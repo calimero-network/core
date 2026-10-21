@@ -17,6 +17,7 @@ use crate::AdminState;
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
     device: Option<Extension<AuthenticatedDevice>>,
@@ -28,7 +29,7 @@ pub async fn handler(
 
     // Before any read, so a refusal costs one membership lookup rather than the
     // group load below.
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+    let scope = match list_scope_for(&state.ctx_client, client_key, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(error=?err, "Failed to resolve the caller's list scope");
@@ -53,6 +54,10 @@ pub async fn handler(
         Ok(info) => {
             info!(group_id=%group_id_str, "Group info retrieved successfully");
             let active_upgrade = info.active_upgrade.as_ref().map(upgrade_info_to_api_data);
+            let (app_package, app_version) = info
+                .target_release
+                .map(|release| (release.package, release.version))
+                .unzip();
 
             ApiResponse {
                 payload: GroupInfoApiResponse {
@@ -60,6 +65,8 @@ pub async fn handler(
                         group_id: hex::encode(info.group_id.to_bytes()),
                         bytecode_id: hex::encode(info.bytecode_id.to_bytes()),
                         target_application_id: info.target_application_id,
+                        app_package,
+                        app_version,
                         member_count: info.member_count,
                         context_count: info.context_count,
                         active_upgrade,

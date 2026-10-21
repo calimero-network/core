@@ -24,6 +24,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{MemberIdentity, PublicKey};
+use calimero_server_primitives::admin::ActivateGroupUpgradeApiRequest;
 use calimero_server_primitives::admin::AddGroupMembersApiRequest;
 use calimero_server_primitives::admin::CreateGroupInvitationApiRequest;
 use calimero_server_primitives::admin::CreateNamespaceApiRequest;
@@ -647,6 +648,7 @@ async fn upgrade_group() {
                 target_application_id: ApplicationId::from([0u8; 32]),
                 cascade: false,
                 force_code_only: false,
+                skip_trial: false,
             },
         )
         .await
@@ -745,6 +747,76 @@ async fn retry_group_upgrade() {
     assert_eq!(resp.data.local_contexts_total, Some(4));
     assert_eq!(resp.data.local_contexts_swapped, Some(2));
     assert_eq!(resp.data.local_contexts_failed, Some(1));
+}
+
+#[tokio::test]
+async fn activate_group_upgrade() {
+    let target = ApplicationId::from([0xAA; 32]);
+    let failed = ContextId::from([0x21; 32]);
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/admin-api/groups/{GID}/upgrade/activate")))
+        .and(body_json(serde_json::json!({
+            "expectedApplicationId": target.to_string(),
+            "expectedVersion": "2.0.0"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {
+                "targetApplicationId": target.to_string(),
+                "switchedContexts": 2,
+                "replayedDeltas": 5,
+                "failedContexts": [{
+                    "contextId": failed.to_string(),
+                    "error": "migration trapped",
+                    "retryable": false
+                }]
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let resp = client
+        .activate_group_upgrade(
+            GID,
+            ActivateGroupUpgradeApiRequest {
+                expected_application_id: Some(target),
+                expected_version: Some("2.0.0".to_owned()),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.data.target_application_id, target);
+    assert_eq!(resp.data.switched_contexts, 2);
+    assert_eq!(resp.data.replayed_deltas, 5);
+    let [only] = resp.data.failed_contexts.as_slice() else {
+        panic!("one failed context, got {:?}", resp.data.failed_contexts);
+    };
+    assert_eq!(only.context_id, failed);
+    assert!(!only.retryable);
+}
+
+#[tokio::test]
+async fn activate_group_upgrade_refused_is_an_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/admin-api/groups/{GID}/upgrade/activate")))
+        .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+            "error": "namespace targets another application"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let err = client
+        .activate_group_upgrade(GID, ActivateGroupUpgradeApiRequest::default())
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("409"), "got: {err}");
 }
 
 #[tokio::test]
@@ -1480,6 +1552,7 @@ async fn concurrent_expired_requests_refresh_once() {
 mod request_proof {
     use calimero_account::{AccountGenesis, AccountProof, CallerProof, DeviceCert, KemPublicKey};
     use calimero_primitives::identity::{DeviceId, PrivateKey};
+    use url::Position;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -1546,17 +1619,21 @@ mod request_proof {
         let _ignored: serde_json::Value = conn.get("admin-api/contexts").await.unwrap();
     }
 
-    /// The signature commits to the method and the path the node received —
-    /// not to the variant name, and not to anything after a `?`.
+    /// The signature commits to the method and the path and query the node
+    /// received, not to the variant name; the space checks no re-encoding happens.
     #[tokio::test]
-    async fn the_proof_commits_to_the_method_and_the_path_the_node_sees() {
+    async fn the_proof_commits_to_the_method_and_the_path_and_query_the_node_sees() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/admin-api/contexts"))
             .respond_with(move |req: &Request| {
                 let proof = decode(req);
                 assert_eq!(proof.request.method, "GET");
-                assert_eq!(proof.request.path, "/admin-api/contexts");
+                assert_eq!(
+                    proof.request.path,
+                    &req.url[Position::BeforePath..Position::AfterQuery],
+                );
+                assert_eq!(proof.request.path, "/admin-api/contexts?limit=5&q=a%20b");
                 assert!(
                     proof.session.is_none(),
                     "with_device_key is the two-link chain"
@@ -1570,7 +1647,8 @@ mod request_proof {
         let url = server.uri().parse().unwrap();
         let conn =
             ConnectionInfo::new(url, None, NoopAuth, NoopStorage).with_request_proof(signer());
-        let _ignored: serde_json::Value = conn.get("admin-api/contexts?limit=5").await.unwrap();
+        let _ignored: serde_json::Value =
+            conn.get("admin-api/contexts?limit=5&q=a b").await.unwrap();
     }
 
     /// The bytes hashed are the bytes sent.

@@ -9,6 +9,8 @@ description: >
       descendant subgroup (target_application_id flips to v2)
     - the descendant context's state migrates (v1 fields preserved,
       v2-only field readable)
+    - node 2, which never installs v2, still names the target package and
+      version on the namespace and group endpoints before it runs the app
 
   Regression guard for the full bytecode_id derivation triangle:
     - `create_group::handle` (originator-side derivation)
@@ -257,6 +259,24 @@ steps:
       - 'equal("{{sub_target_app_node1}}", "{{app_v2}}")'
       - 'equal("{{ns_target_app_node2}}", "{{app_v2}}")'
       - 'equal("{{sub_target_app_node2}}", "{{app_v2}}")'
+
+  # Node 2 has not run the app since the cascade, so it holds neither the v2
+  # bytecode nor a v2 install. The namespace must still name its target release.
+  - name: Node 2 names the namespace's target release before holding it
+    type: assert_api_response
+    node: app-migration-cascade-2
+    path: /admin-api/namespaces/{{namespace_id}}
+    match:
+      data.appPackage: com.calimero.migration-suite
+      data.appVersion: 2.0.0
+
+  - name: Node 2 names the group's target release before holding it
+    type: assert_api_response
+    node: app-migration-cascade-2
+    path: /admin-api/groups/{{group_id}}
+    match:
+      data.appPackage: com.calimero.migration-suite
+      data.appVersion: 2.0.0
 
   # Phase 7b: the EAGER propagator migration ran on the emitter (node 1).
   #

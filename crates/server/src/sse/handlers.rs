@@ -2107,8 +2107,8 @@ mod tests {
         use super::*;
         use crate::admin::caller_scope::{list_scope, ListScope};
         use crate::test_support::{
-            admin_state, apply_through_governance, descope_by_root, revoke_through_governance,
-            seed_device_members, withdrawal_by_root,
+            admin_revokes, admin_state, apply_through_governance, descope_by_root,
+            revoke_through_governance, seed_device_members, withdrawal_by_root,
         };
         use crate::ws::{authorize_group_subscriptions, caller_may_observe_context};
 
@@ -2546,7 +2546,8 @@ mod tests {
                 &f.ns,
                 &f.device_sk,
                 descope_by_root(&root(&f), f.device),
-            );
+            )
+            .expect("the op applies");
             assert!(
                 AccountBindingRepository::new(&f.state.store)
                     .raw_binding(&f.ns, f.device)
@@ -2580,7 +2581,8 @@ mod tests {
                 &f.ns,
                 &f.device_sk,
                 withdraw(&root(&f), thin),
-            );
+            )
+            .expect("the op applies");
 
             assert!(
                 drops_its_subscriptions(&stream.subscribed.session).await,
@@ -2598,10 +2600,10 @@ mod tests {
             assert_withdrawing_a_device_bound_nowhere_ends_its_stream(descope_by_root).await;
         }
 
-        /// The op names an account, but a revocation tombstones the device id
-        /// itself, so a stream on that device stops whichever account is named.
+        /// A device id is minted for its account, so a revocation naming another
+        /// account is refused and the device's stream keeps serving.
         #[actix::test]
-        async fn a_device_revoked_under_another_accounts_name_loses_its_open_stream() {
+        async fn a_revocation_under_another_accounts_name_leaves_the_stream_open() {
             let f = fixture().await;
             let mut stream = open_stream(&f, 1, (f.account, f.device)).await;
             publish_state_change(&f);
@@ -2610,11 +2612,17 @@ mod tests {
                 "precondition: the stream is live and listening"
             );
 
-            revoke_through_governance(&f.state.store, &f.ns, f.peer.0, f.device);
+            let refused = admin_revokes(&f.state.store, &f.ns, f.peer.0, f.device)
+                .expect_err("a revocation naming another account is refused");
 
+            assert_eq!(
+                calimero_governance_store::test_fixtures::binding_rejection(&refused),
+                Some(calimero_governance_store::BindingRejected::DeviceNotMintedForAccount)
+            );
+            publish_state_change(&f);
             assert!(
-                drops_its_subscriptions(&stream.subscribed.session).await,
-                "a revocation naming another account still spends this device"
+                receives(&mut stream, Duration::from_secs(5)).await,
+                "the device keeps its stream"
             );
         }
 
@@ -2638,13 +2646,16 @@ mod tests {
                 match list_scope(
                     &f.state.ctx_client,
                     None,
+                    None,
                     Some(&AuthenticatedAccount(f.account)),
                     device,
                 )
                 .unwrap()
                 {
                     ListScope::Account { groups, .. } => groups.into_iter().collect(),
-                    ListScope::NodeWide => panic!("an account session is never node-wide"),
+                    ListScope::NodeWide | ListScope::ClientKey { .. } => {
+                        panic!("an account session is never node-wide")
+                    }
                 }
             };
             assert_eq!(
@@ -2812,6 +2823,7 @@ mod tests {
             let in_scope = || {
                 list_scope(
                     &f.state.ctx_client,
+                    None,
                     None,
                     Some(&AuthenticatedAccount(f.account)),
                     Some(f.device),

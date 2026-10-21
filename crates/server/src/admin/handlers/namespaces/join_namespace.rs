@@ -12,14 +12,23 @@ use tracing::{debug, error, info};
 
 use crate::admin::handlers::groups::parse_group_id;
 use crate::admin::handlers::validation::ValidatedJson;
-use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
+use crate::admin::service::{join_refusal_code, parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
     Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     ValidatedJson(req): ValidatedJson<JoinGroupApiRequest>,
 ) -> impl IntoResponse {
+    if let Some(refusal) = crate::admin::client_key_scope::refuse_join_outside_binding(
+        &state,
+        client_key.as_deref(),
+        &req.invitation,
+    ) {
+        return refusal;
+    }
+
     let namespace_id = match parse_group_id(&namespace_id_str) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
@@ -45,8 +54,11 @@ pub async fn handler(
         .await
         // A join nobody could endorse is typed (`ContextError::JoinNotEndorsed`)
         // and mapped by `parse_api_error` to a retryable status, for this route
-        // and `POST /groups/join` alike.
-        .map_err(parse_api_error);
+        // and `POST /groups/join` alike. `code` names which refusal it was.
+        .map_err(|err| {
+            let code = join_refusal_code(&err);
+            (parse_api_error(err), code)
+        });
 
     match result {
         Ok(resp) => {
@@ -63,9 +75,9 @@ pub async fn handler(
             }
             .into_response()
         }
-        Err(err) => {
-            error!(namespace_id=%namespace_id_str, error=?err, "Failed to join namespace");
-            err.into_response()
+        Err((err, code)) => {
+            error!(namespace_id=%namespace_id_str, error=?err, ?code, "Failed to join namespace");
+            err.into_coded_response(code)
         }
     }
 }

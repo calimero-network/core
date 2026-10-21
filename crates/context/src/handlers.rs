@@ -6,6 +6,7 @@ use crate::ContextManager;
 
 pub mod abort_migration;
 pub mod acquire_context_lock;
+pub mod activate_namespace_upgrade;
 pub mod add_group_members;
 pub mod admit_tee_node;
 pub mod apply_signed_group_op;
@@ -78,6 +79,7 @@ pub mod store_member_metadata;
 pub mod store_subgroup_visibility;
 pub mod sync;
 pub mod sync_group;
+pub mod trial_upgrade;
 pub mod update_application;
 pub mod update_member_role;
 pub mod upgrade_group;
@@ -322,6 +324,15 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::ResyncContext { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::ActivateUpgrade { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::TrialUpgrade { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::ActivateNamespaceUpgrade { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }

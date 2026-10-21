@@ -30,7 +30,7 @@
 
 use calimero_primitives::identity::{domain_hash, AccountId};
 
-use crate::domain::{NAMESPACE_ID_DOMAIN, SUBGROUP_ID_DOMAIN};
+use crate::domain::{ACCOUNT_NAMESPACE_ID_DOMAIN, NAMESPACE_ID_DOMAIN, SUBGROUP_ID_DOMAIN};
 
 /// Bytes of salt a founded namespace id is derived with.
 pub const NAMESPACE_SALT_LEN: usize = 32;
@@ -52,6 +52,22 @@ pub fn is_founded_by(
     salt: &[u8; NAMESPACE_SALT_LEN],
 ) -> bool {
     founded_namespace_id(founder, salt) == *namespace_id
+}
+
+/// The id of `founder`'s own account namespace under `salt`, hashed under its own domain.
+#[must_use]
+pub fn account_namespace_id(founder: &AccountId, salt: &[u8; NAMESPACE_SALT_LEN]) -> [u8; 32] {
+    domain_hash(ACCOUNT_NAMESPACE_ID_DOMAIN, &[founder.as_bytes(), salt])
+}
+
+/// Whether `namespace_id` is `founder`'s account namespace under `salt`.
+#[must_use]
+pub fn is_account_namespace_of(
+    namespace_id: &[u8; 32],
+    founder: &AccountId,
+    salt: &[u8; NAMESPACE_SALT_LEN],
+) -> bool {
+    account_namespace_id(founder, salt) == *namespace_id
 }
 
 /// Bytes of salt a created subgroup id is derived with.

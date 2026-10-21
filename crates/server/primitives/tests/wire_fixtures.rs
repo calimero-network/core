@@ -17,7 +17,8 @@ use serde_json::Value;
 
 use calimero_server_primitives::admin::{
     AccountDevicesApiResponse, AccountPairInitApiRequest, AccountSignWithRootApiRequest,
-    AccountSignWithRootApiResponse, AddGroupMembersApiRequest, ChangeNamespaceAdminApiRequest,
+    AccountSignWithRootApiResponse, ActivateGroupUpgradeApiRequest,
+    ActivateGroupUpgradeApiResponse, AddGroupMembersApiRequest, ChangeNamespaceAdminApiRequest,
     ContextIdentitiesResponseData, CreateContextRequest, CreateContextResponseData,
     GetGroupUpgradeStatusApiResponse, GetMigrationStatusApiResponse, GetNamespaceApiResponse,
     GetTeeAdmissionPolicyApiResponse, GroupInfoApiResponse, IntentRelayApiResponse,
@@ -137,6 +138,9 @@ wire_fixtures! {
     upgrade_res: UpgradeGroupApiResponse => "groups/upgrade.res.json",
     upgrade_status_res: GetGroupUpgradeStatusApiResponse => "groups/upgrade_status.res.json",
     migration_status_res: GetMigrationStatusApiResponse => "groups/migration_status.res.json",
+    // Both expectations set: an app id alone cannot tell two versions of one app apart.
+    activate_req: ActivateGroupUpgradeApiRequest => "groups/activate.req.json",
+    activate_res: ActivateGroupUpgradeApiResponse => "groups/activate.res.json",
     // The relay descriptor a keyholder reads before minting a warrant. Pinned
     // because `executorAccount` is the one field whose value a client copies
     // verbatim into a signed object: rename it and every relay client mints

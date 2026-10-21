@@ -180,6 +180,7 @@ async fn the_admin_announces_once_and_streams_its_own_context_swaps() {
             target_application_id: app_id_v2(),
             cascade: true,
             force_code_only: false,
+            skip_trial: true,
         })
         .await
         .expect("cascade upgrade should succeed");

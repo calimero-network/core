@@ -110,6 +110,26 @@ impl<'a> AbsorbRepository<'a> {
         Ok(results)
     }
 
+    /// Whether any record produced on `producing_bytecode_id` is buffered for
+    /// `context_id`. One seek over keys only, so an undecodable record still counts.
+    pub fn has_any(
+        &self,
+        context_id: &ContextId,
+        producing_bytecode_id: [u8; 32],
+    ) -> EyreResult<bool> {
+        let target = *context_id.as_ref();
+        let handle = self.store.handle();
+        let mut iter = handle.iter::<AbsorbBufferKey>()?;
+        let first = iter.seek(AbsorbBufferKey::new(
+            target,
+            producing_bytecode_id,
+            [0u8; 32],
+        ))?;
+        Ok(first.is_some_and(|key| {
+            key.context_id() == target && key.producing_bytecode_id() == producing_bytecode_id
+        }))
+    }
+
     /// Distinct contexts that have at least one pending absorbed delta. Used by
     /// the startup recovery scan to know which contexts to attempt to drain.
     pub fn enumerate_all_contexts(&self) -> EyreResult<Vec<ContextId>> {
@@ -210,6 +230,41 @@ mod tests {
         let pending = repo.enumerate_pending(&ctx_b).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!((pending[0].1).id, [2; 32]);
+    }
+
+    #[test]
+    fn has_any_matches_only_the_named_context_and_bytecode() {
+        let store = test_store();
+        let repo = AbsorbRepository::new(&store);
+        let ctx_a = ContextId::from([0xAA; 32]);
+        let ctx_b = ContextId::from([0xBB; 32]);
+        assert!(!repo.has_any(&ctx_a, [9; 32]).unwrap());
+
+        repo.save(&ctx_a, [8; 32], &sample_record([1; 32])).unwrap();
+        repo.save(&ctx_a, [0xA0; 32], &sample_record([2; 32]))
+            .unwrap();
+        repo.save(&ctx_b, [9; 32], &sample_record([3; 32])).unwrap();
+        assert!(!repo.has_any(&ctx_a, [9; 32]).unwrap());
+
+        repo.save(&ctx_a, [9; 32], &sample_record([0xFF; 32]))
+            .unwrap();
+        assert!(repo.has_any(&ctx_a, [9; 32]).unwrap());
+    }
+
+    #[test]
+    fn has_any_counts_a_record_it_cannot_decode() {
+        let store = test_store();
+        let ctx = ContextId::from([0xAA; 32]);
+        let mut handle = store.handle();
+        handle
+            .put(
+                &AbsorbBufferKey::new(*ctx.as_ref(), [9; 32], [1; 32]),
+                &vec![0xFF],
+            )
+            .unwrap();
+        let repo = AbsorbRepository::new(&store);
+        assert!(repo.enumerate_pending(&ctx).is_err());
+        assert!(repo.has_any(&ctx, [9; 32]).unwrap());
     }
 
     #[test]

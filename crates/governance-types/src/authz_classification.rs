@@ -130,7 +130,7 @@ fn classify_root_op(op: &RootOp) -> Authz {
         RootOp::MemberJoinedViaTeeAttestation { .. } => uncovered!("admits a TEE member on a verifier's attestation"),
         RootOp::MemberJoined { .. } | RootOp::MemberJoinedAt { .. } => uncovered!("admits a member on a signed invitation; the join-key rows judge the sync request, not this apply"),
         RootOp::MemberJoinedOpen { .. } => uncovered!("joins an Open subgroup by inheritance; the join-key rows judge the key request, not this apply"),
-        RootOp::NamespaceCreatedV2 { .. } => uncovered!("founds a namespace whose id must derive from the signer's founder and salt"),
+        RootOp::NamespaceCreatedV2 { .. } | RootOp::AccountNamespaceCreated { .. } => uncovered!("founds a namespace whose id must derive from the signer's founder and salt"),
         RootOp::KeyDelivery { .. } => ungated!("applies as a no-op; the key moved to the pull exchange"),
         RootOp::OnBehalf { .. } => uncovered!("a relay applies a delegated namespace op, relay seat"),
         RootOp::RootGuarded { .. } => uncovered!("applies an owner-level op on the account root's proof"),

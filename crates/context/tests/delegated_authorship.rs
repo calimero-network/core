@@ -505,6 +505,7 @@ fn a_delta_in_a_subgroup_its_author_created_is_admitted_at_the_cut() {
                 ciphertext: Vec::new(),
             },
             key_rotation: None,
+            registers: None,
         })
     };
 

@@ -45,6 +45,8 @@ pub async fn handler(
                         local_contexts_total: total,
                         local_contexts_swapped: completed,
                         local_contexts_failed: failed,
+                        contexts_trialled: 0,
+                        contexts_not_held: 0,
                     },
                 },
             }

@@ -2,7 +2,7 @@
 //! `apply_group_op_mutations` in #2304.
 
 use super::context::GroupApplyCtx;
-use crate::{MembershipError, MembershipRepository, MetaRepository};
+use crate::{MembershipError, MetaRepository};
 use calimero_account::AccountId;
 use calimero_primitives::context::GroupMemberRole;
 use eyre::{bail, Result as EyreResult};
@@ -36,7 +36,7 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, new_owner: &AccountId) -> EyreR
     //     a plain-Member owner would have a confusing "owner with
     //     reduced capabilities" status. Require Admin first;
     //     promote then transfer if needed.
-    match MembershipRepository::new(store).role_of(group_id, new_owner)? {
+    match ctx.direct_role(new_owner)? {
         Some(GroupMemberRole::Admin) => {}
         Some(other) => bail!(MembershipError::TransferTargetNotAdmin {
             group: hex::encode(group_id.to_bytes()),

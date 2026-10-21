@@ -40,6 +40,24 @@ impl Handler<NodeMessage> for NodeManager {
                 let snapshot = self.state.sync_status_snapshot(&context_id);
                 let _ = outcome.send(snapshot);
             }
+            NodeMessage::DrainAbsorbed {
+                context_id,
+                outcome,
+            } => {
+                let input = state_delta::StateDeltaContext {
+                    node_clients: self.clients.clone(),
+                    node_state: self.state.clone(),
+                    network_client: self.managers.sync.network_client.clone(),
+                    sync_timeout: self.managers.sync.sync_config.timeout,
+                };
+                let _ignored = ctx.spawn(
+                    async move {
+                        let replayed = state_delta::drain_absorbed(&input, &context_id).await;
+                        let _ignored = outcome.send(replayed);
+                    }
+                    .into_actor(self),
+                );
+            }
             NodeMessage::GetMigrationStatusReports {
                 namespace_id,
                 outcome,

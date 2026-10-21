@@ -127,7 +127,8 @@ delegated `account_proof` session carries; the wide `context:list` /
 `namespace:list` still satisfies them, so operator tokens are unaffected. The
 two `for-application` listings are **not** scoped — they enumerate node-wide
 without ever naming a context whose group could be checked — and keep requiring
-the wide `context:list`. A node-owner session, and a node
+the wide `context:list` (a bound client key is held to its own application on
+them). A node-owner session, and a node
 running without the auth guard at all (`AuthMode::Proxy`, the default), keep the
 node-wide view — narrowing there would empty the endpoint on every
 default-configured node without closing anything, since the proxy is what decides
@@ -152,7 +153,8 @@ when `Column::ContextBlob` associates it with that context — otherwise the sam
 written by an upload naming the context and by a network fetch a peer of the
 context served (`NodeClient::get_blob`), **never** by an announce or an app host
 call, which only name an id. If you add a path that records it, it must prove the
-bytes entered for that context. `DELETE` stays on the node-wide `blob:remove`.
+bytes entered for that context. `DELETE` stays on the node-wide `blob:remove`,
+except for a bound client key (see "Client key bindings").
 
 `GET`/`HEAD /admin-api/blobs/{id}?context_id=` asks the context's peers on a local miss, and the `GET` stores what it fetches.
 A navigation or a subresource load carries no `Origin`, so the origin guard admits one from any site when it names the node's own host.
@@ -280,7 +282,8 @@ guard, and a request may use either:
 - **A request-carried proof** (`src/proof_auth.rs`). One header,
   `X-Calimero-Proof`, holding a hex borsh `CallerProof`: the account root's
   certificate over a device key, optionally the device's statement over a session
-  key, and a signature over *this* method, path and body. Nothing is issued to the
+  key, and a signature over *this* method, path and query (the raw request target
+  from `OriginalUri`), and body. Nothing is issued to the
   caller, so it works on a node the caller has no relationship with.
 
 The proof path is installed only when `AdminConfig::delegated_access` is set —
@@ -311,28 +314,37 @@ covers the token path.
 
 `POST /admin-api/contexts/{id}/presence-intents` (`admin/handlers/context/presence_intent.rs`) is how an account with no node publishes ephemeral presence. It sits on the public `delegated_execution_routes()` router with the other intents routes: the device's signature over the `PresenceStatement` is the credential, and the certificate in `authorProof` ties the device to its account. The handler only rebuilds the update (the context from the path, the author from the certificate's key, so a client cannot name another) and hands it to `NodeClient::publish_delegated_ephemeral`, which makes every decision. Each `DelegatedPresenceError` has its own status (`status_for`). It is not `/intents`: presence runs nothing, spends no warrant nonce and changes no state.
 
+## Direct admission
+
+`POST /admin-api/namespaces/{id}/admit` (`admin/handlers/namespaces/admit_join.rs`) publishes a join a keyholder with no node signed. It sits on the public router on every node (`admission_routes()` in `admin/service.rs`), not behind `delegated_access`: its caller holds a device key and an invitation and nothing on this node, the joiner's signature is the authorization, and the inviter's signed `admitters` list is this node's consent. Gating it on the relay flag would make a peer-to-peer join cloud-only.
+
+Because the caller chooses what a request costs, the handler refuses cheapest first and before anything is signed or published: this node named in `admitters` (a forged list only passes this and fails the invitation check), then decode, join-only, `op.validate()` bounds, the op's invitation is the one presented, the op signature, `validate_open_invitation`, and last a join already applied here (op log or the joiner's nonce window, the two halves the apply guards a relayed join with) answers `published: false` without relaying again, since each relay is a new envelope on every peer's DAG. Keep that order when adding a check. `tests/route_manifest.rs::direct_admission_is_on_the_public_router` fails if the route moves back behind the guard.
+
 ## Client key bindings
 
-A client key minted by `POST /admin/client-key` authenticates as the node owner,
-so its bindings are the only thing that narrows it. `context[<ctx>,<identity>]`
-and `application-binding[<app>]` in its permission list become a
-`ClientKeyScope` extension, and every surface that names a context or group
-checks it:
+A client key minted by `POST /admin/client-key` with `context_id` or `application_id` is bound.
+It executes as the node inside its binding, but it is never the node owner on the admin API.
+`context[<ctx>,<identity>]` and `application-binding[<app>]` in its permission list become a `ClientKeyScope` extension, and every surface checks it:
 
-- `/jsonrpc`, WS `execute` and context subscribe (WS and SSE): the context must
-  be the bound one, or run the bound application.
-- Group subscribe (WS and SSE) and admin routes with a `{group_id}` or
-  `{namespace_id}`: a context binding reaches only the groups on the chain from
-  its context's group up to the namespace; an application binding only groups
-  targeting that application.
-- Admin routes with a `{context_id}`, and `/contexts/sync/{id}`, are refused with
-  `403` outside the binding (`admin/client_key_scope.rs`). `POST /contexts/sync`
-  with no id syncs every context and is refused outright.
-- SSE: a bound key's session principal includes its binding, so it can neither
-  adopt a node-owner session by `Last-Event-ID` nor be adopted by one.
+- `/jsonrpc`, WS `execute` and context subscribe (WS and SSE): the context must be the bound one, or run the bound application.
+  A context this node does not hold yet runs its owning group's target application.
+- Group subscribe (WS and SSE) and admin routes with a `{group_id}` or `{namespace_id}`: a context binding reaches only the groups on the chain from its context's group up to the namespace; an application binding only groups targeting that application.
+  A context binding changes only its context's own group: a route other than `GET`/`HEAD`, a body naming a group and a join need that group exactly (`permits_group_change`).
+- Admin routes with a `{context_id}`, `{application_id}`, and `/contexts/sync/{id}`, are refused with `403` outside the binding (`admin/client_key_scope.rs`).
+  `POST /contexts/sync` with no id syncs every context and is refused outright.
+  `POST /install-application` is refused outright.
+- `POST /contexts`, `/namespaces`, `/groups`, `/contexts/{id}/application`, `/groups/{id}/upgrade` and `/groups/{id}/reparent` are refused when their body names a group or application outside the binding (`refuse_target_outside_binding`).
+- A join (`POST /groups/join`, `/namespaces/{id}/join`) needs a group this node holds and the binding reaches (`refuse_join_outside_binding`).
+  An invitation's application is an unsigned hint that would seed the group's target, so a group this node does not hold yet is joined by an unbound key.
+- Listings and named reads take the key's `ListScope::ClientKey` (`admin/caller_scope.rs`): the groups its binding reaches, and of their contexts only those it permits.
+  `GET /applications`, the `for-application` listings, `/groups/{id}/contexts` and the alias routes filter by the same binding; an alias to a device is never visible to a bound key.
+  Blob reads and uploads are confined like an account session's; `DELETE /blobs/{id}` needs the blob held for one of its contexts and gives that association up with the reference it releases (bound-key deletes are serialized), and `GET /blobs` is refused.
+- SSE: a bound key's session principal includes its binding, so it can neither adopt a node-owner session by `Last-Event-ID` nor be adopted by one.
 
-Every check fails closed when the context or group cannot be resolved. A key
-with no binding is unaffected.
+In proxy mode the binding arrives in `X-Auth-Permissions` and `proxy_permissions` builds the same `ClientKeyScope`; like the permissions, it can only narrow: an account session lists the groups both its account and its binding reach, and of their contexts only those the binding permits.
+Every check fails closed when the context or group cannot be resolved.
+A key with no binding is unaffected, and `/admin/client-key` never mints `admin` on a bound key, whether the binding comes from its fields or its permission list.
+The one exception is mero-auth's `trusted_admin_applications`: an `application_id` listed there may be minted `admin`, and that key is unbound.
 
 ## Sealed transport
 
@@ -368,7 +380,8 @@ sealed under the session and responses stream back in sealed frames. Seven rules
   `InnerScope::Uncredentialed` (set in `lib.rs` when auth is not embedded):
   `merod` guards nothing itself there, and the proxy sees only `POST /sealed/v2`,
   so an opened request for any route outside `UNCREDENTIALED_ADMIN_PATHS` (plus
-  `.../intents` with `delegated_access`) is refused inside the envelope with
+  `/namespaces/{id}/admit` always, and with `delegated_access` the four `delegated_execution_routes()`:
+  `.../intents`, `.../presence-intents`, `.../context-intents`, `.../governance-intents`) is refused inside the envelope with
   `sealed_route_unguarded`. Matched exactly, never by prefix. Keep the list in
   step with the public router in `admin/service.rs`: a route added there is not
   sealable in proxy mode until it is added here, which is the safe direction.
@@ -457,7 +470,7 @@ A revoked, descoped or withdrawn device keeps its account's membership, so no me
 The WS fan-out and every SSE event task also listen to the governance op events (`next_withdrawal`): a `DeviceRevoked`, `DeviceDescoped` or `DeviceWithdrawn` re-derives the grants that watch its namespace, and a lagged listener re-derives every grant.
 Each listener subscribes before it re-derives what it already holds, and an SSE event task re-derives its session on every (re)connect, so a withdrawal applied while no task listened is not missed.
 A subscribe re-derives once more after it records its ids, since a withdrawal committed between its gate and that write finds nothing to drop.
-A descope or withdrawal skips connections anchored on another account; a revocation does not, since its tombstone spends the device id whatever account the op names.
+A descope or withdrawal skips connections anchored on another account; a revocation does not, since its tombstone spends the device id, and the apply refuses one naming an account the id was not minted for.
 A re-derivation vouches only for the ids it checked, so an id a subscribe added meanwhile stays stale.
 
 The caller identity itself (`EventCaller`) is deliberately not persisted on an
@@ -475,7 +488,7 @@ request re-stamps it.
   `CALIMERO_WEBUI_SHA256`. A local archive in `CALIMERO_WEBUI_SRC` is verified
   only if you pass one, and a local directory is never hashed. Bumping the dashboard
   means updating the version and sha256 constants together
-- Admin API requires authentication
+- Admin API requires authentication, except the public router: probes, the public TEE routes, direct admission (always) and delegated execution (with `delegated_access`)
 - JSON-RPC follows JSON-RPC 2.0 spec
 - WebSocket requires context subscription
 - A WebSocket has no CORS, so `ws_handler` asks `OriginGuard::admits` itself, in every auth mode.

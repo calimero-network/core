@@ -18,6 +18,7 @@ use crate::AdminState;
 pub async fn handler(
     Query(query): Query<ListNamespacesQuery>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
     device: Option<Extension<AuthenticatedDevice>>,
@@ -25,7 +26,7 @@ pub async fn handler(
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(100);
 
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+    let scope = match list_scope_for(&state.ctx_client, client_key, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(error=?err, "Failed to resolve the caller's list scope");
@@ -47,7 +48,7 @@ pub async fn handler(
     // enumerates from the caller's groups instead.
     let request = match scope {
         ListScope::NodeWide => ListNamespacesRequest { offset, limit },
-        ListScope::Account { .. } => ListNamespacesRequest {
+        ListScope::Account { .. } | ListScope::ClientKey { .. } => ListNamespacesRequest {
             offset: 0,
             limit: usize::MAX,
         },
@@ -65,7 +66,7 @@ pub async fn handler(
             // is expressed in.
             let entries: Vec<_> = match &scope {
                 ListScope::NodeWide => entries,
-                ListScope::Account { .. } => entries
+                ListScope::Account { .. } | ListScope::ClientKey { .. } => entries
                     .into_iter()
                     .filter(|ns| {
                         scope.admits(Some(&ContextGroupId::from(ns.namespace_id.to_bytes())))
@@ -89,6 +90,8 @@ pub async fn handler(
                         v
                     }
                 };
+                let (app_version, app_package) =
+                    super::with_target_release(app_version, ns.target_release);
                 data.push(NamespaceApiResponse {
                     namespace_id: hex::encode(ns.namespace_id.to_bytes()),
                     bytecode_id: hex::encode(ns.bytecode_id.to_bytes()),
@@ -99,6 +102,7 @@ pub async fn handler(
                     context_count: ns.context_count,
                     subgroup_count: ns.subgroup_count,
                     app_version,
+                    app_package,
                     founding: super::namespace_founding(&state.store, &ns.namespace_id),
                     held_ops: super::namespace_held_ops(&state.store, &ns.namespace_id),
                 });

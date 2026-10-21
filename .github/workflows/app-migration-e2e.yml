@@ -105,7 +105,7 @@ jobs:
           key: ${{ steps.fixtures.outputs.key }}
 
       - name: Upload WASM fixtures artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: app-migration-wasm-fixtures
           # Repo-root-relative roots so paths restore verbatim.
@@ -217,10 +217,16 @@ jobs:
           - 37-stranded-resync
           - 38-namespace-invite-join-regression
           - 39-missing-abi-refused
-        # The only suite that advances a group's target, so the only place registry
-        # coordinates resolve; dht ignores them, so this needs an http lane to exercise it.
+          - 41-reader-sees-post-upgrade-writes
+          - 42-activate-upgrade-on-an-idle-node
+          - 43-retarget-before-activate
+          - 44-context-reports-the-release-it-runs
+        # Scenarios that depend on a group's registry coordinates; dht ignores them,
+        # so they need an http lane to exercise them.
         include:
           - workflow: 01-namespace-cascade-migration
+            mode: http
+          - workflow: 40-paired-device-holds-newer-release
             mode: http
     env:
       WORKFLOW: ${{ matrix.workflow }}
@@ -233,7 +239,7 @@ jobs:
           persist-credentials: false
 
       - name: Download merod image artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: merod-image
           path: /tmp
@@ -244,7 +250,7 @@ jobs:
           docker images | grep merod || true
 
       - name: Download WASM fixtures
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: app-migration-wasm-fixtures
 
@@ -294,7 +300,7 @@ jobs:
 
       - name: Upload docker logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: app-migration-logs-${{ matrix.workflow }}
           path: docker-logs/

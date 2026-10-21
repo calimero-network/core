@@ -95,7 +95,7 @@ use self::local_state::{op_log_contains_content_hash, persist_group_governance_p
 pub use self::absorb::AbsorbRepository;
 pub use self::absorb_record::{AbsorbRecord, AbsorbedEntity, AbsorbedLeaf};
 pub use self::authorizer::{
-    AtCutAuthorizer, AtCutMembershipPath, GroupRows, LiveFallbackAuthorizer,
+    AtCutAuthorizer, AtCutMembershipPath, GroupRows, LiveFallbackAuthorizer, ReentryAtCut,
     LIVE_FALLBACK_AUTHORIZER,
 };
 pub use self::capabilities::CapabilitiesRepository;
@@ -126,7 +126,7 @@ pub use self::void_ledger::{parked_op, Parked};
 
 pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;
-pub use self::namespace_founding::NamespaceFoundingRepository;
+pub use self::namespace_founding::{GenesisKind, NamespaceFoundingRepository};
 
 pub use self::group_keys::{
     key_covering_group, EntitledRecipient, GroupKeyring, KeyRecipient, KeyRequester, StoredGroupKey,
@@ -157,14 +157,14 @@ pub use self::namespace::{
     namespace_groups_member_but_keyless, namespace_groups_with_held_key_buffered_ops,
     namespace_root_participating_but_unbootstrapped, open_relayed_join_for_read,
     open_sealed_root_op, open_sealed_root_op_for_group, redrive_buffered_ops_for_group,
-    redrive_buffered_ops_for_group_with, redrive_sealed_root_ops_with,
-    retry_encrypted_ops_for_group, retry_encrypted_ops_for_group_with,
-    seal_root_op_for_group_if_keyed, seal_root_op_for_publish, seal_root_op_if_keyed,
-    sign_and_apply_namespace_op_without_publish, sign_and_publish_namespace_op,
-    sign_apply_and_publish_namespace_op, sign_apply_and_publish_namespace_op_returning_op,
-    ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure, NamespaceDagService,
-    NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord, NamespaceMembershipService,
-    NamespaceOpLogService, NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
+    redrive_buffered_ops_for_group_with, redrive_namespace_with, retry_encrypted_ops_for_group,
+    retry_encrypted_ops_for_group_with, seal_root_op_for_group_if_keyed, seal_root_op_for_publish,
+    seal_root_op_if_keyed, sign_and_apply_namespace_op_without_publish,
+    sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op,
+    sign_apply_and_publish_namespace_op_returning_op, ApplyNamespaceOpResult, CascadePayload,
+    KeyUnwrapFailure, NamespaceDagService, NamespaceGovernance, NamespaceHead,
+    NamespaceIdentityRecord, NamespaceMembershipService, NamespaceOpLogService,
+    NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
 };
 pub use self::node_device::{
     account_for_context, account_for_group, AccountRoot, DeviceSecret, ImportedRoot,

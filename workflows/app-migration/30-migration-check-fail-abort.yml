@@ -137,13 +137,29 @@ steps:
     statements:
       - 'equal("{{app_v1}}", "{{app_v2}}")'
 
-  - name: Cascade namespace v1 → v2 (lossy migrate)
-    type: upgrade_group
-    node: app-migration-check-fail-1
-    group_id: "{{namespace_id}}"
-    target_application_id: "{{app_v2}}"
-    # The node resolves the migration from the target bundle's embedded ABI.
-    cascade: true
+  # The admin trials the migration on its own contexts before publishing, so the
+  # lossy v2 is refused here and nothing reaches the governance log.
+  - name: Cascade to the lossy v2 is refused by the trial
+    type: script
+    script: workflows/app-migration/upgrade-group.sh
+    target: local
+    args:
+      - app-migration-check-fail-1
+      - "{{namespace_id}}"
+      - '{"targetApplicationId": "{{app_v2}}", "cascade": true}'
+      - "409"
+      - '.error | test("trial of the upgrade failed on context .*migration_check failed")'
+
+  # The test below is about the lazy abort after publish, so it skips the trial.
+  - name: Cascade namespace v1 → v2 (lossy migrate, trial skipped)
+    type: script
+    script: workflows/app-migration/upgrade-group.sh
+    target: local
+    args:
+      - app-migration-check-fail-1
+      - "{{namespace_id}}"
+      - '{"targetApplicationId": "{{app_v2}}", "cascade": true, "skipTrial": true}'
+      - "200"
 
   - name: Wait for cascade op to gossip
     type: wait

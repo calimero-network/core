@@ -25,7 +25,7 @@ pub mod tombstone_gc;
 pub use tombstone_gc::GcConfig;
 pub mod delta_buffer;
 pub mod join_bundle;
-pub use join_bundle::JoinBundle;
+pub use join_bundle::{JoinBundle, NamespaceJoinRefused};
 pub mod messages;
 pub mod presence;
 pub mod sync;

@@ -878,6 +878,13 @@ pub struct TeeAttestRequest {
     /// serving it cannot forge it. Absent for a mock quote.
     #[serde(default)]
     pub include_collateral: bool,
+    /// Also return this TD's event log (the ACPI CCEL table) as `eventLogB64`:
+    /// every measurement the firmware and boot chain extended into RTMR0-3, so
+    /// a verifier can see which event makes this node's registers differ from
+    /// the values it expected. It is public: it describes what the quote's
+    /// registers already commit to. Unavailable for a mock quote.
+    #[serde(default)]
+    pub event_log: bool,
 }
 
 impl TeeAttestRequest {
@@ -888,6 +895,7 @@ impl TeeAttestRequest {
             bind_node_key: false,
             bind_transport_key: false,
             include_collateral: false,
+            event_log: false,
         }
     }
 
@@ -1186,6 +1194,10 @@ pub struct TeeAttestResponseData {
     /// `includeCollateral` and the quote is not a mock.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collateral: Option<serde_json::Value>,
+    /// Base64 of this TD's CCEL event log, present only when the request set
+    /// `eventLog`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_log_b64: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1201,6 +1213,7 @@ impl TeeAttestResponse {
         bound_public_key: Option<PublicKey>,
         transport_public_key: Option<String>,
         collateral: Option<serde_json::Value>,
+        event_log_b64: Option<String>,
     ) -> Self {
         Self {
             data: TeeAttestResponseData {
@@ -1209,6 +1222,7 @@ impl TeeAttestResponse {
                 bound_public_key,
                 transport_public_key,
                 collateral,
+                event_log_b64,
             },
         }
     }
@@ -1473,6 +1487,12 @@ pub struct GroupInfoApiResponseData {
     #[serde(rename = "appKey")]
     pub bytecode_id: String,
     pub target_application_id: ApplicationId,
+    /// Package and version the group targets, from the group itself, so they are
+    /// present before that release is installed on this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_package: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
     pub member_count: u64,
     pub context_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1993,6 +2013,14 @@ pub struct ListMemberDevicesApiResponse {
     pub members: Vec<MemberDevicesApiEntry>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceRevokedDevicesApiResponse {
+    pub revoked_devices: Vec<DeviceId>,
+    /// Hex `sha256(account || device)` of each device its own account withdrew here without a tombstone.
+    pub withdrawn_slots: Vec<String>,
+}
+
 /// The largest plaintext this route will seal, in bytes before hex-encoding.
 ///
 /// What the route exists for is a list of namespace ids — 32 bytes each, plus
@@ -2122,6 +2150,10 @@ pub struct UpgradeGroupApiRequest {
     /// when `false` (default), a missing target ABI refuses the upgrade.
     #[serde(default)]
     pub force_code_only: bool,
+    /// When `true`, the migration is not trialled on this node's contexts before
+    /// the upgrade is published; when `false` (default), a failing trial refuses it.
+    #[serde(default)]
+    pub skip_trial: bool,
 }
 
 impl Validate for UpgradeGroupApiRequest {
@@ -2151,6 +2183,56 @@ pub struct UpgradeGroupApiResponseData {
     /// Contexts whose swap failed on this node; a non-zero value is what
     /// `retry_group_upgrade` picks up.
     pub local_contexts_failed: Option<u32>,
+    /// Contexts this node trialled the migration on before publishing.
+    #[serde(default)]
+    pub contexts_trialled: u32,
+    /// Contexts this node knows of but does not hold, so did not trial.
+    #[serde(default)]
+    pub contexts_not_held: u32,
+}
+
+/// Switch this node's contexts of a namespace to its stored target release.
+/// `expected_application_id` and `expected_version`, when set, must each equal that target.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActivateGroupUpgradeApiRequest {
+    #[serde(default)]
+    pub expected_application_id: Option<ApplicationId>,
+    #[serde(default)]
+    pub expected_version: Option<String>,
+}
+
+impl Validate for ActivateGroupUpgradeApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivateGroupUpgradeApiResponse {
+    pub data: ActivateGroupUpgradeApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivateGroupUpgradeApiResponseData {
+    pub target_application_id: ApplicationId,
+    /// Contexts this request moved to the target; `0` when all were current.
+    pub switched_contexts: u32,
+    /// Held deltas replayed into the namespace's contexts.
+    pub replayed_deltas: u32,
+    /// Contexts this request could not finish; calling again retries only these.
+    pub failed_contexts: Vec<ActivateGroupUpgradeFailedContext>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivateGroupUpgradeFailedContext {
+    pub context_id: ContextId,
+    pub error: String,
+    /// `false` when the switch itself failed (a migration or load), which a retry repeats.
+    pub retryable: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -4891,10 +4973,14 @@ pub struct NamespaceApiResponse {
     pub subgroup_count: usize,
     /// Bundle-manifest version of this namespace's `bytecode_id` blob — the
     /// per-namespace truth (the shared application row only says "latest
-    /// fetched"). `None` when unresolvable (raw-wasm app, legacy key,
-    /// blob not retained locally).
+    /// fetched"). Falls back to the version the group targets when the blob
+    /// is not held locally; `None` for a raw-wasm app or legacy key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
+    /// Package of the release the namespace targets, from the group itself, so
+    /// it is present before that release is installed on this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_package: Option<String>,
     /// What the id was derived from: the founder and salt carried by the
     /// namespace's `NamespaceCreatedV2` genesis. Present on every node that has
     /// applied that genesis, not only the founder's; absent only on a node that
@@ -5005,9 +5091,16 @@ pub struct NodeIdentityApiResponseData {
     pub account_namespace_id: Option<String>,
 
     /// The account that withdrew this node's device, absent on a node no
-    /// revocation has reached.
+    /// revocation has reached or whose operator has acknowledged it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_from: Option<RevokedFromApiEntry>,
+}
+
+/// Acknowledging the withdrawal carries nothing back.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcknowledgeRevokedFromApiResponse {
+    pub data: Empty,
 }
 
 /// Which account withdrew this node's device, and which device it was.
@@ -5082,6 +5175,8 @@ mod naming_back_compat_tests {
             group_id: "g".to_owned(),
             bytecode_id: "b".to_owned(),
             target_application_id: ApplicationId::from([0_u8; 32]),
+            app_package: None,
+            app_version: None,
             member_count: 0,
             context_count: 0,
             active_upgrade: None,
@@ -5096,6 +5191,40 @@ mod naming_back_compat_tests {
         let json = serde_json::to_string(&data).expect("serialize");
         assert!(json.contains("\"appKey\""), "got: {json}");
         assert!(!json.contains("\"bytecodeId\""), "got: {json}");
+    }
+
+    // The release fields are new: an old server omits them and a node with no
+    // named release does too, so neither may be required or serialized as null.
+    #[test]
+    fn group_info_release_fields_are_optional_on_the_wire() {
+        let mut data = GroupInfoApiResponseData {
+            group_id: "g".to_owned(),
+            bytecode_id: "b".to_owned(),
+            target_application_id: ApplicationId::from([0_u8; 32]),
+            app_package: None,
+            app_version: None,
+            member_count: 0,
+            context_count: 0,
+            active_upgrade: None,
+            default_capabilities: 0,
+            subgroup_visibility: String::new(),
+            effective_visibility: String::new(),
+            metadata: None,
+            group_state_hash: String::new(),
+            namespace_id: String::new(),
+            owner_op_counter: 0,
+        };
+        let unnamed = serde_json::to_value(&data).expect("serialize");
+        assert!(unnamed.get("appPackage").is_none(), "got: {unnamed}");
+        assert!(unnamed.get("appVersion").is_none(), "got: {unnamed}");
+        let _: GroupInfoApiResponseData =
+            serde_json::from_value(unnamed).expect("a body without the release fields");
+
+        data.app_package = Some("com.acme.app".to_owned());
+        data.app_version = Some("2.0.0".to_owned());
+        let named = serde_json::to_value(&data).expect("serialize");
+        assert_eq!(named["appPackage"], "com.acme.app");
+        assert_eq!(named["appVersion"], "2.0.0");
     }
 
     // The request half of the same contract: an old server only knows `appKey`,
@@ -5140,5 +5269,27 @@ mod naming_back_compat_tests {
         let req: CreateNamespaceApiRequest =
             serde_json::from_str(json).expect("legacy appKey must still deserialize");
         assert_eq!(req.bytecode_id.as_deref(), Some("aabb"));
+    }
+}
+
+#[cfg(test)]
+mod revoked_devices_wire_tests {
+    use super::*;
+
+    #[test]
+    fn revoked_devices_serialize_as_plain_hex() {
+        let response = NamespaceRevokedDevicesApiResponse {
+            revoked_devices: vec![DeviceId::from([0xAB; 32])],
+            withdrawn_slots: vec!["cd".repeat(32)],
+        };
+
+        assert_eq!(
+            serde_json::to_string(&response).expect("serialize"),
+            format!(
+                r#"{{"revokedDevices":["{}"],"withdrawnSlots":["{}"]}}"#,
+                "ab".repeat(32),
+                "cd".repeat(32)
+            )
+        );
     }
 }

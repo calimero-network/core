@@ -1059,6 +1059,40 @@ mod tests {
         );
     }
 
+    /// A device paired after the group was created learns the release from the
+    /// delegated op alone, so the op's coordinates must reach the target.
+    #[test]
+    fn a_delegated_registration_records_its_coordinates_on_the_target() {
+        let w = world();
+        let mut meta = MetaRepository::new(&w.store)
+            .load(&w.group)
+            .expect("read")
+            .expect("meta");
+        meta.target = calimero_store::key::GroupTarget::default();
+        MetaRepository::new(&w.store)
+            .save(&w.group, &meta)
+            .expect("save");
+        let mut registered = op(bundle(&w));
+        if let GroupOp::ContextRegisteredOnBehalf {
+            package, version, ..
+        } = &mut registered
+        {
+            *package = "com.acme.app".to_owned();
+            *version = "1.0.0".to_owned();
+        }
+        apply(&w, &registered).expect("apply");
+
+        let target = MetaRepository::new(&w.store)
+            .load(&w.group)
+            .expect("read")
+            .expect("meta")
+            .target;
+        assert_eq!(
+            (&*target.package, &*target.version),
+            ("com.acme.app", "1.0.0")
+        );
+    }
+
     #[test]
     fn the_op_must_be_published_by_the_executor_key() {
         let w = world();

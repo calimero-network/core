@@ -46,7 +46,7 @@ pub async fn handler(
 
     info!("TEE registration attestation generated");
     ApiResponse {
-        payload: TeeAttestResponse::new(result.quote_b64, result.quote, None, None, None),
+        payload: TeeAttestResponse::new(result.quote_b64, result.quote, None, None, None, None),
     }
     .into_response()
 }

@@ -28,7 +28,7 @@ use crate::AdminState;
 /// `list_group_members` gates on - so its namespace identity is what resolves to
 /// a governance account. An identity bound to no account is refused exactly as a
 /// non-member is: it names nobody the membership rows could match.
-fn caller_account(store: &Store, group_id: &ContextGroupId) -> EyreResult<AccountId> {
+pub(crate) fn caller_account(store: &Store, group_id: &ContextGroupId) -> EyreResult<AccountId> {
     let account = match NamespaceRepository::new(store).resolve_identity(group_id)? {
         Some((node_key, _)) => {
             calimero_governance_store::member_account_in_namespace(store, group_id, &node_key)?

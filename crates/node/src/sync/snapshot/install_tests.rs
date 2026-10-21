@@ -752,6 +752,7 @@ impl Joiner {
                     ciphertext: Vec::new(),
                 },
                 key_rotation: None,
+                registers: None,
             },
             signature: [0; 64],
             admitter_endorsement: None,

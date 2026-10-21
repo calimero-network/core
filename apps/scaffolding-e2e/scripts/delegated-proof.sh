@@ -167,6 +167,13 @@ expect "a proof minted for another path is refused" 401
 probe "${RELAY_URL}" /admin-api/contexts "$(sign_proof POST /admin-api/contexts)"
 expect "a proof minted for another method is refused" 401
 
+probe "${RELAY_URL}" "/admin-api/contexts?limit=5" "${PROOF}"
+expect "a proof minted without a query is refused with one" 401
+
+probe "${RELAY_URL}" "/admin-api/contexts?limit=5" \
+    "$(sign_proof GET "/admin-api/contexts?limit=5")"
+expect "a proof over the path and query is served" 200
+
 # --- 7. Opening this did not open the route ---------------------------------
 echo "== no proof is still no entry =="
 probe "${RELAY_URL}" /admin-api/contexts ""

@@ -38,4 +38,7 @@ pub use crate::admission::fold_device_link;
 pub use crate::authorize::{authorize, required_mask_for};
 pub use crate::error::Rejected;
 pub use crate::inheritance::MemberPathAtCut;
-pub use crate::view::{AccountBinding, AclView, DeviceBinding, SubgroupEdge, TeeEvidence};
+pub use crate::view::{
+    founder_signed, scope_reaches, AccountBinding, AclView, DeviceBinding, SubgroupEdge,
+    TeeEvidence,
+};

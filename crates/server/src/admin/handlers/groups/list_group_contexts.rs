@@ -20,6 +20,7 @@ pub async fn handler(
     Path(group_id_str): Path<String>,
     Query(query): Query<ListGroupContextsQuery>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
     device: Option<Extension<AuthenticatedDevice>>,
@@ -31,7 +32,7 @@ pub async fn handler(
 
     // Before any read, so a refusal costs one membership lookup rather than the
     // group load below.
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+    let scope = match list_scope_for(&state.ctx_client, client_key, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(error=?err, "Failed to resolve the caller's list scope");
@@ -52,14 +53,34 @@ pub async fn handler(
 
     info!(group_id=%group_id_str, %offset, %limit, "Listing group contexts");
 
-    let result = state
-        .ctx_client
-        .list_group_contexts(ListGroupContextsRequest {
+    // A bound key may see only some of the group's contexts, so it pages its own
+    // list rather than filtering a page of the group's.
+    let bound_key = scope.client_key();
+    let request = match bound_key {
+        Some(_) => ListGroupContextsRequest {
+            group_id,
+            offset: 0,
+            limit: usize::MAX,
+        },
+        None => ListGroupContextsRequest {
             group_id,
             offset,
             limit,
-        })
+        },
+    };
+    let result = state
+        .ctx_client
+        .list_group_contexts(request)
         .await
+        .map(|entries| match bound_key {
+            Some(key) => entries
+                .into_iter()
+                .filter(|e| key.permits_context_in(state.ctx_client.datastore(), &e.context_id))
+                .skip(offset)
+                .take(limit)
+                .collect(),
+            None => entries,
+        })
         .map_err(parse_api_error);
 
     match result {

@@ -72,8 +72,12 @@ pub(crate) struct AppBlobs {
     other: [u8; 32],
 }
 
-/// Minimal valid wasm module: magic + version, no sections.
-const EMPTY_WASM: [u8; 8] = [0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
+/// Minimal wasm module the runtime accepts: it exports a linear memory and nothing else.
+pub(crate) const EMPTY_WASM: [u8; 25] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic, version
+    0x05, 0x03, 0x01, 0x00, 0x01, // memory section: one memory, 1 page
+    0x07, 0x0A, 0x01, 0x06, b'm', b'e', b'm', b'o', b'r', b'y', 0x02, 0x00, // export "memory"
+];
 
 pub(crate) async fn seed_app_blobs(node: &TestNode) -> AppBlobs {
     use calimero_wasm_abi::embed::write_embedded_state_schema;
@@ -450,6 +454,7 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
             target_application_id: app_id_v2(),
             cascade: true,
             force_code_only: false,
+            skip_trial: false,
         })
         .await
         .expect("cascade upgrade should succeed");
@@ -557,6 +562,7 @@ async fn cascade_emits_migration_started_on_the_namespace_root() {
             target_application_id: app_id_v2(),
             cascade: true,
             force_code_only: false,
+            skip_trial: false,
         })
         .await
         .expect("cascade upgrade should succeed");
@@ -790,6 +796,7 @@ async fn cascade_progress_mirrors_the_persisted_counters() {
             target_application_id: app_id_v2(),
             cascade: true,
             force_code_only: false,
+            skip_trial: true,
         })
         .await
         .expect("cascade upgrade should succeed");
@@ -967,6 +974,7 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
             target_application_id: app_id_v2(),
             cascade: true,
             force_code_only: false,
+            skip_trial: false,
         })
         .await
         .expect("cascade upgrade should succeed");
@@ -1032,7 +1040,7 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
 /// `app.wasm` carrying an embedded ABI. The signature and the artifact digest
 /// are both mandatory on the node-side read path, so a fixture without them
 /// reads back as an absent ABI rather than an error.
-fn build_bundle_blob(package: &str, app_version: &str, wasm: &[u8]) -> Vec<u8> {
+pub(crate) fn build_bundle_blob(package: &str, app_version: &str, wasm: &[u8]) -> Vec<u8> {
     use calimero_node_primitives::bundle::sign_manifest_json;
     use flate2::write::GzEncoder;
     use flate2::Compression;
@@ -1175,6 +1183,7 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
             target_application_id: app_id,
             cascade: false,
             force_code_only: false,
+            skip_trial: false,
         })
         .await
         .expect("multi-hop lazy upgrade should succeed");
@@ -1268,6 +1277,7 @@ async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
             target_application_id: app_id,
             cascade: false,
             force_code_only: false,
+            skip_trial: false,
         })
         .await
         .expect_err("missing intermediate must reject");

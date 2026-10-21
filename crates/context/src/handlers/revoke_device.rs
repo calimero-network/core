@@ -154,11 +154,8 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
         let account = target.account;
 
         // A proof minted elsewhere is verified HERE, before anything is published,
-        // against the account the group's own binding names. Refusing beats
-        // publishing: the apply path treats an unverifiable proof as a deterministic
-        // refusal that records nothing and returns `Ok`, so a bad one would leave the
-        // operator with a successful-looking call, no revocation on any replica, and
-        // nothing anywhere saying why.
+        // against the account the group's own binding names. Refusing beats publishing:
+        // the apply refuses a non-admin's bad proof and ignores an admin's, saying why nowhere.
         //
         // Verifying against `target.account` rather than the account inside the proof
         // is what stops a proof for one account authorising a device bound to

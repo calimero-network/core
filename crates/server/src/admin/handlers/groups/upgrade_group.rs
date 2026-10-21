@@ -17,12 +17,21 @@ use crate::AdminState;
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     ValidatedJson(req): ValidatedJson<UpgradeGroupApiRequest>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
+    if let Some(refusal) = crate::admin::client_key_scope::refuse_target_outside_binding(
+        &state,
+        client_key.as_deref(),
+        Some(&group_id),
+        Some(&req.target_application_id),
+    ) {
+        return refusal;
+    }
 
     info!(group_id=%group_id_str, %req.target_application_id, "Initiating group upgrade");
 
@@ -33,6 +42,7 @@ pub async fn handler(
             target_application_id: req.target_application_id,
             cascade: req.cascade,
             force_code_only: req.force_code_only,
+            skip_trial: req.skip_trial,
         })
         .await
         .map_err(parse_api_error);
@@ -49,6 +59,8 @@ pub async fn handler(
                         local_contexts_total: total,
                         local_contexts_swapped: completed,
                         local_contexts_failed: failed,
+                        contexts_trialled: resp.contexts_trialled,
+                        contexts_not_held: resp.contexts_not_held,
                     },
                 },
             }

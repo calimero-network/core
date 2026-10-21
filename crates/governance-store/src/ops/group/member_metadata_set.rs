@@ -3,7 +3,7 @@
 
 use super::super::super::now_millis;
 use super::context::GroupApplyCtx;
-use crate::{MembershipError, MembershipRepository, MetadataRepository};
+use crate::{MembershipError, MetadataRepository};
 use calimero_account::AccountId;
 use calimero_primitives::metadata::{validate_metadata_payload, MetadataRecord};
 use eyre::{bail, Result as EyreResult};
@@ -23,7 +23,7 @@ pub(crate) fn apply(
     // actually are a member of this group; otherwise this is gated like
     // the other metadata ops (admin or CAN_MANAGE_METADATA).
     if ctx.signer_is(member)? {
-        if !MembershipRepository::new(store).is_member(group_id, member)? {
+        if !ctx.is_member_at_cut(member)? {
             bail!(MembershipError::NotMember {
                 group_id: hex::encode(group_id.to_bytes()),
                 identity: signer.to_string(),

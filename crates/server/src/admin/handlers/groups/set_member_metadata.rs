@@ -60,6 +60,7 @@ pub async fn handler(
 pub async fn get_handler(
     Path((group_id_str, account_str)): Path<(String, String)>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     node_owner: Option<Extension<crate::auth::AuthenticatedNodeOwner>>,
     account: Option<Extension<crate::auth::AuthenticatedAccount>>,
     device: Option<Extension<crate::auth::AuthenticatedDevice>>,
@@ -74,6 +75,7 @@ pub async fn get_handler(
     // it must be confined to its own groups here, as the capabilities read is.
     if let Some(refusal) = crate::admin::caller_scope::refuse_group_outside_caller_scope(
         &state.ctx_client,
+        client_key,
         node_owner,
         account,
         device,

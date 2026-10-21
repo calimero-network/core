@@ -20,7 +20,9 @@ use calimero_governance_store::MembershipRepository;
 use calimero_governance_store::AccountBindingRepository;
 use calimero_primitives::identity::DeviceId;
 
-use crate::auth::{AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner};
+use crate::auth::{
+    AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner, ClientKeyScope,
+};
 
 /// Which rows a caller may see.
 #[derive(Clone, Debug)]
@@ -34,14 +36,29 @@ pub(crate) enum ListScope {
     /// win — the proxy is what decides who gets through — it would just empty
     /// the endpoint on every default-configured node.
     NodeWide,
-    /// Only what this account's groups reach.
+    /// Only what this account's groups reach, narrowed by a binding its session carries.
     Account {
         account: AccountId,
+        groups: BTreeSet<ContextGroupId>,
+        key: Option<ClientKeyScope>,
+    },
+    /// A client key bound to an application or a context: the groups its
+    /// binding reaches, and of their contexts only those the binding permits.
+    ClientKey {
+        key: ClientKeyScope,
         groups: BTreeSet<ContextGroupId>,
     },
 }
 
 impl ListScope {
+    /// The binding that also filters this scope's contexts, if any.
+    pub(crate) fn client_key(&self) -> Option<&ClientKeyScope> {
+        match self {
+            Self::ClientKey { key, .. } | Self::Account { key: Some(key), .. } => Some(key),
+            Self::NodeWide | Self::Account { key: None, .. } => None,
+        }
+    }
+
     /// Whether `group_id` is inside the scope.
     ///
     /// A context whose group could not be resolved is **excluded** from an
@@ -52,14 +69,16 @@ impl ListScope {
     pub(crate) fn admits(&self, group_id: Option<&ContextGroupId>) -> bool {
         match self {
             Self::NodeWide => true,
-            Self::Account { groups, .. } => group_id.is_some_and(|g| groups.contains(g)),
+            Self::Account { groups, .. } | Self::ClientKey { groups, .. } => {
+                group_id.is_some_and(|g| groups.contains(g))
+            }
         }
     }
 
     /// The account this scope is for, when it is an account scope.
     pub(crate) const fn account(&self) -> Option<&AccountId> {
         match self {
-            Self::NodeWide => None,
+            Self::NodeWide | Self::ClientKey { .. } => None,
             Self::Account { account, .. } => Some(account),
         }
     }
@@ -108,11 +127,19 @@ pub(crate) const fn narrow_to(
 /// keep listing a group after the caller was removed from it.
 pub(crate) fn list_scope(
     ctx_client: &ContextClient,
+    client_key: Option<&ClientKeyScope>,
     node_owner: Option<&AuthenticatedNodeOwner>,
     account: Option<&AuthenticatedAccount>,
     device: Option<DeviceId>,
 ) -> eyre::Result<ListScope> {
-    let Some(account) = narrow_to(node_owner, account) else {
+    let narrowed = narrow_to(node_owner, account);
+    // Ahead of the node-owner check: a bound client key also carries that marker,
+    // because it executes as the node. An account session is only narrowed by one.
+    if let (Some(key), None) = (client_key, narrowed) {
+        return client_key_scope(ctx_client.datastore(), key);
+    }
+
+    let Some(account) = narrowed else {
         return Ok(ListScope::NodeWide);
     };
 
@@ -137,18 +164,45 @@ pub(crate) fn list_scope(
         });
     }
 
-    Ok(ListScope::Account { account, groups })
+    if let Some(key) = client_key {
+        groups.retain(|group| key.permits_group(store, group));
+    }
+
+    Ok(ListScope::Account {
+        account,
+        groups,
+        key: client_key.cloned(),
+    })
+}
+
+/// Every group on this node the key's binding reaches.
+fn client_key_scope(
+    store: &calimero_store::Store,
+    key: &ClientKeyScope,
+) -> eyre::Result<ListScope> {
+    let groups = calimero_governance_store::MetaRepository::new(store)
+        .enumerate_all(0, usize::MAX)?
+        .into_iter()
+        .map(|(id, _)| ContextGroupId::from(id))
+        .filter(|group| key.permits_group(store, group))
+        .collect();
+    Ok(ListScope::ClientKey {
+        key: key.clone(),
+        groups,
+    })
 }
 
 /// `list_scope` against the extensions an axum handler receives.
 pub(crate) fn list_scope_for(
     ctx_client: &ContextClient,
+    client_key: Option<axum::Extension<ClientKeyScope>>,
     node_owner: Option<axum::Extension<AuthenticatedNodeOwner>>,
     account: Option<axum::Extension<AuthenticatedAccount>>,
     device: Option<axum::Extension<AuthenticatedDevice>>,
 ) -> eyre::Result<ListScope> {
     list_scope(
         ctx_client,
+        client_key.as_ref().map(|e| &e.0),
         node_owner.as_ref().map(|e| &e.0),
         account.as_ref().map(|e| &e.0),
         device.map(|e| e.0 .0),
@@ -189,6 +243,7 @@ pub(crate) fn refuse_unless_group_in_scope(
 /// what a group read handler runs first.
 pub(crate) fn refuse_group_outside_caller_scope(
     ctx_client: &ContextClient,
+    client_key: Option<axum::Extension<ClientKeyScope>>,
     node_owner: Option<axum::Extension<AuthenticatedNodeOwner>>,
     account: Option<axum::Extension<AuthenticatedAccount>>,
     device: Option<axum::Extension<AuthenticatedDevice>>,
@@ -196,7 +251,7 @@ pub(crate) fn refuse_group_outside_caller_scope(
 ) -> Option<axum::response::Response> {
     use axum::response::IntoResponse;
 
-    match list_scope_for(ctx_client, node_owner, account, device) {
+    match list_scope_for(ctx_client, client_key, node_owner, account, device) {
         Ok(scope) => refuse_unless_group_in_scope(&scope, group_id),
         Err(err) => {
             tracing::error!(error = ?err, "Failed to resolve the caller's list scope");
@@ -234,7 +289,10 @@ pub(crate) fn admits_context(
     }
 
     let group_id = calimero_governance_store::get_group_for_context(store, context_id)?;
-    Ok(scope.admits(group_id.as_ref()))
+    let key_permits = scope
+        .client_key()
+        .is_none_or(|key| key.permits_context_in(store, context_id));
+    Ok(key_permits && scope.admits(group_id.as_ref()))
 }
 
 #[cfg(test)]
@@ -252,6 +310,7 @@ mod tests {
     fn account_scope(groups: &[[u8; 32]]) -> ListScope {
         ListScope::Account {
             account: account(),
+            key: None,
             groups: groups
                 .iter()
                 .map(|g| ContextGroupId::from(*g))
@@ -334,6 +393,7 @@ mod tests {
         let a = account_scope(&[[0xa1; 32], [0xa2; 32]]);
         let b = ListScope::Account {
             account: AccountId::from([0x02; 32]),
+            key: None,
             groups: [[0xb1; 32]]
                 .into_iter()
                 .map(ContextGroupId::from)
@@ -416,6 +476,7 @@ mod admits_context_tests {
     fn my_scope() -> ListScope {
         ListScope::Account {
             account: AccountId::from([0x01; 32]),
+            key: None,
             groups: BTreeSet::from([mine()]),
         }
     }

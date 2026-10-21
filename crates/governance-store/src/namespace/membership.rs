@@ -1,4 +1,4 @@
-use crate::authorizer::AtCutAuthorizer;
+use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer, ReentryAtCut};
 use crate::{MembershipRepository, NamespaceRepository, PermissionChecker, ReentryRepository};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::JoinAccountCredential;
@@ -59,6 +59,53 @@ impl<'a> NamespaceMembershipService<'a> {
     /// The permission checker for `group`, carrying this join's cut.
     fn permissions(&self, group: &ContextGroupId) -> PermissionChecker<'a> {
         PermissionChecker::new(self.store, *group).with_apply_auth(self.parents, self.authorizer)
+    }
+
+    /// Whether `member` holds a direct row in `group` at the join's cut, or live where sound.
+    fn has_direct_row_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+    ) -> EyreResult<bool> {
+        if let Some(role) = self
+            .authorizer
+            .direct_role_at_cut(group, member, self.parents)
+        {
+            return Ok(role.is_some());
+        }
+        self.ensure_live_is_sound(group)?;
+        MembershipRepository::new(self.store).has_direct_member(group, member)
+    }
+
+    /// What the join of `member` with `nonce` meets in `group` at its cut, or live where sound.
+    fn reentry_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+        nonce: [u8; 32],
+    ) -> EyreResult<ReentryAtCut> {
+        if let Some(reentry) = self
+            .authorizer
+            .reentry_at_cut(group, member, &nonce, self.parents)
+        {
+            return Ok(reentry);
+        }
+        self.ensure_live_is_sound(group)?;
+        let live = ReentryRepository::new(self.store);
+        Ok(ReentryAtCut {
+            exit: live.block_of(group, member)?,
+            spent: live.is_invitation_consumed(group, member, nonce)?,
+        })
+    }
+
+    /// Refuse to read live rows for a real cut the authorizer cannot read.
+    fn ensure_live_is_sound(&self, group: &ContextGroupId) -> EyreResult<()> {
+        ensure_cut_resolvable(
+            self.authorizer,
+            group,
+            self.parents,
+            "the joiner's standing at the join's cut",
+        )
     }
 
     pub fn apply_member_joined(
@@ -127,7 +174,7 @@ impl<'a> NamespaceMembershipService<'a> {
         // having a direct row — they still need the explicit row written
         // so subsequent direct-membership lookups (e.g. removal,
         // capability writes, list_group_members) reflect their join.
-        if MembershipRepository::new(self.store).has_direct_member(&group_id, member)? {
+        if self.has_direct_row_at_cut(&group_id, member)? {
             return Ok(Vec::new());
         }
 
@@ -149,8 +196,8 @@ impl<'a> NamespaceMembershipService<'a> {
         // and the first apply consumes the invitation, then the second apply sees
         // that consumption row and bails — a failing apply does not advance the
         // namespace governance head, so every later governance op stalls behind it
-        // and the namespace stops converging. Behind the dedup, a re-apply hits
-        // `has_direct_member` and returns early, so the gate runs exactly once.
+        // and the namespace stops converging. Both are read at the join's cut, so a
+        // re-apply meets the same dedup and gate, and its writes are idempotent.
         //
         // It must still come after `verify_member_join_signature`, so we never
         // read state on the say-so of an unauthenticated op.
@@ -160,8 +207,12 @@ impl<'a> NamespaceMembershipService<'a> {
         // of one is itself gated — the sync responder's pre-register, and
         // `join_group`'s local self-add — so a row existing here means the gate
         // already passed for them.
+        ReentryRepository::require_admits(
+            &group_id,
+            member,
+            self.reentry_at_cut(&group_id, member, inv.invitation_nonce)?,
+        )?;
         let reentry = ReentryRepository::new(self.store);
-        reentry.require_invitation_admits(&group_id, member, inv.invitation_nonce)?;
 
         // Skipped on the author for the same reason as the inviter permission:
         // an admin invitation would otherwise be the one kind not accepted offline.
@@ -172,7 +223,11 @@ impl<'a> NamespaceMembershipService<'a> {
             bail!("group does not belong to this namespace");
         }
 
-        MembershipRepository::new(self.store).add_member(&group_id, member, role.clone())?;
+        // A join never replaces a standing role, so a row a concurrent op wrote stays.
+        let membership = MembershipRepository::new(self.store);
+        if !membership.has_direct_member(&group_id, member)? {
+            membership.add_member(&group_id, member, role.clone())?;
+        }
         // Spend the invitation for this identity: presenting it again after they
         // next exit cannot readmit them. Recorded per `(group, identity, nonce)`,
         // so the same open-invite link still admits everyone else who has not

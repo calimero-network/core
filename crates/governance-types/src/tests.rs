@@ -1395,6 +1395,7 @@ fn namespace_op_sign_verify_group() {
             key_id: [0u8; 32].into(),
             encrypted,
             key_rotation: None,
+            registers: None,
         },
     )
     .expect("sign");
@@ -1421,6 +1422,63 @@ fn namespace_op_tampered_fails() {
 
     op.nonce = 999;
     assert!(op.verify_signature().is_err());
+}
+
+#[test]
+fn a_group_envelopes_registered_context_is_signed() {
+    let mut rng = UnwrapErr(SysRng);
+    let sk = PrivateKey::random(&mut rng);
+    let mut op = SignedNamespaceOp::sign(
+        &sk,
+        sample_namespace_id(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: sample_group_id(),
+            key_id: [0u8; 32].into(),
+            encrypted: EncryptedGroupOp {
+                nonce: [42u8; 12],
+                ciphertext: vec![1, 2, 3, 4],
+            },
+            key_rotation: None,
+            registers: Some(ContextId::from([0xC1; 32])),
+        },
+    )
+    .expect("sign");
+    op.verify_signature()
+        .expect("control: the untouched op verifies");
+
+    let NamespaceOp::Group { registers, .. } = &mut op.op else {
+        unreachable!("built as a group op");
+    };
+    *registers = Some(ContextId::from([0xC2; 32]));
+
+    assert!(
+        op.verify_signature().is_err(),
+        "a swapped registered context still verified"
+    );
+}
+
+#[test]
+fn only_a_bare_registration_names_its_context() {
+    let context = ContextId::from([0xC3; 32]);
+    let registration = GroupOp::ContextRegistered {
+        context_id: context,
+        application_id: [0u8; 32].into(),
+        blob_id: [0u8; 32].into(),
+        source: String::new(),
+        service_name: None,
+        package: String::new(),
+        version: String::new(),
+    };
+    assert_eq!(registration.registered_context(), Some(context));
+    assert_eq!(
+        GroupOp::ContextDetached {
+            context_id: context
+        }
+        .registered_context(),
+        None
+    );
 }
 
 #[test]
@@ -2656,6 +2714,7 @@ fn appending_root_sealed_left_the_existing_discriminants_alone() {
             ciphertext: vec![7, 8, 9],
         },
         key_rotation: None,
+        registers: None,
     };
     let sealed = NamespaceOp::RootSealed {
         key_id: KeyId::from([5u8; 32]),
@@ -2698,6 +2757,7 @@ fn a_sealed_root_op_is_distinguishable_from_a_group_op() {
         key_id,
         encrypted: EncryptedGroupOp { nonce, ciphertext },
         key_rotation: None,
+        registers: None,
     })
     .unwrap();
 

@@ -4,6 +4,24 @@
 
 ### Added
 
+- **A refused join says which refusal it was.** `POST /namespaces/{id}/join`
+  and `POST /groups/join` answer a refusal with a `code` beside `error`:
+  `invitation_expired`, `invitation_invalid`, `invitation_already_used`,
+  `removed_from_group`, `reentry_blocked`, `join_refused_by_member`,
+  `no_admitter_reached` or `no_member_reachable`. Several share a status, and
+  apps told every one of them "you can't join with this invitation". A join
+  every answering member refused is now a `503` that quotes the member's reason,
+  not the `504` "could not reach any member" it was answered as before.
+  (#4610)
+
+- **A namespace reports the release it targets before that release is
+  installed.** `GET /admin-api/namespaces`, `/namespaces/{id}` and
+  `/namespaces/for-application/{id}` gain an optional `appPackage`, and their
+  `appVersion` falls back to the group's target when the bundle is not on the
+  node. `GET /admin-api/groups/{id}` gains optional `appPackage` and
+  `appVersion`. A strict client that rejects unknown keys needs
+  calimero-network/mero-js#285. (#4607)
+
 - **A node's operator can trust more origins for login callbacks.**
   `trusted_callback_origins` under `[server.embedded_auth.development]` lists
   app origins the node's sign-in page may hand a new token pair to, besides its
@@ -511,6 +529,79 @@
   [#3528])
 
 ### Fixed
+
+- **A device link racing a target-application change binds the same way on
+  every replica.** An `AccountDeviceLinked` scoped to some applications is
+  judged against every application the group may have targeted at the link's
+  cut, read from its ancestry, instead of the group's live target. Before, a
+  replica that folded a concurrent `TargetApplicationSet` ahead of the link
+  refused a link another replica bound, and nothing reconciled them.
+  (breaking: namespace ops move to schema 26, so SDKs must sign at 26, as
+  mero-js does from calimero-network/mero-js#290; older SDKs' namespace ops
+  are refused) (#4605)
+
+- **A namespace admit is served without a credential.**
+  `POST /admin-api/namespaces/{id}/admit` moves to the public router on every
+  node: the joiner's signed op is its authorization, and an embedded-auth node
+  used to answer it `401`. The handler now refuses a join made under another
+  invitation than the one presented, and answers a join already applied here
+  `published: false` instead of relaying it again. mero-auth no longer grants
+  it under `namespace:manage`; a forward-auth proxy should exempt the path.
+  (#4611)
+
+- **A sealed request reaches `presence-intents` behind an auth proxy.** In
+  proxy mode with `delegated_access` on, a sealed
+  `POST /admin-api/contexts/{id}/presence-intents` was refused inside the
+  envelope with `403 sealed_route_unguarded`, so account presence through a
+  hosted relay failed. It is now sealable like the other delegated-execution
+  routes. (#4613)
+
+- **A device paired after a namespace key rotation folds the namespace's
+  Restricted subgroups.** The late-key replay repeats while it settles parked
+  ops, the key-pull asks for keys named by sealed root ops too, and a parked op
+  whose own group is still sealed waits for its key instead of applying through
+  the live gates. Before, such a device never synced its DMs and
+  `join_context` answered `404`. (#4592)
+
+- **A device link read before its namespace's target folds binds once it
+  does.** A link replayed while the namespace's root still names the
+  placeholder application is held as undecided instead of refused, so the
+  device is bound when the target arrives. (#4599)
+
+- **A publish with no local apply waits for the gossip mesh.** A key delivery
+  or TEE admission whose namespace mesh is momentarily empty waits up to 5 s
+  for a peer before it is refused; before, one empty sample lost the op for
+  good. (#4602)
+
+- **A paired device installs the release a context was registered with.** A
+  `ContextRegistered` now records its release's package and version on a group
+  target that lacks them, so a device paired after the group was created no
+  longer asks the registry for an empty release and reports "application not
+  installed". (#4590)
+
+- **A member added to a subgroup while its key recovery is replaying is no
+  longer left out.** Once a group's key recovery ends, the node replays that
+  group's held ops again, so an add or capability change that arrived by
+  gossip during the first replay is applied and the subgroup's state hash
+  converges. Before, a member outside a Restricted subgroup that was later
+  opened could miss their own member row in it for good. (#4596)
+
+- **A request proof signs the query as well as the path.** The signed target
+  is the request line's path and query, byte for byte, under the domain
+  `calimero.auth.request.v2`; a proof for one query no longer admits another.
+  A reverse proxy in front of a node must forward the path and query
+  unchanged. (breaking: SDKs must sign v2 targets, as mero-js does since
+  calimero-network/mero-js#262, released in 25.3.1; older SDKs stop
+  authenticating with request proofs against this node) (#4549)
+
+- **A client key bound to an application acts only for that application.**
+  On the admin API such a key was answered as the node owner, so an app's
+  token could list, read and delete other apps' contexts, namespaces and
+  blobs. A bound key now reaches only the groups and contexts its binding
+  permits, cannot install applications or gain admin, and lists only what
+  its binding covers; `trusted_admin_applications` names apps whose keys are
+  minted unbound. (breaking for apps that relied on a bound key's node-wide
+  admin access) (#4564)
 
 - **A written-once entry that receives two signed values is sealed.** A
   `WriteOnce`, `ModeratedOnce` or `Frozen` entry given two different authentic
@@ -1918,6 +2009,16 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **auth-frontend v1.3.10 and admin dashboard v1.22.1 are embedded.** Both
+  give an app's client key `context:delete` (auth-frontend#67,
+  admin-dashboard#188), which `DELETE /admin-api/contexts/:id` requires: an
+  app signed in through the node's login page, or opened from the dashboard,
+  could create a context but deleting it answered 403. The key stays bound to
+  the app's own application, so it deletes only that application's contexts.
+  The dashboard moves up from v1.21.3, so v1.22.0 comes with it: opening an
+  app asks first and mints only the grants apps call, and marketplace
+  listings name the registry they come from.
 
 - **auth-frontend v1.3.9 is embedded.** A node's sign-in page now trusts more
   login callbacks, each one an origin something on the node side declared:

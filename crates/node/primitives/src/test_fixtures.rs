@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use calimero_app_downloader::registry::{RegistryConfig, RegistryMode};
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager as BlobStore, FileSystem, CHUNK_SIZE};
 use calimero_network_primitives::blob_types::{BlobProbe, BlobResponse};
@@ -18,6 +19,7 @@ use calimero_network_primitives::messages::NetworkMessage;
 use calimero_network_primitives::network_status::{
     AutonatEntry, NetworkStatusSnapshot, ReachabilityKind,
 };
+use calimero_primitives::context::ContextId;
 use calimero_store::db::InMemoryDB;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
@@ -37,6 +39,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::bundle::{derive_signer_id_did_key, sign_manifest_json, BundleArtifact, BundleManifest};
 use crate::client::{BlobManager, NodeClient, SyncClient};
+use crate::messages::NodeMessage;
 
 pub fn hex_lower(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -63,6 +66,31 @@ pub async fn node_client_over(
     datastore: Store,
     network_client: NetworkClient,
 ) -> (NodeClient, TempDir, TempDir) {
+    let (ctx_sync_tx, _) = mpsc::channel(64);
+    node_client_with(datastore, network_client, LazyRecipient::new(), ctx_sync_tx).await
+}
+
+/// [`node_client_over`], for a node that can switch a context's release: it resolves
+/// releases from its own blobs, accepts sync requests, and sends `node_manager` its messages.
+pub async fn node_client_switching_over(
+    datastore: Store,
+    network_client: NetworkClient,
+    node_manager: LazyRecipient<NodeMessage>,
+) -> (NodeClient, TempDir, TempDir) {
+    let (ctx_sync_tx, mut ctx_sync_rx) = mpsc::channel(64);
+    let _accepted = tokio::spawn(async move { while ctx_sync_rx.recv().await.is_some() {} });
+    let (node_client, data_dir, blob_dir) =
+        node_client_with(datastore, network_client, node_manager, ctx_sync_tx).await;
+    let registry = RegistryConfig::new(RegistryMode::Dht, None);
+    (node_client.with_registry(registry), data_dir, blob_dir)
+}
+
+async fn node_client_with(
+    datastore: Store,
+    network_client: NetworkClient,
+    node_manager: LazyRecipient<NodeMessage>,
+    ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
+) -> (NodeClient, TempDir, TempDir) {
     let data_dir = TempDir::new().unwrap();
     let blob_dir = TempDir::new().unwrap();
 
@@ -78,7 +106,6 @@ pub async fn node_client_over(
     let blob_manager = BlobManager::new(blob_store);
 
     let (event_sender, _) = broadcast::channel(256);
-    let (ctx_sync_tx, _) = mpsc::channel(64);
     let (ns_sync_tx, _) = mpsc::channel(64);
     let (ns_join_tx, _) = mpsc::channel(16);
     let (open_subgroup_join_tx, _) = mpsc::channel(16);
@@ -95,7 +122,7 @@ pub async fn node_client_over(
         datastore,
         blob_manager,
         network_client,
-        LazyRecipient::new(),
+        node_manager,
         event_sender,
         sync_client,
         None,
@@ -265,6 +292,17 @@ pub async fn node_client_over_answering_joins(
     network_client: NetworkClient,
     bundle: JoinBundle,
 ) -> (NodeClient, TempDir, TempDir) {
+    node_client_over_join_answer(datastore, network_client, Ok(bundle)).await
+}
+
+/// [`node_client_over_answering_joins`], answering every namespace-join request
+/// with `answer`: a bundle, or the refusal the joiner loop gives back once
+/// every peer that answered said no.
+pub async fn node_client_over_join_answer(
+    datastore: Store,
+    network_client: NetworkClient,
+    answer: Result<JoinBundle, crate::NamespaceJoinRefused>,
+) -> (NodeClient, TempDir, TempDir) {
     let data_dir = TempDir::new().unwrap();
     let blob_dir = TempDir::new().unwrap();
 
@@ -295,7 +333,7 @@ pub async fn node_client_over_answering_joins(
     // somewhere other than the task making the request.
     let _responder = tokio::spawn(async move {
         while let Some((_params, reply)) = ns_join_rx.recv().await {
-            let _ignored = reply.send(Ok(bundle.clone()));
+            let _ignored = reply.send(answer.clone().map_err(Into::into));
         }
     });
 

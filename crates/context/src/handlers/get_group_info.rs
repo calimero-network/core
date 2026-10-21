@@ -1,5 +1,5 @@
 use actix::{ActorResponse, Handler, Message};
-use calimero_context_client::group::{GetGroupInfoRequest, GroupInfoResponse};
+use calimero_context_client::group::{GetGroupInfoRequest, GroupInfoResponse, TargetRelease};
 use calimero_governance_store::{
     CapabilitiesRepository, MembershipRepository, MetaRepository, MetadataRepository,
     UpgradesRepository,
@@ -124,6 +124,7 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                 group_id,
                 bytecode_id: meta.target.bytecode_id.into(),
                 target_application_id: meta.target.application_id,
+                target_release: TargetRelease::of(&meta.target),
                 member_count,
                 context_count,
                 active_upgrade,

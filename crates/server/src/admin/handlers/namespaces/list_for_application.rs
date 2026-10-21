@@ -18,6 +18,7 @@ pub async fn handler(
     Path(app_id_str): Path<String>,
     Query(query): Query<ListNamespacesForApplicationQuery>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
 ) -> impl IntoResponse {
     let application_id: ApplicationId = match app_id_str.parse() {
         Ok(id) => id,
@@ -35,14 +36,28 @@ pub async fn handler(
 
     info!(application_id=%app_id_str, %offset, %limit, "Listing namespaces for application");
 
+    // A bound key may see only some of them, so it pages its own list.
+    let (page_offset, page_limit) = match client_key {
+        Some(_) => (0, usize::MAX),
+        None => (offset, limit),
+    };
     let result = state
         .ctx_client
         .list_namespaces_for_application(ListNamespacesForApplicationRequest {
             application_id,
-            offset,
-            limit,
+            offset: page_offset,
+            limit: page_limit,
         })
-        .await;
+        .await
+        .map(|entries| match &client_key {
+            Some(key) => entries
+                .into_iter()
+                .filter(|ns| key.permits_group(state.ctx_client.datastore(), &ns.namespace_id))
+                .skip(offset)
+                .take(limit)
+                .collect(),
+            None => entries,
+        });
 
     match result {
         Ok(entries) => {
@@ -61,6 +76,8 @@ pub async fn handler(
                         v
                     }
                 };
+                let (app_version, app_package) =
+                    super::with_target_release(app_version, ns.target_release);
                 data.push(NamespaceApiResponse {
                     namespace_id: hex::encode(ns.namespace_id.to_bytes()),
                     bytecode_id: hex::encode(ns.bytecode_id.to_bytes()),
@@ -71,6 +88,7 @@ pub async fn handler(
                     context_count: ns.context_count,
                     subgroup_count: ns.subgroup_count,
                     app_version,
+                    app_package,
                     founding: super::namespace_founding(&state.store, &ns.namespace_id),
                     held_ops: super::namespace_held_ops(&state.store, &ns.namespace_id),
                 });

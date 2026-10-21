@@ -43,6 +43,7 @@ pub struct GetContextsQuery {
 pub async fn handler(
     Query(query): Query<GetContextsQuery>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
     device: Option<Extension<AuthenticatedDevice>>,
@@ -52,7 +53,7 @@ pub async fn handler(
     let offset = query.offset.unwrap_or(0).min(MAX_OFFSET);
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_PAGE);
 
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+    let scope = match list_scope_for(&state.ctx_client, client_key, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             // Fail closed: a caller whose groups could not be resolved is not a
@@ -110,11 +111,7 @@ pub async fn handler(
             Ok(Some(mut context)) => {
                 // Per-context executing version (activation marker) wins over
                 // the application row's latest-installed version.
-                if let Some(v) = state
-                    .ctx_client
-                    .executing_application_version(&context_id)
-                    .await
-                {
+                if let Some(v) = super::executing_application_version(&state, &context_id).await {
                     context.application_version = Some(v);
                 }
                 let group_id = match state
@@ -163,13 +160,16 @@ fn scoped_context_ids(
     store: &calimero_store::Store,
     scope: &ListScope,
 ) -> eyre::Result<Option<Vec<ContextId>>> {
-    let ListScope::Account { groups, .. } = scope else {
+    let (ListScope::Account { groups, .. } | ListScope::ClientKey { groups, .. }) = scope else {
         return Ok(None);
     };
 
     let mut ids = BTreeSet::new();
     for group in groups {
         ids.extend(ContextTreeService::new(store, *group).enumerate_contexts(0, usize::MAX)?);
+    }
+    if let Some(key) = scope.client_key() {
+        ids.retain(|id| key.permits_context_in(store, id));
     }
     Ok(Some(ids.into_iter().collect()))
 }
@@ -209,6 +209,7 @@ mod tests {
 
         let scope = ListScope::Account {
             account: AccountId::from([0x01; 32]),
+            key: None,
             groups: BTreeSet::from([mine]),
         };
 
@@ -251,6 +252,7 @@ mod tests {
 
         let scope_for = |account: u8, group| ListScope::Account {
             account: AccountId::from([account; 32]),
+            key: None,
             groups: BTreeSet::from([group]),
         };
 

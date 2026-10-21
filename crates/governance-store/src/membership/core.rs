@@ -196,19 +196,38 @@ impl<'a> MembershipRepository<'a> {
         // clobber an existing grant on a role change (e.g. demoting an admin who
         // held custom caps). The `is_none` gate also keeps re-apply idempotent.
         if !is_admin {
-            let capabilities = CapabilitiesRepository::new(self.store);
-            if capabilities
-                .member_capability(group_id, identity)?
-                .is_none()
-            {
-                if let Some(defaults) = capabilities.default_capabilities(group_id)? {
-                    if defaults != 0 {
-                        capabilities.set_member_capability(group_id, identity, defaults)?;
-                    }
-                }
-            }
+            self.seed_default_capability(group_id, identity)?;
         }
 
+        Ok(())
+    }
+
+    /// Gives a member the group's default capabilities when it holds no
+    /// capability row yet. Never replaces an existing row, so a grant made
+    /// since stays, and a re-run is a no-op.
+    ///
+    /// For a row written before the defaults were known: `add_member` seeds
+    /// only from defaults already stored, so a row recorded while they were
+    /// unknown or `0` has no capability row, and without
+    /// `CAN_JOIN_OPEN_SUBGROUPS` there `check_path` refuses every Open
+    /// subgroup.
+    pub fn seed_default_capability(
+        &self,
+        group_id: &ContextGroupId,
+        identity: &AccountId,
+    ) -> EyreResult<()> {
+        let capabilities = CapabilitiesRepository::new(self.store);
+        if capabilities
+            .member_capability(group_id, identity)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        if let Some(defaults) = capabilities.default_capabilities(group_id)? {
+            if defaults != 0 {
+                capabilities.set_member_capability(group_id, identity, defaults)?;
+            }
+        }
         Ok(())
     }
 

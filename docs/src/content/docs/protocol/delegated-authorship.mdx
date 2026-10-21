@@ -188,7 +188,7 @@ Asking before signing is not politeness. A nonce is spent from a monotonic per-d
 
 ## Reaching a relay you have no account on
 
-`POST .../intents` sits on the admin API, which is guarded. For a member using their *own* node that is the right default and costs nothing. For the case delegated authorship exists for it is fatal: a browser tab or an agent holding one signing key has no relationship with the relay and so no credential on it, which is [recorded as the known gap](/protocol/direct-admission/#known-gap) in direct admission.
+`POST .../intents` sits on the admin API, which is guarded. For a member using their *own* node that is the right default and costs nothing. For the case delegated authorship exists for it is fatal: a browser tab or an agent holding one signing key has no relationship with the relay and so no credential on it, the same problem [direct admission](/protocol/direct-admission/#served-without-a-credential) answers for a join.
 
 So a node may be run as a relay, with `merod init --delegated-access` (or `server.admin.delegated_access = true` in `config.toml`). Both were called `public-intents` / `public_intents` until recently; the old flag and the old config key are still accepted for one release, but the name described only the write half and the surface now covers caller-scoped reads too. It does two things. First, it moves the two routes above onto the unauthenticated router, because they are the two that carry their own credential:
 
@@ -220,7 +220,7 @@ and that value is a chain of three links:
 | --- | --- | --- |
 | `account_proof` | the account root | this device key belongs to this account |
 | `session` | the device key | this session key may act for this device, on **this node**, until |
-| `request` | the session key | this exact method, path and body, from here until |
+| `request` | the session key | this exact method, path and query, and body, from here until |
 
 The middle link is optional. With it — the **three-link chain** — the device key
 never signs a request, so a leaked session key cannot be escalated into use of
@@ -234,11 +234,13 @@ misaddressed proof costs almost nothing to refuse.
 
 #### What a proof is bound to, and what it is not
 
-The signature commits to the method, the path and a hash of the body. It does
-**not** cover the query string: a proxy may rewrite a query — a token parameter
-most of all — and signing over bytes something else is entitled to change means
-failing for reasons the caller cannot see. Anything that must be bound belongs
-in the body.
+The signature commits to the method, the path and query, and a hash of the body,
+under the domain `calimero.auth.request.v2`.
+The path and query are the request target exactly as it reaches the node's listener, byte for byte: a reordered, re-encoded, added or dropped query (an empty `?` included) is a different request and is refused.
+
+Behind a reverse proxy, the node verifies the target it receives, after any rewriting the proxy did.
+The proxy must forward the path and query unchanged: no prefix stripping, no re-encoding, no reordering.
+To serve several nodes under one host, give each a prefix with `NODE_PATH_PREFIX`, so the node itself sees the prefixed path the client signed.
 
 The expiry is what bounds replay, and nothing else does: a captured proof
 performs the identical request until it lapses. A node refuses a request link

@@ -1,5 +1,15 @@
-use crate::{MetaRepository, MetadataRepository};
+use std::collections::HashMap;
+
+use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer};
+use crate::namespace::{order_causally, NamespaceOpLogService};
+use crate::void_ledger::VoidLedger;
+use crate::{
+    MetaRepository, MetadataRepository, NamespaceDagService, NamespaceRepository, OpenedNamespaceOp,
+};
+use calimero_app_downloader::registry::{stored_coords, RegistryCoords};
+use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_types::NamespaceId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_primitives::blobs::BlobId;
@@ -31,9 +41,10 @@ impl<'a> ContextRegistrationService<'a> {
         context_id: &ContextId,
         application_id: &ApplicationId,
         blob_id: &BlobId,
+        coords: RegistryCoords<'_>,
     ) -> EyreResult<()> {
         permissions.require_can_create_context(signer)?;
-        self.register_authorized(context_id, application_id, blob_id)
+        self.register_authorized(context_id, application_id, blob_id, coords)
     }
 
     /// Register a context whose authorization has already been decided.
@@ -47,6 +58,7 @@ impl<'a> ContextRegistrationService<'a> {
         context_id: &ContextId,
         application_id: &ApplicationId,
         blob_id: &BlobId,
+        coords: RegistryCoords<'_>,
     ) -> EyreResult<()> {
         tracing::info!(
             %context_id,
@@ -56,28 +68,29 @@ impl<'a> ContextRegistrationService<'a> {
         );
 
         ContextTreeService::new(self.store, self.group_id).register_context(context_id)?;
-        self.backfill_application_if_needed(context_id, application_id, blob_id)
+        self.backfill_application_if_needed(context_id, application_id, blob_id, coords)
     }
 
+    /// Detach `context_id`, which `registered` says the op's cut holds in this group.
     pub fn detach(
         &self,
         permissions: &PermissionChecker<'_>,
         signer: &PublicKey,
         context_id: &ContextId,
+        registered: bool,
     ) -> EyreResult<()> {
         permissions.require_admin(signer)?;
-        match get_group_for_context(self.store, context_id)? {
-            Some(g) if g == self.group_id => {
-                ContextTreeService::new(self.store, self.group_id)
-                    .unregister_context(context_id)?;
-                // Drop the context's metadata record so detach doesn't leave
-                // an orphaned `GroupContextMetadata` row behind.
-                MetadataRepository::new(self.store).delete_context(&self.group_id, context_id)?;
-                Ok(())
-            }
-            Some(_) => bail!("context is registered to a different group"),
-            None => bail!("context is not registered in any group"),
+        if !registered {
+            bail!("context is not registered in this group");
         }
+        // A concurrent detach may have taken it already.
+        if get_group_for_context(self.store, context_id)? == Some(self.group_id) {
+            ContextTreeService::new(self.store, self.group_id).unregister_context(context_id)?;
+            // Drop the context's metadata record so detach doesn't leave
+            // an orphaned `GroupContextMetadata` row behind.
+            MetadataRepository::new(self.store).delete_context(&self.group_id, context_id)?;
+        }
+        Ok(())
     }
 
     fn backfill_application_if_needed(
@@ -85,6 +98,7 @@ impl<'a> ContextRegistrationService<'a> {
         context_id: &ContextId,
         application_id: &ApplicationId,
         blob_id: &BlobId,
+        coords: RegistryCoords<'_>,
     ) -> EyreResult<()> {
         if *application_id == ZERO_APPLICATION_ID {
             return Ok(());
@@ -100,13 +114,22 @@ impl<'a> ContextRegistrationService<'a> {
             // healing it locally cannot diverge this replica.
             let heal_application = meta.target.application_id == ZERO_APPLICATION_ID;
             let heal_bytecode = meta.target.bytecode_id == [0u8; 32];
-            if heal_application || heal_bytecode {
+            // The coordinates are what the lazy upgrade fetches the target by, so
+            // they only join a blob this op names.
+            let heal_coords = (heal_bytecode || meta.target.bytecode_id == **blob_id)
+                && stored_coords(&meta.target.package, &meta.target.version).is_none()
+                && stored_coords(coords.package, coords.version).is_some();
+            if heal_application || heal_bytecode || heal_coords {
                 let mut updated = meta;
                 if heal_application {
                     updated.target.application_id = *application_id;
                 }
                 if heal_bytecode {
                     updated.target.bytecode_id = **blob_id;
+                }
+                if heal_coords {
+                    updated.target.package = coords.package.into();
+                    updated.target.version = coords.version.into();
                 }
                 MetaRepository::new(self.store).save(&self.group_id, &updated)?;
                 tracing::info!(
@@ -115,6 +138,7 @@ impl<'a> ContextRegistrationService<'a> {
                     %blob_id,
                     heal_application,
                     heal_bytecode,
+                    heal_coords,
                     "healed group meta from ContextRegistered"
                 );
             }
@@ -137,4 +161,143 @@ impl<'a> ContextRegistrationService<'a> {
 
         Ok(())
     }
+}
+
+/// Whether `context` is registered in `group` at the cut `parents`, or live where that is
+/// sound. A detach concurrent with the op must not refuse it on the node that took it first.
+pub(crate) fn registered_at_cut(
+    store: &Store,
+    group: &ContextGroupId,
+    context: &ContextId,
+    parents: &[[u8; 32]],
+    authorizer: &dyn AtCutAuthorizer,
+) -> EyreResult<bool> {
+    if !parents.is_empty() {
+        if let Some(registered) = registration_in_log(store, group, context, parents)? {
+            return Ok(registered);
+        }
+        ensure_cut_resolvable(
+            authorizer,
+            group,
+            parents,
+            "the context's registration at the op's cut",
+        )?;
+    }
+    Ok(get_group_for_context(store, context)? == Some(*group))
+}
+
+/// [`registered_at_cut`] from `group`'s applied registrations and detaches of `context`: the
+/// causally latest in the cut, else the first outside it tells what the rows began as.
+/// `None` when the log moves nothing, or an op of `group` or the cut does not read here.
+fn registration_in_log(
+    store: &Store,
+    group: &ContextGroupId,
+    context: &ContextId,
+    parents: &[[u8; 32]],
+) -> EyreResult<Option<bool>> {
+    let namespace = NamespaceId::from(NamespaceRepository::new(store).resolve(group)?.to_bytes());
+    let op_log = NamespaceOpLogService::new(store, namespace);
+    let voided = VoidLedger::new(store, namespace).voided()?;
+    let mut registers = HashMap::new();
+    let mut changes = Vec::new();
+    for entry in op_log.collect_signed_group_ops_for_group(group.to_bytes())? {
+        let id = entry
+            .signed_op
+            .content_hash()
+            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+        let opened = OpenedNamespaceOp::open(store, &entry.signed_op);
+        if opened.refused || voided.contains(&id) {
+            continue;
+        }
+        let Some(op) = opened.group_op else {
+            return Ok(None);
+        };
+        let op = match op.into_unguarded() {
+            GroupOp::OnBehalf { op, .. } => *op,
+            op => op,
+        };
+        let moved = match op {
+            GroupOp::ContextRegistered { context_id, .. }
+            | GroupOp::ContextRegisteredOnBehalf { context_id, .. } => {
+                (context_id == *context, true)
+            }
+            GroupOp::ContextDetached { context_id } => (context_id == *context, false),
+            _ => continue,
+        };
+        if moved.0 {
+            let _ = registers.insert(id, moved.1);
+            changes.push(entry.signed_op);
+        }
+    }
+    if changes.is_empty() {
+        return Ok(None);
+    }
+    let Some(ancestry) = op_log.ancestry(parents)? else {
+        return Ok(None);
+    };
+    let (inside, outside): (Vec<_>, Vec<_>) = changes
+        .into_iter()
+        .partition(|op| op.content_hash().is_ok_and(|id| ancestry.contains_key(&id)));
+    let registered_by = |op: &SignedNamespaceOp| -> EyreResult<bool> {
+        let id = op
+            .content_hash()
+            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+        Ok(registers[&id])
+    };
+    if let Some(latest) = order_causally(&op_log, inside)?.pop() {
+        return registered_by(&latest).map(Some);
+    }
+    // A detach is the first move only of a context the rows began with.
+    match order_causally(&op_log, outside)?.first() {
+        Some(first) => registered_by(first).map(|registers| Some(!registers)),
+        None => Ok(None),
+    }
+}
+
+/// Whether `context` belongs to a group other than `group` at the cut `parents`: an op
+/// there claims it for another group in the clear, counted whatever that op's verdict.
+pub(crate) fn registered_elsewhere_at_cut(
+    store: &Store,
+    namespace: NamespaceId,
+    group: &ContextGroupId,
+    context: &ContextId,
+    parents: &[[u8; 32]],
+    authorizer: &dyn AtCutAuthorizer,
+) -> EyreResult<bool> {
+    let op_log = NamespaceOpLogService::new(store, namespace);
+    if !parents.is_empty() {
+        if let Some(ancestry) = op_log.ancestry(parents)? {
+            return Ok(claimed_elsewhere(ancestry.values(), group, context));
+        }
+        ensure_cut_resolvable(
+            authorizer,
+            group,
+            parents,
+            "the context's registration in another group at the op's cut",
+        )?;
+        // A cut outside the namespace log (a local group-DAG apply) reads the log's heads.
+        let heads = NamespaceDagService::new(store, namespace)
+            .read_head_record()?
+            .parent_hashes;
+        if let Some(ancestry) = op_log.ancestry(&heads)? {
+            if claimed_elsewhere(ancestry.values(), group, context) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(get_group_for_context(store, context)?.is_some_and(|owner| owner != *group))
+}
+
+fn claimed_elsewhere<'a>(
+    ops: impl IntoIterator<Item = &'a SignedNamespaceOp>,
+    group: &ContextGroupId,
+    context: &ContextId,
+) -> bool {
+    ops.into_iter().any(|op| {
+        matches!(
+            &op.op,
+            NamespaceOp::Group { group_id, registers: Some(claimed), .. }
+                if group_id != group && claimed == context
+        )
+    })
 }

@@ -121,6 +121,24 @@ pub enum BindingRejected {
     /// membership is the caller's question.
     #[error("account is not a member of this group")]
     AccountNotMember,
+    /// The scope a link carries is not the account root's statement for this device.
+    #[error("the device scope does not authorise this device: {0}")]
+    ScopeInvalid(calimero_account::AccountError),
+    /// A withdrawal signed by neither an admin at the op's cut nor the holder of a
+    /// valid revocation proof.
+    #[error(
+        "signer is neither an admin at the op's cut nor the holder of a valid revocation proof"
+    )]
+    WithdrawalUnauthorised,
+    /// A descope whose carried scope still reaches this group narrows nothing.
+    #[error("the carried scope still reaches this group")]
+    NotANarrowing,
+    /// A withdrawal naming an account its device id was not minted for.
+    #[error("the device id was not minted for the account the op names")]
+    DeviceNotMintedForAccount,
+    /// A descope whose signer does not speak for the account at the op's cut.
+    #[error("the signer does not speak for the account at the op's cut")]
+    SignerNotTheAccount,
 }
 
 impl BindingRejected {
@@ -449,6 +467,54 @@ impl<'a> AccountBindingRepository<'a> {
         Ok(self.store.handle().get(&key)?)
     }
 
+    /// Every device with a tombstone recorded under `group`, sorted by id.
+    /// `group` must be the namespace: tombstones are keyed by it.
+    ///
+    /// # Errors
+    /// Propagates the store scan failure.
+    pub fn revoked_devices(&self, group: &ContextGroupId) -> EyreResult<Vec<DeviceId>> {
+        Ok(self
+            .revoked_device_ids(group)?
+            .into_iter()
+            .map(DeviceId::from)
+            .collect())
+    }
+
+    /// The scope-floor slots (`sha256(account || device)`) an account's own root withdrew in `group`.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn withdrawn_slots(&self, group: &ContextGroupId) -> EyreResult<Vec<[u8; 32]>> {
+        let gid = group.to_bytes();
+        let floors = collect_keys_with_prefix(
+            self.store,
+            GroupDeviceScopeFloor::new(gid, [0u8; 32]),
+            calimero_store::key::GROUP_DEVICE_SCOPE_FLOOR_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
+        let handle = self.store.handle();
+        let mut slots = Vec::new();
+        for key in floors {
+            if handle.get(&key)? == Some(WITHDRAWN_SCOPE_FLOOR) {
+                slots.push(key.slot());
+            }
+        }
+        Ok(slots)
+    }
+
+    fn revoked_device_ids(&self, group: &ContextGroupId) -> EyreResult<BTreeSet<[u8; 32]>> {
+        let gid = group.to_bytes();
+        Ok(collect_keys_with_prefix(
+            self.store,
+            GroupRevokedDevice::new(gid, [0u8; 32]),
+            calimero_store::key::GROUP_REVOKED_DEVICE_PREFIX,
+            |k| k.group_id() == gid,
+        )?
+        .into_iter()
+        .map(|k| k.device_id())
+        .collect())
+    }
+
     /// Every binding in `group` that is **in force** — stored, not revoked, and
     /// not signed by a root key the account has since rotated past.
     ///
@@ -465,15 +531,7 @@ impl<'a> AccountBindingRepository<'a> {
         // tested against the same rows, so a point read per binding re-walked the
         // column N times for a set that fits in memory — and this runs on the
         // per-op authorization path, not just at delivery time.
-        let revoked: BTreeSet<[u8; 32]> = collect_keys_with_prefix(
-            self.store,
-            GroupRevokedDevice::new(gid, [0u8; 32]),
-            calimero_store::key::GROUP_REVOKED_DEVICE_PREFIX,
-            |k| k.group_id() == gid,
-        )?
-        .into_iter()
-        .map(|k| k.device_id())
-        .collect();
+        let revoked = self.revoked_device_ids(group)?;
 
         // Keys first, then one `get` each — deliberately, and NOT the cursor's own
         // `entries()`, which would save those reads. `entries()` decodes the value
@@ -1323,6 +1381,71 @@ mod tests {
                 expected.is_some()
             );
         }
+    }
+
+    #[test]
+    fn revoked_devices_lists_only_this_namespaces_tombstones() {
+        let store = test_store();
+        let gid = test_group_id();
+        let other = ContextGroupId::from([0x5A; 32]);
+        let repo = AccountBindingRepository::new(&store);
+        let account = genesis_for(1).account_id();
+        let (live, gone_a, gone_b, elsewhere) = (
+            DeviceId::mint(account, [1; 16]),
+            DeviceId::mint(account, [2; 16]),
+            DeviceId::mint(account, [3; 16]),
+            DeviceId::mint(account, [4; 16]),
+        );
+        let signer = key(1);
+        let genesis = genesis_for(1);
+        let cert = cert_for(&genesis, &signer, 1, 0, 0);
+        repo.apply_link(&gid, &genesis, &[], &cert, 0)
+            .expect("link")
+            .expect("binds");
+        for device in [gone_b, gone_a] {
+            repo.apply_revocation(&gid, device).expect("revoke");
+        }
+        repo.apply_revocation(&other, elsewhere).expect("revoke");
+
+        let mut want = vec![gone_a, gone_b];
+        want.sort_by_key(|d| *d.as_bytes());
+        assert_eq!(repo.revoked_devices(&gid).expect("read"), want);
+        assert!(!repo.revoked_devices(&gid).expect("read").contains(&live));
+        assert_eq!(repo.revoked_devices(&other).expect("read"), vec![elsewhere]);
+    }
+
+    #[test]
+    fn withdrawn_slots_lists_only_this_namespaces_account_withdrawals() {
+        let store = test_store();
+        let gid = test_group_id();
+        let other = ContextGroupId::from([0x5A; 32]);
+        let repo = AccountBindingRepository::new(&store);
+        let account = genesis_for(1).account_id();
+        let (withdrawn, narrowed, elsewhere) = (
+            DeviceId::mint(account, [1; 16]),
+            DeviceId::mint(account, [2; 16]),
+            DeviceId::mint(account, [3; 16]),
+        );
+        repo.withdraw_for_account(&gid, account, withdrawn)
+            .expect("withdraw");
+        let _dropped = repo.narrow(&gid, account, narrowed, 7).expect("narrow");
+        repo.withdraw_for_account(&other, account, elsewhere)
+            .expect("withdraw");
+
+        let slot = |device: DeviceId| {
+            let mut hasher = Sha256::new();
+            hasher.update(account.as_bytes());
+            hasher.update(device.as_bytes());
+            <[u8; 32]>::from(hasher.finalize())
+        };
+        assert_eq!(
+            repo.withdrawn_slots(&gid).expect("read"),
+            vec![slot(withdrawn)]
+        );
+        assert_eq!(
+            repo.withdrawn_slots(&other).expect("read"),
+            vec![slot(elsewhere)]
+        );
     }
 
     #[test]

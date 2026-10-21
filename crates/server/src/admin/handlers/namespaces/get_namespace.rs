@@ -51,6 +51,7 @@ fn refuse_unless_in_scope(scope: &ListScope, namespace_id: &ContextGroupId) -> O
 pub async fn handler(
     Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
     device: Option<Extension<AuthenticatedDevice>>,
@@ -62,7 +63,7 @@ pub async fn handler(
 
     // Resolved before any read, so a refusal costs one membership lookup rather
     // than a namespace identity fetch and a metadata load.
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+    let scope = match list_scope_for(&state.ctx_client, client_key, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(error=?err, "Failed to resolve the caller's list scope");
@@ -118,6 +119,8 @@ pub async fn handler(
         Ok(Some(ns)) => {
             let app_version =
                 super::namespace_app_version(&state.node_client, ns.bytecode_id.to_bytes()).await;
+            let (app_version, app_package) =
+                super::with_target_release(app_version, ns.target_release);
             ApiResponse {
                 payload: calimero_server_primitives::admin::GetNamespaceApiResponse {
                     data: calimero_server_primitives::admin::NamespaceApiResponse {
@@ -130,6 +133,7 @@ pub async fn handler(
                         context_count: ns.context_count,
                         subgroup_count: ns.subgroup_count,
                         app_version,
+                        app_package,
                         founding: super::namespace_founding(&state.store, &ns.namespace_id),
                         held_ops: super::namespace_held_ops(&state.store, &ns.namespace_id),
                     },

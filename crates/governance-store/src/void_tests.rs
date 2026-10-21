@@ -23,7 +23,7 @@ use crate::{
     NamespaceGovernance, NamespaceRepository,
 };
 
-const NS: [u8; 32] = [0xB8; 32];
+pub(crate) const NS: [u8; 32] = [0xB8; 32];
 
 /// The authorizer a node runs, built on the op-store the apply writes.
 struct LogAuthorizer<'s> {
@@ -77,8 +77,9 @@ impl<'s> LogAuthorizer<'s> {
                 }
             }
         }
-        // A group op stored before its key arrived folds as a hole; once the key
+        // A sealed op stored before its key arrived folds as a hole; once the key
         // is held it reads as what it is, as the node's own load re-derives it.
+        // An op refused at its cut stays nothing.
         let op_log = crate::NamespaceOpLogService::new(self.store, NS.into());
         for op in &mut ops {
             if !matches!(
@@ -87,39 +88,51 @@ impl<'s> LogAuthorizer<'s> {
             ) {
                 continue;
             }
+            if matches!(
+                crate::void_ledger::VoidLedger::new(self.store, NS.into()).parked(op.id()),
+                Ok(Some(crate::void_ledger::Parked::Refused))
+            ) {
+                continue;
+            }
             let Ok(Some(signed)) = op_log.get_signed_op(op.id()) else {
                 continue;
             };
-            let NamespaceOp::Group {
-                group_id,
-                key_id,
-                encrypted,
-                ..
-            } = &signed.op
-            else {
-                continue;
+            let opened = match &signed.op {
+                NamespaceOp::Group {
+                    group_id,
+                    key_id,
+                    encrypted,
+                    ..
+                } => crate::OpenedNamespaceOp {
+                    group_op: crate::decrypt_group_op(
+                        self.store,
+                        NS.into(),
+                        *group_id,
+                        key_id.as_bytes(),
+                        encrypted,
+                    )
+                    .ok()
+                    .flatten(),
+                    ..Default::default()
+                },
+                NamespaceOp::RootSealed { key_id, encrypted } => crate::OpenedNamespaceOp {
+                    sealed_root: crate::open_sealed_root_op(
+                        self.store,
+                        NS.into(),
+                        key_id.as_bytes(),
+                        encrypted,
+                    )
+                    .ok()
+                    .flatten(),
+                    ..Default::default()
+                },
+                _ => continue,
             };
-            let Some(inner) = crate::decrypt_group_op(
-                self.store,
-                NS.into(),
-                *group_id,
-                key_id.as_bytes(),
-                encrypted,
-            )
-            .ok()
-            .flatten() else {
-                continue;
-            };
-            let binding = crate::unified_op_decode::signer_binding_for(
-                self.store,
-                &Self::group(),
-                &signed.signer,
-            );
-            *op = crate::unified_op_decode::op_from_namespace_op_with_binding(
+            *op = opened.to_op(
                 &signed,
-                Some(&inner),
-                None,
-                binding,
+                |signer| {
+                    crate::unified_op_decode::signer_binding_for(self.store, &Self::group(), signer)
+                },
                 op.id(),
                 op.hlc,
                 &op.parents,
@@ -254,11 +267,69 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
 
     fn effective_role_at_cut(
         &self,
-        _: &ContextGroupId,
-        _: &AccountId,
-        _: &[[u8; 32]],
+        group: &ContextGroupId,
+        member: &AccountId,
+        parents: &[[u8; 32]],
     ) -> Option<Option<GroupMemberRole>> {
-        None
+        if parents.is_empty() {
+            return None;
+        }
+        let view = self.view(parents);
+        if view.is_authorized_admin(*group, member, self.base().root) {
+            return Some(Some(GroupMemberRole::Admin));
+        }
+        Some(
+            view.groups
+                .get(group)
+                .and_then(|members| members.get(member))
+                .cloned(),
+        )
+    }
+
+    fn direct_role_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        if parents.is_empty() {
+            return None;
+        }
+        let path = self
+            .view(parents)
+            .member_path_at_cut(*group, member, self.base().root, 0);
+        Some(match path {
+            calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
+            _ => None,
+        })
+    }
+
+    fn at_cut(&self) -> Option<&dyn AtCutAuthorizer> {
+        Some(self)
+    }
+
+    /// As the projection: a cut missing an op, or holding one still parked, does not read whole.
+    fn can_resolve_cut(&self, _: &ContextGroupId, parents: &[[u8; 32]]) -> bool {
+        let log = crate::NamespaceOpLogService::new(self.store, NS.into());
+        let mut seen = BTreeSet::new();
+        let mut queue = parents.to_vec();
+        while let Some(id) = queue.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let parked = crate::void_ledger::VoidLedger::new(self.store, NS.into()).parked(id);
+            if matches!(
+                parked,
+                Ok(Some(crate::void_ledger::Parked::Undecided)) | Err(_)
+            ) {
+                return false;
+            }
+            let Ok(Some(op)) = log.get_signed_op(id) else {
+                return false;
+            };
+            queue.extend(op.parent_op_hashes);
+        }
+        true
     }
 
     fn context_rotation_group_at_cut(
@@ -363,30 +434,34 @@ impl Seeds {
     }
 }
 
-struct World {
-    store: Store,
+pub(crate) struct World {
+    pub(crate) store: Store,
     seeds: Seeds,
     owner: Person,
     alice: Person,
     sam: Person,
     bob: Person,
     xavier: Person,
-    k0: [u8; 32],
+    pub(crate) k0: [u8; 32],
     nonces: RefCell<BTreeMap<PublicKey, u64>>,
 }
 
 impl World {
-    fn new() -> Self {
-        Self::build(Seeds::random(), true)
+    pub(crate) fn new() -> Self {
+        Self::build(test_store(), Seeds::random(), true)
     }
 
     /// A second node of the same namespace, which holds the group key or not.
     fn replica(&self, keyed: bool) -> Self {
-        Self::build(self.seeds, keyed)
+        self.replica_on(test_store(), keyed)
     }
 
-    fn build(seeds: Seeds, keyed: bool) -> Self {
-        let store = test_store();
+    /// [`Self::replica`] on `store`, which must be shaped like [`test_store`]'s.
+    pub(crate) fn replica_on(&self, store: Store, keyed: bool) -> Self {
+        Self::build(store, self.seeds, keyed)
+    }
+
+    fn build(store: Store, seeds: Seeds, keyed: bool) -> Self {
         let ns = LogAuthorizer::group();
         let person = |store: &Store, bytes: [u8; 32]| {
             let sk = PrivateKey::from(bytes);
@@ -505,16 +580,18 @@ impl World {
                 key_id: GroupKeyring::key_id_for(key).into(),
                 encrypted,
                 key_rotation,
+                registers: None,
             },
         )
         .expect("sign")
     }
 
-    fn apply(&self, op: &SignedNamespaceOp) -> eyre::Result<()> {
+    pub(crate) fn apply(&self, op: &SignedNamespaceOp) -> eyre::Result<()> {
         let authorizer = LogAuthorizer::new(&self.store);
         NamespaceGovernance::new(&self.store, NS.into())
             .with_apply_auth(&op.parent_op_hashes, &authorizer)
             .apply_signed_op(op)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
             .map(|_| ())
     }
 
@@ -527,6 +604,7 @@ impl World {
         NamespaceGovernance::new(&self.store, NS.into())
             .with_apply_auth(&op.parent_op_hashes, &authorizer)
             .apply_signed_op(op)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
             .map(|_| ())
     }
 
@@ -568,7 +646,7 @@ impl World {
     }
 
     /// Owner adds Alice and Sam as admins and Bob as a member; all applied.
-    fn founded(&self) -> [SignedNamespaceOp; 3] {
+    pub(crate) fn founded(&self) -> [SignedNamespaceOp; 3] {
         let a = self.add(&self.owner, &[], &self.alice, GroupMemberRole::Admin);
         self.apply(&a).expect("owner adds alice");
         let s = self.add(&self.owner, &[&a], &self.sam, GroupMemberRole::Admin);
@@ -609,6 +687,7 @@ struct FromTheOldCut {
 
 const K_SAM: [u8; 32] = [0x42; 32];
 const K_ALICE: [u8; 32] = [0x43; 32];
+const K_LATE: [u8; 32] = [0x44; 32];
 
 fn sam_from_the_old_cut(w: &World, head: &SignedNamespaceOp) -> FromTheOldCut {
     FromTheOldCut {
@@ -1330,6 +1409,7 @@ fn unreadable_op(who: &Person, nonce: u64) -> SignedNamespaceOp {
                 ciphertext: vec![nonce as u8; 1 << 20],
             },
             key_rotation: None,
+            registers: None,
         },
     )
     .expect("sign")
@@ -1392,12 +1472,13 @@ fn caps(w: &World, who: &Person) -> Option<u32> {
 #[test]
 fn a_capability_a_void_op_granted_is_taken_back_when_the_removal_arrives() {
     let w = World::new();
-    let [_, s, _] = w.founded();
+    let [_, s, b] = w.founded();
     let before = caps(&w, &w.bob);
 
     let grant = w.sign(
         &w.sam,
-        &[&s],
+        // Bob's add is in the grant's cut: a capability is set only on a member there.
+        &[&b],
         &GroupOp::MemberCapabilitySet {
             member: w.bob.account,
             capabilities: calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS,
@@ -2161,4 +2242,163 @@ fn an_admin_whose_capability_is_revoked_needed_none_of_it() {
         Some(GroupMemberRole::Member),
         "Sam added Xavier as an admin, not through the bit"
     );
+}
+
+fn sign_root(
+    w: &World,
+    who: &Person,
+    parents: &[&SignedNamespaceOp],
+    op: calimero_context_client::local_governance::RootOp,
+) -> SignedNamespaceOp {
+    let sealed = crate::test_fixtures::seal_for_test(&w.store, LogAuthorizer::group(), op);
+    SignedNamespaceOp::sign(
+        &who.sk,
+        NS.into(),
+        parents
+            .iter()
+            .map(|p| p.content_hash().expect("hash"))
+            .collect(),
+        w.next_nonce(who),
+        sealed,
+    )
+    .expect("sign a root op")
+}
+
+fn sign_in_group(
+    w: &World,
+    who: &Person,
+    group: ContextGroupId,
+    parents: &[&SignedNamespaceOp],
+    op: &GroupOp,
+) -> SignedNamespaceOp {
+    SignedNamespaceOp::sign(
+        &who.sk,
+        NS.into(),
+        parents
+            .iter()
+            .map(|p| p.content_hash().expect("hash"))
+            .collect(),
+        w.next_nonce(who),
+        NamespaceOp::Group {
+            group_id: group.to_bytes().into(),
+            key_id: GroupKeyring::key_id_for(&w.k0).into(),
+            encrypted: GroupKeyring::encrypt_op(&w.k0, op).expect("encrypt"),
+            key_rotation: None,
+            registers: op.registered_context(),
+        },
+    )
+    .expect("sign a group op")
+}
+
+/// Alice, an admin, makes a Restricted subgroup of the namespace.
+fn alice_creates_a_restricted_subgroup(
+    w: &World,
+    parent: &SignedNamespaceOp,
+) -> (SignedNamespaceOp, ContextGroupId) {
+    let namespace = LogAuthorizer::group().to_bytes();
+    let create = sign_root(
+        w,
+        &w.alice,
+        &[parent],
+        crate::test_fixtures::group_created(w.alice.account, namespace, true, 0x71),
+    );
+    let subgroup = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+        &w.alice.account,
+        namespace,
+        true,
+        0x71,
+    ));
+    (create, subgroup)
+}
+
+fn visibility(w: &World, subgroup: &ContextGroupId) -> calimero_context_config::VisibilityMode {
+    CapabilitiesRepository::new(&w.store)
+        .subgroup_visibility(subgroup)
+        .expect("visibility")
+}
+
+/// What reaches a node, in the order it arrives.
+#[derive(Clone, Copy)]
+enum Arrival<'a> {
+    Op(&'a SignedNamespaceOp),
+    Key([u8; 32]),
+}
+
+/// Play `arrivals` on `replica`: an op applies once its parents are logged, as in the
+/// DAG, and a key is stored and replays what it opens.
+fn play(replica: &World, groups: &[ContextGroupId], arrivals: &[Arrival<'_>]) {
+    let log = crate::NamespaceOpLogService::new(&replica.store, NS.into());
+    let mut pending: Vec<&SignedNamespaceOp> = Vec::new();
+    for arrival in arrivals {
+        match arrival {
+            Arrival::Op(op) => pending.push(op),
+            Arrival::Key(key) => {
+                let _ = GroupKeyring::new(&replica.store, LogAuthorizer::group())
+                    .store_key(key)
+                    .expect("the key arrives");
+                for group in groups {
+                    let authorizer = LogAuthorizer::new(&replica.store);
+                    let _ = crate::retry_encrypted_ops_for_group_with(
+                        &replica.store,
+                        NS.into(),
+                        group.to_bytes(),
+                        &authorizer,
+                    )
+                    .expect("the key arrival replays");
+                }
+            }
+        }
+        while let Some(at) = pending.iter().position(|op| {
+            op.parent_op_hashes
+                .iter()
+                .all(|parent| log.contains_op(*parent).expect("read the op log"))
+        }) {
+            let _verdict = replica.apply(pending.remove(at));
+        }
+    }
+}
+
+/// The owner, no creator, opens Alice's subgroup. A node still without the creation reads
+/// no creator, which is no verdict: it judges the flip once the creation lands, as refused.
+#[test]
+fn a_flip_whose_creation_is_still_sealed_is_judged_once_the_creation_reads() {
+    use calimero_context_config::VisibilityMode;
+
+    let w = World::new();
+    let founding = w.founded();
+    let _ = GroupKeyring::new(&w.store, LogAuthorizer::group())
+        .store_key(&K_LATE)
+        .expect("the signer holds the later key");
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &founding[2]);
+    w.apply(&create)
+        .expect("alice creates a Restricted subgroup");
+    let flip = sign_in_group(
+        &w,
+        &w.owner,
+        subgroup,
+        &[&create],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    assert!(w.apply(&flip).is_err(), "control: only the creator opens");
+    let groups = [LogAuthorizer::group(), subgroup];
+    let mark = |node: &World| {
+        crate::void_ledger::VoidLedger::new(&node.store, NS.into())
+            .parked(flip.content_hash().expect("hash"))
+            .expect("read the mark")
+    };
+
+    for key_at in 0..=2 {
+        let replica = replica_after(&w, &founding.iter().collect::<Vec<_>>());
+        let mut arrivals = vec![Arrival::Op(&create), Arrival::Op(&flip)];
+        arrivals.insert(key_at, Arrival::Key(K_LATE));
+        play(&replica, &groups, &arrivals);
+
+        assert_eq!(
+            (visibility(&replica, &subgroup), mark(&replica)),
+            (VisibilityMode::Restricted, mark(&w)),
+            "the flip lands differently with the key at {key_at}"
+        );
+    }
 }

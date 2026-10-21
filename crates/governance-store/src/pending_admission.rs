@@ -125,6 +125,7 @@ mod tests {
                 ciphertext: vec![1],
             },
             key_rotation: None,
+            registers: None,
         }
     }
 

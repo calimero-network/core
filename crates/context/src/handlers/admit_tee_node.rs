@@ -145,8 +145,10 @@ fn check_measurement_lists(
     // are present and root is not locked.
     //
     // `calimero-init` extends RTMR3 with
-    // `calimero-rtmr3-v2:<role>:<profile>:<root_hash>`, so it names exactly
-    // one (profile, release) pair. The cost is that it CHANGES EVERY
+    // `calimero-rtmr3-v3:<role>:<profile>:<roothash>`, the dm-verity root
+    // hash of the image's root filesystem (mero-tee#504; releases up to
+    // 2.3.118 used `calimero-rtmr3-v2:...:<calimero.root_hash>`), so it names
+    // exactly one (profile, release) pair. The cost is that it CHANGES EVERY
     // RELEASE, which is why this was optional: pinning it means the policy
     // must gain the new value before nodes on a new image can join. That is
     // the intended trade -- an allowlist that silently stops narrowing is

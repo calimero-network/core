@@ -112,6 +112,12 @@ pub enum Rejected {
     /// themselves in.
     #[error("account is not a member of this scope at the cut")]
     AccountNotMember,
+    /// The device's scope does not reach the application this scope targets.
+    #[error("the device's scope does not reach this scope's application at the cut")]
+    ScopeDoesNotReach,
+    /// The author may not point the group at an application.
+    #[error("author may not set the group's application at the cut")]
+    MayNotManageApplication,
     /// A key rotation for an account this scope has never seen.
     ///
     /// Distinct from [`Self::RotationNotContinuous`], which the two used to share:
