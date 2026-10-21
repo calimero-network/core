@@ -353,12 +353,30 @@ pub async fn start(
         );
     }
     let app_hosts = app_hosts(&config, &node_client);
+    let routes = ServiceBuilder::new()
+        .layer(build_cors_layer(&config.cors, origin_guard.as_ref()))
+        .layer(axum::middleware::from_fn_with_state(
+            app_host::AppOrigins::new(&config.apps),
+            origin_guard::refuse_app_origins,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            origin_guard,
+            origin_guard::refuse_foreign_origins,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            transport,
+            sealed::intercept,
+        ))
+        .service(app);
     let apps_port = match (app_hosts.clone(), config.apps.port) {
         (Some(hosts), Some(port)) => {
-            let router = Router::new()
-                .fallback(app_host::serve_apps_port)
-                .with_state(hosts);
-            Some((router, bind_apps_port(&listeners, port).await?))
+            let service = ServiceBuilder::new()
+                .layer(axum::middleware::from_fn_with_state(
+                    hosts,
+                    app_host::serve_apps_port,
+                ))
+                .service(routes.clone());
+            Some((service, bind_apps_port(&listeners, port).await?))
         }
         _ => None,
     };
@@ -367,20 +385,7 @@ pub async fn start(
             .option_layer(app_hosts.map(|hosts| {
                 axum::middleware::from_fn_with_state(hosts, app_host::serve_app_hosts)
             }))
-            .layer(build_cors_layer(&config.cors, origin_guard.as_ref()))
-            .layer(axum::middleware::from_fn_with_state(
-                app_host::AppOrigins::new(&config.apps),
-                origin_guard::refuse_app_origins,
-            ))
-            .layer(axum::middleware::from_fn_with_state(
-                origin_guard,
-                origin_guard::refuse_foreign_origins,
-            ))
-            .layer(axum::middleware::from_fn_with_state(
-                transport,
-                sealed::intercept,
-            ))
-            .service(app);
+            .service(routes);
 
     let mut set = JoinSet::new();
 
@@ -403,14 +408,19 @@ pub async fn start(
         }));
     }
 
-    if let Some((router, listeners)) = apps_port {
+    if let Some((service, listeners)) = apps_port {
         for listener in listeners {
-            let router = router.clone();
+            let service = service.clone();
             let shutdown = shutdown.clone();
             drop(set.spawn(async move {
-                axum::serve(listener, router)
-                    .with_graceful_shutdown(async move { shutdown.cancelled().await })
-                    .await
+                axum::serve(
+                    listener,
+                    ServiceExt::<Request>::into_make_service_with_connect_info::<
+                        std::net::SocketAddr,
+                    >(service),
+                )
+                .with_graceful_shutdown(async move { shutdown.cancelled().await })
+                .await
             }));
         }
     }
@@ -428,6 +438,7 @@ fn app_hosts(config: &ServerConfig, node_client: &NodeClient) -> Option<app_host
     (!config.sealed.required).then(|| app_host::AppHosts {
         node_client: node_client.clone(),
         origins: app_host::AppOrigins::new(&config.apps),
+        app_api: config.use_embedded_auth(),
     })
 }
 
@@ -903,6 +914,20 @@ mod cors_tests {
 
     /// `GET path` from the node on `port`, once it accepts connections.
     async fn get_path(port: u16, path: &str) -> String {
+        get_path_as(port, &format!("127.0.0.1:{port}"), path).await
+    }
+
+    async fn get_path_as(port: u16, host: &str, path: &str) -> String {
+        send_as("GET", port, host, path, &[]).await
+    }
+
+    async fn send_as(
+        method: &str,
+        port: u16,
+        host: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> String {
         let mut attempts = 0;
         let mut stream = loop {
             match TcpStream::connect(("127.0.0.1", port)).await {
@@ -914,8 +939,13 @@ mod cors_tests {
                 }
             }
         };
-        let request =
-            format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+        let extra: String = headers
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}\r\n"))
+            .collect();
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: {host}\r\n{extra}Content-Length: 0\r\nConnection: close\r\n\r\n"
+        );
         stream
             .write_all(request.as_bytes())
             .await
@@ -981,6 +1011,35 @@ mod cors_tests {
         assert!(super::app_hosts(&config, &state.node_client).is_none());
     }
 
+    #[actix::test]
+    async fn the_app_api_is_open_to_app_origins_only_where_this_node_verifies_tokens() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (state, _blobs) = admin_state(&store).await;
+        let services = || crate::config::ServiceConfigs {
+            admin: None,
+            jsonrpc: None,
+            websocket: None,
+            sse: None,
+        };
+        let with_mode = |mode, proxy_identity| {
+            let mut config = ServerConfig::with_auth(
+                vec![],
+                Keypair::generate_ed25519(),
+                services(),
+                mode,
+                None,
+            );
+            config.proxy_identity = proxy_identity;
+            super::app_hosts(&config, &state.node_client)
+                .expect("app hosts")
+                .app_api
+        };
+
+        assert!(with_mode(crate::config::AuthMode::Embedded, false));
+        assert!(!with_mode(crate::config::AuthMode::Proxy, false));
+        assert!(!with_mode(crate::config::AuthMode::Proxy, true));
+    }
+
     #[tokio::test]
     async fn the_apps_port_binds_on_the_address_of_each_listener() {
         let main = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1008,6 +1067,157 @@ mod cors_tests {
         let bound = super::bind_apps_port(&[v4, v6], port).await.unwrap();
         let ips: Vec<_> = bound.iter().map(|l| l.local_addr().unwrap().ip()).collect();
         assert_eq!(ips, ["::1".parse::<core::net::IpAddr>().unwrap()]);
+    }
+
+    /// A node with embedded auth, RPC and the admin API on `port`, apps on `apps_port`.
+    async fn start_embedded_with_apps_port(
+        port: u16,
+        apps_port: u16,
+    ) -> (CancellationToken, tokio::task::JoinHandle<eyre::Result<()>>) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (state, _blobs) = admin_state(&store).await;
+        let mut auth = mero_auth::embedded::default_config();
+        auth.storage = mero_auth::config::StorageConfig::Memory;
+        let mut config = ServerConfig::with_auth(
+            vec![format!("/ip4/127.0.0.1/tcp/{port}").parse().unwrap()],
+            Keypair::generate_ed25519(),
+            crate::config::ServiceConfigs {
+                admin: Some(AdminConfig::new(true, false)),
+                jsonrpc: Some(crate::jsonrpc::JsonRpcConfig::new(true)),
+                websocket: None,
+                sse: None,
+            },
+            crate::config::AuthMode::Embedded,
+            Some(auth),
+        );
+        config.apps.port = Some(apps_port);
+        let shutdown = CancellationToken::new();
+        let server = actix::spawn(start(
+            config,
+            state.ctx_client.clone(),
+            state.node_client.clone(),
+            store,
+            Registry::default(),
+            Arc::new(NodeReadiness::new()),
+            shutdown.clone(),
+            #[cfg(feature = "mock-attestation")]
+            false,
+        ));
+        (shutdown, server)
+    }
+
+    #[actix::test]
+    async fn an_app_calls_the_node_on_its_own_origin_through_the_nodes_auth() {
+        let (port, apps_port) = (free_port(), free_port());
+        let (shutdown, server) = start_embedded_with_apps_port(port, apps_port).await;
+        let label = crate::app_host::encode_label(&ApplicationId::from([7; 32]));
+        let app_host = format!("{label}.localhost:{port}");
+        let app_origin = format!("http://{app_host}");
+        let port_host = format!("127.0.0.1:{apps_port}");
+        let port_origin = format!("http://{port_host}");
+        let node_host = format!("127.0.0.1:{port}");
+
+        let on_app_host = send_as(
+            "POST",
+            port,
+            &app_host,
+            "/jsonrpc",
+            &[("Origin", &app_origin)],
+        )
+        .await;
+        let on_apps_port = send_as(
+            "POST",
+            apps_port,
+            &port_host,
+            "/jsonrpc",
+            &[("Origin", &port_origin)],
+        )
+        .await;
+        let refresh = send_as(
+            "POST",
+            port,
+            &app_host,
+            "/auth/refresh",
+            &[("Origin", &app_origin)],
+        )
+        .await;
+        let foreign = send_as(
+            "POST",
+            port,
+            &app_host,
+            "/jsonrpc",
+            &[("Origin", "https://evil.example")],
+        )
+        .await;
+        let own_routes = [
+            get_path_as(port, &app_host, "/admin-api/applications").await,
+            get_path_as(port, &app_host, "/auth/login").await,
+            get_path_as(apps_port, &port_host, "/admin-api/applications").await,
+        ];
+        let from_app = [
+            send_as(
+                "POST",
+                port,
+                &node_host,
+                "/jsonrpc",
+                &[("Origin", &app_origin)],
+            )
+            .await,
+            send_as(
+                "POST",
+                port,
+                &node_host,
+                "/admin-api/applications",
+                &[("Origin", &app_origin)],
+            )
+            .await,
+            send_as(
+                "POST",
+                port,
+                &node_host,
+                "/jsonrpc",
+                &[("Origin", &port_origin)],
+            )
+            .await,
+        ];
+        let unauthenticated = send_as("POST", port, &node_host, "/jsonrpc", &[]).await;
+
+        shutdown.cancel();
+        server
+            .await
+            .expect("the server task ends")
+            .expect("the server stops cleanly");
+        for response in [&on_app_host, &on_apps_port, &unauthenticated] {
+            assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+        }
+        assert!(!refresh.starts_with("HTTP/1.1 404"), "{refresh}");
+        assert!(foreign.starts_with("HTTP/1.1 403"), "{foreign}");
+        for response in &own_routes {
+            assert!(response.starts_with("HTTP/1.1 404"), "{response}");
+        }
+        for response in &from_app {
+            assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+        }
+    }
+
+    #[actix::test]
+    async fn a_node_that_does_not_verify_tokens_gives_an_app_origin_no_api() {
+        let (port, apps_port) = (free_port(), free_port());
+        let (shutdown, server) = start_with_apps_port(port, apps_port, false).await;
+        let label = crate::app_host::encode_label(&ApplicationId::from([7; 32]));
+
+        let on_app_host = get_path_as(port, &format!("{label}.localhost:{port}"), "/jsonrpc").await;
+        let on_apps_port = get_path(apps_port, "/jsonrpc").await;
+
+        shutdown.cancel();
+        server
+            .await
+            .expect("the server task ends")
+            .expect("the server stops cleanly");
+        for response in [&on_app_host, &on_apps_port] {
+            assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+            assert!(response.contains("embedded auth"), "{response}");
+        }
     }
 
     #[actix::test]

@@ -33,6 +33,7 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error, field, info, info_span, warn, Instrument};
 use uuid::Uuid;
 
+use crate::app_host::AppApi;
 use crate::auth::{
     AuthenticatedAccount, AuthenticatedDevice, AuthenticatedKey, AuthenticatedNodeOwner,
     ClientKeyScope,
@@ -274,6 +275,7 @@ async fn ws_handler(
     auth_device: Option<Extension<AuthenticatedDevice>>,
     granted: Option<Extension<crate::auth::GrantedPermissions>>,
     client_scope: Option<Extension<ClientKeyScope>>,
+    app_api: Option<Extension<AppApi>>,
 ) -> impl IntoResponse {
     // Validate WebSocket upgrade request
     let ws = match ws {
@@ -288,7 +290,7 @@ async fn ws_handler(
         }
     };
 
-    if !state.origin_guard.admits(&headers, None) {
+    if app_api.is_none() && !state.origin_guard.admits(&headers, None) {
         return refusal(&headers, "/ws");
     }
 
@@ -1469,6 +1471,11 @@ mod tests {
     /// A server as `start` builds it: the service from the server config behind
     /// the router-wide guard, with the caller a token would have proved.
     async fn spawn_guarded_ws(embedded_auth: bool) -> (SocketAddr, TempDir) {
+        spawn_guarded_ws_marked(embedded_auth, false).await
+    }
+
+    /// `app_api` marks every request as one an app host handed over.
+    async fn spawn_guarded_ws_marked(embedded_auth: bool, app_api: bool) -> (SocketAddr, TempDir) {
         let mut config = crate::config::ServerConfig::new(
             vec!["/ip4/127.0.0.1/tcp/2528".parse().unwrap()],
             libp2p::identity::Keypair::generate_ed25519(),
@@ -1493,6 +1500,11 @@ mod tests {
                 (!embedded_auth).then(|| OriginGuard::for_config(&config)),
                 refuse_foreign_origins,
             ));
+        let app = if app_api {
+            app.layer(Extension(crate::app_host::AppApi))
+        } else {
+            app
+        };
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         drop(tokio::spawn(async move {
@@ -1546,6 +1558,29 @@ mod tests {
                     "{case}, embedded auth: {embedded_auth}"
                 );
             }
+        }
+    }
+
+    /// An app host hands over a page of its own origin, which is no host the
+    /// node names, so the socket takes the marker for its answer.
+    #[tokio::test]
+    async fn ws_upgrade_admits_an_app_page_the_app_host_handed_over() {
+        let label = crate::app_host::encode_label(
+            &calimero_primitives::application::ApplicationId::from([7; 32]),
+        );
+        let host = format!("{label}.apps.example");
+        let origin = format!("http://{host}");
+        for (app_api, status) in [
+            (true, StatusCode::SWITCHING_PROTOCOLS),
+            (false, StatusCode::FORBIDDEN),
+        ] {
+            let (addr, _blob_dir) = spawn_guarded_ws_marked(true, app_api).await;
+            let headers = [("host", &*host), ("origin", &*origin)];
+            assert_eq!(
+                upgrade_with(&format!("ws://{addr}/ws"), &headers).await.0,
+                status,
+                "marked: {app_api}"
+            );
         }
     }
 
