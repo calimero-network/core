@@ -11315,6 +11315,85 @@ fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
     }
 }
 
+/// A bundle keeps one application id across releases, so the receiver's local
+/// row still names the release it installed. The record's versions must come
+/// from the op and the group's previous target, not from that row.
+#[test]
+fn cascade_upgrade_record_names_the_released_versions_not_the_local_row() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_storage::logical_clock::HybridTimestamp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let root = ContextGroupId::from([0xE3; 32]);
+    let from_bytecode_id = [0x11u8; 32];
+    let to_bytecode_id = [0x22u8; 32];
+    let app = ApplicationId::from([0x33u8; 32]);
+
+    let store = test_store();
+    let admin = enrol_member(&store, &root, &admin_pk);
+    let mut meta = sample_meta_with_admin(admin);
+    meta.target.bytecode_id = from_bytecode_id;
+    meta.target.application_id = app;
+    meta.target.package = "com.example.app".into();
+    meta.target.version = "1.0.0".into();
+    MetaRepository::new(&store).save(&root, &meta).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&root, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    store
+        .handle()
+        .put(
+            &calimero_store::key::ApplicationMeta::new(app),
+            &calimero_store::types::ApplicationMeta::new(
+                calimero_store::key::BlobMeta::new(from_bytecode_id.into()),
+                0,
+                "".into(),
+                Box::new([]),
+                calimero_store::key::BlobMeta::new([0x02; 32].into()),
+                calimero_store::types::PackageInfo {
+                    package: "com.example.app".into(),
+                    version: "1.0.0".into(),
+                    signer_id: "".into(),
+                    state_version: 1,
+                },
+            ),
+        )
+        .unwrap();
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        root.to_bytes().into(),
+        vec![],
+        1,
+        GroupOp::CascadeUpgrade {
+            from_bytecode_id: from_bytecode_id.into(),
+            bytecode_id: to_bytecode_id.into(),
+            target_application_id: app,
+            to_state_version: 2,
+            migration: None,
+            cascade_hlc: HybridTimestamp::zero(),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
+        },
+    )
+    .expect("sign CascadeUpgrade");
+    apply_local_signed_group_op(&store, &op).expect("cascade applies");
+
+    let record = UpgradesRepository::new(&store)
+        .load(&root)
+        .unwrap()
+        .expect("upgrade record");
+    assert_eq!(
+        (record.from_version.as_str(), record.to_version.as_str()),
+        ("1.0.0", "2.0.0")
+    );
+}
+
 // -----------------------------------------------------------------------
 // Apply-time authority must resolve at the op's causal cut, not against the
 // receiver's live rows.
@@ -11398,7 +11477,13 @@ mod apply_auth_at_cut {
 
         let mut ctx =
             GroupApplyCtx::new_with_apply_auth(&store, &gid, &signer, &CUT, &FixedAuthorizer(true));
-        ctx.queue_migration_started(None, &target, Some(2), 7);
+        ctx.queue_migration_started(
+            "unknown".to_owned(),
+            "2.0.0".to_owned(),
+            &target,
+            Some(2),
+            7,
+        );
 
         let announced = ctx
             .pending_events
@@ -11425,63 +11510,28 @@ mod apply_auth_at_cut {
         );
     }
 
-    /// The persisted record and the announced event derive `from_version`
-    /// through this one function, because deriving it twice is how they came to
-    /// disagree: the record fell back to "unknown" on an ABSENT previous id
-    /// while the event fell back on one EQUAL to the target, so a no-op cascade
-    /// stored a real semver and announced "unknown" for the same transition.
+    /// The record and the event derive their `from` side through this one
+    /// function, so a no-op cascade cannot store one value and announce another.
     #[test]
-    fn from_version_falls_back_identically_for_absent_and_equal_previous_ids() {
-        use crate::ops::group::context::migration_from_version;
+    fn previous_release_version_names_only_a_governed_release() {
+        use crate::ops::group::context::previous_release_version;
+        use calimero_store::key::GroupTarget;
 
-        let store = test_store();
-        let target = ApplicationId::from([0x5B; 32]);
-        let other = ApplicationId::from([0x5C; 32]);
-
-        assert_eq!(
-            migration_from_version(&store, None, &target),
-            "unknown",
-            "no previous id names no version"
-        );
-        // Registered with a real semver, so a short-circuit to "unknown" is
-        // distinguishable: an unregistered id reads "unknown" too, and asserting
-        // against that would pass no matter which branch ran.
-        let register = |id, version: &str| {
-            let mut handle = store.handle();
-            handle
-                .put(
-                    &calimero_store::key::ApplicationMeta::new(id),
-                    &calimero_store::types::ApplicationMeta::new(
-                        calimero_store::key::BlobMeta::new([0x01; 32].into()),
-                        0,
-                        "".into(),
-                        Box::new([]),
-                        calimero_store::key::BlobMeta::new([0x02; 32].into()),
-                        calimero_store::types::PackageInfo {
-                            package: "pkg".into(),
-                            version: version.into(),
-                            signer_id: "".into(),
-                            state_version: 1,
-                        },
-                    ),
-                )
-                .unwrap();
+        let target = |package: &str, version: &str| GroupTarget {
+            package: package.into(),
+            version: version.into(),
+            ..GroupTarget::default()
         };
-        // BOTH registered with real, distinct semvers. If either resolved to an
-        // unregistered id, `application_version` would answer "unknown" and the
-        // fallback assertions would pass without the predicate running at all.
-        register(other, "1.2.3");
-        register(target, "9.9.9");
 
+        assert_eq!(previous_release_version(None), "unknown");
         assert_eq!(
-            migration_from_version(&store, Some(&target), &target),
+            previous_release_version(Some(&target("", ""))),
             "unknown",
-            "a previous id equal to the target means the row already holds the new version"
+            "a target governance never named has no version"
         );
         assert_eq!(
-            migration_from_version(&store, Some(&other), &target),
-            "1.2.3",
-            "a distinct previous id is resolved, not short-circuited"
+            previous_release_version(Some(&target("pkg", "1.2.3"))),
+            "1.2.3"
         );
     }
 

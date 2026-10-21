@@ -365,13 +365,12 @@ async fn a_member_sees_started_then_fleet_progress_then_completed() {
         0,
         "a member runs no propagator, so it has no local swaps to stream: {tags:?}"
     );
-    // The banner renders this string. Nothing on the wire carries it: the
-    // receiver's record is built by the cascade apply, which resolves it from
-    // this node's own application row.
+    // The banner renders this string; the receiver's record takes it from the
+    // op's release, not from this node's application row.
     match &seen.last().expect("asserted above").payload {
         GroupMigrationPayload::MigrationCompleted { to_version, .. } => {
             assert_eq!(
-                to_version, "0.2.0",
+                to_version, "2.0.0",
                 "a member must name the version it reached"
             );
         }

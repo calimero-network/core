@@ -1,7 +1,9 @@
 //! `GroupOp::TargetApplicationSet` apply handler. Extracted from
 //! `apply_group_op_mutations` in #2304.
 
-use super::context::{seed_target_application_row, GroupApplyCtx};
+use super::context::{
+    previous_release_version, release_version, seed_target_application_row, GroupApplyCtx,
+};
 use crate::{MetaRepository, MetadataRepository};
 use calimero_app_downloader::registry::RegistryCoords;
 use calimero_primitives::application::{ApplicationId, ZERO_APPLICATION_ID};
@@ -58,10 +60,10 @@ pub(crate) fn apply(
     let local_contexts_total = MetadataRepository::new(store)
         .count_contexts(group_id)
         .unwrap_or_default() as u32;
+    let from_version = previous_release_version(previous_target.as_ref());
     ctx.queue_migration_started(
-        previous_target
-            .as_ref()
-            .map(|target| &target.application_id),
+        from_version,
+        release_version(coords.package, coords.version),
         target_application_id,
         None,
         local_contexts_total,

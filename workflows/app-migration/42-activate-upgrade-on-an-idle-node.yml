@@ -147,6 +147,16 @@ steps:
       data.targetApplicationId: "{{app_v2}}"
       data.appVersion: 2.0.0
 
+  # Both releases share one application id, so a member's own application row
+  # cannot say which release the upgrade left or reached.
+  - name: Node 2 reports the upgrade's releases before holding it
+    type: assert_api_response
+    node: app-migration-activate-2
+    path: /admin-api/groups/{{namespace_id}}/upgrade/status
+    match:
+      data.fromVersion: 1.0.0
+      data.toVersion: 2.0.0
+
   # The release must be installed before it can be activated: activation never
   # installs one.
   - name: Install scenario-pure-bugfix-v2 on node 2
