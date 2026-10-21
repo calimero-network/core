@@ -25,6 +25,8 @@ const NATIVE_SCHEME: &str = "calimero-app"; // the desktop webview's app scheme 
 const WINDOWS_HOST_PREFIX: &str = "calimero-app."; // its host form on Windows: `http(s)://calimero-app.{label}`
 const AUTH_REFRESH: &str = "/auth/refresh"; // the one login-side route an app origin reaches: a JSON token exchange
 const NO_APP_API: &str = "the app API on an app origin needs the node's embedded auth"; // body of the 403 where this node does not verify tokens
+const FILES_ONLY: &str =
+    "the fallback apps port serves files only; the app API needs the app's own subdomain origin"; // body of the 403 to an API path on the apps port
 const FOREIGN_ORIGIN: &str = "an app's API answers a page of its own origin only"; // body of the 403 to another origin
 
 #[derive(Clone)]
@@ -278,14 +280,11 @@ pub(crate) async fn serve_app_hosts(
     hosts.respond(&app, &parts, parts.uri.path(), "").await
 }
 
-/// The apps port: `/{label}/{version}/{path}`, and the app API at its root.
-pub(crate) async fn serve_apps_port(
-    State(hosts): State<AppHosts>,
-    request: Request,
-    next: Next,
-) -> Response {
-    if is_app_api(request.method(), request.uri().path(), node_prefix()) {
-        return hosts.hand_over(request, next).await;
+/// The apps port: `/{label}/{version}/{path}` and nothing else. Its apps share
+/// one origin, so none of them gets the node's API from it.
+pub(crate) async fn serve_apps_port(State(hosts): State<AppHosts>, request: Request) -> Response {
+    if is_node_api(request.uri().path(), node_prefix()) {
+        return refusal(StatusCode::FORBIDDEN, FILES_ONLY);
     }
     let (parts, _body) = request.into_parts();
     let rest = parts.uri.path().strip_prefix('/').unwrap_or_default();
@@ -312,6 +311,17 @@ fn is_app_api(method: &Method, path: &str, prefix: &str) -> bool {
         || (path == AUTH_REFRESH && method == Method::POST)
         || path == "/sse"
         || path.starts_with("/sse/")
+}
+
+/// Whether `path` is under a route the node answers with an API: RPC, sockets,
+/// events, auth or the admin surface.
+fn is_node_api(path: &str, prefix: &str) -> bool {
+    fn first(path: &str) -> Option<&str> {
+        path.strip_prefix('/')?.split('/').next()
+    }
+    let prefixed = path.strip_prefix(prefix).and_then(first);
+    matches!(prefixed, Some("jsonrpc" | "ws" | "admin-api"))
+        || matches!(first(path), Some("sse" | "auth"))
 }
 
 /// Whether a page's `Origin` is the host it called.
@@ -409,8 +419,8 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{
-        decode_label, encode_label, is_app_api, serve_app_hosts, serve_apps_port, AppApi, AppHosts,
-        AppOrigins, ApplicationId, AUTH_REFRESH, BASE32,
+        decode_label, encode_label, is_app_api, is_node_api, serve_app_hosts, serve_apps_port,
+        AppApi, AppHosts, AppOrigins, ApplicationId, AUTH_REFRESH, BASE32,
     };
     use crate::config::AppsConfig;
     use crate::test_support::{stub_node_manager, test_node_client};
@@ -538,9 +548,9 @@ mod tests {
         let routes = Router::new()
             .route("/{*rest}", any(reached))
             .route("/", any(reached));
-        let port_router = routes
-            .clone()
-            .layer(from_fn_with_state(hosts.clone(), serve_apps_port));
+        let port_router = Router::new()
+            .fallback(serve_apps_port)
+            .with_state(hosts.clone());
         let router = routes.layer(from_fn_with_state(hosts, serve_app_hosts));
         Fixture {
             router,
@@ -703,10 +713,6 @@ mod tests {
                 assert_eq!(response.status(), StatusCode::OK, "{method} {path}");
                 assert_eq!(body, b"app api", "{method} {path}");
                 assert_hardened(&response);
-                let (response, body) = on_port(&f, method.clone(), path).await;
-                assert_eq!(response.status(), StatusCode::OK, "port {method} {path}");
-                assert_eq!(body, b"app api", "port {method} {path}");
-                assert_hardened(&response);
             }
         }
     }
@@ -742,6 +748,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_node_api_is_where_the_router_mounts_it() {
+        for (path, prefix, api) in [
+            ("/jsonrpc", "", true),
+            ("/admin-api", "", true),
+            ("/admin-api/contexts", "", true),
+            ("/node1/admin-api/contexts", "/node1", true),
+            ("/node1/ws", "/node1", true),
+            ("/sse/subscribe", "/node1", true),
+            ("/auth/login", "/node1", true),
+            ("/admin-api/contexts", "/node1", false),
+            ("/jsonrpcx", "", false),
+            ("/admin-dashboard", "", false),
+            ("/health", "", false),
+            ("/abc/1.0.0/", "", false),
+        ] {
+            assert_eq!(is_node_api(path, prefix), api, "{path} under {prefix:?}");
+        }
+    }
+
     #[actix::test]
     async fn an_app_host_has_no_app_api_where_the_node_does_not_verify_tokens() {
         let f = fixture().await;
@@ -751,18 +777,9 @@ mod tests {
             let mut refused = vec![
                 send(&f.router, Method::POST, &f.host, path, &[]).await,
                 send(&f.router, Method::POST, &f.host, path, &forged).await,
-                send(
-                    &f.port_router,
-                    Method::POST,
-                    "127.0.0.1:2429",
-                    path,
-                    &forged,
-                )
-                .await,
             ];
             if path != AUTH_REFRESH {
                 refused.push(get(&f, path).await);
-                refused.push(on_port(&f, Method::GET, path).await);
             }
             for (response, body) in refused {
                 assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
@@ -795,13 +812,6 @@ mod tests {
                 let (response, body) = send(&f.router, method.clone(), &f.host, path, &[]).await;
                 assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
                 assert!(body.is_empty(), "{method} {path}");
-                let (response, body) = on_port(&f, method.clone(), path).await;
-                assert_eq!(
-                    response.status(),
-                    StatusCode::NOT_FOUND,
-                    "port {method} {path}"
-                );
-                assert!(body.is_empty(), "port {method} {path}");
             }
         }
     }
@@ -823,18 +833,7 @@ mod tests {
             &[("origin", &own)],
         )
         .await;
-        let (port, _) = send(
-            &f.port_router,
-            Method::POST,
-            "127.0.0.1:2429",
-            "/jsonrpc",
-            &[("origin", "http://127.0.0.1:2429")],
-        )
-        .await;
-        assert_eq!(
-            (same.status(), port.status()),
-            (StatusCode::OK, StatusCode::OK)
-        );
+        assert_eq!(same.status(), StatusCode::OK);
         let label = encode_label(&ApplicationId::from(APP));
         for (host, origin) in [
             (
@@ -887,15 +886,6 @@ mod tests {
             assert_eq!(response.status(), StatusCode::FORBIDDEN, "{origin}");
             assert_ne!(body, b"app api", "{origin}");
         }
-        let (response, _) = send(
-            &f.port_router,
-            Method::POST,
-            "127.0.0.1:2429",
-            "/jsonrpc",
-            &[("origin", &own)],
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[actix::test]
@@ -1042,6 +1032,37 @@ mod tests {
     }
 
     #[actix::test]
+    async fn the_apps_port_serves_files_only() {
+        let paths = [
+            "/jsonrpc",
+            "/ws",
+            "/sse",
+            "/sse/subscribe",
+            "/auth/refresh",
+            "/auth/login",
+            "/auth/token",
+            "/admin-api",
+            "/admin-api/contexts",
+            "/admin-api/applications",
+        ];
+
+        for app_api in [false, true] {
+            let f = fixture_with(app_api).await;
+            for path in paths {
+                for method in [Method::GET, Method::POST, Method::DELETE] {
+                    let (response, body) = on_port(&f, method.clone(), path).await;
+                    assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {path}");
+                    assert!(
+                        str::from_utf8(&body).unwrap().contains("files only"),
+                        "{method} {path}"
+                    );
+                    assert_hardened(&response);
+                }
+            }
+        }
+    }
+
+    #[actix::test]
     async fn the_apps_port_serves_nothing_else() {
         let f = fixture().await;
         let label = encode_label(&ApplicationId::from(APP));
@@ -1049,8 +1070,7 @@ mod tests {
         let paths = [
             "/".to_owned(),
             "/admin-dashboard".to_owned(),
-            "/admin-api/applications".to_owned(),
-            "/auth/login".to_owned(),
+            "/health".to_owned(),
             "/1.0.0/app.js".to_owned(),
             format!("/{}/1.0.0/", non_canonical(&label)),
             format!("/{unknown}/1.0.0/"),

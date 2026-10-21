@@ -370,12 +370,9 @@ pub async fn start(
         .service(app);
     let apps_port = match (app_hosts.clone(), config.apps.port) {
         (Some(hosts), Some(port)) => {
-            let service = ServiceBuilder::new()
-                .layer(axum::middleware::from_fn_with_state(
-                    hosts,
-                    app_host::serve_apps_port,
-                ))
-                .service(routes.clone());
+            let service = Router::new()
+                .fallback(app_host::serve_apps_port)
+                .with_state(hosts);
             Some((service, bind_apps_port(&listeners, port).await?))
         }
         _ => None,
@@ -1152,8 +1149,8 @@ mod cors_tests {
         let own_routes = [
             get_path_as(port, &app_host, "/admin-api/applications").await,
             get_path_as(port, &app_host, "/auth/login").await,
-            get_path_as(apps_port, &port_host, "/admin-api/applications").await,
         ];
+        let apps_port_api = get_path_as(apps_port, &port_host, "/admin-api/applications").await;
         let from_app = [
             send_as(
                 "POST",
@@ -1187,8 +1184,12 @@ mod cors_tests {
             .await
             .expect("the server task ends")
             .expect("the server stops cleanly");
-        for response in [&on_app_host, &on_apps_port, &unauthenticated] {
+        for response in [&on_app_host, &unauthenticated] {
             assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+        }
+        for response in [&on_apps_port, &apps_port_api] {
+            assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+            assert!(response.contains("files only"), "{response}");
         }
         assert!(!refresh.starts_with("HTTP/1.1 404"), "{refresh}");
         assert!(foreign.starts_with("HTTP/1.1 403"), "{foreign}");
@@ -1214,14 +1215,14 @@ mod cors_tests {
             .await
             .expect("the server task ends")
             .expect("the server stops cleanly");
-        for response in [&on_app_host, &on_apps_port] {
-            assert!(response.starts_with("HTTP/1.1 403"), "{response}");
-            assert!(response.contains("embedded auth"), "{response}");
-        }
+        assert!(on_app_host.starts_with("HTTP/1.1 403"), "{on_app_host}");
+        assert!(on_app_host.contains("embedded auth"), "{on_app_host}");
+        assert!(on_apps_port.starts_with("HTTP/1.1 403"), "{on_apps_port}");
+        assert!(on_apps_port.contains("files only"), "{on_apps_port}");
     }
 
     #[actix::test]
-    async fn the_apps_port_answers_app_paths_only() {
+    async fn the_apps_port_answers_files_only() {
         let (port, apps_port) = (free_port(), free_port());
         let (shutdown, server) = start_with_apps_port(port, apps_port, false).await;
 
@@ -1235,8 +1236,11 @@ mod cors_tests {
             .await
             .expect("the server task ends")
             .expect("the server stops cleanly");
-        for response in [&admin, &auth, &health] {
-            assert!(response.starts_with("HTTP/1.1 404"), "{response}");
+        for (response, status) in [(&admin, "403"), (&auth, "403"), (&health, "404")] {
+            assert!(
+                response.starts_with(&format!("HTTP/1.1 {status}")),
+                "{response}"
+            );
             assert!(
                 response
                     .to_ascii_lowercase()
