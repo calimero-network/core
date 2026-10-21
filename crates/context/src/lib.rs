@@ -407,6 +407,9 @@ pub struct ContextManager {
     /// An entry lives only while its compile runs.
     compiling: HashMap<(BlobId, Option<String>), handlers::execute::SharedCompile>,
 
+    /// Namespaces with a rejoin in flight, so a second rejoin waits for the first.
+    rejoining: handlers::rejoin_namespace::RejoinLocks,
+
     /// Cumulative hit/miss counters for the `contexts` hot cache, driving the
     /// periodic effectiveness log (see [`ContextCacheStats`] and
     /// [`Self::log_cache_stats`]). Independent of `metrics` so the log line
@@ -490,6 +493,7 @@ impl ContextManager {
             applications: BoundedCache::new(MAX_CACHED_APPLICATIONS, "applications"),
             modules: BoundedCache::new(MAX_CACHED_MODULES, "modules"),
             compiling: HashMap::new(),
+            rejoining: Default::default(),
             cache_stats: ContextCacheStats::default(),
 
             metrics: prometheus_registry.map(Metrics::new),

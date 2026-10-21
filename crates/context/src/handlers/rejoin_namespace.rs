@@ -1,6 +1,8 @@
 //! Following a namespace again with no invitation, one the user removed from
 //! this node while the account stayed a member; peers still judge membership.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -18,6 +20,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::key::NamespaceParticipation;
 use calimero_store::Store;
 use eyre::{OptionExt, Result as EyreResult};
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use tracing::warn;
 
 use crate::account_follow::{reaches, require_reach};
@@ -29,6 +32,45 @@ use crate::ContextManager;
 const LANDING_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 30 }); // bounds one restore request
 const LANDING_POLL: Duration = Duration::from_millis(100);
 
+/// One lock per namespace with a rejoin in flight; entries leave when the last holder drops.
+pub(crate) type RejoinLocks = Arc<Mutex<HashMap<[u8; 32], Arc<AsyncMutex<()>>>>>;
+
+struct RejoinLock {
+    locks: RejoinLocks,
+    namespace: [u8; 32],
+    guard: Option<OwnedMutexGuard<()>>,
+}
+
+impl RejoinLock {
+    async fn acquire(locks: RejoinLocks, namespace: [u8; 32]) -> Self {
+        let lock = Arc::clone(
+            locks
+                .lock()
+                .expect("lock map")
+                .entry(namespace)
+                .or_default(),
+        );
+        Self {
+            locks,
+            namespace,
+            guard: Some(lock.lock_owned().await),
+        }
+    }
+}
+
+impl Drop for RejoinLock {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        let mut map = self.locks.lock().expect("lock map");
+        if map
+            .get(&self.namespace)
+            .is_some_and(|lock| Arc::strong_count(lock) == 1)
+        {
+            map.remove(&self.namespace);
+        }
+    }
+}
+
 impl Handler<RejoinNamespaceRequest> for ContextManager {
     type Result = ActorResponse<Self, <RejoinNamespaceRequest as Message>::Result>;
 
@@ -39,8 +81,9 @@ impl Handler<RejoinNamespaceRequest> for ContextManager {
     ) -> Self::Result {
         let store = self.datastore.clone();
         let node_client = self.node_client.clone();
+        let locks = Arc::clone(&self.rejoining);
         ActorResponse::r#async(
-            async move { rejoin(&store, &node_client, namespace_id).await }.into_actor(self),
+            async move { rejoin(&store, &node_client, locks, namespace_id).await }.into_actor(self),
         )
     }
 }
@@ -48,8 +91,11 @@ impl Handler<RejoinNamespaceRequest> for ContextManager {
 async fn rejoin(
     store: &Store,
     node_client: &NodeClient,
+    locks: RejoinLocks,
     namespace: ContextGroupId,
 ) -> EyreResult<JoinGroupResponse> {
+    // A second rejoin waits here, then reads the marker the first one left.
+    let _in_flight = RejoinLock::acquire(locks, namespace.to_bytes()).await;
     let (member_identity, _) = match ForgottenNamespaces::new(store).get(&namespace)? {
         Some(removed) => {
             require_account_still_holds(store, namespace, removed.application_id)?;
@@ -150,7 +196,15 @@ async fn wait_until_restored(store: &Store, namespace: ContextGroupId) -> EyreRe
     }
 }
 
+/// Only while the marker stands: a path that cleared it owns the follow now.
 async fn undo_follow(store: &Store, node_client: &NodeClient, namespace: &ContextGroupId) {
+    match ForgottenNamespaces::new(store).is_forgotten(namespace) {
+        Ok(false) => return,
+        Ok(true) => {}
+        Err(err) => {
+            warn!(?namespace, %err, "failed to read the marker of a namespace whose restore failed")
+        }
+    }
     if let Err(err) = node_client
         .unsubscribe_namespace(namespace.to_bytes())
         .await
@@ -223,11 +277,19 @@ mod tests {
     /// What a peer's pull brings back: the group rows, the key and this node's
     /// own membership. The flag says the removal was still marked when it landed.
     fn land_state_soon(store: &Store, namespace: ContextGroupId) -> Arc<AtomicBool> {
+        land_state_after(store, namespace, Duration::from_millis(150))
+    }
+
+    fn land_state_after(
+        store: &Store,
+        namespace: ContextGroupId,
+        delay: Duration,
+    ) -> Arc<AtomicBool> {
         let store = store.clone();
         let marked = Arc::new(AtomicBool::new(false));
         let seen = Arc::clone(&marked);
         actix::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            tokio::time::sleep(delay).await;
             seen.store(
                 ForgottenNamespaces::new(&store)
                     .is_forgotten(&namespace)
@@ -481,6 +543,67 @@ mod tests {
         assert_unchanged_marker(&store);
         assert!(harness.live_topics().is_empty(), "the topic is let go");
         assert!(!NamespaceRepository::new(&store)
+            .participating_namespaces()
+            .expect("read participation")
+            .contains(&namespace));
+    }
+
+    /// The second request starts while the first waits, which then times out
+    /// before the state lands: the second waits its turn and restores.
+    #[actix::test]
+    async fn a_second_rejoin_waits_for_the_first_and_keeps_the_follow() {
+        let store = store();
+        NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("this node's account root");
+        let harness = actor::over(store.clone()).await;
+        let namespace = removed(&store);
+        let _marked = land_state_after(&store, namespace, Duration::from_millis(1100));
+
+        let (first, second) = tokio::join!(rejoin(&harness, namespace), async {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            rejoin(&harness, namespace).await
+        });
+
+        assert!(first.is_err(), "the first timed out");
+        second.expect("the second restores");
+        assert!(harness.live_topics().contains(&topic()));
+        assert!(NamespaceRepository::new(&store)
+            .participating_namespaces()
+            .expect("read participation")
+            .contains(&namespace));
+    }
+
+    /// Another path lifted the marker while this restore waited, so the follow is its.
+    #[actix::test]
+    async fn a_restore_that_times_out_after_the_marker_was_cleared_keeps_the_follow() {
+        let store = store();
+        NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("this node's account root");
+        let harness = actor::over(store.clone()).await;
+        let namespace = removed(&store);
+        let cleared = store.clone();
+        actix::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            ForgottenNamespaces::new(&cleared)
+                .clear(&namespace)
+                .expect("another path lifts the marker");
+        });
+
+        let err = rejoin(&harness, namespace)
+            .await
+            .expect_err("nothing arrived");
+
+        assert!(
+            matches!(
+                refusal(&err),
+                Some(ContextError::NamespaceNotRestored { .. })
+            ),
+            "got: {err:#}"
+        );
+        assert!(harness.live_topics().contains(&topic()));
+        assert!(NamespaceRepository::new(&store)
             .participating_namespaces()
             .expect("read participation")
             .contains(&namespace));
