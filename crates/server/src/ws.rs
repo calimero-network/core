@@ -245,7 +245,7 @@ pub(crate) fn service(
         config: ws_config,
         auth_enabled,
         events_fanout: Once::new(),
-        origin_guard: OriginGuard::new(config.cors.allowed_origins.as_deref()),
+        origin_guard: OriginGuard::for_config(config),
     });
 
     Some((path, get(ws_handler).layer(Extension(state))))
@@ -1478,6 +1478,7 @@ mod tests {
             None,
         );
         config.cors.allowed_origins = Some(vec!["https://app.example".to_owned()]);
+        config.apps.port = Some(2429);
         let (event_sender, _) = broadcast::channel(16);
         let (node_client, ctx_client, blob_dir) =
             test_clients(LazyRecipient::new(), event_sender).await;
@@ -1489,7 +1490,7 @@ mod tests {
                 [7; 32],
             ))))
             .layer(axum::middleware::from_fn_with_state(
-                (!embedded_auth).then(|| OriginGuard::new(config.cors.allowed_origins.as_deref())),
+                (!embedded_auth).then(|| OriginGuard::for_config(&config)),
                 refuse_foreign_origins,
             ));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1545,6 +1546,19 @@ mod tests {
                     "{case}, embedded auth: {embedded_auth}"
                 );
             }
+        }
+    }
+
+    /// An app's page is third-party code: on the apps port it is no loopback page.
+    #[tokio::test]
+    async fn ws_upgrade_refuses_an_app_origin() {
+        for embedded_auth in [false, true] {
+            let (addr, _blob_dir) = spawn_guarded_ws(embedded_auth).await;
+            assert_eq!(
+                upgrade(addr, "127.0.0.1", Some("http://127.0.0.1:2429")).await,
+                StatusCode::FORBIDDEN,
+                "embedded auth: {embedded_auth}"
+            );
         }
     }
 

@@ -37,10 +37,14 @@ pub(crate) struct OriginGuard {
 impl OriginGuard {
     /// The router-wide guard: `None` where this process or its proxy authenticates callers.
     pub(crate) fn router_wide(config: &ServerConfig) -> Option<Self> {
-        (!config.authenticates_callers()).then(|| Self {
+        (!config.authenticates_callers()).then(|| Self::for_config(config))
+    }
+
+    pub(crate) fn for_config(config: &ServerConfig) -> Self {
+        Self {
             apps: AppOrigins::new(&config.apps),
             ..Self::new(config.cors.allowed_origins.as_deref())
-        })
+        }
     }
 
     pub(crate) fn new(allowed_origins: Option<&[String]>) -> Self {
