@@ -496,19 +496,28 @@ request re-stamps it.
 - A WebSocket has no CORS, so `ws_handler` asks `OriginGuard::admits` itself, in every auth mode.
   There is one origin rule for the node; never give a transport its own.
   With embedded auth the auth layer answers first: an upgrade without a valid token (header, `?token=` or proof) gets `401` whatever its origin, so the origin check refuses (`403`) only a page that carries one.
-  A hosted app must therefore be listed in `[server.cors] allowed_origins` to open a socket, as well as hold a token.
+  A page on an app's own origin is let through by the `AppApi` mark its app host sets, and holds a token bound to its app; any other page must be listed in `[server.cors] allowed_origins` to open a socket.
   The handler answers a `GET /ws` that is not an upgrade with `400` before it looks at the origin.
   In proxy mode a loopback page is admitted a socket whatever host it names, so a proxy that authenticates by something a browser attaches by itself (a cookie, HTTP Basic, a client certificate) hands any loopback page an authenticated socket.
-- `app_host::serve_app_hosts` is the outermost layer, so a request whose `Host` is exactly `{label}.{apps.base_domain}` never meets CORS, the origin guard, the sealed envelope or any route.
+- `app_host::serve_app_hosts` is the outermost layer, so a request whose `Host` is exactly `{label}.{apps.base_domain}` meets no CORS, origin guard, sealed envelope or route of the node, except the app API below.
   Admin tokens live in the dashboard origin's storage, so an app host serves only `GET` and `HEAD` of that app's files, and everything else is `404`.
-  Keep it that way: never route an app host to a handler that is not a frontend file.
+  Keep it that way: never route an app host to a handler that is not a frontend file or the app API.
   Under `sealed.required` the layer is not mounted at all, so an app host cannot get around the envelope.
+- An app calls the node at its own `window.location.origin`, because its content security policy is `default-src 'self'`.
+  `app_host::is_app_api` is the passthrough set: `{NODE_PATH_PREFIX}/jsonrpc`, `{NODE_PATH_PREFIX}/ws`, `/sse`, `/sse/...` and `POST /auth/refresh`, a JSON token exchange; SSE and auth are not prefixed.
+  `app_host::AppHosts::hand_over` runs them through the normal router, auth middleware included, with the `AppApi` request extension that `origin_guard::refuse_app_origins` and `ws_handler` take as leave to skip their app-origin refusal.
+  It answers `403` when `Origin` is not the `Host` called, and `403` with a plain-text body unless this node verifies the token itself (`ServerConfig::use_embedded_auth`).
+  Proxy mode gets no app API, with or without `proxy_identity`: merod mounts no token guard there, and an app host is a listener merod binds itself, with no proxy in front to vouch for the caller.
+  A reverse proxy in front must forward the original `Host` (`proxy_set_header Host $host` for nginx), or the node cannot tell an app host from its own.
+  The desktop webview origins (`calimero-app://...`) cannot use the app API from the node; they go through the desktop app instead.
+  Never add `/admin-api`, `/auth/login` or any page that takes credentials to the set: an app's script could read what the user types.
+  Login stays a top-level navigation to the node's own origin.
 - An app's page runs on `{label}.{base_domain}`, which is a loopback name for `base_domain = localhost`, so an app is third-party code that must not count as a loopback page.
   `app_host::AppOrigins::is_app_origin` names such an origin, any page on the apps port, which shares one origin for every app, and the desktop app's `calimero-app://{label}` and `http(s)://calimero-app.{label}`: `OriginGuard::admits` never treats it as a loopback page, and `origin_guard::refuse_app_origins` answers `403` to it on every route in every auth mode.
   Never re-expose the apps port under a loopback name on a different port (a reverse proxy, a port forward): its pages would no longer be recognised as app origins and would pass as loopback pages.
-- `[server.apps] port` binds a second listener on each `listen` address, served by `app_host::serve_apps_port` alone: `/{label}/{version}/{path}` and the redirects, and `404` for every other path.
+- `[server.apps] port` binds a second listener on each `listen` address, served by `app_host::serve_apps_port`: `/{label}/{version}/{path}` and the redirects, the app API at its root, and `404` for every other path.
   It is not bound under `sealed.required`.
-  Use the subdomain where `{label}.{base_domain}` resolves and the port where it does not (Safari, a remote node by IP); apps on the port share one origin.
+  Use the subdomain where `{label}.{base_domain}` resolves and the port where it does not (Safari, a remote node by IP); apps on the port share one origin, so they can read each other's tokens.
 - An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.
 - In proxy auth mode, `origin_guard::OriginGuard::admits` judges every HTTP request a browser
   sent: one with `Origin` or `Sec-Fetch-Site` (a same-origin `GET` has no `Origin`). Never

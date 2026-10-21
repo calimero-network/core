@@ -317,7 +317,11 @@ desktop app edits it under **Settings → Advanced → Trusted App Origins**
 `trusted_callback_origins`, and the login page reads it from its own node only,
 never from a URL parameter, so a link cannot add to it.
 
+An app calls the node at its own origin (`window.location.origin`), where `/jsonrpc`, `/ws`, `/sse` and `/auth/refresh` reach the node's handlers when the node's embedded auth verifies the token; login is never served there, so it stays a navigation to the node's own origin.
 An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.
+Apps on the shared apps port have one origin, so they can read each other's tokens.
+Proxy deployments get no app API for now, and a reverse proxy in front must forward the original `Host` (`proxy_set_header Host $host` for nginx).
+The desktop webview origins (`calimero-app://...`) cannot use the app API from the node and go through the desktop app instead.
 
 Each entry must be an exact `http` or `https` origin (`scheme://host[:port]`):
 an entry with a path, query, credentials or a wildcard is dropped with a
