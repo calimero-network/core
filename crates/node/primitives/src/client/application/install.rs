@@ -161,6 +161,10 @@ impl NodeClient {
         if let (Some(index), false) = (&frontend, frontend_kept) {
             self.release_frontend_files(index).await;
         }
+        if written.is_err() {
+            let bytecode = application.services.iter().map(|s| s.bytecode.blob_id());
+            self.release_blobs(bytecode).await;
+        }
         written?;
         Ok(application_id)
     }

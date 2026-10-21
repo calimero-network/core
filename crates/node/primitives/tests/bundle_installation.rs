@@ -2124,16 +2124,6 @@ fn frontend_bundle(listed: &[(&str, &[u8])], shipped: &[(&str, &[u8])]) -> Vec<u
     frontend_bundle_by(&signing_key, "1.0.0", listed, shipped)
 }
 
-/// As `frontend_bundle`, but the manifest declares the wasm as `wasm_size` bytes.
-fn frontend_bundle_declaring_wasm_size(
-    listed: &[(&str, &[u8])],
-    shipped: &[(&str, &[u8])],
-    wasm_size: usize,
-) -> Vec<u8> {
-    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
-    signed_frontend_bundle(&signing_key, "1.0.0", listed, shipped, Some(wasm_size))
-}
-
 /// As [`frontend_bundle`], under a caller-held key, so releases share an id.
 fn frontend_bundle_by(
     signing_key: &SigningKey,
@@ -2181,14 +2171,7 @@ fn signed_frontend_bundle(
 
 /// Install through the real entry point, returning the refusal if any.
 async fn try_install(node_client: &NodeClient, bytes: Vec<u8>) -> eyre::Result<ApplicationId> {
-    let (blob_id, _size) = node_client
-        .add_blob(
-            Cursor::new(bytes.as_slice()),
-            Some(bytes.len() as u64),
-            None,
-        )
-        .await
-        .expect("add the bundle blob");
+    let blob_id = blob_id_in(node_client, &bytes).await;
     let source = "file:///test/bundle.mpk".parse().unwrap();
     node_client
         .install_application_from_bundle_blob(&blob_id, &source)
@@ -2277,9 +2260,10 @@ async fn a_wasm_artifact_longer_than_its_declared_size_still_installs() {
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
     let files: &[(&str, &[u8])] = &[("frontend/index.html", FRONTEND_INDEX)];
 
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let id = try_install(
         &node_client,
-        frontend_bundle_declaring_wasm_size(files, files, 1),
+        signed_frontend_bundle(&key, "1.0.0", files, files, Some(1)),
     )
     .await
     .expect("the wasm size field was never enforced, so understating it must not refuse");
@@ -2322,10 +2306,7 @@ async fn read_blob(node_client: &NodeClient, blob_id: BlobId) -> Vec<u8> {
 #[tokio::test]
 async fn an_installed_frontend_is_stored_file_by_file() {
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
-    let files: &[(&str, &[u8])] = &[
-        ("frontend/index.html", FRONTEND_INDEX),
-        ("frontend/app.js", FRONTEND_APP_JS),
-    ];
+    let files = &FILES_1_0_0;
 
     let (id, bundle) = install_frontend(&node_client, files).await;
 
@@ -2400,20 +2381,7 @@ async fn a_refused_remote_downgrade_stores_no_frontend() {
 #[tokio::test]
 async fn an_upgrade_keeps_every_version_s_frontend_and_shares_identical_files() {
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
-    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let source = "file:///test/bundle.mpk".parse().unwrap();
-    let mut blobs = Vec::new();
-    for (version, files) in [("1.0.0", &FILES_1_0_0), ("2.0.0", &FILES_2_0_0)] {
-        let bytes = frontend_bundle_by(&key, version, files, files);
-        let blob = blob_id_in(&node_client, &bytes).await;
-        node_client
-            .install_application_from_bundle_blob(&blob, &source)
-            .await
-            .unwrap();
-        blobs.push(blob);
-    }
-
-    let [v1, v2] = [blobs[0], blobs[1]];
+    let (_, [v1, v2]) = install_two_releases(&node_client).await;
     let (i1, i2) = (
         node_client.get_bundle_frontend(&v1).unwrap().unwrap(),
         node_client.get_bundle_frontend(&v2).unwrap().unwrap(),
@@ -2502,12 +2470,18 @@ async fn installing_one_bundle_twice_at_once_leaks_no_frontend_blob() {
     }
 }
 
-/// A datastore whose frontend index cannot be deleted, so the cleanup of a
-/// refused install fails after the index was written.
-#[derive(Debug)]
-struct FrontendIndexUndeletable(Arc<dyn for<'x> Database<'x>>);
+#[derive(Debug, Clone, Copy)]
+enum IndexFault {
+    Put,
+    Delete,
+}
 
-impl<'a> Database<'a> for FrontendIndexUndeletable {
+/// A datastore whose frontend index fails the given write: a delete fails the
+/// cleanup of a refused install after the index was written, a put fails the write itself.
+#[derive(Debug)]
+struct FaultyFrontendIndex(Arc<dyn for<'x> Database<'x>>, IndexFault);
+
+impl<'a> Database<'a> for FaultyFrontendIndex {
     fn open(_config: &StoreConfig) -> eyre::Result<Self> {
         eyre::bail!("test double: not openable")
     }
@@ -2521,11 +2495,14 @@ impl<'a> Database<'a> for FrontendIndexUndeletable {
     }
 
     fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> eyre::Result<()> {
+        if matches!((col, self.1), (Column::BundleFrontend, IndexFault::Put)) {
+            eyre::bail!("frontend index put failed");
+        }
         self.0.put(col, key, value)
     }
 
     fn delete(&self, col: Column, key: Slice<'_>) -> eyre::Result<()> {
-        if matches!(col, Column::BundleFrontend) {
+        if matches!((col, self.1), (Column::BundleFrontend, IndexFault::Delete)) {
             eyre::bail!("frontend index delete failed");
         }
         self.0.delete(col, key)
@@ -2599,9 +2576,10 @@ async fn a_row_write_refused_after_the_files_were_stored_releases_them() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_index_that_cannot_be_deleted_keeps_its_files() {
-    let store = Store::new(Arc::new(FrontendIndexUndeletable(Arc::new(
-        InMemoryDB::owned(),
-    ))));
+    let store = Store::new(Arc::new(FaultyFrontendIndex(
+        Arc::new(InMemoryDB::owned()),
+        IndexFault::Delete,
+    )));
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(Some(store.clone())).await;
 
     let (v15_blob, before) =
@@ -2613,4 +2591,23 @@ async fn an_index_that_cannot_be_deleted_keeps_its_files() {
     for blob in frontend_blobs(&node_client, &v15_blob) {
         assert!(node_client.has_blob(&blob).unwrap());
     }
+}
+
+#[tokio::test]
+async fn an_index_write_that_fails_releases_the_service_blobs_too() {
+    let store = Store::new(Arc::new(FaultyFrontendIndex(
+        Arc::new(InMemoryDB::owned()),
+        IndexFault::Put,
+    )));
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(Some(store)).await;
+    let bytes = frontend_bundle(&FILES_1_0_0, &FILES_1_0_0);
+    let bundle = blob_id_in(&node_client, &bytes).await;
+    let before = node_client.list_blobs().unwrap().len();
+
+    let result = node_client
+        .install_application_from_bundle_blob(&bundle, &"file:///test/bundle.mpk".parse().unwrap())
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(node_client.list_blobs().unwrap().len(), before);
 }
