@@ -43,6 +43,7 @@ use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::{observe_handler_delivery, PublishReadiness};
 use calimero_governance_store::{
     MembershipRepository, MetaRepository, NamespaceRepository, NodeDeviceRepository,
+    PendingNamespacePurges,
 };
 
 impl Handler<LeaveNamespaceRequest> for ContextManager {
@@ -203,7 +204,13 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
                     "leave_namespace",
                 )
                 .await;
-                if !purged {
+                // Folding our own `AccountNamespacePurged` armed a purge this node just ran.
+                if purged {
+                    if let Err(err) = PendingNamespacePurges::new(&datastore).disarm(&namespace_id)
+                    {
+                        warn!(?namespace_id, %err, "could not clear the arm of a finished purge");
+                    }
+                } else {
                     let _ = node_client
                         .unsubscribe_namespace(namespace_id.to_bytes())
                         .await;
@@ -246,7 +253,7 @@ mod tests {
     use calimero_governance_store::op_events::{self, OpEvent};
     use calimero_governance_store::{
         register_context_in_group, AccountNamespaceSet, ForgottenNamespaces, MembershipRepository,
-        MetaRepository, NamespaceRepository, NodeDeviceRepository,
+        MetaRepository, NamespaceRepository, NodeDeviceRepository, PendingNamespacePurges,
     };
     use calimero_primitives::context::{ContextId, GroupMemberRole};
     use calimero_primitives::identity::PrivateKey;
@@ -614,6 +621,12 @@ mod tests {
             ForgottenNamespaces::new(&store).list().unwrap(),
             vec![],
             "the account left: there is nothing to restore"
+        );
+        assert!(
+            !PendingNamespacePurges::new(&store)
+                .is_armed(&namespace)
+                .unwrap(),
+            "the purge ran here, so no arm is left waiting"
         );
         let mut asked = false;
         while let Ok(event) = events.try_recv() {
