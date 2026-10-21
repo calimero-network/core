@@ -336,10 +336,12 @@ It executes as the node inside its binding, but it is never the node owner on th
   `POST /contexts/sync` with no id syncs every context and is refused outright.
   `POST /install-application` is refused outright.
 - `POST /contexts`, `/namespaces`, `/groups`, `/contexts/{id}/application`, `/groups/{id}/upgrade` and `/groups/{id}/reparent` are refused when their body names a group or application outside the binding (`refuse_target_outside_binding`).
-- A join (`POST /groups/join`, `/namespaces/{id}/join`) needs a group this node holds and the binding reaches (`refuse_join_outside_binding`).
-  An invitation's application is an unsigned hint that would seed the group's target, so a group this node does not hold yet is joined by an unbound key.
+- A join (`POST /groups/join`, `/namespaces/{id}/join`) needs a group the binding reaches, or a group this node does not hold yet whose invitation hints the bound application (`refuse_join_outside_binding`).
+  The hint is unsigned and seeds the group's target until the real one arrives, so only an application binding takes it: a context binding never joins a group it does not hold, and a held group is judged by its own target.
+  `refuse_out_of_scope` leaves a `/namespaces/{id}/join` path parameter to that handler.
+  A token that joined on a lying hint loses the group once the real target arrives; the join is not undone, because only the sync that brings the target knows it.
 - Listings and named reads take the key's `ListScope::ClientKey` (`admin/caller_scope.rs`): the groups its binding reaches, and of their contexts only those it permits.
-  `GET /applications`, the `for-application` listings, `/groups/{id}/contexts` and the alias routes filter by the same binding; an alias to a device is never visible to a bound key.
+  `GET /applications` (an app origin sees only its own application), the `for-application` listings, `/groups/{id}/contexts` and the alias routes filter by the same binding; an alias to a device is never visible to a bound key.
   Blob reads and uploads are confined like an account session's; `DELETE /blobs/{id}` needs the blob held for one of its contexts and gives that association up with the reference it releases (bound-key deletes are serialized), and `GET /blobs` is refused.
 - SSE: a bound key's session principal includes its binding, so it can neither adopt a node-owner session by `Last-Event-ID` nor be adopted by one.
 
@@ -500,24 +502,35 @@ request re-stamps it.
   The handler answers a `GET /ws` that is not an upgrade with `400` before it looks at the origin.
   In proxy mode a loopback page is admitted a socket whatever host it names, so a proxy that authenticates by something a browser attaches by itself (a cookie, HTTP Basic, a client certificate) hands any loopback page an authenticated socket.
 - `app_host::serve_app_hosts` is the outermost layer, so a request whose `Host` is exactly `{label}.{apps.base_domain}` meets no CORS, origin guard, sealed envelope or route of the node, except the app API below.
-  Admin tokens live in the dashboard origin's storage, so an app host serves only `GET` and `HEAD` of that app's files, and everything else is `404`.
-  Keep it that way: never route an app host to a handler that is not a frontend file or the app API.
+  Admin tokens live in the dashboard origin's storage, so an app host serves only `GET` and `HEAD` of that app's files, the app API, the admin routes below and a redirect of the login page.
+  Everything else is `404`, and any other `/admin-api` route is `403` with a short plain-text body.
+  Keep it that way: never route an app host to a handler that is not a frontend file, the app API or a route of the allowlist below.
   Under `sealed.required` the layer is not mounted at all, so an app host cannot get around the envelope.
 - An app calls the node at its own `window.location.origin`, because its content security policy is `default-src 'self'`.
-  `app_host::is_app_api` is the passthrough set: `{NODE_PATH_PREFIX}/jsonrpc`, `{NODE_PATH_PREFIX}/ws`, `/sse`, `/sse/...` and `POST /auth/refresh`, a JSON token exchange; SSE and auth are not prefixed.
+  `app_host::is_app_api` is the passthrough set: `{NODE_PATH_PREFIX}/jsonrpc`, `{NODE_PATH_PREFIX}/ws`, `/sse`, `/sse/...`, `POST /auth/refresh` and `GET` or `HEAD /auth/validate`, which exchange or check a token and read nothing else; SSE and auth are not prefixed.
+  It also holds the admin allowlist, `app_host::is_app_admin_route`, matched by method and exact segment shape under `{NODE_PATH_PREFIX}/admin-api`:
+  `GET /contexts`, `GET /contexts/{id}`, `GET /contexts/for-application/{app}`, `GET /namespaces/for-application/{app}`, `GET /applications`, `GET /applications/{id}`, `GET /contexts/{id}/identities-owned`, `GET /contexts/{id}/group`, `POST /contexts`, `POST /contexts/{id}/join`, `GET` and `POST /namespaces`, `POST /namespaces/{id}/invite`, `POST /namespaces/{id}/join`, `POST /namespaces/{id}/groups`, `GET /groups/{id}/members`, `GET /health` and `GET /is-authed`.
+  Never match a prefix there, so `/contexts/{id}/anything` stays refused.
   `app_host::AppHosts::hand_over` runs them through the normal router, auth middleware included, with the `AppApi` request extension that `origin_guard::refuse_app_origins` and `ws_handler` take as leave to skip their app-origin refusal.
   It answers `403` when `Origin` is not the `Host` called, and `403` with a plain-text body unless this node verifies the token itself (`ServerConfig::use_embedded_auth`).
   Proxy mode gets no app API, with or without `proxy_identity`: merod mounts no token guard there, and an app host is a listener merod binds itself, with no proxy in front to vouch for the caller.
   A reverse proxy in front must forward the original `Host` (`proxy_set_header Host $host` for nginx), or the node cannot tell an app host from its own.
   The desktop webview origins (`calimero-app://...`) cannot use the app API from the node; they go through the desktop app instead.
-  Never add `/admin-api`, `/auth/login` or any page that takes credentials to the set: an app's script could read what the user types.
+  Never add a route that changes or lists something outside the app's binding, or any page that takes credentials, to the set: an app's script could read what the user types.
+  `GET /auth/login` on an app host answers `302` to the node's own login page with the same path, query and port, and no body: the host without its label, and no scheme so the browser keeps its own.
   Login stays a top-level navigation to the node's own origin.
+- Every request an app host hands over is bound to the app of its `Host` label.
+  `AppApi` carries the `ApplicationId`, and `auth::bind_to_app`, mounted by `AuthLayerExt::with_auth_guard` right behind the guard, refuses (`403`) a token that holds `admin` or is bound to another application, and otherwise attaches a `ClientKeyScope` with `application_id` set to that app, keeping the token's own context binding.
+  `auth::refuse_foreign_session` wraps the auth router and gives `/auth/refresh` and `/auth/validate` the same decision (`bindings_on_app`) for the session they carry.
+  A token bound to a context of another application then matches nothing, and a node-owner or account session is narrowed like a bound client key, so the scope-aware checks (`refuse_out_of_scope`, `list_scope`, `refuse_target_outside_binding`, `refuse_join_outside_binding`, the `/jsonrpc` and `/ws` context checks) apply to it.
+  Never mount a route behind the guard by another path: the binding lives in `with_auth_guard`.
 - An app's page runs on `{label}.{base_domain}`, which is a loopback name for `base_domain = localhost`, so an app is third-party code that must not count as a loopback page.
   `app_host::AppOrigins::is_app_origin` names such an origin, any page on the apps port, which shares one origin for every app, and the desktop app's `calimero-app://{label}` and `http(s)://calimero-app.{label}`: `OriginGuard::admits` never treats it as a loopback page, and `origin_guard::refuse_app_origins` answers `403` to it on every route in every auth mode.
   Never re-expose the apps port under a loopback name on a different port (a reverse proxy, a port forward): its pages would no longer be recognised as app origins and would pass as loopback pages.
-- `[server.apps] port` binds a second listener on each `listen` address, served by `app_host::serve_apps_port`: `/{label}/{version}/{path}` and the redirects, the app API at its root, and `404` for every other path.
-  It is not bound under `sealed.required`.
-  Use the subdomain where `{label}.{base_domain}` resolves and the port where it does not (Safari, a remote node by IP); apps on the port share one origin, so they can read each other's tokens.
+- `[server.apps] port` binds a second listener on each `listen` address, served by `app_host::serve_apps_port`: `/{label}/{version}/{path}` and the redirects, and `404` for every other path.
+  It serves files only: `/jsonrpc`, `/ws`, `/sse`, `/auth/*` and `/admin-api/*` answer `403` with a plain-text body, because its apps share one origin and have no identity to bind a token to, and the login page is not redirected from there.
+  It is not bound under `sealed.required`, and `start` refuses a port equal to any `listen` port.
+  Use the subdomain where `{label}.{base_domain}` resolves and the port where it does not (Safari, a remote node by IP), for pages that need no API.
 - An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.
 - In proxy auth mode, `origin_guard::OriginGuard::admits` judges every HTTP request a browser
   sent: one with `Origin` or `Sec-Fetch-Site` (a same-origin `GET` has no `Origin`). Never
