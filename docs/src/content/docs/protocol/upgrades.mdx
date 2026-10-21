@@ -148,6 +148,9 @@ Port 0, 80 and 443 are refused: a browser leaves out 80 and 443, so every defaul
 Use the subdomain wherever it resolves, because it gives each app an origin of its own.
 Use the port only where it does not, because apps on it can read each other's storage.
 
+An app is third-party code, so the node answers a page on any app origin `403` on every route of its own, in every auth mode, and never counts it as a loopback page.
+The app origins are `{label}.{base_domain}` with any port, `{host}:{apps port}`, `calimero-app://{label}` and `http(s)://calimero-app.{label}`, where `{label}` is the canonical base32 of an application id.
+
 An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.
 
 `calimero-bundle` holds the rules (`crates/bundle/src/frontend.rs`), and each refusal carries a stable code.

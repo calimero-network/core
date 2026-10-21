@@ -20,6 +20,8 @@ const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; font-src 'sel
 const IMMUTABLE: &str = "public, max-age=31536000, immutable"; // a file's URL names its release
 const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567"; // RFC 4648 alphabet, lowercase
 const LABEL_LEN: usize = 52; // 32 bytes in unpadded base32
+const NATIVE_SCHEME: &str = "calimero-app"; // the desktop webview's app scheme on macOS and Linux
+const WINDOWS_HOST_PREFIX: &str = "calimero-app."; // its host form on Windows: `http(s)://calimero-app.{label}`
 
 #[derive(Clone)]
 pub(crate) struct AppHosts {
@@ -66,7 +68,7 @@ fn decode_label(label: &str) -> Option<ApplicationId> {
     (encode_label(&id) == label).then_some(id)
 }
 
-/// The browser origins an app's page runs from.
+/// The browser origins an app's page can run from.
 #[derive(Clone, Debug)]
 pub(crate) struct AppOrigins {
     base_domain: String,
@@ -81,27 +83,29 @@ impl AppOrigins {
         }
     }
 
-    /// Whether `origin` is `http(s)://{label}.{base_domain}`, or any page on the apps port.
+    /// Whether `origin` is shaped like any app's: `{label}.{base_domain}`, any
+    /// page on the apps port, or one of the desktop app's own origins.
     pub(crate) fn is_app_origin(&self, origin: &str) -> bool {
-        let Some((scheme, rest)) = origin.split_once("://") else {
+        let Some((scheme, authority)) = split_origin(origin) else {
             return false;
         };
-        let Ok(authority) = rest.parse::<Authority>() else {
-            return false;
-        };
-        // A browser omits the scheme's default port from `Origin`.
-        let default_port = if scheme.eq_ignore_ascii_case("https") {
-            443
-        } else {
-            80
-        };
-        ["http", "https"]
-            .iter()
-            .any(|allowed| scheme.eq_ignore_ascii_case(allowed))
-            && (self.app_at(authority.host()).is_some()
-                || self
-                    .port
-                    .is_some_and(|port| authority.port_u16().unwrap_or(default_port) == port))
+        let host = authority.host().to_ascii_lowercase();
+        match scheme.as_str() {
+            NATIVE_SCHEME => decode_label(&host).is_some(),
+            "http" | "https" => {
+                self.app_at(&host).is_some()
+                    || is_windows_host(&host)
+                    || self.is_apps_port(&scheme, &authority)
+            }
+            _ => false,
+        }
+    }
+
+    /// A browser omits a scheme's default port from `Origin`.
+    fn is_apps_port(&self, scheme: &str, authority: &Authority) -> bool {
+        let default = if scheme == "https" { 443 } else { 80 };
+        self.port
+            .is_some_and(|port| authority.port_u16().unwrap_or(default) == port)
     }
 
     /// The app whose host is exactly `{label}.{base_domain}`.
@@ -109,6 +113,16 @@ impl AppOrigins {
         let host = host.to_ascii_lowercase();
         decode_label(host.strip_suffix(&self.base_domain)?.strip_suffix('.')?)
     }
+}
+
+fn split_origin(origin: &str) -> Option<(String, Authority)> {
+    let (scheme, rest) = origin.split_once("://")?;
+    Some((scheme.to_ascii_lowercase(), rest.parse().ok()?))
+}
+
+fn is_windows_host(host: &str) -> bool {
+    host.strip_prefix(WINDOWS_HOST_PREFIX)
+        .is_some_and(|label| decode_label(label).is_some())
 }
 
 impl AppHosts {
@@ -800,6 +814,9 @@ mod tests {
         for origin in [
             format!("http://{label}.{base}:2428"),
             format!("HTTPS://{}.{base}", label.to_ascii_uppercase()),
+            format!("calimero-app://{label}"),
+            format!("http://calimero-app.{label}"),
+            format!("https://calimero-app.{label}"),
             "http://203.0.113.9:2429".to_owned(),
         ] {
             assert!(origins.is_app_origin(&origin), "{origin}");
@@ -809,6 +826,7 @@ mod tests {
             format!("ftp://{label}.{base}"),
             format!("http://{label}.evil.example"),
             format!("http://{label}{base}"),
+            format!("calimero-app://{}", non_canonical(&label)),
             "http://203.0.113.9:2430".to_owned(),
             "http://localhost:5173".to_owned(),
             "null".to_owned(),
