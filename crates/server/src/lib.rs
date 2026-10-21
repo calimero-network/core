@@ -1156,7 +1156,8 @@ mod cors_tests {
             &[("Origin", &app_origin)],
         )
         .await;
-        let own_routes = [get_path_as(port, &app_host, "/auth/login").await];
+        let login = get_path_as(port, &app_host, "/auth/login?app-id=x").await;
+        let own_routes = [get_path_as(port, &app_host, "/auth/token").await];
         let apps_port_api = get_path_as(apps_port, &port_host, "/admin-api/applications").await;
         let from_app = [
             send_as(
@@ -1200,6 +1201,11 @@ mod cors_tests {
         }
         assert!(!refresh.starts_with("HTTP/1.1 404"), "{refresh}");
         assert!(foreign.starts_with("HTTP/1.1 403"), "{foreign}");
+        assert!(login.starts_with("HTTP/1.1 302"), "{login}");
+        assert!(
+            login.contains(&format!("location: //localhost:{port}/auth/login?app-id=x")),
+            "{login}"
+        );
         for response in [&admin_route, &deleted] {
             assert!(response.starts_with("HTTP/1.1 403"), "{response}");
         }

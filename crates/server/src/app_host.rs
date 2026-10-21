@@ -24,6 +24,7 @@ const LABEL_LEN: usize = 52; // 32 bytes in unpadded base32
 const NATIVE_SCHEME: &str = "calimero-app"; // the desktop webview's app scheme on macOS and Linux
 const WINDOWS_HOST_PREFIX: &str = "calimero-app."; // its host form on Windows: `http(s)://calimero-app.{label}`
 pub(crate) const AUTH_REFRESH: &str = "/auth/refresh"; // a login-side route an app origin reaches: a JSON token exchange
+const AUTH_LOGIN: &str = "/auth/login"; // the node's login page, which an app origin sends its user to instead of serving
 const AUTH_VALIDATE: &str = "/auth/validate"; // the other: a token check that reads nothing but the token
 const ADMIN_API: &str = "/admin-api"; // where the node mounts its admin routes, under `NODE_PATH_PREFIX`
 const NO_APP_API: &str = "the app API on an app origin needs the node's embedded auth"; // body of the 403 where this node does not verify tokens
@@ -154,6 +155,26 @@ impl AppHosts {
         hardened(next.run(request).await)
     }
 
+    /// Sends a `GET` of the login page to the node's own origin: the host without
+    /// its label, same port and query, and no scheme so the browser keeps its own.
+    fn login_redirect(request: &Request) -> Option<Response> {
+        if request.method() != Method::GET || request.uri().path() != AUTH_LOGIN {
+            return None;
+        }
+        let host = request.headers().get(header::HOST)?.to_str().ok()?;
+        let host = host.parse::<Authority>().ok()?;
+        let name = host.host().to_ascii_lowercase();
+        let name = name.get(LABEL_LEN + 1..)?;
+        let node = host
+            .port_u16()
+            .map_or_else(|| name.to_owned(), |port| format!("{name}:{port}"));
+        let query = request
+            .uri()
+            .query()
+            .map_or(String::new(), |q| format!("?{q}"));
+        Some(redirect(&format!("//{node}{AUTH_LOGIN}{query}")))
+    }
+
     /// The app a `Host` header names: exactly `{label}.{base_domain}`.
     fn app_for(&self, headers: &HeaderMap) -> Option<ApplicationId> {
         let host = headers.get(header::HOST)?.to_str().ok()?;
@@ -277,6 +298,9 @@ pub(crate) async fn serve_app_hosts(
     let Some(app) = hosts.app_for(request.headers()) else {
         return next.run(request).await;
     };
+    if let Some(login) = AppHosts::login_redirect(&request) {
+        return login;
+    }
     let (method, path) = (request.method(), request.uri().path());
     if is_app_api(method, path, node_prefix()) {
         return hosts.hand_over(app, request, next).await;
@@ -748,7 +772,7 @@ mod tests {
     #[actix::test]
     async fn an_app_host_serves_nothing_but_its_files() {
         let f = fixture().await;
-        let paths = ["/admin-dashboard", "/auth/login", "/health"];
+        let paths = ["/admin-dashboard", "/auth/token", "/health"];
 
         for path in paths {
             for method in [Method::GET, Method::POST] {
@@ -863,6 +887,66 @@ mod tests {
     }
 
     #[actix::test]
+    async fn the_login_page_of_an_app_host_is_the_nodes_own() {
+        let f = fixture().await;
+        let query = "?callback-url=http%3A%2F%2Fa.localhost%3A2428%2F&app-id=x&permissions=a%2Cb";
+        let label = encode_label(&ApplicationId::from(APP));
+
+        for (host, uri, to) in [
+            (
+                f.host.clone(),
+                format!("/auth/login{query}"),
+                format!("//localhost:2428/auth/login{query}"),
+            ),
+            (
+                f.host.to_ascii_uppercase(),
+                "/auth/login".to_owned(),
+                "//localhost:2428/auth/login".to_owned(),
+            ),
+            (
+                format!("{label}.localhost"),
+                "/auth/login".to_owned(),
+                "//localhost/auth/login".to_owned(),
+            ),
+        ] {
+            let (response, body) = send(&f.router, Method::GET, &host, &uri, &[]).await;
+            assert_eq!(response.status(), StatusCode::FOUND, "{host} {uri}");
+            assert_eq!(
+                header_of(&response, "location").to_ascii_lowercase(),
+                to.to_ascii_lowercase()
+            );
+            assert!(body.is_empty());
+            assert_hardened(&response);
+        }
+        let uri = format!("/auth/login{query}");
+        for (host, port) in [(&f.host, "2428"), (&f.host.replace("2428", "2429"), "2429")] {
+            let (response, _) = send(&f.router, Method::GET, host, &uri, &[]).await;
+            assert_eq!(
+                header_of(&response, "location"),
+                format!("//localhost:{port}{uri}"),
+                "the port the request reached"
+            );
+        }
+    }
+
+    #[actix::test]
+    async fn only_a_get_of_the_login_page_is_redirected() {
+        let f = fixture_with(true).await;
+
+        for (method, uri) in [
+            (Method::POST, "/auth/login"),
+            (Method::GET, "/auth/login/x"),
+            (Method::GET, "/auth/loginx"),
+            (Method::GET, "/auth/token"),
+        ] {
+            let (response, _) = send(&f.router, method.clone(), &f.host, uri, &[]).await;
+            assert_ne!(response.status(), StatusCode::FOUND, "{method} {uri}");
+            let (response, _) = on_port(&f, method.clone(), uri).await;
+            assert_ne!(response.status(), StatusCode::FOUND, "port {method} {uri}");
+        }
+    }
+
+    #[actix::test]
     async fn the_token_refresh_is_handed_over_for_a_post_only() {
         let f = fixture_with(true).await;
 
@@ -972,7 +1056,6 @@ mod tests {
         let f = fixture_with(true).await;
         let paths = [
             "/admin-dashboard",
-            "/auth/login",
             "/auth/token",
             "/auth/providers",
             "/auth/refresh/x",
