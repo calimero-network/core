@@ -77,8 +77,9 @@ token_field() {
     echo "${_value}"
 }
 
-# A root login, as the token response on stdout.
+# A root login, as the token response on stdout. The defaults match the scenario's merobox login step.
 admin_login() {
+    : "${MERO_AUTH_ADMIN_USER:=dev}" "${MERO_AUTH_ADMIN_PASSWORD:=dev-password}"
     _login=$(printf '{"auth_method":"user_password","public_key":"%s","client_name":"frontend-serving","permissions":["admin"],"timestamp":%s,"provider_data":{"username":"%s","password":"%s"}}' \
         "${MERO_AUTH_ADMIN_USER}" "$(date +%s)" "${MERO_AUTH_ADMIN_USER}" "${MERO_AUTH_ADMIN_PASSWORD}")
     curl -sS -X POST "${url}/auth/token" -H 'Content-Type: application/json' -d "${_login}"
