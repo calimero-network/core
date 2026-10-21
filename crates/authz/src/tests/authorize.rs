@@ -180,8 +180,8 @@ fn only_the_creator_opens_a_subgroup_and_its_admins_close_it() {
     assert!(authorize(&flip(admin, true), &view).is_ok());
     assert!(authorize(&flip(creator, true), &view).is_ok());
 
-    // A group with no recorded creator (a namespace root) keeps the admin rule.
-    let root = ContextGroupId::from([9u8; 32]);
+    // The namespace root, which no creation makes, keeps the admin rule.
+    let root = ContextGroupId::from(*op_with(admin, OpPayload::Noop).scope.as_bytes());
     let mut groups = BTreeMap::new();
     groups.insert(
         root,
@@ -202,6 +202,35 @@ fn only_the_creator_opens_a_subgroup_and_its_admins_close_it() {
         },
     );
     assert!(authorize(&open_root, &root_view).is_ok());
+}
+
+/// A cut that does not hold a subgroup's creation has no creator to open it, whoever
+/// holds an admin row there; only the namespace root keeps the admin rule.
+#[test]
+fn a_subgroup_whose_creation_is_not_at_the_cut_is_not_opened_by_an_admin() {
+    let admin = AccountId::from([2u8; 32]);
+    let group = ContextGroupId::from([3u8; 32]);
+    let mut groups = BTreeMap::new();
+    groups.insert(
+        group,
+        [(admin, GroupMemberRole::Admin)].into_iter().collect(),
+    );
+    let view = bind_account(
+        bind_test_devices(AclView {
+            groups,
+            ..Default::default()
+        }),
+        admin,
+    );
+    let open = op_with(
+        admin,
+        OpPayload::SubgroupVisibilitySet {
+            scope: ScopeId::from(group.to_bytes()),
+            restricted: false,
+        },
+    );
+
+    assert_eq!(authorize(&open, &view), Err(Rejected::NotGroupCreator));
 }
 
 #[test]

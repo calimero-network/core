@@ -267,6 +267,16 @@ impl AclView {
         self.root_admin.as_ref() == Some(author)
     }
 
+    /// `root` (the namespace root and its founder) with the owner at the cut: the heir of the
+    /// latest transfer folded here, else the founder.
+    #[must_use]
+    pub fn root_at_cut(
+        &self,
+        root: Option<(ContextGroupId, AccountId)>,
+    ) -> Option<(ContextGroupId, AccountId)> {
+        root.map(|(group, founder)| (group, self.root_admin.unwrap_or(founder)))
+    }
+
     /// Does a device of `account`, scoped to `applications`, reach this scope?
     #[must_use]
     pub fn scope_reaches(&self, account: &AccountId, applications: &[ApplicationId]) -> bool {

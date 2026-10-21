@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_config::MemberCapabilities;
+use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_op::{Op, OpPayload};
 use calimero_op_adapter::payload_from_group_op;
 use calimero_primitives::context::GroupMemberRole;
@@ -17,6 +17,7 @@ use super::super::op_log::Hole;
 use super::NamespaceGovernance;
 use crate::authorizer::GroupRows;
 use crate::op_budget::OpBudget;
+use crate::op_events::OpEvent;
 use crate::void_ledger::{Parked, VoidLedger, STORED_BEFORE};
 use crate::{
     cascade_remove_member_from_group_tree, restore_member_context_identities,
@@ -70,6 +71,7 @@ struct Written {
     members: BTreeSet<AccountId>,
     explicit_caps: BTreeSet<AccountId>,
     default_caps: bool,
+    visibility: bool,
 }
 
 impl NamespaceGovernance<'_> {
@@ -235,11 +237,11 @@ impl NamespaceGovernance<'_> {
     }
 
     /// Set what void ops wrote to what the log without them holds, and keep the keys
-    /// they stored from being current. Covers ops judged void before. Idempotent.
+    /// they stored from being current; the events to announce once the op is logged.
     pub(super) fn reconcile_voided(
         &self,
         applied: Option<(&Op, &SignedNamespaceOp, [u8; 32])>,
-    ) -> EyreResult<()> {
+    ) -> EyreResult<Vec<OpEvent>> {
         let root = ContextGroupId::from(self.namespace_id.to_bytes());
         let extra = applied.map(|(op, _, _)| op);
         let ledger = VoidLedger::new(self.store, self.namespace_id);
@@ -250,7 +252,7 @@ impl NamespaceGovernance<'_> {
             .map(|intro| (intro.op, ContextGroupId::from(intro.group)))
             .collect();
         let Some(voided) = self.authorizer.voided_ops(&root, extra, &held) else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         let earlier = ledger.voided()?;
         // A key is void when every op that stored it is.
@@ -264,7 +266,7 @@ impl NamespaceGovernance<'_> {
                 .set_key_voided(&key, void)?;
         }
         if voided.is_empty() && earlier.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
@@ -314,15 +316,17 @@ impl NamespaceGovernance<'_> {
         let mut plans = Vec::with_capacity(written.len());
         for (group, written) in &written {
             let Some(rows) = self.authorizer.group_rows(group, extra) else {
-                return Ok(());
+                return Ok(Vec::new());
             };
             plans.push((group, written, rows));
         }
 
+        let mut events = Vec::new();
         for (group, written, rows) in &plans {
-            self.rebuild_rows(group, written, rows)?;
+            events.extend(self.rebuild_rows(group, written, rows)?);
         }
-        ledger.set_voided(&voided)
+        ledger.set_voided(&voided)?;
+        Ok(events)
     }
 
     /// What the unified log holds for op `id`, if it holds one.
@@ -342,7 +346,7 @@ impl NamespaceGovernance<'_> {
         group: &ContextGroupId,
         written: &Written,
         rows: &GroupRows,
-    ) -> EyreResult<()> {
+    ) -> EyreResult<Option<OpEvent>> {
         let membership = MembershipRepository::new(self.store);
         let capabilities = CapabilitiesRepository::new(self.store);
 
@@ -363,6 +367,19 @@ impl NamespaceGovernance<'_> {
                         None => capabilities.delete_default(group)?,
                     }
                 }
+            }
+        }
+
+        // Every flip the fold counts passed its gate at its cut, void or not.
+        let mut event = None;
+        if let Some(wanted) = rows.visibility.filter(|_| written.visibility) {
+            if capabilities.subgroup_visibility(group)? != wanted {
+                capabilities.set_subgroup_visibility(group, wanted)?;
+                // Inherited auto-follow re-runs on a rollback as on the flip it undoes.
+                event = Some(OpEvent::SubgroupVisibilityChanged {
+                    group_id: group.to_bytes(),
+                    open: wanted == VisibilityMode::Open,
+                });
             }
         }
 
@@ -408,7 +425,7 @@ impl NamespaceGovernance<'_> {
             }
         }
 
-        Ok(())
+        Ok(event)
     }
 }
 
@@ -420,6 +437,9 @@ fn payload_written_group(payload: &OpPayload) -> Option<ContextGroupId> {
         | OpPayload::MemberLeft { group, .. }
         | OpPayload::MemberCapabilitySet { group, .. }
         | OpPayload::DefaultCapabilitiesSet { group, .. } => Some(*group),
+        OpPayload::SubgroupVisibilitySet { scope, .. } => {
+            Some(ContextGroupId::from(*scope.as_bytes()))
+        }
         _ => None,
     }
 }
@@ -435,6 +455,7 @@ fn record_write(entry: &mut Written, payload: &OpPayload) {
             let _ = entry.explicit_caps.insert(*member);
         }
         OpPayload::DefaultCapabilitiesSet { .. } => entry.default_caps = true,
+        OpPayload::SubgroupVisibilitySet { .. } => entry.visibility = true,
         _ => {}
     }
 }

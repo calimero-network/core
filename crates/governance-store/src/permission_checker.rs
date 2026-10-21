@@ -235,6 +235,21 @@ impl<'a> PermissionChecker<'a> {
         self.account_for_signer(signer)
     }
 
+    /// `member`'s role in this group at the op's cut, `None` for a non-member; live
+    /// only where that is sound.
+    pub fn effective_role_at_cut(&self, member: &AccountId) -> EyreResult<Option<GroupMemberRole>> {
+        if let Some(role) =
+            self.authorizer
+                .effective_role_at_cut(&self.group_id, member, self.parents)
+        {
+            return Ok(role);
+        }
+        self.ensure_live_fallback_is_sound_for_account(member)?;
+        Ok(MembershipRepository::new(self.store)
+            .effective_role(&self.group_id, member)?
+            .map(|(role, _)| role))
+    }
+
     /// Does a device of `account` scoped to `applications` reach this namespace at
     /// the op's cut: its own account namespace, or a scope covering the target?
     pub fn scope_reaches(
@@ -530,39 +545,43 @@ impl<'a> PermissionChecker<'a> {
         })
     }
 
-    /// Allow only the group's creator to open it (#4522).
-    ///
-    /// Opening a Restricted subgroup is its creator's decision alone: not an
-    /// admin promoted inside it, not an admin of a group above it. The creator is
-    /// fixed at the subgroup's birth and recorded from its `GroupCreated`, which
-    /// every namespace member reads, and the signer's account is resolved at the
-    /// NAMESPACE scope. So a member outside the subgroup - who cannot read its
-    /// sealed history - reaches the same verdict as one inside, and the flip
-    /// applies on every node instead of being held where the key is missing.
-    ///
-    /// A creator later removed from the subgroup can still open it: that removal
-    /// is sealed under the subgroup's key, so honouring it would bring back the
-    /// split this rule removes. Removal from the namespace does stop it, because
-    /// it ends the binding the signer resolves through.
-    ///
-    /// A group with no recorded creator - a namespace root, which no
-    /// `GroupCreated` makes, and whose history every member reads anyway - keeps
-    /// the admin / `CAN_MANAGE_VISIBILITY` rule, as the projection does.
+    /// Allow only the group's creator, read at the flip's cut and still in the namespace, to
+    /// open it; a group with no recorded creator (a namespace root) keeps the admin rule.
     pub fn require_creator_opens(&self, identity: &PublicKey) -> EyreResult<()> {
-        let Some(creator) = crate::group_creator::GroupCreatorRepository::new(self.store)
-            .creator(&self.group_id)?
-        else {
-            return self.require_can_manage_visibility(identity);
-        };
         let namespace = crate::NamespaceRepository::new(self.store).resolve(&self.group_id)?;
-        let signer = match self.principal_account(identity) {
-            Some(account) => Some(account),
-            None => PermissionChecker::new(self.store, namespace)
-                .with_apply_auth(self.parents, self.authorizer)
-                .account_for_signer(identity)?,
+        let at_namespace = PermissionChecker::new(self.store, namespace)
+            .with_apply_auth(self.parents, self.authorizer);
+        let creator = match self
+            .authorizer
+            .group_creator_at_cut(&self.group_id, self.parents)
+        {
+            Some(Some(creator)) => Some(creator),
+            Some(None)
+                if !crate::ops::namespace::group_created::is_namespace_root(
+                    self.store,
+                    self.group_id,
+                )? =>
+            {
+                None
+            }
+            _ => {
+                let Some(creator) = crate::group_creator::GroupCreatorRepository::new(self.store)
+                    .creator(&self.group_id)?
+                else {
+                    return self.require_can_manage_visibility(identity);
+                };
+                at_namespace.ensure_live_fallback_is_sound(identity)?;
+                Some(creator)
+            }
         };
-        if signer == Some(creator) {
-            return Ok(());
+        if let Some(creator) = creator {
+            let signer = match self.principal_account(identity) {
+                Some(account) => Some(account),
+                None => at_namespace.account_for_signer_at_cut(identity)?,
+            };
+            if signer == Some(creator) && at_namespace.effective_role_at_cut(&creator)?.is_some() {
+                return Ok(());
+            }
         }
         bail!(CapabilitiesError::Unauthorized {
             group_id: self.group_id.to_string(),

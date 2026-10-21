@@ -5,7 +5,7 @@ use calimero_context_client::local_governance::NamespaceOp;
 use calimero_context_client::messages::RelaySignedJoinRequest;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
-use calimero_governance_store::{GovernanceSigner, GroupKeyring};
+use calimero_governance_store::{relayed_join_applied, GovernanceSigner, GroupKeyring};
 use calimero_primitives::identity::PrivateKey;
 
 use crate::ContextManager;
@@ -53,6 +53,10 @@ impl Handler<RelaySignedJoinRequest> for ContextManager {
                     );
                 };
 
+                // Applied already, through another admitter whose answer was lost: done.
+                if relayed_join_applied(&datastore, namespace_id, &op)? {
+                    return Ok(());
+                }
                 let encrypted = GroupKeyring::encrypt_relayed_op(&key, &op)?;
                 let sealed = NamespaceOp::RootRelaySealed {
                     key_id: key_id.into(),
