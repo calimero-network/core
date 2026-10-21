@@ -2,8 +2,9 @@ name: 46 - An app host on a node that enforces no token refuses the app API (1-n
 description: >
   A node in proxy auth mode without `proxy_identity` enforces no token itself,
   so an app host must not pass `/jsonrpc` through: it answers 403 with a
-  plain-text body. An app origin on the node's own host is refused with 403,
-  and a loopback dev page is not.
+  plain-text body, as does every admin route, and its login page is sent to the
+  node's own origin with a 302. An app origin on the node's own host is refused
+  with 403, and a loopback dev page is not.
 
 auth_mode: proxy
 
