@@ -13,7 +13,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
 use config::ServerConfig;
 use eyre::{bail, Result as EyreResult};
-use multiaddr::Protocol;
+use multiaddr::{Multiaddr, Protocol};
 use prometheus_client::registry::Registry;
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
@@ -184,6 +184,13 @@ pub async fn start(
     // narrower-than-intended (or empty) origin set at runtime.
     if let Err(e) = config.cors.validate() {
         bail!("invalid CORS configuration: {e}");
+    }
+
+    if let Some((port, addr)) = config.apps.port.and_then(|port| {
+        let addr = config.listen.iter().find(|a| tcp_port(a) == Some(port));
+        addr.map(|addr| (port, addr))
+    }) {
+        bail!("apps port {port} is also the listen address {addr}: the apps port must differ from every listen port");
     }
 
     // Register HTTP request metrics on the same registry before the
@@ -436,6 +443,13 @@ fn app_hosts(config: &ServerConfig, node_client: &NodeClient) -> Option<app_host
         node_client: node_client.clone(),
         origins: app_host::AppOrigins::new(&config.apps),
         app_api: config.use_embedded_auth(),
+    })
+}
+
+fn tcp_port(addr: &Multiaddr) -> Option<u16> {
+    addr.iter().find_map(|protocol| match protocol {
+        Protocol::Tcp(port) => Some(port),
+        _ => None,
     })
 }
 
@@ -963,24 +977,11 @@ mod cors_tests {
             .port()
     }
 
-    /// A node with admin on `port` and apps on `apps_port`, sealed or not.
-    async fn start_with_apps_port(
-        port: u16,
-        apps_port: u16,
-        sealed: bool,
+    async fn spawn_node(
+        config: ServerConfig,
     ) -> (CancellationToken, tokio::task::JoinHandle<eyre::Result<()>>) {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let (state, _blobs) = admin_state(&store).await;
-        let mut config = ServerConfig::new(
-            vec![format!("/ip4/127.0.0.1/tcp/{port}").parse().unwrap()],
-            Keypair::generate_ed25519(),
-            Some(AdminConfig::new(true, false)),
-            None,
-            None,
-            None,
-        );
-        config.sealed = crate::config::SealedConfig::new(sealed);
-        config.apps.port = Some(apps_port);
         let shutdown = CancellationToken::new();
         let server = actix::spawn(start(
             config,
@@ -994,6 +995,25 @@ mod cors_tests {
             false,
         ));
         (shutdown, server)
+    }
+
+    /// A node with admin on `port` and apps on `apps_port`, sealed or not.
+    async fn start_with_apps_port(
+        port: u16,
+        apps_port: u16,
+        sealed: bool,
+    ) -> (CancellationToken, tokio::task::JoinHandle<eyre::Result<()>>) {
+        let mut config = ServerConfig::new(
+            vec![format!("/ip4/127.0.0.1/tcp/{port}").parse().unwrap()],
+            Keypair::generate_ed25519(),
+            Some(AdminConfig::new(true, false)),
+            None,
+            None,
+            None,
+        );
+        config.sealed = crate::config::SealedConfig::new(sealed);
+        config.apps.port = Some(apps_port);
+        spawn_node(config).await
     }
 
     #[actix::test]
@@ -1071,8 +1091,6 @@ mod cors_tests {
         port: u16,
         apps_port: u16,
     ) -> (CancellationToken, tokio::task::JoinHandle<eyre::Result<()>>) {
-        let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let (state, _blobs) = admin_state(&store).await;
         let mut auth = mero_auth::embedded::default_config();
         auth.storage = mero_auth::config::StorageConfig::Memory;
         let mut config = ServerConfig::with_auth(
@@ -1088,19 +1106,7 @@ mod cors_tests {
             Some(auth),
         );
         config.apps.port = Some(apps_port);
-        let shutdown = CancellationToken::new();
-        let server = actix::spawn(start(
-            config,
-            state.ctx_client.clone(),
-            state.node_client.clone(),
-            store,
-            Registry::default(),
-            Arc::new(NodeReadiness::new()),
-            shutdown.clone(),
-            #[cfg(feature = "mock-attestation")]
-            false,
-        ));
-        (shutdown, server)
+        spawn_node(config).await
     }
 
     #[actix::test]
@@ -1270,6 +1276,21 @@ mod cors_tests {
                 .contains("content-security-policy"),
             "{main}"
         );
+    }
+
+    #[actix::test]
+    async fn an_apps_port_that_is_a_listen_port_stops_the_node_from_starting() {
+        let port = free_port();
+        let (_shutdown, server) = start_with_apps_port(port, port, false).await;
+
+        let err = server
+            .await
+            .expect("the server task ends")
+            .expect_err("a node with one port for both must not start");
+
+        let err = err.to_string();
+        assert!(err.contains(&format!("apps port {port}")), "{err}");
+        assert!(err.contains(&format!("/ip4/127.0.0.1/tcp/{port}")), "{err}");
     }
 
     #[actix::test]
