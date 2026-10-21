@@ -93,12 +93,7 @@ async fn run(
 
     // Nothing re-drives a gain, leave or armed purge applied while no listener was up
     // (a lagged recv, a restart's window), so a start sweeps all three.
-    for namespace in PendingNamespacePurges::new(&store)
-        .armed()
-        .unwrap_or_default()
-    {
-        purge_if_left(&store, &manager, namespace).await;
-    }
+    purge_armed(&store, &manager).await;
     for namespace in namespaces_the_account_left(&store) {
         unfollow(&node_client, namespace).await;
     }
@@ -153,9 +148,16 @@ async fn run(
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                 warn!(
                     skipped,
-                    "account-follow subscriber lagged; a gain dropped here is followed by \
-                     the sweep on this node's next start"
+                    "account-follow subscriber lagged; armed purges are swept now, the rest \
+                     on this node's next start"
                 );
+                let store = store.clone();
+                let manager = manager.clone();
+                let topics = Arc::clone(&topics);
+                let _ = tasks.spawn(async move {
+                    let _decided = topics.lock().await;
+                    purge_armed(&store, &manager).await;
+                });
                 continue;
             }
             Err(broadcast::error::RecvError::Closed) => {
@@ -800,10 +802,51 @@ fn own_account(store: &Store) -> Option<AccountId> {
 /// Purge `namespace` when the fold armed a purge and the account has left it; under the
 /// `topics` lock, so no event slips in. Arming and withdrawing belong to the fold.
 async fn purge_if_left(store: &Store, manager: &Addr<ContextManager>, namespace: ContextGroupId) {
+    purge_if_left_with(store, namespace, |namespace| async move {
+        match manager.send(PurgeNamespace { namespace }).await {
+            Ok(Ok(())) => true,
+            Ok(Err(err)) => {
+                warn!(
+                    ?err,
+                    ?namespace,
+                    "account-follow: failed to purge a namespace"
+                );
+                false
+            }
+            Err(err) => {
+                warn!(
+                    ?err,
+                    ?namespace,
+                    "account-follow: the purge was not delivered"
+                );
+                false
+            }
+        }
+    })
+    .await;
+}
+
+/// The purge itself is `purge`, which says whether it succeeded. The arm is cleared only
+/// if it still holds the token read before the purge, so a purge armed while this one
+/// was in flight is kept for its own event.
+async fn purge_if_left_with<F, Fut>(store: &Store, namespace: ContextGroupId, purge: F)
+where
+    F: FnOnce(ContextGroupId) -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
     let pending = PendingNamespacePurges::new(store);
-    if !pending.is_armed(&namespace).unwrap_or(false) {
-        return;
-    }
+    let token = match pending.token(&namespace) {
+        Ok(Some(token)) => token,
+        Ok(None) => return,
+        Err(err) => {
+            warn!(
+                ?err,
+                ?namespace,
+                "account-follow: could not read a pending purge; not purging"
+            );
+            return;
+        }
+    };
     match account_is_member(store, namespace) {
         Ok(false) => {}
         Ok(true) => return,
@@ -816,30 +859,29 @@ async fn purge_if_left(store: &Store, manager: &Addr<ContextManager>, namespace:
             return;
         }
     }
-    match manager.send(PurgeNamespace { namespace }).await {
-        Ok(Ok(())) => {
-            info!(
-                ?namespace,
-                "account-follow: purged a namespace the account left"
-            );
-            if let Err(err) = pending.disarm(&namespace) {
-                warn!(
-                    ?err,
-                    ?namespace,
-                    "account-follow: could not clear a finished purge"
-                );
-            }
-        }
-        Ok(Err(err)) => warn!(
+    if !purge(namespace).await {
+        return;
+    }
+    info!(
+        ?namespace,
+        "account-follow: purged a namespace the account left"
+    );
+    if let Err(err) = pending.disarm_if(&namespace, &token) {
+        warn!(
             ?err,
             ?namespace,
-            "account-follow: failed to purge a namespace"
-        ),
-        Err(err) => warn!(
-            ?err,
-            ?namespace,
-            "account-follow: the purge was not delivered"
-        ),
+            "account-follow: could not clear a finished purge"
+        );
+    }
+}
+
+/// Finish every armed purge whose account has left.
+async fn purge_armed(store: &Store, manager: &Addr<ContextManager>) {
+    for namespace in PendingNamespacePurges::new(store)
+        .armed()
+        .unwrap_or_default()
+    {
+        purge_if_left(store, manager, namespace).await;
     }
 }
 
@@ -1805,10 +1847,20 @@ mod tests {
             .expect("the account is a member");
         let harness = actor::over(store.clone()).await;
         let listener = listen(&store, &harness);
+        let sentinel = a_held_namespace(&store, 0xA8);
         purge_announced(&store, account_namespace, left);
+        purge_announced(&store, account_namespace, sentinel);
         assert!(
-            eventually(|| PendingNamespacePurges::new(&store).is_armed(&left).unwrap()).await,
-            "the purge is waiting for the leave"
+            eventually(|| MetaRepository::new(&store)
+                .load(&sentinel)
+                .unwrap()
+                .is_none())
+            .await,
+            "the sentinel behind the first purge was handled"
+        );
+        assert!(
+            MetaRepository::new(&store).load(&left).unwrap().is_some(),
+            "the purge waits while the account is a member"
         );
         listener.abort();
 
@@ -1948,6 +2000,80 @@ mod tests {
 
         assert!(purged, "the account was no member, and the fold armed it");
         assert!(!PendingNamespacePurges::new(&store).is_armed(&left).unwrap());
+    }
+
+    /// A purge armed while another is in flight is not the one that finishes: the finished
+    /// purge must leave the newer arm for its own event.
+    #[actix::test]
+    async fn a_purge_in_flight_does_not_clear_one_armed_after_it_started() {
+        let store = store();
+        let (account_namespace, signer_sk) = an_account_folding_ops(&store);
+        let held = a_held_namespace(&store, 0xA9);
+        fold(&store, account_namespace, &signer_sk, purge_op(held));
+
+        super::purge_if_left_with(&store, held, |_| async {
+            fold(&store, account_namespace, &signer_sk, rejoin_op(held));
+            fold(&store, account_namespace, &signer_sk, purge_op(held));
+            true
+        })
+        .await;
+
+        assert!(
+            PendingNamespacePurges::new(&store).is_armed(&held).unwrap(),
+            "the second purge's arm survives the first purge finishing"
+        );
+    }
+
+    /// A dropped event must not leave an armed purge waiting for a restart.
+    #[actix::test]
+    async fn a_lagged_listener_sweeps_the_armed_purges() {
+        let store = store();
+        let (account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[]);
+        let (held, sentinel) = (
+            a_held_namespace(&store, 0xAA),
+            a_held_namespace(&store, 0xAB),
+        );
+        let harness = actor::over(store.clone()).await;
+        let (tx, rx) = tokio::sync::broadcast::channel(2);
+        let listener = tokio::spawn(run(
+            rx,
+            store.clone(),
+            harness.node_client.clone(),
+            Arc::clone(harness.context_client.ack_router()),
+            harness.manager.clone(),
+        ));
+        // The loop is running once a purge event is handled.
+        PendingNamespacePurges::new(&store)
+            .arm(&sentinel)
+            .expect("arm the sentinel");
+        let _ = tx.send(OpEvent::AccountNamespaceLeft {
+            group_id: account_namespace.to_bytes(),
+            namespace: sentinel,
+            purge: true,
+        });
+        assert!(
+            eventually(|| MetaRepository::new(&store)
+                .load(&sentinel)
+                .unwrap()
+                .is_none())
+            .await
+        );
+
+        PendingNamespacePurges::new(&store)
+            .arm(&held)
+            .expect("arm the purge");
+        let stranger = AccountId::from([0x5E; 32]);
+        for _ in 0..4 {
+            let _ = tx.send(OpEvent::MemberRemoved {
+                group_id: held.to_bytes(),
+                member: stranger,
+            });
+        }
+        let purged =
+            eventually(|| MetaRepository::new(&store).load(&held).unwrap().is_none()).await;
+        listener.abort();
+
+        assert!(purged, "the lag swept the armed purge");
     }
 
     /// The purge op applies from any device that is an admin of the account

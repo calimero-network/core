@@ -15228,7 +15228,7 @@ mod account_plane_apply {
         if armed_before {
             pending.arm(&namespace).unwrap();
         }
-        crate::apply_group_op_mutations(
+        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
             &store,
             &gid,
             &owner_sk.public_key(),
@@ -15237,6 +15237,10 @@ mod account_plane_apply {
             &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
         )
         .unwrap();
+        assert!(
+            !events.is_empty(),
+            "the op folded rather than being refused"
+        );
         pending.is_armed(&namespace).unwrap()
     }
 
