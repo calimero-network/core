@@ -17,8 +17,9 @@
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::Store;
+use calimero_store::{key, types, Store};
 
 /// The credential `sign_pk` would present, derived deterministically from the
 /// key so the same key always speaks for the same account.
@@ -119,6 +120,29 @@ pub fn unverified_invitation(
         bytecode_id: None,
         admitter_addrs: Vec::new(),
     }
+}
+
+/// The application row a creation resolves its bytecode through.
+pub fn install_application(store: &Store, application: ApplicationId) {
+    let mut handle = store.handle();
+    handle
+        .put(
+            &key::ApplicationMeta::new(application),
+            &types::ApplicationMeta::new(
+                key::BlobMeta::new([0x01; 32].into()),
+                1024,
+                "file://test.wasm".into(),
+                vec![].into(),
+                key::BlobMeta::new([0x02; 32].into()),
+                types::PackageInfo {
+                    package: "com.test.app".into(),
+                    version: "1.0.0".into(),
+                    signer_id: "test".into(),
+                    state_version: 0,
+                },
+            ),
+        )
+        .expect("install the application");
 }
 
 /// The account `sign_pk` will speak for once enrolled.
@@ -1121,6 +1145,7 @@ pub(crate) mod actor {
         subscribed: UnboundedSender<String>,
         unsubscribed: UnboundedSender<String>,
         broadcast: UnboundedSender<String>,
+        published: UnboundedSender<String>,
         /// The topics subscribed to and not since dropped, as the swarm would hold them.
         live: Arc<Mutex<BTreeSet<String>>>,
         /// A topic whose subscribe is not answered until the semaphore hands out a
@@ -1179,6 +1204,7 @@ pub(crate) mod actor {
                 }
                 NetworkMessage::Publish { request, outcome } => {
                     let _ignored = self.broadcast.send(request.topic.to_string());
+                    let _ignored = self.published.send(request.topic.to_string());
                     let _ignored = outcome.send(Ok(MessageId(b"stub".to_vec())));
                 }
                 _ => {}
@@ -1225,6 +1251,7 @@ pub(crate) mod actor {
         unsubscribed: UnboundedReceiver<String>,
         broadcast: UnboundedReceiver<String>,
         drains: UnboundedReceiver<ContextId>,
+        published: UnboundedReceiver<String>,
         live: Arc<Mutex<BTreeSet<String>>>,
         // The blob filesystem and the node's data root outlive the manager.
         _dirs: (TempDir, TempDir),
@@ -1282,6 +1309,12 @@ pub(crate) mod actor {
         /// [`over_switching`] harness. Drains.
         pub(crate) fn drains(&mut self) -> Vec<ContextId> {
             drain(&mut self.drains)
+        }
+
+        /// Every topic a message was actually published on, unlike
+        /// [`Self::broadcast_topics`], which also counts the mesh-count probe.
+        pub(crate) fn published_topics(&mut self) -> Vec<String> {
+            drain(&mut self.published)
         }
     }
 
@@ -1362,6 +1395,7 @@ pub(crate) mod actor {
         let (subscribed_tx, subscribed) = unbounded_channel();
         let (unsubscribed_tx, unsubscribed) = unbounded_channel();
         let (broadcast_tx, broadcast) = unbounded_channel();
+        let (published_tx, published) = unbounded_channel();
         let live = Arc::new(Mutex::new(BTreeSet::new()));
         let network = LazyRecipient::<NetworkMessage>::new();
         let recipient = network.clone();
@@ -1372,6 +1406,7 @@ pub(crate) mod actor {
                 subscribed: subscribed_tx,
                 unsubscribed: unsubscribed_tx,
                 broadcast: broadcast_tx,
+                published: published_tx,
                 live: stub_live,
                 held,
             }
@@ -1428,6 +1463,7 @@ pub(crate) mod actor {
             unsubscribed,
             broadcast,
             drains,
+            published,
             live,
             _dirs: (data_dir, blob_dir),
             _network: stub,

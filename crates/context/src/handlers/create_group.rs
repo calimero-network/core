@@ -1029,11 +1029,11 @@ mod tests {
     use calimero_primitives::metadata::MAX_METADATA_NAME_LEN;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
-    use calimero_store::{key, types, Store};
+    use calimero_store::Store;
 
     use super::{initial_default_capabilities, rollback_local_group_rows};
     use crate::handlers::ensure_account_namespace::ensure_account_namespace;
-    use crate::test_support::{actor, certify_device};
+    use crate::test_support::{actor, certify_device, install_application};
 
     const APP: [u8; 32] = [0xC1; 32];
     const SALT: [u8; 32] = [0xC2; 32];
@@ -1196,29 +1196,6 @@ mod tests {
         );
 
         assert!(MetaRepository::new(&store).load(&group).unwrap().is_none());
-    }
-
-    /// The application row a creation resolves its bytecode through.
-    fn install_application(store: &Store, application: ApplicationId) {
-        let mut handle = store.handle();
-        handle
-            .put(
-                &key::ApplicationMeta::new(application),
-                &types::ApplicationMeta::new(
-                    key::BlobMeta::new([0x01; 32].into()),
-                    1024,
-                    "file://test.wasm".into(),
-                    vec![].into(),
-                    key::BlobMeta::new([0x02; 32].into()),
-                    types::PackageInfo {
-                        package: "com.test.app".into(),
-                        version: "1.0.0".into(),
-                        signer_id: "test".into(),
-                        state_version: 0,
-                    },
-                ),
-            )
-            .expect("install the application");
     }
 
     /// A namespace this node creates is a namespace it has just gained, and the

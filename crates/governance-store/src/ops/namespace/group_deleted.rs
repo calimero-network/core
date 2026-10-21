@@ -3,9 +3,9 @@
 
 use super::context::NamespaceApplyCtx;
 use crate::{
-    delete_group_local_rows, enumerate_group_contexts, unregister_context_from_group, ApplyError,
-    CapabilitiesError, GroupDeletedRejection, MetaRepository, NamespaceError, NamespaceRepository,
-    PermissionChecker,
+    delete_group_and_parent_edge, enumerate_group_contexts, unregister_context_from_group,
+    ApplyError, CapabilitiesError, GroupDeletedRejection, MetaRepository, NamespaceError,
+    NamespaceRepository, PermissionChecker,
 };
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
@@ -160,17 +160,7 @@ pub(crate) fn apply(
             unregister_context_from_group(store, &gid, &context_id)?;
             deleted_contexts += 1;
         }
-        // Capture parent before delete_group_local_rows runs.
-        let parent_for_cleanup = NamespaceRepository::new(store).parent(&gid)?;
-        delete_group_local_rows(store, &gid)?;
-        if let Some(parent) = parent_for_cleanup {
-            let mut handle = store.handle();
-            handle.delete(&calimero_store::key::GroupParentRef::new(gid_bytes))?;
-            handle.delete(&calimero_store::key::GroupChildIndex::new(
-                parent.to_bytes(),
-                gid_bytes,
-            ))?;
-        }
+        delete_group_and_parent_edge(store, &gid)?;
     }
 
     // Counts reflect what was actually deleted locally: groups is the

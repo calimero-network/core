@@ -518,6 +518,18 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     Ok(())
 }
 
+/// [`delete_group_local_rows`], then the group's edge in its parent, so the
+/// parent no longer lists a deleted child.
+pub fn delete_group_and_parent_edge(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
+    let namespaces = NamespaceRepository::new(store);
+    let parent = namespaces.parent(group_id)?;
+    delete_group_local_rows(store, group_id)?;
+    if let Some(parent) = parent {
+        namespaces.unnest(&parent, group_id)?;
+    }
+    Ok(())
+}
+
 /// Remove this node's namespace-level state: the signing identity, the
 /// governance DAG head, and every stored governance op for the namespace.
 ///

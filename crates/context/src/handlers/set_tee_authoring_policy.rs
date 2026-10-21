@@ -63,7 +63,7 @@ impl Handler<SetTeeAuthoringPolicyRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let report = calimero_governance_store::sign_apply_and_publish(
+                let report = calimero_governance_store::sign_apply_and_publish_required(
                     &datastore,
                     &node_client,
                     &ack_router,

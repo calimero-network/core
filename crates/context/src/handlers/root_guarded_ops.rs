@@ -6,7 +6,7 @@
 //!
 //! The local apply runs before the publish, so a refusal (not the owner, a
 //! target who is not an admin, a stale counter) reaches the caller and nothing
-//! is published.
+//! is published. An op this node cannot seal for peers is refused unapplied.
 
 use std::sync::Arc;
 
@@ -55,7 +55,7 @@ impl ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let report = calimero_governance_store::sign_apply_and_publish(
+                let report = calimero_governance_store::sign_apply_and_publish_required(
                     &datastore,
                     &node_client,
                     &ack_router,
@@ -183,5 +183,276 @@ impl Handler<ChangeNamespaceAdminRequest> for ContextManager {
             }
             .into_actor(self),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_account::AccountId;
+    use calimero_context_client::group::{
+        CreateGroupRequest, OwnerDeleteGroupRequest, SetTeeAdmissionPolicyRequest,
+        SetTeeAuthoringPolicyRequest, SignedReleaseTrust,
+    };
+    use calimero_context_client::local_governance::TeeAdmissionMode;
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::{
+        get_op_head, register_context_in_group, GroupKeyring, KeyringError, MembershipRepository,
+        MetaError, MetaRepository, NodeDeviceRepository,
+    };
+    use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::context::{ContextId, GroupMemberRole};
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
+    use crate::test_support::{actor, install_application};
+
+    const APP: [u8; 32] = [0xE1; 32];
+
+    /// A namespace this node founded and owns, with a Restricted subgroup, which
+    /// seals its ops under its own key.
+    async fn owned_namespace() -> (Store, actor::Harness, ContextGroupId, ContextGroupId) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        install_application(&store, ApplicationId::from(APP));
+        let _root = NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root that signs the owner's proofs");
+        let mut harness = actor::over(store.clone()).await;
+        let create = |parent_group_id| CreateGroupRequest {
+            salt: None,
+            bytecode_id: None,
+            application_id: Some(ApplicationId::from(APP)),
+            name: None,
+            parent_group_id,
+            restricted: parent_group_id.is_some(),
+        };
+        let namespace = harness
+            .manager
+            .send(create(None))
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created")
+            .group_id;
+        let subgroup = harness
+            .manager
+            .send(create(Some(namespace)))
+            .await
+            .expect("the manager answers")
+            .expect("the subgroup is created")
+            .group_id;
+        let _created = harness.published_topics();
+        (store, harness, namespace, subgroup)
+    }
+
+    fn topic(namespace: &ContextGroupId) -> String {
+        format!("ns/{}", hex::encode(namespace.to_bytes()))
+    }
+
+    /// Leave this node holding no key for `group`, so nothing it signs there can be sealed.
+    fn drop_keys(store: &Store, group: ContextGroupId) {
+        let keyring = GroupKeyring::new(store, group);
+        while let Some(key) = keyring.load_current_key_record().unwrap() {
+            keyring.delete_key_by_id(&key.key_id).unwrap();
+        }
+    }
+
+    fn sequence(store: &Store, group: &ContextGroupId) -> Option<u64> {
+        get_op_head(store, group).unwrap().map(|head| head.sequence)
+    }
+
+    fn assert_cannot_seal(err: &eyre::Report) {
+        assert!(
+            matches!(
+                err.downcast_ref::<KeyringError>(),
+                Some(KeyringError::NoGroupKey(_))
+            ),
+            "expected NoGroupKey, got {err:?}"
+        );
+    }
+
+    fn release_policy(
+        group_id: ContextGroupId,
+        mode: TeeAdmissionMode,
+    ) -> SetTeeAdmissionPolicyRequest {
+        SetTeeAdmissionPolicyRequest {
+            group_id,
+            allowed_mrtd: vec![],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec![],
+            accept_mock: false,
+            signed_release: Some(SignedReleaseTrust {
+                allowed_profiles: vec!["locked-read-only".to_owned()],
+                min_release_version: None,
+            }),
+            mode,
+            root_proof: None,
+        }
+    }
+
+    async fn owner_delete(harness: &actor::Harness, group_id: ContextGroupId) -> eyre::Result<()> {
+        harness
+            .manager
+            .send(OwnerDeleteGroupRequest {
+                group_id,
+                root_proof: None,
+            })
+            .await
+            .expect("the manager answers")
+    }
+
+    #[actix::test]
+    async fn an_owner_delete_of_a_subgroup_is_published() {
+        let (store, mut harness, namespace, subgroup) = owned_namespace().await;
+
+        owner_delete(&harness, subgroup)
+            .await
+            .expect("the owner may delete");
+
+        assert!(MetaRepository::new(&store)
+            .load(&subgroup)
+            .unwrap()
+            .is_none());
+        assert!(
+            harness.published_topics().contains(&topic(&namespace)),
+            "the delete never left this node"
+        );
+    }
+
+    #[actix::test]
+    async fn an_owner_delete_of_the_namespace_is_published() {
+        let (store, mut harness, namespace, _subgroup) = owned_namespace().await;
+
+        owner_delete(&harness, namespace)
+            .await
+            .expect("the owner may delete");
+
+        assert!(MetaRepository::new(&store)
+            .load(&namespace)
+            .unwrap()
+            .is_none());
+        assert!(
+            harness.published_topics().contains(&topic(&namespace)),
+            "the delete never left this node"
+        );
+    }
+
+    #[actix::test]
+    async fn an_owner_delete_refused_for_a_context_publishes_nothing() {
+        let (store, mut harness, namespace, subgroup) = owned_namespace().await;
+        register_context_in_group(&store, &subgroup, &ContextId::from([0xE2; 32])).unwrap();
+
+        let err = owner_delete(&harness, subgroup).await.unwrap_err();
+
+        assert!(
+            matches!(
+                err.downcast_ref::<MetaError>(),
+                Some(MetaError::HasRegisteredContexts)
+            ),
+            "expected HasRegisteredContexts, got {err:?}"
+        );
+        assert!(MetaRepository::new(&store)
+            .load(&subgroup)
+            .unwrap()
+            .is_some());
+        assert!(!harness.published_topics().contains(&topic(&namespace)));
+    }
+
+    #[actix::test]
+    async fn an_owner_delete_this_node_cannot_seal_is_refused_unapplied() {
+        let (store, mut harness, namespace, subgroup) = owned_namespace().await;
+        drop_keys(&store, subgroup);
+
+        let err = owner_delete(&harness, subgroup).await.unwrap_err();
+
+        assert_cannot_seal(&err);
+        assert!(
+            MetaRepository::new(&store)
+                .load(&subgroup)
+                .unwrap()
+                .is_some(),
+            "a delete peers never see was applied here"
+        );
+        assert!(!harness.published_topics().contains(&topic(&namespace)));
+    }
+
+    #[actix::test]
+    async fn a_tee_authoring_policy_this_node_cannot_seal_is_refused_unapplied() {
+        let (store, mut harness, namespace, _subgroup) = owned_namespace().await;
+        drop_keys(&store, namespace);
+        let before = sequence(&store, &namespace);
+
+        let err = harness
+            .manager
+            .send(SetTeeAuthoringPolicyRequest {
+                group_id: namespace,
+                allowed_mrtd: vec!["aa".to_owned()],
+                root_proof: None,
+            })
+            .await
+            .expect("the manager answers")
+            .unwrap_err();
+
+        assert_cannot_seal(&err);
+        assert_eq!(
+            sequence(&store, &namespace),
+            before,
+            "the policy was applied"
+        );
+        assert!(!harness.published_topics().contains(&topic(&namespace)));
+    }
+
+    #[actix::test]
+    async fn a_tee_admission_policy_this_node_cannot_seal_is_refused_unapplied() {
+        let (store, mut harness, namespace, _subgroup) = owned_namespace().await;
+        drop_keys(&store, namespace);
+        let before = sequence(&store, &namespace);
+
+        let err = harness
+            .manager
+            .send(release_policy(namespace, TeeAdmissionMode::Replica))
+            .await
+            .expect("the manager answers")
+            .unwrap_err();
+
+        assert_cannot_seal(&err);
+        assert_eq!(
+            sequence(&store, &namespace),
+            before,
+            "the policy was applied"
+        );
+        assert!(!harness.published_topics().contains(&topic(&namespace)));
+    }
+
+    #[actix::test]
+    async fn a_mode_switch_leaves_a_tee_row_in_a_subgroup_it_cannot_seal_for() {
+        let (store, mut harness, namespace, subgroup) = owned_namespace().await;
+        let tee = AccountId::from([0xE3; 32]);
+        let membership = MembershipRepository::new(&store);
+        for group in [namespace, subgroup] {
+            membership
+                .add_member(&group, &tee, GroupMemberRole::ReadOnlyTee)
+                .unwrap();
+        }
+        drop_keys(&store, subgroup);
+
+        harness
+            .manager
+            .send(release_policy(namespace, TeeAdmissionMode::Relay))
+            .await
+            .expect("the manager answers")
+            .expect("the policy is set");
+
+        let role = |group| membership.role_of(&group, &tee).unwrap();
+        assert_eq!(role(namespace), Some(GroupMemberRole::RelayTee));
+        assert_eq!(
+            role(subgroup),
+            Some(GroupMemberRole::ReadOnlyTee),
+            "a conversion nobody could be sent was applied here"
+        );
+        assert!(!harness.published_topics().is_empty());
     }
 }

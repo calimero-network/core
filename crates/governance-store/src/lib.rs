@@ -133,9 +133,9 @@ pub use self::group_keys::{
 };
 pub use self::group_settings::GroupSettingsService;
 pub use self::local_state::{
-    delete_group_local_rows, delete_namespace_local_state, get_local_gov_nonce,
-    get_member_context_joins, get_op_head, load_nonce_window, read_op_log_after,
-    remove_all_member_context_joins, set_local_gov_nonce, store_nonce_window,
+    delete_group_and_parent_edge, delete_group_local_rows, delete_namespace_local_state,
+    get_local_gov_nonce, get_member_context_joins, get_op_head, load_nonce_window,
+    read_op_log_after, remove_all_member_context_joins, set_local_gov_nonce, store_nonce_window,
     track_member_context_join,
 };
 pub use self::membership::MembershipRepository;
@@ -1593,6 +1593,21 @@ pub async fn sign_apply_and_publish(
 ) -> EyreResult<Option<crate::governance_broadcast::DeliveryReport>> {
     GroupGovernancePublisher::new(store, node_client, *group_id)
         .sign_apply_and_publish(ack_router, signer_sk, op)
+        .await
+}
+
+/// [`sign_apply_and_publish`] for an op peers must receive. See
+/// [`GroupGovernancePublisher::sign_apply_and_publish_required`].
+pub async fn sign_apply_and_publish_required(
+    store: &Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &calimero_context_client::local_governance::AckRouter,
+    group_id: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    op: GroupOp,
+) -> EyreResult<crate::governance_broadcast::DeliveryReport> {
+    GroupGovernancePublisher::new(store, node_client, *group_id)
+        .sign_apply_and_publish_required(ack_router, signer_sk, op)
         .await
 }
 
