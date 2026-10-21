@@ -1,5 +1,6 @@
 //! `cargo mero bundle --check-frontend` and `--frontend-dir`, driven through the real binary.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -78,63 +79,6 @@ fn write_mpk(dir: &Path, files: Files, archived: Files) -> PathBuf {
     write_archive(dir, &signed(manifest_declaring(entries)), archived)
 }
 
-#[test]
-fn check_frontend_accepts_a_valid_bundle() {
-    let tmp = tempfile::tempdir().unwrap();
-    let files = [
-        ("frontend/index.html", INDEX_HTML),
-        ("frontend/app.js", "1"),
-    ];
-    let mpk = write_mpk(tmp.path(), &files, &files);
-
-    let out = cargo_mero(&[
-        "bundle",
-        "--check-frontend",
-        mpk.to_str().unwrap(),
-        "--format",
-        "json",
-    ]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let summary = stdout_json(&out);
-    assert_eq!(summary["ok"], true);
-    assert_eq!(summary["frontend"]["entry"], "frontend/index.html");
-    assert_eq!(summary["frontend"]["files"], 2);
-}
-
-#[test]
-fn check_frontend_reports_a_tampered_file_as_json() {
-    let tmp = tempfile::tempdir().unwrap();
-    let declared = [
-        ("frontend/index.html", INDEX_HTML),
-        ("frontend/app.js", "1"),
-    ];
-    let archived = [
-        ("frontend/index.html", INDEX_HTML),
-        ("frontend/app.js", "2"),
-    ];
-    let mpk = write_mpk(tmp.path(), &declared, &archived);
-
-    let out = cargo_mero(&[
-        "bundle",
-        "--check-frontend",
-        mpk.to_str().unwrap(),
-        "--format",
-        "json",
-    ]);
-    assert!(!out.status.success());
-    let err = stdout_json(&out);
-    assert_eq!(err["code"], "FRONTEND_HASH_MISMATCH");
-    assert_eq!(err["path"], "frontend/app.js");
-    assert!(
-        err["message"].is_string() && err["hint"].is_string(),
-        "{err}"
-    );
-}
-
 fn check_json(mpk: &Path) -> Output {
     cargo_mero(&[
         "bundle",
@@ -151,74 +95,125 @@ fn check_failure(mpk: &Path) -> serde_json::Value {
     stdout_json(&out)
 }
 
-fn check_code(files: Files, archived: Files) -> serde_json::Value {
+#[test]
+fn check_frontend_accepts_a_valid_bundle() {
     let tmp = tempfile::tempdir().unwrap();
-    check_failure(&write_mpk(tmp.path(), files, archived))
+    let files = [
+        ("frontend/index.html", INDEX_HTML),
+        ("frontend/app.js", "1"),
+    ];
+    let out = check_json(&write_mpk(tmp.path(), &files, &files));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let summary = stdout_json(&out);
+    assert_eq!(summary["ok"], true);
+    assert_eq!(summary["frontend"]["entry"], "frontend/index.html");
+    assert_eq!(summary["frontend"]["files"], 2);
 }
 
 #[test]
 fn check_frontend_reports_each_rule_with_its_code() {
     let remote = r#"<script src="https://cdn.example/x.js"></script>"#;
     let index = ("frontend/index.html", INDEX_HTML);
-    let cases: [(Files, &str, &str); 5] = [
+    let app = [index, ("frontend/app.js", "1")];
+    let cases: [(Files, Files, &str, &str); 8] = [
         (
+            &[("frontend/index.html", remote)],
             &[("frontend/index.html", remote)],
             "FRONTEND_REMOTE_RESOURCE",
             "frontend/index.html",
         ),
         (
             &[index, ("frontend/app.js.map", "{}")],
+            &[index, ("frontend/app.js.map", "{}")],
             "FRONTEND_UNSUPPORTED_TYPE",
             "frontend/app.js.map",
         ),
         (
+            &[index, ("frontend/a\\b.js", "1")],
             &[index, ("frontend/a\\b.js", "1")],
             "FRONTEND_UNSAFE_PATH",
             "frontend/a\\b.js",
         ),
         (
             &[index, index],
+            &[index, index],
             "FRONTEND_DUPLICATE_PATH",
             "frontend/index.html",
         ),
         (
             &[("frontend/app.js", "1")],
+            &[("frontend/app.js", "1")],
             "FRONTEND_NO_ENTRY",
             "frontend/index.html",
         ),
+        (
+            &app,
+            &[index, ("frontend/app.js", "2")],
+            "FRONTEND_HASH_MISMATCH",
+            "frontend/app.js",
+        ),
+        (
+            &app,
+            &[index, ("frontend/app.js", "12")],
+            "FRONTEND_SIZE_MISMATCH",
+            "frontend/app.js",
+        ),
+        (&app, &app[..1], "FRONTEND_MISSING_FILE", "frontend/app.js"),
     ];
-    for (files, code, path) in cases {
-        let err = check_code(files, files);
+    for (files, archived, code, path) in cases {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = check_failure(&write_mpk(tmp.path(), files, archived));
         assert_eq!(err["code"], code, "{err}");
         assert_eq!(err["path"].as_str().unwrap_or(""), path, "{err}");
+        assert!(
+            err["message"].is_string() && err["hint"].is_string(),
+            "{err}"
+        );
     }
 }
 
 #[test]
-fn check_frontend_reports_a_resized_file() {
-    let declared = [
-        ("frontend/index.html", INDEX_HTML),
-        ("frontend/app.js", "1"),
-    ];
-    let archived = [
-        ("frontend/index.html", INDEX_HTML),
-        ("frontend/app.js", "12"),
-    ];
-    assert_eq!(
-        check_code(&declared, &archived)["code"],
-        "FRONTEND_SIZE_MISMATCH"
-    );
-}
+fn check_frontend_refuses_an_undeclared_member_without_reading_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let files = [("frontend/index.html", INDEX_HTML)];
+    let mpk = tmp.path().join("app.mpk");
+    let mut tar = tar::Builder::new(GzEncoder::new(
+        std::fs::File::create(&mpk).unwrap(),
+        Compression::default(),
+    ));
+    let manifest = serde_json::to_vec(&signed(manifest_declaring(vec![declared(
+        files[0].0, files[0].1,
+    )])))
+    .unwrap();
+    let extra = calimero_bundle::MAX_FRONTEND_BYTES * 2;
+    // Streamed zeros, so the archive stays tiny; the extra member comes before the manifest.
+    let mut header = tar::Header::new_gnu();
+    header.set_size(extra);
+    header.set_mode(0o644);
+    tar.append_data(
+        &mut header,
+        "frontend/extra.js",
+        std::io::repeat(0).take(extra),
+    )
+    .unwrap();
+    for (path, bytes) in [
+        ("manifest.json", manifest.as_slice()),
+        (files[0].0, files[0].1.as_bytes()),
+    ] {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        tar.append_data(&mut header, path, bytes).unwrap();
+    }
+    tar.into_inner().unwrap().finish().unwrap();
 
-#[test]
-fn check_frontend_reports_a_missing_file() {
-    let declared = [
-        ("frontend/index.html", INDEX_HTML),
-        ("frontend/app.js", "1"),
-    ];
-    let err = check_code(&declared, &declared[..1]);
-    assert_eq!(err["code"], "FRONTEND_MISSING_FILE", "{err}");
-    assert_eq!(err["path"], "frontend/app.js");
+    let err = check_failure(&mpk);
+    assert_eq!(err["code"], "FRONTEND_UNSAFE_PATH", "{err}");
+    assert_eq!(err["path"], "frontend/extra.js");
 }
 
 #[test]

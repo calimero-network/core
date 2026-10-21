@@ -1,15 +1,15 @@
 //! Checking a bundle's web frontend and reporting it for humans or, with `--format json`, CI.
 //! Paths, sizes, hashes and types are `calimero_bundle`'s, shared with the node.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use calimero_bundle::{
     check_frontend_html, mime_type, verify_frontend_file, verify_manifest_signature,
-    BundleArtifact, BundleFrontend, BundleManifest, FrontendError, MAX_FRONTEND_BYTES,
-    MAX_MANIFEST_BYTES,
+    BundleArtifact, BundleFrontend, BundleManifest, FrontendError, FRONTEND_ROOT,
+    MAX_FRONTEND_BYTES, MAX_MANIFEST_BYTES,
 };
 use camino::Utf8Path;
 use eyre::{bail, eyre, Context, Result};
@@ -20,7 +20,7 @@ use crate::manifest;
 use crate::OutputFormat;
 
 const GENERIC_ERROR_CODE: &str = "BUNDLE_ERROR"; // any failure that is not a `FrontendError`
-const ARCHIVE_ROOT: &str = "frontend"; // where the frontend sits in the bundle
+const MANIFEST: &str = "manifest.json"; // the signed manifest's archive path
 const ENTRY: &str = "frontend/index.html"; // the page a node serves at the app root
 const SOURCE_MAP_SUFFIX: &str = ".map"; // never shipped: it only helps a debugger
 const HIDDEN_PREFIX: char = '.'; // editor and tool litter such as .DS_Store and .vite/
@@ -69,7 +69,7 @@ pub fn collect(dir: &Path) -> Result<Collected> {
         bail!("frontend directory {} is not a directory", dir.display());
     }
     let mut found = Vec::new();
-    walk(dir, ARCHIVE_ROOT, &mut found)?;
+    walk(dir, FRONTEND_ROOT.trim_end_matches('/'), &mut found)?;
     found.sort_by(|a, b| a.1.cmp(&b.1));
     if found.iter().map(|f| f.2).sum::<u64>() > MAX_FRONTEND_BYTES {
         return Err(FrontendError::TooLarge.into());
@@ -144,57 +144,96 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<(PathBuf, String, u64)>) -> Result<
     Ok(())
 }
 
-/// Open an `.mpk`, verify its signature, then check the frontend's manifest entries and every file's bytes.
-pub fn check_mpk(mpk: &Utf8Path) -> Result<FrontendSummary> {
-    let file = File::open(mpk).wrap_err_with(|| format!("failed to open {mpk}"))?;
-    let mut archive = tar::Archive::new(GzDecoder::new(file));
+/// An entry's archive path with `/` between components on every platform, so it
+/// compares with the manifest's names even where `tar` yields backslashes.
+fn archive_name(path: &Path) -> String {
+    let parts: Vec<_> = path
+        .components()
+        .filter(|c| !matches!(c, Component::CurDir))
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect();
+    parts.join("/")
+}
 
+fn open_archive(mpk: &Utf8Path) -> Result<tar::Archive<GzDecoder<File>>> {
+    let file = File::open(mpk).wrap_err_with(|| format!("failed to open {mpk}"))?;
+    Ok(tar::Archive::new(GzDecoder::new(file)))
+}
+
+/// The signed manifest's validated frontend section, from a pass that reads only `manifest.json`.
+fn signed_frontend(mpk: &Utf8Path) -> Result<BundleFrontend> {
+    let mut archive = open_archive(mpk)?;
     let mut manifest = None;
-    let mut files: HashMap<String, Vec<u8>> = HashMap::new();
     for entry in archive
         .entries()
         .wrap_err("failed to read the bundle archive")?
     {
         let entry = entry?;
-        let path = entry.path()?.to_string_lossy().into_owned();
-        let is_manifest = path == "manifest.json";
-        if !is_manifest && !path.starts_with("frontend/") {
+        if archive_name(&entry.path()?) != MANIFEST {
             continue;
         }
-        // One byte past the cap, so an oversized file fails its size check.
-        let cap = if is_manifest {
-            MAX_MANIFEST_BYTES
-        } else {
-            MAX_FRONTEND_BYTES
-        };
         let mut bytes = Vec::new();
-        entry.take(cap + 1).read_to_end(&mut bytes)?;
-        if is_manifest {
-            if bytes.len() as u64 > MAX_MANIFEST_BYTES {
-                bail!("manifest.json exceeds {MAX_MANIFEST_BYTES} bytes");
-            }
-            manifest = Some(bytes);
-        } else {
-            files.insert(path, bytes);
+        entry.take(MAX_MANIFEST_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+            bail!("{MANIFEST} exceeds {MAX_MANIFEST_BYTES} bytes");
         }
+        manifest = Some(bytes);
     }
 
-    let manifest = manifest.ok_or_else(|| eyre!("{mpk} has no manifest.json"))?;
+    let manifest = manifest.ok_or_else(|| eyre!("{mpk} has no {MANIFEST}"))?;
     let manifest: serde_json::Value =
         serde_json::from_slice(&manifest).wrap_err("manifest.json is not valid JSON")?;
     verify_manifest_signature(&manifest).wrap_err("the manifest signature does not verify")?;
     let manifest: BundleManifest =
         serde_json::from_value(manifest).wrap_err("manifest.json is not a bundle manifest")?;
-    let Some(frontend) = manifest.frontend else {
-        bail!("the manifest declares no frontend");
-    };
-
+    let frontend = manifest
+        .frontend
+        .ok_or_else(|| eyre!("the manifest declares no frontend"))?;
     frontend.validate()?;
-    for file in &frontend.files {
-        let bytes = files
-            .get(&file.path)
-            .ok_or_else(|| FrontendError::MissingFile(file.path.clone()))?;
-        check_file(file, bytes)?;
+    Ok(frontend)
+}
+
+/// Open an `.mpk`, verify its signature, validate the frontend it declares, then
+/// check each declared file read to its declared size. An undeclared `frontend/`
+/// member is refused unread.
+pub fn check_mpk(mpk: &Utf8Path) -> Result<FrontendSummary> {
+    let frontend = signed_frontend(mpk)?;
+    let declared: HashMap<&str, &BundleArtifact> = frontend
+        .files
+        .iter()
+        .map(|f| (f.path.as_str(), f))
+        .collect();
+
+    let mut seen = HashSet::new();
+    let mut archive = open_archive(mpk)?;
+    for entry in archive
+        .entries()
+        .wrap_err("failed to read the bundle archive")?
+    {
+        let mut entry = entry?;
+        let name = archive_name(&entry.path()?);
+        if !name.starts_with(FRONTEND_ROOT) {
+            continue;
+        }
+        let Some(file) = declared.get(name.as_str()) else {
+            return Err(FrontendError::UnsafePath(name).into());
+        };
+        if !entry.header().entry_type().is_file() {
+            return Err(FrontendError::UnsafePath(name).into());
+        }
+        if !seen.insert(name.clone()) {
+            return Err(FrontendError::DuplicatePath(name).into());
+        }
+        // One byte past the declared size, so an oversized file fails its size check.
+        let mut bytes = Vec::new();
+        (&mut entry)
+            .take(file.size.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        check_file(file, &bytes)?;
+    }
+
+    if let Some(file) = frontend.files.iter().find(|f| !seen.contains(&f.path)) {
+        return Err(FrontendError::MissingFile(file.path.clone()).into());
     }
     Ok(FrontendSummary::of(&frontend))
 }
@@ -300,6 +339,16 @@ fn hint(err: &FrontendError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn archive_names_join_components_with_a_slash_and_drop_a_leading_dot() {
+        let path = Path::new(".")
+            .join("frontend")
+            .join("assets")
+            .join("app.js");
+
+        assert_eq!(archive_name(&path), "frontend/assets/app.js");
+    }
 
     #[test]
     fn a_directory_in_a_files_place_is_refused_as_unsafe() {
