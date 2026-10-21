@@ -162,20 +162,20 @@ Any other token acts as if bound to that app, narrowed by its own binding, so RP
 `/auth/refresh` and `/auth/validate` hold the session they carry to the same rule, so an `admin` session is not renewed or checked on an app host.
 A refresh is judged by the permissions it would mint, and `/auth/validate` refuses an `X-Forwarded-Uri` there.
 `GET /admin-api/applications` lists only the bound application, and `GET /admin-api/applications/{id}` and the `for-application` listings refuse any other.
-A join of a namespace this node does not hold yet has no stored target to check, so the node takes the invitation's application, an unsigned hint, and allows the join when it names the bound application.
-A group the node holds is judged by its own target, and a token bound to a context never joins a group it does not hold.
-Once the namespace's real target arrives, the binding is judged against it, so a hint that lied leaves the token with no access.
+An app's key may join a namespace on an invitation that names its app, because a node that does not hold the namespace has no signed application to check.
+Until the namespace's signed admin arrives, the invitation's application is an unsigned hint, so the app's key cannot act on that namespace or list it.
+After that the key is judged by the stored target, which stays the hint until a signed target op replaces it, so a namespace that never gets one keeps a tampered hint.
+A hint that lied loses access once the real target arrives, and the join is never undone.
+A token bound to a context never joins a group it does not hold.
 These work only where the node's embedded auth verifies the token, and only for a page whose `Origin` is the host it calls.
 Under proxy mode they answer `403` with a plain-text reason, and an app's page is served but cannot call the node, so proxy deployments get no app API for now.
 A reverse proxy in front must forward the original `Host` (`proxy_set_header Host $host` for nginx).
 The desktop webview origins (`calimero-app://...`) cannot use the app API from the node and go through the desktop app instead.
-Every other path on an app origin is a file or `404`, and every other admin route is `403`.
 A login page is never served there, because an app's script could read what the user types.
 `GET /auth/login` on an app host answers `302` to the node's own login page with the same query and port: the host without its label.
 The apps port has no login redirect, because it would send a token into an origin every app shares, and answers `403` there like every other API path.
 Login is a top-level navigation to the node's own origin.
 
-An app is third-party code, so the node answers a page on any app origin `403` on every route of its own host, in every auth mode, and never counts it as a loopback page.
 The app origins are `{label}.{base_domain}` with any port, `{host}:{apps port}`, `calimero-app://{label}` and `http(s)://calimero-app.{label}`, where `{label}` is the canonical base32 of an application id.
 
 An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.

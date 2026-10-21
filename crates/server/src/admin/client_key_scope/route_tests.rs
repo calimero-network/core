@@ -9,14 +9,24 @@ use axum::http::{Method, Request, StatusCode};
 use axum::Router;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::group::{GroupContextEntry, NamespaceSummary};
+use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_client::messages::ContextMessage;
+use calimero_context_config::types::BytecodeId;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{ContextTreeService, MetaRepository};
+use calimero_governance_store::test_fixtures::enrol_member;
+use calimero_governance_store::{
+    apply_local_signed_group_op, ContextTreeService, MembershipRepository, MetaRepository,
+};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::identity::PrivateKey;
+use calimero_store::db::Column;
 use calimero_store::db::InMemoryDB;
-use calimero_store::key::{ApplicationMeta, ContextMeta as ContextMetaKey, GroupMetaValue};
+use calimero_store::key::{
+    ApplicationMeta, AsKeyParts as _, ContextMeta as ContextMetaKey, GroupMeta, GroupMetaValue,
+};
 use calimero_store::types::ContextMeta;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
@@ -30,11 +40,14 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use tower::ServiceExt as _;
 
+use super::GROUP_REFUSAL;
 use crate::admin::service::{setup, AdminConfig};
 use crate::app_host::{encode_label, serve_app_hosts, AppHosts, AppOrigins};
 use crate::config::{AppsConfig, ServerConfig};
 use crate::service_mounts::with_optional_auth;
 use crate::{AdminState, NodeReadiness};
+
+const NAMESPACE: [u8; 32] = [0xc1; 32]; // the namespace the join tests target
 
 const APP_TOKEN: &[&str] = &[
     "context:create",
@@ -53,6 +66,13 @@ struct Tenant {
     namespace: ContextGroupId,
     context: ContextId,
     blob: BlobId,
+}
+
+/// A join body whose unsigned invitation for `group` hints at `app`.
+fn invitation_hinting(group: &ContextGroupId, app: &ApplicationId) -> Value {
+    let mut invitation = calimero_context::test_support::unverified_invitation(group);
+    invitation.application_id = Some(*app.as_ref());
+    json!({ "invitation": invitation })
 }
 
 fn tenant(byte: u8) -> Tenant {
@@ -604,34 +624,47 @@ async fn a_bound_key_still_reaches_its_own_application() {
 }
 
 /// A group this node does not hold has no signed target to check the binding
-/// against: the invitation's application is an unsigned hint.
+/// against: the invitation's application is an unsigned hint, taken when it names the bound one.
 #[actix::test]
-async fn a_bound_key_cannot_join_a_group_this_node_does_not_hold() {
+async fn a_bound_key_joins_a_group_this_node_does_not_hold_only_on_a_hint_of_its_application() {
     let node = Node::new().await;
     let token = node.bound_to_mine().await;
-    let unknown = ContextGroupId::from([0xc1; 32]);
+    let unknown = ContextGroupId::from(NAMESPACE);
     let unknown_hex = hex::encode(unknown.to_bytes());
-    let mut invitation = calimero_context::test_support::unverified_invitation(&unknown);
-    invitation.application_id = Some(*node.mine.app.as_ref());
-    let invite = json!({ "invitation": invitation });
 
     for path in [
         format!("/namespaces/{unknown_hex}/join"),
         "/groups/join".to_owned(),
     ] {
         let (status, body) = node
-            .call(&token, Method::POST, &path, Some(invite.clone()))
+            .call(
+                &token,
+                Method::POST,
+                &path,
+                Some(invitation_hinting(&unknown, &node.theirs.app)),
+            )
             .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {body}");
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{path} hinting theirs: {body}"
+        );
+        let (status, body) = node
+            .call(
+                &token,
+                Method::POST,
+                &path,
+                Some(invitation_hinting(&unknown, &node.mine.app)),
+            )
+            .await;
+        assert_ne!(status, StatusCode::FORBIDDEN, "{path} hinting mine: {body}");
     }
-    let mut held = calimero_context::test_support::unverified_invitation(&node.mine.namespace);
-    held.application_id = Some(*node.mine.app.as_ref());
     let (status, body) = node
         .call(
             &token,
             Method::POST,
             "/groups/join",
-            Some(json!({ "invitation": held })),
+            Some(invitation_hinting(&node.mine.namespace, &node.mine.app)),
         )
         .await;
     assert_ne!(
@@ -639,6 +672,244 @@ async fn a_bound_key_cannot_join_a_group_this_node_does_not_hold() {
         StatusCode::FORBIDDEN,
         "a held group of mine: {body}"
     );
+}
+
+#[actix::test]
+async fn a_context_bound_key_cannot_join_a_group_this_node_does_not_hold() {
+    let node = Node::new().await;
+    let token = node
+        .client_token(vec![
+            "namespace".to_owned(),
+            format!("context[{},identity]", node.mine.context),
+            application_binding(&node.mine.app.to_string()),
+        ])
+        .await;
+    let unknown = ContextGroupId::from(NAMESPACE);
+
+    let (status, body) = node
+        .call(
+            &token,
+            Method::POST,
+            &format!("/namespaces/{}/join", hex::encode(unknown.to_bytes())),
+            Some(invitation_hinting(&unknown, &node.mine.app)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+/// The namespace as the join's first phase leaves it: the invitation's hint as
+/// target and the placeholder as admin.
+fn seed_unverified(node: &Node, hint: ApplicationId) -> ContextGroupId {
+    let namespace = ContextGroupId::from(NAMESPACE);
+    let placeholder = calimero_governance_store::placeholder_admin_identity();
+    MetaRepository::new(&node.store)
+        .save(
+            &namespace,
+            &GroupMetaValue {
+                target: calimero_store::key::GroupTarget {
+                    application_id: hint,
+                    ..Default::default()
+                },
+                admin_identity: placeholder,
+                owner_identity: placeholder,
+                migration: None,
+                created_at: 0,
+                auto_join: true,
+            },
+        )
+        .expect("the join's first phase");
+    namespace
+}
+
+/// Genesis names the namespace's admin, and the admin's target op applies.
+fn found_with_target(node: &Node, namespace: &ContextGroupId, target: ApplicationId) {
+    let admin_sk = PrivateKey::from([0x77; 32]);
+    let admin = enrol_member(&node.store, namespace, &admin_sk.public_key());
+    let mut meta = MetaRepository::new(&node.store)
+        .load(namespace)
+        .expect("read the meta")
+        .expect("the meta");
+    meta.admin_identity = admin;
+    meta.owner_identity = admin;
+    MetaRepository::new(&node.store)
+        .save(namespace, &meta)
+        .expect("genesis");
+    MembershipRepository::new(&node.store)
+        .add_member(namespace, &admin, GroupMemberRole::Admin)
+        .expect("the admin");
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        namespace.to_bytes().into(),
+        vec![],
+        1,
+        GroupOp::TargetApplicationSet {
+            bytecode_id: BytecodeId::from([0xaa; 32]),
+            target_application_id: target,
+            package: "com.example.app".to_owned(),
+            version: "1.0.0".to_owned(),
+        },
+    )
+    .expect("sign the target op");
+    apply_local_signed_group_op(&node.store, &op).expect("the target op applies");
+}
+
+/// Every group-level route a key reaches a namespace by.
+fn namespace_routes(
+    namespace: &ContextGroupId,
+    app: &ApplicationId,
+) -> Vec<(Method, String, Value)> {
+    let ns = hex::encode(namespace.to_bytes());
+    vec![
+        (Method::GET, format!("/groups/{ns}/members"), json!({})),
+        (Method::POST, format!("/namespaces/{ns}/invite"), json!({})),
+        (Method::POST, format!("/namespaces/{ns}/groups"), json!({})),
+        (
+            Method::POST,
+            "/contexts".to_owned(),
+            json!({ "applicationId": app, "groupId": ns, "initializationParams": [] }),
+        ),
+    ]
+}
+
+async fn listed_namespaces(node: &Node, token: &str, namespace: &ContextGroupId) -> Vec<bool> {
+    let mut seen = Vec::new();
+    for path in [
+        "/namespaces".to_owned(),
+        format!("/namespaces/for-application/{}", node.mine.app),
+    ] {
+        let (status, body) = node.call(token, Method::GET, &path, None).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+        seen.push(
+            ids(&body, "namespaces", "namespaceId").contains(&hex::encode(namespace.to_bytes())),
+        );
+    }
+    seen
+}
+
+async fn assert_routes(
+    node: &Node,
+    token: &str,
+    namespace: &ContextGroupId,
+    refused: bool,
+    when: &str,
+) {
+    for (method, path, body) in namespace_routes(namespace, &node.mine.app) {
+        let (status, response) = node.call(token, method.clone(), &path, Some(body)).await;
+        if refused {
+            assert_eq!(status, StatusCode::FORBIDDEN, "{when}: {method} {path}");
+            assert_eq!(response["error"], GROUP_REFUSAL, "{when}: {method} {path}");
+        } else {
+            assert_ne!(
+                status,
+                StatusCode::FORBIDDEN,
+                "{when}: {method} {path}: {response}"
+            );
+        }
+    }
+    let listed = listed_namespaces(node, token, namespace).await;
+    assert_eq!(listed, vec![!refused; 2], "{when}: listings");
+}
+
+/// The invitation's application is an unsigned hint, so a namespace still
+/// seeded from it gives an application's key no scope but the join.
+#[actix::test]
+async fn an_app_bound_key_cannot_act_on_a_namespace_whose_signed_admin_has_not_arrived() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+    let namespace = seed_unverified(&node, node.mine.app);
+
+    assert_routes(&node, &token, &namespace, true, "before genesis").await;
+    let (status, body) = node
+        .call(
+            &token,
+            Method::POST,
+            &format!("/namespaces/{}/join", hex::encode(namespace.to_bytes())),
+            Some(invitation_hinting(&namespace, &node.mine.app)),
+        )
+        .await;
+    assert_ne!(status, StatusCode::FORBIDDEN, "the join: {body}");
+}
+
+#[actix::test]
+async fn a_hinted_join_is_refused_when_the_group_meta_cannot_be_read() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+    let namespace = seed_unverified(&node, node.mine.app);
+    let key = GroupMeta::new(namespace.to_bytes());
+    let raw: &[u8; 33] = key.as_key().as_ref();
+    node.store
+        .raw_put(Column::Group, raw, b"not a meta")
+        .expect("corrupt the row");
+
+    let (status, body) = node
+        .call(
+            &token,
+            Method::POST,
+            "/groups/join",
+            Some(invitation_hinting(&namespace, &node.mine.app)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+#[actix::test]
+async fn an_app_bound_key_acts_on_a_namespace_once_the_real_target_is_its_application() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+    let namespace = seed_unverified(&node, node.mine.app);
+
+    found_with_target(&node, &namespace, node.mine.app);
+    assert_routes(&node, &token, &namespace, false, "after the target is mine").await;
+}
+
+#[actix::test]
+async fn a_key_bound_to_a_hinted_application_loses_the_namespace_when_the_real_target_lands() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+    let namespace = seed_unverified(&node, node.mine.app);
+
+    found_with_target(&node, &namespace, node.theirs.app);
+    assert_routes(
+        &node,
+        &token,
+        &namespace,
+        true,
+        "after the target is theirs",
+    )
+    .await;
+}
+
+#[actix::test]
+async fn an_unbound_key_acts_on_a_namespace_whose_admin_has_not_arrived() {
+    let node = Node::new().await;
+    let token = node.unbound().await;
+    let namespace = seed_unverified(&node, node.theirs.app);
+
+    for (method, path, body) in namespace_routes(&namespace, &node.mine.app) {
+        let (status, response) = node.call(&token, method.clone(), &path, Some(body)).await;
+        assert_ne!(status, StatusCode::FORBIDDEN, "{method} {path}: {response}");
+    }
+}
+
+#[actix::test]
+async fn an_app_origin_joins_a_namespace_this_node_does_not_hold_only_on_a_hint_of_its_app() {
+    let node = Node::new().await;
+    let token = node.unbound().await;
+    let unknown = ContextGroupId::from(NAMESPACE);
+    let path = format!("/namespaces/{}/join", hex::encode(unknown.to_bytes()));
+
+    for (hint, joins) in [(node.mine.app, true), (node.theirs.app, false)] {
+        let (status, body) = node
+            .call_on_origin_of(
+                &node.mine.app,
+                Some(&token),
+                Method::POST,
+                &path,
+                Some(invitation_hinting(&unknown, &hint)),
+            )
+            .await;
+        assert_eq!(status != StatusCode::FORBIDDEN, joins, "{hint}: {body}");
+    }
 }
 
 #[actix::test]
@@ -788,12 +1059,7 @@ async fn a_bound_key_cannot_retarget_its_namespace_or_install() {
 async fn a_bound_key_joins_only_into_its_own_application() {
     let node = Node::new().await;
     let token = node.bound_to_mine().await;
-    let invite = |group: ContextGroupId, app: &ApplicationId| {
-        let mut invitation = calimero_context::test_support::unverified_invitation(&group);
-        invitation.application_id = Some(*app.as_ref());
-        json!({ "invitation": invitation })
-    };
-    let unknown = ContextGroupId::from([0xc1; 32]);
+    let unknown = ContextGroupId::from(NAMESPACE);
     let unknown_hex = hex::encode(unknown.to_bytes());
 
     let (status, body) = node
@@ -801,7 +1067,7 @@ async fn a_bound_key_joins_only_into_its_own_application() {
             &token,
             Method::POST,
             "/groups/join",
-            Some(invite(node.theirs.namespace, &node.theirs.app)),
+            Some(invitation_hinting(&node.theirs.namespace, &node.theirs.app)),
         )
         .await;
     assert_eq!(
@@ -814,7 +1080,7 @@ async fn a_bound_key_joins_only_into_its_own_application() {
             &token,
             Method::POST,
             "/groups/join",
-            Some(invite(node.theirs.namespace, &node.mine.app)),
+            Some(invitation_hinting(&node.theirs.namespace, &node.mine.app)),
         )
         .await;
     assert_eq!(
@@ -827,7 +1093,7 @@ async fn a_bound_key_joins_only_into_its_own_application() {
             &token,
             Method::POST,
             &format!("/namespaces/{unknown_hex}/join"),
-            Some(invite(unknown, &node.theirs.app)),
+            Some(invitation_hinting(&unknown, &node.theirs.app)),
         )
         .await;
     assert_eq!(
@@ -1257,9 +1523,23 @@ async fn an_app_origin_cannot_reach_another_applications_namespace_or_context() 
     let token = node.unbound().await;
     let ns = hex::encode(node.theirs.namespace.to_bytes());
     let theirs = node.theirs.app;
+    let join = invitation_hinting(&node.theirs.namespace, &node.mine.app);
+    let (status, body) = node
+        .call_on_origin_of(
+            &node.mine.app,
+            Some(&token),
+            Method::POST,
+            &format!("/namespaces/{ns}/join"),
+            Some(join),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a held namespace relabelled: {body}"
+    );
 
     for (method, path) in [
-        (Method::POST, format!("/namespaces/{ns}/join")),
         (Method::POST, format!("/namespaces/{ns}/invite")),
         (Method::POST, format!("/namespaces/{ns}/groups")),
         (Method::GET, format!("/groups/{ns}/members")),

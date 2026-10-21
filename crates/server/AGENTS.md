@@ -336,10 +336,12 @@ It executes as the node inside its binding, but it is never the node owner on th
   `POST /contexts/sync` with no id syncs every context and is refused outright.
   `POST /install-application` is refused outright.
 - `POST /contexts`, `/namespaces`, `/groups`, `/contexts/{id}/application`, `/groups/{id}/upgrade` and `/groups/{id}/reparent` are refused when their body names a group or application outside the binding (`refuse_target_outside_binding`).
-- A join (`POST /groups/join`, `/namespaces/{id}/join`) needs a group the binding reaches, or a group this node does not hold yet whose invitation hints the bound application (`refuse_join_outside_binding`).
-  The hint is unsigned and seeds the group's target until the real one arrives, so only an application binding takes it: a context binding never joins a group it does not hold, and a held group is judged by its own target.
+- A join (`POST /groups/join`, `/namespaces/{id}/join`) needs a group the binding reaches, or a group with no signed admin on this node yet whose invitation hints the bound application (`refuse_join_outside_binding`).
+  The hint is unsigned, so only an application binding takes it: a context binding never joins a group it does not hold.
   `refuse_out_of_scope` leaves a `/namespaces/{id}/join` path parameter to that handler.
-  A token that joined on a lying hint loses the group once the real target arrives; the join is not undone, because only the sync that brings the target knows it.
+  A group still carrying the join's placeholder admin is hidden by `verified_meta` (`auth.rs`) from every scope check: an application's key gets `403` on its routes and does not see it in listings until the signed admin arrives.
+  After that the key is judged by the stored target, which is still the unsigned hint until a signed `TargetApplicationSet` or a cascade upgrade replaces it, so a namespace with no such op keeps a tampered hint.
+  A hint that lied loses access once the real target arrives, and the join is never undone.
 - Listings and named reads take the key's `ListScope::ClientKey` (`admin/caller_scope.rs`): the groups its binding reaches, and of their contexts only those it permits.
   `GET /applications` (an app origin sees only its own application), the `for-application` listings, `/groups/{id}/contexts` and the alias routes filter by the same binding; an alias to a device is never visible to a bound key.
   Blob reads and uploads are confined like an account session's; `DELETE /blobs/{id}` needs the blob held for one of its contexts and gives that association up with the reference it releases (bound-key deletes are serialized), and `GET /blobs` is refused.
@@ -508,8 +510,7 @@ request re-stamps it.
   Under `sealed.required` the layer is not mounted at all, so an app host cannot get around the envelope.
 - An app calls the node at its own `window.location.origin`, because its content security policy is `default-src 'self'`.
   `app_host::is_app_api` is the passthrough set: `{NODE_PATH_PREFIX}/jsonrpc`, `{NODE_PATH_PREFIX}/ws`, `/sse`, `/sse/...`, `POST /auth/refresh` and `GET` or `HEAD /auth/validate`, which exchange or check a token and read nothing else; SSE and auth are not prefixed.
-  It also holds the admin allowlist, `app_host::is_app_admin_route`, matched by method and exact segment shape under `{NODE_PATH_PREFIX}/admin-api`:
-  `GET /contexts`, `GET /contexts/{id}`, `GET /contexts/for-application/{app}`, `GET /namespaces/for-application/{app}`, `GET /applications`, `GET /applications/{id}`, `GET /contexts/{id}/identities-owned`, `GET /contexts/{id}/group`, `POST /contexts`, `POST /contexts/{id}/join`, `GET` and `POST /namespaces`, `POST /namespaces/{id}/invite`, `POST /namespaces/{id}/join`, `POST /namespaces/{id}/groups`, `GET /groups/{id}/members`, `GET /health` and `GET /is-authed`.
+  It also holds the admin allowlist, `app_host::is_app_admin_route`, matched by method and exact segment shape under `{NODE_PATH_PREFIX}/admin-api`.
   Never match a prefix there, so `/contexts/{id}/anything` stays refused.
   `app_host::AppHosts::hand_over` runs them through the normal router, auth middleware included, with the `AppApi` request extension that `origin_guard::refuse_app_origins` and `ws_handler` take as leave to skip their app-origin refusal.
   It answers `403` when `Origin` is not the `Host` called, and `403` with a plain-text body unless this node verifies the token itself (`ServerConfig::use_embedded_auth`).

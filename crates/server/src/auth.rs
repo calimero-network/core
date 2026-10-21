@@ -12,8 +12,10 @@ use axum::http::{HeaderValue, Method, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
-use calimero_governance_store::NamespaceRepository;
+use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::{placeholder_admin_identity, MetaRepository, NamespaceRepository};
 use calimero_primitives::application::ApplicationId;
+use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use eyre::Result;
 use futures_util::future::BoxFuture;
@@ -141,7 +143,7 @@ impl ClientKeyScope {
     pub(crate) fn permits_group(
         &self,
         store: &calimero_store::Store,
-        group_id: &calimero_context_config::types::ContextGroupId,
+        group_id: &ContextGroupId,
     ) -> bool {
         let bindings = &self.0;
 
@@ -174,14 +176,16 @@ impl ClientKeyScope {
         }
 
         if let Some(application_id) = bindings.application_id.as_deref() {
-            match calimero_governance_store::MetaRepository::new(store).load(group_id) {
-                Ok(Some(meta))
-                    if meta
-                        .target
-                        .application_id
-                        .to_string()
-                        .eq_ignore_ascii_case(application_id) => {}
-                _ => return false,
+            let Some(meta) = verified_meta(store, group_id) else {
+                return false;
+            };
+            if !meta
+                .target
+                .application_id
+                .to_string()
+                .eq_ignore_ascii_case(application_id)
+            {
+                return false;
             }
         }
 
@@ -192,7 +196,7 @@ impl ClientKeyScope {
     pub(crate) fn permits_group_change(
         &self,
         store: &calimero_store::Store,
-        group_id: &calimero_context_config::types::ContextGroupId,
+        group_id: &ContextGroupId,
     ) -> bool {
         self.permits_group(store, group_id)
             && self.0.context_id.as_deref().is_none_or(|context_id| {
@@ -247,10 +251,16 @@ fn context_application(
         return Some(meta.application.application_id());
     }
     let group = calimero_governance_store::get_group_for_context(store, context_id).ok()??;
-    let meta = calimero_governance_store::MetaRepository::new(store)
-        .load(&group)
-        .ok()??;
-    Some(meta.target.application_id)
+    Some(verified_meta(store, &group)?.target.application_id)
+}
+
+/// The group's meta once a signed admin has replaced the placeholder a join seeds it with.
+/// Its target may still be the invitation's unsigned hint until a signed target op replaces it.
+pub(crate) fn verified_meta(store: &Store, group_id: &ContextGroupId) -> Option<GroupMetaValue> {
+    MetaRepository::new(store)
+        .load(group_id)
+        .ok()?
+        .filter(|meta| meta.admin_identity != placeholder_admin_identity())
 }
 
 /// The authenticated requester's **account**, injected by [`AuthGuardService`]
@@ -2027,34 +2037,35 @@ mod app_binding_tests {
         assert_eq!((status, seen.as_str()), (StatusCode::OK, "none"));
     }
 
+    /// A root key and the client key `k-1` under it, holding `stored`.
+    async fn seed_keys(storage: &Arc<dyn Storage>, stored: Vec<String>) {
+        let keys = KeyManager::new(Arc::clone(storage));
+        let root = Key::new_root_key_with_permissions(
+            "owner".to_owned(),
+            "user_password".to_owned(),
+            vec!["admin".to_owned()],
+            None,
+        );
+        keys.set_key("root", &root).await.unwrap();
+        let key = Key::new_client_key("root".to_owned(), "app".to_owned(), stored, None);
+        keys.set_key("k-1", &key).await.unwrap();
+    }
+
+    /// `POST /auth/refresh` carrying a token pair.
+    fn refresh_req(access: &str, refresh: &str) -> Request<Body> {
+        let body = serde_json::json!({ "access_token": access, "refresh_token": refresh });
+        Request::post("/auth/refresh")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
     /// The guard and the binding as `with_auth_guard` mounts them, with a real token.
     async fn guarded(permissions: &[&str], marked: bool) -> (StatusCode, String) {
         let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
         let token_manager = super::tests::token_manager(&storage).await;
         let permissions: Vec<String> = permissions.iter().map(|p| (*p).to_owned()).collect();
-        let keys = KeyManager::new(Arc::clone(&storage));
-        keys.set_key(
-            "root",
-            &Key::new_root_key_with_permissions(
-                "owner".to_owned(),
-                "user_password".to_owned(),
-                vec!["admin".to_owned()],
-                None,
-            ),
-        )
-        .await
-        .unwrap();
-        keys.set_key(
-            "k-1",
-            &Key::new_client_key(
-                "root".to_owned(),
-                "app".to_owned(),
-                permissions.clone(),
-                None,
-            ),
-        )
-        .await
-        .unwrap();
+        seed_keys(&storage, permissions.clone()).await;
         let (token, _) = token_manager
             .generate_token_pair("k-1".to_owned(), permissions, None, None)
             .await
@@ -2104,18 +2115,16 @@ mod app_binding_tests {
 
     /// A token pair for `permissions`, and the session routes behind `refuse_foreign_session`.
     async fn session(permissions: &[&str], marked: bool) -> (Router, String, String) {
-        session_of_key(permissions, permissions, marked).await
+        session_on(
+            Arc::new(MemoryStorage::new()),
+            permissions,
+            permissions,
+            marked,
+        )
+        .await
     }
 
-    /// [`session`] whose key stores `stored` while its tokens claim `claimed`.
-    async fn session_of_key(
-        stored: &[&str],
-        claimed: &[&str],
-        marked: bool,
-    ) -> (Router, String, String) {
-        session_on(Arc::new(MemoryStorage::new()), stored, claimed, marked).await
-    }
-
+    /// [`session`] over `storage`, whose key stores `stored` while its tokens claim `claimed`.
     async fn session_on(
         storage: Arc<dyn Storage>,
         stored: &[&str],
@@ -2125,16 +2134,7 @@ mod app_binding_tests {
         let tokens: TokenManager = super::tests::token_manager(&storage).await;
         let permissions: Vec<String> = claimed.iter().map(|p| (*p).to_owned()).collect();
         let stored: Vec<String> = stored.iter().map(|p| (*p).to_owned()).collect();
-        let key = Key::new_client_key("root".to_owned(), "app".to_owned(), stored, None);
-        let keys = KeyManager::new(Arc::clone(&storage));
-        let root = Key::new_root_key_with_permissions(
-            "owner".to_owned(),
-            "user_password".to_owned(),
-            vec!["admin".to_owned()],
-            None,
-        );
-        keys.set_key("root", &root).await.unwrap();
-        keys.set_key("k-1", &key).await.unwrap();
+        seed_keys(&storage, stored).await;
         let (access, refresh) = tokens
             .generate_token_pair("k-1".to_owned(), permissions, None, None)
             .await
@@ -2159,14 +2159,8 @@ mod app_binding_tests {
 
     async fn refreshed(permissions: &[&str], marked: bool) -> StatusCode {
         let (router, access, refresh) = session(permissions, marked).await;
-        let body = serde_json::json!({ "access_token": access, "refresh_token": refresh });
         router
-            .oneshot(
-                Request::post("/auth/refresh")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
+            .oneshot(refresh_req(&access, &refresh))
             .await
             .unwrap()
             .status()
@@ -2189,16 +2183,15 @@ mod app_binding_tests {
     /// A refresh mints from the key's stored permissions, not the old token's.
     #[tokio::test]
     async fn a_refresh_is_judged_by_the_permissions_it_will_mint() {
-        let (router, access, refresh) =
-            session_of_key(&["admin"], &["context:execute"], true).await;
-        let body = serde_json::json!({ "access_token": access, "refresh_token": refresh });
+        let (router, access, refresh) = session_on(
+            Arc::new(MemoryStorage::new()),
+            &["admin"],
+            &["context:execute"],
+            true,
+        )
+        .await;
         let status = router
-            .oneshot(
-                Request::post("/auth/refresh")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
+            .oneshot(refresh_req(&access, &refresh))
             .await
             .unwrap()
             .status();
@@ -2231,13 +2224,7 @@ mod app_binding_tests {
         let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
         let (router, access, refresh) =
             session_on(Arc::clone(&storage), &["admin"], &["admin"], true).await;
-        let body = serde_json::json!({ "access_token": access, "refresh_token": refresh });
-        let refresh = || {
-            Request::post("/auth/refresh")
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap()
-        };
+        let refresh = || refresh_req(&access, &refresh);
 
         let key = format!("{}k-1", prefixes::CLIENT_KEY);
         storage.set(&key, b"not a key").await.unwrap();
