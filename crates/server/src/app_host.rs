@@ -23,7 +23,7 @@ const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567"; // RFC 4648 alpha
 const LABEL_LEN: usize = 52; // 32 bytes in unpadded base32
 const NATIVE_SCHEME: &str = "calimero-app"; // the desktop webview's app scheme on macOS and Linux
 const WINDOWS_HOST_PREFIX: &str = "calimero-app."; // its host form on Windows: `http(s)://calimero-app.{label}`
-const AUTH_REFRESH: &str = "/auth/refresh"; // the one login-side route an app origin reaches: a JSON token exchange
+pub(crate) const AUTH_REFRESH: &str = "/auth/refresh"; // the one login-side route an app origin reaches: a JSON token exchange
 const NO_APP_API: &str = "the app API on an app origin needs the node's embedded auth"; // body of the 403 where this node does not verify tokens
 const FILES_ONLY: &str =
     "the fallback apps port serves files only; the app API needs the app's own subdomain origin"; // body of the 403 to an API path on the apps port
@@ -36,9 +36,10 @@ pub(crate) struct AppHosts {
     pub(crate) app_api: bool,
 }
 
-/// Marks a request answered for an app's own origin, which the origin checks let through.
+/// Marks a request answered for an app's own origin, which the origin checks
+/// let through, and names the app whose origin it is.
 #[derive(Clone, Debug)]
-pub(crate) struct AppApi;
+pub(crate) struct AppApi(pub(crate) ApplicationId);
 
 /// An app's DNS label: its id as unpadded lowercase base32.
 pub(crate) fn encode_label(id: &ApplicationId) -> String {
@@ -139,14 +140,14 @@ fn is_windows_host(host: &str) -> bool {
 impl AppHosts {
     /// Passes an app API request to the node's own handlers, only where this
     /// node verifies the token itself and the page is of the origin it calls.
-    async fn hand_over(&self, mut request: Request, next: Next) -> Response {
+    async fn hand_over(&self, app: ApplicationId, mut request: Request, next: Next) -> Response {
         if !self.app_api {
             return refusal(StatusCode::FORBIDDEN, NO_APP_API);
         }
         if !is_same_origin(request.headers()) {
             return refusal(StatusCode::FORBIDDEN, FOREIGN_ORIGIN);
         }
-        request.extensions_mut().insert(AppApi);
+        request.extensions_mut().insert(AppApi(app));
         hardened(next.run(request).await)
     }
 
@@ -274,7 +275,7 @@ pub(crate) async fn serve_app_hosts(
         return next.run(request).await;
     };
     if is_app_api(request.method(), request.uri().path(), node_prefix()) {
-        return hosts.hand_over(request, next).await;
+        return hosts.hand_over(app, request, next).await;
     }
     let (parts, _body) = request.into_parts();
     hosts.respond(&app, &parts, parts.uri.path(), "").await

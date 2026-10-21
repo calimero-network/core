@@ -1501,7 +1501,9 @@ mod tests {
                 refuse_foreign_origins,
             ));
         let app = if app_api {
-            app.layer(Extension(crate::app_host::AppApi))
+            app.layer(Extension(crate::app_host::AppApi(
+                calimero_primitives::application::ApplicationId::from([7; 32]),
+            )))
         } else {
             app
         };
@@ -2701,6 +2703,95 @@ mod tests {
             resp["result"]["contextIds"],
             serde_json::to_value(vec![bound_ctx()]).unwrap(),
             "only the bound context may be subscribed: {resp}"
+        );
+    }
+
+    /// A key bound to one application, on a node holding a context of it and
+    /// one of another application.
+    async fn spawn_test_ws_application_bound_key() -> TestServer {
+        let scope = crate::auth::ClientKeyScope(
+            mero_auth::auth::bindings::ClientKeyBindings::from_permissions(&[
+                mero_auth::auth::bindings::application_binding(
+                    &calimero_primitives::application::ApplicationId::from([0xD1u8; 32])
+                        .to_string(),
+                ),
+                "context:execute".to_owned(),
+            ]),
+        );
+        let (event_sender, _) = broadcast::channel(256);
+        let server = spawn_test_ws_layered(
+            true,
+            |app| {
+                app.layer(Extension(scope))
+                    .layer(Extension(crate::auth::AuthenticatedNodeOwner))
+            },
+            crate::test_support::stub_node_manager(vec![]),
+            event_sender,
+            WsConfig::new(true),
+        )
+        .await;
+        for (context, app) in [(bound_ctx(), [0xD1u8; 32]), (other_ctx(), [0xD2u8; 32])] {
+            crate::test_support::put_context_app(
+                server.state.ctx_client.datastore(),
+                context,
+                calimero_primitives::application::ApplicationId::from(app),
+            );
+        }
+        server
+    }
+
+    #[actix::test]
+    async fn an_application_bound_key_subscribes_only_to_its_applications_contexts() {
+        let server = spawn_test_ws_application_bound_key().await;
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+
+        let req = WsRequest {
+            id: Some(1),
+            payload: RequestPayload::Subscribe(SubscribeRequest {
+                context_ids: vec![bound_ctx(), other_ctx()],
+                group_ids: vec![],
+            }),
+        };
+        write
+            .send(Message::Text(serde_json::to_string(&req).unwrap().into()))
+            .await
+            .unwrap();
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+
+        assert_eq!(
+            resp["result"]["contextIds"],
+            serde_json::to_value(vec![bound_ctx()]).unwrap(),
+            "another application's context must be refused: {resp}"
+        );
+    }
+
+    #[actix::test]
+    async fn an_application_bound_key_cannot_execute_on_another_applications_context() {
+        let server = spawn_test_ws_application_bound_key().await;
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+
+        let req = WsRequest {
+            id: Some(1),
+            payload: RequestPayload::Execute(ExecutionRequest::new(
+                other_ctx(),
+                "some_method".to_owned(),
+                json!({}),
+            )),
+        };
+        write
+            .send(Message::Text(serde_json::to_string(&req).unwrap().into()))
+            .await
+            .unwrap();
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("execute response");
+
+        assert!(
+            resp.to_string()
+                .contains("not permitted to act on this context"),
+            "{resp}"
         );
     }
 

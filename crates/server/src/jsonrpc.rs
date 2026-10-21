@@ -383,13 +383,19 @@ impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, RpcError<E>> {
 
 #[cfg(test)]
 mod client_key_binding_tests {
+    use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::ContextId;
+    use calimero_server_primitives::jsonrpc::{
+        ExecutionRequest, Request as PrimitiveRequest, RequestId, RequestPayload, Version,
+    };
     use calimero_utils_actix::LazyRecipient;
     use mero_auth::auth::bindings::{application_binding, ClientKeyBindings};
 
-    use super::binding_refusal;
     use super::test_support::state_with;
+    use super::{binding_refusal, handle_request_inner};
+    use crate::auth::AuthenticatedNodeOwner;
     use crate::auth::ClientKeyScope;
+    use crate::test_support::put_context_app;
 
     fn scope(permissions: &[String]) -> ClientKeyScope {
         ClientKeyScope(ClientKeyBindings::from_permissions(permissions))
@@ -413,6 +419,59 @@ mod client_key_binding_tests {
 
         assert!(binding_refusal(&t.state, Some(&s), &mine).is_none());
         assert!(binding_refusal(&t.state, Some(&s), &other).is_some());
+    }
+
+    #[tokio::test]
+    async fn an_application_bound_key_reaches_only_its_applications_contexts() {
+        let t = state_with(true, LazyRecipient::new()).await;
+        let (mine, other) = (ContextId::from([1; 32]), ContextId::from([2; 32]));
+        let (app, other_app) = (ApplicationId::from([7; 32]), ApplicationId::from([8; 32]));
+        for (context, app) in [(mine, app), (other, other_app)] {
+            put_context_app(t.state.ctx_client.datastore(), context, app);
+        }
+        let s = scope(&[application_binding(&app.to_string())]);
+
+        assert!(binding_refusal(&t.state, Some(&s), &mine).is_none());
+        assert!(binding_refusal(&t.state, Some(&s), &other).is_some());
+    }
+
+    #[tokio::test]
+    async fn an_application_bound_key_is_refused_an_execute_on_another_applications_context() {
+        let t = state_with(true, LazyRecipient::new()).await;
+        let other = ContextId::from([2; 32]);
+        put_context_app(
+            t.state.ctx_client.datastore(),
+            other,
+            ApplicationId::from([8; 32]),
+        );
+        let s = scope(&[application_binding(
+            &ApplicationId::from([7; 32]).to_string(),
+        )]);
+        let request = PrimitiveRequest::new(
+            Version::TwoPointZero,
+            RequestId::Number(1),
+            RequestPayload::Execute(ExecutionRequest::new(
+                other,
+                "set".to_owned(),
+                serde_json::json!({}),
+            )),
+        );
+        let request = serde_json::from_value(serde_json::to_value(&request).unwrap()).unwrap();
+
+        let response = handle_request_inner(
+            t.state,
+            None,
+            Some(AuthenticatedNodeOwner),
+            None,
+            None,
+            Some(s),
+            request,
+        )
+        .await;
+
+        assert!(serde_json::to_string(&response.0)
+            .unwrap()
+            .contains("not permitted to act on this context"));
     }
 
     #[tokio::test]

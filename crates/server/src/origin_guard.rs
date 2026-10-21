@@ -346,7 +346,7 @@ mod tests {
                 .layer(axum::middleware::from_fn(
                     move |mut request: axum::extract::Request, next: axum::middleware::Next| async move {
                         if marked {
-                            request.extensions_mut().insert(AppApi);
+                            request.extensions_mut().insert(AppApi(ApplicationId::from([7; 32])));
                         }
                         next.run(request).await
                     },
