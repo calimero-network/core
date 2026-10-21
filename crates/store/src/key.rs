@@ -31,7 +31,8 @@ pub use context::{
     ContextActivatedBytecode, ContextActivatedStateVersion, ContextAuthoredRemaining, ContextBlob,
     ContextConfig, ContextDagDelta, ContextExecutingBytecode, ContextIdentity, ContextLeftMarker,
     ContextMeta, ContextMigrationFailed, ContextPrivateState, ContextResyncRequested, ContextState,
-    ContextWarrantNonce, ScopeUnifiedOp, STATE_KEY_LEN,
+    ContextWarrantNonce, NamespaceForgotten, ScopeUnifiedOp, NAMESPACE_FORGOTTEN_KEY_LEN,
+    NAMESPACE_FORGOTTEN_PREFIX, STATE_KEY_LEN,
 };
 pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
 pub use group::{

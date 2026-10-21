@@ -5893,6 +5893,96 @@ fn the_device_survives_leaving_one_namespace_and_goes_with_the_last() {
 }
 
 #[test]
+fn the_device_outlives_the_last_namespace_while_a_removal_is_remembered() {
+    let store = test_store();
+    let repo = NodeDeviceRepository::new(&store);
+    let namespace = ContextGroupId::from([0xA1u8; 32]);
+    let _ = NamespaceRepository::new(&store)
+        .participate_in_bundle(&namespace)
+        .expect("provision");
+    let device = repo.ensure_enrolled(&namespace).expect("mint").device();
+    ForgottenNamespaces::new(&store)
+        .mark(&namespace, None, 1, None)
+        .expect("remember the removal");
+
+    delete_namespace_local_state(&store, &namespace).expect("remove the only namespace");
+
+    assert_eq!(
+        repo.get().expect("read").map(|d| d.device()),
+        Some(device),
+        "a rejoin has to find the device the inviter wrapped its key for"
+    );
+}
+
+#[test]
+fn delete_namespace_local_state_also_drops_the_bootstrap_inviter_and_the_pending_self_purge() {
+    let store = test_store();
+    let namespace = ContextGroupId::from([0xA2u8; 32]);
+    let _ = NamespaceRepository::new(&store)
+        .participate_in_bundle(&namespace)
+        .expect("provision");
+    let membership = MembershipRepository::new(&store);
+    membership
+        .set_bootstrap_inviter(namespace.to_bytes().into(), AccountId::from([0x01; 32]))
+        .expect("record the inviter hint");
+    PendingSelfPurgeRepository::new(&store)
+        .mark(&namespace)
+        .expect("mark the purge");
+
+    delete_namespace_local_state(&store, &namespace).expect("remove the namespace");
+
+    assert!(membership
+        .bootstrap_inviter(namespace.to_bytes().into())
+        .expect("read")
+        .is_none());
+    assert!(!PendingSelfPurgeRepository::new(&store)
+        .is_marked(&namespace)
+        .expect("read"));
+}
+
+#[test]
+fn delete_group_local_rows_drops_the_owner_op_counter() {
+    let store = test_store();
+    let group = ContextGroupId::from([0xA3u8; 32]);
+    crate::owner_guard::advance_owner_op_counter(&store, &group).expect("spend a counter");
+    assert_eq!(
+        crate::owner_guard::owner_op_counter(&store, &group).expect("read"),
+        1
+    );
+
+    delete_group_local_rows(&store, &group).expect("delete the group");
+
+    assert_eq!(
+        crate::owner_guard::owner_op_counter(&store, &group).expect("read"),
+        0
+    );
+}
+
+#[test]
+fn delete_context_members_drops_one_contexts_capability_rows_only() {
+    let store = test_store();
+    let group = ContextGroupId::from([0xA4u8; 32]);
+    let member = AccountId::from([0x02; 32]);
+    let (gone, kept) = (ContextId::from([0x31; 32]), ContextId::from([0x32; 32]));
+    let caps = CapabilitiesRepository::new(&store);
+    for context in [gone, kept] {
+        caps.set_context_member(&group, &context, &member, 1)
+            .expect("grant");
+    }
+
+    caps.delete_context_members(&group, &gone).expect("delete");
+
+    assert!(caps
+        .context_member_capability(&group, &gone, &member)
+        .expect("read")
+        .is_none());
+    assert!(caps
+        .context_member_capability(&group, &kept, &member)
+        .expect("read")
+        .is_some());
+}
+
+#[test]
 fn delete_namespace_local_state_clears_identity_head_and_ops() {
     use calimero_primitives::identity::PublicKey;
     use calimero_store::key::{
@@ -5955,7 +6045,33 @@ fn delete_namespace_local_state_clears_identity_head_and_ops() {
             .unwrap();
     }
 
+    // Op-log rows scoped to the namespace go with it; another scope's stay.
+    let op_row = |scope: [u8; 32]| [scope.to_vec(), vec![0x66; 32]].concat();
+    for scope in [ns_bytes, other_ns_bytes] {
+        store
+            .raw_put(calimero_store::db::Column::UnifiedOp, &op_row(scope), b"op")
+            .unwrap();
+    }
+
     delete_namespace_local_state(&store, &ns_id).unwrap();
+
+    assert!(
+        store
+            .raw_get(calimero_store::db::Column::UnifiedOp, &op_row(ns_bytes))
+            .unwrap()
+            .is_none(),
+        "the namespace's unified op-log rows should be cleared"
+    );
+    assert!(
+        store
+            .raw_get(
+                calimero_store::db::Column::UnifiedOp,
+                &op_row(other_ns_bytes)
+            )
+            .unwrap()
+            .is_some(),
+        "another namespace's op-log rows must stay"
+    );
 
     let handle = store.handle();
     assert!(

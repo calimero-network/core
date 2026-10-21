@@ -7,7 +7,7 @@ use calimero_primitives::blobs::BlobId as PrimitiveBlobId;
 use calimero_primitives::context::ContextId as PrimitiveContextId;
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 use generic_array::sequence::Concat;
-use generic_array::typenum::{U32, U33};
+use generic_array::typenum::{U1, U32, U33};
 use generic_array::GenericArray;
 
 use crate::db::Column;
@@ -531,6 +531,76 @@ impl Debug for ContextLeftMarker {
         f.debug_struct("ContextLeftMarker")
             .field("context_id", &self.context_id())
             .field("public_key", &self.public_key())
+            .finish()
+    }
+}
+
+/// First byte of a [`NamespaceForgotten`] key. Together with its 33-byte length it
+/// keeps the row apart from the 32-byte and 64-byte keys that share `ContextLocal`.
+pub const NAMESPACE_FORGOTTEN_PREFIX: u8 = 0x4E;
+
+/// Length of a [`NamespaceForgotten`] key: `prefix ‖ namespace_id`.
+pub const NAMESPACE_FORGOTTEN_KEY_LEN: usize = 33;
+
+#[derive(Clone, Copy, Debug)]
+pub struct NamespaceForgottenPrefix;
+
+impl KeyComponent for NamespaceForgottenPrefix {
+    type LEN = U1;
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct NamespaceIdComponent;
+
+impl KeyComponent for NamespaceIdComponent {
+    type LEN = U32;
+}
+
+/// Node-local record, in `ContextLocal` and never synced, that the user removed a
+/// namespace from this device; only an explicit join clears it.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NamespaceForgotten(Key<(NamespaceForgottenPrefix, NamespaceIdComponent)>);
+
+impl NamespaceForgotten {
+    #[must_use]
+    pub fn new(namespace_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([NAMESPACE_FORGOTTEN_PREFIX])
+            .concat(GenericArray::from(namespace_id))))
+    }
+
+    #[must_use]
+    pub fn namespace_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; NAMESPACE_FORGOTTEN_KEY_LEN]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for NamespaceForgotten {
+    type Components = (NamespaceForgottenPrefix, NamespaceIdComponent);
+
+    fn column() -> Column {
+        Column::ContextLocal
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NamespaceForgotten {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for NamespaceForgotten {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NamespaceForgotten")
+            .field("namespace_id", &self.namespace_id())
             .finish()
     }
 }

@@ -1480,6 +1480,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "sha2 0.11.0",
+ "strum 0.28.0",
  "tar",
  "tempfile",
  "thiserror 2.0.21",

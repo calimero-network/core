@@ -1359,6 +1359,18 @@ pub fn parse_api_error(err: Report) -> ApiError {
             message: err.to_string(),
         };
     }
+    // The request conflicts with what this node holds: a namespace the user removed,
+    // or the account namespace, which cannot be removed.
+    if let Some(
+        calimero_context::error::ContextError::NamespaceForgotten { .. }
+        | calimero_context::error::ContextError::AccountNamespaceNotRemovable { .. },
+    ) = err.downcast_ref::<calimero_context::error::ContextError>()
+    {
+        return ApiError {
+            status_code: StatusCode::CONFLICT,
+            message: err.to_string(),
+        };
+    }
     // A warrant the gate refused, surfacing from inside the execute path. Every
     // variant is about the caller's authorization rather than this node's health,
     // and a replay is the one most likely to be hit in practice: a relay that
@@ -2710,6 +2722,25 @@ mod parse_api_error_tests {
                 "the id the caller supplied is what tells them what was missing; got: {}",
                 api.message
             );
+        }
+
+        #[test]
+        fn a_removed_namespace_and_the_account_namespace_are_409() {
+            for err in [
+                ContextError::NamespaceForgotten {
+                    namespace_id: "n".to_owned(),
+                },
+                ContextError::AccountNamespaceNotRemovable {
+                    namespace_id: "n".to_owned(),
+                },
+            ] {
+                let rendered = err.to_string();
+                assert_eq!(
+                    parse_api_error(err.into()).status_code,
+                    StatusCode::CONFLICT,
+                    "{rendered}"
+                );
+            }
         }
 
         #[test]

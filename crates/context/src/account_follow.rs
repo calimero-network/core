@@ -19,8 +19,9 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
     account_for_group, bind_device_everywhere, replay_known_revocations, withdraw_device_in,
-    AccountBindingRepository, AccountDeviceRegistry, AccountNamespaceSet, KnownDeviceCert,
-    MetaRepository, NamespaceDagService, NamespaceRepository, NodeDeviceRepository,
+    AccountBindingRepository, AccountDeviceRegistry, AccountNamespaceSet, ForgottenNamespaces,
+    KnownDeviceCert, MetaRepository, NamespaceDagService, NamespaceRepository,
+    NodeDeviceRepository,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
@@ -279,8 +280,14 @@ pub fn node_reaches(store: &Store, group: &ContextGroupId) -> EyreResult<bool> {
 /// Propagates the participation read and the reads behind [`node_reaches`].
 pub fn namespaces_in_reach(store: &Store) -> EyreResult<Vec<ContextGroupId>> {
     let mut reached = Vec::new();
+    let forgotten = ForgottenNamespaces::new(store);
     for namespace in NamespaceRepository::new(store).participating_namespaces()? {
-        if node_reaches(store, &namespace)? {
+        if forgotten.is_forgotten(&namespace)? {
+            debug!(
+                ?namespace,
+                "account-follow: removed from this device; not subscribing"
+            );
+        } else if node_reaches(store, &namespace)? {
             reached.push(namespace);
         } else {
             debug!(?namespace, "account-follow: this device's scope no longer reaches this namespace; not subscribing");
@@ -792,12 +799,23 @@ async fn follow(store: &Store, node_client: &NodeClient, namespace: ContextGroup
             ?namespace,
             "account-follow: following a namespace the account gained"
         ),
+        Err(err) if is_forgotten(&err) => debug!(
+            ?namespace,
+            "account-follow: not following a namespace removed from this device"
+        ),
         Err(err) => warn!(
             ?err,
             ?namespace,
             "account-follow: failed to follow a namespace the account gained"
         ),
     }
+}
+
+fn is_forgotten(err: &eyre::Report) -> bool {
+    matches!(
+        err.downcast_ref::<crate::error::ContextError>(),
+        Some(crate::error::ContextError::NamespaceForgotten { .. })
+    )
 }
 
 #[cfg(test)]
@@ -813,8 +831,8 @@ mod tests {
     use calimero_governance_store::op_events::OpEvent;
     use calimero_governance_store::{
         op_events, AccountBindingRepository, AccountDeviceRegistry, AccountNamespaceSet,
-        GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
-        NodeDeviceRepository,
+        ForgottenNamespaces, GroupKeyring, MembershipRepository, MetaRepository,
+        NamespaceRepository, NodeDeviceRepository,
     };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::GroupMemberRole;
@@ -1265,6 +1283,110 @@ mod tests {
         assert!(
             followed,
             "the listener never followed a namespace its account had already gained"
+        );
+    }
+
+    fn forget(store: &Store, namespace: ContextGroupId) {
+        ForgottenNamespaces::new(store)
+            .mark(&namespace, None, 1, None)
+            .expect("record the removal");
+    }
+
+    /// The start-up subscribe sweep and `join_context`'s namespace sync both run
+    /// their set through here.
+    #[test]
+    fn a_removed_namespace_is_left_out_of_the_set_a_device_subscribes() {
+        let store = store();
+        let (_account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[]);
+        let kept = ns(0xD7);
+        let removed = ns(0xD8);
+        a_namespace_targeting(&store, kept, app(0x11));
+        a_namespace_targeting(&store, removed, app(0x11));
+        forget(&store, removed);
+
+        let reached = namespaces_in_reach(&store).expect("read the participating set");
+
+        assert!(
+            reached.contains(&kept),
+            "the control is reached: {reached:?}"
+        );
+        assert!(
+            !reached.contains(&removed),
+            "a removed namespace must not be subscribed again: {reached:?}"
+        );
+    }
+
+    #[actix::test]
+    async fn the_start_up_sweep_does_not_follow_a_removed_namespace() {
+        let store = store();
+        let (account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[]);
+        let kept = ContextGroupId::from([0x96; 32]);
+        let removed = ContextGroupId::from([0x97; 32]);
+        let set = AccountNamespaceSet::new(&store, account_namespace);
+        set.record(kept, Some(app(0x11))).expect("the control");
+        set.record(removed, Some(app(0x11)))
+            .expect("the removed one");
+        forget(&store, removed);
+
+        let mut harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        let mut subscribed = Vec::new();
+        let _swept = eventually(|| {
+            subscribed.append(&mut harness.subscribed());
+            subscribed.contains(&topic(kept))
+        })
+        .await;
+        listener.abort();
+
+        assert!(
+            subscribed.contains(&topic(kept)),
+            "the sweep follows the control; got: {subscribed:?}"
+        );
+        assert!(
+            !subscribed.contains(&topic(removed)),
+            "the sweep must not bring a removed namespace back; got: {subscribed:?}"
+        );
+        assert!(
+            !NamespaceRepository::new(&store)
+                .participating_namespaces()
+                .expect("read the participation rows")
+                .contains(&removed),
+            "nor note participation in it"
+        );
+    }
+
+    #[actix::test]
+    async fn a_gain_of_a_removed_namespace_is_not_followed() {
+        let store = store();
+        let (account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[]);
+        let kept = ContextGroupId::from([0x98; 32]);
+        let removed = ContextGroupId::from([0x99; 32]);
+        forget(&store, removed);
+
+        let mut harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        for namespace in [removed, kept] {
+            op_events::notify(OpEvent::AccountNamespaceGained {
+                group_id: account_namespace.to_bytes(),
+                namespace,
+                application: Some(app(0x11)),
+            });
+        }
+        let mut subscribed = Vec::new();
+        let _followed = eventually(|| {
+            subscribed.append(&mut harness.subscribed());
+            subscribed.contains(&topic(kept))
+        })
+        .await;
+        listener.abort();
+
+        assert!(
+            subscribed.contains(&topic(kept)),
+            "the control gain is followed; got: {subscribed:?}"
+        );
+        assert!(
+            !subscribed.contains(&topic(removed)),
+            "a gain of a removed namespace must not follow it; got: {subscribed:?}"
         );
     }
 

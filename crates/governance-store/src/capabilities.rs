@@ -6,7 +6,7 @@ use calimero_primitives::context::ContextId;
 use calimero_store::key::{
     GroupContextMemberCap, GroupDefaultCaps, GroupDefaultCapsValue, GroupMemberCapability,
     GroupMemberCapabilityValue, GroupSubgroupVis, GroupSubgroupVisValue,
-    GROUP_MEMBER_CAPABILITY_PREFIX,
+    GROUP_CONTEXT_MEMBER_CAP_PREFIX, GROUP_MEMBER_CAPABILITY_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -204,6 +204,26 @@ impl<'a> CapabilitiesRepository<'a> {
             GroupMemberCapability::new(gid, AccountId::from([0u8; 32])),
             GROUP_MEMBER_CAPABILITY_PREFIX,
             |k| k.group_id() == gid,
+        )?;
+        let mut handle = self.store.handle();
+        for key in keys {
+            handle.delete(&key)?;
+        }
+        Ok(())
+    }
+
+    /// Delete every member's capability row for `context_id` in `group_id`.
+    pub fn delete_context_members(
+        &self,
+        group_id: &ContextGroupId,
+        context_id: &ContextId,
+    ) -> EyreResult<()> {
+        let gid = group_id.to_bytes();
+        let keys = collect_keys_with_prefix(
+            self.store,
+            GroupContextMemberCap::new(gid, *context_id, AccountId::from([0u8; 32])),
+            GROUP_CONTEXT_MEMBER_CAP_PREFIX,
+            |k| k.group_id() == gid && k.context_id() == *context_id,
         )?;
         let mut handle = self.store.handle();
         for key in keys {

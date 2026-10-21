@@ -51,6 +51,7 @@ pub mod namespace_pending_op_count;
 pub mod pair_device_complete;
 pub mod pair_device_init;
 pub mod precompile_application;
+pub mod purge_namespace;
 pub mod relay_signed_join;
 pub mod relink_device;
 pub mod remove_group_members;
