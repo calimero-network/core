@@ -1,4 +1,4 @@
-name: 44 - Two namespaces on different releases each load their own frontend (1-node)
+name: 45 - Two namespaces on different releases each load their own frontend (1-node)
 description: >
   One app ships at two releases, each bundling its own frontend whose
   index.html embeds its version string. A namespace is created on release 1.0.0,
@@ -6,11 +6,12 @@ description: >
 
   The node serves each release's files from the app's own host,
   `{label}.localhost:{port}`, with the content security policy, `nosniff`, an
-  ETag and a Content-Length. `/` redirects to the newest release. The app host
-  answers 404 for the dashboard, admin API, auth and RPC paths, and the normal
-  host still serves the dashboard. A request to the node's own host that
-  carries the app host as its `Origin` is refused with 403, and the same request
-  without an `Origin` is refused by auth with 401.
+  ETag and a Content-Length, and `/` redirects to the newest release.
+  The app host answers 404 for the dashboard, admin API and login. It passes
+  `/jsonrpc` to the node's auth: 401 without a token, a real call with one
+  from the app's own origin, 403 from any other origin. The same app origin on
+  the node's own host is refused with 403 on every route, and a loopback dev
+  page is not.
 
   Serving is keyed by release, not namespace (`/?namespace=` is not supported
   yet), so the assertions run per release on the one app host.
@@ -50,6 +51,22 @@ steps:
     outputs:
       namespace_a: namespaceId
 
+  - name: Create a subgroup in namespace A
+    type: create_group_in_namespace
+    node: app-migration-frontend-1
+    namespace_id: "{{namespace_a}}"
+    group_name: "frontend-a"
+    outputs:
+      group_a: groupId
+
+  - name: Create a context on release 1.0.0
+    type: create_context
+    node: app-migration-frontend-1
+    application_id: "{{app_id}}"
+    group_id: "{{group_a}}"
+    outputs:
+      ctx_a: contextId
+
   - name: Install release 2.0.0
     type: install_application
     node: app-migration-frontend-1
@@ -78,5 +95,7 @@ steps:
       - "{{app_id}}"
       - "1.0.0"
       - "2.0.0"
+      - embedded
+      - "{{ctx_a}}"
 
 stop_all_nodes: true
