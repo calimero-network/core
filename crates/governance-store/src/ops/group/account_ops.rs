@@ -281,14 +281,23 @@ pub(crate) fn apply_device_certified(
     Ok(())
 }
 
-/// A rejoin or plain leave is the account's latest word, so a purge armed on this node
-/// for `namespace` no longer applies. Only this node's own account namespace arms one.
-fn disarm_own_purge(ctx: &GroupApplyCtx<'_>, namespace: &ContextGroupId) -> EyreResult<()> {
+/// The account's latest word on `namespace` decides this node's purge: a purging leave
+/// arms it, a rejoin or plain leave withdraws it. Only this node's own account arms one.
+fn set_own_purge(
+    ctx: &GroupApplyCtx<'_>,
+    namespace: &ContextGroupId,
+    armed: bool,
+) -> EyreResult<()> {
     let own = NodeDeviceRepository::new(ctx.store()).account_namespace()?;
-    if own.as_ref() == Some(ctx.group_id()) {
-        PendingNamespacePurges::new(ctx.store()).disarm(namespace)?;
+    if own.as_ref() != Some(ctx.group_id()) {
+        return Ok(());
     }
-    Ok(())
+    let pending = PendingNamespacePurges::new(ctx.store());
+    if armed {
+        pending.arm(namespace)
+    } else {
+        pending.disarm(namespace)
+    }
 }
 
 /// `GroupOp::AccountNamespaceGained` - record a namespace this account is in.
@@ -304,7 +313,7 @@ pub(crate) fn apply_namespace_gained(
     }
 
     AccountNamespaceSet::new(ctx.store(), group_id).record(*namespace, application)?;
-    disarm_own_purge(ctx, namespace)?;
+    set_own_purge(ctx, namespace, false)?;
     ctx.queue_event(OpEvent::AccountNamespaceGained {
         group_id: group_id.to_bytes(),
         namespace: *namespace,
@@ -328,9 +337,7 @@ pub(crate) fn apply_namespace_left(
     }
 
     AccountNamespaceSet::new(ctx.store(), group_id).forget(*namespace)?;
-    if !purge {
-        disarm_own_purge(ctx, namespace)?;
-    }
+    set_own_purge(ctx, namespace, purge)?;
     ctx.queue_event(OpEvent::AccountNamespaceLeft {
         group_id: group_id.to_bytes(),
         namespace: *namespace,

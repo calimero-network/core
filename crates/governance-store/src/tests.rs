@@ -15204,19 +15204,30 @@ mod account_plane_apply {
         );
     }
 
-    /// Folding an op for `namespace` with a purge armed on this node, and whether the
-    /// purge is still armed afterwards.
-    fn armed_after_folding(op: impl FnOnce(ContextGroupId) -> GroupOp) -> bool {
+    /// Whether a purge of a namespace is armed on this node after folding `op` for it, in
+    /// this node's own account namespace or in another account's, starting `armed_before`.
+    fn armed_after_folding(
+        own_namespace: bool,
+        armed_before: bool,
+        op: impl FnOnce(ContextGroupId) -> GroupOp,
+    ) -> bool {
         let store = test_store();
-        let gid = crate::NodeDeviceRepository::new(&store)
-            .account_namespace()
-            .unwrap()
-            .expect("test_store provisions a root");
+        let gid = if own_namespace {
+            crate::NodeDeviceRepository::new(&store)
+                .account_namespace()
+                .unwrap()
+                .expect("test_store provisions a root")
+        } else {
+            test_group_id()
+        };
         let owner_sk = key(1);
         let _root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
 
         let namespace = ContextGroupId::from([0x87; 32]);
-        PendingNamespacePurges::new(&store).arm(&namespace).unwrap();
+        let pending = PendingNamespacePurges::new(&store);
+        if armed_before {
+            pending.arm(&namespace).unwrap();
+        }
         crate::apply_group_op_mutations(
             &store,
             &gid,
@@ -15226,33 +15237,41 @@ mod account_plane_apply {
             &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
         )
         .unwrap();
-        PendingNamespacePurges::new(&store)
-            .is_armed(&namespace)
-            .unwrap()
+        pending.is_armed(&namespace).unwrap()
+    }
+
+    fn rejoin(namespace: ContextGroupId) -> GroupOp {
+        GroupOp::AccountNamespaceGained {
+            namespace,
+            application: None,
+        }
     }
 
     #[test]
     fn folding_a_rejoin_withdraws_a_pending_purge() {
-        assert!(!armed_after_folding(|namespace| {
-            GroupOp::AccountNamespaceGained {
-                namespace,
-                application: None,
-            }
-        }));
+        assert!(!armed_after_folding(true, true, rejoin));
     }
 
     #[test]
     fn folding_a_plain_leave_withdraws_a_pending_purge() {
-        assert!(!armed_after_folding(|namespace| {
+        assert!(!armed_after_folding(true, true, |namespace| {
             GroupOp::AccountNamespaceLeft { namespace }
         }));
     }
 
     #[test]
-    fn folding_a_purging_leave_keeps_a_pending_purge() {
-        assert!(armed_after_folding(|namespace| {
+    fn folding_a_purging_leave_arms_a_purge() {
+        assert!(armed_after_folding(true, false, |namespace| {
             GroupOp::AccountNamespacePurged { namespace }
         }));
+    }
+
+    #[test]
+    fn another_accounts_ops_neither_arm_nor_withdraw_a_purge() {
+        let purged = |namespace| GroupOp::AccountNamespacePurged { namespace };
+        assert!(!armed_after_folding(false, false, purged));
+        assert!(armed_after_folding(false, true, purged));
+        assert!(armed_after_folding(false, true, rejoin));
     }
 
     /// An admin at the cut that this namespace can name no account for writes

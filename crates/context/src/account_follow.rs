@@ -211,13 +211,7 @@ async fn run(
                     let topics = Arc::clone(&topics);
                     let _ = tasks.spawn(async move {
                         let _decided = topics.lock().await;
-                        let namespace = ContextGroupId::from(group_id);
-                        if PendingNamespacePurges::new(&store)
-                            .is_armed(&namespace)
-                            .unwrap_or(false)
-                        {
-                            purge_if_left(&store, &manager, namespace).await;
-                        }
+                        purge_if_left(&store, &manager, ContextGroupId::from(group_id)).await;
                     });
                 }
             }
@@ -803,26 +797,16 @@ fn own_account(store: &Store) -> Option<AccountId> {
         .map(|held| held.account)
 }
 
-/// Purge `namespace` once this account has left it, else arm the purge durably for
-/// its `MemberRemoved` or the next start; under the `topics` lock, so no event slips in.
+/// Purge `namespace` when the fold armed a purge and the account has left it; under the
+/// `topics` lock, so no event slips in. Arming and withdrawing belong to the fold.
 async fn purge_if_left(store: &Store, manager: &Addr<ContextManager>, namespace: ContextGroupId) {
     let pending = PendingNamespacePurges::new(store);
+    if !pending.is_armed(&namespace).unwrap_or(false) {
+        return;
+    }
     match account_is_member(store, namespace) {
         Ok(false) => {}
-        Ok(true) => {
-            if let Err(err) = pending.arm(&namespace) {
-                warn!(
-                    ?err,
-                    ?namespace,
-                    "account-follow: could not remember a purge"
-                );
-            }
-            warn!(
-                ?namespace,
-                "account-follow: a purge came before the account's leave; waiting for it"
-            );
-            return;
-        }
+        Ok(true) => return,
         Err(err) => {
             warn!(
                 ?err,
@@ -1608,11 +1592,7 @@ mod tests {
 
         let harness = actor::over(store.clone()).await;
         let listener = listen(&store, &harness);
-        op_events::notify(OpEvent::AccountNamespaceLeft {
-            group_id: account_namespace.to_bytes(),
-            namespace: left,
-            purge: true,
-        });
+        purge_announced(&store, account_namespace, left);
 
         let purged =
             eventually(|| MetaRepository::new(&store).load(&left).unwrap().is_none()).await;
@@ -1644,6 +1624,44 @@ mod tests {
         namespace
     }
 
+    /// This node as the holder of its account, with a signer that is an admin of the
+    /// account namespace, so ops signed with it fold for real.
+    fn an_account_folding_ops(store: &Store) -> (ContextGroupId, PrivateKey) {
+        let (account_namespace, _device) = holder_device_scoped_to(store, &[]);
+        let (_ns, signer_pk, signer_sk) = NamespaceRepository::new(store)
+            .participate_in(&account_namespace)
+            .expect("this node's signer");
+        let root = NodeDeviceRepository::new(store)
+            .holder_root()
+            .expect("read the root")
+            .expect("this node holds the root");
+        let signer_cert = DeviceCert::sign(
+            root.signing_key(),
+            root.account(),
+            DeviceId::mint(root.account(), [0x7A; 16]),
+            &signer_pk,
+            &KemPublicKey::from([0x7A; 32]),
+            0,
+            0,
+        )
+        .expect("the root certifies the signer");
+        AccountBindingRepository::new(store)
+            .apply_link(&account_namespace, &root.genesis(), &[], &signer_cert, 0)
+            .expect("bind the signer")
+            .expect("the founder's own device binds");
+        let account = this_nodes_account(store);
+        MetaRepository::new(store)
+            .save(
+                &account_namespace,
+                &calimero_governance_store::test_fixtures::test_meta(),
+            )
+            .expect("the account namespace");
+        MembershipRepository::new(store)
+            .add_member(&account_namespace, &account, GroupMemberRole::Admin)
+            .expect("the account administers its own namespace");
+        (account_namespace, PrivateKey::from(signer_sk))
+    }
+
     fn this_nodes_account(store: &Store) -> AccountId {
         NodeDeviceRepository::new(store)
             .get()
@@ -1652,7 +1670,36 @@ mod tests {
             .account
     }
 
-    fn purge_announced(account_namespace: ContextGroupId, namespace: ContextGroupId) {
+    fn fold(store: &Store, account_namespace: ContextGroupId, signer: &PrivateKey, op: GroupOp) {
+        calimero_governance_store::sign_apply_local_group_op_borsh(
+            store,
+            &account_namespace,
+            signer,
+            op,
+        )
+        .expect("the op folds");
+    }
+
+    fn purge_op(namespace: ContextGroupId) -> GroupOp {
+        GroupOp::AccountNamespacePurged { namespace }
+    }
+
+    fn rejoin_op(namespace: ContextGroupId) -> GroupOp {
+        GroupOp::AccountNamespaceGained {
+            namespace,
+            application: None,
+        }
+    }
+
+    /// A purging leave as the fold leaves it: the purge armed, the event queued.
+    fn purge_announced(
+        store: &Store,
+        account_namespace: ContextGroupId,
+        namespace: ContextGroupId,
+    ) {
+        PendingNamespacePurges::new(store)
+            .arm(&namespace)
+            .expect("arm the purge");
         op_events::notify(OpEvent::AccountNamespaceLeft {
             group_id: account_namespace.to_bytes(),
             namespace,
@@ -1677,8 +1724,8 @@ mod tests {
 
         let harness = actor::over(store.clone()).await;
         let listener = listen(&store, &harness);
-        purge_announced(account_namespace, kept);
-        purge_announced(account_namespace, sentinel);
+        purge_announced(&store, account_namespace, kept);
+        purge_announced(&store, account_namespace, sentinel);
         let sentinel_gone = eventually(|| {
             MetaRepository::new(&store)
                 .load(&sentinel)
@@ -1713,8 +1760,8 @@ mod tests {
         let harness = actor::over(store.clone()).await;
         let listener = listen(&store, &harness);
         let sentinel = a_held_namespace(&store, 0x9A);
-        purge_announced(account_namespace, left);
-        purge_announced(account_namespace, sentinel);
+        purge_announced(&store, account_namespace, left);
+        purge_announced(&store, account_namespace, sentinel);
         assert!(
             eventually(|| MetaRepository::new(&store)
                 .load(&sentinel)
@@ -1758,7 +1805,7 @@ mod tests {
             .expect("the account is a member");
         let harness = actor::over(store.clone()).await;
         let listener = listen(&store, &harness);
-        purge_announced(account_namespace, left);
+        purge_announced(&store, account_namespace, left);
         assert!(
             eventually(|| PendingNamespacePurges::new(&store).is_armed(&left).unwrap()).await,
             "the purge is waiting for the leave"
@@ -1783,66 +1830,24 @@ mod tests {
     #[actix::test]
     async fn a_rejoin_folded_while_no_listener_ran_cancels_the_armed_purge() {
         let store = store();
-        let (account_namespace, _device) = holder_device_scoped_to(&store, &[]);
-        let (_ns, signer_pk, signer_sk) = NamespaceRepository::new(&store)
-            .participate_in(&account_namespace)
-            .expect("this node's signer");
-        let root = NodeDeviceRepository::new(&store)
-            .holder_root()
-            .expect("read the root")
-            .expect("this node holds the root");
-        let signer_cert = DeviceCert::sign(
-            root.signing_key(),
-            root.account(),
-            DeviceId::mint(root.account(), [0x7A; 16]),
-            &signer_pk,
-            &KemPublicKey::from([0x7A; 32]),
-            0,
-            0,
-        )
-        .expect("the root certifies the signer");
-        AccountBindingRepository::new(&store)
-            .apply_link(&account_namespace, &root.genesis(), &[], &signer_cert, 0)
-            .expect("bind the signer")
-            .expect("the founder's own device binds");
+        let (account_namespace, signer_sk) = an_account_folding_ops(&store);
         let (held, sentinel) = (
             a_held_namespace(&store, 0xA3),
             a_held_namespace(&store, 0xA4),
         );
         let account = this_nodes_account(&store);
-        MetaRepository::new(&store)
-            .save(
-                &account_namespace,
-                &calimero_governance_store::test_fixtures::test_meta(),
-            )
-            .expect("the account namespace");
-        MembershipRepository::new(&store)
-            .add_member(&account_namespace, &account, GroupMemberRole::Admin)
-            .expect("the account administers its own namespace");
         MembershipRepository::new(&store)
             .add_member(&held, &account, GroupMemberRole::Member)
             .expect("the account is a member");
 
-        let harness = actor::over(store.clone()).await;
-        let listener = listen(&store, &harness);
-        purge_announced(account_namespace, held);
-        assert!(eventually(|| PendingNamespacePurges::new(&store).is_armed(&held).unwrap()).await);
-        listener.abort();
-
-        calimero_governance_store::sign_apply_local_group_op_borsh(
-            &store,
-            &account_namespace,
-            &PrivateKey::from(signer_sk),
-            GroupOp::AccountNamespaceGained {
-                namespace: held,
-                application: None,
-            },
-        )
-        .expect("the rejoin folds");
+        fold(&store, account_namespace, &signer_sk, purge_op(held));
+        assert!(PendingNamespacePurges::new(&store).is_armed(&held).unwrap());
+        fold(&store, account_namespace, &signer_sk, rejoin_op(held));
         MembershipRepository::new(&store)
             .remove_member(&held, &account)
             .expect("the account is removed later");
 
+        let harness = actor::over(store.clone()).await;
         let listener = listen(&store, &harness);
         op_events::notify(OpEvent::MemberRemoved {
             group_id: held.to_bytes(),
@@ -1869,6 +1874,80 @@ mod tests {
             MetaRepository::new(&store).load(&held).unwrap().is_some(),
             "the account rejoined, so the namespace stays"
         );
+    }
+
+    /// Events are handled after the folds queued them, so a removal and a re-add folded
+    /// in one batch reach the listener as a purge and then a rejoin: neither may arm.
+    #[actix::test]
+    async fn a_purge_and_rejoin_folded_in_one_batch_leave_nothing_armed() {
+        let store = store();
+        let (account_namespace, signer_sk) = an_account_folding_ops(&store);
+        let (held, sentinel) = (
+            a_held_namespace(&store, 0xA5),
+            a_held_namespace(&store, 0xA6),
+        );
+        let account = this_nodes_account(&store);
+        MembershipRepository::new(&store)
+            .add_member(&held, &account, GroupMemberRole::Member)
+            .expect("the account is a member");
+        fold(&store, account_namespace, &signer_sk, purge_op(held));
+        fold(&store, account_namespace, &signer_sk, rejoin_op(held));
+
+        let harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        op_events::notify(OpEvent::AccountNamespaceLeft {
+            group_id: account_namespace.to_bytes(),
+            namespace: held,
+            purge: true,
+        });
+        op_events::notify(OpEvent::AccountNamespaceGained {
+            group_id: account_namespace.to_bytes(),
+            namespace: held,
+            application: None,
+        });
+        MembershipRepository::new(&store)
+            .remove_member(&held, &account)
+            .expect("the account is removed later");
+        op_events::notify(OpEvent::MemberRemoved {
+            group_id: held.to_bytes(),
+            member: account,
+        });
+        purge_announced(&store, account_namespace, sentinel);
+        let sentinel_gone = eventually(|| {
+            MetaRepository::new(&store)
+                .load(&sentinel)
+                .unwrap()
+                .is_none()
+        })
+        .await;
+        listener.abort();
+
+        assert!(sentinel_gone, "the events were handled");
+        assert!(MetaRepository::new(&store).load(&held).unwrap().is_some());
+        assert!(!PendingNamespacePurges::new(&store).is_armed(&held).unwrap());
+    }
+
+    /// The removal can fold before the purge: the fold arms, and the purge event then
+    /// finds the account already gone and finishes it at once.
+    #[actix::test]
+    async fn a_purge_folded_after_the_removal_purges_at_once() {
+        let store = store();
+        let (account_namespace, signer_sk) = an_account_folding_ops(&store);
+        let left = a_held_namespace(&store, 0xA7);
+        let harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        fold(&store, account_namespace, &signer_sk, purge_op(left));
+        op_events::notify(OpEvent::AccountNamespaceLeft {
+            group_id: account_namespace.to_bytes(),
+            namespace: left,
+            purge: true,
+        });
+        let purged =
+            eventually(|| MetaRepository::new(&store).load(&left).unwrap().is_none()).await;
+        listener.abort();
+
+        assert!(purged, "the account was no member, and the fold armed it");
+        assert!(!PendingNamespacePurges::new(&store).is_armed(&left).unwrap());
     }
 
     /// The purge op applies from any device that is an admin of the account
@@ -1899,8 +1978,8 @@ mod tests {
 
         let harness = actor::over(store.clone()).await;
         let listener = listen(&store, &harness);
-        purge_announced(account_namespace, held);
-        purge_announced(account_namespace, sentinel);
+        purge_announced(&store, account_namespace, held);
+        purge_announced(&store, account_namespace, sentinel);
         let sentinel_gone = eventually(|| {
             MetaRepository::new(&store)
                 .load(&sentinel)
@@ -2119,7 +2198,7 @@ mod tests {
         let store = store();
         let (account_namespace, _device, root_sk) = a_device_scoped_to(&store, &[app(0x11)]);
         let account = AccountGenesis::new(root_sk.public_key()).account_id();
-        let kept = ContextGroupId::from([0x97; 32]);
+        let kept = ContextGroupId::from([0xB1; 32]);
         let namespaces = NamespaceRepository::new(&store);
         let _identity = namespaces
             .participate_in(&kept)
@@ -2133,11 +2212,11 @@ mod tests {
 
         // One barrier per half, so the assertion holds whichever runs first: the
         // follow half reaches `followed`, and the unfollow half drops `left`.
-        let followed = ContextGroupId::from([0x98; 32]);
+        let followed = ContextGroupId::from([0xB2; 32]);
         AccountNamespaceSet::new(&store, account_namespace)
             .record(followed, Some(app(0x11)))
             .expect("in scope");
-        let left = ContextGroupId::from([0x99; 32]);
+        let left = ContextGroupId::from([0xB3; 32]);
         let _identity = namespaces
             .participate_in(&left)
             .expect("takes part in it, and the set names it nowhere");
