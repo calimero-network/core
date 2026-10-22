@@ -318,7 +318,7 @@ snow = { version = "0.9.6", default-features = false }
 subtle = "2.6.1"
 strum = "0.28.0"
 syn = { version = "3.0", features = ["full"] }
-tantivy = { version = "0.26.2", default-features = false, features = ["lz4-compression"] }
+tantivy = { version = "0.27.0", default-features = false, features = ["lz4-compression"] }
 tar = "0.4"
 tempfile = "3.10"
 windows-sys = "0.61"
