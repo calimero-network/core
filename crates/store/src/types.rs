@@ -9,7 +9,7 @@ mod generic;
 mod group;
 
 pub use application::{ApplicationMeta, ApplicationPreviousBlob, PackageInfo, ServiceMeta};
-pub use blobs::BlobMeta;
+pub use blobs::{BlobMeta, BundleFrontend, FrontendFile};
 pub use context::{
     ContextActivatedBytecode, ContextActivatedStateVersion, ContextAuthoredRemaining,
     ContextConfig, ContextDagDelta, ContextExecutingBytecode, ContextIdentity, ContextLeftMarker,

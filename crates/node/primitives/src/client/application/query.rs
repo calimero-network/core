@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::blobs::BlobId;
-use calimero_store::key;
+use calimero_store::{key, types};
 use semver::Version;
 
 use super::application_from_meta;
@@ -23,6 +23,17 @@ pub fn compare_versions(a: &str, b: &str) -> Ordering {
 }
 
 impl NodeClient {
+    /// The frontend files stored for a bundle blob; `None` when it shipped none.
+    pub fn get_bundle_frontend(
+        &self,
+        bundle_blob_id: &BlobId,
+    ) -> eyre::Result<Option<types::BundleFrontend>> {
+        Ok(self
+            .datastore
+            .handle()
+            .get(&key::BundleFrontend::new(*bundle_blob_id))?)
+    }
+
     /// List all installed applications.
     pub fn list_applications(&self) -> eyre::Result<Vec<Application>> {
         let handle = self.datastore.handle();

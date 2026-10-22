@@ -53,3 +53,97 @@ impl PredefinedEntry for key::PrefetchedBlob {
     type Codec = Borsh;
     type DataType<'a> = ();
 }
+
+/// One frontend file of a bundle: its archive path and the blob holding its
+/// bytes. The blob id is content-addressed, so it doubles as a strong ETag.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct FrontendFile {
+    pub path: Box<str>,
+    pub blob: key::BlobMeta,
+}
+
+impl FrontendFile {
+    #[must_use]
+    pub const fn new(path: Box<str>, blob: key::BlobMeta) -> Self {
+        Self { path, blob }
+    }
+}
+
+/// Value for [`key::BundleFrontend`]: the owning application, the entry path
+/// and every stored file. A brand-new key, so a node that never stored one reads `None`.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct BundleFrontend {
+    pub application: key::ApplicationMeta,
+    pub entry: Box<str>,
+    pub files: Vec<FrontendFile>,
+}
+
+impl BundleFrontend {
+    #[must_use]
+    pub const fn new(
+        application: key::ApplicationMeta,
+        entry: Box<str>,
+        files: Vec<FrontendFile>,
+    ) -> Self {
+        Self {
+            application,
+            entry,
+            files,
+        }
+    }
+}
+
+impl PredefinedEntry for key::BundleFrontend {
+    type Codec = Borsh;
+    type DataType<'a> = BundleFrontend;
+}
+
+#[cfg(test)]
+mod bundle_frontend_tests {
+    use std::sync::Arc;
+
+    use calimero_primitives::blobs::BlobId;
+
+    use super::{BundleFrontend, FrontendFile};
+    use crate::db::InMemoryDB;
+    use crate::{key, Store};
+
+    #[test]
+    fn an_absent_key_reads_as_none() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let bundle = BlobId::from([7; 32]);
+
+        let read = store
+            .handle()
+            .get(&key::BundleFrontend::new(bundle))
+            .expect("read an absent key");
+
+        assert_eq!(read, None);
+    }
+
+    #[test]
+    fn a_written_index_reads_back() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let bundle = BlobId::from([7; 32]);
+        let index = BundleFrontend::new(
+            key::ApplicationMeta::new([3; 32].into()),
+            "frontend/index.html".into(),
+            vec![FrontendFile::new(
+                "frontend/index.html".into(),
+                key::BlobMeta::new(BlobId::from([1; 32])),
+            )],
+        );
+
+        let mut handle = store.handle();
+        handle
+            .put(&key::BundleFrontend::new(bundle), &index)
+            .unwrap();
+
+        assert_eq!(
+            handle.get(&key::BundleFrontend::new(bundle)).unwrap(),
+            Some(index)
+        );
+    }
+}
