@@ -33,6 +33,16 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error, field, info, info_span, warn, Instrument};
 use uuid::Uuid;
 
+use crate::app_host::AppApi;
+use crate::auth::{
+    AuthenticatedAccount, AuthenticatedDevice, AuthenticatedKey, AuthenticatedNodeOwner,
+    ClientKeyScope,
+};
+use crate::caller_account::EventCaller;
+use crate::config::ServerConfig;
+use crate::origin_guard::{refusal, OriginGuard};
+use crate::subscription_grants::{next_withdrawal, Withdrawal};
+
 mod execute;
 mod subscribe;
 mod unsubscribe;
@@ -245,7 +255,7 @@ pub(crate) fn service(
         config: ws_config,
         auth_enabled,
         events_fanout: Once::new(),
-        origin_guard: OriginGuard::new(config.cors.allowed_origins.as_deref()),
+        origin_guard: OriginGuard::for_config(config),
     });
 
     Some((path, get(ws_handler).layer(Extension(state))))
@@ -265,6 +275,7 @@ async fn ws_handler(
     auth_device: Option<Extension<AuthenticatedDevice>>,
     granted: Option<Extension<crate::auth::GrantedPermissions>>,
     client_scope: Option<Extension<ClientKeyScope>>,
+    app_api: Option<Extension<AppApi>>,
 ) -> impl IntoResponse {
     // Validate WebSocket upgrade request
     let ws = match ws {
@@ -279,7 +290,7 @@ async fn ws_handler(
         }
     };
 
-    if !state.origin_guard.admits(&headers, None) {
+    if app_api.is_none() && !state.origin_guard.admits(&headers, None) {
         return refusal(&headers, "/ws");
     }
 
@@ -1141,15 +1152,6 @@ macro_rules! mount_method {
 
 pub(crate) use mount_method;
 
-use crate::auth::{
-    AuthenticatedAccount, AuthenticatedDevice, AuthenticatedKey, AuthenticatedNodeOwner,
-    ClientKeyScope,
-};
-use crate::caller_account::EventCaller;
-use crate::config::ServerConfig;
-use crate::origin_guard::{refusal, OriginGuard};
-use crate::subscription_grants::{next_withdrawal, Withdrawal};
-
 /// WebSocket command channel buffer size
 ///
 /// This controls how many WebSocket commands can be queued in the channel before
@@ -1469,6 +1471,11 @@ mod tests {
     /// A server as `start` builds it: the service from the server config behind
     /// the router-wide guard, with the caller a token would have proved.
     async fn spawn_guarded_ws(embedded_auth: bool) -> (SocketAddr, TempDir) {
+        spawn_guarded_ws_marked(embedded_auth, false).await
+    }
+
+    /// `app_api` marks every request as one an app host handed over.
+    async fn spawn_guarded_ws_marked(embedded_auth: bool, app_api: bool) -> (SocketAddr, TempDir) {
         let mut config = crate::config::ServerConfig::new(
             vec!["/ip4/127.0.0.1/tcp/2528".parse().unwrap()],
             libp2p::identity::Keypair::generate_ed25519(),
@@ -1478,6 +1485,7 @@ mod tests {
             None,
         );
         config.cors.allowed_origins = Some(vec!["https://app.example".to_owned()]);
+        config.apps.port = Some(2429);
         let (event_sender, _) = broadcast::channel(16);
         let (node_client, ctx_client, blob_dir) =
             test_clients(LazyRecipient::new(), event_sender).await;
@@ -1489,9 +1497,16 @@ mod tests {
                 [7; 32],
             ))))
             .layer(axum::middleware::from_fn_with_state(
-                (!embedded_auth).then(|| OriginGuard::new(config.cors.allowed_origins.as_deref())),
+                (!embedded_auth).then(|| OriginGuard::for_config(&config)),
                 refuse_foreign_origins,
             ));
+        let app = if app_api {
+            app.layer(Extension(crate::app_host::AppApi(
+                calimero_primitives::application::ApplicationId::from([7; 32]),
+            )))
+        } else {
+            app
+        };
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         drop(tokio::spawn(async move {
@@ -1545,6 +1560,42 @@ mod tests {
                     "{case}, embedded auth: {embedded_auth}"
                 );
             }
+        }
+    }
+
+    /// An app host hands over a page of its own origin, which is no host the
+    /// node names, so the socket takes the marker for its answer.
+    #[tokio::test]
+    async fn ws_upgrade_admits_an_app_page_the_app_host_handed_over() {
+        let label = crate::app_host::encode_label(
+            &calimero_primitives::application::ApplicationId::from([7; 32]),
+        );
+        let host = format!("{label}.apps.example");
+        let origin = format!("http://{host}");
+        for (app_api, status) in [
+            (true, StatusCode::SWITCHING_PROTOCOLS),
+            (false, StatusCode::FORBIDDEN),
+        ] {
+            let (addr, _blob_dir) = spawn_guarded_ws_marked(true, app_api).await;
+            let headers = [("host", &*host), ("origin", &*origin)];
+            assert_eq!(
+                upgrade_with(&format!("ws://{addr}/ws"), &headers).await.0,
+                status,
+                "marked: {app_api}"
+            );
+        }
+    }
+
+    /// An app's page is third-party code: on the apps port it is no loopback page.
+    #[tokio::test]
+    async fn ws_upgrade_refuses_an_app_origin() {
+        for embedded_auth in [false, true] {
+            let (addr, _blob_dir) = spawn_guarded_ws(embedded_auth).await;
+            assert_eq!(
+                upgrade(addr, "127.0.0.1", Some("http://127.0.0.1:2429")).await,
+                StatusCode::FORBIDDEN,
+                "embedded auth: {embedded_auth}"
+            );
         }
     }
 
@@ -2652,6 +2703,95 @@ mod tests {
             resp["result"]["contextIds"],
             serde_json::to_value(vec![bound_ctx()]).unwrap(),
             "only the bound context may be subscribed: {resp}"
+        );
+    }
+
+    /// A key bound to one application, on a node holding a context of it and
+    /// one of another application.
+    async fn spawn_test_ws_application_bound_key() -> TestServer {
+        let scope = crate::auth::ClientKeyScope(
+            mero_auth::auth::bindings::ClientKeyBindings::from_permissions(&[
+                mero_auth::auth::bindings::application_binding(
+                    &calimero_primitives::application::ApplicationId::from([0xD1u8; 32])
+                        .to_string(),
+                ),
+                "context:execute".to_owned(),
+            ]),
+        );
+        let (event_sender, _) = broadcast::channel(256);
+        let server = spawn_test_ws_layered(
+            true,
+            |app| {
+                app.layer(Extension(scope))
+                    .layer(Extension(crate::auth::AuthenticatedNodeOwner))
+            },
+            crate::test_support::stub_node_manager(vec![]),
+            event_sender,
+            WsConfig::new(true),
+        )
+        .await;
+        for (context, app) in [(bound_ctx(), [0xD1u8; 32]), (other_ctx(), [0xD2u8; 32])] {
+            crate::test_support::put_context_app(
+                server.state.ctx_client.datastore(),
+                context,
+                calimero_primitives::application::ApplicationId::from(app),
+            );
+        }
+        server
+    }
+
+    #[actix::test]
+    async fn an_application_bound_key_subscribes_only_to_its_applications_contexts() {
+        let server = spawn_test_ws_application_bound_key().await;
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+
+        let req = WsRequest {
+            id: Some(1),
+            payload: RequestPayload::Subscribe(SubscribeRequest {
+                context_ids: vec![bound_ctx(), other_ctx()],
+                group_ids: vec![],
+            }),
+        };
+        write
+            .send(Message::Text(serde_json::to_string(&req).unwrap().into()))
+            .await
+            .unwrap();
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+
+        assert_eq!(
+            resp["result"]["contextIds"],
+            serde_json::to_value(vec![bound_ctx()]).unwrap(),
+            "another application's context must be refused: {resp}"
+        );
+    }
+
+    #[actix::test]
+    async fn an_application_bound_key_cannot_execute_on_another_applications_context() {
+        let server = spawn_test_ws_application_bound_key().await;
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+
+        let req = WsRequest {
+            id: Some(1),
+            payload: RequestPayload::Execute(ExecutionRequest::new(
+                other_ctx(),
+                "some_method".to_owned(),
+                json!({}),
+            )),
+        };
+        write
+            .send(Message::Text(serde_json::to_string(&req).unwrap().into()))
+            .await
+            .unwrap();
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("execute response");
+
+        assert!(
+            resp.to_string()
+                .contains("not permitted to act on this context"),
+            "{resp}"
         );
     }
 

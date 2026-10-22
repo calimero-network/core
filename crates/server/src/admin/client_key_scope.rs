@@ -7,8 +7,10 @@ use axum::http::{Method, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use calimero_context_config::types::{ContextGroupId, SignedGroupOpenInvitation};
+use calimero_governance_store::{placeholder_admin_identity, MetaRepository};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
+use calimero_store::Store;
 use tracing::warn;
 
 use crate::admin::handlers::groups::parse_group_id;
@@ -121,16 +123,19 @@ pub(crate) fn refuse_target_outside_binding(
     )
 }
 
-/// Refuse a bound key's join unless this node holds the group and the binding may
-/// change it. An unheld group's application is only the invitation's unsigned hint.
+/// Refuse a bound key's join unless the binding may change the group, or the
+/// group has no signed admin here yet and the invitation's unsigned hint names the bound application.
 pub(crate) fn refuse_join_outside_binding(
     state: &AdminState,
     client_key: Option<&ClientKeyScope>,
     invitation: &SignedGroupOpenInvitation,
 ) -> Option<Response> {
     let scope = client_key?;
+    let store = state.ctx_client.datastore();
     let group_id = invitation.invitation.group_id;
-    if scope.permits_group_change(state.ctx_client.datastore(), &group_id) {
+    if scope.permits_group_change(store, &group_id)
+        || hints_bound_application(scope, store, invitation)
+    {
         return None;
     }
     warn!(bindings = ?scope.0, ?group_id, "client key refused: join outside its binding");
@@ -141,6 +146,27 @@ pub(crate) fn refuse_join_outside_binding(
         }
         .into_response(),
     )
+}
+
+fn hints_bound_application(
+    scope: &ClientKeyScope,
+    store: &Store,
+    invitation: &SignedGroupOpenInvitation,
+) -> bool {
+    let unverified = MetaRepository::new(store)
+        .load(&invitation.invitation.group_id)
+        .is_ok_and(|meta| {
+            meta.is_none_or(|meta| meta.admin_identity == placeholder_admin_identity())
+        });
+    let hint = invitation.application_id.map(ApplicationId::from);
+    unverified
+        && scope.0.context_id.is_none()
+        && scope
+            .0
+            .application_id
+            .as_deref()
+            .zip(hint)
+            .is_some_and(|(bound, hint)| bound.eq_ignore_ascii_case(&hint.to_string()))
 }
 
 fn refusal(
@@ -163,10 +189,17 @@ fn refusal(
 
     params.iter().find_map(|&(name, value)| match name {
         "context_id" => (!may_act_on_context(value)).then_some(CONTEXT_REFUSAL),
-        "group_id" | "namespace_id" => (!may_act_on_group(value)).then_some(GROUP_REFUSAL),
+        "group_id" => (!may_act_on_group(value)).then_some(GROUP_REFUSAL),
+        // A join is judged by its handler, which weighs the invitation's hint for a namespace not held yet.
+        "namespace_id" if is_join(path) => None,
+        "namespace_id" => (!may_act_on_group(value)).then_some(GROUP_REFUSAL),
         "application_id" => (!may_name_application(value)).then_some(APPLICATION_REFUSAL),
         _ => None,
     })
+}
+
+fn is_join(path: &str) -> bool {
+    path.trim_end_matches('/').ends_with("/join")
 }
 
 fn sync_target(path: &str) -> Option<Option<&str>> {
@@ -253,6 +286,18 @@ mod tests {
             );
             assert_eq!(decide("/groups/x/members", &[(name, MINE)]), None, "{name}");
         }
+    }
+
+    #[test]
+    fn a_namespace_join_is_left_to_its_handler() {
+        assert_eq!(
+            decide("/namespaces/x/join", &[("namespace_id", OTHER)]),
+            None
+        );
+        assert_eq!(
+            decide("/namespaces/x/leave", &[("namespace_id", OTHER)]),
+            Some(GROUP_REFUSAL)
+        );
     }
 
     #[test]

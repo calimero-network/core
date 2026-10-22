@@ -787,7 +787,7 @@ pub async fn validate_handler(
 }
 
 /// Extracts the token from the Authorization header.
-fn extract_token_from_headers(headers: &HeaderMap) -> Option<&str> {
+pub fn extract_token_from_headers(headers: &HeaderMap) -> Option<&str> {
     headers
         .get("Authorization")
         .and_then(|value| value.to_str().ok())

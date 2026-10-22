@@ -11,13 +11,26 @@ use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
 use calimero_node_primitives::messages::NodeMessage;
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::context::ContextId;
 use calimero_primitives::events::NodeEvent;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
+use calimero_store::key::{ApplicationMeta, ContextMeta};
+use calimero_store::types::ContextMeta as ContextMetaValue;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
 use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
+
+/// Records `context` as running `app`.
+pub(crate) fn put_context_app(store: &Store, context: ContextId, app: ApplicationId) {
+    let meta = ContextMetaValue::new(ApplicationMeta::new(app), [0; 32], vec![], None);
+    store
+        .handle()
+        .put(&ContextMeta::new(context), &meta)
+        .unwrap();
+}
 
 /// One live presence entry as the node's awareness store reports it:
 /// `(author, slice, age_ms)`.

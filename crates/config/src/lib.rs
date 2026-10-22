@@ -825,6 +825,49 @@ mod tests {
         let typo: Result<super::ServerConfig, _> =
             toml::from_str("listen = []\n[apps]\nbase_domains = \"x\"\n");
         assert!(typo.is_err());
+
+        let port: super::ServerConfig =
+            toml::from_str("listen = []\n[apps]\nport = 2429\n").unwrap();
+        assert_eq!(port.apps.port, Some(2429));
+        assert_eq!(absent.apps.port, None);
+        assert!(toml::to_string(&port).unwrap().contains("port = 2429"));
+    }
+
+    /// Port 0 binds an ephemeral port that no page's `Origin` can be matched to.
+    #[test]
+    fn server_apps_port_must_not_be_zero() {
+        let parsed: Result<super::ServerConfig, _> =
+            toml::from_str("listen = []\n[apps]\nport = 0\n");
+        assert!(parsed.is_err());
+    }
+
+    /// A browser leaves out port 80 and 443, so every default-port origin would be an app's.
+    #[test]
+    fn server_apps_port_must_not_be_a_default_web_port() {
+        for port in [80, 443] {
+            let parsed: Result<super::ServerConfig, _> =
+                toml::from_str(&format!("listen = []\n[apps]\nport = {port}\n"));
+            let error = parsed
+                .expect_err("a default web port is refused")
+                .to_string();
+            assert!(error.contains("default port"), "{error}");
+        }
+    }
+
+    /// A one-label base domain other than `localhost` is a public suffix, which
+    /// would put every app under a name anyone can register.
+    #[test]
+    fn server_apps_base_domain_must_not_be_a_public_suffix() {
+        for bad in ["com", "", "Com"] {
+            let parsed: Result<super::ServerConfig, _> =
+                toml::from_str(&format!("listen = []\n[apps]\nbase_domain = \"{bad}\"\n"));
+            assert!(parsed.is_err(), "{bad:?}");
+        }
+        for good in ["localhost", "apps.example", "Apps.Example"] {
+            let parsed: Result<super::ServerConfig, _> =
+                toml::from_str(&format!("listen = []\n[apps]\nbase_domain = \"{good}\"\n"));
+            assert!(parsed.is_ok(), "{good:?}");
+        }
     }
 
     /// `forward_auth` is opt-in too, round-trips, and a config without it is
