@@ -259,8 +259,10 @@ mod tests {
 
     use calimero_context_client::group::{CreateGroupRequest, ListNamespacesForApplicationRequest};
     use calimero_governance_store::test_fixtures::test_meta;
+    use calimero_governance_store::ReentryRepository;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_store::db::InMemoryDB;
+    use calimero_store::key::GroupExitReason;
 
     use super::*;
     use crate::test_support::{actor, enrol, paired_device_scoped_to};
@@ -718,5 +720,101 @@ mod tests {
             .collect();
 
         assert_eq!(names, vec![Some("Team".to_owned())]);
+    }
+
+    /// What a peer's pull brings back for a namespace this node's account was
+    /// removed from: the rows and the key, then `after` for how the exit applied.
+    fn land_exit_soon(
+        store: &Store,
+        namespace: ContextGroupId,
+        after: impl FnOnce(&Store, &PublicKey, AccountId) + 'static,
+    ) {
+        let store = store.clone();
+        actix::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let mut meta = test_meta();
+            meta.target.application_id = ApplicationId::from(APP);
+            MetaRepository::new(&store)
+                .save(&namespace, &meta)
+                .expect("the group rows arrive");
+            let _key_id = GroupKeyring::new(&store, namespace)
+                .store_key(&[0x42; 32])
+                .expect("the group key arrives");
+            let (identity, _) = NamespaceRepository::new(&store)
+                .identity(&namespace)
+                .expect("read this node's identity")
+                .expect("the follow gave this node an identity");
+            let account = enrol(&store, &namespace, &identity);
+            MembershipRepository::new(&store)
+                .add_member(&namespace, &account, GroupMemberRole::Member)
+                .expect("the account was a member");
+            after(&store, &identity, account);
+        });
+    }
+
+    /// The restore is refused and leaves this node as the removal left it.
+    async fn assert_restore_refused(
+        store: &Store,
+        harness: &mut actor::Harness,
+        namespace: ContextGroupId,
+    ) {
+        let err = rejoin(harness, namespace)
+            .await
+            .expect_err("the account is not a member");
+
+        assert!(
+            matches!(
+                refusal(&err),
+                Some(ContextError::NamespaceNotRestored { .. })
+            ),
+            "got: {err:#}"
+        );
+        assert_unchanged_marker(store);
+        assert!(harness.live_topics().is_empty(), "the topic is let go");
+        assert!(!NamespaceRepository::new(store)
+            .participating_namespaces()
+            .expect("read participation")
+            .contains(&namespace));
+        assert_eq!(
+            forgotten_listed(harness).await,
+            vec![namespace],
+            "only the removal is listed"
+        );
+        let listed = harness
+            .manager
+            .send(ListNamespacesForApplicationRequest {
+                application_id: ApplicationId::from(APP),
+                offset: 0,
+                limit: usize::MAX,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the listing");
+        assert_eq!(
+            listed.len(),
+            1,
+            "no live row beside the removal: {listed:?}"
+        );
+    }
+
+    /// An admin's removal applied while this node held the marker.
+    #[actix::test]
+    async fn a_member_removed_by_an_admin_is_not_restored() {
+        let store = store();
+        NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("this node's account root");
+        let mut harness = actor::over(store.clone()).await;
+        let namespace = removed(&store);
+        land_exit_soon(&store, namespace, move |store, _identity, account| {
+            MembershipRepository::new(store)
+                .remove_member(&namespace, &account)
+                .expect("MemberRemoved drops the row");
+            ReentryRepository::new(store)
+                .block(&namespace, &account, GroupExitReason::Removed)
+                .expect("MemberRemoved blocks re-entry");
+        });
+
+        assert_restore_refused(&store, &mut harness, namespace).await;
     }
 }
