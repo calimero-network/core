@@ -17,7 +17,7 @@ use tracing::error;
 use crate::config::AppsConfig;
 use crate::origin_guard::names_origin;
 
-const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'"; // see crates/bundle/AGENTS.md
+const CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'"; // see crates/bundle/AGENTS.md
 const IMMUTABLE: &str = "public, max-age=31536000, immutable"; // a file's URL names its release
 const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567"; // RFC 4648 alphabet, lowercase
 const LABEL_LEN: usize = 52; // 32 bytes in unpadded base32
@@ -511,7 +511,7 @@ mod tests {
     use crate::test_support::{stub_node_manager, test_node_client};
 
     const BASE: &str = "localhost";
-    const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
+    const CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
     const APP: [u8; 32] = [7; 32];
     const API_PATHS: [&str; 5] = ["/jsonrpc", "/ws", "/sse", "/sse/subscribe", "/auth/refresh"];
     const ID: &str = "0123abcd";
@@ -1209,6 +1209,29 @@ mod tests {
         let (response, _) = send(&f.router, Method::GET, &unknown_app, "/1.0.0/", &[]).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert_hardened(&response);
+    }
+
+    #[actix::test]
+    async fn video_and_xml_files_are_served_with_their_types() {
+        let f = fixture().await;
+        let html = add(&f.node_client, b"<p>v3</p>").await;
+        let webm = add(&f.node_client, b"webm").await;
+        let xml = add(&f.node_client, b"<a/>").await;
+        let files = vec![
+            ("frontend/index.html", html),
+            ("frontend/clip.webm", webm),
+            ("frontend/feed.xml", xml),
+        ];
+        publish(&f.store, "3.0.0", 3, files);
+
+        for (path, mime) in [
+            ("/3.0.0/clip.webm", "video/webm"),
+            ("/3.0.0/feed.xml", "application/xml"),
+        ] {
+            let (response, _) = get(&f, path).await;
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(header_of(&response, "content-type"), mime, "{path}");
+        }
     }
 
     #[actix::test]

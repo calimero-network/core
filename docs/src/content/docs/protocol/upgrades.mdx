@@ -191,6 +191,7 @@ A bundled frontend is code the node serves to a browser, so the boundary has to 
 - **Per-app origin.** Each app is a separate browser origin, so one app's page cannot read another app's storage or the dashboard's admin tokens.
   The apps port gives that up on purpose, and every app on it shares one origin.
 - **CSP.** Every response carries a policy that allows only same-origin files, so a bundle cannot load code from another origin or run inline script.
+  Its `script-src` adds `'wasm-unsafe-eval'` so an app can compile WebAssembly, which does not allow `eval`.
 - **App hosts serve files and a narrow API.** `GET` and `HEAD` of a release's indexed files, the app API and a short list of admin routes are the whole surface.
   A token used there is bound to the app of the host, a token that holds `admin` is refused, every other admin route answers `403`, and the dashboard answers `404`.
   The apps port serves files only.
