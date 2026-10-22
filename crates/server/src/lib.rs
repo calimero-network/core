@@ -23,6 +23,7 @@ use tracing::{info, warn};
 use crate::service_mounts::mount_runtime_services;
 
 pub mod admin;
+mod app_host;
 mod auth;
 #[cfg(test)]
 mod authz_matrix;
@@ -351,17 +352,31 @@ pub async fn start(
              refused"
         );
     }
-    let app = ServiceBuilder::new()
-        .layer(build_cors_layer(&config.cors, origin_guard.as_ref()))
-        .layer(axum::middleware::from_fn_with_state(
-            origin_guard,
-            origin_guard::refuse_foreign_origins,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
-            transport,
-            sealed::intercept,
-        ))
-        .service(app);
+    // A browser cannot seal a request, so under `sealed.required` an app host would
+    // be the one way around the envelope: leave it unmounted.
+    let app_hosts = (!config.sealed.required).then(|| app_host::AppHosts {
+        node_client: node_client.clone(),
+        origins: app_host::AppOrigins::new(&config.apps),
+    });
+    let app =
+        ServiceBuilder::new()
+            .option_layer(app_hosts.map(|hosts| {
+                axum::middleware::from_fn_with_state(hosts, app_host::serve_app_hosts)
+            }))
+            .layer(build_cors_layer(&config.cors, origin_guard.as_ref()))
+            .layer(axum::middleware::from_fn_with_state(
+                app_host::AppOrigins::new(&config.apps),
+                origin_guard::refuse_app_origins,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                origin_guard,
+                origin_guard::refuse_foreign_origins,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                transport,
+                sealed::intercept,
+            ))
+            .service(app);
 
     let mut set = JoinSet::new();
 
@@ -510,6 +525,7 @@ mod cors_tests {
     use axum::response::Response;
     use axum::routing::get;
     use axum::Router;
+    use calimero_primitives::application::ApplicationId;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
     use libp2p::identity::Keypair;
@@ -809,7 +825,7 @@ mod cors_tests {
 
     /// Sends `POST /admin-api/account/sign-with-root` to the node on `port` as a
     /// page served from `origin`, once the node accepts connections.
-    async fn post_sign_with_root(port: u16, origin: Option<&str>) -> String {
+    async fn post_sign_with_root(port: u16, host: Option<&str>, origin: Option<&str>) -> String {
         let mut attempts = 0;
         let mut stream = loop {
             match TcpStream::connect(("127.0.0.1", port)).await {
@@ -822,8 +838,9 @@ mod cors_tests {
             }
         };
         let origin = origin.map_or_else(String::new, |origin| format!("Origin: {origin}\r\n"));
+        let host = host.map_or_else(|| format!("127.0.0.1:{port}"), str::to_owned);
         let request = format!(
-            "POST /admin-api/account/sign-with-root HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+            "POST /admin-api/account/sign-with-root HTTP/1.1\r\nHost: {host}\r\n\
              {origin}Content-Length: 0\r\nConnection: close\r\n\r\n"
         );
         stream
@@ -836,6 +853,54 @@ mod cors_tests {
             .await
             .expect("read the response");
         String::from_utf8_lossy(&response).into_owned()
+    }
+
+    #[actix::test]
+    async fn a_node_requiring_sealed_requests_does_not_serve_app_hosts() {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .expect("a free port")
+            .local_addr()
+            .expect("its address")
+            .port();
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (state, _blobs) = admin_state(&store).await;
+        let mut config = ServerConfig::new(
+            vec![format!("/ip4/127.0.0.1/tcp/{port}").parse().unwrap()],
+            Keypair::generate_ed25519(),
+            Some(AdminConfig::new(true, false)),
+            None,
+            None,
+            None,
+        );
+        config.sealed = crate::config::SealedConfig::new(true);
+        let shutdown = CancellationToken::new();
+        let server = actix::spawn(start(
+            config,
+            state.ctx_client.clone(),
+            state.node_client.clone(),
+            store,
+            Registry::default(),
+            Arc::new(NodeReadiness::new()),
+            shutdown.clone(),
+            #[cfg(feature = "mock-attestation")]
+            false,
+        ));
+        let label = crate::app_host::encode_label(&ApplicationId::from([7; 32]));
+
+        let app_host = post_sign_with_root(port, Some(&format!("{label}.localhost")), None).await;
+
+        shutdown.cancel();
+        server
+            .await
+            .expect("the server task ends")
+            .expect("the server stops cleanly");
+        assert!(app_host.contains("sealed_required"), "{app_host}");
+        assert!(
+            !app_host
+                .to_ascii_lowercase()
+                .contains("content-security-policy"),
+            "{app_host}"
+        );
     }
 
     #[actix::test]
@@ -868,8 +933,10 @@ mod cors_tests {
             false,
         ));
 
-        let foreign = post_sign_with_root(port, Some("https://site.example")).await;
-        let direct = post_sign_with_root(port, None).await;
+        let foreign = post_sign_with_root(port, None, Some("https://site.example")).await;
+        let direct = post_sign_with_root(port, None, None).await;
+        let label = crate::app_host::encode_label(&ApplicationId::from([7; 32]));
+        let app_host = post_sign_with_root(port, Some(&format!("{label}.localhost")), None).await;
 
         shutdown.cancel();
         server
@@ -878,6 +945,13 @@ mod cors_tests {
             .expect("the server stops cleanly");
         assert!(foreign.starts_with("HTTP/1.1 403"), "{foreign}");
         assert!(foreign.contains("browser request refused"), "{foreign}");
+        assert!(app_host.starts_with("HTTP/1.1 404"), "{app_host}");
+        assert!(
+            app_host
+                .to_ascii_lowercase()
+                .contains("content-security-policy"),
+            "{app_host}"
+        );
         assert!(
             !direct.contains("browser request refused"),
             "a request carrying no browser headers is left to the route: {direct}"

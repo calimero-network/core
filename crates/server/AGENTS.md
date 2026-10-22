@@ -91,6 +91,7 @@ src/
 │   ├── events.rs             # SSE events
 │   ├── handlers.rs           # SSE handlers
 │   └── ...
+├── app_host.rs               # App frontends served from `{label}.{base_domain}`, outside every other layer
 ├── auth.rs                   # Authentication middleware
 ├── proxy_permissions.rs      # Proxy mode: X-Auth-Permissions → GrantedPermissions
 ├── sealed.rs                 # Sealed transport: /sealed/v2 envelope, wraps the router
@@ -250,6 +251,7 @@ When adding a new `.route(...)`, regenerate `crates/server/endpoints.json` via `
 | `src/admin/handlers/applications/install_application.rs` | App install             |
 | `src/jsonrpc/execute.rs`                                 | JSON-RPC execution      |
 | `src/ws/subscribe.rs`                                    | WS subscriptions        |
+| `src/app_host.rs`                                        | Host dispatch and frontend serving |
 | `src/subscription_grants.rs`                             | Keeping a subscription's authorization true |
 | `src/sse/handlers.rs`                                    | SSE handlers            |
 | `primitives/src/jsonrpc.rs`                              | JSON-RPC types          |
@@ -497,6 +499,12 @@ request re-stamps it.
   A hosted app must therefore be listed in `[server.cors] allowed_origins` to open a socket, as well as hold a token.
   The handler answers a `GET /ws` that is not an upgrade with `400` before it looks at the origin.
   In proxy mode a loopback page is admitted a socket whatever host it names, so a proxy that authenticates by something a browser attaches by itself (a cookie, HTTP Basic, a client certificate) hands any loopback page an authenticated socket.
+- `app_host::serve_app_hosts` is the outermost layer, so a request whose `Host` is exactly `{label}.{apps.base_domain}` never meets CORS, the origin guard, the sealed envelope or any route.
+  Admin tokens live in the dashboard origin's storage, so an app host serves only `GET` and `HEAD` of that app's files, and everything else is `404`.
+  Keep it that way: never route an app host to a handler that is not a frontend file.
+  Under `sealed.required` the layer is not mounted at all, so an app host cannot get around the envelope.
+- An app's page runs on `{label}.{base_domain}`, which is a loopback name for `base_domain = localhost`, so an app is third-party code that must not count as a loopback page.
+  `app_host::AppOrigins::is_app_origin` names such an origin: `OriginGuard::admits` never treats it as a loopback page, and `origin_guard::refuse_app_origins` answers `403` to it on every route in every auth mode.
 - In proxy auth mode, `origin_guard::OriginGuard::admits` judges every HTTP request a browser
   sent: one with `Origin` or `Sec-Fetch-Site` (a same-origin `GET` has no `Origin`). Never
   count `Sec-Fetch-Mode` alone: Node's built-in `fetch` sends it on every request, so it would

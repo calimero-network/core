@@ -215,6 +215,10 @@ pub enum Column {
     /// The per-file blobs of an installed bundle's web frontend, keyed by the
     /// bundle blob id (see `key::BundleFrontend`). Node-local, not synchronized.
     BundleFrontend,
+    /// The bundle blob of each release of an application, keyed by application
+    /// id and a hash of the version (see `key::ApplicationRelease`). Node-local,
+    /// not synchronized.
+    ApplicationRelease,
 }
 
 /// Table-file accounting for a whole store, summed over every column family

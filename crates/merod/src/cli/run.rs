@@ -330,6 +330,7 @@ fn server_config_from(source: calimero_config::ServerConfig, keypair: Keypair) -
         source.embedded_auth,
     );
     server_config.sealed = source.sealed;
+    server_config.apps = source.apps;
     server_config.cors = source.cors.unwrap_or_default();
     server_config.proxy_identity = source.proxy_identity;
     server_config
@@ -504,6 +505,14 @@ mod tests {
             server.cors.allowed_origins,
             Some(vec!["https://app.example".to_owned()])
         );
+    }
+
+    #[test]
+    fn server_apps_section_reaches_the_server() {
+        let mut source = calimero_config::ServerConfig::new(vec![], None, None, None, None);
+        source.apps.base_domain = "apps.example".to_owned();
+        let server = server_config_from(source, Keypair::generate_ed25519());
+        assert_eq!(server.apps.base_domain, "apps.example");
     }
 
     #[test]

@@ -114,6 +114,27 @@ Identical files across versions share one refcounted blob.
 An upgrade keeps the frontend of every older bundle, because the node does not count the contexts still bound to it.
 Uninstalling an application releases the frontend of every bundle installed under it.
 
+#### Serving the frontend
+
+Each application is served from its own browser origin, `{label}.{base_domain}`, for example `http://{label}.localhost:2428/`.
+`{label}` is the application id as unpadded lowercase base32, 52 characters.
+`base_domain` is `[server.apps] base_domain` and defaults to `localhost`.
+A request whose `Host` is exactly that name is answered before any other route, CORS or auth layer, and every other host reaches the node's normal routes unchanged.
+Admin tokens live in the dashboard origin, so an app host serves nothing but that app's files: `GET` and `HEAD` of `/{version}/` (the entry) and `/{version}/{path}`, and `404` for everything else.
+`{version}` is found by two point reads, the release pointer stored under the application id and a hash of the version, then the bundle's index, so an older release keeps its own files after an upgrade.
+When two bundles claim one release, the latest install wins.
+`{path}` is only a key into the index's file list and never touches a filesystem, so `..` and encoded dots simply match no file.
+`/` redirects (`302`) to the application row's current version, and `/{version}` redirects to `/{version}/`.
+`/?namespace={id}` is not supported yet and answers `404`, because a namespace records the bytecode blob it runs and not the release that blob came from.
+
+Files stream from their blobs, whose chunks are re-hashed as they are read.
+A file declares its `Content-Length` from the blob size.
+A blob that is missing or fails its hash in the first chunk answers `500` before any header is sent, and one that fails later breaks the body, never delivering other bytes.
+Every response carries the content security policy from `crates/bundle/AGENTS.md`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
+A node that sets `[server.sealed] required` mounts no app host, because a browser cannot seal a request.
+A page on an app's origin is third-party code, so the node answers it `403` on every route of its own, in every auth mode, and never counts it as a loopback page.
+A file also carries its `Content-Type`, an `ETag` of its blob id (answered with `304` on a match) and `Cache-Control: public, max-age=31536000, immutable`.
+
 `calimero-bundle` holds the rules (`crates/bundle/src/frontend.rs`), and each refusal carries a stable code.
 The node enforces paths, sizes, hashes and the MIME allowlist at install.
 The HTML rules are build-time feedback that only `cargo mero` runs; at serve time the boundary is the per-app origin plus the CSP.

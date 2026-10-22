@@ -17,6 +17,8 @@ pub const DEFAULT_ADDRS: [IpAddr; 2] = [
     IpAddr::V6(Ipv6Addr::LOCALHOST),
 ];
 
+pub const DEFAULT_APPS_BASE_DOMAIN: &str = "localhost"; // app hosts are `{label}.localhost`
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMode {
@@ -120,6 +122,30 @@ impl SealedConfig {
     }
 }
 
+/// Where each installed app's frontend is served (`[server.apps]`): from its
+/// own origin, `{label}.{base_domain}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+#[non_exhaustive]
+pub struct AppsConfig {
+    pub base_domain: String,
+}
+
+impl Default for AppsConfig {
+    fn default() -> Self {
+        Self {
+            base_domain: DEFAULT_APPS_BASE_DOMAIN.to_owned(),
+        }
+    }
+}
+
+impl AppsConfig {
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 impl Default for CorsConfig {
     fn default() -> Self {
         Self {
@@ -197,6 +223,8 @@ pub struct ServerConfig {
 
     pub sealed: SealedConfig,
 
+    pub apps: AppsConfig,
+
     /// Take an account-anchored caller's identity from the proxy in front of
     /// this node (`server.proxy_identity`). Read only under
     /// [`AuthMode::Proxy`]; see [`crate::proxy_identity`] for what it trusts.
@@ -209,7 +237,7 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         listen: Vec<Multiaddr>,
         identity: Keypair,
         admin: Option<AdminConfig>,
@@ -231,13 +259,14 @@ impl ServerConfig {
                 allow_private_network: true,
             },
             sealed: SealedConfig::new(false),
+            apps: AppsConfig::default(),
             proxy_identity: false,
             tee_release_version: None,
         }
     }
 
     #[must_use]
-    pub const fn with_auth(
+    pub fn with_auth(
         listen: Vec<Multiaddr>,
         identity: Keypair,
         services: ServiceConfigs,
@@ -264,6 +293,7 @@ impl ServerConfig {
                 allow_private_network: true,
             },
             sealed: SealedConfig::new(false),
+            apps: AppsConfig::default(),
             proxy_identity: false,
             tee_release_version: None,
         }

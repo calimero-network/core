@@ -135,7 +135,7 @@ impl NodeClient {
         let frontend = match &manifest.frontend {
             Some(frontend) => {
                 match self
-                    .store_frontend(&application_id, frontend, &contents.frontend)
+                    .store_frontend(&application_id, version, frontend, &contents.frontend)
                     .await
                 {
                     Ok(index) => Some(index),
@@ -174,6 +174,7 @@ impl NodeClient {
     async fn store_frontend(
         &self,
         application_id: &ApplicationId,
+        version: &str,
         frontend: &BundleFrontend,
         files: &BTreeMap<String, Arc<[u8]>>,
     ) -> eyre::Result<types::BundleFrontend> {
@@ -197,6 +198,7 @@ impl NodeClient {
         }
         Ok(types::BundleFrontend::new(
             key::ApplicationMeta::new(*application_id),
+            version.into(),
             frontend.entry.as_str().into(),
             stored,
         ))
@@ -234,6 +236,20 @@ impl NodeClient {
             // A dangling index is worse than a leaked blob: keep the files if it stays.
             kept = handle.delete(&index_key).is_err();
         }
+        if matches!(written, Ok(true)) {
+            // A missing pointer only makes the release a 404, so a failure here never fails the install.
+            let release = key::ApplicationRelease::new(*application_id, &application.version);
+            let pointer = types::ApplicationRelease {
+                bundle: **bundle_blob_id,
+            };
+            let updated = match frontend {
+                Some(_) => handle.put(&release, &pointer),
+                None => handle.delete(&release),
+            };
+            if let Err(err) = updated {
+                warn!(%application_id, %err, "failed to update a release pointer");
+            }
+        }
         (kept, written)
     }
 
@@ -257,6 +273,10 @@ impl NodeClient {
         handle.delete(&key::ApplicationMeta::new(*application_id))?;
         let mut released = Vec::new();
         for (index_key, index) in owned {
+            let release = key::ApplicationRelease::new(*application_id, &index.version);
+            if let Err(err) = handle.delete(&release) {
+                warn!(%application_id, %err, "failed to delete a release pointer");
+            }
             match handle.delete(&index_key) {
                 Ok(()) => released.push(index),
                 Err(err) => warn!(%application_id, %err, "failed to delete a frontend index"),

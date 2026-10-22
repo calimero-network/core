@@ -34,6 +34,27 @@ impl NodeClient {
             .get(&key::BundleFrontend::new(*bundle_blob_id))?)
     }
 
+    /// The frontend of one release of an installed application, by point reads:
+    /// the row, the release pointer, then the bundle's index.
+    pub fn find_bundle_frontend(
+        &self,
+        application_id: &ApplicationId,
+        version: &str,
+    ) -> eyre::Result<Option<types::BundleFrontend>> {
+        let handle = self.datastore.handle();
+        if !handle.has(&key::ApplicationMeta::new(*application_id))? {
+            return Ok(None);
+        }
+        let release = key::ApplicationRelease::new(*application_id, version);
+        let Some(release) = handle.get(&release)? else {
+            return Ok(None);
+        };
+        let index = handle.get(&key::BundleFrontend::new(release.bundle.into()))?;
+        Ok(index.filter(|index| {
+            index.application.application_id() == *application_id && &*index.version == version
+        }))
+    }
+
     /// List all installed applications.
     pub fn list_applications(&self) -> eyre::Result<Vec<Application>> {
         let handle = self.datastore.handle();
