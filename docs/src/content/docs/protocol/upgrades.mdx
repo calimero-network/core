@@ -88,6 +88,7 @@ content. A blob is treated as a bundle when it contains a `manifest.json` entry
 | `wasm` + `abi` | single-service artifacts, each a `{path, hash, size}` record; `hash` is required |
 | `services` | named multi-service modules; overrides `wasm` / `abi` when present and non-empty |
 | `migrations` | migration artifacts |
+| `frontend` | the app's static web build: `entry` plus `files`, each a `{path, hash, size}` record under `frontend/` (below) |
 | `links` | `frontend` / `github` / `docs` URLs |
 | `signature` | the Ed25519 signature object (below) |
 
@@ -100,6 +101,33 @@ That path check runs over *every* artifact the manifest declares - `wasm`, `abi`
 single exhaustive destructure of the manifest, so a new artifact field stops compiling
 until it is classified
 (`crates/node/primitives/src/client/application/bundle.rs`).
+
+### The bundled frontend
+
+A bundle may carry its own web build, so the UI a namespace loads can match the contract it runs instead of one externally hosted latest build.
+Every file is listed in the manifest with its hash, so the manifest signature covers the UI as it covers the WASM.
+An older node ignores the field and the app still runs from `links.frontend`.
+
+`calimero-bundle` holds the rules (`crates/bundle/src/frontend.rs`), and each refusal carries a stable code.
+The node enforces paths, sizes, hashes and the MIME allowlist at install.
+The HTML rules are build-time feedback that only `cargo mero` runs; at serve time the boundary is the per-app origin plus the CSP.
+
+| Code | Raised by | Refused when |
+| --- | --- | --- |
+| `FRONTEND_UNSAFE_PATH` | both | a path is not under `frontend/`, or has an empty, `.` or `..` component, or any character outside `A-Z a-z 0-9 . _ ~ @ + -` |
+| `FRONTEND_DUPLICATE_PATH` | both | a path is listed twice, ignoring ASCII case |
+| `FRONTEND_NO_ENTRY` | both | `entry` is not one of the listed files |
+| `FRONTEND_ENTRY_NOT_HTML` | both | `entry` is not an HTML file |
+| `FRONTEND_UNSUPPORTED_TYPE` | both | a file's extension is outside the served MIME allowlist (source maps included) |
+| `FRONTEND_TOO_LARGE` | both | the declared sizes sum past `MAX_FRONTEND_BYTES` (32 MiB) |
+| `FRONTEND_SIZE_MISMATCH` / `FRONTEND_HASH_MISMATCH` | both | a file's bytes differ from its manifest entry |
+| `FRONTEND_REMOTE_RESOURCE` | CLI | an HTML file loads a URL from another origin: a `src`, `href`, `srcset` or `poster` with a scheme or `//host` on any element except `<a>` and `<area>`; `data:` and `blob:` are refused only on `script`, `modulepreload` and `preload` loaders |
+| `FRONTEND_ESCAPING_URL` | CLI | an HTML file loads a root-absolute URL (`/assets/app.js`, `/vite.svg`; Vite's default `base: '/'`), or a relative one whose `..` climbs above the frontend root, in any of those attributes; or has any `<base>`; build with `base: './'` |
+| `FRONTEND_INLINE_SCRIPT` | CLI | an HTML file has an executable inline `<script>`, an `on*` event-handler attribute, a `javascript:` URL in `href`, `src`, `action` or `formaction`, a `srcdoc` attribute, or markup a browser could read as text inside a raw-text element; the served page's CSP forbids inline code |
+| `FRONTEND_INVALID_HTML` | CLI | an HTML file is not UTF-8 |
+| `FRONTEND_MISSING_FILE` | both | a file the manifest lists is not in the archive or the build output |
+
+`cargo mero` reads HTML with the `html5ever` tokenizer, so attribute values are decoded and URLs normalised the way a browser does them: `h&#116;tps://`, a tab inside the scheme and `\\host` are all caught.
 
 ### Signing
 

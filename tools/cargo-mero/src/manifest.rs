@@ -125,6 +125,7 @@ pub fn render(
             github: meta.github.clone(),
             docs: meta.docs.clone(),
         }),
+        frontend: None,
         frontend_aliases: meta.frontend_aliases.clone(),
         signature: None,
     };

@@ -13,7 +13,7 @@ publish = true
 calimero-build-utils.workspace = true
 
 [dependencies]
-calimero-bundle.workspace = true
+calimero-bundle = { workspace = true, features = ["html"] }
 calimero-primitives = { workspace = true, features = ["borsh"] }
 clap = { workspace = true, features = ["derive"] }
 eyre.workspace = true
