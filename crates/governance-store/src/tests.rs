@@ -17961,10 +17961,10 @@ mod unverified_target_marker {
     }
 
     #[test]
-    fn a_registered_context_of_the_hinted_application_confirms_it() {
+    fn a_registered_context_of_the_hinted_application_does_not_confirm_it() {
         let (store, gid, sk) = hinted_group();
         apply(&store, &gid, &sk, registered(HINTED_APP));
-        assert!(!unverified(&store, &gid));
+        assert!(unverified(&store, &gid));
     }
 
     #[test]
