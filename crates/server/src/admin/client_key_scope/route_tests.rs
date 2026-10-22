@@ -947,6 +947,20 @@ async fn a_bound_key_restores_only_its_own_applications_removed_namespace() {
 }
 
 #[actix::test]
+async fn a_bound_key_rejoins_a_held_namespace_only_of_its_own_application() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+
+    for (namespace, permitted) in [(node.mine.namespace, true), (node.theirs.namespace, false)] {
+        let path = format!("/namespaces/{}/join", hex::encode(namespace.to_bytes()));
+        let (status, body) = node
+            .call(&token, Method::POST, &path, Some(json!({})))
+            .await;
+        assert_eq!(status != StatusCode::FORBIDDEN, permitted, "{path}: {body}");
+    }
+}
+
+#[actix::test]
 async fn an_unbound_key_keeps_the_node_wide_view() {
     let node = Node::new().await;
     let token = node.unbound().await;
