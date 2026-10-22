@@ -77,15 +77,23 @@ Other `bundle` flags:
 | `--bump <patch\|minor\|major>` | Fetch the next `appVersion` from the registry instead: a bump over the highest version published for this package. Mutually exclusive with `--app-version`. |
 | `--package <id>` | Override the manifest's `package` id, e.g. to build a migration-target bundle under a distinct identity. |
 | `-o, --output <path>` | Override the output path (defaults to `dist/<package>-<appVersion>.mpk`). |
+| `--frontend-dir <dir>` | Ship a built web frontend (see [Shipping a web frontend](#shipping-a-web-frontend)). |
+| `--check-frontend <mpk>` | Check the frontend inside an existing `.mpk`; builds and signs nothing. |
+| `--format <human\|json>` | Print frontend failures and the final summary as one JSON object. |
 | `--no-abi` | Omit the ABI artifact; the bundle cannot be migrated. |
 | `--no-icon` | Ship without an icon. |
 | `--no-logo` | Suppress the icon preview printed above the summary. |
-| `--print-output-path` | Print the built `.mpk` path as the last line, for scripts that need it. |
+| `--print-output-path` | Print the built `.mpk` path on stdout (stderr with `--format json`), for scripts that need it. |
 | `--profiling` | Skip `wasm-opt` size optimization, keeping debug/profiling info. |
 
 **5. `meroctl app install --path dist/<package>-<appVersion>.mpk`**
 Installs the bundle on a running `merod` node.
 The node derives the `ApplicationId` from the bundle's `package` and signer (see [SIGNING.md](SIGNING.md)); `bundle` prints it in the post-bundle summary.
+
+### Shipping a web frontend
+
+`cargo mero bundle --frontend-dir <dir>` packs a built web frontend into the signed `.mpk`, and `--check-frontend <mpk>` checks one.
+The checks, the JSON output and the error codes are in the [cargo-mero docs](https://github.com/calimero-network/core/blob/master/docs/src/content/docs/build/cargo-mero.mdx#shipping-a-web-frontend).
 
 ## Publishing to the registry
 
@@ -148,6 +156,7 @@ The workspace table wins over the package table when both are present.
 | `slug`                | `handlers.slug`        | `package`                        |
 | `frontend`            | `links.frontend`       | omitted                          |
 | `frontend-aliases`    | `frontendAliases`      | empty (see below)                |
+| `frontend-dir`        | `frontend`             | omitted (see [Shipping a web frontend](#shipping-a-web-frontend)) |
 | `github`              | `links.github`         | omitted                          |
 | `docs`                | `links.docs`           | omitted                          |
 | `services`            | `services[]`           | empty (see [Multi-service workspaces](#multi-service-workspaces)) |

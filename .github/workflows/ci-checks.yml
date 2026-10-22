@@ -363,9 +363,9 @@ jobs:
           restore-keys: |
             cargo-mero-fixtures-${{ runner.os }}-
 
-      # Each fixture builds into its own cached target dir; --include-ignored adds bundle_produces_signed_mpk.
+      # Each fixture builds into its own cached target dir; bundle_produces_signed_mpk runs by default, and --include-ignored adds the frontend pack test.
       - name: Run pipeline e2e
-        run: env -u CARGO_TARGET_DIR cargo test -p cargo-mero --test pipeline -- --include-ignored --test-threads 1
+        run: env -u CARGO_TARGET_DIR cargo test -p cargo-mero --test pipeline --test frontend -- --include-ignored --test-threads 1
 
   # PR-time guard against a wasm too large for merod to load; the fuzzy suite never runs on PRs.
   wasm-size:

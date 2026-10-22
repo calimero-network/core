@@ -6,7 +6,7 @@ use std::fs;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use calimero_bundle::BundleArtifact;
+use calimero_bundle::{BundleArtifact, BundleFrontend};
 use calimero_primitives::application::ApplicationId;
 use camino::{Utf8Path, Utf8PathBuf};
 use ed25519_dalek::SigningKey;
@@ -15,16 +15,17 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 
 use crate::build::{self, BuiltWasm};
+use crate::frontend::{self, Collected, FrontendSummary, Summary};
 use crate::manifest::{self, StagedArtifact};
 use crate::meta::{self, BundleMeta};
 use crate::{icon, logo, registry, sdk, workspace};
-use crate::{BuildArgs, BundleArgs};
+use crate::{BuildArgs, BundleArgs, OutputFormat};
 
 /// Environment variable naming a signing-key JSON file, used when none of
 /// `--key`/`--dev` is passed.
 const SIGN_KEY_ENV: &str = "MERO_SIGN_KEY";
 
-pub fn run(args: &BundleArgs) -> Result<PathBuf> {
+pub fn run(args: &BundleArgs) -> Result<Summary> {
     // Resolve signing first: a missing or bad key must fail before a long build.
     let signing_key = resolve_signing_key(args.key.as_deref(), args.dev)?;
 
@@ -34,6 +35,10 @@ pub fn run(args: &BundleArgs) -> Result<PathBuf> {
     // Resolved before the build so a missing icon or guide fails fast, same as signing.
     bundle_meta.icon = icon::resolve(&bundle_meta, args.no_icon)?;
     bundle_meta.guide = meta::read_guide(&bundle_meta)?;
+    // Checked before the build too: a bad frontend is the likelier failure and the cheaper one.
+    let frontend = frontend_dir(&bundle_meta, args)
+        .map(|dir| frontend::collect(&dir))
+        .transpose()?;
     if args.no_abi {
         eprintln!("warning: bundling without an ABI; this app cannot be migrated");
     }
@@ -57,20 +62,26 @@ pub fn run(args: &BundleArgs) -> Result<PathBuf> {
     })?;
 
     let staging = prepare_staging(&base)?;
-    println!("• staging bundle files in {staging}");
+    eprintln!("• staging bundle files in {staging}");
     let staged = stage(&bundle_meta, &built, &staging, args.no_abi)?;
 
-    println!("• writing manifest.json");
+    eprintln!("• writing manifest.json");
     // Read off the same resolve graph the build just used, so the stamp cannot
     // describe a different SDK than the wasm was compiled against.
     let sdk = sdk::resolve(&metadata);
-    let manifest_path = write_manifest(&staging, &bundle_meta, &staged, sdk.as_ref())?;
+    let manifest_path = write_manifest(
+        &staging,
+        &bundle_meta,
+        &staged,
+        frontend.as_ref().map(|f| &f.frontend),
+        sdk.as_ref(),
+    )?;
     let signer_id = sign(&manifest_path, &signing_key)?;
     let application_id = ApplicationId::for_bundle(&bundle_meta.package, &signer_id)?;
 
     let output = output_path(args, &base, &bundle_meta.package, &bundle_meta.app_version);
-    println!("• packaging {output}");
-    package(&output, &manifest_path, &staged)?;
+    eprintln!("• packaging {output}");
+    package(&output, &manifest_path, &staged, frontend.as_ref())?;
     fs::remove_dir_all(&staging).wrap_err_with(|| format!("failed to remove {staging}"))?;
 
     print_summary(
@@ -81,10 +92,26 @@ pub fn run(args: &BundleArgs) -> Result<PathBuf> {
         args.no_logo,
     )?;
     if args.print_output_path {
-        println!("{output}");
+        match args.format {
+            OutputFormat::Human => println!("{output}"),
+            OutputFormat::Json => eprintln!("{output}"),
+        }
     }
 
-    Ok(output.into_std_path_buf())
+    Ok(Summary {
+        ok: true,
+        output: Some(output.to_string()),
+        frontend: frontend.map(|f| FrontendSummary::of(&f.frontend)),
+    })
+}
+
+/// The `--frontend-dir` flag (relative to the working directory), else the
+/// `frontend-dir` key (relative to the manifest that set it).
+fn frontend_dir(meta: &BundleMeta, args: &BundleArgs) -> Option<PathBuf> {
+    args.frontend_dir.clone().or_else(|| {
+        let dir = meta.frontend_dir.as_deref()?;
+        Some(meta.manifest_dir.join(dir).into_std_path_buf())
+    })
 }
 
 /// Bundle metadata with the `--package` / `--app-version` overrides applied.
@@ -129,10 +156,11 @@ fn write_manifest(
     staging: &Utf8Path,
     meta: &BundleMeta,
     staged: &[StagedArtifact],
+    frontend: Option<&BundleFrontend>,
     sdk: Option<&manifest::SdkResolution>,
 ) -> Result<Utf8PathBuf> {
     let path = staging.join("manifest.json");
-    let value = manifest::render(meta, staged, sdk)?;
+    let value = manifest::render(meta, staged, frontend, sdk)?;
     fs::write(&path, serde_json::to_string_pretty(&value)?)
         .wrap_err_with(|| format!("failed to write {path}"))?;
     Ok(path)
@@ -162,9 +190,9 @@ pub fn resolve_signing_key(key: Option<&Path>, dev: bool) -> Result<SigningKey> 
 fn sign(manifest_path: &Utf8Path, key: &SigningKey) -> Result<String> {
     if mero_sign::is_dev_key(key) {
         print_dev_warning();
-        println!("• signing manifest.json with the DEV key");
+        eprintln!("• signing manifest.json with the DEV key");
     } else {
-        println!("• signing manifest.json");
+        eprintln!("• signing manifest.json");
     }
     mero_sign::sign_manifest(manifest_path.as_std_path(), key)?;
     Ok(signer_id_of(key))
@@ -336,9 +364,9 @@ fn print_summary(
 
     // The path goes on its own full-width line: beside the art it would wrap at
     // the terminal edge and the continuation would run back through the logo.
-    println!();
-    println!("\u{2713} {}  ({})", short_path(output), human_size(size));
-    println!();
+    eprintln!();
+    eprintln!("\u{2713} {}  ({})", short_path(output), human_size(size));
+    eprintln!();
     match logo {
         Some(logo) => {
             // Vertically centre the text against a logo that is usually taller.
@@ -350,10 +378,10 @@ fn print_summary(
                     .checked_sub(pad)
                     .and_then(|d| details.get(d))
                     .map_or("", String::as_str);
-                println!("{art}   {text}");
+                eprintln!("{art}   {text}");
             }
         }
-        None => details.iter().for_each(|line| println!("  {line}")),
+        None => details.iter().for_each(|line| eprintln!("  {line}")),
     }
     Ok(())
 }
@@ -386,7 +414,12 @@ fn human_size(bytes: u64) -> String {
 
 /// Write the tar.gz `.mpk`: `manifest.json` at the root plus each artifact at the
 /// same relative path recorded in the manifest, so the two never disagree.
-fn package(output: &Utf8Path, manifest_path: &Utf8Path, staged: &[StagedArtifact]) -> Result<()> {
+fn package(
+    output: &Utf8Path,
+    manifest_path: &Utf8Path,
+    staged: &[StagedArtifact],
+    frontend: Option<&Collected>,
+) -> Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).wrap_err_with(|| format!("failed to create {parent}"))?;
     }
@@ -411,6 +444,18 @@ fn package(output: &Utf8Path, manifest_path: &Utf8Path, staged: &[StagedArtifact
         }
     }
 
+    // From memory, so the bundle holds the bytes that were hashed even if the build dir changed since.
+    for (file, bytes) in frontend
+        .iter()
+        .flat_map(|f| f.frontend.files.iter().zip(&f.contents))
+    {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        tar.append_data(&mut header, &file.path, bytes.as_slice())
+            .wrap_err_with(|| format!("failed to add {} to the bundle", file.path))?;
+    }
+
     tar.into_inner()
         .wrap_err("failed to finalize tar")?
         .finish()
@@ -420,6 +465,10 @@ fn package(output: &Utf8Path, manifest_path: &Utf8Path, staged: &[StagedArtifact
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+
+    use flate2::read::GzDecoder;
+
     use super::*;
     use crate::workspace::FeatureArgs;
 
@@ -436,9 +485,49 @@ mod tests {
             no_icon: false,
             no_logo: false,
             print_output_path: false,
+            frontend_dir: None,
+            check_frontend: None,
+            format: crate::OutputFormat::Human,
             bump: None,
             features: FeatureArgs::default(),
         }
+    }
+
+    #[test]
+    fn packaged_frontend_bytes_are_the_hashed_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let build = tmp.path().join("web");
+        fs::create_dir(&build).unwrap();
+        fs::write(build.join("index.html"), "<!doctype html>").unwrap();
+        let collected = frontend::collect(&build).unwrap();
+
+        // A watch build rewriting dist/ while the wasm builds.
+        fs::write(build.join("index.html"), "<!doctype html><p>changed").unwrap();
+        let dir = Utf8PathBuf::from_path_buf(tmp.path().to_owned()).unwrap();
+        fs::write(dir.join("manifest.json"), "{}").unwrap();
+        package(
+            &dir.join("app.mpk"),
+            &dir.join("manifest.json"),
+            &[],
+            Some(&collected),
+        )
+        .unwrap();
+
+        let file = &collected.frontend.files[0];
+        let mut archive =
+            tar::Archive::new(GzDecoder::new(File::open(dir.join("app.mpk")).unwrap()));
+        let mut packed = archive
+            .entries()
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|e| e.path().unwrap().to_str() == Some(file.path.as_str()))
+            .unwrap();
+        let mut bytes = Vec::new();
+        let _ = packed.read_to_end(&mut bytes).unwrap();
+        assert_eq!(
+            manifest::artifact_from_bytes(&file.path, &bytes).hash,
+            file.hash
+        );
     }
 
     #[test]

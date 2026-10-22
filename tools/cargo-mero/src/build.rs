@@ -269,7 +269,7 @@ fn emit_abi(
     publish(&abi_json, |staged| {
         std::fs::write(staged, contents).wrap_err_with(|| format!("failed to write {abi_json}"))
     })?;
-    println!("• emitted {abi_json}");
+    eprintln!("• emitted {abi_json}");
 
     write_state_schema(crate_dir, res_dir, &manifest)?;
 
@@ -309,7 +309,7 @@ fn write_state_schema(crate_dir: &Utf8Path, res_dir: &Utf8Path, manifest: &Manif
                 std::fs::write(staged, contents)
                     .wrap_err_with(|| format!("failed to write {schema_path}"))
             })?;
-            println!("• emitted {schema_path}");
+            eprintln!("• emitted {schema_path}");
         }
     }
 
@@ -367,22 +367,22 @@ fn build_one(
     publish(&wasm_path, |staged| {
         std::fs::copy(&artifact, staged)
             .wrap_err_with(|| format!("failed to copy {artifact} -> {staged}"))?;
-        println!("• copied wasm to {wasm_path}");
+        eprintln!("• copied wasm to {wasm_path}");
 
         if optimize {
-            println!("• optimizing {wasm_path} (wasm-opt -Oz)");
+            eprintln!("• optimizing {wasm_path} (wasm-opt -Oz)");
             OptimizationOptions::new_optimize_for_size_aggressively()
                 .enable_feature(Feature::BulkMemory)
                 .run(staged, staged)
                 .map_err(|e| eyre!("wasm-opt failed on {wasm_path}: {e}"))?;
         } else {
-            println!("• skipping wasm-opt (profiling build)");
+            eprintln!("• skipping wasm-opt (profiling build)");
         }
 
         // Embed the full abi.json: it carries the per-method flags the node's xcall
         // gate reads, which a state schema alone would drop.
         if let Some(abi_json) = &abi_json {
-            println!("• embedding {abi_json} into {wasm_path}");
+            eprintln!("• embedding {abi_json} into {wasm_path}");
             mero_abi::run_embed(staged.as_std_path(), abi_json.as_std_path())?;
         }
         Ok(())
@@ -401,7 +401,7 @@ fn build_one(
 /// one service's schema.
 fn cargo_build(targets: &[Target], profile: &str, args: &BuildArgs) -> Result<()> {
     let names: Vec<&str> = targets.iter().map(|t| t.crate_name.as_str()).collect();
-    println!("• building {} (--profile {profile})", names.join(", "));
+    eprintln!("• building {} (--profile {profile})", names.join(", "));
 
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let mut cmd = Command::new(cargo);
@@ -414,6 +414,7 @@ fn cargo_build(targets: &[Target], profile: &str, args: &BuildArgs) -> Result<()
         cmd.arg("--manifest-path").arg(mp);
     }
     cmd.env("RUSTFLAGS", remapped_rustflags(""));
+    cmd.stdout(std::io::stderr()); // keeps stdout for the command's own output
 
     let status = cmd.status().wrap_err("failed to spawn `cargo build`")?;
     if !status.success() {
@@ -453,9 +454,9 @@ fn ensure_wasm_target() -> Result<()> {
         Ok(out) if out.status.success() => {
             let installed = String::from_utf8_lossy(&out.stdout);
             if installed.lines().any(|l| l.trim() == TARGET) {
-                println!("• target {TARGET} present");
+                eprintln!("• target {TARGET} present");
             } else {
-                println!("• installing target {TARGET}");
+                eprintln!("• installing target {TARGET}");
                 let status = Command::new("rustup")
                     .args(["target", "add", TARGET])
                     .status()
@@ -467,7 +468,7 @@ fn ensure_wasm_target() -> Result<()> {
         }
         // No rustup (e.g. distro toolchain): assume the target is provided some
         // other way and let `cargo build` produce the real error if it isn't.
-        _ => println!("• skipping target check (rustup unavailable)"),
+        _ => eprintln!("• skipping target check (rustup unavailable)"),
     }
     Ok(())
 }

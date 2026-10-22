@@ -72,6 +72,10 @@ cargo mero bundle --dev --no-icon      # -> dist/<package>-<appVersion>.mpk (dev
 export MERO_SIGN_KEY="$RUNNER_TEMP/mero-key.json"
 cargo mero bundle --no-icon  # reads MERO_SIGN_KEY when no --key/--dev
 
+# Ship a built web frontend in the bundle, or check one in an existing .mpk
+cargo mero bundle --dev --no-icon --frontend-dir web/dist --format json
+cargo mero bundle --check-frontend dist/<package>-<appVersion>.mpk
+
 # Registry: bump to the next published version and publish
 cargo mero bundle --key my-key.json --bump patch
 CALIMERO_API_KEY=... cargo mero publish dist/<package>-<appVersion>.mpk
