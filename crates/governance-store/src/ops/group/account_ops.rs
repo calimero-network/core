@@ -16,7 +16,10 @@ use super::context::GroupApplyCtx;
 use crate::authorizer::AtCutMembershipPath;
 use crate::membership::MembershipPath;
 use crate::op_events::OpEvent;
-use crate::{AccountBindingRepository, AccountNamespaceSet, BindingRejected, MembershipRepository};
+use crate::{
+    AccountBindingRepository, AccountNamespaceSet, BindingRejected, MembershipRepository,
+    NodeDeviceRepository, PendingNamespacePurges,
+};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
     DeviceLabel, DeviceScope, RootKeyHandoff, SignedDeviceRevocation,
@@ -278,6 +281,25 @@ pub(crate) fn apply_device_certified(
     Ok(())
 }
 
+/// The account's latest word on `namespace` decides this node's purge: a purging leave
+/// arms it, a rejoin or plain leave withdraws it. Only this node's own account arms one.
+fn set_own_purge(
+    ctx: &GroupApplyCtx<'_>,
+    namespace: &ContextGroupId,
+    armed: bool,
+) -> EyreResult<()> {
+    let own = NodeDeviceRepository::new(ctx.store()).account_namespace()?;
+    if own.as_ref() != Some(ctx.group_id()) {
+        return Ok(());
+    }
+    let pending = PendingNamespacePurges::new(ctx.store());
+    if armed {
+        pending.arm(namespace)
+    } else {
+        pending.disarm(namespace)
+    }
+}
+
 /// `GroupOp::AccountNamespaceGained` - record a namespace this account is in.
 /// A gain that read a target replaces the recorded one; one that read none keeps it.
 pub(crate) fn apply_namespace_gained(
@@ -291,6 +313,7 @@ pub(crate) fn apply_namespace_gained(
     }
 
     AccountNamespaceSet::new(ctx.store(), group_id).record(*namespace, application)?;
+    set_own_purge(ctx, namespace, false)?;
     ctx.queue_event(OpEvent::AccountNamespaceGained {
         group_id: group_id.to_bytes(),
         namespace: *namespace,
@@ -300,11 +323,13 @@ pub(crate) fn apply_namespace_gained(
     Ok(())
 }
 
-/// `GroupOp::AccountNamespaceLeft` - drop a namespace this account has left. The
-/// event fires with or without a row: a device may follow it from its pair list.
+/// `GroupOp::AccountNamespaceLeft` - drop a namespace this account has left; with
+/// `purge`, `AccountNamespacePurged`. The event fires with or without a row: a
+/// device may follow it from its pair list.
 pub(crate) fn apply_namespace_left(
     ctx: &mut GroupApplyCtx<'_>,
     namespace: &ContextGroupId,
+    purge: bool,
 ) -> EyreResult<()> {
     let group_id = *ctx.group_id();
     if owning_account_signer(ctx, "account namespace left")?.is_none() {
@@ -312,11 +337,13 @@ pub(crate) fn apply_namespace_left(
     }
 
     AccountNamespaceSet::new(ctx.store(), group_id).forget(*namespace)?;
+    set_own_purge(ctx, namespace, purge)?;
     ctx.queue_event(OpEvent::AccountNamespaceLeft {
         group_id: group_id.to_bytes(),
         namespace: *namespace,
+        purge,
     });
-    tracing::info!(group_id = ?group_id, ?namespace, "account namespace left");
+    tracing::info!(group_id = ?group_id, ?namespace, purge, "account namespace left");
     Ok(())
 }
 

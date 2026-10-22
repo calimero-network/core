@@ -644,6 +644,9 @@ pub struct LeaveGroupResponse {
 #[derive(Debug)]
 pub struct LeaveNamespaceRequest {
     pub namespace_id: ContextGroupId,
+    /// Every device of the account, this one included, also takes the
+    /// namespace and its contexts off its disk.
+    pub purge: bool,
 }
 
 impl Message for LeaveNamespaceRequest {
@@ -654,6 +657,9 @@ impl Message for LeaveNamespaceRequest {
 pub struct LeaveNamespaceResponse {
     pub namespace_id: ContextGroupId,
     pub member_public_key: PublicKey,
+    /// This node purged the namespace. False when `purge` was not asked for, or no
+    /// admin had acked the `MemberLeft` yet (then `DELETE /namespaces/{id}` is the way).
+    pub purged: bool,
 }
 
 // ---- Metadata getters ----

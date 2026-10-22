@@ -401,11 +401,17 @@ where
     /// every descendant where the leaver has a direct row; multi-scope
     /// owner + last-admin checks run upfront. Rejects with
     /// `MustTransferOwnership` if the leaver owns any group in the
-    /// subtree.
-    pub async fn leave_namespace(&self, namespace_id: &str) -> Result<LeaveNamespaceApiResponse> {
+    /// subtree. With `purge`, every device of the account also takes the
+    /// namespace off its disk once an admin has confirmed the leave.
+    pub async fn leave_namespace(
+        &self,
+        namespace_id: &str,
+        purge: bool,
+    ) -> Result<LeaveNamespaceApiResponse> {
+        let query = if purge { "?purge=true" } else { "" };
         let response = self
             .connection
-            .post_no_body(&format!("admin-api/namespaces/{namespace_id}/leave"))
+            .post_no_body(&format!("admin-api/namespaces/{namespace_id}/leave{query}"))
             .await?;
         Ok(response)
     }

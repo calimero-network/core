@@ -3679,6 +3679,15 @@ impl Validate for IssueNamespaceOwnershipProofApiRequest {
 
 // ---- Leave Namespace (cascading self-leave) ----
 
+/// `?purge=true`: every device of the account also takes the namespace off its
+/// disk. A query, so a leave sent with no body is the plain one it always was.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LeaveNamespaceQuery {
+    #[serde(default)]
+    pub purge: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LeaveNamespaceApiResponse {
@@ -3690,6 +3699,10 @@ pub struct LeaveNamespaceApiResponse {
 pub struct LeaveNamespaceApiResponseData {
     pub namespace_id: String,
     pub member_public_key: PublicKey,
+    /// This node took the namespace off its disk; false when `purge` was not asked
+    /// for, or no admin had confirmed the leave yet.
+    #[serde(default)]
+    pub purged: bool,
 }
 
 // ---- Get Context Group ----

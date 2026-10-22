@@ -76,6 +76,8 @@ mod migration_events_e2e;
 #[cfg(test)]
 mod namespace_forget_e2e;
 #[cfg(test)]
+mod namespace_leave_purge_e2e;
+#[cfg(test)]
 mod parent_plan_applied_flag_test;
 #[cfg(test)]
 mod registered_bytecode_e2e;

@@ -39,6 +39,12 @@ impl AckRouter {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// The ops with a publish waiting on acks right now.
+    #[must_use]
+    pub fn in_flight(&self) -> Vec<[u8; 32]> {
+        self.lock().keys().copied().collect()
+    }
+
     /// Register interest in acks for `op_hash`. Returns a receiver that
     /// fires once per ack the wire layer routes here.
     pub fn subscribe(&self, op_hash: [u8; 32]) -> broadcast::Receiver<SignedAck> {

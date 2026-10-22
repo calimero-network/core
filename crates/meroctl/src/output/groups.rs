@@ -671,6 +671,7 @@ impl Report for LeaveNamespaceApiResponse {
             "Member Public Key",
             &self.data.member_public_key.to_string(),
         ]);
+        let _ = table.add_row(vec!["Purged from this node", &self.data.purged.to_string()]);
         println!("{table}");
     }
 }

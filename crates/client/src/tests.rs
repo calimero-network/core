@@ -488,6 +488,39 @@ async fn delete_namespace() {
 }
 
 #[tokio::test]
+async fn leave_namespace_asks_for_a_purge_only_when_told_to() {
+    let leave = |purge: bool| async move {
+        let server = MockServer::start().await;
+        let mock =
+            Mock::given(method("POST")).and(path(format!("/admin-api/namespaces/{GID}/leave")));
+        let mock = if purge {
+            mock.and(wiremock::matchers::query_param("purge", "true"))
+        } else {
+            mock.and(wiremock::matchers::query_param_is_missing("purge"))
+        };
+        mock.respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {
+                "namespaceId": GID,
+                "memberPublicKey": ZERO_HEX,
+                "purged": purge
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+        let client = make_client(&Url::parse(&server.uri()).unwrap());
+        client
+            .leave_namespace(GID, purge)
+            .await
+            .unwrap()
+            .data
+            .purged
+    };
+    assert!(leave(true).await);
+    assert!(!leave(false).await);
+}
+
+#[tokio::test]
 async fn create_namespace_invitation() {
     let zeros: Vec<u8> = vec![0; 32];
     let server = MockServer::start().await;

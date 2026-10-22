@@ -15147,6 +15147,7 @@ mod account_plane_apply {
             vec![OpEvent::AccountNamespaceLeft {
                 group_id: gid.to_bytes(),
                 namespace: never_gained,
+                purge: false,
             }],
             "a leave with no row behind it still owes the unfollow"
         );
@@ -15155,6 +15156,126 @@ mod account_plane_apply {
         assert_eq!(set.contains(gained).unwrap(), None);
         assert_eq!(set.contains(never_gained).unwrap(), None);
         assert_eq!(set.namespaces().unwrap(), vec![]);
+    }
+
+    /// A purging leave drops the namespace from the set as a leave does, and
+    /// tells this account's devices to take it off their disks.
+    #[test]
+    fn a_purged_namespace_leaves_the_set_and_asks_for_the_purge() {
+        let store = test_store();
+        let gid = test_group_id();
+        let owner_sk = key(1);
+        let _root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+
+        let gained = ContextGroupId::from([0x86; 32]);
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &owner_sk,
+            GroupOp::AccountNamespaceGained {
+                namespace: gained,
+                application: None,
+            },
+        )
+        .unwrap();
+
+        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &owner_sk.public_key(),
+            &GroupOp::AccountNamespacePurged { namespace: gained },
+            &[],
+            &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+        )
+        .unwrap();
+        assert_eq!(
+            events,
+            vec![OpEvent::AccountNamespaceLeft {
+                group_id: gid.to_bytes(),
+                namespace: gained,
+                purge: true,
+            }],
+        );
+        assert_eq!(
+            AccountNamespaceSet::new(&store, gid)
+                .contains(gained)
+                .unwrap(),
+            None
+        );
+    }
+
+    /// Whether a purge of a namespace is armed on this node after folding `op` for it, in
+    /// this node's own account namespace or in another account's, starting `armed_before`.
+    fn armed_after_folding(
+        own_namespace: bool,
+        armed_before: bool,
+        op: impl FnOnce(ContextGroupId) -> GroupOp,
+    ) -> bool {
+        let store = test_store();
+        let gid = if own_namespace {
+            crate::NodeDeviceRepository::new(&store)
+                .account_namespace()
+                .unwrap()
+                .expect("test_store provisions a root")
+        } else {
+            test_group_id()
+        };
+        let owner_sk = key(1);
+        let _root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
+
+        let namespace = ContextGroupId::from([0x87; 32]);
+        let pending = PendingNamespacePurges::new(&store);
+        if armed_before {
+            pending.arm(&namespace).unwrap();
+        }
+        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &owner_sk.public_key(),
+            &op(namespace),
+            &[],
+            &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+        )
+        .unwrap();
+        assert!(
+            !events.is_empty(),
+            "the op folded rather than being refused"
+        );
+        pending.is_armed(&namespace).unwrap()
+    }
+
+    fn rejoin(namespace: ContextGroupId) -> GroupOp {
+        GroupOp::AccountNamespaceGained {
+            namespace,
+            application: None,
+        }
+    }
+
+    #[test]
+    fn folding_a_rejoin_withdraws_a_pending_purge() {
+        assert!(!armed_after_folding(true, true, rejoin));
+    }
+
+    #[test]
+    fn folding_a_plain_leave_withdraws_a_pending_purge() {
+        assert!(!armed_after_folding(true, true, |namespace| {
+            GroupOp::AccountNamespaceLeft { namespace }
+        }));
+    }
+
+    #[test]
+    fn folding_a_purging_leave_arms_a_purge() {
+        assert!(armed_after_folding(true, false, |namespace| {
+            GroupOp::AccountNamespacePurged { namespace }
+        }));
+    }
+
+    #[test]
+    fn another_accounts_ops_neither_arm_nor_withdraw_a_purge() {
+        let purged = |namespace| GroupOp::AccountNamespacePurged { namespace };
+        assert!(!armed_after_folding(false, false, purged));
+        assert!(armed_after_folding(false, true, purged));
+        assert!(armed_after_folding(false, true, rejoin));
     }
 
     /// An admin at the cut that this namespace can name no account for writes
@@ -15193,6 +15314,7 @@ mod account_plane_apply {
                 application: None,
             },
             GroupOp::AccountNamespaceLeft { namespace: planted },
+            GroupOp::AccountNamespacePurged { namespace: planted },
         ] {
             let (_handled, _divergence, events) = crate::apply_group_op_mutations(
                 &store,

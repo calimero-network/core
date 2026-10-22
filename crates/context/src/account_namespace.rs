@@ -129,6 +129,8 @@ pub async fn publish_device_certified(
 pub(crate) enum AccountNamespaceChange {
     Gained,
     Left,
+    /// Left, and every device takes it off its disk.
+    Purged,
 }
 
 /// Tell this account's other devices that this node gained or left `namespace`.
@@ -265,6 +267,7 @@ async fn publish(
             application: target_application(store, namespace)?,
         },
         AccountNamespaceChange::Left => GroupOp::AccountNamespaceLeft { namespace },
+        AccountNamespaceChange::Purged => GroupOp::AccountNamespacePurged { namespace },
     };
     let op_kind = op.op_kind_label();
 

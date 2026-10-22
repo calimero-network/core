@@ -151,6 +151,17 @@ impl<'a> NamespaceFoundingRepository<'a> {
         salt_bytes.copy_from_slice(salt);
         Ok(Some((AccountId::from(founder_bytes), salt_bytes)))
     }
+
+    /// Drop both records of a namespace this node no longer holds.
+    ///
+    /// # Errors
+    /// The store write.
+    pub fn forget(&self, namespace_id: &ContextGroupId) -> EyreResult<()> {
+        let mut handle = self.store.handle();
+        handle.delete(&key(namespace_id))?;
+        handle.delete(&relay_key(namespace_id))?;
+        Ok(())
+    }
 }
 
 /// Namespaces whose genesis marked them as their founder's account namespace
