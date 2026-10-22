@@ -864,4 +864,52 @@ mod tests {
 
         assert_restore_refused(&store, &mut harness, namespace).await;
     }
+
+    fn own_account(store: &Store) -> AccountId {
+        NodeDeviceRepository::new(store)
+            .get()
+            .expect("read this node's device")
+            .expect("this node holds a device")
+            .account
+    }
+
+    #[actix::test]
+    async fn an_account_that_left_the_namespace_is_not_found_and_nothing_is_followed() {
+        let store = store();
+        NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("this node's account root");
+        let mut harness = actor::over(store.clone()).await;
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                salt: None,
+                bytecode_id: None,
+                application_id: None,
+                name: None,
+                parent_group_id: None,
+                restricted: true,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+        let account = own_account(&store);
+        MembershipRepository::new(&store)
+            .remove_member(&created.group_id, &account)
+            .expect("MemberLeft drops the row");
+        ReentryRepository::new(&store)
+            .block(&created.group_id, &account, GroupExitReason::Left)
+            .expect("MemberLeft blocks re-entry");
+        let _created_topics = harness.subscribed();
+
+        let err = rejoin(&harness, created.group_id)
+            .await
+            .expect_err("the account left");
+
+        assert!(
+            matches!(refusal(&err), Some(ContextError::NamespaceNotFound { .. })),
+            "got: {err:#}"
+        );
+        assert!(harness.subscribed().is_empty(), "never asked to subscribe");
+    }
 }
