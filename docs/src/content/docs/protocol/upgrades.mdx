@@ -107,6 +107,7 @@ until it is classified
 A bundle may carry its own web build, so the UI a namespace loads can match the contract it runs instead of one externally hosted latest build.
 Every file is listed in the manifest with its hash, so the manifest signature covers the UI as it covers the WASM.
 An older node ignores the field and the app still runs from `links.frontend`.
+A node that understands the field checks every listed file against the manifest before any application row or service blob is written, and refuses the whole install on the first mismatch, missing file or rule violation, naming the code below.
 
 `calimero-bundle` holds the rules (`crates/bundle/src/frontend.rs`), and each refusal carries a stable code.
 The node enforces paths, sizes, hashes and the MIME allowlist at install.
