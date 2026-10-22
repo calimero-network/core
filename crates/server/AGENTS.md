@@ -348,9 +348,10 @@ It executes as the node inside its binding, but it is never the node owner on th
 - A join (`POST /groups/join`, `/namespaces/{id}/join`) needs a group the binding reaches, or a group with no signed admin on this node yet whose invitation hints the bound application (`refuse_join_outside_binding`).
   The hint is unsigned, so only an application binding takes it: a context binding never joins a group it does not hold.
   `refuse_out_of_scope` leaves a `/namespaces/{id}/join` path parameter to that handler.
-  A group still carrying the join's placeholder admin is hidden by `verified_meta` (`auth.rs`) from every scope check: an application's key gets `403` on its routes and does not see it in listings until the signed admin arrives.
-  After that the key is judged by the stored target, which is still the unsigned hint until a signed `TargetApplicationSet` or a cascade upgrade replaces it, so a namespace with no such op keeps a tampered hint.
-  A hint that lied loses access once the real target arrives, and the join is never undone.
+  A group still carrying the join's placeholder admin, or whose target application is still only the invitation's hint, is hidden by `verified_meta` (`auth.rs`) from every scope check: an application's key gets `403` on its routes and does not see it in listings.
+  The hint is marked node-locally (`MetaRepository::is_target_unverified`) when the join seeds it, and a signed `TargetApplicationSet`, or a cascade upgrade clears the mark, and a subgroup is refused while its namespace is marked.
+  A signed context registration does not clear it, because any member who may create a context can sign one, so a namespace that never gets a target op stays refused to an app's key.
+  A join refused after that seeding leaves the group and its mark behind, so the key stays refused there.
 - Listings and named reads take the key's `ListScope::ClientKey` (`admin/caller_scope.rs`): the groups its binding reaches, and of their contexts only those it permits.
   `GET /applications` (an app origin sees only its own application), the `for-application` listings, `/groups/{id}/contexts` and the alias routes filter by the same binding; an alias to a device is never visible to a bound key.
   Blob reads and uploads are confined like an account session's; `DELETE /blobs/{id}` needs the blob held for one of its contexts and gives that association up with the reference it releases (bound-key deletes are serialized), and `GET /blobs` is refused.

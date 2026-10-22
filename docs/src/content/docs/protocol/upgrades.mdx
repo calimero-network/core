@@ -163,9 +163,11 @@ Any other token acts as if bound to that app, narrowed by its own binding, so RP
 A refresh is judged by the permissions it would mint, and `/auth/validate` refuses an `X-Forwarded-Uri` there.
 `GET /admin-api/applications` lists only the bound application, and `GET /admin-api/applications/{id}` and the `for-application` listings refuse any other.
 An app's key may join a namespace on an invitation that names its app, because a node that does not hold the namespace has no signed application to check.
-Until the namespace's signed admin arrives, the invitation's application is an unsigned hint, so the app's key cannot act on that namespace or list it.
-After that the key is judged by the stored target, which stays the hint until a signed target op replaces it, so a namespace that never gets one keeps a tampered hint.
-A hint that lied loses access once the real target arrives, and the join is never undone.
+The invitation's application is an unsigned hint, so the node marks it as unverified when the join seeds it.
+An app's key is refused on that namespace, and the namespace is left out of its listings, until a signed op confirms the application.
+Only a signed target op or cascade upgrade confirms it: a context registration does not, because any member allowed to create a context can sign one.
+A namespace that never gets such an op stays refused to an app's key, and so do its subgroups.
+A join that is refused after seeding the hint leaves the mark in place, so the key stays refused there.
 A token bound to a context never joins a group it does not hold.
 These work only where the node's embedded auth verifies the token, and only for a page whose `Origin` is the host it calls.
 Under proxy mode they answer `403` with a plain-text reason, and an app's page is served but cannot call the node, so proxy deployments get no app API for now.
