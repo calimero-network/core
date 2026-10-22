@@ -180,6 +180,25 @@ The app origins are `{label}.{base_domain}` with any port, `{host}:{apps port}`,
 
 An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.
 
+#### Threat model for served frontends
+
+A bundled frontend is code the node serves to a browser, so the boundary has to hold even for a bundle the operator did not write.
+
+- **Per-app origin.** Each app is a separate browser origin, so one app's page cannot read another app's storage or the dashboard's admin tokens.
+  The apps port gives that up on purpose, and every app on it shares one origin.
+- **CSP.** Every response carries a policy that allows only same-origin files, so a bundle cannot load code from another origin or run inline script.
+- **App hosts serve files and a narrow API.** `GET` and `HEAD` of a release's indexed files, the app API and a short list of admin routes are the whole surface.
+  A token used there is bound to the app of the host, a token that holds `admin` is refused, every other admin route answers `403`, and the dashboard answers `404`.
+  The apps port serves files only.
+- **Sealed nodes do not serve.** A browser cannot seal a request, so a node that requires sealed requests mounts no app host and binds no apps port.
+
+Out of scope here:
+
+- A relay serving frontends to other users.
+  A relay that does so must give each app its own origin and keep its own credentials off those origins.
+- The desktop app's `calimero-app` custom scheme, which lives in `tauri-app`.
+  This node treats the scheme's origins as app origins and refuses them on its own routes, as listed above.
+
 `calimero-bundle` holds the rules (`crates/bundle/src/frontend.rs`), and each refusal carries a stable code.
 The node enforces paths, sizes, hashes and the MIME allowlist at install.
 The HTML rules are build-time feedback that only `cargo mero` runs; at serve time the boundary is the per-app origin plus the CSP.
