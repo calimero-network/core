@@ -40,6 +40,28 @@ fn save_load_delete_group_meta() {
     assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
 }
 
+#[test]
+fn an_unverified_target_marker_is_per_group_and_dies_with_the_meta() {
+    let store = test_store();
+    let gid = test_group_id();
+    let other = ContextGroupId::from([0x66; 32]);
+    let meta = MetaRepository::new(&store);
+
+    assert!(!meta.is_target_unverified(&gid).unwrap());
+
+    meta.save(&gid, &test_meta()).unwrap();
+    meta.mark_target_unverified(&gid).unwrap();
+    assert!(meta.is_target_unverified(&gid).unwrap());
+    assert!(!meta.is_target_unverified(&other).unwrap());
+
+    meta.delete(&gid).unwrap();
+    assert!(!meta.is_target_unverified(&gid).unwrap());
+
+    meta.mark_target_unverified(&gid).unwrap();
+    meta.clear_target_unverified(&gid).unwrap();
+    assert!(!meta.is_target_unverified(&gid).unwrap());
+}
+
 // -----------------------------------------------------------------------
 // Member tests
 // -----------------------------------------------------------------------
