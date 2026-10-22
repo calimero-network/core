@@ -214,12 +214,17 @@ impl AppHosts {
         let Some(rest) = rest else {
             return redirect(&format!("{prefix}/{version}/"));
         };
-        let wanted = if rest.is_empty() {
+        let mut wanted = if rest.is_empty() {
             index.entry.to_string()
         } else {
             format!("{FRONTEND_ROOT}{rest}")
         };
-        let Some(file) = index.files.iter().find(|file| *file.path == *wanted) else {
+        let mut found = index.files.iter().find(|file| *file.path == *wanted);
+        if found.is_none() && is_client_route(rest, &request.headers) {
+            wanted = index.entry.to_string();
+            found = index.files.iter().find(|file| *file.path == *wanted);
+        }
+        let Some(file) = found else {
             return status(StatusCode::NOT_FOUND);
         };
         let Some(mime) = calimero_bundle::mime_type(&wanted) else {
@@ -328,6 +333,17 @@ pub(crate) async fn serve_apps_port(State(hosts): State<AppHosts>, request: Requ
     hosts
         .respond(&app, &parts, &format!("/{tail}"), &prefix)
         .await
+}
+
+/// A page request for a path no file answers: the app's own router resolves it.
+fn is_client_route(rest: &str, headers: &HeaderMap) -> bool {
+    let last = rest.rsplit('/').next().unwrap_or_default();
+    let wants_page = headers
+        .get_all(header::ACCEPT)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .any(|value| value.to_ascii_lowercase().contains("text/html"));
+    wants_page && !last.contains('.')
 }
 
 fn node_prefix() -> &'static str {
@@ -1193,6 +1209,60 @@ mod tests {
         let (response, _) = send(&f.router, Method::GET, &unknown_app, "/1.0.0/", &[]).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert_hardened(&response);
+    }
+
+    #[actix::test]
+    async fn a_client_route_without_a_file_gets_the_entry_for_a_page_request() {
+        let f = fixture().await;
+        let html = [("accept", "text/html,application/xhtml+xml,*/*;q=0.8")];
+        let (entry, entry_body) = get(&f, "/1.0.0/").await;
+
+        for method in [Method::GET, Method::HEAD] {
+            for path in ["/1.0.0/a/b", "/1.0.0/a/", "/1.0.0/v1.2/page"] {
+                let (response, body) = send(&f.router, method.clone(), &f.host, path, &html).await;
+                assert_eq!(response.status(), StatusCode::OK, "{method} {path}");
+                let expected = if method == Method::GET {
+                    &entry_body[..]
+                } else {
+                    b""
+                };
+                assert_eq!(body, expected, "{method} {path}");
+                for name in ["content-type", "etag", "cache-control"] {
+                    assert_eq!(
+                        header_of(&response, name),
+                        header_of(&entry, name),
+                        "{name}"
+                    );
+                }
+                assert_hardened(&response);
+            }
+        }
+        let (other, body) = send(&f.router, Method::GET, &f.host, "/2.0.0/x", &html).await;
+        assert_eq!(body, b"<p>v2</p>");
+        assert_eq!(other.status(), StatusCode::OK);
+    }
+
+    #[actix::test]
+    async fn a_missing_asset_or_a_non_page_request_is_not_given_the_entry() {
+        let f = fixture().await;
+        let html = [("accept", "text/html")];
+        let json = [("accept", "application/json")];
+
+        for (path, headers) in [
+            ("/1.0.0/missing.js", &html[..]),
+            ("/1.0.0/a/b.png", &html[..]),
+            ("/1.0.0/a/b", &json[..]),
+            ("/1.0.0/a/b", &[][..]),
+            ("/9.9.9/a/b", &html[..]),
+        ] {
+            let (response, _) = send(&f.router, Method::GET, &f.host, path, headers).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+        let unknown_app = format!("{}.localhost", encode_label(&ApplicationId::from([9; 32])));
+        let (response, _) = send(&f.router, Method::GET, &unknown_app, "/1.0.0/a/b", &html).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let (post, _) = send(&f.router, Method::POST, &f.host, "/1.0.0/a/b", &html).await;
+        assert_eq!(post.status(), StatusCode::NOT_FOUND);
     }
 
     #[actix::test]
