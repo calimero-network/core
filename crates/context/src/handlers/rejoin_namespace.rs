@@ -946,4 +946,38 @@ mod tests {
         );
         assert!(harness.subscribed().is_empty(), "never asked to subscribe");
     }
+
+    /// During a restore's wait the group rows are back and the marker still stands.
+    #[actix::test]
+    async fn a_namespace_held_and_marked_is_listed_once_as_removed() {
+        let store = store();
+        let harness = actor::over(store.clone()).await;
+        let namespace = removed(&store);
+        let mut meta = test_meta();
+        meta.target.application_id = ApplicationId::from(APP);
+        MetaRepository::new(&store)
+            .save(&namespace, &meta)
+            .expect("the group rows are back");
+        let (_, identity, _) = NamespaceRepository::new(&store)
+            .participate_in(&namespace)
+            .expect("the follow gave this node an identity");
+        let account = enrol(&store, &namespace, &identity);
+        MembershipRepository::new(&store)
+            .add_member(&namespace, &account, GroupMemberRole::Member)
+            .expect("this node's account is a member again");
+
+        let listed = harness
+            .manager
+            .send(ListNamespacesForApplicationRequest {
+                application_id: ApplicationId::from(APP),
+                offset: 0,
+                limit: usize::MAX,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the listing");
+
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert!(listed[0].forgotten);
+    }
 }

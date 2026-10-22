@@ -21,7 +21,10 @@ impl Handler<ListNamespacesForApplicationRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let entries = namespace_rows_for_applications(&self.datastore, &[application_id])?;
+            let removed = ForgottenNamespaces::new(&self.datastore).list()?;
+            // The marker row wins over rows a restore has brought back before it lifts it.
+            let mut entries = namespace_rows_for_applications(&self.datastore, &[application_id])?;
+            entries.retain(|(id, _)| !removed.iter().any(|r| r.namespace_id.to_bytes() == *id));
             let mut namespaces = collect_namespace_summaries(
                 entries,
                 |group_id| self.node_signing_key(group_id),
@@ -34,8 +37,7 @@ impl Handler<ListNamespacesForApplicationRequest> for ContextManager {
                 },
             )?;
             namespaces.extend(
-                ForgottenNamespaces::new(&self.datastore)
-                    .list()?
+                removed
                     .into_iter()
                     .filter(|removed| removed.application_id == Some(application_id))
                     .map(|removed| NamespaceSummary {
