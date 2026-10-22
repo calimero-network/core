@@ -341,6 +341,7 @@ It executes as the node inside its binding, but it is never the node owner on th
   A context this node does not hold yet runs its owning group's target application.
 - Group subscribe (WS and SSE) and admin routes with a `{group_id}` or `{namespace_id}`: a context binding reaches only the groups on the chain from its context's group up to the namespace; an application binding only groups targeting that application.
   A context binding changes only its context's own group: a route other than `GET`/`HEAD`, a body naming a group and a join need that group exactly (`permits_group_change`).
+- A change under `{group_id}` or `{namespace_id}` by an application binding also needs every descendant group and context to belong to that application (`permits_subtree_change`), because a delete or member change cascades over the subtree.
 - Admin routes with a `{context_id}`, `{application_id}`, and `/contexts/sync/{id}`, are refused with `403` outside the binding (`admin/client_key_scope.rs`).
   `POST /contexts/sync` with no id syncs every context and is refused outright.
   `POST /install-application` is refused outright.
@@ -524,6 +525,8 @@ request re-stamps it.
   `app_host::is_app_api` is the passthrough set: `{NODE_PATH_PREFIX}/jsonrpc`, `{NODE_PATH_PREFIX}/ws`, `/sse`, `/sse/...`, `POST /auth/refresh` and `GET` or `HEAD /auth/validate`, which exchange or check a token and read nothing else; SSE and auth are not prefixed.
   It also holds the admin allowlist, `app_host::is_app_admin_route`, matched by method and exact segment shape under `{NODE_PATH_PREFIX}/admin-api`.
   Never match a prefix there, so `/contexts/{id}/anything` stays refused.
+  The list covers the contexts, groups, members, blobs and context aliases an app manages; each route is confined to the app by `refuse_out_of_scope`, `refuse_target_outside_binding`, `refuse_join_outside_binding` or the blob handlers' context scope.
+  A route with no app scoping (blob listing, blob delete of another's blob, application, node, account and TEE routes) stays out of it.
   `app_host::AppHosts::hand_over` runs them through the normal router, auth middleware included, with the `AppApi` request extension that `origin_guard::refuse_app_origins` and `ws_handler` take as leave to skip their app-origin refusal.
   It answers `403` when `Origin` is not the `Host` called, and `403` with a plain-text body unless this node verifies the token itself (`ServerConfig::use_embedded_auth`).
   Proxy mode gets no app API, with or without `proxy_identity`: merod mounts no token guard there, and an app host is a listener merod binds itself, with no proxy in front to vouch for the caller.

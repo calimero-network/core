@@ -1730,8 +1730,8 @@ async fn an_app_origin_needs_a_token_and_refuses_the_rest_of_the_admin_api() {
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     for (method, path) in [
-        (Method::DELETE, format!("/contexts/{context}")),
         (Method::DELETE, format!("/blobs/{blob}")),
+        (Method::PUT, format!("/contexts/{context}")),
         (Method::GET, "/blobs".to_owned()),
         (Method::POST, "/install-application".to_owned()),
         (Method::GET, format!("/applications/{}/abi", node.mine.app)),
@@ -1809,4 +1809,245 @@ async fn an_app_origin_cannot_create_in_another_application() {
             .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{path} {body}: {response}");
     }
+}
+
+/// Each route an app host passes on, as (method, path) with `{g}` the group, `{c}` the context and `{a}` an account.
+const WIDENED_ROUTES: &[(Method, &str)] = &[
+    (Method::GET, "/groups/{g}"),
+    (Method::GET, "/groups/{g}/metadata"),
+    (Method::PUT, "/groups/{g}/metadata"),
+    (Method::PUT, "/groups/{g}/contexts/{c}/metadata"),
+    (Method::POST, "/groups/{g}/members"),
+    (Method::POST, "/groups/{g}/members/remove"),
+    (Method::PUT, "/groups/{g}/members/{a}/role"),
+    (Method::PUT, "/groups/{g}/members/{a}/capabilities"),
+    (Method::PUT, "/groups/{g}/settings/default-capabilities"),
+    (Method::PUT, "/groups/{g}/settings/subgroup-visibility"),
+    (Method::GET, "/groups/{g}/subgroups"),
+    (Method::GET, "/groups/{g}/contexts"),
+    (Method::GET, "/groups/{g}/members/{a}/metadata"),
+    (Method::PUT, "/groups/{g}/members/{a}/metadata"),
+    (Method::GET, "/namespaces/{g}"),
+    (Method::GET, "/namespaces/{g}/groups"),
+    (Method::POST, "/groups/{g}/reparent"),
+    (Method::POST, "/groups/{g}/sync"),
+    (Method::POST, "/groups/{g}/leave"),
+    (Method::DELETE, "/groups/{g}"),
+    (Method::DELETE, "/namespaces/{g}"),
+    (Method::DELETE, "/contexts/{c}"),
+    (Method::POST, "/contexts/{c}/leave"),
+    (Method::GET, "/contexts/{c}/identities"),
+];
+
+#[actix::test]
+async fn an_app_origin_reaches_the_widened_routes_for_its_own_resources_only() {
+    let node = Node::new().await;
+    let mut permissions: Vec<String> = APP_TOKEN.iter().map(|p| (*p).to_owned()).collect();
+    permissions.extend(["context:delete".to_owned(), "context:leave".to_owned()]);
+    let token = node.client_token(permissions).await;
+    let account = hex::encode([0x33; 32]);
+    let fill = |template: &str, tenant: &Tenant| {
+        template
+            .replace("{g}", &hex::encode(tenant.namespace.to_bytes()))
+            .replace("{c}", &tenant.context.to_string())
+            .replace("{a}", &account)
+    };
+
+    for (method, template) in WIDENED_ROUTES {
+        let own = fill(template, &node.mine);
+        let (status, body) = node
+            .call_on_origin_of(
+                &node.mine.app,
+                Some(&token),
+                method.clone(),
+                &own,
+                Some(json!({})),
+            )
+            .await;
+        assert_ne!(status, StatusCode::FORBIDDEN, "{method} {own}: {body}");
+
+        let theirs = fill(template, &node.theirs);
+        let (status, body) = node
+            .call_on_origin_of(
+                &node.mine.app,
+                Some(&token),
+                method.clone(),
+                &theirs,
+                Some(json!({})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {theirs}: {body}");
+        assert!(
+            body.to_string().contains("not permitted"),
+            "{method} {theirs} is refused by the binding, not the host: {body}"
+        );
+    }
+}
+
+#[actix::test]
+async fn an_app_origin_reads_the_nodes_own_identity() {
+    let node = Node::new().await;
+    let token = node.unbound().await;
+    let (status, body) = node
+        .call_on_origin_of(&node.mine.app, Some(&token), Method::GET, "/identity", None)
+        .await;
+    assert_ne!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+#[actix::test]
+async fn an_app_origin_joins_groups_aliases_contexts_and_blobs_for_its_own_app_only() {
+    let node = Node::new().await;
+    let token = node.unbound().await;
+    let (mine, theirs) = (&node.mine, &node.theirs);
+    let call = async |method: Method, path: String, body: Option<Value>| {
+        node.call_on_origin_of(&mine.app, Some(&token), method, &path, body)
+            .await
+    };
+
+    let (status, body) = call(
+        Method::POST,
+        "/groups/join".to_owned(),
+        Some(invitation_hinting(&theirs.namespace, &mine.app)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "joining their group: {body}");
+
+    let alias = |context: &Tenant| json!({ "alias": "x", "contextId": context.context });
+    let (status, body) = call(
+        Method::POST,
+        "/alias/create/context".to_owned(),
+        Some(alias(theirs)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "aliasing theirs: {body}");
+    let (status, body) = call(
+        Method::POST,
+        "/alias/create/context".to_owned(),
+        Some(alias(mine)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "aliasing mine: {body}");
+    let (status, body) = call(Method::POST, "/alias/lookup/context/x".to_owned(), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["value"], json!(mine.context.to_string()));
+
+    let reparent = json!({ "newParentId": hex::encode(theirs.namespace.to_bytes()) });
+    let (status, body) = call(
+        Method::POST,
+        format!(
+            "/groups/{}/reparent",
+            hex::encode(mine.namespace.to_bytes())
+        ),
+        Some(reparent),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "reparenting under theirs: {body}"
+    );
+
+    for (tenant, expected) in [(mine, StatusCode::OK), (theirs, StatusCode::FORBIDDEN)] {
+        let uri = format!("/blobs/{}?context_id={}", mine.blob, tenant.context);
+        let (status, body) = call(Method::GET, uri, None).await;
+        assert_eq!(
+            status, expected,
+            "reading a blob through {}: {body}",
+            tenant.context
+        );
+    }
+    let (status, body) = call(Method::GET, format!("/blobs/{}", theirs.blob), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "no context named: {body}");
+    let (status, body) = call(
+        Method::PUT,
+        format!("/blobs?context_id={}", theirs.context),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "uploading into theirs: {body}"
+    );
+}
+
+/// A subgroup of `mine`'s namespace targeting `target`, holding a context that runs `context_app`.
+fn seed_mixed_subgroup(node: &Node, target: ApplicationId, context_app: Option<ApplicationId>) {
+    let sub = ContextGroupId::from([0xa4; 32]);
+    let mut meta = MetaRepository::new(&node.store)
+        .load(&node.mine.namespace)
+        .expect("load")
+        .expect("namespace meta");
+    meta.target.application_id = target;
+    MetaRepository::new(&node.store)
+        .save(&sub, &meta)
+        .expect("meta");
+    calimero_governance_store::NamespaceRepository::new(&node.store)
+        .nest(&node.mine.namespace, &sub)
+        .expect("nest");
+    if let Some(app) = context_app {
+        let context = ContextId::from([0xa5; 32]);
+        ContextTreeService::new(&node.store, sub)
+            .register_context(&context)
+            .expect("register");
+        node.store
+            .handle()
+            .put(
+                &ContextMetaKey::new(context),
+                &ContextMeta::new(ApplicationMeta::new(app), [0; 32], vec![], None),
+            )
+            .expect("context meta");
+    }
+}
+
+#[actix::test]
+async fn an_app_origin_cannot_cascade_over_a_subtree_holding_another_applications_groups_or_contexts(
+) {
+    let account = hex::encode([0x33; 32]);
+    for (foreign_group, foreign_context) in [(true, false), (false, true)] {
+        let node = Node::new().await;
+        let (mine, theirs) = (node.mine.app, node.theirs.app);
+        if foreign_group {
+            seed_mixed_subgroup(&node, theirs, None);
+        } else {
+            seed_mixed_subgroup(&node, mine, Some(theirs));
+        }
+        let token = node.unbound().await;
+        let ns = hex::encode(node.mine.namespace.to_bytes());
+
+        for (method, path) in [
+            (Method::DELETE, format!("/groups/{ns}")),
+            (Method::DELETE, format!("/namespaces/{ns}")),
+            (Method::POST, format!("/groups/{ns}/members/remove")),
+            (Method::PUT, format!("/groups/{ns}/members/{account}/role")),
+            (
+                Method::PUT,
+                format!("/groups/{ns}/members/{account}/capabilities"),
+            ),
+        ] {
+            let (status, body) = node
+                .call_on_origin_of(&mine, Some(&token), method.clone(), &path, Some(json!({})))
+                .await;
+            assert_eq!(
+                status,
+                StatusCode::FORBIDDEN,
+                "{method} {path} {foreign_group} {foreign_context}: {body}"
+            );
+        }
+    }
+
+    let node = Node::new().await;
+    seed_mixed_subgroup(&node, node.mine.app, Some(node.mine.app));
+    let token = node.unbound().await;
+    let ns = hex::encode(node.mine.namespace.to_bytes());
+    let (status, body) = node
+        .call_on_origin_of(
+            &node.mine.app,
+            Some(&token),
+            Method::DELETE,
+            &format!("/groups/{ns}"),
+            Some(json!({})),
+        )
+        .await;
+    assert_ne!(status, StatusCode::FORBIDDEN, "a tree of one app: {body}");
 }

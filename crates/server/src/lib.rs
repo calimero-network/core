@@ -1158,7 +1158,7 @@ mod cors_tests {
             "DELETE",
             port,
             &app_host,
-            "/admin-api/contexts/abc",
+            "/admin-api/blobs/abc",
             &[("Origin", &app_origin)],
         )
         .await;

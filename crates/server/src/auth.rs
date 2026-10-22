@@ -13,7 +13,9 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{placeholder_admin_identity, MetaRepository, NamespaceRepository};
+use calimero_governance_store::{
+    placeholder_admin_identity, ContextTreeService, MetaRepository, NamespaceRepository,
+};
 use calimero_primitives::application::ApplicationId;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
@@ -213,6 +215,32 @@ impl ClientKeyScope {
                     })
                     .is_some_and(|owning| owning == *group_id)
             })
+    }
+
+    /// [`Self::permits_group_change`] for a change that reaches the group's whole
+    /// subtree: an application binding also needs every group and context below to be its own.
+    pub(crate) fn permits_subtree_change(&self, store: &Store, group_id: &ContextGroupId) -> bool {
+        if !self.permits_group_change(store, group_id) {
+            return false;
+        }
+        let Some(bound) = self.0.application_id.as_deref() else {
+            return true;
+        };
+        let Ok(mut groups) = NamespaceRepository::new(store).collect_descendants(group_id) else {
+            return false;
+        };
+        groups.push(*group_id);
+        let is_bound = |app: ApplicationId| app.to_string().eq_ignore_ascii_case(bound);
+        groups.iter().all(|group| {
+            verified_meta(store, group).is_some_and(|meta| is_bound(meta.target.application_id))
+                && ContextTreeService::new(store, *group)
+                    .enumerate_contexts(0, usize::MAX)
+                    .is_ok_and(|contexts| {
+                        contexts.iter().all(|context| {
+                            context_application(store, context).is_some_and(is_bound)
+                        })
+                    })
+        })
     }
 
     pub(crate) fn principal(&self) -> String {

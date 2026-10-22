@@ -12,7 +12,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use futures_util::{stream, StreamExt as _};
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::config::AppsConfig;
 use crate::origin_guard::names_origin;
@@ -324,6 +324,7 @@ pub(crate) async fn serve_app_hosts(
         return hosts.hand_over(app, request, next).await;
     }
     if is_admin_api(path, node_prefix()) {
+        debug!(%method, path, app = %encode_label(&app), "admin route refused on an app origin");
         return refusal(StatusCode::FORBIDDEN, ADMIN_REFUSED);
     }
     let (parts, _body) = request.into_parts();
@@ -384,8 +385,9 @@ fn is_app_api(method: &Method, path: &str, prefix: &str) -> bool {
         || path.starts_with("/sse/")
 }
 
-/// The admin routes an app uses to find and make its contexts and namespaces,
-/// matched by method and exact segment shape.
+/// The admin routes an app uses to find, make and manage its contexts, groups and
+/// blobs, matched by method and exact segment shape. The router's scope checks
+/// confine each one to the app of the host.
 fn is_app_admin_route(method: &Method, route: &str) -> bool {
     let Some(route) = route
         .strip_prefix(ADMIN_API)
@@ -394,24 +396,54 @@ fn is_app_admin_route(method: &Method, route: &str) -> bool {
         return false;
     };
     let segments: Vec<&str> = route.split('/').collect();
-    matches!(
-        (method, segments.as_slice()),
-        (
-            &Method::GET,
-            ["contexts" | "namespaces" | "applications" | "health" | "is-authed"]
-        ) | (&Method::GET, ["contexts", _])
-            | (&Method::GET, ["applications", _])
-            | (&Method::GET, ["namespaces", "for-application", _])
-            | (&Method::GET, ["contexts", "for-application", _])
-            | (&Method::GET, ["contexts", _, "identities-owned" | "group"])
-            | (&Method::GET, ["groups", _, "members"])
-            | (&Method::POST, ["contexts" | "namespaces"])
-            | (&Method::POST, ["contexts", _, "join"])
-            | (
-                &Method::POST,
-                ["namespaces", _, "invite" | "join" | "groups"]
-            )
-    )
+    let segments = segments.as_slice();
+    match *method {
+        Method::GET | Method::HEAD if matches!(segments, ["blobs", _]) => true,
+        Method::GET => matches!(
+            segments,
+            ["contexts" | "namespaces" | "applications" | "health" | "is-authed" | "identity"]
+                | ["contexts" | "applications" | "groups" | "namespaces", _]
+                | ["namespaces", _, "groups"]
+                | ["groups", _, "contexts"]
+                | ["groups", _, "members", _, "metadata"]
+                | ["namespaces", "for-application", _]
+                | ["contexts", "for-application", _]
+                | ["contexts", _, "identities-owned" | "identities" | "group"]
+                | ["groups", _, "members" | "metadata" | "subgroups"]
+        ),
+        Method::POST => matches!(
+            segments,
+            ["contexts" | "namespaces"]
+                | ["contexts", _, "join" | "leave"]
+                | ["namespaces", _, "invite" | "join" | "groups"]
+                | ["groups", "join"]
+                | ["groups", _, "members" | "reparent" | "sync" | "leave"]
+                | ["groups", _, "members", "remove"]
+                | ["alias", "create", "context"]
+                | ["alias", "lookup", "context", _]
+        ),
+        Method::PUT => matches!(
+            segments,
+            ["blobs"]
+                | ["groups", _, "metadata"]
+                | ["groups", _, "contexts", _, "metadata"]
+                | [
+                    "groups",
+                    _,
+                    "members",
+                    _,
+                    "role" | "capabilities" | "metadata"
+                ]
+                | [
+                    "groups",
+                    _,
+                    "settings",
+                    "default-capabilities" | "subgroup-visibility"
+                ]
+        ),
+        Method::DELETE => matches!(segments, ["contexts" | "namespaces" | "groups", _]),
+        _ => false,
+    }
 }
 
 fn is_admin_api(path: &str, prefix: &str) -> bool {
@@ -471,10 +503,10 @@ fn redirect(to: &str) -> Response {
 
 fn hardened(mut response: Response) -> Response {
     let headers = response.headers_mut();
-    drop(headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(CSP),
-    ));
+    // A handler's own policy (a blob download's sandbox) is stricter than this one.
+    headers
+        .entry(header::CONTENT_SECURITY_POLICY)
+        .or_insert(HeaderValue::from_static(CSP));
     drop(headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
@@ -520,6 +552,7 @@ fn matches_etag(headers: &HeaderMap, etag: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::ADMIN_REFUSED;
     use core::str;
     use std::sync::Arc;
 
@@ -549,7 +582,7 @@ mod tests {
     const APP: [u8; 32] = [7; 32];
     const API_PATHS: [&str; 5] = ["/jsonrpc", "/ws", "/sse", "/sse/subscribe", "/auth/refresh"];
     const ID: &str = "0123abcd";
-    const ALLOWED_ADMIN: [(Method, &str); 16] = [
+    const ALLOWED_ADMIN: [(Method, &str); 47] = [
         (Method::GET, "/admin-api/applications"),
         (Method::GET, "/admin-api/applications/0123abcd"),
         (
@@ -569,6 +602,58 @@ mod tests {
         (Method::POST, "/admin-api/namespaces/0123abcd/join"),
         (Method::POST, "/admin-api/namespaces/0123abcd/groups"),
         (Method::GET, "/admin-api/groups/0123abcd/members"),
+        (Method::GET, "/admin-api/contexts/0123abcd/identities"),
+        (Method::POST, "/admin-api/contexts/0123abcd/leave"),
+        (Method::DELETE, "/admin-api/contexts/0123abcd"),
+        (Method::DELETE, "/admin-api/namespaces/0123abcd"),
+        (Method::DELETE, "/admin-api/groups/0123abcd"),
+        (Method::GET, "/admin-api/groups/0123abcd"),
+        (Method::GET, "/admin-api/groups/0123abcd/metadata"),
+        (Method::GET, "/admin-api/namespaces/0123abcd"),
+        (Method::GET, "/admin-api/namespaces/0123abcd/groups"),
+        (Method::GET, "/admin-api/groups/0123abcd/contexts"),
+        (
+            Method::GET,
+            "/admin-api/groups/0123abcd/members/0123abcd/metadata",
+        ),
+        (
+            Method::PUT,
+            "/admin-api/groups/0123abcd/members/0123abcd/metadata",
+        ),
+        (Method::GET, "/admin-api/identity"),
+        (Method::PUT, "/admin-api/groups/0123abcd/metadata"),
+        (
+            Method::PUT,
+            "/admin-api/groups/0123abcd/contexts/0123abcd/metadata",
+        ),
+        (Method::POST, "/admin-api/groups/0123abcd/members"),
+        (Method::POST, "/admin-api/groups/0123abcd/members/remove"),
+        (
+            Method::PUT,
+            "/admin-api/groups/0123abcd/members/0123abcd/role",
+        ),
+        (
+            Method::PUT,
+            "/admin-api/groups/0123abcd/members/0123abcd/capabilities",
+        ),
+        (
+            Method::PUT,
+            "/admin-api/groups/0123abcd/settings/default-capabilities",
+        ),
+        (
+            Method::PUT,
+            "/admin-api/groups/0123abcd/settings/subgroup-visibility",
+        ),
+        (Method::GET, "/admin-api/groups/0123abcd/subgroups"),
+        (Method::POST, "/admin-api/groups/0123abcd/reparent"),
+        (Method::POST, "/admin-api/groups/0123abcd/sync"),
+        (Method::POST, "/admin-api/groups/0123abcd/leave"),
+        (Method::POST, "/admin-api/groups/join"),
+        (Method::PUT, "/admin-api/blobs"),
+        (Method::GET, "/admin-api/blobs/0123abcd"),
+        (Method::HEAD, "/admin-api/blobs/0123abcd"),
+        (Method::POST, "/admin-api/alias/create/context"),
+        (Method::POST, "/admin-api/alias/lookup/context/name"),
     ];
 
     struct Fixture {
@@ -878,7 +963,6 @@ mod tests {
     async fn an_app_host_refuses_every_other_admin_route() {
         let f = fixture_with(true).await;
         let refused = [
-            (Method::DELETE, format!("/admin-api/contexts/{ID}")),
             (Method::PUT, format!("/admin-api/contexts/{ID}")),
             (Method::DELETE, format!("/admin-api/blobs/{ID}")),
             (Method::GET, "/admin-api/blobs".to_owned()),
@@ -890,19 +974,13 @@ mod tests {
                 format!("/admin-api/applications/{ID}/versions"),
             ),
             (Method::POST, "/admin-api/applications".to_owned()),
-            (Method::POST, format!("/admin-api/groups/{ID}/members")),
             (
                 Method::DELETE,
                 format!("/admin-api/groups/{ID}/members/{ID}"),
             ),
             (Method::GET, format!("/admin-api/groups/{ID}/members/{ID}")),
-            (Method::GET, format!("/admin-api/groups/{ID}")),
-            (Method::POST, "/admin-api/alias/create/context".to_owned()),
             (Method::GET, "/admin-api/alias/list/context".to_owned()),
-            (Method::DELETE, format!("/admin-api/namespaces/{ID}")),
-            (Method::GET, format!("/admin-api/namespaces/{ID}")),
             (Method::POST, format!("/admin-api/namespaces/{ID}/leave")),
-            (Method::GET, format!("/admin-api/contexts/{ID}/identities")),
             (Method::GET, format!("/admin-api/contexts/{ID}/group/extra")),
             (Method::POST, format!("/admin-api/contexts/{ID}/group")),
             (Method::POST, format!("/admin-api/contexts/{ID}/join/extra")),
@@ -913,6 +991,29 @@ mod tests {
             (Method::GET, "/admin-api".to_owned()),
             (Method::GET, "/admin-api/".to_owned()),
             (Method::GET, "/admin-api/tee/attest".to_owned()),
+            (Method::GET, "/admin-api/identity/context".to_owned()),
+            (Method::GET, "/admin-api/peers".to_owned()),
+            (Method::GET, "/admin-api/network/status".to_owned()),
+            (Method::GET, "/admin-api/usage".to_owned()),
+            (Method::POST, "/admin-api/account/pair-init".to_owned()),
+            (Method::GET, "/admin-api/account/devices".to_owned()),
+            (
+                Method::POST,
+                "/admin-api/alias/create/application".to_owned(),
+            ),
+            (Method::POST, "/admin-api/alias/create/device".to_owned()),
+            (Method::GET, "/admin-api/alias/list/context".to_owned()),
+            (Method::POST, format!("/admin-api/groups/{ID}/upgrade")),
+            (Method::POST, format!("/admin-api/groups/{ID}/owner-delete")),
+            (
+                Method::POST,
+                format!("/admin-api/groups/{ID}/transfer-ownership"),
+            ),
+            (
+                Method::GET,
+                format!("/admin-api/groups/{ID}/members/{ID}/capabilities"),
+            ),
+            (Method::DELETE, format!("/admin-api/applications/{ID}")),
             (Method::POST, "/auth/validate".to_owned()),
             (Method::DELETE, "/auth/validate".to_owned()),
         ];
@@ -928,7 +1029,7 @@ mod tests {
                 assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {path}");
                 assert_ne!(body, b"app api", "{method} {path}");
                 assert!(
-                    *method == Method::HEAD || !body.is_empty(),
+                    *method == Method::HEAD || body == ADMIN_REFUSED.as_bytes(),
                     "{method} {path}"
                 );
                 assert_hardened(&response);
@@ -1042,12 +1143,7 @@ mod tests {
                 "/node1",
                 false,
             ),
-            (
-                Method::DELETE,
-                "/node1/admin-api/contexts/c",
-                "/node1",
-                false,
-            ),
+            (Method::DELETE, "/node1/admin-api/blobs/c", "/node1", false),
             (Method::GET, "/admin-apix/contexts", "", false),
             (Method::GET, "/auth/validate", "/node1", true),
             (Method::HEAD, "/auth/validate", "", true),
@@ -1313,6 +1409,38 @@ mod tests {
             (response.status(), got),
             (StatusCode::OK, b"<p>v3</p>".to_vec())
         );
+    }
+
+    #[actix::test]
+    async fn a_handler_keeps_the_content_security_policy_it_set() {
+        const SANDBOX: &str = "sandbox; default-src 'none'";
+        let f = fixture_with(true).await;
+        let hosts = AppHosts {
+            node_client: f.node_client.clone(),
+            origins: AppOrigins::new(&AppsConfig {
+                base_domain: BASE.to_owned(),
+                ..AppsConfig::default()
+            }),
+            app_api: true,
+        };
+        let router = Router::new()
+            .route(
+                "/{*rest}",
+                any(|| async { ([(header::CONTENT_SECURITY_POLICY, SANDBOX)], "blob") }),
+            )
+            .layer(from_fn_with_state(hosts, serve_app_hosts));
+
+        let (response, _) = send(
+            &router,
+            Method::GET,
+            &f.host,
+            "/admin-api/blobs/0123abcd",
+            &[],
+        )
+        .await;
+
+        assert_eq!(header_of(&response, "content-security-policy"), SANDBOX);
+        assert_eq!(header_of(&response, "x-content-type-options"), "nosniff");
     }
 
     #[actix::test]
