@@ -259,7 +259,9 @@ mod tests {
 
     use calimero_context_client::group::{CreateGroupRequest, ListNamespacesForApplicationRequest};
     use calimero_governance_store::test_fixtures::test_meta;
-    use calimero_governance_store::{DenyListRepository, ReentryRepository};
+    use calimero_governance_store::{
+        AccountBindingRepository, DenyListRepository, ReentryRepository,
+    };
     use calimero_primitives::context::GroupMemberRole;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupExitReason;
@@ -834,6 +836,30 @@ mod tests {
             DenyListRepository::new(store)
                 .mark(&namespace, &account)
                 .expect("the member is denied");
+        });
+
+        assert_restore_refused(&store, &mut harness, namespace).await;
+    }
+
+    /// The account stays a member; only this node's device is withdrawn.
+    #[actix::test]
+    async fn a_device_revoked_in_the_namespace_is_not_restored() {
+        let store = store();
+        NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("this node's account root");
+        let mut harness = actor::over(store.clone()).await;
+        let namespace = removed(&store);
+        land_exit_soon(&store, namespace, move |store, identity, _account| {
+            let bindings = AccountBindingRepository::new(store);
+            let device = bindings
+                .binding_for_sign_pk(&namespace, identity)
+                .expect("read the binding")
+                .expect("the device is bound")
+                .device;
+            bindings
+                .apply_revocation(&namespace, device)
+                .expect("DeviceRevoked drops the binding");
         });
 
         assert_restore_refused(&store, &mut harness, namespace).await;
