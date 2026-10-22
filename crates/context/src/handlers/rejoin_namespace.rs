@@ -267,7 +267,7 @@ mod tests {
     use calimero_store::key::GroupExitReason;
 
     use super::*;
-    use crate::test_support::{actor, enrol, paired_device_scoped_to};
+    use crate::test_support::{actor, enrol, paired_device_scoped_to, rescope_paired_device};
 
     const NS: [u8; 32] = [0x3C; 32];
     const ACCOUNT_NS: [u8; 32] = [0x3D; 32];
@@ -908,6 +908,40 @@ mod tests {
 
         assert!(
             matches!(refusal(&err), Some(ContextError::NamespaceNotFound { .. })),
+            "got: {err:#}"
+        );
+        assert!(harness.subscribed().is_empty(), "never asked to subscribe");
+    }
+
+    #[actix::test]
+    async fn a_descoped_device_is_refused_a_held_namespace_it_no_longer_reaches() {
+        let store = store();
+        let account_namespace = ContextGroupId::from(ACCOUNT_NS);
+        let (device, root_sk) =
+            paired_device_scoped_to(&store, &account_namespace, &[ApplicationId::from(APP)]);
+        let namespace = ContextGroupId::from(NS);
+        let mut meta = test_meta();
+        meta.target.application_id = ApplicationId::from(APP);
+        MetaRepository::new(&store)
+            .save(&namespace, &meta)
+            .expect("the namespace is held");
+        MembershipRepository::new(&store)
+            .add_member(&namespace, &own_account(&store), GroupMemberRole::Member)
+            .expect("the account is a member");
+        rescope_paired_device(
+            &store,
+            &account_namespace,
+            device,
+            &root_sk,
+            &[ApplicationId::from(OTHER_APP)],
+            1,
+        );
+        let mut harness = actor::over(store.clone()).await;
+
+        let err = rejoin(&harness, namespace).await.expect_err("out of scope");
+
+        assert!(
+            matches!(refusal(&err), Some(ContextError::DeviceOutOfScope { .. })),
             "got: {err:#}"
         );
         assert!(harness.subscribed().is_empty(), "never asked to subscribe");
