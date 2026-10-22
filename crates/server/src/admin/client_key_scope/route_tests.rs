@@ -16,6 +16,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::test_fixtures::enrol_member;
 use calimero_governance_store::{
     apply_local_signed_group_op, ContextTreeService, MembershipRepository, MetaRepository,
+    NamespaceRepository,
 };
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
@@ -707,7 +708,7 @@ async fn a_context_bound_key_cannot_join_a_group_this_node_does_not_hold() {
 }
 
 /// The namespace as the join's first phase leaves it: the invitation's hint as
-/// target and the placeholder as admin.
+/// target, marked unverified, and the placeholder as admin.
 fn seed_unverified(node: &Node, hint: ApplicationId) -> ContextGroupId {
     let namespace = ContextGroupId::from(NAMESPACE);
     let placeholder = calimero_governance_store::placeholder_admin_identity();
@@ -727,11 +728,14 @@ fn seed_unverified(node: &Node, hint: ApplicationId) -> ContextGroupId {
             },
         )
         .expect("the join's first phase");
+    MetaRepository::new(&node.store)
+        .mark_target_unverified(&namespace)
+        .expect("mark the hint");
     namespace
 }
 
-/// Genesis names the namespace's admin, and the admin's target op applies.
-fn found_with_target(node: &Node, namespace: &ContextGroupId, target: ApplicationId) {
+/// Genesis names the namespace's admin and applies no target op.
+fn genesis(node: &Node, namespace: &ContextGroupId) -> PrivateKey {
     let admin_sk = PrivateKey::from([0x77; 32]);
     let admin = enrol_member(&node.store, namespace, &admin_sk.public_key());
     let mut meta = MetaRepository::new(&node.store)
@@ -746,6 +750,12 @@ fn found_with_target(node: &Node, namespace: &ContextGroupId, target: Applicatio
     MembershipRepository::new(&node.store)
         .add_member(namespace, &admin, GroupMemberRole::Admin)
         .expect("the admin");
+    admin_sk
+}
+
+/// Genesis names the namespace's admin, and the admin's target op applies.
+fn found_with_target(node: &Node, namespace: &ContextGroupId, target: ApplicationId) {
+    let admin_sk = genesis(node, namespace);
     let op = SignedGroupOp::sign(
         &admin_sk,
         namespace.to_bytes().into(),
@@ -837,6 +847,49 @@ async fn an_app_bound_key_cannot_act_on_a_namespace_whose_signed_admin_has_not_a
         )
         .await;
     assert_ne!(status, StatusCode::FORBIDDEN, "the join: {body}");
+}
+
+/// Genesis alone does not confirm a hinted application: only a signed op that
+/// names it does.
+#[actix::test]
+async fn an_app_bound_key_cannot_act_on_a_namespace_whose_hinted_application_no_signed_op_confirmed(
+) {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+    let namespace = seed_unverified(&node, node.mine.app);
+
+    genesis(&node, &namespace);
+    assert_routes(&node, &token, &namespace, true, "after genesis").await;
+}
+
+/// A subgroup created under a marked namespace copies its hinted target and has
+/// a real admin, but carries no marker of its own.
+#[actix::test]
+async fn an_app_bound_key_cannot_act_on_a_subgroup_of_a_namespace_with_a_hinted_application() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+    let namespace = seed_unverified(&node, node.mine.app);
+    genesis(&node, &namespace);
+
+    let subgroup = ContextGroupId::from([0xc2; 32]);
+    let meta = MetaRepository::new(&node.store)
+        .load(&namespace)
+        .expect("read")
+        .expect("the namespace meta");
+    MetaRepository::new(&node.store)
+        .save(&subgroup, &meta)
+        .expect("the subgroup meta");
+    NamespaceRepository::new(&node.store)
+        .nest(&namespace, &subgroup)
+        .expect("nest");
+    let path = format!("/groups/{}/members", hex::encode(subgroup.to_bytes()));
+
+    let (status, body) = node.call(&token, Method::GET, &path, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "before the target: {body}");
+
+    found_with_target(&node, &namespace, node.mine.app);
+    let (status, body) = node.call(&token, Method::GET, &path, None).await;
+    assert_ne!(status, StatusCode::FORBIDDEN, "after the target: {body}");
 }
 
 #[actix::test]

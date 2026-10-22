@@ -257,10 +257,18 @@ fn context_application(
     Some(verified_meta(store, &group)?.target.application_id)
 }
 
-/// The group's meta once a signed admin has replaced the placeholder a join seeds it with.
-/// Its target may still be the invitation's unsigned hint until a signed target op replaces it.
+/// The group's meta once a signed admin has replaced the placeholder a join seeds it with
+/// and a signed op has confirmed the target application the invitation hinted, for the group and its namespace.
 pub(crate) fn verified_meta(store: &Store, group_id: &ContextGroupId) -> Option<GroupMetaValue> {
-    MetaRepository::new(store)
+    let metas = MetaRepository::new(store);
+    // A subgroup copies its parent's target, so a marked root marks the whole tree.
+    let root = NamespaceRepository::new(store).resolve(group_id).ok()?;
+    for group in [group_id, &root] {
+        if metas.is_target_unverified(group).unwrap_or(true) {
+            return None;
+        }
+    }
+    metas
         .load(group_id)
         .ok()?
         .filter(|meta| meta.admin_identity != placeholder_admin_identity())
