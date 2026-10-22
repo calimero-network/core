@@ -126,8 +126,9 @@ Any other `/admin-api` route answers `403` with a short plain-text body, and eve
 `{version}` is found by two point reads, the release pointer stored under the application id and a hash of the version, then the bundle's index, so an older release keeps its own files after an upgrade.
 When two bundles claim one release, the latest install wins.
 `{path}` is only a key into the index's file list and never touches a filesystem, so `..` and encoded dots simply match no file.
-A `GET` or `HEAD` under `/{version}/` that matches no file, has no extension in its last segment and accepts `text/html` is answered with the release's entry and its headers, so a single-page app's client routes survive a reload.
-A path with an extension, or a request that does not accept `text/html`, still answers `404`.
+A `GET` or `HEAD` under `/{version}/` that matches no file, has no extension in its last segment and accepts `text/html` is answered with the release's entry and its headers, so a single-page app's client routes survive a reload; that response carries `Vary: Accept`.
+A path with an extension, or a request that does not accept `text/html`, that matches no file is tried again with its leading segments dropped one at a time, and the longest remainder that is a file of the same release is served, trying at most 16 leading segments.
+This resolves an entry's relative `./assets/...` URLs on a deep link such as `/{version}/p/123`, and answers `404` when no remainder is a file.
 `/` redirects (`302`) to the application row's current version, and `/{version}` redirects to `/{version}/`.
 `/?namespace={id}` is not supported yet and answers `404`, because a namespace records the bytecode blob it runs and not the release that blob came from.
 

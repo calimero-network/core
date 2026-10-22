@@ -20,6 +20,7 @@ use crate::origin_guard::names_origin;
 const CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'"; // see crates/bundle/AGENTS.md
 const IMMUTABLE: &str = "public, max-age=31536000, immutable"; // a file's URL names its release
 const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567"; // RFC 4648 alphabet, lowercase
+const MAX_STRIPPED_SEGMENTS: usize = 16; // leading segments a deep link may drop to find its asset
 const LABEL_LEN: usize = 52; // 32 bytes in unpadded base32
 const NATIVE_SCHEME: &str = "calimero-app"; // the desktop webview's app scheme on macOS and Linux
 const WINDOWS_HOST_PREFIX: &str = "calimero-app."; // its host form on Windows: `http(s)://calimero-app.{label}`
@@ -214,27 +215,38 @@ impl AppHosts {
         let Some(rest) = rest else {
             return redirect(&format!("{prefix}/{version}/"));
         };
-        let mut wanted = if rest.is_empty() {
-            index.entry.to_string()
-        } else {
-            format!("{FRONTEND_ROOT}{rest}")
+        let in_index = |tail: &str| {
+            index
+                .files
+                .iter()
+                .find(|file| file.path.strip_prefix(FRONTEND_ROOT) == Some(tail))
         };
-        let mut found = index.files.iter().find(|file| *file.path == *wanted);
-        if found.is_none() && is_client_route(rest, &request.headers) {
-            wanted = index.entry.to_string();
-            found = index.files.iter().find(|file| *file.path == *wanted);
+        let mut found = if rest.is_empty() {
+            index.files.iter().find(|file| *file.path == *index.entry)
+        } else {
+            in_index(rest)
+        };
+        let mut negotiated = false;
+        if found.is_none() {
+            if is_client_route(rest, &request.headers) {
+                found = index.files.iter().find(|file| *file.path == *index.entry);
+                negotiated = true;
+            } else {
+                found = relative_tails(rest).find_map(in_index);
+            }
         }
         let Some(file) = found else {
             return status(StatusCode::NOT_FOUND);
         };
-        let Some(mime) = calimero_bundle::mime_type(&wanted) else {
+        let Some(mime) = calimero_bundle::mime_type(&file.path) else {
             return status(StatusCode::NOT_FOUND);
         };
 
         let blob_id = file.blob.blob_id();
         let etag = format!("\"{blob_id}\"");
         if matches_etag(&request.headers, &etag) {
-            return with_file_headers(status(StatusCode::NOT_MODIFIED), mime, &etag);
+            let response = with_file_headers(status(StatusCode::NOT_MODIFIED), mime, &etag);
+            return vary_on_accept(response, negotiated);
         }
         let (body, size) = match self.open_blob(blob_id).await {
             Ok(opened) => opened,
@@ -245,7 +257,8 @@ impl AppHosts {
         } else {
             body
         };
-        let mut response = with_file_headers(hardened(Response::new(body)), mime, &etag);
+        let response = with_file_headers(hardened(Response::new(body)), mime, &etag);
+        let mut response = vary_on_accept(response, negotiated);
         drop(
             response
                 .headers_mut()
@@ -344,6 +357,15 @@ fn is_client_route(rest: &str, headers: &HeaderMap) -> bool {
         .filter_map(|value| value.to_str().ok())
         .any(|value| value.to_ascii_lowercase().contains("text/html"));
     wants_page && !last.contains('.')
+}
+
+/// What `rest` names once leading segments are dropped, longest first and at most
+/// `MAX_STRIPPED_SEGMENTS` of them: a page opened on a deep link resolves its
+/// `./assets/...` URLs below that link.
+fn relative_tails(rest: &str) -> impl Iterator<Item = &str> {
+    rest.match_indices('/')
+        .take(MAX_STRIPPED_SEGMENTS)
+        .map(|(at, _)| &rest[at + 1..])
 }
 
 fn node_prefix() -> &'static str {
@@ -461,6 +483,18 @@ fn hardened(mut response: Response) -> Response {
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
     ));
+    response
+}
+
+/// The entry stands in for any page path, so a cache must key it by `Accept`.
+fn vary_on_accept(mut response: Response, negotiated: bool) -> Response {
+    if negotiated {
+        drop(
+            response
+                .headers_mut()
+                .insert(header::VARY, HeaderValue::from_static("accept")),
+        );
+    }
     response
 }
 
@@ -1191,11 +1225,8 @@ mod tests {
             "/9.9.9/",
             "/9.9.9/app.js",
             "/1.0.0/missing.js",
-            "/1.0.0/../2.0.0/app.js",
-            "/1.0.0/%2e%2e/2.0.0/app.js",
             "/%2e%2e/app.js",
             "/1.0.0/..%2fapp.js",
-            "/1.0.0/frontend/app.js",
             "/1.0.0/app.js/",
             "/9.9.9",
             "/../",
@@ -1235,6 +1266,56 @@ mod tests {
     }
 
     #[actix::test]
+    async fn an_asset_below_a_deep_link_resolves_to_the_releases_own_file() {
+        let f = fixture().await;
+        let html = add(&f.node_client, b"<p>v3</p>").await;
+        let outer = add(&f.node_client, b"outer").await;
+        let inner = add(&f.node_client, b"inner").await;
+        let files = vec![
+            ("frontend/index.html", html),
+            ("frontend/assets/a.js", outer),
+            ("frontend/b/assets/a.js", inner),
+        ];
+        publish(&f.store, "3.0.0", 3, files);
+        let page = [("accept", "text/html")];
+
+        for (path, body) in [
+            ("/3.0.0/p/assets/a.js", &b"outer"[..]),
+            ("/3.0.0/p/q/assets/a.js", b"outer"),
+            ("/3.0.0/x/b/assets/a.js", b"inner"),
+            ("/1.0.0/p/app.js", b"v1();"),
+            ("/1.0.0/../2.0.0/app.js", b"v1();"),
+            ("/1.0.0/%2e%2e/2.0.0/app.js", b"v1();"),
+            ("/1.0.0/frontend/app.js", b"v1();"),
+        ] {
+            let (response, got) = get(&f, path).await;
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(got, body, "{path}");
+            assert_eq!(
+                header_of(&response, "content-type"),
+                "text/javascript; charset=utf-8"
+            );
+        }
+        let deep = "p/".repeat(20);
+        let thousands = "p/".repeat(5000);
+        for path in [
+            "/3.0.0/p/nothing.js".to_owned(),
+            "/3.0.0/p/app.js".to_owned(),
+            "/2.0.0/p/assets/a.js".to_owned(),
+            format!("/3.0.0/{deep}assets/a.js"),
+            format!("/3.0.0/{thousands}assets/a.js"),
+        ] {
+            let (response, _) = get(&f, &path).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path:.40}");
+        }
+        let (response, got) = send(&f.router, Method::GET, &f.host, "/3.0.0/p/q", &page).await;
+        assert_eq!(
+            (response.status(), got),
+            (StatusCode::OK, b"<p>v3</p>".to_vec())
+        );
+    }
+
+    #[actix::test]
     async fn a_client_route_without_a_file_gets_the_entry_for_a_page_request() {
         let f = fixture().await;
         let html = [("accept", "text/html,application/xhtml+xml,*/*;q=0.8")];
@@ -1250,6 +1331,7 @@ mod tests {
                     b""
                 };
                 assert_eq!(body, expected, "{method} {path}");
+                assert_eq!(header_of(&response, "vary"), "accept");
                 for name in ["content-type", "etag", "cache-control"] {
                     assert_eq!(
                         header_of(&response, name),
@@ -1260,6 +1342,14 @@ mod tests {
                 assert_hardened(&response);
             }
         }
+        let etag = header_of(&entry, "etag");
+        let revalidate = [("accept", "text/html"), ("if-none-match", etag)];
+        let (cached, _) = send(&f.router, Method::GET, &f.host, "/1.0.0/a/b", &revalidate).await;
+        assert_eq!(cached.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(header_of(&cached, "vary"), "accept");
+        assert!(entry.headers().get("vary").is_none());
+        let (file, _) = get(&f, "/1.0.0/app.js").await;
+        assert!(file.headers().get("vary").is_none());
         let (other, body) = send(&f.router, Method::GET, &f.host, "/2.0.0/x", &html).await;
         assert_eq!(body, b"<p>v2</p>");
         assert_eq!(other.status(), StatusCode::OK);
@@ -1425,8 +1515,6 @@ mod tests {
             format!("/{}/1.0.0/", non_canonical(&label)),
             format!("/{unknown}/1.0.0/"),
             format!("/{label}/9.9.9/"),
-            format!("/{label}/1.0.0/../2.0.0/app.js"),
-            format!("/{label}/1.0.0/%2e%2e/2.0.0/app.js"),
         ];
 
         for path in paths {

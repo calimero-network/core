@@ -518,8 +518,8 @@ request re-stamps it.
   Everything else is `404`, and any other `/admin-api` route is `403` with a short plain-text body.
   Keep it that way: never route an app host to a handler that is not a frontend file, the app API or a route of the allowlist below.
   Under `sealed.required` the layer is not mounted at all, so an app host cannot get around the envelope.
-- A `GET` or `HEAD` under `/{version}/` that names no indexed file, has no `.` in its last segment and whose `Accept` includes `text/html` is answered with the release's entry (`app_host::is_client_route`), so a single-page app's routes survive a reload.
-  Anything else that matches no file stays `404`.
+- A `GET` or `HEAD` under `/{version}/` that names no indexed file, has no `.` in its last segment and whose `Accept` includes `text/html` is answered with the release's entry (`app_host::is_client_route`), so a single-page app's routes survive a reload and carries `Vary: Accept`.
+  Any other path that matches no file is retried with leading segments dropped (`app_host::relative_tails`, longest first, at most `MAX_STRIPPED_SEGMENTS` of them), so an entry built with a relative base loads its assets on a deep link; only files of the same release are served, and no match stays `404`.
 - An app calls the node at its own `window.location.origin`, because its content security policy is `default-src 'self'`.
   `app_host::is_app_api` is the passthrough set: `{NODE_PATH_PREFIX}/jsonrpc`, `{NODE_PATH_PREFIX}/ws`, `/sse`, `/sse/...`, `POST /auth/refresh` and `GET` or `HEAD /auth/validate`, which exchange or check a token and read nothing else; SSE and auth are not prefixed.
   It also holds the admin allowlist, `app_host::is_app_admin_route`, matched by method and exact segment shape under `{NODE_PATH_PREFIX}/admin-api`.
