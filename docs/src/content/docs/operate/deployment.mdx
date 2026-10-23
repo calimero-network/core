@@ -289,6 +289,91 @@ for a valid token. A proxy must not forward a request because such a call
 returned `200`.
 </Aside>
 
+### App hosts behind the proxy
+
+A proxy-mode node serves an app's API on the app's own host (`{label}.{base_domain}`) only with `[server.apps] trust_proxy = true`.
+merod then mounts no token guard on that host: it acts on the `X-Auth-Permissions` header as the proxy sends it, and nothing in merod can tell a value mero-auth issued from one the client wrote.
+The proxy alone keeps a client from naming its own permissions, so it must replace `X-Auth-Permissions`, `X-Auth-Account` and `X-Auth-Device` on every request to an app host.
+`base_domain` must be the node's own host, and the certificate must cover `*.{base_domain}`.
+
+```nginx
+# App hosts behind nginx: `[server.apps] base_domain = "node1.example.com"`, `trust_proxy = true`
+map $http_upgrade $connection_upgrade { default upgrade; "" close; }
+
+server {
+    listen 443 ssl;
+    server_name "~^[a-z2-7]{52}\.node1\.example\.com$";
+
+    # The certificate must cover *.node1.example.com.
+    ssl_certificate     /etc/letsencrypt/live/node1.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/node1.example.com/privkey.pem;
+
+    # The app's files: no token, and never a client's identity or permissions.
+    location / {
+        proxy_pass http://127.0.0.1:2528;
+        proxy_set_header Host               $host;
+        proxy_set_header X-Auth-Permissions "";
+        proxy_set_header X-Auth-Account     "";
+        proxy_set_header X-Auth-Device      "";
+    }
+
+    # The app API: every request validated, merod gets only mero-auth's permissions.
+    location ~ ^/(jsonrpc|ws|sse|admin-api/) {
+        auth_request     /_validate;
+        auth_request_set $permissions $upstream_http_x_auth_permissions;
+
+        proxy_pass http://127.0.0.1:2528;
+        proxy_set_header Host               $host;
+        proxy_set_header X-Auth-Permissions $permissions;
+        proxy_set_header X-Auth-Account     "";
+        proxy_set_header X-Auth-Device      "";
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
+    }
+
+    location = /_validate {
+        internal;
+        proxy_pass http://127.0.0.1:3001/auth/validate;
+        proxy_method GET;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length     "";
+        proxy_set_header Host               $host;
+        proxy_set_header X-Forwarded-Host   $host;
+        proxy_set_header X-Forwarded-Uri    $request_uri;
+        proxy_set_header X-Forwarded-Method $request_method;
+    }
+
+    # Only refresh and validate reach mero-auth; login goes to merod, which redirects to the node.
+    location = /auth/refresh {
+        limit_except POST { deny all; }
+        proxy_pass http://127.0.0.1:3001;
+        proxy_set_header Host $host;
+    }
+    location = /auth/validate {
+        limit_except GET { deny all; }
+        proxy_pass http://127.0.0.1:3001;
+        proxy_set_header Host $host;
+    }
+    location = /auth/login {
+        proxy_pass http://127.0.0.1:2528;
+        proxy_set_header Host               $host;
+        proxy_set_header X-Auth-Permissions "";
+        proxy_set_header X-Auth-Account     "";
+        proxy_set_header X-Auth-Device      "";
+    }
+    location /auth/ {
+        return 403;
+    }
+}
+```
+
+nginx drops every `proxy_set_header` a `server` block sets once a `location` sets one of its own, so each location above clears the three headers itself; a location added later must too.
+Files take no token, the app API is validated by mero-auth with the original URI and method, only `/auth/refresh` and `/auth/validate` reach mero-auth, and `/auth/login` goes to merod, which redirects to the node's own login page.
+A host that is not a 52-character app label falls to the node's own `server` block.
+mero-tee's relay ingress is the same shape in Traefik: `HostRegexp` routers, `forwardAuth` with `authResponseHeaders`, and a middleware that deletes the client's headers on the entrypoint.
+
 :::tip
 WebSocket (`/ws`) and Server-Sent Events (`/sse`) are long-lived streams. Set
 your proxy's read timeouts high and disable response buffering for those paths,

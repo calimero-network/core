@@ -32,7 +32,7 @@ use calimero_server_primitives::admin::DeleteGroupApiRequest;
 use calimero_server_primitives::admin::DeleteNamespaceApiRequest;
 use calimero_server_primitives::admin::DetachContextFromGroupApiRequest;
 use calimero_server_primitives::admin::GroupMemberApiInput;
-use calimero_server_primitives::admin::JoinGroupApiRequest;
+use calimero_server_primitives::admin::JoinNamespaceApiRequest;
 use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
 use calimero_server_primitives::admin::ReparentGroupApiRequest;
 use calimero_server_primitives::admin::ResyncContextApiRequest;
@@ -604,8 +604,8 @@ async fn join_namespace() {
     let resp = client
         .join_namespace(
             GID,
-            JoinGroupApiRequest {
-                invitation,
+            JoinNamespaceApiRequest {
+                invitation: Some(invitation),
                 group_name: None,
             },
         )

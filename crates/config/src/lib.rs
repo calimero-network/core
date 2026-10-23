@@ -825,33 +825,34 @@ mod tests {
         let typo: Result<super::ServerConfig, _> =
             toml::from_str("listen = []\n[apps]\nbase_domains = \"x\"\n");
         assert!(typo.is_err());
-
-        let port: super::ServerConfig =
-            toml::from_str("listen = []\n[apps]\nport = 2429\n").unwrap();
-        assert_eq!(port.apps.port, Some(2429));
-        assert_eq!(absent.apps.port, None);
-        assert!(toml::to_string(&port).unwrap().contains("port = 2429"));
     }
 
-    /// Port 0 binds an ephemeral port that no page's `Origin` can be matched to.
     #[test]
-    fn server_apps_port_must_not_be_zero() {
+    fn server_apps_trust_proxy_defaults_off_and_is_written_only_when_set() {
+        let absent: super::ServerConfig = toml::from_str("listen = []\n").unwrap();
+        assert!(!absent.apps.trust_proxy);
+
+        let set: super::ServerConfig =
+            toml::from_str("listen = []\n[apps]\ntrust_proxy = true\n").unwrap();
+        assert!(set.apps.trust_proxy);
+        assert!(toml::to_string(&set)
+            .unwrap()
+            .contains("trust_proxy = true"));
+
+        let unset: super::ServerConfig =
+            toml::from_str("listen = []\n[apps]\nbase_domain = \"apps.example\"\n").unwrap();
+        assert!(!toml::to_string(&unset).unwrap().contains("trust_proxy"));
+    }
+
+    /// The fallback apps port is gone: a config that still sets it is refused by name.
+    #[test]
+    fn server_apps_port_is_refused() {
         let parsed: Result<super::ServerConfig, _> =
-            toml::from_str("listen = []\n[apps]\nport = 0\n");
-        assert!(parsed.is_err());
-    }
-
-    /// A browser leaves out port 80 and 443, so every default-port origin would be an app's.
-    #[test]
-    fn server_apps_port_must_not_be_a_default_web_port() {
-        for port in [80, 443] {
-            let parsed: Result<super::ServerConfig, _> =
-                toml::from_str(&format!("listen = []\n[apps]\nport = {port}\n"));
-            let error = parsed
-                .expect_err("a default web port is refused")
-                .to_string();
-            assert!(error.contains("default port"), "{error}");
-        }
+            toml::from_str("listen = []\n[apps]\nport = 2429\n");
+        let error = parsed
+            .expect_err("the apps port is not a setting")
+            .to_string();
+        assert!(error.contains("unknown field `port`"), "{error}");
     }
 
     /// A one-label base domain other than `localhost` is a public suffix, which

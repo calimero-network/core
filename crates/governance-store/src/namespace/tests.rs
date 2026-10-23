@@ -1314,6 +1314,55 @@ fn namespace_retry_service_skips_the_nodes_own_ops() {
     );
 }
 
+/// A removed namespace holds none of what its own ops did, so a restore replays
+/// them: the node's own join is what binds its key to its account again.
+#[test]
+fn namespace_retry_service_replays_the_nodes_own_ops_of_a_removed_namespace() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let store = test_store();
+    let namespace_id = [0x86; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let group = ContextGroupId::from([0x87; 32]);
+    let own_sk = PrivateKey::random(&mut rng);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &own_sk.public_key(), own_sk.as_bytes())
+        .unwrap();
+    let group_key = [0x93; 32];
+    let key_id = GroupKeyring::new(&store, group)
+        .store_key(&group_key)
+        .unwrap();
+    let own_op = SignedNamespaceOp::sign(
+        &own_sk,
+        namespace_id.into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: group.to_bytes().into(),
+            key_id: key_id.into(),
+            encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+            registers: None,
+        },
+    )
+    .unwrap();
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    gov.store_operation(&own_op).unwrap();
+    assert!(gov.authored_here(&own_op).unwrap());
+
+    crate::ForgottenNamespaces::new(&store)
+        .mark(&ns_gid, None, 1, None)
+        .unwrap();
+
+    assert!(!gov.authored_here(&own_op).unwrap());
+    let candidates = group_retry_candidates(&store, namespace_id.into(), group.to_bytes());
+    assert_eq!(candidates.len(), 1, "the node's own op is replayed");
+}
+
 #[test]
 fn namespace_retry_service_orders_candidates_by_signer_nonce() {
     // Regression test for #2349: when a peer buffers several

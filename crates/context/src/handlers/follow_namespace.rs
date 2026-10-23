@@ -31,6 +31,15 @@ pub(crate) async fn follow(
         }
         .into());
     }
+    follow_marked(store, node_client, namespace).await
+}
+
+/// [`follow`] for a restore, which keeps the removal marked until the namespace is back.
+pub(crate) async fn follow_marked(
+    store: &Store,
+    node_client: &NodeClient,
+    namespace: &ContextGroupId,
+) -> EyreResult<(PublicKey, [u8; 32])> {
     let (_namespace, sign_pk, sign_sk) = NamespaceRepository::new(store)
         .participate_in(namespace)
         .map_err(|err| {

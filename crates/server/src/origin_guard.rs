@@ -368,19 +368,15 @@ mod tests {
     /// every other purpose: it must not inherit a loopback page's reach.
     #[tokio::test]
     async fn an_app_origin_never_reaches_the_nodes_routes() {
-        let origins = [
-            format!(
-                "http://{}.localhost:2428",
-                encode_label(&ApplicationId::from([7; 32]))
-            ),
-            "http://127.0.0.1:2429".to_owned(),
-        ];
-        for mut config in [
+        let origins = [format!(
+            "http://{}.localhost:2428",
+            encode_label(&ApplicationId::from([7; 32]))
+        )];
+        for config in [
             node(AuthMode::Proxy, false),
             node(AuthMode::Proxy, true),
             node(AuthMode::Embedded, false),
         ] {
-            config.apps.port = Some(2429);
             for origin in &origins {
                 for path in ["/admin-api/x", "/jsonrpc"] {
                     assert_eq!(
@@ -391,18 +387,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    /// A browser leaves the default port out of `Origin`, so a page on an apps
-    /// port of 80 names no port at all.
-    #[tokio::test]
-    async fn an_app_page_on_a_default_apps_port_never_reaches_the_nodes_routes() {
-        let mut config = node(AuthMode::Proxy, false);
-        config.apps.port = Some(80);
-        assert_eq!(
-            page_posts(&config, "http://127.0.0.1", "/admin-api/x").await,
-            StatusCode::FORBIDDEN
-        );
     }
 
     #[tokio::test]

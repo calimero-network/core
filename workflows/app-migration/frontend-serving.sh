@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # Check what a node serves on an app's own host for two releases of one app.
-# Usage: frontend-serving.sh <node> <app_id> <release_a> <release_b> <embedded|proxy> [context_id] [apps_port]
+# Usage: frontend-serving.sh <node> <app_id> <release_a> <release_b> <embedded|proxy> [context_id]
 # `release_b` is the newest install, so it is where `/` must redirect.
 # `proxy` is a node that enforces no token, so only its refusals are checked.
 # curl rather than meroctl: the merod image ships no CLI for a `target: local` script.
@@ -14,7 +14,6 @@ release_a="${3:?release a}"
 release_b="${4:?release b}"
 mode="${5:?mode}"
 context_id="${6:-}"
-apps_port="${7:-}"
 app_permissions='"application:list","context:list","context:create","context:execute","namespace","group"'
 fixtures=apps/migrations/frontend-release
 refused=403 # the answer to a route the node does not give an app origin
@@ -160,7 +159,7 @@ check_embedded() {
     want_status "${app_host}" /auth/refresh "${refused}" -X POST -H 'Content-Type: application/json' -H "Origin: http://${app_host}" \
         -d "$(printf '{"access_token":"%s","refresh_token":"%s"}' "${admin}" "${admin_refresh}")"
     want_status "${app_host}" /admin-api/contexts "${refused}" -H "Authorization: Bearer ${admin}"
-    want_status "${app_host}" "/admin-api/contexts/${context_id}" "${refused}" -X DELETE -H "Authorization: Bearer ${token}"
+    want_status "${app_host}" /admin-api/blobs/abc "${refused}" -X DELETE -H "Authorization: Bearer ${token}"
     want_status "${app_host}" "/admin-api/contexts/${context_id}" "${refused}" -X DELETE -H "Authorization: Bearer ${admin}"
     want_status "${node_host}" /admin-api/contexts 200 -H "Authorization: Bearer ${admin}"
     grep -q "${context_id}" "${body}" || fail "the node's own host no longer lists the context: $(cat "${body}")"
@@ -173,26 +172,6 @@ check_embedded() {
     # A loopback dev page is not an app origin: auth answers it, the origin guard does not.
     want_status "${node_host}" /admin-api/applications 401 -H 'Origin: http://localhost:5173'
 
-    [ -z "${apps_port}" ] || check_apps_port
-}
-
-# The apps port serves files only, login included. A container does not publish it, so it is checked on a native node only.
-check_apps_port() {
-    docker port "${node}" >/dev/null 2>&1 && return
-    apps_url="http://127.0.0.1:${apps_port}"
-    for path in /jsonrpc /ws /sse /auth/token /admin-api/contexts; do
-        files_only -X POST "${apps_url}${path}"
-    done
-    files_only "${apps_url}/auth/login?app-id=x"
-    status=$(curl -sS -o /dev/null -w '%{http_code}' "${apps_url}/${label}/${release_a}/") || fail "no answer on the apps port"
-    [ "${status}" = 200 ] || fail "the apps port did not serve its files: ${status}"
-}
-
-# files_only <curl args>: the apps port must refuse the request, saying it serves files only.
-files_only() {
-    status=$(curl -sS -o "${body}" -w '%{http_code}' "$@") || fail "no answer on the apps port: $*"
-    [ "${status}" = "${refused}" ] || fail "the apps port answered ${status}, wanted ${refused}: $*"
-    grep -q 'files only' "${body}" || fail "the apps port's refusal does not say why: $* $(cat "${body}")"
 }
 
 check_proxy() {

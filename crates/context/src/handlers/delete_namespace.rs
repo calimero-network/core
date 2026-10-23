@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use actix::fut::LocalBoxActorFuture;
 use actix::{ActorFutureExt, ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{DeleteNamespaceRequest, DeleteNamespaceResponse};
 use calimero_context_config::types::ContextGroupId;
@@ -13,6 +16,7 @@ use eyre::bail;
 use tracing::info;
 
 use crate::handlers::purge_namespace::purge_namespace;
+use crate::handlers::rejoin_namespace::RejoinLock;
 use crate::ContextManager;
 
 impl Handler<DeleteNamespaceRequest> for ContextManager {
@@ -23,10 +27,26 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
         DeleteNamespaceRequest { namespace_id }: DeleteNamespaceRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        // A restore in flight lifts the marker and may follow again; the removal runs after it.
+        let in_flight = RejoinLock::acquire(Arc::clone(&self.rejoining), namespace_id.to_bytes());
+        ActorResponse::r#async(
+            in_flight
+                .into_actor(self)
+                .then(move |lock, act, _ctx| act.remove_namespace(namespace_id, lock)),
+        )
+    }
+}
+
+impl ContextManager {
+    fn remove_namespace(
+        &mut self,
+        namespace_id: ContextGroupId,
+        in_flight: RejoinLock,
+    ) -> LocalBoxActorFuture<Self, eyre::Result<DeleteNamespaceResponse>> {
         // A local teardown, no DAG op: the account stays a member and peers see nothing.
         let (signer, _) = match self.require_namespace_signing_key(&namespace_id) {
             Ok(key) => key,
-            Err(err) => return ActorResponse::reply(Err(err)),
+            Err(err) => return actix::fut::ready(Err(err)).boxed_local(),
         };
 
         let result = (|| {
@@ -70,7 +90,7 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
         })();
         let payload = match result {
             Ok(payload) => payload,
-            Err(err) => return ActorResponse::reply(Err(err)),
+            Err(err) => return actix::fut::ready(Err(err)).boxed_local(),
         };
 
         // Hold every cached context's lock so no run writes while its rows go.
@@ -81,11 +101,13 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
             .map(|context| context.lock())
             .collect();
 
+        let dag = self.namespace_dags.get(&namespace_id.to_bytes()).cloned();
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let search = self.search.clone();
 
         let task = async move {
+            let _in_flight = in_flight;
             let mut _held = Vec::with_capacity(locks.len());
             for lock in locks {
                 _held.push(match lock {
@@ -93,6 +115,11 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
                     Either::Right(task) => task.await,
                 });
             }
+            // An op still applying holds the DAG; it finishes before the rows go.
+            let mut dag_held = match &dag {
+                Some(dag) => Some(dag.lock().await),
+                None => None,
+            };
 
             let outcome = purge_namespace(
                 &datastore,
@@ -102,6 +129,10 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
                 &payload,
             )
             .await;
+            // Emptied in place, so an op queued on this lock sees no history either.
+            if let Some(dag) = dag_held.as_mut() {
+                **dag = crate::new_namespace_dag();
+            }
 
             if outcome.is_ok() {
                 info!(
@@ -120,12 +151,15 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
         };
 
         // Dropped on failure too: a purge cut short leaves cached state over missing rows.
-        ActorResponse::r#async(task.into_actor(self).map(|(contexts, outcome), act, _ctx| {
-            for context in contexts {
-                let _ignored = act.contexts.remove(&context);
-            }
-            outcome
-        }))
+        task.into_actor(self)
+            .map(move |(contexts, outcome), act, _ctx| {
+                for context in contexts {
+                    let _ignored = act.contexts.remove(&context);
+                }
+                let _ignored = act.namespace_dags.remove(&namespace_id.to_bytes());
+                outcome
+            })
+            .boxed_local()
     }
 }
 
@@ -148,8 +182,6 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use calimero_account::AccountId;
     use calimero_context_client::group::CreateGroupRequest;
     use calimero_governance_store::{
@@ -231,6 +263,51 @@ mod tests {
         assert!(ForgottenNamespaces::new(&store)
             .is_forgotten(&namespace)
             .expect("read the marker"));
+    }
+
+    /// The resident governance DAG remembers every op it applied, so one kept
+    /// past the removal turns the op a restore pulls again into a duplicate.
+    #[actix::test]
+    async fn a_removed_namespace_applies_its_genesis_again() {
+        use calimero_context_client::messages::NamespaceApplyOutcome;
+        use calimero_governance_store::NamespaceOpLogService;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the founder's account root");
+        let harness = actor::over(store.clone()).await;
+        let (namespace, _account) = a_namespace_this_node_only_belongs_to(&harness, &store).await;
+        let genesis = NamespaceOpLogService::new(&store, namespace.to_bytes().into())
+            .collect_root_ops()
+            .expect("read the root ops")
+            .into_iter()
+            .next()
+            .expect("the namespace has its genesis");
+        let _held = harness
+            .context_client
+            .apply_signed_namespace_op(genesis.clone())
+            .await
+            .expect("the held genesis is judged");
+
+        let _deleted = harness
+            .manager
+            .send(DeleteNamespaceRequest {
+                namespace_id: namespace,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is removed");
+        let again = harness
+            .context_client
+            .apply_signed_namespace_op(genesis)
+            .await
+            .expect("the genesis is judged again");
+
+        assert!(
+            matches!(again, NamespaceApplyOutcome::Applied { .. }),
+            "{again:?}"
+        );
     }
 
     /// The restore names the namespace by what the user saw, not by its id.

@@ -13,7 +13,9 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{placeholder_admin_identity, MetaRepository, NamespaceRepository};
+use calimero_governance_store::{
+    placeholder_admin_identity, ContextTreeService, MetaRepository, NamespaceRepository,
+};
 use calimero_primitives::application::ApplicationId;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
@@ -176,15 +178,19 @@ impl ClientKeyScope {
         }
 
         if let Some(application_id) = bindings.application_id.as_deref() {
-            let Some(meta) = verified_meta(store, group_id) else {
-                return false;
+            let held = match MetaRepository::new(store).load(group_id) {
+                Ok(Some(_)) => {
+                    verified_meta(store, group_id).map(|meta| meta.target.application_id)
+                }
+                // A removed namespace has no group rows; its marker names the application.
+                Ok(None) => calimero_governance_store::ForgottenNamespaces::new(store)
+                    .get(group_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|removed| removed.application_id),
+                Err(_) => None,
             };
-            if !meta
-                .target
-                .application_id
-                .to_string()
-                .eq_ignore_ascii_case(application_id)
-            {
+            if !held.is_some_and(|app| app.to_string().eq_ignore_ascii_case(application_id)) {
                 return false;
             }
         }
@@ -210,6 +216,32 @@ impl ClientKeyScope {
                     })
                     .is_some_and(|owning| owning == *group_id)
             })
+    }
+
+    /// [`Self::permits_group_change`] for a change that reaches the group's whole
+    /// subtree: an application binding also needs every group and context below to be its own.
+    pub(crate) fn permits_subtree_change(&self, store: &Store, group_id: &ContextGroupId) -> bool {
+        if !self.permits_group_change(store, group_id) {
+            return false;
+        }
+        let Some(bound) = self.0.application_id.as_deref() else {
+            return true;
+        };
+        let Ok(mut groups) = NamespaceRepository::new(store).collect_descendants(group_id) else {
+            return false;
+        };
+        groups.push(*group_id);
+        let is_bound = |app: ApplicationId| app.to_string().eq_ignore_ascii_case(bound);
+        groups.iter().all(|group| {
+            verified_meta(store, group).is_some_and(|meta| is_bound(meta.target.application_id))
+                && ContextTreeService::new(store, *group)
+                    .enumerate_contexts(0, usize::MAX)
+                    .is_ok_and(|contexts| {
+                        contexts.iter().all(|context| {
+                            context_application(store, context).is_some_and(is_bound)
+                        })
+                    })
+        })
     }
 
     pub(crate) fn principal(&self) -> String {
@@ -254,10 +286,18 @@ fn context_application(
     Some(verified_meta(store, &group)?.target.application_id)
 }
 
-/// The group's meta once a signed admin has replaced the placeholder a join seeds it with.
-/// Its target may still be the invitation's unsigned hint until a signed target op replaces it.
+/// The group's meta once a signed admin has replaced the placeholder a join seeds it with
+/// and a signed op has confirmed the target application the invitation hinted, for the group and its namespace.
 pub(crate) fn verified_meta(store: &Store, group_id: &ContextGroupId) -> Option<GroupMetaValue> {
-    MetaRepository::new(store)
+    let metas = MetaRepository::new(store);
+    // A subgroup copies its parent's target, so a marked root marks the whole tree.
+    let root = NamespaceRepository::new(store).resolve(group_id).ok()?;
+    for group in [group_id, &root] {
+        if metas.is_target_unverified(group).unwrap_or(true) {
+            return None;
+        }
+    }
+    metas
         .load(group_id)
         .ok()?
         .filter(|meta| meta.admin_identity != placeholder_admin_identity())

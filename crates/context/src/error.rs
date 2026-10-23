@@ -128,6 +128,16 @@ pub enum ContextError {
         namespace_id: String,
     },
 
+    /// A restore followed the namespace but its group rows and key had not
+    /// landed in time; the removal stands and the restore may be retried.
+    #[error(
+        "namespace '{namespace_id}' was followed again but its state has not arrived yet; retry"
+    )]
+    NamespaceNotRestored {
+        /// Hex rendering of the target namespace id (for the message only).
+        namespace_id: String,
+    },
+
     /// A caller-supplied identity is not a member of the group it named.
     ///
     /// Distinct from [`Self::NotAGroupMember`], which is about THIS NODE's own

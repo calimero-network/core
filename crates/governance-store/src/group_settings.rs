@@ -132,7 +132,10 @@ impl<'a> GroupSettingsService<'a> {
                 version: coords.version.to_owned(),
             },
         )?;
-        MetaRepository::new(self.store).save(&self.group_id, &meta)
+        let metas = MetaRepository::new(self.store);
+        metas.save(&self.group_id, &meta)?;
+        // A signed op named the target, so it is no longer only an invitation's hint.
+        metas.clear_target_unverified(&self.group_id)
     }
 
     pub fn set_subgroup_visibility(

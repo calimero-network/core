@@ -92,6 +92,47 @@ impl PredefinedEntry for key::ContextBlob {
     type DataType<'a> = ();
 }
 
+/// What an access grant lets its holder do in one context on this node: call
+/// these methods, as this node, until `not_after`.
+///
+/// No secret is stored: the row is keyed by the hash of the grant's secret
+/// (`key::ContextAccessGrant`), and revoking the grant deletes the row.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct ContextAccessGrant {
+    /// The methods the holder may call. Never empty: an empty list would read
+    /// as "every method" to anyone used to empty-means-all elsewhere.
+    pub methods: Vec<String>,
+    /// The grantor's own note, for listing. Never shown to the holder.
+    pub label: String,
+    /// Unix seconds.
+    pub created_at: u64,
+    /// Unix seconds after which the grant is refused; `None` until revoked.
+    pub not_after: Option<u64>,
+}
+
+impl ContextAccessGrant {
+    #[must_use]
+    pub const fn new(
+        methods: Vec<String>,
+        label: String,
+        created_at: u64,
+        not_after: Option<u64>,
+    ) -> Self {
+        Self {
+            methods,
+            label,
+            created_at,
+            not_after,
+        }
+    }
+}
+
+impl PredefinedEntry for key::ContextAccessGrant {
+    type Codec = Borsh;
+    type DataType<'a> = ContextAccessGrant;
+}
+
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextConfig {

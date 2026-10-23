@@ -19,7 +19,7 @@ use zeroize::ZeroizeOnDrop;
 
 // Group-key prefix allocation ledger. Every byte in `0x20..=0x59` is taken
 // except `0x25`, `0x2B` and `0x2C` (retired, below); **the next free byte is
-// `0x5A`**.
+// `0x5B`**.
 //
 // This pointer was stale when `GroupMemberByAccount` first claimed a byte: it
 // still read `0x4C`, which `NODE_ACCOUNT_DEVICE_CERT_PREFIX` had already taken
@@ -1798,6 +1798,47 @@ impl AsKeyParts for NamespaceBootstrapInviter {
 
 impl FromKeyParts for NamespaceBootstrapInviter {
     type Error = ();
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+/// Prefix for the node-local "target application is only an invitation hint" marker.
+pub const GROUP_TARGET_UNVERIFIED_PREFIX: u8 = 0x5A;
+
+/// Marks a group whose stored target application came from an invitation's
+/// unsigned `application_id` and no signed op has confirmed it. NODE-LOCAL.
+///
+/// Key layout: `GROUP_TARGET_UNVERIFIED_PREFIX (1 byte) + group_id (32)`; the
+/// value is `()`. Absent means verified, so rows written before this key existed
+/// need no migration. It is not group state and is never hashed or replicated.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupTargetUnverified(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl GroupTargetUnverified {
+    #[must_use]
+    pub fn new(group_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_TARGET_UNVERIFIED_PREFIX])
+            .concat(GenericArray::from(group_id))))
+    }
+}
+
+impl AsKeyParts for GroupTargetUnverified {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupTargetUnverified {
+    type Error = Infallible;
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
         Ok(Self(parts))
@@ -4387,6 +4428,15 @@ mod tests {
     }
 
     #[test]
+    fn group_target_unverified_key_layout() {
+        let gid = [0x78; 32];
+        let key = GroupTargetUnverified::new(gid);
+        assert_eq!(key.as_key().as_bytes()[0], GROUP_TARGET_UNVERIFIED_PREFIX);
+        assert_eq!(&key.as_key().as_bytes()[1..], &gid);
+        assert_eq!(key.as_key().as_bytes().len(), 33);
+    }
+
+    #[test]
     fn pending_self_purge_roundtrip() {
         let ns = [0x77; 32];
         let key = PendingSelfPurge::new(ns);
@@ -4621,6 +4671,7 @@ mod tests {
                 "GROUP_PENDING_DEVICE_ROTATION",
                 GROUP_PENDING_DEVICE_ROTATION_PREFIX,
             ),
+            ("GROUP_TARGET_UNVERIFIED", GROUP_TARGET_UNVERIFIED_PREFIX),
         ];
         for i in 0..prefixes.len() {
             for j in (i + 1)..prefixes.len() {

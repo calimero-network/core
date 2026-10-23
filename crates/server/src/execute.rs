@@ -46,7 +46,7 @@ pub(crate) enum CallerIdentity<'a> {
 /// `granted` is what the token carries: the embedded guard's, or in proxy mode
 /// what the proxy named in `X-Auth-Permissions` (`crate::proxy_permissions`).
 /// With none, only a node whose guard did not run serves the call.
-fn may_execute(
+pub(crate) fn may_execute(
     auth_enabled: bool,
     granted: Option<&GrantedPermissions>,
     context_id: &ContextId,
