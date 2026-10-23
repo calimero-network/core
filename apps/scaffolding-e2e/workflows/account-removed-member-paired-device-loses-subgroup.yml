@@ -274,6 +274,6 @@ steps:
     args:
       key: first_key
     expected_failure: true
-    expected_error: No owned identity
+    expected_error: NoOwnedIdentity
 
 stop_all_nodes: true
