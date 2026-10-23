@@ -152,6 +152,10 @@ scenarios:
     file: workflows/namespace-restore-kicked-member.yml
     app: scaffolding-e2e
     registry_fetch: "false"
+  - workflow: namespace-transfer-ownership-keeps-founder
+    file: workflows/namespace-transfer-ownership-keeps-founder.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
   - workflow: account-namespace-left-unfollows
     file: workflows/account-namespace-left-unfollows.yml
     app: scaffolding-e2e

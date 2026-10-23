@@ -1,0 +1,186 @@
+name: E2E KV Store - A Founder Who Transfers Ownership Stays An Admin
+description: >
+  Node-1's account founds a namespace, makes node-2's account an Admin, and
+  hands the namespace to it. The former owner stays an Admin on both nodes: node-1
+  still lists the namespace and its members, node-2 sees both accounts as Admins,
+  and node-1 can still leave. Node-1 can no longer transfer the namespace.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: transfer-owner-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: transfer-owner-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: transfer-owner-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install application on node-1
+    type: install_application
+    node: transfer-owner-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2
+    type: install_application
+    node: transfer-owner-node-2
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+
+  - name: Get node-1's account
+    type: node_identity
+    node: transfer-owner-node-1
+    outputs:
+      account_node1: accountId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: transfer-owner-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2
+    type: create_namespace_invitation
+    node: transfer-owner-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation: invitation
+
+  - name: Node-2 joins the namespace
+    type: join_namespace
+    node: transfer-owner-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation}}'
+    outputs:
+      account_node2: memberAccount
+
+  - name: Promote node-2 to Admin
+    type: update_member_role
+    node: transfer-owner-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{account_node2}}'
+    role: Admin
+
+  - name: Settle the promotion onto both replicas
+    type: wait_for_sync
+    group_id: '{{namespace_id}}'
+    nodes:
+      - transfer-owner-node-1
+      - transfer-owner-node-2
+    timeout: 60
+    check_interval: 2
+
+  - name: Node-1 hands the namespace to node-2
+    type: script
+    script: scripts/transfer-ownership.sh
+    target: local
+    args:
+      - transfer-owner-node-1
+      - '{{namespace_id}}'
+      - '{{account_node2}}'
+
+  - name: Node-1 still lists the namespace
+    type: assert_api_response
+    node: transfer-owner-node-1
+    path: '/admin-api/namespaces/for-application/{{app_id}}'
+    where:
+      namespaceId: '{{namespace_id}}'
+    match:
+      namespaceId: '{{namespace_id}}'
+    retries: 15
+    interval: 2
+
+  - name: Node-1 lists itself as an Admin
+    type: assert_api_response
+    node: transfer-owner-node-1
+    path: /admin-api/groups/{{namespace_id}}/members
+    where:
+      identity: '{{account_node1}}'
+    match:
+      role: Admin
+    retries: 15
+    interval: 2
+
+  - name: Node-1 lists node-2 as an Admin
+    type: assert_api_response
+    node: transfer-owner-node-1
+    path: /admin-api/groups/{{namespace_id}}/members
+    where:
+      identity: '{{account_node2}}'
+    match:
+      role: Admin
+    retries: 15
+    interval: 2
+
+  - name: Node-2 lists node-1 as an Admin
+    type: assert_api_response
+    node: transfer-owner-node-2
+    path: /admin-api/groups/{{namespace_id}}/members
+    where:
+      identity: '{{account_node1}}'
+    match:
+      role: Admin
+    retries: 15
+    interval: 2
+
+  - name: Node-2 lists itself as an Admin
+    type: assert_api_response
+    node: transfer-owner-node-2
+    path: /admin-api/groups/{{namespace_id}}/members
+    where:
+      identity: '{{account_node2}}'
+    match:
+      role: Admin
+    retries: 15
+    interval: 2
+
+  - name: Node-1 is no longer the owner and cannot transfer again
+    type: script
+    script: scripts/transfer-ownership.sh
+    target: local
+    args:
+      - transfer-owner-node-1
+      - '{{namespace_id}}'
+      - '{{account_node1}}'
+      - '403'
+
+  - name: Node-1 leaves the namespace
+    type: leave_namespace
+    node: transfer-owner-node-1
+    namespace_id: '{{namespace_id}}'
+
+  - name: Wait for the leave to reach node-2
+    type: wait
+    seconds: 10
+
+  - name: Node-2 lists the namespace members
+    type: list_group_members
+    node: transfer-owner-node-2
+    group_id: '{{namespace_id}}'
+    outputs:
+      members_after_leave: members
+
+  - name: Assert node-1 left and node-2 stayed
+    type: assert
+    statements:
+      - "not_contains({{members_after_leave}}, {{account_node1}})"
+      - "contains({{members_after_leave}}, {{account_node2}})"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120
