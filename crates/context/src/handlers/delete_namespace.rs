@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use actix::fut::LocalBoxActorFuture;
 use actix::{ActorFutureExt, ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{DeleteNamespaceRequest, DeleteNamespaceResponse};
 use calimero_context_config::types::ContextGroupId;
@@ -13,6 +16,7 @@ use eyre::bail;
 use tracing::info;
 
 use crate::handlers::purge_namespace::purge_namespace;
+use crate::handlers::rejoin_namespace::RejoinLock;
 use crate::ContextManager;
 
 impl Handler<DeleteNamespaceRequest> for ContextManager {
@@ -23,10 +27,26 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
         DeleteNamespaceRequest { namespace_id }: DeleteNamespaceRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        // A restore in flight lifts the marker and may follow again; the removal runs after it.
+        let in_flight = RejoinLock::acquire(Arc::clone(&self.rejoining), namespace_id.to_bytes());
+        ActorResponse::r#async(
+            in_flight
+                .into_actor(self)
+                .then(move |lock, act, _ctx| act.remove_namespace(namespace_id, lock)),
+        )
+    }
+}
+
+impl ContextManager {
+    fn remove_namespace(
+        &mut self,
+        namespace_id: ContextGroupId,
+        in_flight: RejoinLock,
+    ) -> LocalBoxActorFuture<Self, eyre::Result<DeleteNamespaceResponse>> {
         // A local teardown, no DAG op: the account stays a member and peers see nothing.
         let (signer, _) = match self.require_namespace_signing_key(&namespace_id) {
             Ok(key) => key,
-            Err(err) => return ActorResponse::reply(Err(err)),
+            Err(err) => return actix::fut::ready(Err(err)).boxed_local(),
         };
 
         let result = (|| {
@@ -70,7 +90,7 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
         })();
         let payload = match result {
             Ok(payload) => payload,
-            Err(err) => return ActorResponse::reply(Err(err)),
+            Err(err) => return actix::fut::ready(Err(err)).boxed_local(),
         };
 
         // Hold every cached context's lock so no run writes while its rows go.
@@ -87,6 +107,7 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
         let search = self.search.clone();
 
         let task = async move {
+            let _in_flight = in_flight;
             let mut _held = Vec::with_capacity(locks.len());
             for lock in locks {
                 _held.push(match lock {
@@ -130,16 +151,15 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
         };
 
         // Dropped on failure too: a purge cut short leaves cached state over missing rows.
-        ActorResponse::r#async(
-            task.into_actor(self)
-                .map(move |(contexts, outcome), act, _ctx| {
-                    for context in contexts {
-                        let _ignored = act.contexts.remove(&context);
-                    }
-                    let _ignored = act.namespace_dags.remove(&namespace_id.to_bytes());
-                    outcome
-                }),
-        )
+        task.into_actor(self)
+            .map(move |(contexts, outcome), act, _ctx| {
+                for context in contexts {
+                    let _ignored = act.contexts.remove(&context);
+                }
+                let _ignored = act.namespace_dags.remove(&namespace_id.to_bytes());
+                outcome
+            })
+            .boxed_local()
     }
 }
 
@@ -162,8 +182,6 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use calimero_account::AccountId;
     use calimero_context_client::group::CreateGroupRequest;
     use calimero_governance_store::{

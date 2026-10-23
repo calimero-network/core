@@ -257,7 +257,9 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    use calimero_context_client::group::{CreateGroupRequest, ListNamespacesForApplicationRequest};
+    use calimero_context_client::group::{
+        CreateGroupRequest, DeleteNamespaceRequest, ListNamespacesForApplicationRequest,
+    };
     use calimero_governance_store::test_fixtures::test_meta;
     use calimero_governance_store::{
         AccountBindingRepository, DenyListRepository, ReentryRepository,
@@ -611,6 +613,50 @@ mod tests {
             .participating_namespaces()
             .expect("read participation")
             .contains(&namespace));
+    }
+
+    /// A removal asked while a restore is in flight runs after it, so the restore
+    /// cannot lift the marker the removal writes or follow what it purged.
+    #[actix::test]
+    async fn a_removal_waits_for_a_restore_in_flight_and_keeps_its_marker() {
+        let store = store();
+        NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("this node's account root");
+        let namespace = removed(&store);
+        let _identity = NamespaceRepository::new(&store)
+            .participate_in(&namespace)
+            .expect("a follow already began");
+        let _landed = land_state_after(&store, namespace, Duration::ZERO);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let (harness, gate) = actor::over_holding_subscribe(store.clone(), topic()).await;
+        let _pulled_again = land_state_after(&store, namespace, Duration::from_millis(900));
+
+        let restore = rejoin(&harness, namespace);
+        let removal = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let removal = harness.manager.send(DeleteNamespaceRequest {
+                namespace_id: namespace,
+            });
+            let release = async {
+                tokio::time::sleep(Duration::from_millis(1200)).await;
+                gate.add_permits(1);
+            };
+            tokio::join!(removal, release).0
+        };
+        let (restored, removed_now) = tokio::join!(restore, removal);
+
+        restored.expect("the restore finishes first");
+        removed_now
+            .expect("answers")
+            .expect("the removal then goes through");
+        assert!(MetaRepository::new(&store)
+            .load(&namespace)
+            .expect("read the meta")
+            .is_none());
+        assert!(ForgottenNamespaces::new(&store)
+            .is_forgotten(&namespace)
+            .expect("read the marker"));
     }
 
     fn assert_unchanged_marker(store: &Store) {
