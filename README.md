@@ -1,6 +1,14 @@
 # Calimero Core
 
-Peer-to-peer application platform with local-first governance, CRDT state sync, and WASM execution.
+**Ship the app. Skip the infrastructure.**
+
+Calimero is a confidential application platform. You write an app once and it runs in a managed confidential cloud, on your own nodes, or peer-to-peer, with state that syncs between nodes on its own.
+This repository is the open-source runtime under all three: the node, the SDK and the protocol.
+
+- **Control without hosting.** Customers keep their data on their terms; nobody runs a separate on-prem edition.
+- **One signed bundle.** App logic (WASM) and its frontend ship as one signed package, and the same build runs on every node.
+- **Shared apps, no shared server.** Several parties run one app over replicated state that converges with CRDTs, with no consensus and no central database; groups decide who reads and writes what.
+- **Don't trust us. Verify us.** Nodes can run sealed in Intel TDX confidential VMs that attest the image they boot; keys are released only to nodes whose measurements match the release policy (see [mero-tee](https://github.com/calimero-network/mero-tee)).
 
 > **Full documentation**: <https://calimero-network.github.io/core/> — organized into four tracks: **Build** (write apps), **Operate** (run nodes), **Protocol Reference** (reimplement / understand the model), and **Contribute** (work on core).
 

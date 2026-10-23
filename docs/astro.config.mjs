@@ -12,7 +12,7 @@ export default defineConfig({
     starlight({
       title: 'Calimero Core',
       description:
-        'Build, operate, and reimplement Calimero — a peer-to-peer framework for sandboxed WASM apps over causally-consistent shared state.',
+        'Build, operate, and reimplement Calimero — the confidential application platform. Write an app once; run it in a confidential cloud, on your own nodes, or peer-to-peer.',
       logo: {
         light: './src/assets/logo-light.svg',
         dark: './src/assets/logo-dark.svg',
