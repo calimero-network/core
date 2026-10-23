@@ -1018,6 +1018,7 @@ pub(crate) fn method_error_response(
 
     let status_code = match err {
         ExecutionError::FunctionCallError(_) => StatusCode::BAD_REQUEST,
+        ExecutionError::NoOwnedIdentity => StatusCode::FORBIDDEN,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     let mut body = serde_json::to_value(err).unwrap_or_else(|_| json!({}));
