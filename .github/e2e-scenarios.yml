@@ -151,6 +151,7 @@ scenarios:
   - workflow: namespace-restore-kicked-member
     file: workflows/namespace-restore-kicked-member.yml
     app: scaffolding-e2e
+    registry_fetch: "false"
   - workflow: account-namespace-left-unfollows
     file: workflows/account-namespace-left-unfollows.yml
     app: scaffolding-e2e
