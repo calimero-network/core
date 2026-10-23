@@ -138,6 +138,7 @@ mod tests {
             member_count: 1,
             context_count: 2,
             subgroup_count: 3,
+            forgotten: false,
         }
     }
 

@@ -143,6 +143,7 @@ fn namespaces(store: &Store, app: Option<&ApplicationId>) -> Vec<NamespaceSummar
             member_count: 0,
             context_count: 0,
             subgroup_count: 0,
+            forgotten: false,
         })
         .collect()
 }
@@ -659,6 +660,14 @@ async fn a_bound_key_joins_a_group_this_node_does_not_hold_only_on_a_hint_of_its
             .await;
         assert_ne!(status, StatusCode::FORBIDDEN, "{path} hinting mine: {body}");
     }
+    // A rejoin names no invitation; it is held to the same rule by the path alone.
+    for namespace in [unknown, node.theirs.namespace] {
+        let path = format!("/namespaces/{}/join", hex::encode(namespace.to_bytes()));
+        let (status, body) = node
+            .call(&token, Method::POST, &path, Some(json!({})))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {body}");
+    }
     let (status, body) = node
         .call(
             &token,
@@ -909,6 +918,45 @@ async fn an_app_origin_joins_a_namespace_this_node_does_not_hold_only_on_a_hint_
             )
             .await;
         assert_eq!(status != StatusCode::FORBIDDEN, joins, "{hint}: {body}");
+    }
+}
+
+#[actix::test]
+async fn a_bound_key_restores_only_its_own_applications_removed_namespace() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+    let (mine, theirs) = (
+        ContextGroupId::from([0xc2; 32]),
+        ContextGroupId::from([0xc3; 32]),
+    );
+    let removals = calimero_governance_store::ForgottenNamespaces::new(&node.store);
+    removals
+        .mark(&mine, Some(node.mine.app), 1, None)
+        .expect("this application's removal");
+    removals
+        .mark(&theirs, Some(node.theirs.app), 1, None)
+        .expect("another application's removal");
+
+    for (namespace, permitted) in [(mine, true), (theirs, false)] {
+        let path = format!("/namespaces/{}/join", hex::encode(namespace.to_bytes()));
+        let (status, body) = node
+            .call(&token, Method::POST, &path, Some(json!({})))
+            .await;
+        assert_eq!(status != StatusCode::FORBIDDEN, permitted, "{path}: {body}");
+    }
+}
+
+#[actix::test]
+async fn a_bound_key_rejoins_a_held_namespace_only_of_its_own_application() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+
+    for (namespace, permitted) in [(node.mine.namespace, true), (node.theirs.namespace, false)] {
+        let path = format!("/namespaces/{}/join", hex::encode(namespace.to_bytes()));
+        let (status, body) = node
+            .call(&token, Method::POST, &path, Some(json!({})))
+            .await;
+        assert_eq!(status != StatusCode::FORBIDDEN, permitted, "{path}: {body}");
     }
 }
 

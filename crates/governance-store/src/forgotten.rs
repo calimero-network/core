@@ -49,6 +49,20 @@ impl<'a> ForgottenNamespaces<'a> {
         Ok(())
     }
 
+    /// The record of `namespace`, when this node's user removed it.
+    pub fn get(&self, namespace: &ContextGroupId) -> EyreResult<Option<ForgottenNamespace>> {
+        Ok(self
+            .store
+            .handle()
+            .get(&Key::new(namespace.to_bytes()))?
+            .map(|value: Value| ForgottenNamespace {
+                namespace_id: *namespace,
+                application_id: value.application_id.map(ApplicationId::from),
+                forgotten_at_ms: value.forgotten_at_ms,
+                name: value.name,
+            }))
+    }
+
     /// Whether `namespace` was removed from this node and not joined again since.
     pub fn is_forgotten(&self, namespace: &ContextGroupId) -> EyreResult<bool> {
         Ok(self.store.handle().has(&Key::new(namespace.to_bytes()))?)
@@ -129,6 +143,21 @@ mod tests {
 
         forgotten.clear(&ns).unwrap();
         assert!(!forgotten.is_forgotten(&ns).unwrap());
+    }
+
+    #[test]
+    fn get_returns_the_record_of_a_marked_namespace_only() {
+        let store = test_store();
+        let forgotten = ForgottenNamespaces::new(&store);
+        let ns = ContextGroupId::from(NS_A);
+        let app = ApplicationId::from(APP);
+
+        assert_eq!(forgotten.get(&ns).unwrap(), None);
+        forgotten.mark(&ns, Some(app), 9, None).unwrap();
+        let record = forgotten.get(&ns).unwrap().expect("a record");
+        assert_eq!(record.application_id, Some(app));
+        assert_eq!(record.forgotten_at_ms, 9);
+        assert_eq!(forgotten.get(&ContextGroupId::from(NS_B)).unwrap(), None);
     }
 
     #[test]

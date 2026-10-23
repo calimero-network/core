@@ -22,15 +22,16 @@ use crate::group::{
     LeaveNamespaceRequest, LinkAccountDeviceRequest, ListAllGroupsRequest,
     ListGroupContextsRequest, ListGroupMembersRequest, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, OwnerDeleteGroupRequest, PairDeviceCompleteRequest,
-    PairDeviceInitRequest, RelinkDeviceRequest, RemoveGroupMembersRequest, RescopeDeviceRequest,
-    ResyncContextRequest, RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
-    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
-    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
-    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, SetTeeAuthoringPolicyRequest,
-    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
-    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
-    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
-    TransferOwnershipRequest, TrialUpgradeRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    PairDeviceInitRequest, RejoinNamespaceRequest, RelinkDeviceRequest, RemoveGroupMembersRequest,
+    RescopeDeviceRequest, ResyncContextRequest, RetryGroupUpgradeRequest, RevokeDeviceRequest,
+    RotateGroupKeyRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
+    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
+    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
+    SetTeeAuthoringPolicyRequest, StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest,
+    StoreGroupContextRequest, StoreGroupMetaRequest, StoreGroupMetadataRequest,
+    StoreMemberCapabilityRequest, StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest,
+    SyncGroupRequest, TransferOwnershipRequest, TrialUpgradeRequest, UpdateMemberRoleRequest,
+    UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -705,6 +706,10 @@ pub enum ContextMessage {
     DeleteNamespace {
         request: DeleteNamespaceRequest,
         outcome: oneshot::Sender<<DeleteNamespaceRequest as Message>::Result>,
+    },
+    RejoinNamespace {
+        request: RejoinNamespaceRequest,
+        outcome: oneshot::Sender<<RejoinNamespaceRequest as Message>::Result>,
     },
     AddGroupMembers {
         request: AddGroupMembersRequest,

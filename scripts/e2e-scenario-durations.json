@@ -107,6 +107,8 @@
   "name-registry-admin": 23,
   "name-registry-contested": 113,
   "namespace-owner-writes-in-a-foreign-open-subgroup": 16,
+  "namespace-restore-kicked-member": 82,
+  "namespace-restore-without-invitation": 21,
   "nested-crdt": 23,
   "nested-crdt-offline-catchup": 74,
   "offline-account-root": 24,

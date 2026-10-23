@@ -3,9 +3,9 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_client::group::JoinGroupRequest;
+use calimero_context_client::group::{JoinGroupRequest, RejoinNamespaceRequest};
 use calimero_server_primitives::admin::{
-    JoinGroupApiRequest, JoinNamespaceApiResponse, JoinNamespaceApiResponseData,
+    JoinNamespaceApiRequest, JoinNamespaceApiResponse, JoinNamespaceApiResponseData,
 };
 use reqwest::StatusCode;
 use tracing::{debug, error, info};
@@ -19,14 +19,17 @@ pub async fn handler(
     Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
     client_key: Option<Extension<crate::auth::ClientKeyScope>>,
-    ValidatedJson(req): ValidatedJson<JoinGroupApiRequest>,
+    ValidatedJson(req): ValidatedJson<JoinNamespaceApiRequest>,
 ) -> impl IntoResponse {
-    if let Some(refusal) = crate::admin::client_key_scope::refuse_join_outside_binding(
-        &state,
-        client_key.as_deref(),
-        &req.invitation,
-    ) {
-        return refusal;
+    if let Some(invitation) = &req.invitation {
+        if let Some(refusal) = crate::admin::client_key_scope::refuse_join_outside_binding(
+            &state,
+            client_key.as_deref(),
+            &invitation.invitation.group_id,
+            Some(invitation),
+        ) {
+            return refusal;
+        }
     }
 
     let namespace_id = match parse_group_id(&namespace_id_str) {
@@ -34,31 +37,52 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    let invitation_group_id = req.invitation.invitation.group_id;
-    if invitation_group_id != namespace_id {
-        return ApiError {
-            status_code: StatusCode::BAD_REQUEST,
-            message: "invitation group_id does not match namespace_id in path".into(),
+    let result = match req.invitation {
+        Some(invitation) => {
+            let invitation_group_id = invitation.invitation.group_id;
+            if invitation_group_id != namespace_id {
+                return ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "invitation group_id does not match namespace_id in path".into(),
+                }
+                .into_response();
+            }
+
+            info!(namespace_id=%namespace_id_str, "Joining namespace via invitation");
+
+            state
+                .ctx_client
+                .join_group(JoinGroupRequest {
+                    invitation,
+                    group_name: req.group_name,
+                })
+                .await
         }
-        .into_response();
+        None => {
+            if let Some(refusal) = crate::admin::client_key_scope::refuse_join_outside_binding(
+                &state,
+                client_key.as_deref(),
+                &namespace_id,
+                None,
+            ) {
+                return refusal;
+            }
+
+            info!(namespace_id=%namespace_id_str, "Rejoining a namespace removed from this node");
+
+            state
+                .ctx_client
+                .rejoin_namespace(RejoinNamespaceRequest { namespace_id })
+                .await
+        }
     }
-
-    info!(namespace_id=%namespace_id_str, "Joining namespace via invitation");
-
-    let result = state
-        .ctx_client
-        .join_group(JoinGroupRequest {
-            invitation: req.invitation,
-            group_name: req.group_name,
-        })
-        .await
-        // A join nobody could endorse is typed (`ContextError::JoinNotEndorsed`)
-        // and mapped by `parse_api_error` to a retryable status, for this route
-        // and `POST /groups/join` alike. `code` names which refusal it was.
-        .map_err(|err| {
-            let code = join_refusal_code(&err);
-            (parse_api_error(err), code)
-        });
+    // A join nobody could endorse is typed (`ContextError::JoinNotEndorsed`)
+    // and mapped by `parse_api_error` to a retryable status, for this route
+    // and `POST /groups/join` alike. `code` names which refusal it was.
+    .map_err(|err| {
+        let code = join_refusal_code(&err);
+        (parse_api_error(err), code)
+    });
 
     match result {
         Ok(resp) => {

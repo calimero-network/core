@@ -105,6 +105,7 @@ pub async fn handler(
                     app_package,
                     founding: super::namespace_founding(&state.store, &ns.namespace_id),
                     held_ops: super::namespace_held_ops(&state.store, &ns.namespace_id),
+                    forgotten: None,
                 });
             }
             ApiResponse {

@@ -228,6 +228,7 @@ impl<'a> MetadataRepository<'a> {
             member_count,
             context_count,
             subgroup_count,
+            forgotten: false,
         }))
     }
 }
