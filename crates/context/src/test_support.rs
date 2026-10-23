@@ -1409,6 +1409,26 @@ pub(crate) mod actor {
         build(store, bundle.map(Ok), None, None, false, false).await
     }
 
+    /// [`over_answering_joins`] with every subscribe to `topic` held as in
+    /// [`over_holding_subscribe`].
+    pub(crate) async fn over_answering_joins_holding_subscribe(
+        store: Store,
+        bundle: calimero_node_primitives::join_bundle::JoinBundle,
+        topic: String,
+    ) -> (Harness, Arc<Semaphore>) {
+        let gate = Arc::new(Semaphore::new(0));
+        let harness = build(
+            store,
+            Some(Ok(bundle)),
+            None,
+            Some((topic, Arc::clone(&gate))),
+            false,
+            false,
+        )
+        .await;
+        (harness, gate)
+    }
+
     /// [`over`], with every peer asked refusing the join for `reason`.
     pub(crate) async fn over_refusing_joins(store: Store, reason: &str) -> Harness {
         let refused = calimero_node_primitives::NamespaceJoinRefused {

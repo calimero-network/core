@@ -35,14 +35,14 @@ const LANDING_POLL: Duration = Duration::from_millis(100);
 /// One lock per namespace with a rejoin in flight; entries leave when the last holder drops.
 pub(crate) type RejoinLocks = Arc<Mutex<HashMap<[u8; 32], Arc<AsyncMutex<()>>>>>;
 
-struct RejoinLock {
+pub(crate) struct RejoinLock {
     locks: RejoinLocks,
     namespace: [u8; 32],
     guard: Option<OwnedMutexGuard<()>>,
 }
 
 impl RejoinLock {
-    async fn acquire(locks: RejoinLocks, namespace: [u8; 32]) -> Self {
+    pub(crate) async fn acquire(locks: RejoinLocks, namespace: [u8; 32]) -> Self {
         let lock = Arc::clone(
             locks
                 .lock()
