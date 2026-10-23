@@ -68,6 +68,7 @@ pub async fn handler(
                     identity: m.identity,
                     role: m.role,
                     name: m.name,
+                    direct: m.direct,
                 })
                 .collect();
             ApiResponse {

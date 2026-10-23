@@ -1,4 +1,7 @@
+use std::collections::BTreeSet;
+
 use actix::{ActorResponse, Handler, Message};
+use calimero_account::AccountId;
 use calimero_context_client::group::{
     GroupMemberEntry, ListGroupMembersRequest, ListGroupMembersResponse,
 };
@@ -99,6 +102,12 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
             // which produced the set.
             members.sort_by_key(|(identity, _)| *identity);
 
+            let direct: BTreeSet<AccountId> = MembershipRepository::new(&self.datastore)
+                .list(&group_id, 0, usize::MAX)?
+                .into_iter()
+                .map(|(identity, _)| identity)
+                .collect();
+
             let entries = members
                 .into_iter()
                 .skip(offset)
@@ -113,6 +122,7 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
                         identity,
                         role,
                         name,
+                        direct: direct.contains(&identity),
                     }
                 })
                 .collect();
@@ -202,5 +212,79 @@ mod tests {
             format!("node is not a member of group '{}'", "a7".repeat(32)),
             "the refusal names the group by the hex id the API takes"
         );
+    }
+
+    /// A member the group holds a row for is direct; one that reaches it through
+    /// an Open ancestor is not, and a client can tell which.
+    #[actix::test]
+    async fn a_listed_member_says_whether_the_group_holds_its_own_row() {
+        use calimero_context_client::group::CreateGroupRequest;
+        use calimero_context_config::MemberCapabilities;
+        use calimero_governance_store::{CapabilitiesRepository, NodeDeviceRepository};
+        use calimero_primitives::context::GroupMemberRole;
+        use calimero_primitives::identity::PrivateKey;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let app = ApplicationId::from([0xC1; 32]);
+        crate::test_support::install_application(&store, app);
+        let _root = NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+        let harness = actor::over(store.clone()).await;
+        let create = |parent_group_id| CreateGroupRequest {
+            salt: None,
+            bytecode_id: None,
+            application_id: Some(app),
+            name: None,
+            parent_group_id,
+            restricted: false,
+        };
+        let namespace = harness
+            .manager
+            .send(create(None))
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created")
+            .group_id;
+        let subgroup = harness
+            .manager
+            .send(create(Some(namespace)))
+            .await
+            .expect("the manager answers")
+            .expect("the Open subgroup is created")
+            .group_id;
+
+        let inherited =
+            crate::test_support::account_for(&PrivateKey::from([0x55; 32]).public_key());
+        MembershipRepository::new(&store)
+            .add_member(&namespace, &inherited, GroupMemberRole::Member)
+            .expect("seat the member in the namespace");
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &namespace,
+                &inherited,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )
+            .expect("let it join Open subgroups");
+
+        let members = harness
+            .manager
+            .send(ListGroupMembersRequest {
+                group_id: subgroup,
+                offset: 0,
+                limit: 10,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the founder lists its subgroup")
+            .members;
+
+        let direct_of = |who| members.iter().find(|m| m.identity == who).map(|m| m.direct);
+        assert_eq!(direct_of(inherited), Some(false), "{members:?}");
+        let creator = members
+            .iter()
+            .find(|m| m.identity != inherited)
+            .expect("the creator is listed");
+        assert!(creator.direct, "{members:?}");
     }
 }

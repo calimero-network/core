@@ -277,6 +277,9 @@ pub struct GroupMemberEntry {
     pub identity: AccountId,
     pub role: GroupMemberRole,
     pub name: Option<String>,
+    /// Whether the group holds a row of its own for this member, as opposed to
+    /// the member reaching it by inheritance through an Open ancestor.
+    pub direct: bool,
 }
 
 #[derive(Clone, Debug)]

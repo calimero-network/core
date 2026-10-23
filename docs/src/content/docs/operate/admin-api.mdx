@@ -335,7 +335,7 @@ the path parameter — these are reproduced exactly as routed below.
 | GET | `/admin-api/groups/:group_id/contexts` | List contexts in a group. |
 | POST | `/admin-api/groups/:group_id/reparent` | Re-parent a group. |
 | GET | `/admin-api/groups/:group_id/subgroups` | List subgroups. |
-| GET | `/admin-api/groups/:group_id/members` | List group members. |
+| GET | `/admin-api/groups/:group_id/members` | List group members. Each entry's `direct` is `true` when the group holds a row of its own for the member and `false` when the member reaches it by inheritance through an Open ancestor. |
 | POST | `/admin-api/groups/:group_id/members` | Add group members, each named by account, or by key written `key:<64-hex>`. Every id is hex, so the tag is what tells the two apart — an untagged key is read as an account. |
 | POST | `/admin-api/groups/:group_id/members/remove` | Remove group members. |
 | POST | `/admin-api/groups/:group_id/accounts/:account/seal` | Seal a payload to that account's **root key**, as this group sees it. Body `{ plaintext }`, hex, at most 64 KiB and never empty; returns `{ accountRootEpoch, ephemeralPublicKey, nonce, ciphertext }`. Caller and target must both be group members, and a non-member is refused identically to an unknown account. Confidentiality only — the sender key is ephemeral and unauthenticated, so anyone knowing a root public key can produce an envelope for it. |

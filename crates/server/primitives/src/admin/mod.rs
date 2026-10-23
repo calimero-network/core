@@ -1981,6 +1981,10 @@ pub struct GroupMemberApiEntry {
     pub role: GroupMemberRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// `true` when the group holds a row of its own for this member, `false`
+    /// when the member reaches it by inheritance through an Open ancestor.
+    #[serde(default)]
+    pub direct: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -4201,6 +4205,18 @@ pub struct SetSubgroupVisibilityApiResponse {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A node that predates `direct` answers without it; read as "not direct",
+    /// which promises nothing, rather than refused.
+    #[test]
+    fn a_member_entry_without_direct_still_parses() {
+        let entry: GroupMemberApiEntry = serde_json::from_str(&format!(
+            r#"{{"identity":"{}","role":"Member"}}"#,
+            "ab".repeat(32)
+        ))
+        .expect("the pre-existing body must still deserialize");
+        assert!(!entry.direct);
+    }
 
     /// A sidecar that predates direct admission sends `{ groupId }` alone, and
     /// that must still be accepted: an absent `admitterAddrs` means broadcast
