@@ -72,7 +72,8 @@ Signing is two SHA-256 hashes over the same canonical bytes (the signing payload
 - **The static check mirrors the serving contract.** Each app is served from its own origin `{label}.{base_domain}` under `/{version}/`, so a root-absolute URL resolves outside that version's folder.
   Root-absolute or climbing resource URLs and any `<base>` (`FRONTEND_ESCAPING_URL`), remote resource URLs (`FRONTEND_REMOTE_RESOURCE`), and inline code including `srcdoc` (`FRONTEND_INLINE_SCRIPT`) are refused.
   SVG files are left to the CSP.
-- **The server must send this CSP with the frontend.** `default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'`.
+- **The server must send this CSP with the frontend.** `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'`.
+  `'wasm-unsafe-eval'` lets an app compile WebAssembly (the SDK's WASM client) and does not allow `eval` or inline script.
   Loosening it without loosening `check_html` refuses bundles that would work, and tightening it without `check_html` ships pages that break.
 - **`handlers` is a sibling of `metadata`, on purpose.** Keep it out of `to_metadata_json()` - see `handlers_does_not_affect_metadata` in `lib.rs`.
 

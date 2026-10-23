@@ -13,7 +13,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
 use config::ServerConfig;
 use eyre::{bail, Result as EyreResult};
-use multiaddr::{Multiaddr, Protocol};
+use multiaddr::Protocol;
 use prometheus_client::registry::Registry;
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
@@ -184,13 +184,6 @@ pub async fn start(
     // narrower-than-intended (or empty) origin set at runtime.
     if let Err(e) = config.cors.validate() {
         bail!("invalid CORS configuration: {e}");
-    }
-
-    if let Some((port, addr)) = config.apps.port.and_then(|port| {
-        let addr = config.listen.iter().find(|a| tcp_port(a) == Some(port));
-        addr.map(|addr| (port, addr))
-    }) {
-        bail!("apps port {port} is also the listen address {addr}: the apps port must differ from every listen port");
     }
 
     // Register HTTP request metrics on the same registry before the
@@ -375,15 +368,6 @@ pub async fn start(
             sealed::intercept,
         ))
         .service(app);
-    let apps_port = match (app_hosts.clone(), config.apps.port) {
-        (Some(hosts), Some(port)) => {
-            let service = Router::new()
-                .fallback(app_host::serve_apps_port)
-                .with_state(hosts);
-            Some((service, bind_apps_port(&listeners, port).await?))
-        }
-        _ => None,
-    };
     let app =
         ServiceBuilder::new()
             .option_layer(app_hosts.map(|hosts| {
@@ -412,23 +396,6 @@ pub async fn start(
         }));
     }
 
-    if let Some((service, listeners)) = apps_port {
-        for listener in listeners {
-            let service = service.clone();
-            let shutdown = shutdown.clone();
-            drop(set.spawn(async move {
-                axum::serve(
-                    listener,
-                    ServiceExt::<Request>::into_make_service_with_connect_info::<
-                        std::net::SocketAddr,
-                    >(service),
-                )
-                .with_graceful_shutdown(async move { shutdown.cancelled().await })
-                .await
-            }));
-        }
-    }
-
     while let Some(result) = set.join_next().await {
         result??;
     }
@@ -442,35 +409,8 @@ fn app_hosts(config: &ServerConfig, node_client: &NodeClient) -> Option<app_host
     (!config.sealed.required).then(|| app_host::AppHosts {
         node_client: node_client.clone(),
         origins: app_host::AppOrigins::new(&config.apps),
-        app_api: config.use_embedded_auth(),
+        app_api: config.serves_app_api(),
     })
-}
-
-fn tcp_port(addr: &Multiaddr) -> Option<u16> {
-    addr.iter().find_map(|protocol| match protocol {
-        Protocol::Tcp(port) => Some(port),
-        _ => None,
-    })
-}
-
-/// Binds `port` on each address the server listens on; one that cannot bind is
-/// skipped, but at least one must.
-async fn bind_apps_port(listeners: &[TcpListener], port: u16) -> EyreResult<Vec<TcpListener>> {
-    let mut bound = Vec::new();
-    for listener in listeners {
-        let addr = SocketAddr::from((listener.local_addr()?.ip(), port));
-        match TcpListener::bind(addr).await {
-            Ok(listener) => bound.push(listener),
-            Err(err) => warn!(%addr, %err, "cannot serve apps on this address"),
-        }
-    }
-    if bound.is_empty() {
-        bail!("cannot bind the apps port {port} on any listen address");
-    }
-    for listener in &bound {
-        info!(addr = %listener.local_addr()?, "Serving apps on their own port");
-    }
-    Ok(bound)
 }
 
 /// CORS layer applied to every mounted route.
@@ -583,7 +523,6 @@ mod cors_tests {
     //!
     //! Do not delete `expose_headers` without also breaking these tests.
 
-    use core::net::SocketAddr;
     use core::time::Duration;
     use std::net::TcpListener;
     use std::sync::Arc;
@@ -923,11 +862,6 @@ mod cors_tests {
         String::from_utf8_lossy(&response).into_owned()
     }
 
-    /// `GET path` from the node on `port`, once it accepts connections.
-    async fn get_path(port: u16, path: &str) -> String {
-        get_path_as(port, &format!("127.0.0.1:{port}"), path).await
-    }
-
     async fn get_path_as(port: u16, host: &str, path: &str) -> String {
         send_as("GET", port, host, path, &[]).await
     }
@@ -997,13 +931,11 @@ mod cors_tests {
         (shutdown, server)
     }
 
-    /// A node with admin on `port` and apps on `apps_port`, sealed or not.
-    async fn start_with_apps_port(
+    /// A node with admin on `port` and no caller authentication.
+    async fn start_plain(
         port: u16,
-        apps_port: u16,
-        sealed: bool,
     ) -> (CancellationToken, tokio::task::JoinHandle<eyre::Result<()>>) {
-        let mut config = ServerConfig::new(
+        let config = ServerConfig::new(
             vec![format!("/ip4/127.0.0.1/tcp/{port}").parse().unwrap()],
             Keypair::generate_ed25519(),
             Some(AdminConfig::new(true, false)),
@@ -1011,8 +943,6 @@ mod cors_tests {
             None,
             None,
         );
-        config.sealed = crate::config::SealedConfig::new(sealed);
-        config.apps.port = Some(apps_port);
         spawn_node(config).await
     }
 
@@ -1057,43 +987,37 @@ mod cors_tests {
         assert!(!with_mode(crate::config::AuthMode::Proxy, true));
     }
 
-    #[tokio::test]
-    async fn the_apps_port_binds_on_the_address_of_each_listener() {
-        let main = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let apps_port = free_port();
-
-        let bound = super::bind_apps_port(&[main], apps_port).await.unwrap();
-
-        let addrs: Vec<_> = bound.iter().map(|l| l.local_addr().unwrap()).collect();
-        assert_eq!(addrs, [SocketAddr::from(([127, 0, 0, 1], apps_port))]);
-    }
-
-    #[tokio::test]
-    async fn an_occupied_apps_port_is_skipped_but_one_that_binds_nowhere_is_an_error() {
-        let v4 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = occupied.local_addr().unwrap().port();
-
-        let none = super::bind_apps_port(&[v4], port).await;
-        assert!(none.is_err(), "no listen address could bind the apps port");
-
-        let Ok(v6) = tokio::net::TcpListener::bind("[::1]:0").await else {
-            return;
+    #[actix::test]
+    async fn trust_proxy_opens_the_app_api_in_proxy_mode_only() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (state, _blobs) = admin_state(&store).await;
+        let services = crate::config::ServiceConfigs {
+            admin: None,
+            jsonrpc: None,
+            websocket: None,
+            sse: None,
         };
-        let v4 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let bound = super::bind_apps_port(&[v4, v6], port).await.unwrap();
-        let ips: Vec<_> = bound.iter().map(|l| l.local_addr().unwrap().ip()).collect();
-        assert_eq!(ips, ["::1".parse::<core::net::IpAddr>().unwrap()]);
+        let mut config = ServerConfig::with_auth(
+            vec![],
+            Keypair::generate_ed25519(),
+            services,
+            crate::config::AuthMode::Proxy,
+            None,
+        );
+        config.apps.trust_proxy = true;
+
+        let hosts = super::app_hosts(&config, &state.node_client).expect("app hosts");
+
+        assert!(hosts.app_api);
     }
 
-    /// A node with embedded auth, RPC and the admin API on `port`, apps on `apps_port`.
-    async fn start_embedded_with_apps_port(
+    /// A node with embedded auth, RPC and the admin API on `port`.
+    async fn start_embedded(
         port: u16,
-        apps_port: u16,
     ) -> (CancellationToken, tokio::task::JoinHandle<eyre::Result<()>>) {
         let mut auth = mero_auth::embedded::default_config();
         auth.storage = mero_auth::config::StorageConfig::Memory;
-        let mut config = ServerConfig::with_auth(
+        let config = ServerConfig::with_auth(
             vec![format!("/ip4/127.0.0.1/tcp/{port}").parse().unwrap()],
             Keypair::generate_ed25519(),
             crate::config::ServiceConfigs {
@@ -1105,19 +1029,16 @@ mod cors_tests {
             crate::config::AuthMode::Embedded,
             Some(auth),
         );
-        config.apps.port = Some(apps_port);
         spawn_node(config).await
     }
 
     #[actix::test]
     async fn an_app_calls_the_node_on_its_own_origin_through_the_nodes_auth() {
-        let (port, apps_port) = (free_port(), free_port());
-        let (shutdown, server) = start_embedded_with_apps_port(port, apps_port).await;
+        let port = free_port();
+        let (shutdown, server) = start_embedded(port).await;
         let label = crate::app_host::encode_label(&ApplicationId::from([7; 32]));
         let app_host = format!("{label}.localhost:{port}");
         let app_origin = format!("http://{app_host}");
-        let port_host = format!("127.0.0.1:{apps_port}");
-        let port_origin = format!("http://{port_host}");
         let node_host = format!("127.0.0.1:{port}");
 
         let on_app_host = send_as(
@@ -1126,14 +1047,6 @@ mod cors_tests {
             &app_host,
             "/jsonrpc",
             &[("Origin", &app_origin)],
-        )
-        .await;
-        let on_apps_port = send_as(
-            "POST",
-            apps_port,
-            &port_host,
-            "/jsonrpc",
-            &[("Origin", &port_origin)],
         )
         .await;
         let refresh = send_as(
@@ -1158,13 +1071,12 @@ mod cors_tests {
             "DELETE",
             port,
             &app_host,
-            "/admin-api/contexts/abc",
+            "/admin-api/blobs/abc",
             &[("Origin", &app_origin)],
         )
         .await;
         let login = get_path_as(port, &app_host, "/auth/login?app-id=x").await;
         let own_routes = [get_path_as(port, &app_host, "/auth/token").await];
-        let apps_port_api = get_path_as(apps_port, &port_host, "/admin-api/applications").await;
         let from_app = [
             send_as(
                 "POST",
@@ -1182,14 +1094,6 @@ mod cors_tests {
                 &[("Origin", &app_origin)],
             )
             .await,
-            send_as(
-                "POST",
-                port,
-                &node_host,
-                "/jsonrpc",
-                &[("Origin", &port_origin)],
-            )
-            .await,
         ];
         let unauthenticated = send_as("POST", port, &node_host, "/jsonrpc", &[]).await;
 
@@ -1200,10 +1104,6 @@ mod cors_tests {
             .expect("the server stops cleanly");
         for response in [&on_app_host, &app_route, &unauthenticated] {
             assert!(response.starts_with("HTTP/1.1 401"), "{response}");
-        }
-        for response in [&on_apps_port, &apps_port_api] {
-            assert!(response.starts_with("HTTP/1.1 403"), "{response}");
-            assert!(response.contains("files only"), "{response}");
         }
         assert!(!refresh.starts_with("HTTP/1.1 404"), "{refresh}");
         assert!(foreign.starts_with("HTTP/1.1 403"), "{foreign}");
@@ -1225,12 +1125,11 @@ mod cors_tests {
 
     #[actix::test]
     async fn a_node_that_does_not_verify_tokens_gives_an_app_origin_no_api() {
-        let (port, apps_port) = (free_port(), free_port());
-        let (shutdown, server) = start_with_apps_port(port, apps_port, false).await;
+        let port = free_port();
+        let (shutdown, server) = start_plain(port).await;
         let label = crate::app_host::encode_label(&ApplicationId::from([7; 32]));
 
         let on_app_host = get_path_as(port, &format!("{label}.localhost:{port}"), "/jsonrpc").await;
-        let on_apps_port = get_path(apps_port, "/jsonrpc").await;
 
         shutdown.cancel();
         server
@@ -1239,74 +1138,6 @@ mod cors_tests {
             .expect("the server stops cleanly");
         assert!(on_app_host.starts_with("HTTP/1.1 403"), "{on_app_host}");
         assert!(on_app_host.contains("embedded auth"), "{on_app_host}");
-        assert!(on_apps_port.starts_with("HTTP/1.1 403"), "{on_apps_port}");
-        assert!(on_apps_port.contains("files only"), "{on_apps_port}");
-    }
-
-    #[actix::test]
-    async fn the_apps_port_answers_files_only() {
-        let (port, apps_port) = (free_port(), free_port());
-        let (shutdown, server) = start_with_apps_port(port, apps_port, false).await;
-
-        let admin = get_path(apps_port, "/admin-api/applications").await;
-        let auth = get_path(apps_port, "/auth/providers").await;
-        let health = get_path(apps_port, "/health").await;
-        let main = get_path(port, "/health").await;
-
-        shutdown.cancel();
-        server
-            .await
-            .expect("the server task ends")
-            .expect("the server stops cleanly");
-        for (response, status) in [(&admin, "403"), (&auth, "403"), (&health, "404")] {
-            assert!(
-                response.starts_with(&format!("HTTP/1.1 {status}")),
-                "{response}"
-            );
-            assert!(
-                response
-                    .to_ascii_lowercase()
-                    .contains("content-security-policy"),
-                "{response}"
-            );
-        }
-        assert!(
-            !main
-                .to_ascii_lowercase()
-                .contains("content-security-policy"),
-            "{main}"
-        );
-    }
-
-    #[actix::test]
-    async fn an_apps_port_that_is_a_listen_port_stops_the_node_from_starting() {
-        let port = free_port();
-        let (_shutdown, server) = start_with_apps_port(port, port, false).await;
-
-        let err = server
-            .await
-            .expect("the server task ends")
-            .expect_err("a node with one port for both must not start");
-
-        let err = err.to_string();
-        assert!(err.contains(&format!("apps port {port}")), "{err}");
-        assert!(err.contains(&format!("/ip4/127.0.0.1/tcp/{port}")), "{err}");
-    }
-
-    #[actix::test]
-    async fn a_node_requiring_sealed_requests_does_not_open_the_apps_port() {
-        let (port, apps_port) = (free_port(), free_port());
-        let (shutdown, server) = start_with_apps_port(port, apps_port, true).await;
-
-        let _up = get_path(port, "/health").await;
-        let apps = TcpStream::connect(("127.0.0.1", apps_port)).await;
-
-        shutdown.cancel();
-        server
-            .await
-            .expect("the server task ends")
-            .expect("the server stops cleanly");
-        assert!(apps.is_err(), "the apps port must not be bound");
     }
 
     #[actix::test]

@@ -40,6 +40,28 @@ fn save_load_delete_group_meta() {
     assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
 }
 
+#[test]
+fn an_unverified_target_marker_is_per_group_and_dies_with_the_meta() {
+    let store = test_store();
+    let gid = test_group_id();
+    let other = ContextGroupId::from([0x66; 32]);
+    let meta = MetaRepository::new(&store);
+
+    assert!(!meta.is_target_unverified(&gid).unwrap());
+
+    meta.save(&gid, &test_meta()).unwrap();
+    meta.mark_target_unverified(&gid).unwrap();
+    assert!(meta.is_target_unverified(&gid).unwrap());
+    assert!(!meta.is_target_unverified(&other).unwrap());
+
+    meta.delete(&gid).unwrap();
+    assert!(!meta.is_target_unverified(&gid).unwrap());
+
+    meta.mark_target_unverified(&gid).unwrap();
+    meta.clear_target_unverified(&gid).unwrap();
+    assert!(!meta.is_target_unverified(&gid).unwrap());
+}
+
 // -----------------------------------------------------------------------
 // Member tests
 // -----------------------------------------------------------------------
@@ -17831,5 +17853,124 @@ mod invite_capability {
             crate::plan_carried_link(&f.store, &f.ns_gid, &relay_sk, &who.proof, &foreign).unwrap(),
             Err(crate::CarriedLinkRefusal::ScopeInvalid(_))
         ));
+    }
+}
+
+// -----------------------------------------------------------------------
+// Unverified target marker: only a signed op that names the application clears it
+// -----------------------------------------------------------------------
+mod unverified_target_marker {
+    use super::*;
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_context_config::types::BytecodeId;
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_storage::logical_clock::HybridTimestamp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    const HINTED_APP: [u8; 32] = [0xCC; 32]; // the application `test_meta` targets
+    const HINTED_BYTECODE: [u8; 32] = [0xBB; 32];
+
+    /// A group whose target is the hinted application and carries the marker,
+    /// plus its admin's signing key.
+    fn hinted_group() -> (Store, ContextGroupId, PrivateKey) {
+        let mut rng = UnwrapErr(SysRng);
+        let admin_sk = PrivateKey::random(&mut rng);
+        let store = test_store();
+        let gid = test_group_id();
+        let admin = enrol_member(&store, &gid, &admin_sk.public_key());
+        MetaRepository::new(&store)
+            .save(&gid, &sample_meta_with_admin(admin))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        MetaRepository::new(&store)
+            .mark_target_unverified(&gid)
+            .unwrap();
+        (store, gid, admin_sk)
+    }
+
+    fn apply(store: &Store, gid: &ContextGroupId, sk: &PrivateKey, op: GroupOp) {
+        let signed = SignedGroupOp::sign(sk, gid.to_bytes().into(), vec![], 1, op).unwrap();
+        apply_local_signed_group_op(store, &signed).unwrap();
+    }
+
+    fn target_set(application: [u8; 32]) -> GroupOp {
+        GroupOp::TargetApplicationSet {
+            bytecode_id: BytecodeId::from([0x5A; 32]),
+            target_application_id: ApplicationId::from(application),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
+        }
+    }
+
+    fn registered(application: [u8; 32]) -> GroupOp {
+        GroupOp::ContextRegistered {
+            context_id: ContextId::from([0x77; 32]),
+            application_id: ApplicationId::from(application),
+            blob_id: BlobId::from([0xBB; 32]),
+            source: "test://app".to_owned(),
+            service_name: None,
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
+        }
+    }
+
+    fn unverified(store: &Store, gid: &ContextGroupId) -> bool {
+        MetaRepository::new(store)
+            .is_target_unverified(gid)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_signed_target_naming_the_hinted_application_confirms_it() {
+        let (store, gid, sk) = hinted_group();
+        apply(&store, &gid, &sk, target_set(HINTED_APP));
+        assert!(!unverified(&store, &gid));
+    }
+
+    #[test]
+    fn a_signed_target_naming_another_application_replaces_the_hint() {
+        let (store, gid, sk) = hinted_group();
+        apply(&store, &gid, &sk, target_set([0xD2; 32]));
+        assert!(!unverified(&store, &gid));
+        let target = MetaRepository::new(&store)
+            .load(&gid)
+            .unwrap()
+            .unwrap()
+            .target;
+        assert_eq!(target.application_id, ApplicationId::from([0xD2; 32]));
+    }
+
+    #[test]
+    fn a_cascade_upgrade_replaces_the_hint() {
+        let (store, gid, sk) = hinted_group();
+        let cascade = GroupOp::CascadeUpgrade {
+            from_bytecode_id: HINTED_BYTECODE.into(),
+            bytecode_id: [0x22; 32].into(),
+            target_application_id: ApplicationId::from([0xD2; 32]),
+            to_state_version: 0,
+            migration: None,
+            cascade_hlc: HybridTimestamp::zero(),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
+        };
+        apply(&store, &gid, &sk, cascade);
+        assert!(!unverified(&store, &gid));
+    }
+
+    #[test]
+    fn a_registered_context_of_the_hinted_application_does_not_confirm_it() {
+        let (store, gid, sk) = hinted_group();
+        apply(&store, &gid, &sk, registered(HINTED_APP));
+        assert!(unverified(&store, &gid));
+    }
+
+    #[test]
+    fn a_registered_context_of_another_application_leaves_the_hint_unconfirmed() {
+        let (store, gid, sk) = hinted_group();
+        apply(&store, &gid, &sk, registered([0xD2; 32]));
+        assert!(unverified(&store, &gid));
     }
 }

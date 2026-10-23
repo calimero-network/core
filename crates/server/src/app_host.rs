@@ -1,10 +1,12 @@
 //! Serves an installed app's frontend from its own origin, `{label}.{base_domain}`.
 
+use std::collections::HashMap;
+
 use axum::body::{Body, Bytes};
-use axum::extract::{Request, State};
+use axum::extract::{Query, Request, State};
 use axum::http::request::Parts;
 use axum::http::uri::Authority;
-use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::Response;
 use calimero_bundle::FRONTEND_ROOT;
@@ -12,14 +14,15 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use futures_util::{stream, StreamExt as _};
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::config::AppsConfig;
 use crate::origin_guard::names_origin;
 
-const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'"; // see crates/bundle/AGENTS.md
+const CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'"; // see crates/bundle/AGENTS.md
 const IMMUTABLE: &str = "public, max-age=31536000, immutable"; // a file's URL names its release
 const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567"; // RFC 4648 alphabet, lowercase
+const MAX_STRIPPED_SEGMENTS: usize = 16; // leading segments a deep link may drop to find its asset
 const LABEL_LEN: usize = 52; // 32 bytes in unpadded base32
 const NATIVE_SCHEME: &str = "calimero-app"; // the desktop webview's app scheme on macOS and Linux
 const WINDOWS_HOST_PREFIX: &str = "calimero-app."; // its host form on Windows: `http(s)://calimero-app.{label}`
@@ -28,8 +31,6 @@ const AUTH_LOGIN: &str = "/auth/login"; // the node's login page, which an app o
 const AUTH_VALIDATE: &str = "/auth/validate"; // the other: a token check that reads nothing but the token
 const ADMIN_API: &str = "/admin-api"; // where the node mounts its admin routes, under `NODE_PATH_PREFIX`
 const NO_APP_API: &str = "the app API on an app origin needs the node's embedded auth"; // body of the 403 where this node does not verify tokens
-const FILES_ONLY: &str =
-    "the fallback apps port serves files only; the app API needs the app's own subdomain origin"; // body of the 403 to an API path on the apps port
 const ADMIN_REFUSED: &str = "an app's origin may use only the admin routes an app needs"; // body of the 403 to any other admin route
 const FOREIGN_ORIGIN: &str = "an app's API answers a page of its own origin only"; // body of the 403 to another origin
 
@@ -88,19 +89,17 @@ fn decode_label(label: &str) -> Option<ApplicationId> {
 #[derive(Clone, Debug)]
 pub(crate) struct AppOrigins {
     base_domain: String,
-    port: Option<u16>,
 }
 
 impl AppOrigins {
     pub(crate) fn new(apps: &AppsConfig) -> Self {
         Self {
             base_domain: apps.base_domain.to_ascii_lowercase(),
-            port: apps.port,
         }
     }
 
-    /// Whether `origin` is shaped like any app's: `{label}.{base_domain}`, any
-    /// page on the apps port, or one of the desktop app's own origins.
+    /// Whether `origin` is shaped like any app's: `{label}.{base_domain}` or one
+    /// of the desktop app's own origins.
     pub(crate) fn is_app_origin(&self, origin: &str) -> bool {
         let Some((scheme, authority)) = split_origin(origin) else {
             return false;
@@ -108,27 +107,24 @@ impl AppOrigins {
         let host = authority.host().to_ascii_lowercase();
         match scheme.as_str() {
             NATIVE_SCHEME => decode_label(&host).is_some(),
-            "http" | "https" => {
-                self.app_at(&host).is_some()
-                    || is_windows_host(&host)
-                    || self.is_apps_port(&scheme, &authority)
-            }
+            "http" | "https" => self.app_at(&host).is_some() || is_windows_host(&host),
             _ => false,
         }
     }
 
-    /// A browser omits a scheme's default port from `Origin`.
-    fn is_apps_port(&self, scheme: &str, authority: &Authority) -> bool {
-        let default = if scheme == "https" { 443 } else { 80 };
-        self.port
-            .is_some_and(|port| authority.port_u16().unwrap_or(default) == port)
-    }
-
-    /// The app whose host is exactly `{label}.{base_domain}`.
+    /// The app whose host is exactly `{label}.{base_domain}`, with at most one
+    /// trailing dot, which names the same host.
     fn app_at(&self, host: &str) -> Option<ApplicationId> {
         let host = host.to_ascii_lowercase();
+        let host = host.strip_suffix('.').unwrap_or(&host);
         decode_label(host.strip_suffix(&self.base_domain)?.strip_suffix('.')?)
     }
+}
+
+/// The lowercase host name of a `Host` header, port left off.
+fn host_name(headers: &HeaderMap) -> Option<String> {
+    let host = headers.get(header::HOST)?.to_str().ok()?;
+    Some(host.parse::<Authority>().ok()?.host().to_ascii_lowercase())
 }
 
 fn split_origin(origin: &str) -> Option<(String, Authority)> {
@@ -177,24 +173,26 @@ impl AppHosts {
 
     /// The app a `Host` header names: exactly `{label}.{base_domain}`.
     fn app_for(&self, headers: &HeaderMap) -> Option<ApplicationId> {
-        let host = headers.get(header::HOST)?.to_str().ok()?;
-        self.origins.app_at(host.parse::<Authority>().ok()?.host())
+        self.origins.app_at(&host_name(headers)?)
     }
 
-    /// Answers `path`, relative to the app's root; `prefix` is where that root
-    /// sits on the host, for redirects.
-    async fn respond(
-        &self,
-        app: &ApplicationId,
-        request: &Parts,
-        path: &str,
-        prefix: &str,
-    ) -> Response {
+    /// Whether a `Host` header names a label's shape under any other domain, which
+    /// the node must not answer as its own host.
+    fn is_foreign_label_host(headers: &HeaderMap) -> bool {
+        host_name(headers).is_some_and(|host| {
+            host.split('.').next().is_some_and(|first| {
+                first.len() == LABEL_LEN && first.bytes().all(|b| BASE32.contains(&b))
+            })
+        })
+    }
+
+    /// Answers `path`, relative to the app's root.
+    async fn respond(&self, app: &ApplicationId, request: &Parts, path: &str) -> Response {
         if !matches!(request.method, Method::GET | Method::HEAD) {
             return status(StatusCode::NOT_FOUND);
         }
         if path == "/" {
-            return self.redirect_to_current(app, request.uri.query(), prefix);
+            return self.redirect_to_current(app, request.uri.query());
         }
         let Some(rest_of_path) = path.strip_prefix('/') else {
             return status(StatusCode::NOT_FOUND);
@@ -212,24 +210,40 @@ impl AppHosts {
             }
         };
         let Some(rest) = rest else {
-            return redirect(&format!("{prefix}/{version}/"));
+            return redirect(&format!("/{version}/"));
         };
-        let wanted = if rest.is_empty() {
-            index.entry.to_string()
+        let in_index = |tail: &str| {
+            index
+                .files
+                .iter()
+                .find(|file| file.path.strip_prefix(FRONTEND_ROOT) == Some(tail))
+        };
+        let mut found = if rest.is_empty() {
+            index.files.iter().find(|file| *file.path == *index.entry)
         } else {
-            format!("{FRONTEND_ROOT}{rest}")
+            in_index(rest)
         };
-        let Some(file) = index.files.iter().find(|file| *file.path == *wanted) else {
+        let mut negotiated = false;
+        if found.is_none() {
+            if is_client_route(rest, &request.headers) {
+                found = index.files.iter().find(|file| *file.path == *index.entry);
+                negotiated = true;
+            } else {
+                found = relative_tails(rest).find_map(in_index);
+            }
+        }
+        let Some(file) = found else {
             return status(StatusCode::NOT_FOUND);
         };
-        let Some(mime) = calimero_bundle::mime_type(&wanted) else {
+        let Some(mime) = calimero_bundle::mime_type(&file.path) else {
             return status(StatusCode::NOT_FOUND);
         };
 
         let blob_id = file.blob.blob_id();
         let etag = format!("\"{blob_id}\"");
         if matches_etag(&request.headers, &etag) {
-            return with_file_headers(status(StatusCode::NOT_MODIFIED), mime, &etag);
+            let response = with_file_headers(status(StatusCode::NOT_MODIFIED), mime, &etag);
+            return vary_on_accept(response, negotiated);
         }
         let (body, size) = match self.open_blob(blob_id).await {
             Ok(opened) => opened,
@@ -240,7 +254,8 @@ impl AppHosts {
         } else {
             body
         };
-        let mut response = with_file_headers(hardened(Response::new(body)), mime, &etag);
+        let response = with_file_headers(hardened(Response::new(body)), mime, &etag);
+        let mut response = vary_on_accept(response, negotiated);
         drop(
             response
                 .headers_mut()
@@ -249,12 +264,7 @@ impl AppHosts {
         response
     }
 
-    fn redirect_to_current(
-        &self,
-        app: &ApplicationId,
-        query: Option<&str>,
-        prefix: &str,
-    ) -> Response {
+    fn redirect_to_current(&self, app: &ApplicationId, query: Option<&str>) -> Response {
         // A namespace's release is not recorded against the app, so it names nothing here.
         let names_namespace = query.is_some_and(|q| {
             q.split('&')
@@ -262,7 +272,7 @@ impl AppHosts {
         });
         let current = self.node_client.get_application(app).ok().flatten();
         match current.and_then(|row| row.version) {
-            Some(version) if !names_namespace => redirect(&format!("{prefix}/{version}/")),
+            Some(version) if !names_namespace => redirect(&format!("/{version}/")),
             _ => status(StatusCode::NOT_FOUND),
         }
     }
@@ -296,38 +306,72 @@ pub(crate) async fn serve_app_hosts(
     next: Next,
 ) -> Response {
     let Some(app) = hosts.app_for(request.headers()) else {
+        if AppHosts::is_foreign_label_host(request.headers()) {
+            return status(StatusCode::NOT_FOUND);
+        }
         return next.run(request).await;
     };
     if let Some(login) = AppHosts::login_redirect(&request) {
         return login;
     }
     let (method, path) = (request.method(), request.uri().path());
+    if is_admin_api(path, node_prefix()) && purges_account(request.uri()) {
+        debug!(%method, path, app = %encode_label(&app), "account purge refused on an app origin");
+        return refusal(StatusCode::FORBIDDEN, ADMIN_REFUSED);
+    }
     if is_app_api(method, path, node_prefix()) {
         return hosts.hand_over(app, request, next).await;
     }
     if is_admin_api(path, node_prefix()) {
+        debug!(%method, path, app = %encode_label(&app), "admin route refused on an app origin");
         return refusal(StatusCode::FORBIDDEN, ADMIN_REFUSED);
     }
     let (parts, _body) = request.into_parts();
-    hosts.respond(&app, &parts, parts.uri.path(), "").await
+    hosts.respond(&app, &parts, parts.uri.path()).await
 }
 
-/// The apps port: `/{label}/{version}/{path}` and nothing else. Its apps share
-/// one origin, so none of them gets the node's API from it.
-pub(crate) async fn serve_apps_port(State(hosts): State<AppHosts>, request: Request) -> Response {
-    if is_node_api(request.uri().path(), node_prefix()) {
-        return refusal(StatusCode::FORBIDDEN, FILES_ONLY);
-    }
-    let (parts, _body) = request.into_parts();
-    let rest = parts.uri.path().strip_prefix('/').unwrap_or_default();
-    let (label, tail) = rest.split_once('/').unwrap_or((rest, ""));
-    let Some(app) = decode_label(label) else {
-        return status(StatusCode::NOT_FOUND);
-    };
-    let prefix = format!("/{label}");
-    hosts
-        .respond(&app, &parts, &format!("/{tail}"), &prefix)
-        .await
+/// Leaving with `purge` frees every device of the account, an account action an app
+/// origin never takes; an unreadable query counts as one.
+fn purges_account(uri: &Uri) -> bool {
+    Query::<HashMap<String, String>>::try_from_uri(uri).map_or(true, |Query(query)| {
+        query.get("purge").is_some_and(|value| value != "false")
+    })
+}
+
+/// A page request for a path no file answers: the app's own router resolves it.
+fn is_client_route(rest: &str, headers: &HeaderMap) -> bool {
+    let last = rest.rsplit('/').next().unwrap_or_default();
+    let wants_page = headers
+        .get_all(header::ACCEPT)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .any(accepts_html);
+    wants_page && !last.contains('.')
+}
+
+/// Whether an `Accept` value lists `text/html` itself with a nonzero `q` (RFC 9110 12.5.1).
+fn accepts_html(accept: &str) -> bool {
+    accept.split(',').any(|range| {
+        let mut parts = range.split(';').map(str::trim);
+        parts
+            .next()
+            .is_some_and(|media| media.eq_ignore_ascii_case("text/html"))
+            && parts.all(|param| match param.split_once('=') {
+                Some((name, q)) if name.trim().eq_ignore_ascii_case("q") => {
+                    q.trim().parse::<f32>().is_ok_and(|q| q > 0.0)
+                }
+                _ => true,
+            })
+    })
+}
+
+/// What `rest` names once leading segments are dropped, longest first and at most
+/// `MAX_STRIPPED_SEGMENTS` of them: a page opened on a deep link resolves its
+/// `./assets/...` URLs below that link.
+fn relative_tails(rest: &str) -> impl Iterator<Item = &str> {
+    rest.match_indices('/')
+        .take(MAX_STRIPPED_SEGMENTS)
+        .map(|(at, _)| &rest[at + 1..])
 }
 
 fn node_prefix() -> &'static str {
@@ -346,8 +390,9 @@ fn is_app_api(method: &Method, path: &str, prefix: &str) -> bool {
         || path.starts_with("/sse/")
 }
 
-/// The admin routes an app uses to find and make its contexts and namespaces,
-/// matched by method and exact segment shape.
+/// The admin routes an app uses to find, make and manage its contexts, groups and
+/// blobs, matched by method and exact segment shape. The router's scope checks
+/// confine each one to the app of the host.
 fn is_app_admin_route(method: &Method, route: &str) -> bool {
     let Some(route) = route
         .strip_prefix(ADMIN_API)
@@ -356,41 +401,61 @@ fn is_app_admin_route(method: &Method, route: &str) -> bool {
         return false;
     };
     let segments: Vec<&str> = route.split('/').collect();
-    matches!(
-        (method, segments.as_slice()),
-        (
-            &Method::GET,
-            ["contexts" | "namespaces" | "applications" | "health" | "is-authed"]
-        ) | (&Method::GET, ["contexts", _])
-            | (&Method::GET, ["applications", _])
-            | (&Method::GET, ["namespaces", "for-application", _])
-            | (&Method::GET, ["contexts", "for-application", _])
-            | (&Method::GET, ["contexts", _, "identities-owned" | "group"])
-            | (&Method::GET, ["groups", _, "members"])
-            | (&Method::POST, ["contexts" | "namespaces"])
-            | (&Method::POST, ["contexts", _, "join"])
-            | (
-                &Method::POST,
-                ["namespaces", _, "invite" | "join" | "groups"]
-            )
-    )
+    let segments = segments.as_slice();
+    match *method {
+        Method::GET | Method::HEAD if matches!(segments, ["blobs", _]) => true,
+        Method::GET => matches!(
+            segments,
+            ["contexts" | "namespaces" | "applications" | "health" | "is-authed" | "identity"]
+                | ["contexts" | "applications" | "groups" | "namespaces", _]
+                | ["namespaces", _, "groups"]
+                | ["groups", _, "contexts"]
+                | ["groups", _, "members", _, "metadata" | "capabilities"]
+                | ["groups", _, "contexts", _, "metadata"]
+                | ["namespaces", "for-application", _]
+                | ["contexts", "for-application", _]
+                | ["contexts", _, "identities-owned" | "identities" | "group"]
+                | ["groups", _, "members" | "metadata" | "subgroups"]
+        ),
+        Method::POST => matches!(
+            segments,
+            ["contexts" | "namespaces"]
+                | ["contexts", _, "join" | "leave"]
+                | ["namespaces", _, "invite" | "join" | "groups" | "leave"]
+                | ["groups", "join"]
+                | ["groups", _, "members" | "reparent" | "sync" | "leave"]
+                | ["groups", _, "members", "remove"]
+                | ["alias", "create", "context"]
+                | ["alias", "lookup", "context", _]
+        ),
+        Method::PUT => matches!(
+            segments,
+            ["blobs"]
+                | ["groups", _, "metadata"]
+                | ["groups", _, "contexts", _, "metadata"]
+                | [
+                    "groups",
+                    _,
+                    "members",
+                    _,
+                    "role" | "capabilities" | "metadata"
+                ]
+                | [
+                    "groups",
+                    _,
+                    "settings",
+                    "default-capabilities" | "subgroup-visibility"
+                ]
+        ),
+        Method::DELETE => matches!(segments, ["contexts" | "namespaces" | "groups", _]),
+        _ => false,
+    }
 }
 
 fn is_admin_api(path: &str, prefix: &str) -> bool {
     path.strip_prefix(prefix)
         .and_then(|route| route.strip_prefix(ADMIN_API))
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-}
-
-/// Whether `path` is under a route the node answers with an API: RPC, sockets,
-/// events, auth or the admin surface.
-fn is_node_api(path: &str, prefix: &str) -> bool {
-    fn first(path: &str) -> Option<&str> {
-        path.strip_prefix('/')?.split('/').next()
-    }
-    let prefixed = path.strip_prefix(prefix).and_then(first);
-    matches!(prefixed, Some("jsonrpc" | "ws" | "admin-api"))
-        || matches!(first(path), Some("sse" | "auth"))
 }
 
 /// Whether a page's `Origin` is the host it called.
@@ -433,10 +498,10 @@ fn redirect(to: &str) -> Response {
 
 fn hardened(mut response: Response) -> Response {
     let headers = response.headers_mut();
-    drop(headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(CSP),
-    ));
+    // A handler's own policy (a blob download's sandbox) is stricter than this one.
+    headers
+        .entry(header::CONTENT_SECURITY_POLICY)
+        .or_insert(HeaderValue::from_static(CSP));
     drop(headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
@@ -445,6 +510,18 @@ fn hardened(mut response: Response) -> Response {
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
     ));
+    response
+}
+
+/// The entry stands in for any page path, so a cache must key it by `Accept`.
+fn vary_on_accept(mut response: Response, negotiated: bool) -> Response {
+    if negotiated {
+        drop(
+            response
+                .headers_mut()
+                .insert(header::VARY, HeaderValue::from_static("accept")),
+        );
+    }
     response
 }
 
@@ -470,6 +547,7 @@ fn matches_etag(headers: &HeaderMap, etag: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::{accepts_html, ADMIN_REFUSED};
     use core::str;
     use std::sync::Arc;
 
@@ -488,18 +566,18 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{
-        decode_label, encode_label, is_app_api, is_node_api, serve_app_hosts, serve_apps_port,
-        AppApi, AppHosts, AppOrigins, ApplicationId, AUTH_REFRESH, BASE32,
+        decode_label, encode_label, is_app_api, purges_account, serve_app_hosts, AppApi, AppHosts,
+        AppOrigins, ApplicationId, AUTH_REFRESH, BASE32,
     };
     use crate::config::AppsConfig;
     use crate::test_support::{stub_node_manager, test_node_client};
 
     const BASE: &str = "localhost";
-    const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
+    const CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
     const APP: [u8; 32] = [7; 32];
     const API_PATHS: [&str; 5] = ["/jsonrpc", "/ws", "/sse", "/sse/subscribe", "/auth/refresh"];
     const ID: &str = "0123abcd";
-    const ALLOWED_ADMIN: [(Method, &str); 16] = [
+    const ALLOWED_ADMIN: [(Method, &str); 50] = [
         (Method::GET, "/admin-api/applications"),
         (Method::GET, "/admin-api/applications/0123abcd"),
         (
@@ -519,11 +597,71 @@ mod tests {
         (Method::POST, "/admin-api/namespaces/0123abcd/join"),
         (Method::POST, "/admin-api/namespaces/0123abcd/groups"),
         (Method::GET, "/admin-api/groups/0123abcd/members"),
+        (Method::GET, "/admin-api/contexts/0123abcd/identities"),
+        (Method::POST, "/admin-api/contexts/0123abcd/leave"),
+        (Method::POST, "/admin-api/namespaces/0123abcd/leave"),
+        (Method::DELETE, "/admin-api/contexts/0123abcd"),
+        (Method::DELETE, "/admin-api/namespaces/0123abcd"),
+        (Method::DELETE, "/admin-api/groups/0123abcd"),
+        (Method::GET, "/admin-api/groups/0123abcd"),
+        (Method::GET, "/admin-api/groups/0123abcd/metadata"),
+        (
+            Method::GET,
+            "/admin-api/groups/0123abcd/members/0123abcd/capabilities",
+        ),
+        (
+            Method::GET,
+            "/admin-api/groups/0123abcd/contexts/0123abcd/metadata",
+        ),
+        (Method::GET, "/admin-api/namespaces/0123abcd"),
+        (Method::GET, "/admin-api/namespaces/0123abcd/groups"),
+        (Method::GET, "/admin-api/groups/0123abcd/contexts"),
+        (
+            Method::GET,
+            "/admin-api/groups/0123abcd/members/0123abcd/metadata",
+        ),
+        (
+            Method::PUT,
+            "/admin-api/groups/0123abcd/members/0123abcd/metadata",
+        ),
+        (Method::GET, "/admin-api/identity"),
+        (Method::PUT, "/admin-api/groups/0123abcd/metadata"),
+        (
+            Method::PUT,
+            "/admin-api/groups/0123abcd/contexts/0123abcd/metadata",
+        ),
+        (Method::POST, "/admin-api/groups/0123abcd/members"),
+        (Method::POST, "/admin-api/groups/0123abcd/members/remove"),
+        (
+            Method::PUT,
+            "/admin-api/groups/0123abcd/members/0123abcd/role",
+        ),
+        (
+            Method::PUT,
+            "/admin-api/groups/0123abcd/members/0123abcd/capabilities",
+        ),
+        (
+            Method::PUT,
+            "/admin-api/groups/0123abcd/settings/default-capabilities",
+        ),
+        (
+            Method::PUT,
+            "/admin-api/groups/0123abcd/settings/subgroup-visibility",
+        ),
+        (Method::GET, "/admin-api/groups/0123abcd/subgroups"),
+        (Method::POST, "/admin-api/groups/0123abcd/reparent"),
+        (Method::POST, "/admin-api/groups/0123abcd/sync"),
+        (Method::POST, "/admin-api/groups/0123abcd/leave"),
+        (Method::POST, "/admin-api/groups/join"),
+        (Method::PUT, "/admin-api/blobs"),
+        (Method::GET, "/admin-api/blobs/0123abcd"),
+        (Method::HEAD, "/admin-api/blobs/0123abcd"),
+        (Method::POST, "/admin-api/alias/create/context"),
+        (Method::POST, "/admin-api/alias/lookup/context/name"),
     ];
 
     struct Fixture {
         router: Router,
-        port_router: Router,
         node_client: calimero_node_primitives::client::NodeClient,
         store: Store,
         blob_dir: TempDir,
@@ -639,13 +777,9 @@ mod tests {
         let routes = Router::new()
             .route("/{*rest}", any(reached))
             .route("/", any(reached));
-        let port_router = Router::new()
-            .fallback(serve_apps_port)
-            .with_state(hosts.clone());
         let router = routes.layer(from_fn_with_state(hosts, serve_app_hosts));
         Fixture {
             router,
-            port_router,
             node_client,
             store,
             blob_dir,
@@ -828,7 +962,6 @@ mod tests {
     async fn an_app_host_refuses_every_other_admin_route() {
         let f = fixture_with(true).await;
         let refused = [
-            (Method::DELETE, format!("/admin-api/contexts/{ID}")),
             (Method::PUT, format!("/admin-api/contexts/{ID}")),
             (Method::DELETE, format!("/admin-api/blobs/{ID}")),
             (Method::GET, "/admin-api/blobs".to_owned()),
@@ -840,19 +973,12 @@ mod tests {
                 format!("/admin-api/applications/{ID}/versions"),
             ),
             (Method::POST, "/admin-api/applications".to_owned()),
-            (Method::POST, format!("/admin-api/groups/{ID}/members")),
             (
                 Method::DELETE,
                 format!("/admin-api/groups/{ID}/members/{ID}"),
             ),
             (Method::GET, format!("/admin-api/groups/{ID}/members/{ID}")),
-            (Method::GET, format!("/admin-api/groups/{ID}")),
-            (Method::POST, "/admin-api/alias/create/context".to_owned()),
             (Method::GET, "/admin-api/alias/list/context".to_owned()),
-            (Method::DELETE, format!("/admin-api/namespaces/{ID}")),
-            (Method::GET, format!("/admin-api/namespaces/{ID}")),
-            (Method::POST, format!("/admin-api/namespaces/{ID}/leave")),
-            (Method::GET, format!("/admin-api/contexts/{ID}/identities")),
             (Method::GET, format!("/admin-api/contexts/{ID}/group/extra")),
             (Method::POST, format!("/admin-api/contexts/{ID}/group")),
             (Method::POST, format!("/admin-api/contexts/{ID}/join/extra")),
@@ -863,6 +989,29 @@ mod tests {
             (Method::GET, "/admin-api".to_owned()),
             (Method::GET, "/admin-api/".to_owned()),
             (Method::GET, "/admin-api/tee/attest".to_owned()),
+            (Method::GET, "/admin-api/identity/context".to_owned()),
+            (Method::GET, "/admin-api/peers".to_owned()),
+            (Method::GET, "/admin-api/network/status".to_owned()),
+            (Method::GET, "/admin-api/usage".to_owned()),
+            (Method::POST, "/admin-api/account/pair-init".to_owned()),
+            (Method::GET, "/admin-api/account/devices".to_owned()),
+            (
+                Method::POST,
+                "/admin-api/alias/create/application".to_owned(),
+            ),
+            (Method::POST, "/admin-api/alias/create/device".to_owned()),
+            (Method::GET, "/admin-api/alias/list/context".to_owned()),
+            (Method::POST, format!("/admin-api/groups/{ID}/upgrade")),
+            (Method::POST, format!("/admin-api/groups/{ID}/owner-delete")),
+            (
+                Method::POST,
+                format!("/admin-api/groups/{ID}/transfer-ownership"),
+            ),
+            (
+                Method::POST,
+                format!("/admin-api/groups/{ID}/members/{ID}/capabilities"),
+            ),
+            (Method::DELETE, format!("/admin-api/applications/{ID}")),
             (Method::POST, "/auth/validate".to_owned()),
             (Method::DELETE, "/auth/validate".to_owned()),
         ];
@@ -878,7 +1027,7 @@ mod tests {
                 assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {path}");
                 assert_ne!(body, b"app api", "{method} {path}");
                 assert!(
-                    *method == Method::HEAD || !body.is_empty(),
+                    *method == Method::HEAD || body == ADMIN_REFUSED.as_bytes(),
                     "{method} {path}"
                 );
                 assert_hardened(&response);
@@ -941,8 +1090,6 @@ mod tests {
         ] {
             let (response, _) = send(&f.router, method.clone(), &f.host, uri, &[]).await;
             assert_ne!(response.status(), StatusCode::FOUND, "{method} {uri}");
-            let (response, _) = on_port(&f, method.clone(), uri).await;
-            assert_ne!(response.status(), StatusCode::FOUND, "port {method} {uri}");
         }
     }
 
@@ -955,6 +1102,38 @@ mod tests {
                 send(&f.router, method.clone(), &f.host, "/auth/refresh", &[]).await;
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method}");
             assert_ne!(body, b"app api", "{method}");
+        }
+    }
+
+    #[test]
+    fn only_an_accept_listing_html_as_acceptable_asks_for_a_page() {
+        for (accept, page) in [
+            ("text/html", true),
+            ("TEXT/HTML", true),
+            ("text/html,application/xhtml+xml,*/*;q=0.8", true),
+            ("application/json, text/html ; q=0.5", true),
+            ("text/html;level=1", true),
+            ("text/html;q=0", false),
+            ("text/html; q=0.000", false),
+            ("application/x-text/html-fragment", false),
+            ("text/htmlx", false),
+            ("*/*", false),
+            ("", false),
+        ] {
+            assert_eq!(accepts_html(accept), page, "{accept}");
+        }
+    }
+
+    #[test]
+    fn an_app_origin_may_leave_its_namespace_but_never_purge_the_account() {
+        for (uri, purges) in [
+            ("/admin-api/namespaces/x/leave", false),
+            ("/admin-api/namespaces/x/leave?purge=false", false),
+            ("/admin-api/namespaces/x/leave?purge=true", true),
+            ("/admin-api/namespaces/x/leave?purge=yes", true),
+            ("/admin-api/namespaces/x/leave?purge", true),
+        ] {
+            assert_eq!(purges_account(&uri.parse().unwrap()), purges, "{uri}");
         }
     }
 
@@ -992,38 +1171,13 @@ mod tests {
                 "/node1",
                 false,
             ),
-            (
-                Method::DELETE,
-                "/node1/admin-api/contexts/c",
-                "/node1",
-                false,
-            ),
+            (Method::DELETE, "/node1/admin-api/blobs/c", "/node1", false),
             (Method::GET, "/admin-apix/contexts", "", false),
             (Method::GET, "/auth/validate", "/node1", true),
             (Method::HEAD, "/auth/validate", "", true),
             (Method::POST, "/auth/validate", "", false),
         ] {
             assert_eq!(is_app_api(&method, path, prefix), api, "{method} {path}");
-        }
-    }
-
-    #[test]
-    fn the_node_api_is_where_the_router_mounts_it() {
-        for (path, prefix, api) in [
-            ("/jsonrpc", "", true),
-            ("/admin-api", "", true),
-            ("/admin-api/contexts", "", true),
-            ("/node1/admin-api/contexts", "/node1", true),
-            ("/node1/ws", "/node1", true),
-            ("/sse/subscribe", "/node1", true),
-            ("/auth/login", "/node1", true),
-            ("/admin-api/contexts", "/node1", false),
-            ("/jsonrpcx", "", false),
-            ("/admin-dashboard", "", false),
-            ("/health", "", false),
-            ("/abc/1.0.0/", "", false),
-        ] {
-            assert_eq!(is_node_api(path, prefix), api, "{path} under {prefix:?}");
         }
     }
 
@@ -1152,11 +1306,12 @@ mod tests {
         let hosts = [
             "localhost:2428".to_owned(),
             "127.0.0.1:2428".to_owned(),
-            format!("{label}.other.example"),
-            format!("{}.localhost", non_canonical(&label)),
             format!("x.{label}.localhost"),
             format!("{label}localhost"),
             "short.localhost".to_owned(),
+            format!("{}.other.example", &label[1..]),
+            format!("{label}a.other.example"),
+            format!("{}1.other.example", &label[1..]),
         ];
 
         for host in hosts {
@@ -1168,6 +1323,55 @@ mod tests {
     }
 
     #[actix::test]
+    async fn a_label_shaped_host_that_is_not_an_app_host_is_404() {
+        let f = fixture_with(true).await;
+        let label = encode_label(&ApplicationId::from(APP));
+        let hosts = [
+            format!("{label}.other.example"),
+            format!("{label}.other.example:2428"),
+            format!("{}.other.example", label.to_ascii_uppercase()),
+            format!("{label}.localhost.other.example"),
+            format!("{}.localhost", non_canonical(&label)),
+            format!("{label}.localhost.evil.example."),
+            label.clone(),
+        ];
+
+        for host in hosts {
+            for path in ["/metrics", "/admin-api/health", "/jsonrpc"] {
+                let (response, body) = send(&f.router, Method::POST, &host, path, &[]).await;
+                assert_eq!(response.status(), StatusCode::NOT_FOUND, "{host} {path}");
+                assert_ne!(body, b"normal router", "{host} {path}");
+                assert_ne!(body, b"app api", "{host} {path}");
+                assert_hardened(&response);
+            }
+        }
+    }
+
+    #[actix::test]
+    async fn a_trailing_dot_on_the_host_names_the_same_app() {
+        let f = fixture().await;
+        let label = encode_label(&ApplicationId::from(APP));
+
+        for host in [
+            format!("{label}.localhost.:2428"),
+            format!("{label}.LOCALHOST."),
+        ] {
+            let (response, body) = send(&f.router, Method::GET, &host, "/1.0.0/", &[]).await;
+            assert_eq!(response.status(), StatusCode::OK, "{host}");
+            assert_eq!(body, b"<p>v1</p>", "{host}");
+        }
+        let (response, _) = send(
+            &f.router,
+            Method::GET,
+            &format!("{label}.localhost..:2428"),
+            "/1.0.0/",
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "one dot only");
+    }
+
+    #[actix::test]
     async fn unknown_labels_versions_and_paths_are_404() {
         let f = fixture().await;
         let unknown_app = format!("{}.localhost", encode_label(&ApplicationId::from([9; 32])));
@@ -1175,11 +1379,8 @@ mod tests {
             "/9.9.9/",
             "/9.9.9/app.js",
             "/1.0.0/missing.js",
-            "/1.0.0/../2.0.0/app.js",
-            "/1.0.0/%2e%2e/2.0.0/app.js",
             "/%2e%2e/app.js",
             "/1.0.0/..%2fapp.js",
-            "/1.0.0/frontend/app.js",
             "/1.0.0/app.js/",
             "/9.9.9",
             "/../",
@@ -1193,6 +1394,174 @@ mod tests {
         let (response, _) = send(&f.router, Method::GET, &unknown_app, "/1.0.0/", &[]).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert_hardened(&response);
+    }
+
+    #[actix::test]
+    async fn video_and_xml_files_are_served_with_their_types() {
+        let f = fixture().await;
+        let html = add(&f.node_client, b"<p>v3</p>").await;
+        let webm = add(&f.node_client, b"webm").await;
+        let xml = add(&f.node_client, b"<a/>").await;
+        let files = vec![
+            ("frontend/index.html", html),
+            ("frontend/clip.webm", webm),
+            ("frontend/feed.xml", xml),
+        ];
+        publish(&f.store, "3.0.0", 3, files);
+
+        for (path, mime) in [
+            ("/3.0.0/clip.webm", "video/webm"),
+            ("/3.0.0/feed.xml", "application/xml"),
+        ] {
+            let (response, _) = get(&f, path).await;
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(header_of(&response, "content-type"), mime, "{path}");
+        }
+    }
+
+    #[actix::test]
+    async fn an_asset_below_a_deep_link_resolves_to_the_releases_own_file() {
+        let f = fixture().await;
+        let html = add(&f.node_client, b"<p>v3</p>").await;
+        let outer = add(&f.node_client, b"outer").await;
+        let inner = add(&f.node_client, b"inner").await;
+        let files = vec![
+            ("frontend/index.html", html),
+            ("frontend/assets/a.js", outer),
+            ("frontend/b/assets/a.js", inner),
+        ];
+        publish(&f.store, "3.0.0", 3, files);
+        let page = [("accept", "text/html")];
+
+        for (path, body) in [
+            ("/3.0.0/p/assets/a.js", &b"outer"[..]),
+            ("/3.0.0/p/q/assets/a.js", b"outer"),
+            ("/3.0.0/x/b/assets/a.js", b"inner"),
+            ("/1.0.0/p/app.js", b"v1();"),
+            ("/1.0.0/../2.0.0/app.js", b"v1();"),
+            ("/1.0.0/%2e%2e/2.0.0/app.js", b"v1();"),
+            ("/1.0.0/frontend/app.js", b"v1();"),
+        ] {
+            let (response, got) = get(&f, path).await;
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(got, body, "{path}");
+            assert_eq!(
+                header_of(&response, "content-type"),
+                "text/javascript; charset=utf-8"
+            );
+        }
+        let deep = "p/".repeat(20);
+        let thousands = "p/".repeat(5000);
+        for path in [
+            "/3.0.0/p/nothing.js".to_owned(),
+            "/3.0.0/p/app.js".to_owned(),
+            "/2.0.0/p/assets/a.js".to_owned(),
+            format!("/3.0.0/{deep}assets/a.js"),
+            format!("/3.0.0/{thousands}assets/a.js"),
+        ] {
+            let (response, _) = get(&f, &path).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path:.40}");
+        }
+        let (response, got) = send(&f.router, Method::GET, &f.host, "/3.0.0/p/q", &page).await;
+        assert_eq!(
+            (response.status(), got),
+            (StatusCode::OK, b"<p>v3</p>".to_vec())
+        );
+    }
+
+    #[actix::test]
+    async fn a_handler_keeps_the_content_security_policy_it_set() {
+        const SANDBOX: &str = "sandbox; default-src 'none'";
+        let f = fixture_with(true).await;
+        let hosts = AppHosts {
+            node_client: f.node_client.clone(),
+            origins: AppOrigins::new(&AppsConfig {
+                base_domain: BASE.to_owned(),
+                ..AppsConfig::default()
+            }),
+            app_api: true,
+        };
+        let router = Router::new()
+            .route(
+                "/{*rest}",
+                any(|| async { ([(header::CONTENT_SECURITY_POLICY, SANDBOX)], "blob") }),
+            )
+            .layer(from_fn_with_state(hosts, serve_app_hosts));
+
+        let (response, _) = send(
+            &router,
+            Method::GET,
+            &f.host,
+            "/admin-api/blobs/0123abcd",
+            &[],
+        )
+        .await;
+
+        assert_eq!(header_of(&response, "content-security-policy"), SANDBOX);
+        assert_eq!(header_of(&response, "x-content-type-options"), "nosniff");
+    }
+
+    #[actix::test]
+    async fn a_client_route_without_a_file_gets_the_entry_for_a_page_request() {
+        let f = fixture().await;
+        let html = [("accept", "text/html,application/xhtml+xml,*/*;q=0.8")];
+        let (entry, entry_body) = get(&f, "/1.0.0/").await;
+
+        for method in [Method::GET, Method::HEAD] {
+            for path in ["/1.0.0/a/b", "/1.0.0/a/", "/1.0.0/v1.2/page"] {
+                let (response, body) = send(&f.router, method.clone(), &f.host, path, &html).await;
+                assert_eq!(response.status(), StatusCode::OK, "{method} {path}");
+                let expected = if method == Method::GET {
+                    &entry_body[..]
+                } else {
+                    b""
+                };
+                assert_eq!(body, expected, "{method} {path}");
+                assert_eq!(header_of(&response, "vary"), "accept");
+                for name in ["content-type", "etag", "cache-control"] {
+                    assert_eq!(
+                        header_of(&response, name),
+                        header_of(&entry, name),
+                        "{name}"
+                    );
+                }
+                assert_hardened(&response);
+            }
+        }
+        let etag = header_of(&entry, "etag");
+        let revalidate = [("accept", "text/html"), ("if-none-match", etag)];
+        let (cached, _) = send(&f.router, Method::GET, &f.host, "/1.0.0/a/b", &revalidate).await;
+        assert_eq!(cached.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(header_of(&cached, "vary"), "accept");
+        assert!(entry.headers().get("vary").is_none());
+        let (file, _) = get(&f, "/1.0.0/app.js").await;
+        assert!(file.headers().get("vary").is_none());
+        let (other, body) = send(&f.router, Method::GET, &f.host, "/2.0.0/x", &html).await;
+        assert_eq!(body, b"<p>v2</p>");
+        assert_eq!(other.status(), StatusCode::OK);
+    }
+
+    #[actix::test]
+    async fn a_missing_asset_or_a_non_page_request_is_not_given_the_entry() {
+        let f = fixture().await;
+        let html = [("accept", "text/html")];
+        let json = [("accept", "application/json")];
+
+        for (path, headers) in [
+            ("/1.0.0/missing.js", &html[..]),
+            ("/1.0.0/a/b.png", &html[..]),
+            ("/1.0.0/a/b", &json[..]),
+            ("/1.0.0/a/b", &[][..]),
+            ("/9.9.9/a/b", &html[..]),
+        ] {
+            let (response, _) = send(&f.router, Method::GET, &f.host, path, headers).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+        let unknown_app = format!("{}.localhost", encode_label(&ApplicationId::from([9; 32])));
+        let (response, _) = send(&f.router, Method::GET, &unknown_app, "/1.0.0/a/b", &html).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let (post, _) = send(&f.router, Method::POST, &f.host, "/1.0.0/a/b", &html).await;
+        assert_eq!(post.status(), StatusCode::NOT_FOUND);
     }
 
     #[actix::test]
@@ -1252,102 +1621,6 @@ mod tests {
         assert!(!body.contains(&b'X'));
     }
 
-    async fn on_port(f: &Fixture, method: Method, uri: &str) -> (Response, Vec<u8>) {
-        send(&f.port_router, method, "127.0.0.1:2429", uri, &[]).await
-    }
-
-    #[actix::test]
-    async fn the_apps_port_serves_each_apps_files_under_its_label() {
-        let f = fixture().await;
-        let label = encode_label(&ApplicationId::from(APP));
-
-        let (page, html) = on_port(&f, Method::GET, &format!("/{label}/1.0.0/")).await;
-        let (_, js) = on_port(&f, Method::GET, &format!("/{label}/2.0.0/app.js")).await;
-        let (head, _) = on_port(&f, Method::HEAD, &format!("/{label}/1.0.0/app.js")).await;
-
-        assert_eq!(page.status(), StatusCode::OK);
-        assert_eq!((html, js), (b"<p>v1</p>".to_vec(), b"v2();".to_vec()));
-        assert_hardened(&page);
-        assert_eq!(header_of(&head, "content-length"), "5");
-    }
-
-    #[actix::test]
-    async fn the_apps_port_redirects_within_the_label() {
-        let f = fixture().await;
-        let label = encode_label(&ApplicationId::from(APP));
-
-        for (uri, to) in [
-            (format!("/{label}"), format!("/{label}/2.0.0/")),
-            (format!("/{label}/"), format!("/{label}/2.0.0/")),
-            (format!("/{label}/1.0.0"), format!("/{label}/1.0.0/")),
-        ] {
-            let (response, _) = on_port(&f, Method::GET, &uri).await;
-            assert_eq!(response.status(), StatusCode::FOUND, "{uri}");
-            assert_eq!(header_of(&response, "location"), to, "{uri}");
-            assert_hardened(&response);
-        }
-    }
-
-    #[actix::test]
-    async fn the_apps_port_serves_files_only() {
-        let paths = [
-            "/jsonrpc",
-            "/ws",
-            "/sse",
-            "/sse/subscribe",
-            "/auth/refresh",
-            "/auth/login",
-            "/auth/token",
-            "/admin-api",
-            "/admin-api/contexts",
-            "/admin-api/applications",
-        ];
-
-        for app_api in [false, true] {
-            let f = fixture_with(app_api).await;
-            for path in paths {
-                for method in [Method::GET, Method::POST, Method::DELETE] {
-                    let (response, body) = on_port(&f, method.clone(), path).await;
-                    assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {path}");
-                    assert!(
-                        str::from_utf8(&body).unwrap().contains("files only"),
-                        "{method} {path}"
-                    );
-                    assert_hardened(&response);
-                }
-            }
-        }
-    }
-
-    #[actix::test]
-    async fn the_apps_port_serves_nothing_else() {
-        let f = fixture().await;
-        let label = encode_label(&ApplicationId::from(APP));
-        let unknown = encode_label(&ApplicationId::from([9; 32]));
-        let paths = [
-            "/".to_owned(),
-            "/admin-dashboard".to_owned(),
-            "/health".to_owned(),
-            "/1.0.0/app.js".to_owned(),
-            format!("/{}/1.0.0/", non_canonical(&label)),
-            format!("/{unknown}/1.0.0/"),
-            format!("/{label}/9.9.9/"),
-            format!("/{label}/1.0.0/../2.0.0/app.js"),
-            format!("/{label}/1.0.0/%2e%2e/2.0.0/app.js"),
-        ];
-
-        for path in paths {
-            for method in [Method::GET, Method::POST] {
-                let (response, body) = on_port(&f, method.clone(), &path).await;
-                assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
-                assert!(body.is_empty(), "{path}");
-                assert_hardened(&response);
-            }
-        }
-        let (post, _) = on_port(&f, Method::POST, &format!("/{label}/1.0.0/app.js")).await;
-        assert_eq!(post.status(), StatusCode::NOT_FOUND);
-    }
-
     fn non_canonical(label: &str) -> String {
         let (head, last) = label.split_at(label.len() - 1);
         let next = BASE32[BASE32
@@ -1370,10 +1643,7 @@ mod tests {
     #[test]
     fn only_a_canonical_label_under_the_base_domain_is_an_app_origin() {
         let label = encode_label(&ApplicationId::from(APP));
-        let apps = AppsConfig {
-            port: Some(2429),
-            ..AppsConfig::default()
-        };
+        let apps = AppsConfig::default();
         let origins = AppOrigins::new(&apps);
         let base = &apps.base_domain;
 
@@ -1383,7 +1653,6 @@ mod tests {
             format!("calimero-app://{label}"),
             format!("http://calimero-app.{label}"),
             format!("https://calimero-app.{label}"),
-            "http://203.0.113.9:2429".to_owned(),
         ] {
             assert!(origins.is_app_origin(&origin), "{origin}");
         }
@@ -1393,7 +1662,7 @@ mod tests {
             format!("http://{label}.evil.example"),
             format!("http://{label}{base}"),
             format!("calimero-app://{}", non_canonical(&label)),
-            "http://203.0.113.9:2430".to_owned(),
+            "http://203.0.113.9:2429".to_owned(),
             "http://localhost:5173".to_owned(),
             "null".to_owned(),
         ] {

@@ -194,6 +194,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         created_at: 0,
                         auto_join: true,
                     };
+                    // Marked before the meta is written: a crash in between leaves
+                    // an orphan marker, which only refuses, never an unmarked hint.
+                    if target_application_id != calimero_primitives::application::ZERO_APPLICATION_ID {
+                        MetaRepository::new(&datastore).mark_target_unverified(&group_id)?;
+                    }
                     MetaRepository::new(&datastore).save(&group_id, &meta)?;
 
                     // The hint goes to its own node-local row, not to a
@@ -1690,6 +1695,52 @@ mod tests {
             .participating_namespaces()
             .expect("read participation")
             .contains(&group));
+    }
+
+    /// The invitation's application id is unsigned, so a join that seeds it as
+    /// the group's target leaves it marked until a signed op confirms it.
+    #[actix::test]
+    async fn a_joined_groups_target_is_unverified_until_a_signed_op_confirms_it() {
+        let group = ContextGroupId::from(GROUP);
+        let (store, outcome) = join_with_bundle(a_bundle_keyed_by(
+            &PrivateKey::from([0xD3; 32]),
+            &[0xE1; 32],
+        ))
+        .await;
+        assert!(outcome.is_ok(), "the join completes: {outcome:?}");
+
+        let metas = calimero_governance_store::MetaRepository::new(&store);
+        let seeded = metas
+            .load(&group)
+            .expect("read")
+            .expect("the join seeds meta");
+        assert_eq!(
+            seeded.target.application_id,
+            calimero_primitives::application::ApplicationId::from(APP)
+        );
+        assert!(metas.is_target_unverified(&group).expect("read"));
+    }
+
+    /// A join no member endorses still leaves the seeded meta behind, so the
+    /// marker has to be there for the hint it holds.
+    #[actix::test]
+    async fn a_refused_join_leaves_its_seeded_target_marked() {
+        let group = ContextGroupId::from(GROUP);
+        let store = a_store_with_a_joiner();
+        let harness = actor::over_refusing_joins(store.clone(), "not admitted").await;
+        let outcome = harness
+            .manager
+            .send(JoinGroupRequest {
+                invitation: an_invitation(group),
+                group_name: None,
+            })
+            .await
+            .expect("the manager answers");
+        assert!(outcome.is_err(), "the join is refused");
+
+        let metas = calimero_governance_store::MetaRepository::new(&store);
+        assert!(metas.load(&group).expect("read").is_some());
+        assert!(metas.is_target_unverified(&group).expect("read"));
     }
 
     /// A join every member refused carries the member's reason.
