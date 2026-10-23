@@ -773,6 +773,11 @@ pub enum ContextError {
         parent_id: String,
     },
 
+    /// A `400`: a subgroup, or a group pinned to a `bytecode_id`, has to name its
+    /// `application_id`; only the app-less account namespace goes without.
+    #[error("application_id is required for a subgroup and when bytecode_id is given")]
+    ApplicationRequired,
+
     /// A `400`: the `bytecode_id` a caller chose cannot be bound (zero, not an
     /// application bundle, or another package's bundle).
     #[error("{reason}")]

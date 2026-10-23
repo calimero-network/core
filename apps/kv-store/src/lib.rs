@@ -344,8 +344,20 @@ impl KvStore {
 #[cfg(test)]
 mod tests {
     use calimero_sdk::testing::TestHost;
+    use calimero_storage::testing::converge_app;
 
     use super::*;
+
+    #[test]
+    fn a_script_run_beside_test_host() {
+        converge_app(KvStore::init)
+            .replicas(2)
+            .ops(|s| {
+                let _ = s.set("a".into(), "1".into());
+            })
+            .invariant("the key is present", |s| s.len().unwrap_or(0) == 1)
+            .assert_all_replicas_equal();
+    }
 
     #[test]
     fn set_get_len_remove() {

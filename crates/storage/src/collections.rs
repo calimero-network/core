@@ -7,7 +7,6 @@ use core::fmt;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use std::collections::BTreeMap;
-use std::sync::LazyLock;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
@@ -1008,10 +1007,8 @@ impl<T: BorshDeserialize> BorshDeserialize for Entry<T> {
 #[expect(unused_qualifications, reason = "AtomicUnit macro is unsanitized")]
 type StoreResult<T> = std::result::Result<T, StoreError>;
 
-static ROOT_ID: LazyLock<Id> = LazyLock::new(Id::root);
-
 /// The fixed id under which an app's `Root<T>` value lives — a single
-/// child of [`ROOT_ID`]. Mirrors [`root::Root::entry_id`] but available
+/// child of the root id (`Id::root()`). Mirrors [`root::Root::entry_id`] but available
 /// at module scope so the merge dispatch in `interface.rs` can
 /// recognise it without picking a concrete `T`.
 ///
@@ -1034,7 +1031,7 @@ static ROOT_ID: LazyLock<Id> = LazyLock::new(Id::root);
 pub const ROOT_ENTRY_ID: Id = Id::new([118; 32]);
 
 /// Whether `id` addresses the app's root state — either the canonical
-/// `ROOT_ID` (system root) or the `Root<T>` entry (the WASM app's
+/// `Id::root()` (system root) or the `Root<T>` entry (the WASM app's
 /// serialised root-state container).
 ///
 /// Both ids share the same merge path: their content is the app's
@@ -1144,7 +1141,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         if id.is_root() {
             let _ignored = <Interface<S>>::save(&mut this).expect("save");
         } else {
-            let _ = <Interface<S>>::add_child_to(*ROOT_ID, &mut this).expect("add child");
+            let _ = <Interface<S>>::add_child_to(Id::root(), &mut this).expect("add child");
         }
 
         this
@@ -1205,7 +1202,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             let _ignored = <Interface<S>>::save(&mut this).expect("save");
             this.materialized.set(true);
         } else if parent_id.is_none() {
-            let _ = <Interface<S>>::add_child_to(*ROOT_ID, &mut this).expect("add child");
+            let _ = <Interface<S>>::add_child_to(Id::root(), &mut this).expect("add child");
             this.materialized.set(true);
         }
 
@@ -1227,7 +1224,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             // A handle deserialized from its owner's bytes is clean, and
             // `add_child_to` writes nothing for a clean element.
             self.storage.is_dirty = true;
-            let _ = <Interface<S>>::add_child_to(*ROOT_ID, self)?;
+            let _ = <Interface<S>>::add_child_to(Id::root(), self)?;
         }
         self.materialized.set(true);
         Ok(())
@@ -1322,7 +1319,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         let _ignored = S::storage_remove(Key::Index(old_id));
 
         // Remove old child reference from ROOT (without creating tombstone)
-        let _ = <Index<S>>::remove_child_reference_only(*ROOT_ID, old_id);
+        let _ = <Index<S>>::remove_child_reference_only(Id::root(), old_id);
 
         // Broadcast a tombstone for the old id when re-keying a NESTED collection
         // (`parent_id.is_some()`). Such a collection was created on-demand with a
@@ -1349,7 +1346,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         self.storage.metadata.crdt_type = Some(crdt_type);
 
         // Add the collection with new ID to ROOT
-        let _ = <Interface<S>>::add_child_to(*ROOT_ID, self)
+        let _ = <Interface<S>>::add_child_to(Id::root(), self)
             .expect("failed to add collection with new ID");
         self.materialized.set(true);
     }

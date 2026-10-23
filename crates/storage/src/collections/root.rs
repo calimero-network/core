@@ -18,7 +18,7 @@ use core::fmt;
 use std::cell::OnceCell;
 use std::ops::{Deref, DerefMut};
 
-use super::{Collection, StoreError, ROOT_ENTRY_ID, ROOT_ID};
+use super::{Collection, StoreError, ROOT_ENTRY_ID};
 use crate::address::Id;
 use crate::delta::StorageDelta;
 use crate::index::DeferredAncestorScope;
@@ -72,7 +72,7 @@ where
     /// Creates a new root collection with the given value.
     #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     pub fn new_internal<F: FnOnce() -> T>(f: F) -> Self {
-        let mut inner = Collection::new(Some(*ROOT_ID));
+        let mut inner = Collection::new(Some(Id::root()));
 
         let id = Self::entry_id();
 

@@ -247,6 +247,59 @@ mod tests {
         store
     }
 
+    async fn identity_body(store: &Store) -> serde_json::Value {
+        let _identity = NamespaceRepository::new(store)
+            .participate_in(&NS.into())
+            .expect("mint the node's signing identity");
+        let (state, _blob_dir) = crate::test_support::admin_state(store).await;
+        let response = handler(Extension(state)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        serde_json::from_slice(&body).expect("a json body")
+    }
+
+    /// The handler reads the account namespace outside `node_identity`, so only
+    /// a call through it sees the field.
+    #[actix::test]
+    async fn a_holder_reports_its_account_namespace_id() {
+        let store = a_node_taking_part_somewhere();
+        let root = NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("root");
+        let namespace = root.account_namespace();
+
+        let body = identity_body(&store).await;
+
+        assert_eq!(
+            body["data"]["accountNamespaceId"],
+            hex::encode(namespace.to_bytes())
+        );
+    }
+
+    /// A node paired into another account that has not followed its namespace
+    /// yet omits the field rather than reporting a derived id it takes no part in.
+    #[actix::test]
+    async fn a_node_following_no_account_namespace_omits_the_field() {
+        let store = a_node_taking_part_somewhere();
+        let _adopted = NodeDeviceRepository::new(&store)
+            .ensure_enrolled_into(
+                &[ContextGroupId::from(NS)],
+                AccountGenesis::new(PrivateKey::from([0x51; 32]).public_key()),
+            )
+            .expect("pair into another account");
+
+        let body = identity_body(&store).await;
+
+        assert!(
+            body["data"]
+                .get("accountNamespaceId")
+                .is_none_or(|id| id.is_null()),
+            "{body}"
+        );
+    }
+
     /// A node that has taken part in nothing has no device and no root, and there
     /// is nothing to report - a 404 rather than a made-up id.
     #[test]
