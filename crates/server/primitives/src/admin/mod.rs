@@ -5306,3 +5306,164 @@ mod revoked_devices_wire_tests {
         );
     }
 }
+
+/// The most methods one access grant may name. A grant is meant to name the few
+/// calls a third party needs, not to stand in for a node token.
+pub const MAX_ACCESS_GRANT_METHODS: usize = 32;
+/// The longest method name an access grant accepts.
+pub const MAX_ACCESS_GRANT_METHOD_LEN: usize = 128;
+/// The longest label an access grant accepts.
+pub const MAX_ACCESS_GRANT_LABEL_LEN: usize = 128;
+
+/// `POST /admin-api/contexts/:context_id/grants` — let whoever holds the
+/// returned token call these methods in this context, as this node.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateAccessGrantApiRequest {
+    /// The methods the holder may call. Each is a bare method name
+    /// (`[A-Za-z0-9_]`), so it can never widen the permission string it becomes.
+    pub methods: Vec<String>,
+    /// The grantor's own note, for listing. Never shown to the holder.
+    #[serde(default)]
+    pub label: String,
+    /// Unix seconds after which the grant is refused. Absent: until revoked.
+    #[serde(default)]
+    pub not_after: Option<u64>,
+}
+
+impl Validate for CreateAccessGrantApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.methods.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "methods" });
+        }
+        if self.methods.len() > MAX_ACCESS_GRANT_METHODS {
+            errors.push(ValidationError::ValueTooLarge {
+                field: "methods",
+                max: MAX_ACCESS_GRANT_METHODS as u64,
+                actual: self.methods.len() as u64,
+            });
+        }
+        for method in &self.methods {
+            if !is_grantable_method_name(method) {
+                errors.push(ValidationError::InvalidFormat {
+                    field: "methods",
+                    reason: format!(
+                        "'{method}' is not a method name: 1 to {MAX_ACCESS_GRANT_METHOD_LEN} \
+                         characters of [A-Za-z0-9_]"
+                    ),
+                });
+            }
+        }
+        errors.extend(validate_string_length(
+            &self.label,
+            "label",
+            MAX_ACCESS_GRANT_LABEL_LEN,
+        ));
+        errors
+    }
+}
+
+/// Whether `method` can be named in an access grant.
+///
+/// Narrower than what an application may export, on purpose: each name becomes
+/// `context:execute[<context>,,<method>]`, and a `,` or `]` in it would be read
+/// as the permission's own syntax.
+#[must_use]
+pub fn is_grantable_method_name(method: &str) -> bool {
+    !method.is_empty()
+        && method.len() <= MAX_ACCESS_GRANT_METHOD_LEN
+        && method
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// One access grant, as its grantor sees it. The token is never in here: it is
+/// returned once, by the create call, and this node keeps only its hash.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessGrantApiData {
+    /// Hex. What revoking the grant names.
+    pub grant_id: String,
+    pub methods: Vec<String>,
+    pub label: String,
+    /// Unix seconds.
+    pub created_at: u64,
+    /// Unix seconds; absent means until revoked.
+    pub not_after: Option<u64>,
+}
+
+/// What the create call returns: the grant, and the one copy of its token.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedAccessGrantApiData {
+    #[serde(flatten)]
+    pub grant: AccessGrantApiData,
+    /// Hex. The credential the holder presents. This node stores only its
+    /// hash, so it cannot be shown again.
+    pub token: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAccessGrantApiResponse {
+    pub data: CreatedAccessGrantApiData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAccessGrantsApiResponse {
+    pub data: Vec<AccessGrantApiData>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeAccessGrantApiResponseData {
+    pub grant_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeAccessGrantApiResponse {
+    pub data: RevokeAccessGrantApiResponseData,
+}
+
+/// `POST /admin-api/contexts/:context_id/grant-calls` — call one method under
+/// an access grant. The token is the whole credential.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccessGrantCallApiRequest {
+    /// Hex, as the create call returned it.
+    pub token: String,
+    /// The method to call; one the grant names.
+    pub method: String,
+    /// Its arguments, as the JSON the guest will receive.
+    pub args_json: serde_json::Value,
+}
+
+impl Validate for AccessGrantCallApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.token.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "token" });
+        }
+        if self.method.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "method" });
+        }
+        errors
+    }
+}
+
+/// What a granted call returned.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessGrantCallApiResponseData {
+    /// The method's own return value.
+    pub returns: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessGrantCallApiResponse {
+    pub data: AccessGrantCallApiResponseData,
+}

@@ -74,6 +74,7 @@ fn app(
         )
         .route("/admin-api/groups/{group_id}/context-intents", post(echo))
         .route("/admin-api/namespaces/{namespace_id}/admit", post(echo))
+        .route("/admin-api/contexts/{context_id}/grant-calls", post(echo))
         .route(
             "/admin-api/groups/{group_id}/governance-intents",
             post(echo),
@@ -1122,6 +1123,12 @@ async fn delegated_execution_is_reachable_sealed_only_where_it_is_public() {
     let (status, body) = sealed_call(&transport, "POST", &admit, b"join").await;
     assert_eq!(status, 200, "a signed join carries its own authorization");
     assert_eq!(body, b"join");
+
+    // So is a call under an access grant: the token in the body is the credential.
+    let grant_call = format!("/admin-api/contexts/{CONTEXT}/grant-calls");
+    let (status, body) = sealed_call(&transport, "POST", &grant_call, b"call").await;
+    assert_eq!(status, 200, "a grant's token carries its own authorization");
+    assert_eq!(body, b"call");
 }
 
 #[test]
@@ -1145,6 +1152,7 @@ fn the_uncredentialed_scope_matches_paths_exactly() {
         format!("/admin-api/groups/{CONTEXT}/context-intents"),
         format!("/admin-api/groups/{CONTEXT}/governance-intents"),
         format!("/admin-api/namespaces/{CONTEXT}/admit"),
+        format!("/admin-api/contexts/{CONTEXT}/grant-calls"),
     ] {
         assert!(root.allows_inner(&allowed), "{allowed}");
     }
@@ -1191,6 +1199,10 @@ fn the_uncredentialed_scope_matches_paths_exactly() {
         format!("/admin-api/namespaces/{CONTEXT}/join"),
         format!("/admin-api/namespaces/{CONTEXT}/admin"),
         "/admin-api/namespaces/../admit".to_owned(),
+        // Managing grants needs a node token; only the call is uncredentialed.
+        format!("/admin-api/contexts/{CONTEXT}/grants"),
+        format!("/admin-api/contexts/{CONTEXT}/grant-calls/"),
+        format!("/admin-api/contexts/{}/grant-calls", &CONTEXT[1..]),
         "/jsonrpc".to_owned(),
         "/auth/token".to_owned(),
     ] {

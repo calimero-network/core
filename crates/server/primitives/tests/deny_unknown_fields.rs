@@ -33,6 +33,8 @@ fn every_request_body_is_a_closed_set() {
         admin::UpdateContextApplicationRequest,
         admin::PerformIntentApiRequest,
         admin::QueryContextApiRequest,
+        admin::CreateAccessGrantApiRequest,
+        admin::AccessGrantCallApiRequest,
         admin::ResyncContextApiRequest,
         admin::CreateGroupApiRequest,
         admin::DeleteGroupApiRequest,

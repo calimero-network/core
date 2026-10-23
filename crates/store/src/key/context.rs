@@ -926,6 +926,75 @@ impl Debug for ContextBlob {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct AccessGrantId;
+
+impl KeyComponent for AccessGrantId {
+    type LEN = U32;
+}
+
+/// One access grant this node holds for a context: `context_id(32) ‖
+/// grant_id(32)`, in the node-local [`Column::ContextAccessGrant`].
+///
+/// The grant id is a hash of the grant's secret, so a presented secret is
+/// looked up rather than compared, and the secret itself is never stored.
+/// Context first so a deleted context's grants go with one prefix delete.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextAccessGrant(Key<(ContextId, AccessGrantId)>);
+
+impl ContextAccessGrant {
+    #[must_use]
+    pub fn new(context_id: PrimitiveContextId, grant_id: [u8; 32]) -> Self {
+        Self(Key(
+            GenericArray::from(*context_id).concat(GenericArray::from(grant_id))
+        ))
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        let mut context_id = [0; 32];
+        context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
+        context_id.into()
+    }
+
+    #[must_use]
+    pub fn grant_id(&self) -> [u8; 32] {
+        let mut grant_id = [0; 32];
+        grant_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
+        grant_id
+    }
+}
+
+impl AsKeyParts for ContextAccessGrant {
+    type Components = (ContextId, AccessGrantId);
+
+    fn column() -> Column {
+        Column::ContextAccessGrant
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for ContextAccessGrant {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for ContextAccessGrant {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextAccessGrant")
+            .field("context_id", &self.context_id())
+            .field("grant_id", &self.grant_id())
+            .finish()
+    }
+}
+
 /// Key for a unified causal-log op (cutover C2): `scope(32) ‖ op_id(32)`, in the
 /// [`Column::UnifiedOp`] column. The prefix is the op's **scope** (a
 /// `calimero_op::ScopeId`'s 32 bytes — a namespace root for governance ops, a
