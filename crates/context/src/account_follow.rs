@@ -859,9 +859,16 @@ where
             return;
         }
     };
-    match account_is_member(store, namespace) {
-        Ok(false) => {}
-        Ok(true) => return,
+    let left = folded_here(store, namespace).and_then(|folded| {
+        if folded {
+            account_is_member(store, namespace).map(|member| !member)
+        } else {
+            Ok(false)
+        }
+    });
+    match left {
+        Ok(true) => {}
+        Ok(false) => return,
         Err(err) => {
             warn!(
                 ?err,
@@ -1637,6 +1644,7 @@ mod tests {
         let _identity = NamespaceRepository::new(&store)
             .participate_in(&left)
             .expect("take part");
+        folded(&store, left);
         calimero_governance_store::register_context_in_group(&store, &left, &context)
             .expect("register");
         let state = [[0x9C; 32].to_vec(), vec![1; 32]].concat();
@@ -1675,6 +1683,12 @@ mod tests {
         let _identity = NamespaceRepository::new(store)
             .participate_in(&namespace)
             .expect("take part");
+        namespace
+    }
+
+    fn a_folded_namespace(store: &Store, seed: u8) -> ContextGroupId {
+        let namespace = a_held_namespace(store, seed);
+        folded(store, namespace);
         namespace
     }
 
@@ -1769,8 +1783,8 @@ mod tests {
         let store = store();
         let (account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[]);
         let (kept, sentinel) = (
-            a_held_namespace(&store, 0x97),
-            a_held_namespace(&store, 0x98),
+            a_folded_namespace(&store, 0x97),
+            a_folded_namespace(&store, 0x98),
         );
         MembershipRepository::new(&store)
             .add_member(&kept, &this_nodes_account(&store), GroupMemberRole::Member)
@@ -1799,13 +1813,51 @@ mod tests {
         );
     }
 
+    /// A device that follows a namespace but has not synced its governance reads no
+    /// member row as "not synced yet", so the purge waits for the fold instead.
+    #[actix::test]
+    async fn a_waiting_purge_ignores_a_namespace_not_yet_folded() {
+        let store = store();
+        let (account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[]);
+        let (unsynced, sentinel) = (
+            a_held_namespace(&store, 0xB1),
+            a_held_namespace(&store, 0xB2),
+        );
+        folded(&store, sentinel);
+
+        let harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        purge_announced(&store, account_namespace, unsynced);
+        purge_announced(&store, account_namespace, sentinel);
+        let sentinel_gone = eventually(|| {
+            MetaRepository::new(&store)
+                .load(&sentinel)
+                .unwrap()
+                .is_none()
+        })
+        .await;
+        listener.abort();
+
+        assert!(sentinel_gone, "the folded sentinel was purged after it");
+        assert!(
+            MetaRepository::new(&store)
+                .load(&unsynced)
+                .unwrap()
+                .is_some(),
+            "an unsynced namespace is not purged"
+        );
+        assert!(PendingNamespacePurges::new(&store)
+            .is_armed(&unsynced)
+            .unwrap());
+    }
+
     /// The purge op can reach a sibling before the `MemberLeft` it follows. It
     /// waits for it instead of being dropped.
     #[actix::test]
     async fn a_purge_that_arrives_before_the_leave_waits_for_it() {
         let store = store();
         let (account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[]);
-        let left = a_held_namespace(&store, 0x99);
+        let left = a_folded_namespace(&store, 0x99);
         let account = this_nodes_account(&store);
         MembershipRepository::new(&store)
             .add_member(&left, &account, GroupMemberRole::Member)
@@ -1813,7 +1865,7 @@ mod tests {
 
         let harness = actor::over(store.clone()).await;
         let listener = listen(&store, &harness);
-        let sentinel = a_held_namespace(&store, 0x9A);
+        let sentinel = a_folded_namespace(&store, 0x9A);
         purge_announced(&store, account_namespace, left);
         purge_announced(&store, account_namespace, sentinel);
         assert!(
@@ -1852,14 +1904,14 @@ mod tests {
     async fn a_purge_waiting_for_the_leave_is_done_after_a_restart() {
         let store = store();
         let (account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[]);
-        let left = a_held_namespace(&store, 0x9B);
+        let left = a_folded_namespace(&store, 0x9B);
         let account = this_nodes_account(&store);
         MembershipRepository::new(&store)
             .add_member(&left, &account, GroupMemberRole::Member)
             .expect("the account is a member");
         let harness = actor::over(store.clone()).await;
         let listener = listen(&store, &harness);
-        let sentinel = a_held_namespace(&store, 0xA8);
+        let sentinel = a_folded_namespace(&store, 0xA8);
         purge_announced(&store, account_namespace, left);
         purge_announced(&store, account_namespace, sentinel);
         assert!(
@@ -1896,8 +1948,8 @@ mod tests {
         let store = store();
         let (account_namespace, signer_sk) = an_account_folding_ops(&store);
         let (held, sentinel) = (
-            a_held_namespace(&store, 0xA3),
-            a_held_namespace(&store, 0xA4),
+            a_folded_namespace(&store, 0xA3),
+            a_folded_namespace(&store, 0xA4),
         );
         let account = this_nodes_account(&store);
         MembershipRepository::new(&store)
@@ -1947,8 +1999,8 @@ mod tests {
         let store = store();
         let (account_namespace, signer_sk) = an_account_folding_ops(&store);
         let (held, sentinel) = (
-            a_held_namespace(&store, 0xA5),
-            a_held_namespace(&store, 0xA6),
+            a_folded_namespace(&store, 0xA5),
+            a_folded_namespace(&store, 0xA6),
         );
         let account = this_nodes_account(&store);
         MembershipRepository::new(&store)
@@ -1997,7 +2049,7 @@ mod tests {
     async fn a_purge_folded_after_the_removal_purges_at_once() {
         let store = store();
         let (account_namespace, signer_sk) = an_account_folding_ops(&store);
-        let left = a_held_namespace(&store, 0xA7);
+        let left = a_folded_namespace(&store, 0xA7);
         let harness = actor::over(store.clone()).await;
         let listener = listen(&store, &harness);
         fold(&store, account_namespace, &signer_sk, purge_op(left));
@@ -2042,8 +2094,8 @@ mod tests {
         let store = store();
         let (account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[]);
         let (held, sentinel) = (
-            a_held_namespace(&store, 0xAA),
-            a_held_namespace(&store, 0xAB),
+            a_folded_namespace(&store, 0xAA),
+            a_folded_namespace(&store, 0xAB),
         );
         let harness = actor::over(store.clone()).await;
         let (tx, rx) = tokio::sync::broadcast::channel(2);
@@ -2099,8 +2151,8 @@ mod tests {
         // This node's device covers app 0x11 only; the namespace targets app 0x22.
         let (account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[app(0x11)]);
         let (held, sentinel) = (
-            a_held_namespace(&store, 0xA1),
-            a_held_namespace(&store, 0xA2),
+            a_folded_namespace(&store, 0xA1),
+            a_folded_namespace(&store, 0xA2),
         );
         for namespace in [held, sentinel] {
             let mut meta = MetaRepository::new(&store)
