@@ -519,6 +519,7 @@ request re-stamps it.
   Everything else is `404`, and any other `/admin-api` route is `403` with a short plain-text body.
   Keep it that way: never route an app host to a handler that is not a frontend file, the app API or a route of the allowlist below.
   Under `sealed.required` the layer is not mounted at all, so an app host cannot get around the envelope.
+  A `Host` whose first label is 52 lowercase base32 characters but which is not exactly that name (one trailing dot allowed) answers `404` (`AppHosts::is_foreign_label_host`), so a label under a domain someone else controls never reaches the node's routes.
 - A `GET` or `HEAD` under `/{version}/` that names no indexed file, has no `.` in its last segment and whose `Accept` includes `text/html` is answered with the release's entry (`app_host::is_client_route`), so a single-page app's routes survive a reload and carries `Vary: Accept`.
   Any other path that matches no file is retried with leading segments dropped (`app_host::relative_tails`, longest first, at most `MAX_STRIPPED_SEGMENTS` of them), so an entry built with a relative base loads its assets on a deep link; only files of the same release are served, and no match stays `404`.
 - An app calls the node at its own `window.location.origin`, because its content security policy is `default-src 'self'`.

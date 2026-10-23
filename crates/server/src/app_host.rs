@@ -110,11 +110,19 @@ impl AppOrigins {
         }
     }
 
-    /// The app whose host is exactly `{label}.{base_domain}`.
+    /// The app whose host is exactly `{label}.{base_domain}`, with at most one
+    /// trailing dot, which names the same host.
     fn app_at(&self, host: &str) -> Option<ApplicationId> {
         let host = host.to_ascii_lowercase();
+        let host = host.strip_suffix('.').unwrap_or(&host);
         decode_label(host.strip_suffix(&self.base_domain)?.strip_suffix('.')?)
     }
+}
+
+/// The lowercase host name of a `Host` header, port left off.
+fn host_name(headers: &HeaderMap) -> Option<String> {
+    let host = headers.get(header::HOST)?.to_str().ok()?;
+    Some(host.parse::<Authority>().ok()?.host().to_ascii_lowercase())
 }
 
 fn split_origin(origin: &str) -> Option<(String, Authority)> {
@@ -163,8 +171,17 @@ impl AppHosts {
 
     /// The app a `Host` header names: exactly `{label}.{base_domain}`.
     fn app_for(&self, headers: &HeaderMap) -> Option<ApplicationId> {
-        let host = headers.get(header::HOST)?.to_str().ok()?;
-        self.origins.app_at(host.parse::<Authority>().ok()?.host())
+        self.origins.app_at(&host_name(headers)?)
+    }
+
+    /// Whether a `Host` header names a label's shape under any other domain, which
+    /// the node must not answer as its own host.
+    fn is_foreign_label_host(headers: &HeaderMap) -> bool {
+        host_name(headers).is_some_and(|host| {
+            host.split('.').next().is_some_and(|first| {
+                first.len() == LABEL_LEN && first.bytes().all(|b| BASE32.contains(&b))
+            })
+        })
     }
 
     /// Answers `path`, relative to the app's root.
@@ -287,6 +304,9 @@ pub(crate) async fn serve_app_hosts(
     next: Next,
 ) -> Response {
     let Some(app) = hosts.app_for(request.headers()) else {
+        if AppHosts::is_foreign_label_host(request.headers()) {
+            return status(StatusCode::NOT_FOUND);
+        }
         return next.run(request).await;
     };
     if let Some(login) = AppHosts::login_redirect(&request) {
@@ -1215,11 +1235,12 @@ mod tests {
         let hosts = [
             "localhost:2428".to_owned(),
             "127.0.0.1:2428".to_owned(),
-            format!("{label}.other.example"),
-            format!("{}.localhost", non_canonical(&label)),
             format!("x.{label}.localhost"),
             format!("{label}localhost"),
             "short.localhost".to_owned(),
+            format!("{}.other.example", &label[1..]),
+            format!("{label}a.other.example"),
+            format!("{}1.other.example", &label[1..]),
         ];
 
         for host in hosts {
@@ -1228,6 +1249,55 @@ mod tests {
             assert_eq!(response.status(), StatusCode::OK, "{host}");
             assert_eq!(body, b"normal router", "{host}");
         }
+    }
+
+    #[actix::test]
+    async fn a_label_shaped_host_that_is_not_an_app_host_is_404() {
+        let f = fixture_with(true).await;
+        let label = encode_label(&ApplicationId::from(APP));
+        let hosts = [
+            format!("{label}.other.example"),
+            format!("{label}.other.example:2428"),
+            format!("{}.other.example", label.to_ascii_uppercase()),
+            format!("{label}.localhost.other.example"),
+            format!("{}.localhost", non_canonical(&label)),
+            format!("{label}.localhost.evil.example."),
+            label.clone(),
+        ];
+
+        for host in hosts {
+            for path in ["/metrics", "/admin-api/health", "/jsonrpc"] {
+                let (response, body) = send(&f.router, Method::POST, &host, path, &[]).await;
+                assert_eq!(response.status(), StatusCode::NOT_FOUND, "{host} {path}");
+                assert_ne!(body, b"normal router", "{host} {path}");
+                assert_ne!(body, b"app api", "{host} {path}");
+                assert_hardened(&response);
+            }
+        }
+    }
+
+    #[actix::test]
+    async fn a_trailing_dot_on_the_host_names_the_same_app() {
+        let f = fixture().await;
+        let label = encode_label(&ApplicationId::from(APP));
+
+        for host in [
+            format!("{label}.localhost.:2428"),
+            format!("{label}.LOCALHOST."),
+        ] {
+            let (response, body) = send(&f.router, Method::GET, &host, "/1.0.0/", &[]).await;
+            assert_eq!(response.status(), StatusCode::OK, "{host}");
+            assert_eq!(body, b"<p>v1</p>", "{host}");
+        }
+        let (response, _) = send(
+            &f.router,
+            Method::GET,
+            &format!("{label}.localhost..:2428"),
+            "/1.0.0/",
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "one dot only");
     }
 
     #[actix::test]
