@@ -280,6 +280,15 @@ mod tests {
         Store::new(Arc::new(InMemoryDB::owned()))
     }
 
+    /// Give the node its account root once start-up has found none, so it holds a
+    /// root without the account namespace that start-up creates for a holder.
+    async fn hold_root_after_start(store: &Store) {
+        tokio::task::yield_now().await;
+        NodeDeviceRepository::new(store)
+            .provision_account_root()
+            .expect("this node's account root");
+    }
+
     /// What a peer's pull brings back: the group rows, the key and this node's
     /// own membership. The flag says the removal was still marked when it landed.
     fn land_state_soon(store: &Store, namespace: ContextGroupId) -> Arc<AtomicBool> {
@@ -377,10 +386,8 @@ mod tests {
     #[actix::test]
     async fn a_removed_namespace_is_followed_again_and_its_marker_lifted() {
         let store = store();
-        NodeDeviceRepository::new(&store)
-            .provision_account_root()
-            .expect("this node's account root");
         let mut harness = actor::over(store.clone()).await;
+        hold_root_after_start(&store).await;
         let namespace = removed(&store);
         let marked_until_landed = land_state_soon(&store, namespace);
 
@@ -406,10 +413,8 @@ mod tests {
     #[actix::test]
     async fn a_restored_namespace_has_its_contexts_followed_again() {
         let store = store();
-        NodeDeviceRepository::new(&store)
-            .provision_account_root()
-            .expect("this node's account root");
         let harness = actor::over(store.clone()).await;
+        hold_root_after_start(&store).await;
         let namespace = removed(&store);
         let mut events = calimero_governance_store::op_events::subscribe();
         let _marked = land_state_soon(&store, namespace);
@@ -488,10 +493,8 @@ mod tests {
     #[actix::test]
     async fn a_namespace_never_joined_is_not_found() {
         let store = store();
-        NodeDeviceRepository::new(&store)
-            .provision_account_root()
-            .expect("this node's account root");
         let mut harness = actor::over(store.clone()).await;
+        hold_root_after_start(&store).await;
         let namespace = ContextGroupId::from(NS);
 
         let err = rejoin(&harness, namespace)
@@ -509,10 +512,8 @@ mod tests {
     #[actix::test]
     async fn a_rejoin_whose_subscribe_fails_leaves_the_namespace_removed() {
         let store = store();
-        NodeDeviceRepository::new(&store)
-            .provision_account_root()
-            .expect("this node's account root");
         let (mut harness, gate) = actor::over_holding_subscribe(store.clone(), topic()).await;
+        hold_root_after_start(&store).await;
         gate.close();
         let namespace = removed(&store);
 
@@ -529,10 +530,8 @@ mod tests {
     #[actix::test]
     async fn a_rejoin_whose_state_never_lands_leaves_the_namespace_removed() {
         let store = store();
-        NodeDeviceRepository::new(&store)
-            .provision_account_root()
-            .expect("this node's account root");
         let harness = actor::over(store.clone()).await;
+        hold_root_after_start(&store).await;
         let namespace = removed(&store);
 
         let err = rejoin(&harness, namespace)
@@ -559,10 +558,8 @@ mod tests {
     #[actix::test]
     async fn a_second_rejoin_waits_for_the_first_and_keeps_the_follow() {
         let store = store();
-        NodeDeviceRepository::new(&store)
-            .provision_account_root()
-            .expect("this node's account root");
         let harness = actor::over(store.clone()).await;
+        hold_root_after_start(&store).await;
         let namespace = removed(&store);
         let _marked = land_state_after(&store, namespace, Duration::from_millis(1100));
 
@@ -584,10 +581,8 @@ mod tests {
     #[actix::test]
     async fn a_restore_that_times_out_after_the_marker_was_cleared_keeps_the_follow() {
         let store = store();
-        NodeDeviceRepository::new(&store)
-            .provision_account_root()
-            .expect("this node's account root");
         let harness = actor::over(store.clone()).await;
+        hold_root_after_start(&store).await;
         let namespace = removed(&store);
         let cleared = store.clone();
         actix::spawn(async move {
@@ -671,10 +666,8 @@ mod tests {
     #[actix::test]
     async fn rejoining_a_namespace_this_node_is_in_is_a_no_op_success() {
         let store = store();
-        NodeDeviceRepository::new(&store)
-            .provision_account_root()
-            .expect("this node's account root");
         let harness = actor::over(store.clone()).await;
+        hold_root_after_start(&store).await;
         let created = harness
             .manager
             .send(CreateGroupRequest {
@@ -716,10 +709,8 @@ mod tests {
     #[actix::test]
     async fn the_application_lists_a_removed_namespace_until_it_is_restored() {
         let store = store();
-        NodeDeviceRepository::new(&store)
-            .provision_account_root()
-            .expect("this node's account root");
         let harness = actor::over(store.clone()).await;
+        hold_root_after_start(&store).await;
         let namespace = removed(&store);
         land_state_soon(&store, namespace);
         ForgottenNamespaces::new(&store)
@@ -849,10 +840,8 @@ mod tests {
     #[actix::test]
     async fn a_member_removed_by_an_admin_is_not_restored() {
         let store = store();
-        NodeDeviceRepository::new(&store)
-            .provision_account_root()
-            .expect("this node's account root");
         let mut harness = actor::over(store.clone()).await;
+        hold_root_after_start(&store).await;
         let namespace = removed(&store);
         land_exit_soon(&store, namespace, move |store, _identity, account| {
             MembershipRepository::new(store)
@@ -870,10 +859,8 @@ mod tests {
     #[actix::test]
     async fn a_deny_listed_member_is_not_restored() {
         let store = store();
-        NodeDeviceRepository::new(&store)
-            .provision_account_root()
-            .expect("this node's account root");
         let mut harness = actor::over(store.clone()).await;
+        hold_root_after_start(&store).await;
         let namespace = removed(&store);
         land_exit_soon(&store, namespace, move |store, _identity, account| {
             MembershipRepository::new(store)
@@ -891,10 +878,8 @@ mod tests {
     #[actix::test]
     async fn a_device_revoked_in_the_namespace_is_not_restored() {
         let store = store();
-        NodeDeviceRepository::new(&store)
-            .provision_account_root()
-            .expect("this node's account root");
         let mut harness = actor::over(store.clone()).await;
+        hold_root_after_start(&store).await;
         let namespace = removed(&store);
         land_exit_soon(&store, namespace, move |store, identity, _account| {
             let bindings = AccountBindingRepository::new(store);
@@ -922,10 +907,8 @@ mod tests {
     #[actix::test]
     async fn an_account_that_left_the_namespace_is_not_found_and_nothing_is_followed() {
         let store = store();
-        NodeDeviceRepository::new(&store)
-            .provision_account_root()
-            .expect("this node's account root");
         let mut harness = actor::over(store.clone()).await;
+        hold_root_after_start(&store).await;
         let created = harness
             .manager
             .send(CreateGroupRequest {
