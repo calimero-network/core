@@ -345,8 +345,24 @@ fn is_client_route(rest: &str, headers: &HeaderMap) -> bool {
         .get_all(header::ACCEPT)
         .iter()
         .filter_map(|value| value.to_str().ok())
-        .any(|value| value.to_ascii_lowercase().contains("text/html"));
+        .any(accepts_html);
     wants_page && !last.contains('.')
+}
+
+/// Whether an `Accept` value lists `text/html` itself with a nonzero `q` (RFC 9110 12.5.1).
+fn accepts_html(accept: &str) -> bool {
+    accept.split(',').any(|range| {
+        let mut parts = range.split(';').map(str::trim);
+        parts
+            .next()
+            .is_some_and(|media| media.eq_ignore_ascii_case("text/html"))
+            && parts.all(|param| match param.split_once('=') {
+                Some((name, q)) if name.trim().eq_ignore_ascii_case("q") => {
+                    q.trim().parse::<f32>().is_ok_and(|q| q > 0.0)
+                }
+                _ => true,
+            })
+    })
 }
 
 /// What `rest` names once leading segments are dropped, longest first and at most
@@ -531,7 +547,7 @@ fn matches_etag(headers: &HeaderMap, etag: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::ADMIN_REFUSED;
+    use super::{accepts_html, ADMIN_REFUSED};
     use core::str;
     use std::sync::Arc;
 
@@ -1086,6 +1102,25 @@ mod tests {
                 send(&f.router, method.clone(), &f.host, "/auth/refresh", &[]).await;
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method}");
             assert_ne!(body, b"app api", "{method}");
+        }
+    }
+
+    #[test]
+    fn only_an_accept_listing_html_as_acceptable_asks_for_a_page() {
+        for (accept, page) in [
+            ("text/html", true),
+            ("TEXT/HTML", true),
+            ("text/html,application/xhtml+xml,*/*;q=0.8", true),
+            ("application/json, text/html ; q=0.5", true),
+            ("text/html;level=1", true),
+            ("text/html;q=0", false),
+            ("text/html; q=0.000", false),
+            ("application/x-text/html-fragment", false),
+            ("text/htmlx", false),
+            ("*/*", false),
+            ("", false),
+        ] {
+            assert_eq!(accepts_html(accept), page, "{accept}");
         }
     }
 
