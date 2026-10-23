@@ -49,11 +49,10 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountDeviceApiEntry>>> {
     let bindings = AccountBindingRepository::new(store);
 
     let mut by_device: BTreeMap<DeviceId, Draft> = BTreeMap::new();
-    let account_namespace = devices.account_namespace()?;
 
     // Replicated, so a device that is not the holder sees every sibling here.
     // Unfiltered on purpose: a revoked device is reported as revoked, not hidden.
-    if let Some(namespace) = account_namespace {
+    if let Some(namespace) = devices.account_namespace()? {
         let registry = AccountDeviceRegistry::new(store, namespace);
         for cert in registry.all_devices()? {
             let _replaced = by_device.insert(
@@ -70,11 +69,7 @@ fn collect(store: &Store) -> EyreResult<Option<Vec<AccountDeviceApiEntry>>> {
         }
     }
 
-    // Not the account namespace: the namespace listing never shows it either.
     for namespace in NamespaceRepository::new(store).participating_namespaces()? {
-        if Some(namespace) == account_namespace {
-            continue;
-        }
         for binding in bindings.devices_of(&namespace, account)? {
             by_device
                 .entry(binding.device)
@@ -321,39 +316,6 @@ mod tests {
             .find(|entry| entry.device_id == device)
             .expect("the revoked device is still reported");
         assert!(entry.revoked);
-    }
-
-    /// The namespace listing never shows the account namespace, so a device bound
-    /// there must not name it either: the two lists are read together.
-    #[test]
-    fn the_account_namespace_is_not_listed_among_a_devices_namespaces() {
-        let (store, root) = seeded_account();
-        let account_namespace = NodeDeviceRepository::new(&store)
-            .account_namespace()
-            .expect("read")
-            .expect("a holder names an account namespace");
-        NamespaceRepository::new(&store)
-            .note_participation(&account_namespace)
-            .expect("join the account namespace, as creation does");
-        NamespaceRepository::new(&store)
-            .note_participation(&ns(NS_A))
-            .expect("join an ordinary namespace");
-        let device = DeviceId::mint(
-            AccountGenesis::new(root.public_key()).account_id(),
-            [0x99; 16],
-        );
-        let sign_pk = PrivateKey::from([0x9A; 32]).public_key();
-        for namespace in [account_namespace, ns(NS_A)] {
-            bind(&store, &root, &namespace, device, &sign_pk);
-        }
-
-        let entries = collect(&store).expect("collect").expect("has account");
-
-        let entry = entries
-            .iter()
-            .find(|entry| entry.device_id == device)
-            .expect("the bound device is reported");
-        assert_eq!(entry.namespaces, vec![hex::encode(NS_A)]);
     }
 
     /// The account namespace participates like any other in production, so a
