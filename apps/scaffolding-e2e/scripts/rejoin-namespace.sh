@@ -17,12 +17,7 @@ command -v jq >/dev/null || fail "jq is required to read the answer"
 
 URL=$(node_url "${NODE}") || fail "could not resolve ${NODE}'s URL"
 
-LOGIN=$(curl -sS -X POST "${URL}/auth/token" \
-    -H 'Content-Type: application/json' \
-    -d "$(printf '{"auth_method":"user_password","public_key":"rejoin-namespace","client_name":"%s","timestamp":%s,"provider_data":{"username":"%s","password":"%s"}}' \
-        "${URL}" "$(date +%s)" "${MERO_AUTH_ADMIN_USER:-dev}" "${MERO_AUTH_ADMIN_PASSWORD:-dev-password}")")
-TOKEN=$(echo "${LOGIN}" | jq -r '.data.access_token // .access_token // empty')
-[ -n "${TOKEN}" ] || fail "the operator could not log in: ${LOGIN}"
+TOKEN=$(operator_token "${URL}" rejoin-namespace) || exit 1
 
 # A refusal is awaited: the leave that causes it reaches this node by sync.
 ATTEMPTS=1
