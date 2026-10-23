@@ -29,9 +29,9 @@ pub use calimero_primitives::context::GroupMemberRole;
 use component::KeyComponents;
 pub use context::{
     ContextAccessGrant, ContextActivatedBytecode, ContextActivatedStateVersion,
-    ContextAuthoredRemaining, ContextBlob,
-    ContextConfig, ContextDagDelta, ContextExecutingBytecode, ContextIdentity, ContextLeftMarker,
-    ContextMeta, ContextMigrationFailed, ContextPrivateState, ContextResyncRequested, ContextState,
+    ContextAuthoredRemaining, ContextBlob, ContextConfig, ContextDagDelta,
+    ContextExecutingBytecode, ContextIdentity, ContextLeftMarker, ContextMeta,
+    ContextMigrationFailed, ContextPrivateState, ContextResyncRequested, ContextState,
     ContextWarrantNonce, NamespaceForgotten, ScopeUnifiedOp, NAMESPACE_FORGOTTEN_KEY_LEN,
     NAMESPACE_FORGOTTEN_PREFIX, STATE_KEY_LEN,
 };

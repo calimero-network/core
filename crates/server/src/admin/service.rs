@@ -28,11 +28,10 @@ use crate::admin::handlers::applications::{
 };
 use crate::admin::handlers::context::{
     access_grants, create_context, create_context_intent, delete_context, get_context,
-    get_context_group,
-    get_context_identities, get_context_ids, get_context_storage, get_contexts_for_application,
-    get_contexts_with_executors_for_application, governance_intent, intent_relay, join_context,
-    leave_context, perform_intent, presence_intent, query_context, resync_context, sync,
-    update_context_application,
+    get_context_group, get_context_identities, get_context_ids, get_context_storage,
+    get_contexts_for_application, get_contexts_with_executors_for_application, governance_intent,
+    intent_relay, join_context, leave_context, perform_intent, presence_intent, query_context,
+    resync_context, sync, update_context_application,
 };
 use crate::admin::handlers::identity::{
     acknowledge_revoked_from, generate_context_identity, get_node_identity,

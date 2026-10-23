@@ -131,7 +131,11 @@ fn api_data(grant_id: [u8; 32], grant: types::ContextAccessGrant) -> AccessGrant
 /// With no permissions handed over, no guard ran on this node (proxy mode
 /// without `X-Auth-Permissions`), and the proxy is what decided this caller may
 /// be here, as on every other route.
-fn may_grant(granted: Option<&GrantedPermissions>, context_id: &ContextId, methods: &[String]) -> bool {
+fn may_grant(
+    granted: Option<&GrantedPermissions>,
+    context_id: &ContextId,
+    methods: &[String],
+) -> bool {
     granted.is_none_or(|granted| {
         methods
             .iter()
@@ -376,7 +380,10 @@ pub async fn call_handler(
 
     // One clock, on the one node the grant binds: nothing has converged yet,
     // so a wall-clock bound means the same thing to everyone it can affect.
-    if grant.not_after.is_some_and(|not_after| now_secs() > not_after) {
+    if grant
+        .not_after
+        .is_some_and(|not_after| now_secs() > not_after)
+    {
         return refuse(StatusCode::FORBIDDEN, "this access grant has expired");
     }
 

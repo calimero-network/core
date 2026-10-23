@@ -100,9 +100,8 @@ static CONTEXT_READ_SUBRESOURCE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
-static CONTEXT_ACCESS_GRANTS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^/admin-api/contexts/([^/]+)/grants(?:/[^/]+)?$").unwrap()
-});
+static CONTEXT_ACCESS_GRANTS_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/grants(?:/[^/]+)?$").unwrap());
 
 static CONTEXT_MEMBERSHIP_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/(join|leave|resync)$").unwrap());
