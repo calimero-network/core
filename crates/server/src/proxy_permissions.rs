@@ -34,6 +34,7 @@ use axum::response::{IntoResponse, Response};
 use mero_auth::auth::bindings::ClientKeyBindings;
 use tracing::warn;
 
+use crate::app_host::AppApi;
 use crate::auth::{ClientKeyScope, GrantedPermissions};
 
 /// The token's permissions, comma-joined, as mero-auth's `/auth/validate`
@@ -96,6 +97,10 @@ pub(crate) async fn inject(mut request: Request<Body>, next: Next) -> Response {
     let _previous = request.headers_mut().remove(&PERMISSIONS_HEADER);
 
     match permissions {
+        // An app host's request is held to the app, so it needs the proxy's word.
+        Ok(None) if request.extensions().get::<AppApi>().is_some() => {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
         Ok(None) => {}
         Ok(Some(permissions)) => {
             let bindings = ClientKeyBindings::from_permissions(&permissions);

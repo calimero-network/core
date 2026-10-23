@@ -2,7 +2,9 @@ use crate::{MembershipRepository, MetaError};
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
-use calimero_store::key::{ContextMeta, GroupMeta, GroupMetaValue, GROUP_META_PREFIX};
+use calimero_store::key::{
+    ContextMeta, GroupMeta, GroupMetaValue, GroupTargetUnverified, GROUP_META_PREFIX,
+};
 use calimero_store::Store;
 use eyre::{eyre, Result as EyreResult};
 use sha2::{Digest, Sha256};
@@ -44,6 +46,28 @@ impl<'a> MetaRepository<'a> {
         let mut handle = self.store.handle();
         let key = GroupMeta::new(group_id.to_bytes());
         handle.delete(&key)?;
+        handle.delete(&GroupTargetUnverified::new(group_id.to_bytes()))?;
+        Ok(())
+    }
+
+    /// Whether the group's target application is only an invitation's unsigned
+    /// hint: no signed op has confirmed it. Node-local; absent means verified.
+    pub fn is_target_unverified(&self, group_id: &ContextGroupId) -> EyreResult<bool> {
+        Ok(self
+            .store
+            .handle()
+            .has(&GroupTargetUnverified::new(group_id.to_bytes()))?)
+    }
+
+    pub fn mark_target_unverified(&self, group_id: &ContextGroupId) -> EyreResult<()> {
+        let key = GroupTargetUnverified::new(group_id.to_bytes());
+        self.store.handle().put(&key, &())?;
+        Ok(())
+    }
+
+    pub fn clear_target_unverified(&self, group_id: &ContextGroupId) -> EyreResult<()> {
+        let key = GroupTargetUnverified::new(group_id.to_bytes());
+        self.store.handle().delete(&key)?;
         Ok(())
     }
 

@@ -55,7 +55,7 @@ pub(crate) async fn refuse_out_of_scope(
                 |raw| {
                     parse_group_id(raw).is_ok_and(|id| {
                         if changes {
-                            scope.permits_group_change(store, &id)
+                            scope.permits_subtree_change(store, &id)
                         } else {
                             scope.permits_group(store, &id)
                         }
