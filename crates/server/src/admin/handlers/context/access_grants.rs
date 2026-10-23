@@ -387,7 +387,7 @@ pub async fn call_handler(
         return refuse(StatusCode::FORBIDDEN, "this access grant has expired");
     }
 
-    if !grant.methods.iter().any(|method| *method == req.method) {
+    if !grant.methods.contains(&req.method) {
         warn!(%context_id, grant_id = %hex::encode(grant_id), method = %req.method, "refusing a method the access grant does not name");
         return refuse(
             StatusCode::FORBIDDEN,
