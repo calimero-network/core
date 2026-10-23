@@ -28,7 +28,8 @@ pub use blobs::{BlobMeta, BlobOwner, BundleFrontend, PrefetchedBlob};
 pub use calimero_primitives::context::GroupMemberRole;
 use component::KeyComponents;
 pub use context::{
-    ContextActivatedBytecode, ContextActivatedStateVersion, ContextAuthoredRemaining, ContextBlob,
+    ContextAccessGrant, ContextActivatedBytecode, ContextActivatedStateVersion,
+    ContextAuthoredRemaining, ContextBlob,
     ContextConfig, ContextDagDelta, ContextExecutingBytecode, ContextIdentity, ContextLeftMarker,
     ContextMeta, ContextMigrationFailed, ContextPrivateState, ContextResyncRequested, ContextState,
     ContextWarrantNonce, NamespaceForgotten, ScopeUnifiedOp, NAMESPACE_FORGOTTEN_KEY_LEN,

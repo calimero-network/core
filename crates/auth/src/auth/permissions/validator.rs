@@ -100,6 +100,10 @@ static CONTEXT_READ_SUBRESOURCE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+static CONTEXT_ACCESS_GRANTS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^/admin-api/contexts/([^/]+)/grants(?:/[^/]+)?$").unwrap()
+});
+
 static CONTEXT_MEMBERSHIP_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/(join|leave|resync)$").unwrap());
 
@@ -477,6 +481,32 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
                     UserScope::Any,
                     None,
                 ))],
+                _ => vec![],
+            };
+        }
+    }
+
+    // Access grants: issue, list and revoke the tokens that let a third party
+    // call named methods in this context, as this node.
+    //
+    // `Execute` on the context, with no method: a grant lets its holder run
+    // calls, so issuing one asks for the authority it hands on. A token scoped
+    // to some methods passes this route check, and the handler then refuses a
+    // grant naming any method that token may not call itself, so a grant can
+    // only narrow. The call route (`/grant-calls`) is left to the default-deny:
+    // merod serves it without a credential, the token in its body being the
+    // credential, and a proxy in front exempts that path instead.
+    if let Some(captures) = CONTEXT_ACCESS_GRANTS_REGEX.captures(path) {
+        if let Some(ctx_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![ctx_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::GET | HttpMethod::POST | HttpMethod::DELETE => {
+                    vec![Permission::Context(ContextPermission::Execute(
+                        scope,
+                        UserScope::Any,
+                        None,
+                    ))]
+                }
                 _ => vec![],
             };
         }
@@ -1528,6 +1558,50 @@ mod tests {
         // first one.
         assert!(validator.validate_permissions(&["context:intent[ctx-1]".to_owned()], &required));
         assert!(validator.validate_permissions(&["admin".to_owned()], &required));
+    }
+
+    /// Managing access grants asks for `context:execute` on that context, not
+    /// `admin`: an app's own bound token issues the grants it hands out. The
+    /// call route is left to the default-deny, because merod serves it without
+    /// a credential and a proxy exempts it.
+    #[test]
+    fn managing_access_grants_asks_for_execute_on_the_context() {
+        let validator = PermissionValidator::new();
+
+        for (method, uri) in [
+            (Method::POST, "/admin-api/contexts/ctx-1/grants"),
+            (Method::GET, "/admin-api/contexts/ctx-1/grants"),
+            (Method::DELETE, "/admin-api/contexts/ctx-1/grants/abcd"),
+        ] {
+            let request = Request::builder()
+                .method(method.clone())
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&request);
+            assert!(
+                validator.validate_permissions(&["context:execute[ctx-1]".to_owned()], &required),
+                "{method} {uri}: {required:?}"
+            );
+            assert!(
+                !validator.validate_permissions(&["context:execute[ctx-2]".to_owned()], &required),
+                "{method} {uri} reached from another context"
+            );
+            assert!(
+                !validator.validate_permissions(&["context:intent[ctx-1]".to_owned()], &required),
+                "{method} {uri} reached by an intent token"
+            );
+        }
+
+        let call = Request::builder()
+            .method(Method::POST)
+            .uri("/admin-api/contexts/ctx-1/grant-calls")
+            .body(Body::empty())
+            .unwrap();
+        assert!(matches!(
+            validator.determine_required_permissions(&call).as_slice(),
+            [Permission::Admin(_)]
+        ));
     }
 
     /// Discovery must reach the same token that submits.

@@ -316,6 +316,15 @@ covers the token path.
 
 `POST /admin-api/contexts/{id}/presence-intents` (`admin/handlers/context/presence_intent.rs`) is how an account with no node publishes ephemeral presence. It sits on the public `delegated_execution_routes()` router with the other intents routes: the device's signature over the `PresenceStatement` is the credential, and the certificate in `authorProof` ties the device to its account. The handler only rebuilds the update (the context from the path, the author from the certificate's key, so a client cannot name another) and hands it to `NodeClient::publish_delegated_ephemeral`, which makes every decision. Each `DelegatedPresenceError` has its own status (`status_for`). It is not `/intents`: presence runs nothing, spends no warrant nonce and changes no state.
 
+## Access grants
+
+`admin/handlers/context/access_grants.rs`. A node issues a token whose holder may call named methods in one context, as the node, with no session: `POST/GET /admin-api/contexts/{id}/grants`, `DELETE .../grants/{grant_id}` (protected, mapped to `context:execute[<ctx>]`), and `POST .../grant-calls` (public on every node, `access_grant_routes()`, sealable under proxy mode). The call runs through `execute_request` as `CallerIdentity::NodeOwner` with `GrantedPermissions` built from the grant's methods, so `may_execute` refuses an unnamed method a second time past the handler. Four rules:
+
+- **A grant only narrows.** `may_grant`: every method it names must pass `may_execute` against the issuer's own token. The same predicate filters the listing and gates revoke (a grant the token could not have issued is a `404`), so a method-scoped token cannot list or revoke others' grants. An account session is refused on all three, since a granted call runs as the node.
+- **No secret is stored.** The row (`key::ContextAccessGrant`, `context ‖ domain_hash(token)`) is looked up by the hash of the presented token. The token is in the create answer once. An unknown and a revoked token get one message.
+- **Method names are `[A-Za-z0-9_]` only** (`is_grantable_method_name`), because each becomes `context:execute[<ctx>,,<method>]` and a `,` or `]` would be read as permission syntax.
+- **`notAfter` is judged on this node's clock**, which is sound only because a grant binds this node alone and nothing about it reaches the wire.
+
 ## Direct admission
 
 `POST /admin-api/namespaces/{id}/admit` (`admin/handlers/namespaces/admit_join.rs`) publishes a join a keyholder with no node signed. It sits on the public router on every node (`admission_routes()` in `admin/service.rs`), not behind `delegated_access`: its caller holds a device key and an invitation and nothing on this node, the joiner's signature is the authorization, and the inviter's signed `admitters` list is this node's consent. Gating it on the relay flag would make a peer-to-peer join cloud-only.

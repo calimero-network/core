@@ -13,7 +13,7 @@ pub use application::{
 };
 pub use blobs::{BlobMeta, BundleFrontend, FrontendFile};
 pub use context::{
-    ContextActivatedBytecode, ContextActivatedStateVersion, ContextAuthoredRemaining,
+    ContextAccessGrant, ContextActivatedBytecode, ContextActivatedStateVersion, ContextAuthoredRemaining,
     ContextConfig, ContextDagDelta, ContextExecutingBytecode, ContextIdentity, ContextLeftMarker,
     ContextMeta, ContextMigrationFailed, ContextPrivateState, ContextState, ContextWarrantNonce,
     NamespaceForgotten, ScopeUnifiedOp,

@@ -219,6 +219,17 @@ pub enum Column {
     /// id and a hash of the version (see `key::ApplicationRelease`). Node-local,
     /// not synchronized.
     ApplicationRelease,
+    /// Access grants this node issued for a context, keyed `context_id(32) ‖
+    /// grant_id(32)` (see `key::ContextAccessGrant`): a holder of the grant's
+    /// secret may call the listed methods in that context, as this node.
+    ///
+    /// **Node-local and deliberately not synchronized.** A grant is this node's
+    /// own consent to run calls as its own identity; no peer can honour one, and
+    /// shipping the rows would tell every member who this node let in. Its own
+    /// column because the 64-byte `context_id`-prefixed key would collide with
+    /// `ContextLeftMarker` in `ContextLocal`. Dropped with the context by
+    /// `delete_context`. Auto-created from `Column::iter()` (no DB migration).
+    ContextAccessGrant,
 }
 
 /// Table-file accounting for a whole store, summed over every column family

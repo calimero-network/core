@@ -27,7 +27,8 @@ use crate::admin::handlers::applications::{
     list_application_versions, list_applications, uninstall_application,
 };
 use crate::admin::handlers::context::{
-    create_context, create_context_intent, delete_context, get_context, get_context_group,
+    access_grants, create_context, create_context_intent, delete_context, get_context,
+    get_context_group,
     get_context_identities, get_context_ids, get_context_storage, get_contexts_for_application,
     get_contexts_with_executors_for_application, governance_intent, intent_relay, join_context,
     leave_context, perform_intent, presence_intent, query_context, resync_context, sync,
@@ -254,6 +255,16 @@ pub(crate) fn setup(
         .route(
             "/contexts/{context_id}/query",
             post(query_context::handler),
+        )
+        // Access grants this node issues for a context. Managing them needs a
+        // node token; calling under one is the public `access_grant_routes`.
+        .route(
+            "/contexts/{context_id}/grants",
+            post(access_grants::create_handler).get(access_grants::list_handler),
+        )
+        .route(
+            "/contexts/{context_id}/grants/{grant_id}",
+            delete(access_grants::revoke_handler),
         )
         // Identity management
         .route(
@@ -551,6 +562,8 @@ pub(crate) fn setup(
         .nest("/tee", tee::service())
         // On every node, whatever `delegated_access` says; see `admission_routes`.
         .merge(admission_routes())
+        // On every node too; see `access_grant_routes`.
+        .merge(access_grant_routes())
         .merge(if admin_config.delegated_access {
             info!(
                 "Delegated execution is served publicly: a warrant is the credential on \
@@ -630,6 +643,20 @@ fn admission_routes() -> Router {
     Router::new().route(
         "/namespaces/{namespace_id}/admit",
         post(namespaces::admit_join::handler),
+    )
+}
+
+/// Calling a method under an access grant this node issued.
+///
+/// Public on every node, and not behind `delegated_access`: the caller is a third
+/// party holding a token and nothing on this node, so the token is the whole
+/// credential. A node that issued no grant refuses every call after one hash and
+/// one point read, so serving the route grants nothing until an operator issues
+/// one. See `access_grants` for what a grant lets its holder do.
+fn access_grant_routes() -> Router {
+    Router::new().route(
+        "/contexts/{context_id}/grant-calls",
+        post(access_grants::call_handler),
     )
 }
 
