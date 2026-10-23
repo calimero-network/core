@@ -41,13 +41,14 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use tower::ServiceExt as _;
 
-use super::GROUP_REFUSAL;
+use super::{APPLICATION_REFUSAL, CONTEXT_REFUSAL, GROUP_REFUSAL};
 use crate::admin::service::{setup, AdminConfig};
 use crate::app_host::{encode_label, serve_app_hosts, AppHosts, AppOrigins};
 use crate::config::{AppsConfig, ServerConfig};
 use crate::service_mounts::with_optional_auth;
 use crate::{AdminState, NodeReadiness};
 
+const BINDING_REFUSALS: [&str; 3] = [CONTEXT_REFUSAL, GROUP_REFUSAL, APPLICATION_REFUSAL]; // a 403 from the key's binding, not the app host
 const NAMESPACE: [u8; 32] = [0xc1; 32]; // the namespace the join tests target
 
 const APP_TOKEN: &[&str] = &[
@@ -1903,7 +1904,7 @@ async fn an_app_origin_reaches_the_widened_routes_for_its_own_resources_only() {
             .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method} {theirs}: {body}");
         assert!(
-            body.to_string().contains("not permitted"),
+            BINDING_REFUSALS.contains(&body["error"].as_str().unwrap_or_default()),
             "{method} {theirs} is refused by the binding, not the host: {body}"
         );
     }
