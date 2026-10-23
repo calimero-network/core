@@ -6,7 +6,8 @@ use calimero_context_client::group::CreateGroupRequest;
 use calimero_context_client::local_governance::AckRouter;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
-    AccountDeviceRegistry, AccountRoot, MetaRepository, NamespaceRepository, NodeDeviceRepository,
+    placeholder_admin_identity, AccountDeviceRegistry, AccountRoot, MetaRepository,
+    NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -90,6 +91,13 @@ async fn record_holder_device(
     .await;
 }
 
+/// Whether genesis has run: a seeded row still naming the placeholder admin is not a namespace.
+pub(crate) fn is_established(store: &Store, namespace_id: &ContextGroupId) -> EyreResult<bool> {
+    Ok(MetaRepository::new(store)
+        .load(namespace_id)?
+        .is_some_and(|meta| meta.admin_identity != placeholder_admin_identity()))
+}
+
 /// Answers `None` on a node that is not the holder of its account.
 pub(crate) async fn ensure_account_namespace(
     store: &Store,
@@ -102,7 +110,7 @@ pub(crate) async fn ensure_account_namespace(
     let namespace_id = root.account_namespace();
 
     devices.store_account_namespace(&namespace_id)?;
-    let exists = MetaRepository::new(store).load(&namespace_id)?.is_some();
+    let exists = is_established(store, &namespace_id)?;
 
     // Resolved here because the node's signing key is a singleton, so the
     // identity this mints is the one `create_group` will find.
@@ -136,7 +144,7 @@ pub(crate) async fn ensure_account_namespace(
                 created.group_id
             ),
             // Losing the race to a concurrent first pairing is not an error.
-            Err(_) if MetaRepository::new(store).load(&namespace_id)?.is_some() => {}
+            Err(_) if is_established(store, &namespace_id)? => {}
             Err(err) => return Err(err),
         }
 
@@ -184,13 +192,14 @@ mod tests {
     use calimero_account::AccountGenesis;
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{
-        AccountDeviceRegistry, AccountNamespaceSet, MembershipRepository, MetaRepository,
-        NamespaceFoundingRepository, NamespaceRepository, NodeDeviceRepository,
+        placeholder_admin_identity, AccountDeviceRegistry, AccountNamespaceSet,
+        MembershipRepository, MetaRepository, NamespaceFoundingRepository, NamespaceRepository,
+        NodeDeviceRepository,
     };
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
-    use calimero_store::key::{GroupAccountDevice, GroupTarget};
+    use calimero_store::key::{GroupAccountDevice, GroupMetaValue, GroupTarget};
     use calimero_store::Store;
 
     use super::ensure_account_namespace;
@@ -231,6 +240,43 @@ mod tests {
             .expect("read")
             .expect("the namespace exists");
         assert_eq!(meta.target, GroupTarget::default());
+    }
+
+    /// A seeded but ungenesised row is not a namespace: it must not suppress
+    /// creation, or every op published into it fails the at-cut Admin gate.
+    #[actix::test]
+    async fn a_placeholder_meta_row_does_not_count_as_created() {
+        let store = holder_store();
+        let namespace = NodeDeviceRepository::new(&store)
+            .account_root()
+            .expect("read")
+            .expect("root")
+            .account_namespace();
+        let placeholder = placeholder_admin_identity();
+        MetaRepository::new(&store)
+            .save(
+                &namespace,
+                &GroupMetaValue {
+                    target: GroupTarget::default(),
+                    created_at: 0,
+                    admin_identity: placeholder,
+                    owner_identity: placeholder,
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("seed the placeholder row");
+
+        let harness = actor::over(store.clone()).await;
+        let _ = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("the ensure runs");
+
+        let meta = MetaRepository::new(&store)
+            .load(&namespace)
+            .expect("read")
+            .expect("the namespace exists");
+        assert_ne!(meta.admin_identity, placeholder, "creation was skipped");
     }
 
     /// The account namespace is founded like any other: its id derives from

@@ -1079,6 +1079,7 @@ fn group_lifecycle_refusal_status(
         | Refusal::InvitationInvalid { .. }
         | Refusal::TeePolicyInvalid { .. }
         | Refusal::OwnershipProofInvalid { .. }
+        | Refusal::ApplicationRequired
         | Refusal::BytecodeIdInvalid { .. } => StatusCode::BAD_REQUEST,
         Refusal::UpgradeNotFound { .. } => StatusCode::NOT_FOUND,
         Refusal::UpgradeInProgress { .. }
@@ -2613,6 +2614,7 @@ mod parse_api_error_tests {
                     },
                     StatusCode::BAD_REQUEST,
                 ),
+                (ContextError::ApplicationRequired, StatusCode::BAD_REQUEST),
                 (
                     ContextError::BytecodeNotInstalled {
                         blob_id: "b1".to_owned(),
