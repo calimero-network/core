@@ -91,7 +91,7 @@ src/
 │   ├── events.rs             # SSE events
 │   ├── handlers.rs           # SSE handlers
 │   └── ...
-├── app_host.rs               # App frontends served from `{label}.{base_domain}` and the apps port, and the origins app pages run from
+├── app_host.rs               # App frontends served from `{label}.{base_domain}` and the origins app pages run from
 ├── auth.rs                   # Authentication middleware
 ├── proxy_permissions.rs      # Proxy mode: X-Auth-Permissions → GrantedPermissions
 ├── sealed.rs                 # Sealed transport: /sealed/v2 envelope, wraps the router
@@ -541,12 +541,7 @@ request re-stamps it.
   A token bound to a context of another application then matches nothing, and a node-owner or account session is narrowed like a bound client key, so the scope-aware checks (`refuse_out_of_scope`, `list_scope`, `refuse_target_outside_binding`, `refuse_join_outside_binding`, the `/jsonrpc` and `/ws` context checks) apply to it.
   Never mount a route behind the guard by another path: the binding lives in `with_auth_guard`.
 - An app's page runs on `{label}.{base_domain}`, which is a loopback name for `base_domain = localhost`, so an app is third-party code that must not count as a loopback page.
-  `app_host::AppOrigins::is_app_origin` names such an origin, any page on the apps port, which shares one origin for every app, and the desktop app's `calimero-app://{label}` and `http(s)://calimero-app.{label}`: `OriginGuard::admits` never treats it as a loopback page, and `origin_guard::refuse_app_origins` answers `403` to it on every route in every auth mode.
-  Never re-expose the apps port under a loopback name on a different port (a reverse proxy, a port forward): its pages would no longer be recognised as app origins and would pass as loopback pages.
-- `[server.apps] port` binds a second listener on each `listen` address, served by `app_host::serve_apps_port`: `/{label}/{version}/{path}` and the redirects, and `404` for every other path.
-  It serves files only: `/jsonrpc`, `/ws`, `/sse`, `/auth/*` and `/admin-api/*` answer `403` with a plain-text body, because its apps share one origin and have no identity to bind a token to, and the login page is not redirected from there.
-  It is not bound under `sealed.required`, and `start` refuses a port equal to any `listen` port.
-  Use the subdomain where `{label}.{base_domain}` resolves and the port where it does not (Safari, a remote node by IP), for pages that need no API.
+  `app_host::AppOrigins::is_app_origin` names such an origin, and the desktop app's `calimero-app://{label}` and `http(s)://calimero-app.{label}`: `OriginGuard::admits` never treats it as a loopback page, and `origin_guard::refuse_app_origins` answers `403` to it on every route in every auth mode.
 - An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.
 - In proxy auth mode, `origin_guard::OriginGuard::admits` judges every HTTP request a browser
   sent: one with `Origin` or `Sec-Fetch-Site` (a same-origin `GET` has no `Origin`). Never

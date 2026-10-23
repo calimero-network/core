@@ -132,28 +132,6 @@ pub struct AppsConfig {
     /// would put every app under a name anyone can register.
     #[serde(deserialize_with = "deserialize_base_domain")]
     pub base_domain: String,
-    /// Serve every app from this port too, at `/{label}/{version}/{path}`, for
-    /// clients that cannot resolve `{label}.{base_domain}`.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_apps_port"
-    )]
-    pub port: Option<u16>,
-}
-
-/// Port 0 binds an ephemeral port that no page's `Origin` can be matched to, and a
-/// browser leaves out 80 and 443, which would make every default-port origin an app's.
-fn deserialize_apps_port<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<u16>, D::Error> {
-    match Option::<u16>::deserialize(deserializer)? {
-        Some(0) => Err(serde::de::Error::custom("apps port must not be 0")),
-        Some(port @ (80 | 443)) => Err(serde::de::Error::custom(format!(
-            "apps port must not be {port}, the default port of a web origin"
-        ))),
-        port => Ok(port),
-    }
 }
 
 fn deserialize_base_domain<'de, D: serde::Deserializer<'de>>(
@@ -172,7 +150,6 @@ impl Default for AppsConfig {
     fn default() -> Self {
         Self {
             base_domain: DEFAULT_APPS_BASE_DOMAIN.to_owned(),
-            port: None,
         }
     }
 }

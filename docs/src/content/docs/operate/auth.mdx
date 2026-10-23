@@ -324,7 +324,6 @@ A join of a namespace the node does not hold yet is allowed when the invitation'
 Every other admin route answers `403` on an app's origin.
 Login is never served there: `GET /auth/login` on an app host answers `302` to the node's own login page with the same query and port, so it stays a navigation to the node's own origin.
 An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.
-Apps on the shared apps port have one origin and no API: it serves files only and answers `403` on every API path, `/auth/login` included.
 Proxy deployments get no app API for now, and a reverse proxy in front must forward the original `Host` (`proxy_set_header Host $host` for nginx).
 The desktop webview origins (`calimero-app://...`) cannot use the app API from the node and go through the desktop app instead.
 

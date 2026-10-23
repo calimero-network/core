@@ -140,20 +140,7 @@ A node that sets `[server.sealed] required` mounts no app host, because a browse
 A page on an app's origin is third-party code, so the node answers it `403` on every route of its own, in every auth mode, and never counts it as a loopback page.
 A file also carries its `Content-Type`, an `ETag` of its blob id (answered with `304` on a match) and `Cache-Control: public, max-age=31536000, immutable`.
 
-#### The apps port and app origins
-
-A browser that cannot resolve `{label}.{base_domain}` cannot open an app's own origin.
-Safari does not resolve wildcard `localhost` subdomains, and a remote node reached by IP has no name to put a label under.
-For those, set `[server.apps] port`, which binds a second listener on each address the node listens on.
-It serves `/{label}/{version}/{path}` with the same files and headers, redirects `/{label}/` to the current version and `/{label}/{version}` to `/{label}/{version}/`, and answers `404` for everything else.
-`/jsonrpc`, `/ws`, `/sse`, `/auth` and `/admin-api` answer `403` there, because the app API needs an origin of the app's own.
-Every app on that port shares one origin with the others, and that origin is never the dashboard's.
-It is not bound when `[server.sealed] required` is set.
-Port 0, 80 and 443 are refused: a browser leaves out 80 and 443, so every default-port origin would be an app's, the node's own dashboard included.
-
-Use the subdomain wherever it resolves, because it gives each app an origin of its own.
-Use the port only where it does not, and only for pages that need no API, because apps on it can read each other's storage.
-The node refuses to start when `[server.apps] port` equals the port of one of its `listen` addresses.
+#### App origins
 
 An app's page calls the node at `window.location.origin`, because its content security policy allows requests to its own origin only.
 On an app host the node passes `/jsonrpc`, `/ws`, `/sse`, `/sse/...`, `POST /auth/refresh` and `GET` or `HEAD /auth/validate` to its normal handlers, so auth applies as on the node's own host.
@@ -182,10 +169,9 @@ A reverse proxy in front must forward the original `Host` (`proxy_set_header Hos
 The desktop webview origins (`calimero-app://...`) cannot use the app API from the node and go through the desktop app instead.
 A login page is never served there, because an app's script could read what the user types.
 `GET /auth/login` on an app host answers `302` to the node's own login page with the same query and port: the host without its label.
-The apps port has no login redirect, because it would send a token into an origin every app shares, and answers `403` there like every other API path.
 Login is a top-level navigation to the node's own origin.
 
-The app origins are `{label}.{base_domain}` with any port, `{host}:{apps port}`, `calimero-app://{label}` and `http(s)://calimero-app.{label}`, where `{label}` is the canonical base32 of an application id.
+The app origins are `{label}.{base_domain}` with any port, `calimero-app://{label}` and `http(s)://calimero-app.{label}`, where `{label}` is the canonical base32 of an application id.
 
 An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.
 
@@ -194,13 +180,11 @@ An app page logs in through a callback origin the operator lists in the auth con
 A bundled frontend is code the node serves to a browser, so the boundary has to hold even for a bundle the operator did not write.
 
 - **Per-app origin.** Each app is a separate browser origin, so one app's page cannot read another app's storage or the dashboard's admin tokens.
-  The apps port gives that up on purpose, and every app on it shares one origin.
 - **CSP.** Every response carries a policy that allows only same-origin files, so a bundle cannot load code from another origin or run inline script.
   Its `script-src` adds `'wasm-unsafe-eval'` so an app can compile WebAssembly, which does not allow `eval`.
 - **App hosts serve files and a narrow API.** `GET` and `HEAD` of a release's indexed files, the app API and a short list of admin routes are the whole surface.
   A token used there is bound to the app of the host, a token that holds `admin` is refused, every other admin route answers `403`, and the dashboard answers `404`.
-  The apps port serves files only.
-- **Sealed nodes do not serve.** A browser cannot seal a request, so a node that requires sealed requests mounts no app host and binds no apps port.
+- **Sealed nodes do not serve.** A browser cannot seal a request, so a node that requires sealed requests mounts no app host.
 
 Out of scope here:
 

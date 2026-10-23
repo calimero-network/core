@@ -29,8 +29,6 @@ const AUTH_LOGIN: &str = "/auth/login"; // the node's login page, which an app o
 const AUTH_VALIDATE: &str = "/auth/validate"; // the other: a token check that reads nothing but the token
 const ADMIN_API: &str = "/admin-api"; // where the node mounts its admin routes, under `NODE_PATH_PREFIX`
 const NO_APP_API: &str = "the app API on an app origin needs the node's embedded auth"; // body of the 403 where this node does not verify tokens
-const FILES_ONLY: &str =
-    "the fallback apps port serves files only; the app API needs the app's own subdomain origin"; // body of the 403 to an API path on the apps port
 const ADMIN_REFUSED: &str = "an app's origin may use only the admin routes an app needs"; // body of the 403 to any other admin route
 const FOREIGN_ORIGIN: &str = "an app's API answers a page of its own origin only"; // body of the 403 to another origin
 
@@ -89,19 +87,17 @@ fn decode_label(label: &str) -> Option<ApplicationId> {
 #[derive(Clone, Debug)]
 pub(crate) struct AppOrigins {
     base_domain: String,
-    port: Option<u16>,
 }
 
 impl AppOrigins {
     pub(crate) fn new(apps: &AppsConfig) -> Self {
         Self {
             base_domain: apps.base_domain.to_ascii_lowercase(),
-            port: apps.port,
         }
     }
 
-    /// Whether `origin` is shaped like any app's: `{label}.{base_domain}`, any
-    /// page on the apps port, or one of the desktop app's own origins.
+    /// Whether `origin` is shaped like any app's: `{label}.{base_domain}` or one
+    /// of the desktop app's own origins.
     pub(crate) fn is_app_origin(&self, origin: &str) -> bool {
         let Some((scheme, authority)) = split_origin(origin) else {
             return false;
@@ -109,20 +105,9 @@ impl AppOrigins {
         let host = authority.host().to_ascii_lowercase();
         match scheme.as_str() {
             NATIVE_SCHEME => decode_label(&host).is_some(),
-            "http" | "https" => {
-                self.app_at(&host).is_some()
-                    || is_windows_host(&host)
-                    || self.is_apps_port(&scheme, &authority)
-            }
+            "http" | "https" => self.app_at(&host).is_some() || is_windows_host(&host),
             _ => false,
         }
-    }
-
-    /// A browser omits a scheme's default port from `Origin`.
-    fn is_apps_port(&self, scheme: &str, authority: &Authority) -> bool {
-        let default = if scheme == "https" { 443 } else { 80 };
-        self.port
-            .is_some_and(|port| authority.port_u16().unwrap_or(default) == port)
     }
 
     /// The app whose host is exactly `{label}.{base_domain}`.
@@ -182,20 +167,13 @@ impl AppHosts {
         self.origins.app_at(host.parse::<Authority>().ok()?.host())
     }
 
-    /// Answers `path`, relative to the app's root; `prefix` is where that root
-    /// sits on the host, for redirects.
-    async fn respond(
-        &self,
-        app: &ApplicationId,
-        request: &Parts,
-        path: &str,
-        prefix: &str,
-    ) -> Response {
+    /// Answers `path`, relative to the app's root.
+    async fn respond(&self, app: &ApplicationId, request: &Parts, path: &str) -> Response {
         if !matches!(request.method, Method::GET | Method::HEAD) {
             return status(StatusCode::NOT_FOUND);
         }
         if path == "/" {
-            return self.redirect_to_current(app, request.uri.query(), prefix);
+            return self.redirect_to_current(app, request.uri.query());
         }
         let Some(rest_of_path) = path.strip_prefix('/') else {
             return status(StatusCode::NOT_FOUND);
@@ -213,7 +191,7 @@ impl AppHosts {
             }
         };
         let Some(rest) = rest else {
-            return redirect(&format!("{prefix}/{version}/"));
+            return redirect(&format!("/{version}/"));
         };
         let in_index = |tail: &str| {
             index
@@ -267,12 +245,7 @@ impl AppHosts {
         response
     }
 
-    fn redirect_to_current(
-        &self,
-        app: &ApplicationId,
-        query: Option<&str>,
-        prefix: &str,
-    ) -> Response {
+    fn redirect_to_current(&self, app: &ApplicationId, query: Option<&str>) -> Response {
         // A namespace's release is not recorded against the app, so it names nothing here.
         let names_namespace = query.is_some_and(|q| {
             q.split('&')
@@ -280,7 +253,7 @@ impl AppHosts {
         });
         let current = self.node_client.get_application(app).ok().flatten();
         match current.and_then(|row| row.version) {
-            Some(version) if !names_namespace => redirect(&format!("{prefix}/{version}/")),
+            Some(version) if !names_namespace => redirect(&format!("/{version}/")),
             _ => status(StatusCode::NOT_FOUND),
         }
     }
@@ -328,25 +301,7 @@ pub(crate) async fn serve_app_hosts(
         return refusal(StatusCode::FORBIDDEN, ADMIN_REFUSED);
     }
     let (parts, _body) = request.into_parts();
-    hosts.respond(&app, &parts, parts.uri.path(), "").await
-}
-
-/// The apps port: `/{label}/{version}/{path}` and nothing else. Its apps share
-/// one origin, so none of them gets the node's API from it.
-pub(crate) async fn serve_apps_port(State(hosts): State<AppHosts>, request: Request) -> Response {
-    if is_node_api(request.uri().path(), node_prefix()) {
-        return refusal(StatusCode::FORBIDDEN, FILES_ONLY);
-    }
-    let (parts, _body) = request.into_parts();
-    let rest = parts.uri.path().strip_prefix('/').unwrap_or_default();
-    let (label, tail) = rest.split_once('/').unwrap_or((rest, ""));
-    let Some(app) = decode_label(label) else {
-        return status(StatusCode::NOT_FOUND);
-    };
-    let prefix = format!("/{label}");
-    hosts
-        .respond(&app, &parts, &format!("/{tail}"), &prefix)
-        .await
+    hosts.respond(&app, &parts, parts.uri.path()).await
 }
 
 /// A page request for a path no file answers: the app's own router resolves it.
@@ -450,17 +405,6 @@ fn is_admin_api(path: &str, prefix: &str) -> bool {
     path.strip_prefix(prefix)
         .and_then(|route| route.strip_prefix(ADMIN_API))
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-}
-
-/// Whether `path` is under a route the node answers with an API: RPC, sockets,
-/// events, auth or the admin surface.
-fn is_node_api(path: &str, prefix: &str) -> bool {
-    fn first(path: &str) -> Option<&str> {
-        path.strip_prefix('/')?.split('/').next()
-    }
-    let prefixed = path.strip_prefix(prefix).and_then(first);
-    matches!(prefixed, Some("jsonrpc" | "ws" | "admin-api"))
-        || matches!(first(path), Some("sse" | "auth"))
 }
 
 /// Whether a page's `Origin` is the host it called.
@@ -571,8 +515,8 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{
-        decode_label, encode_label, is_app_api, is_node_api, serve_app_hosts, serve_apps_port,
-        AppApi, AppHosts, AppOrigins, ApplicationId, AUTH_REFRESH, BASE32,
+        decode_label, encode_label, is_app_api, serve_app_hosts, AppApi, AppHosts, AppOrigins,
+        ApplicationId, AUTH_REFRESH, BASE32,
     };
     use crate::config::AppsConfig;
     use crate::test_support::{stub_node_manager, test_node_client};
@@ -658,7 +602,6 @@ mod tests {
 
     struct Fixture {
         router: Router,
-        port_router: Router,
         node_client: calimero_node_primitives::client::NodeClient,
         store: Store,
         blob_dir: TempDir,
@@ -774,13 +717,9 @@ mod tests {
         let routes = Router::new()
             .route("/{*rest}", any(reached))
             .route("/", any(reached));
-        let port_router = Router::new()
-            .fallback(serve_apps_port)
-            .with_state(hosts.clone());
         let router = routes.layer(from_fn_with_state(hosts, serve_app_hosts));
         Fixture {
             router,
-            port_router,
             node_client,
             store,
             blob_dir,
@@ -1092,8 +1031,6 @@ mod tests {
         ] {
             let (response, _) = send(&f.router, method.clone(), &f.host, uri, &[]).await;
             assert_ne!(response.status(), StatusCode::FOUND, "{method} {uri}");
-            let (response, _) = on_port(&f, method.clone(), uri).await;
-            assert_ne!(response.status(), StatusCode::FOUND, "port {method} {uri}");
         }
     }
 
@@ -1150,26 +1087,6 @@ mod tests {
             (Method::POST, "/auth/validate", "", false),
         ] {
             assert_eq!(is_app_api(&method, path, prefix), api, "{method} {path}");
-        }
-    }
-
-    #[test]
-    fn the_node_api_is_where_the_router_mounts_it() {
-        for (path, prefix, api) in [
-            ("/jsonrpc", "", true),
-            ("/admin-api", "", true),
-            ("/admin-api/contexts", "", true),
-            ("/node1/admin-api/contexts", "/node1", true),
-            ("/node1/ws", "/node1", true),
-            ("/sse/subscribe", "/node1", true),
-            ("/auth/login", "/node1", true),
-            ("/admin-api/contexts", "/node1", false),
-            ("/jsonrpcx", "", false),
-            ("/admin-dashboard", "", false),
-            ("/health", "", false),
-            ("/abc/1.0.0/", "", false),
-        ] {
-            assert_eq!(is_node_api(path, prefix), api, "{path} under {prefix:?}");
         }
     }
 
@@ -1563,100 +1480,6 @@ mod tests {
         assert!(!body.contains(&b'X'));
     }
 
-    async fn on_port(f: &Fixture, method: Method, uri: &str) -> (Response, Vec<u8>) {
-        send(&f.port_router, method, "127.0.0.1:2429", uri, &[]).await
-    }
-
-    #[actix::test]
-    async fn the_apps_port_serves_each_apps_files_under_its_label() {
-        let f = fixture().await;
-        let label = encode_label(&ApplicationId::from(APP));
-
-        let (page, html) = on_port(&f, Method::GET, &format!("/{label}/1.0.0/")).await;
-        let (_, js) = on_port(&f, Method::GET, &format!("/{label}/2.0.0/app.js")).await;
-        let (head, _) = on_port(&f, Method::HEAD, &format!("/{label}/1.0.0/app.js")).await;
-
-        assert_eq!(page.status(), StatusCode::OK);
-        assert_eq!((html, js), (b"<p>v1</p>".to_vec(), b"v2();".to_vec()));
-        assert_hardened(&page);
-        assert_eq!(header_of(&head, "content-length"), "5");
-    }
-
-    #[actix::test]
-    async fn the_apps_port_redirects_within_the_label() {
-        let f = fixture().await;
-        let label = encode_label(&ApplicationId::from(APP));
-
-        for (uri, to) in [
-            (format!("/{label}"), format!("/{label}/2.0.0/")),
-            (format!("/{label}/"), format!("/{label}/2.0.0/")),
-            (format!("/{label}/1.0.0"), format!("/{label}/1.0.0/")),
-        ] {
-            let (response, _) = on_port(&f, Method::GET, &uri).await;
-            assert_eq!(response.status(), StatusCode::FOUND, "{uri}");
-            assert_eq!(header_of(&response, "location"), to, "{uri}");
-            assert_hardened(&response);
-        }
-    }
-
-    #[actix::test]
-    async fn the_apps_port_serves_files_only() {
-        let paths = [
-            "/jsonrpc",
-            "/ws",
-            "/sse",
-            "/sse/subscribe",
-            "/auth/refresh",
-            "/auth/login",
-            "/auth/token",
-            "/admin-api",
-            "/admin-api/contexts",
-            "/admin-api/applications",
-        ];
-
-        for app_api in [false, true] {
-            let f = fixture_with(app_api).await;
-            for path in paths {
-                for method in [Method::GET, Method::POST, Method::DELETE] {
-                    let (response, body) = on_port(&f, method.clone(), path).await;
-                    assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {path}");
-                    assert!(
-                        str::from_utf8(&body).unwrap().contains("files only"),
-                        "{method} {path}"
-                    );
-                    assert_hardened(&response);
-                }
-            }
-        }
-    }
-
-    #[actix::test]
-    async fn the_apps_port_serves_nothing_else() {
-        let f = fixture().await;
-        let label = encode_label(&ApplicationId::from(APP));
-        let unknown = encode_label(&ApplicationId::from([9; 32]));
-        let paths = [
-            "/".to_owned(),
-            "/admin-dashboard".to_owned(),
-            "/health".to_owned(),
-            "/1.0.0/app.js".to_owned(),
-            format!("/{}/1.0.0/", non_canonical(&label)),
-            format!("/{unknown}/1.0.0/"),
-            format!("/{label}/9.9.9/"),
-        ];
-
-        for path in paths {
-            for method in [Method::GET, Method::POST] {
-                let (response, body) = on_port(&f, method.clone(), &path).await;
-                assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
-                assert!(body.is_empty(), "{path}");
-                assert_hardened(&response);
-            }
-        }
-        let (post, _) = on_port(&f, Method::POST, &format!("/{label}/1.0.0/app.js")).await;
-        assert_eq!(post.status(), StatusCode::NOT_FOUND);
-    }
-
     fn non_canonical(label: &str) -> String {
         let (head, last) = label.split_at(label.len() - 1);
         let next = BASE32[BASE32
@@ -1679,10 +1502,7 @@ mod tests {
     #[test]
     fn only_a_canonical_label_under_the_base_domain_is_an_app_origin() {
         let label = encode_label(&ApplicationId::from(APP));
-        let apps = AppsConfig {
-            port: Some(2429),
-            ..AppsConfig::default()
-        };
+        let apps = AppsConfig::default();
         let origins = AppOrigins::new(&apps);
         let base = &apps.base_domain;
 
@@ -1692,7 +1512,6 @@ mod tests {
             format!("calimero-app://{label}"),
             format!("http://calimero-app.{label}"),
             format!("https://calimero-app.{label}"),
-            "http://203.0.113.9:2429".to_owned(),
         ] {
             assert!(origins.is_app_origin(&origin), "{origin}");
         }
@@ -1702,7 +1521,7 @@ mod tests {
             format!("http://{label}.evil.example"),
             format!("http://{label}{base}"),
             format!("calimero-app://{}", non_canonical(&label)),
-            "http://203.0.113.9:2430".to_owned(),
+            "http://203.0.113.9:2429".to_owned(),
             "http://localhost:5173".to_owned(),
             "null".to_owned(),
         ] {
