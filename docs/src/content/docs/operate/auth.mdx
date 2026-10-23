@@ -327,7 +327,8 @@ An app page logs in through a callback origin the operator lists in the auth con
 Proxy deployments get no app API unless `[server.apps] trust_proxy = true` is set, in which case the proxy must authenticate every request to an app host and forward the original `Host` (`proxy_set_header Host $host` for nginx) and its `X-Auth-Permissions`.
 The proxy's forward-auth must send `X-Forwarded-Uri` and `X-Forwarded-Method` to mero-auth's `/auth/validate`, so per-route permissions are checked.
 Traefik's forwardAuth does; nginx `auth_request` needs them configured.
-It must also strip or overwrite any client-sent `X-Auth-Permissions`.
+It must also overwrite any client-sent `X-Auth-Permissions`, `X-Auth-Account` and `X-Auth-Device`; merod cannot check that it does, so a proxy that forwards them lets a client name its own permissions.
+[App hosts behind the proxy](/operate/deployment/#app-hosts-behind-the-proxy) shows an nginx configuration.
 On app hosts only `POST /auth/refresh` and `GET`/`HEAD /auth/validate` may reach mero-auth.
 `/auth/login` must go to merod, which redirects to the node's login page, or be refused, so the login page is never served on an app's origin.
 `[server.apps] base_domain` must be the node's own host, because mero-auth validates an app-host request by stripping exactly one app label and comparing the rest with the token's host.
