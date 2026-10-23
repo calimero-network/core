@@ -528,6 +528,7 @@ request re-stamps it.
   Never match a prefix there, so `/contexts/{id}/anything` stays refused.
   The list covers the contexts, groups, members, blobs and context aliases an app manages; each route is confined to the app by `refuse_out_of_scope`, `refuse_target_outside_binding`, `refuse_join_outside_binding` or the blob handlers' context scope.
   A route with no app scoping (blob listing, blob delete of another's blob, application, node, account and TEE routes) stays out of it.
+  Leaving a namespace is allowed, but never with `purge`, which frees every device of the account; `app_host::purges_account` refuses it, and an unreadable query counts as a purge.
   `app_host::AppHosts::hand_over` runs them through the normal router, auth middleware included, with the `AppApi` request extension that `origin_guard::refuse_app_origins` and `ws_handler` take as leave to skip their app-origin refusal.
   It answers `403` when `Origin` is not the `Host` called, and `403` with a plain-text body unless this node verifies the token itself (`ServerConfig::use_embedded_auth`).
   Proxy mode gets no app API, with or without `proxy_identity`, unless `[server.apps] trust_proxy` is set (`ServerConfig::serves_app_api`): merod mounts no token guard there, so the operator vouches that a proxy authenticates every app-host request.

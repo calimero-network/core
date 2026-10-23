@@ -1,10 +1,12 @@
 //! Serves an installed app's frontend from its own origin, `{label}.{base_domain}`.
 
+use std::collections::HashMap;
+
 use axum::body::{Body, Bytes};
-use axum::extract::{Request, State};
+use axum::extract::{Query, Request, State};
 use axum::http::request::Parts;
 use axum::http::uri::Authority;
-use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::Response;
 use calimero_bundle::FRONTEND_ROOT;
@@ -313,6 +315,10 @@ pub(crate) async fn serve_app_hosts(
         return login;
     }
     let (method, path) = (request.method(), request.uri().path());
+    if is_admin_api(path, node_prefix()) && purges_account(request.uri()) {
+        debug!(%method, path, app = %encode_label(&app), "account purge refused on an app origin");
+        return refusal(StatusCode::FORBIDDEN, ADMIN_REFUSED);
+    }
     if is_app_api(method, path, node_prefix()) {
         return hosts.hand_over(app, request, next).await;
     }
@@ -322,6 +328,14 @@ pub(crate) async fn serve_app_hosts(
     }
     let (parts, _body) = request.into_parts();
     hosts.respond(&app, &parts, parts.uri.path()).await
+}
+
+/// Leaving with `purge` frees every device of the account, an account action an app
+/// origin never takes; an unreadable query counts as one.
+fn purges_account(uri: &Uri) -> bool {
+    Query::<HashMap<String, String>>::try_from_uri(uri).map_or(true, |Query(query)| {
+        query.get("purge").is_some_and(|value| value != "false")
+    })
 }
 
 /// A page request for a path no file answers: the app's own router resolves it.
@@ -390,7 +404,7 @@ fn is_app_admin_route(method: &Method, route: &str) -> bool {
             segments,
             ["contexts" | "namespaces"]
                 | ["contexts", _, "join" | "leave"]
-                | ["namespaces", _, "invite" | "join" | "groups"]
+                | ["namespaces", _, "invite" | "join" | "groups" | "leave"]
                 | ["groups", "join"]
                 | ["groups", _, "members" | "reparent" | "sync" | "leave"]
                 | ["groups", _, "members", "remove"]
@@ -535,8 +549,8 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{
-        decode_label, encode_label, is_app_api, serve_app_hosts, AppApi, AppHosts, AppOrigins,
-        ApplicationId, AUTH_REFRESH, BASE32,
+        decode_label, encode_label, is_app_api, purges_account, serve_app_hosts, AppApi, AppHosts,
+        AppOrigins, ApplicationId, AUTH_REFRESH, BASE32,
     };
     use crate::config::AppsConfig;
     use crate::test_support::{stub_node_manager, test_node_client};
@@ -546,7 +560,7 @@ mod tests {
     const APP: [u8; 32] = [7; 32];
     const API_PATHS: [&str; 5] = ["/jsonrpc", "/ws", "/sse", "/sse/subscribe", "/auth/refresh"];
     const ID: &str = "0123abcd";
-    const ALLOWED_ADMIN: [(Method, &str); 47] = [
+    const ALLOWED_ADMIN: [(Method, &str); 48] = [
         (Method::GET, "/admin-api/applications"),
         (Method::GET, "/admin-api/applications/0123abcd"),
         (
@@ -568,6 +582,7 @@ mod tests {
         (Method::GET, "/admin-api/groups/0123abcd/members"),
         (Method::GET, "/admin-api/contexts/0123abcd/identities"),
         (Method::POST, "/admin-api/contexts/0123abcd/leave"),
+        (Method::POST, "/admin-api/namespaces/0123abcd/leave"),
         (Method::DELETE, "/admin-api/contexts/0123abcd"),
         (Method::DELETE, "/admin-api/namespaces/0123abcd"),
         (Method::DELETE, "/admin-api/groups/0123abcd"),
@@ -939,7 +954,6 @@ mod tests {
             ),
             (Method::GET, format!("/admin-api/groups/{ID}/members/{ID}")),
             (Method::GET, "/admin-api/alias/list/context".to_owned()),
-            (Method::POST, format!("/admin-api/namespaces/{ID}/leave")),
             (Method::GET, format!("/admin-api/contexts/{ID}/group/extra")),
             (Method::POST, format!("/admin-api/contexts/{ID}/group")),
             (Method::POST, format!("/admin-api/contexts/{ID}/join/extra")),
@@ -1063,6 +1077,19 @@ mod tests {
                 send(&f.router, method.clone(), &f.host, "/auth/refresh", &[]).await;
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method}");
             assert_ne!(body, b"app api", "{method}");
+        }
+    }
+
+    #[test]
+    fn an_app_origin_may_leave_its_namespace_but_never_purge_the_account() {
+        for (uri, purges) in [
+            ("/admin-api/namespaces/x/leave", false),
+            ("/admin-api/namespaces/x/leave?purge=false", false),
+            ("/admin-api/namespaces/x/leave?purge=true", true),
+            ("/admin-api/namespaces/x/leave?purge=yes", true),
+            ("/admin-api/namespaces/x/leave?purge", true),
+        ] {
+            assert_eq!(purges_account(&uri.parse().unwrap()), purges, "{uri}");
         }
     }
 

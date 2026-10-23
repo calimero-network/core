@@ -1854,6 +1854,7 @@ const WIDENED_ROUTES: &[(Method, &str)] = &[
     (Method::POST, "/groups/{g}/reparent"),
     (Method::POST, "/groups/{g}/sync"),
     (Method::POST, "/groups/{g}/leave"),
+    (Method::POST, "/namespaces/{g}/leave"),
     (Method::DELETE, "/groups/{g}"),
     (Method::DELETE, "/namespaces/{g}"),
     (Method::DELETE, "/contexts/{c}"),
