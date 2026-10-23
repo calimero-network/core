@@ -12,6 +12,7 @@ use calimero_store::Store;
 use rand::RngExt;
 use tracing::{debug, warn};
 
+use crate::handlers::ensure_account_namespace::is_established;
 use crate::ContextManager;
 use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
@@ -52,6 +53,12 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // binding it to its creator is what stops another member who saw the
         // id from racing a concurrent create for it. That needs the creator's
         // account, so it is derived below, once the account is resolved.
+
+        if application_id.is_none() && (parent_group_id.is_some() || bytecode_id.is_some()) {
+            return ActorResponse::reply(Err(
+                crate::error::ContextError::ApplicationRequired.into()
+            ));
+        }
 
         // Only the account namespace passes a salt, so its genesis marks it as one.
         let account_namespace = salt.is_some();
@@ -184,7 +191,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
             }
         };
 
-        if let Ok(Some(_)) = MetaRepository::new(&self.datastore).load(&group_id) {
+        if let Ok(true) = is_established(&self.datastore, &group_id) {
             return ActorResponse::reply(Err(crate::error::ContextError::GroupAlreadyExists {
                 group_id: group_id.to_string(),
             }
@@ -1291,6 +1298,79 @@ mod tests {
                 .admin_identity,
             founder,
             "the genesis names the same account the id commits to"
+        );
+    }
+
+    /// A subgroup with no `application_id` used to silently take its parent's.
+    #[actix::test]
+    async fn a_subgroup_with_no_application_id_is_refused_by_name() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+        let harness = actor::over(store.clone()).await;
+        let request = |application_id, parent_group_id| CreateGroupRequest {
+            salt: None,
+            bytecode_id: None,
+            application_id,
+            name: None,
+            parent_group_id,
+            restricted: true,
+        };
+        let root = harness
+            .manager
+            .send(request(Some(ApplicationId::from(APP)), None))
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        let err = harness
+            .manager
+            .send(request(None, Some(root.group_id)))
+            .await
+            .expect("the manager answers")
+            .expect_err("a subgroup must name its application");
+
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::error::ContextError>(),
+                Some(crate::error::ContextError::ApplicationRequired)
+            ),
+            "{err:?}"
+        );
+    }
+
+    /// A `bytecode_id` pins a version of an application, so it has nothing to
+    /// pin without one.
+    #[actix::test]
+    async fn a_bytecode_id_with_no_application_id_is_refused_by_name() {
+        let store = store();
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+        let harness = actor::over(store.clone()).await;
+
+        let err = harness
+            .manager
+            .send(CreateGroupRequest {
+                salt: None,
+                bytecode_id: Some([0x77; 32].into()),
+                application_id: None,
+                name: None,
+                parent_group_id: None,
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("a bytecode_id needs an application");
+
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::error::ContextError>(),
+                Some(crate::error::ContextError::ApplicationRequired)
+            ),
+            "{err:?}"
         );
     }
 

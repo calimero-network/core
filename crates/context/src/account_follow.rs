@@ -2811,6 +2811,59 @@ mod tests {
         );
     }
 
+    /// An admin revocation authorises nothing outside the group whose admin gate
+    /// let it through, so one with no proof is never carried. A proof-bearing
+    /// revocation sent after it is the control: once that one lands, the
+    /// listener has long since passed the proof-less one.
+    #[actix::test]
+    async fn a_revocation_with_no_proof_is_not_carried() {
+        let store = store();
+        let (account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
+        let elsewhere = ContextGroupId::from([0x8B; 32]);
+        a_namespace_targeting(&store, elsewhere, app(0x11));
+        let _key_id = GroupKeyring::new(&store, elsewhere)
+            .store_key(&[0x42; 32])
+            .expect("hold the scope key");
+        let account = AccountGenesis::new(root_sk.public_key()).account_id();
+        let unproven = DeviceId::mint(account, [0x6B; 16]);
+        let control = DeviceId::mint(account, [0x6D; 16]);
+        for device in [unproven, control] {
+            a_device_bound_in(&store, account_namespace, &root_sk, device);
+            a_device_bound_in(&store, elsewhere, &root_sk, device);
+        }
+
+        let harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        op_events::notify(OpEvent::DeviceRevoked {
+            group_id: account_namespace.to_bytes(),
+            account,
+            device: unproven,
+            proof: None,
+        });
+        op_events::notify(OpEvent::DeviceRevoked {
+            group_id: account_namespace.to_bytes(),
+            account,
+            device: control,
+            proof: Some(Box::new(a_revocation_of(&root_sk, control))),
+        });
+
+        let bindings = AccountBindingRepository::new(&store);
+        let control_carried = eventually(|| {
+            bindings
+                .is_revoked(&elsewhere, control)
+                .expect("read the control's tombstone row")
+        })
+        .await;
+        listener.abort();
+        assert!(control_carried, "the control revocation was never carried");
+        assert!(
+            !bindings
+                .is_revoked(&elsewhere, unproven)
+                .expect("read the tombstone row"),
+            "a revocation with no proof was carried into another namespace"
+        );
+    }
+
     /// A namespace whose replay was missed gets this account's recorded withdrawals
     /// when the listener starts, so a dropped replay is repaired.
     #[actix::test]
