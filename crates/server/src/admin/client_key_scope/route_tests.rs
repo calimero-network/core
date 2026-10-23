@@ -1839,6 +1839,8 @@ const WIDENED_ROUTES: &[(Method, &str)] = &[
     (Method::GET, "/groups/{g}/metadata"),
     (Method::PUT, "/groups/{g}/metadata"),
     (Method::PUT, "/groups/{g}/contexts/{c}/metadata"),
+    (Method::GET, "/groups/{g}/contexts/{c}/metadata"),
+    (Method::GET, "/groups/{g}/members/{a}/capabilities"),
     (Method::POST, "/groups/{g}/members"),
     (Method::POST, "/groups/{g}/members/remove"),
     (Method::PUT, "/groups/{g}/members/{a}/role"),

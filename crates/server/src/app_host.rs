@@ -394,7 +394,8 @@ fn is_app_admin_route(method: &Method, route: &str) -> bool {
                 | ["contexts" | "applications" | "groups" | "namespaces", _]
                 | ["namespaces", _, "groups"]
                 | ["groups", _, "contexts"]
-                | ["groups", _, "members", _, "metadata"]
+                | ["groups", _, "members", _, "metadata" | "capabilities"]
+                | ["groups", _, "contexts", _, "metadata"]
                 | ["namespaces", "for-application", _]
                 | ["contexts", "for-application", _]
                 | ["contexts", _, "identities-owned" | "identities" | "group"]
@@ -560,7 +561,7 @@ mod tests {
     const APP: [u8; 32] = [7; 32];
     const API_PATHS: [&str; 5] = ["/jsonrpc", "/ws", "/sse", "/sse/subscribe", "/auth/refresh"];
     const ID: &str = "0123abcd";
-    const ALLOWED_ADMIN: [(Method, &str); 48] = [
+    const ALLOWED_ADMIN: [(Method, &str); 50] = [
         (Method::GET, "/admin-api/applications"),
         (Method::GET, "/admin-api/applications/0123abcd"),
         (
@@ -588,6 +589,14 @@ mod tests {
         (Method::DELETE, "/admin-api/groups/0123abcd"),
         (Method::GET, "/admin-api/groups/0123abcd"),
         (Method::GET, "/admin-api/groups/0123abcd/metadata"),
+        (
+            Method::GET,
+            "/admin-api/groups/0123abcd/members/0123abcd/capabilities",
+        ),
+        (
+            Method::GET,
+            "/admin-api/groups/0123abcd/contexts/0123abcd/metadata",
+        ),
         (Method::GET, "/admin-api/namespaces/0123abcd"),
         (Method::GET, "/admin-api/namespaces/0123abcd/groups"),
         (Method::GET, "/admin-api/groups/0123abcd/contexts"),
@@ -983,7 +992,7 @@ mod tests {
                 format!("/admin-api/groups/{ID}/transfer-ownership"),
             ),
             (
-                Method::GET,
+                Method::POST,
                 format!("/admin-api/groups/{ID}/members/{ID}/capabilities"),
             ),
             (Method::DELETE, format!("/admin-api/applications/{ID}")),
