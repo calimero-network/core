@@ -1,4 +1,4 @@
-//! On start: make sure a holder's account namespace exists, and publish a
+//! On start: make sure the account namespace of a holder in use exists, and publish a
 //! pre-registry holder's cached device certificates into it, then drop them.
 //!
 //! Nothing else will ever do it. The cache was node-local, so a device certified
@@ -54,8 +54,16 @@ async fn run(
         }
         return Ok(());
     };
-    // Every start, not only with cached rows: a root restored by `account import`
-    // has none, and no pairing runs on it to create the namespace.
+    // Not only with cached rows: a root restored by `account import` has none, and
+    // no pairing runs on it. A node that takes part in no namespace is left alone:
+    // `init` gave every node a root, and one about to pair has no use for its own.
+    if cached.is_empty()
+        && NamespaceRepository::new(store)
+            .participating_namespaces()?
+            .is_empty()
+    {
+        return Ok(());
+    }
     let Some(namespace) = ensure_account_namespace(store, context_client).await? else {
         warn!(
             certificates = cached.len(),
@@ -150,8 +158,10 @@ mod tests {
     use std::sync::Arc;
 
     use calimero_account::{AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey};
+    use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{
-        AccountDeviceRegistry, AccountRoot, MetaRepository, NodeDeviceRepository,
+        AccountDeviceRegistry, AccountRoot, MetaRepository, NamespaceRepository,
+        NodeDeviceRepository,
     };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::identity::PrivateKey;
@@ -231,6 +241,9 @@ mod tests {
     #[actix::test]
     async fn a_holder_with_no_cached_rows_still_gets_its_account_namespace() {
         let (store, root) = holder_store();
+        NamespaceRepository::new(&store)
+            .note_participation(&ContextGroupId::from([0x31; 32]))
+            .expect("the restored node takes part in a namespace");
 
         let _harness = actor::over(store.clone()).await;
 
@@ -243,6 +256,21 @@ mod tests {
             .await,
             "the account namespace was never created"
         );
+    }
+
+    /// `init` gives every node a root, including one about to pair onto another
+    /// account, which has no use for a namespace of its own.
+    #[actix::test]
+    async fn a_holder_that_takes_part_in_nothing_gets_no_account_namespace() {
+        let (store, root) = holder_store();
+
+        let _harness = actor::over(store.clone()).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        assert!(MetaRepository::new(&store)
+            .load(&root.account_namespace())
+            .expect("read")
+            .is_none());
     }
 
     /// One statement per cached row, at the scope the pairing gave it, and the
