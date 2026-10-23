@@ -152,8 +152,9 @@ const UNSEALED_ADMIN_PATHS: [&str; 4] = ["/health", "/ready", "/tee/info", "/tee
 /// The admin routes this process serves without a credential, and so the only
 /// ones a sealed request may reach under [`InnerScope::Uncredentialed`]. They
 /// mirror the public router in `admin::service`. Direct admission
-/// ([`is_admit_path`]) and delegated execution are matched separately because
-/// they name an id; delegated execution only when `delegated_access` is on.
+/// ([`is_admit_path`]), calls under an access grant (`/grant-calls`) and
+/// delegated execution are matched separately because they name an id;
+/// delegated execution only when `delegated_access` is on.
 const UNCREDENTIALED_ADMIN_PATHS: [&str; 5] = [
     "/health",
     "/ready",
@@ -357,7 +358,10 @@ impl SealedTransport {
         else {
             return false;
         };
-        if UNCREDENTIALED_ADMIN_PATHS.contains(&admin) || is_admit_path(admin) {
+        if UNCREDENTIALED_ADMIN_PATHS.contains(&admin)
+            || is_admit_path(admin)
+            || is_context_intents_path(admin, "/grant-calls")
+        {
             return true;
         }
         delegated_access
@@ -797,7 +801,8 @@ fn admit_start(
 
 /// `/contexts/{id}{suffix}`, with `id` exactly 64 lowercase hex characters, as
 /// a context id renders — delegated execution (`/intents`) and an account's
-/// presence (`/presence-intents`), both on `delegated_execution_routes()`.
+/// presence (`/presence-intents`), both on `delegated_execution_routes()`, and
+/// a call under an access grant (`/grant-calls`), on `access_grant_routes()`.
 fn is_context_intents_path(admin_path: &str, suffix: &str) -> bool {
     admin_path
         .strip_prefix("/contexts/")

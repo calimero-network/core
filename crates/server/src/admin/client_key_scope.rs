@@ -55,7 +55,7 @@ pub(crate) async fn refuse_out_of_scope(
                 |raw| {
                     parse_group_id(raw).is_ok_and(|id| {
                         if changes {
-                            scope.permits_group_change(store, &id)
+                            scope.permits_subtree_change(store, &id)
                         } else {
                             scope.permits_group(store, &id)
                         }
@@ -124,17 +124,17 @@ pub(crate) fn refuse_target_outside_binding(
 }
 
 /// Refuse a bound key's join unless the binding may change the group, or the
-/// group has no signed admin here yet and the invitation's unsigned hint names the bound application.
+/// group has no signed admin here yet and an invitation's unsigned hint names the bound application.
 pub(crate) fn refuse_join_outside_binding(
     state: &AdminState,
     client_key: Option<&ClientKeyScope>,
-    invitation: &SignedGroupOpenInvitation,
+    group_id: &ContextGroupId,
+    invitation: Option<&SignedGroupOpenInvitation>,
 ) -> Option<Response> {
     let scope = client_key?;
     let store = state.ctx_client.datastore();
-    let group_id = invitation.invitation.group_id;
-    if scope.permits_group_change(store, &group_id)
-        || hints_bound_application(scope, store, invitation)
+    if scope.permits_group_change(store, group_id)
+        || invitation.is_some_and(|invitation| hints_bound_application(scope, store, invitation))
     {
         return None;
     }

@@ -7,10 +7,6 @@ description: >
   `frontend-serving.sh` checks what the node serves on the app's own host,
   `{label}.localhost:{port}`, and what it refuses there and on its own host.
 
-  The apps port, which answers 403 on every API path and on login, is checked
-  here only on a native node. CI runs Docker, where the script skips that part,
-  and the Rust tests of `calimero-server` cover the port.
-
   Serving is keyed by release, not namespace (`/?namespace=` is not supported
   yet), so the assertions run per release on the one app host.
 
@@ -84,28 +80,6 @@ steps:
       - "is_set({{namespace_a}})"
       - "is_set({{namespace_b}})"
 
-  - name: Stop the node to give its apps a port of their own
-    type: stop_node
-    nodes:
-      - app-migration-frontend-1
-
-  - name: Add the apps port to its config
-    type: script
-    script: workflows/app-migration/frontend-apps-port.sh
-    target: local
-    args:
-      - app-migration-frontend-1
-      - "9880"
-
-  - name: Start the node again
-    type: start_node
-    nodes:
-      - app-migration-frontend-1
-
-  - name: Let the node finish starting
-    type: wait
-    seconds: 10
-
   - name: Check each release is served from the app host
     type: script
     script: workflows/app-migration/frontend-serving.sh
@@ -117,6 +91,5 @@ steps:
       - "2.0.0"
       - embedded
       - "{{ctx_a}}"
-      - "9880"
 
 stop_all_nodes: true

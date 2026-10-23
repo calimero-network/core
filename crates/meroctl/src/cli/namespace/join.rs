@@ -1,5 +1,5 @@
 use calimero_context_config::types::SignedGroupOpenInvitation;
-use calimero_server_primitives::admin::JoinGroupApiRequest;
+use calimero_server_primitives::admin::JoinNamespaceApiRequest;
 use clap::Parser;
 use eyre::Result;
 
@@ -23,8 +23,8 @@ impl JoinCommand {
         let invitation: SignedGroupOpenInvitation = serde_json::from_str(&self.invitation_json)
             .map_err(|e| eyre::eyre!("invalid invitation JSON: {e}"))?;
 
-        let request = JoinGroupApiRequest {
-            invitation,
+        let request = JoinNamespaceApiRequest {
+            invitation: Some(invitation),
             group_name: None,
         };
 

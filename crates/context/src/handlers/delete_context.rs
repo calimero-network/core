@@ -202,7 +202,8 @@ pub(crate) fn purge_context_rows(datastore: &Store, context_id: &ContextId) -> e
     // Every key in these columns starts with the context id: synced state, its
     // node-local private half, member identities, the node-local columns
     // derived from state (the ordered indexes, the full-text index and its
-    // dirty log), the blobs held for it and a half-installed snapshot. The search rows go even on a node
+    // dirty log), the blobs held for it, the access grants issued for it and a
+    // half-installed snapshot. The search rows go even on a node
     // that runs search off, so a context that returns later never meets a stale index.
     for column in [
         Column::State,
@@ -215,6 +216,7 @@ pub(crate) fn purge_context_rows(datastore: &Store, context_id: &ContextId) -> e
         Column::ContextBlob,
         Column::BlobOwner,
         Column::SnapshotStage,
+        Column::ContextAccessGrant,
     ] {
         datastore.raw_delete_prefix(column, context_id.as_ref())?;
     }
@@ -329,6 +331,8 @@ mod tests {
             (Column::ContextWarrantNonce, prefixed(context, &[0x07; 64])),
             (Column::BlobOwner, prefixed(context, &[0x08; 32])),
             (Column::SnapshotStage, prefixed(context, &[0x0b; 33])),
+            // Access grants: context ‖ grant id.
+            (Column::ContextAccessGrant, prefixed(context, &[0x0e; 32])),
             // A left marker: context ‖ member key.
             (Column::ContextLocal, prefixed(context, &[0x0c; 32])),
             // Op-log rows: scope ‖ op id.
@@ -382,6 +386,7 @@ mod tests {
                     | Column::AbsorbBuffer
                     | Column::BlobOwner
                     | Column::SnapshotStage
+                    | Column::ContextAccessGrant
             );
             assert_eq!(
                 present(&store, &row),

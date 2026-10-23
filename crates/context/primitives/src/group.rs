@@ -141,6 +141,17 @@ pub struct DeleteNamespaceResponse {
     pub deleted: bool,
 }
 
+/// Take part in a namespace again with no invitation: one this node's user
+/// removed from it while the account stayed a member.
+#[derive(Clone, Debug)]
+pub struct RejoinNamespaceRequest {
+    pub namespace_id: ContextGroupId,
+}
+
+impl Message for RejoinNamespaceRequest {
+    type Result = eyre::Result<JoinGroupResponse>;
+}
+
 /// A governance op a member asked this node to publish on their behalf, in the
 /// delegable form their warrant signs.
 #[derive(Debug)]
@@ -1645,6 +1656,9 @@ pub struct NamespaceSummary {
     pub member_count: usize,
     pub context_count: usize,
     pub subgroup_count: usize,
+    /// Removed from this node by its user while the account stayed a member:
+    /// nothing of it is held here, and a join without an invitation restores it.
+    pub forgotten: bool,
 }
 
 #[derive(Debug)]

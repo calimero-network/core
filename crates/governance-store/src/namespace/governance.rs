@@ -973,8 +973,12 @@ impl<'a> NamespaceGovernance<'a> {
     }
 
     /// Whether this node signed `op`.
-    fn authored_here(&self, op: &SignedNamespaceOp) -> EyreResult<bool> {
+    pub(super) fn authored_here(&self, op: &SignedNamespaceOp) -> EyreResult<bool> {
         let namespace = ContextGroupId::from(self.namespace_id.to_bytes());
+        // A removed namespace holds none of what this node's own ops did.
+        if crate::ForgottenNamespaces::new(self.store).is_forgotten(&namespace)? {
+            return Ok(false);
+        }
         let local = NamespaceRepository::new(self.store).identity(&namespace)?;
         Ok(local.is_some_and(|(local_pk, ..)| local_pk == op.signer))
     }

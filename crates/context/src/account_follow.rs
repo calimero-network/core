@@ -288,6 +288,23 @@ async fn run(
 /// # Errors
 /// Propagates the device, namespace and metadata reads.
 pub fn node_reaches(store: &Store, group: &ContextGroupId) -> EyreResult<bool> {
+    let namespace = NamespaceRepository::new(store).resolve(group)?;
+    let application = MetaRepository::new(store)
+        .load(&namespace)?
+        .map(|meta| meta.target.application_id);
+    reaches(store, namespace, application)
+}
+
+/// [`node_reaches`] for a namespace targeting `application`, for one this node
+/// holds no meta row for.
+///
+/// # Errors
+/// Propagates the device and registry reads.
+pub(crate) fn reaches(
+    store: &Store,
+    namespace: ContextGroupId,
+    application: Option<ApplicationId>,
+) -> EyreResult<bool> {
     let devices = NodeDeviceRepository::new(store);
     if devices.holder_root()?.is_some() {
         return Ok(true);
@@ -296,7 +313,6 @@ pub fn node_reaches(store: &Store, group: &ContextGroupId) -> EyreResult<bool> {
     else {
         return Ok(true);
     };
-    let namespace = NamespaceRepository::new(store).resolve(group)?;
     if namespace == account_namespace {
         return Ok(true);
     }
@@ -304,11 +320,7 @@ pub fn node_reaches(store: &Store, group: &ContextGroupId) -> EyreResult<bool> {
     else {
         return Ok(true);
     };
-    Ok(own.covers(
-        MetaRepository::new(store)
-            .load(&namespace)?
-            .map(|meta| meta.target.application_id),
-    ))
+    Ok(own.covers(application))
 }
 
 /// The namespaces this node takes part in that its own scope still reaches.

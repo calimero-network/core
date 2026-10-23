@@ -14,6 +14,8 @@ use crate::storage::models::{Key, KeyType};
 use crate::storage::{KeyManager, Storage};
 use crate::{AuthError, AuthResponse};
 
+const APP_LABEL_LEN: usize = 52; // an application id as unpadded lowercase base32
+
 /// Storage keyspace prefix for the consumed-refresh-token denylist (finding #2).
 ///
 /// Each successful refresh records the `jti` of the refresh token it just
@@ -144,6 +146,23 @@ pub struct TokenManager {
     consume_refresh_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
+/// `host` without its first label when that is a canonical app label (the last
+/// character of 256 bits in base32 carries four zero bits), else `host`.
+fn without_app_label(host: &str) -> &str {
+    match host.split_once('.') {
+        Some((label, rest))
+            if label.len() == APP_LABEL_LEN
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || (b'2'..=b'7').contains(&b))
+                && label.ends_with(['a', 'q']) =>
+        {
+            rest
+        }
+        _ => host,
+    }
+}
+
 impl TokenManager {
     /// Create a new JWT token manager
     ///
@@ -256,8 +275,9 @@ impl TokenManager {
             // Compare the hosts (handle both with and without port); host
             // names are case-insensitive, so compare lowercased.
             let request_host_without_port = request_host.split(':').next().unwrap_or(request_host);
-            let request_host_lc = request_host.to_ascii_lowercase();
-            let request_host_without_port_lc = request_host_without_port.to_ascii_lowercase();
+            let request_host_lc = without_app_label(&request_host.to_ascii_lowercase()).to_owned();
+            let request_host_without_port_lc =
+                without_app_label(&request_host_without_port.to_ascii_lowercase()).to_owned();
             if request_host_without_port_lc != token_host && request_host_lc != token_host {
                 return Err(format!(
                     "Token is not valid for this host. Token is for '{token_host}' but request is to '{request_host}'"
@@ -1914,6 +1934,43 @@ mod tests {
             Some("node.example.com.attacker.com"),
         )
         .is_err());
+    }
+
+    #[test]
+    fn test_validate_node_host_match_strips_one_app_label() {
+        let label = "a".repeat(51) + "q";
+        for host in [
+            format!("{label}.node.example.com"),
+            format!("{label}.node.example.com:8443"),
+            format!("{}.NODE.example.com", label.to_ascii_uppercase()),
+        ] {
+            assert!(
+                TokenManager::validate_node_host_match("https://node.example.com", Some(&host))
+                    .is_ok(),
+                "{host}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_node_host_match_strips_nothing_else() {
+        let label = "a".repeat(51) + "q";
+        for host in [
+            format!("{label}.{label}.node.example.com"),
+            format!("{label}.attacker.com"),
+            format!("{}.node.example.com", "a".repeat(51)),
+            format!("{}.node.example.com", "a".repeat(52) + "a"),
+            format!("{}b.node.example.com", "a".repeat(51)),
+            format!("{}1.node.example.com", "a".repeat(51)),
+            "www.node.example.com".to_owned(),
+            label.clone(),
+        ] {
+            assert!(
+                TokenManager::validate_node_host_match("https://node.example.com", Some(&host))
+                    .is_err(),
+                "{host}"
+            );
+        }
     }
 
     #[test]

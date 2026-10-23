@@ -145,6 +145,13 @@ scenarios:
     file: workflows/account-revoked-device-repairs.yml
     app: scaffolding-e2e
     registry_fetch: "false"
+  - workflow: namespace-restore-without-invitation
+    file: workflows/namespace-restore-without-invitation.yml
+    app: scaffolding-e2e
+  - workflow: namespace-restore-kicked-member
+    file: workflows/namespace-restore-kicked-member.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
   - workflow: account-namespace-left-unfollows
     file: workflows/account-namespace-left-unfollows.yml
     app: scaffolding-e2e
