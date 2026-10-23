@@ -1,5 +1,5 @@
-//! One-shot on start: publish a pre-registry holder's cached device
-//! certificates into the account namespace, then drop them.
+//! On start: make sure a holder's account namespace exists, and publish a
+//! pre-registry holder's cached device certificates into it, then drop them.
 //!
 //! Nothing else will ever do it. The cache was node-local, so a device certified
 //! before the registry existed is one no other device of the account can carry
@@ -41,20 +41,21 @@ async fn run(
 ) -> EyreResult<()> {
     let devices = NodeDeviceRepository::new(store);
     let cached = devices.legacy_device_certs()?;
-    if cached.is_empty() {
-        return Ok(());
-    }
 
     // Only the account root can sign a scope, so a node that no longer holds one
     // leaves the rows for a node that does rather than dropping them.
     let Some(root) = devices.holder_root()? else {
-        warn!(
-            certificates = cached.len(),
-            "cached device certificates, but no account root to sign their scopes; \
-             leaving them where they are"
-        );
+        if !cached.is_empty() {
+            warn!(
+                certificates = cached.len(),
+                "cached device certificates, but no account root to sign their scopes; \
+                 leaving them where they are"
+            );
+        }
         return Ok(());
     };
+    // Every start, not only with cached rows: a root restored by `account import`
+    // has none, and no pairing runs on it to create the namespace.
     let Some(namespace) = ensure_account_namespace(store, context_client).await? else {
         warn!(
             certificates = cached.len(),
@@ -63,6 +64,9 @@ async fn run(
         );
         return Ok(());
     };
+    if cached.is_empty() {
+        return Ok(());
+    }
     let Some((_signer_pk, signer_sk_bytes)) =
         NamespaceRepository::new(store).identity(&namespace)?
     else {
@@ -146,7 +150,9 @@ mod tests {
     use std::sync::Arc;
 
     use calimero_account::{AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey};
-    use calimero_governance_store::{AccountDeviceRegistry, AccountRoot, NodeDeviceRepository};
+    use calimero_governance_store::{
+        AccountDeviceRegistry, AccountRoot, MetaRepository, NodeDeviceRepository,
+    };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
@@ -216,6 +222,26 @@ mod tests {
         assert!(
             eventually(|| devices.legacy_device_certs().expect("read").is_empty()).await,
             "the migration left the cached rows behind"
+        );
+    }
+
+    /// A root restored by `merod account import` holds no legacy rows, and no
+    /// pairing ever runs on it, so start is the only place its namespace can
+    /// be created.
+    #[actix::test]
+    async fn a_holder_with_no_cached_rows_still_gets_its_account_namespace() {
+        let (store, root) = holder_store();
+
+        let _harness = actor::over(store.clone()).await;
+
+        let namespace = root.account_namespace();
+        assert!(
+            eventually(|| MetaRepository::new(&store)
+                .load(&namespace)
+                .expect("read")
+                .is_some())
+            .await,
+            "the account namespace was never created"
         );
     }
 

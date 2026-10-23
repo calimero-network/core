@@ -25,7 +25,7 @@ use calimero_store::key::{self, GroupMetaValue, GroupTarget};
 use calimero_store::{types, Store};
 use futures_util::io::Cursor;
 
-use crate::test_support::{actor, credential, enrol, enrol_holder};
+use crate::test_support::{actor, credential, enrol, enrol_holder, eventually};
 
 /// `init` reads the executing account (`account_id`) into memory and commits
 /// it as the root hash, with an empty artifact; `set` does the same with a
@@ -171,10 +171,25 @@ async fn fixture_with(
 ) -> Fixture {
     global_runtime();
     let store = Store::new(Arc::new(InMemoryDB::owned()));
-    NodeDeviceRepository::new(&store)
+    let root = NodeDeviceRepository::new(&store)
         .provision_account_root()
         .expect("provision the account root an initialised node has");
-    let harness = actor::over(store.clone()).await;
+    let mut harness = actor::over(store.clone()).await;
+    // Start-up creates the account namespace and announces it; let that finish so
+    // a test's own drain sees only what it caused.
+    let account_namespace = root.account_namespace();
+    assert!(
+        eventually(|| MetaRepository::new(&store)
+            .load(&account_namespace)
+            .expect("read")
+            .is_some())
+        .await,
+        "start-up never created the account namespace"
+    );
+    assert!(
+        eventually(|| harness.broadcast_topics().is_empty()).await,
+        "start-up announcements never settled"
+    );
 
     let wasm = wat::parse_str(module_with(init_signs)).expect("parse the module");
     let (blob_id, size) = harness
