@@ -161,6 +161,23 @@ steps:
     match:
       forgotten: true
 
+  - name: Node-1 holds no contexts for the refused namespace
+    type: list_group_contexts
+    node: restore-kick-node-1
+    group_id: '{{namespace_id}}'
+    expected_failure: true
+    expected_error: not a member of group
+
+  - name: Node-1 cannot read what node-3 wrote after the kick
+    type: call
+    node: restore-kick-node-1
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "after_kick"
+    expected_failure: true
+    expected_error: No owned identity
+
 stop_all_nodes: true
 restart: false
 wait_timeout: 120
