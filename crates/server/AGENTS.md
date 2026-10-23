@@ -530,8 +530,15 @@ request re-stamps it.
   A route with no app scoping (blob listing, blob delete of another's blob, application, node, account and TEE routes) stays out of it.
   `app_host::AppHosts::hand_over` runs them through the normal router, auth middleware included, with the `AppApi` request extension that `origin_guard::refuse_app_origins` and `ws_handler` take as leave to skip their app-origin refusal.
   It answers `403` when `Origin` is not the `Host` called, and `403` with a plain-text body unless this node verifies the token itself (`ServerConfig::use_embedded_auth`).
-  Proxy mode gets no app API, with or without `proxy_identity`: merod mounts no token guard there, and an app host is a listener merod binds itself, with no proxy in front to vouch for the caller.
+  Proxy mode gets no app API, with or without `proxy_identity`, unless `[server.apps] trust_proxy` is set (`ServerConfig::serves_app_api`): merod mounts no token guard there, so the operator vouches that a proxy authenticates every app-host request.
+  With it, `proxy_permissions::inject` answers `401` to an app-host request without `X-Auth-Permissions`, and `bind_to_app` runs behind it as under embedded auth.
   A reverse proxy in front must forward the original `Host` (`proxy_set_header Host $host` for nginx), or the node cannot tell an app host from its own.
+  The proxy's forward-auth must send `X-Forwarded-Uri` and `X-Forwarded-Method` to mero-auth's `/auth/validate`, so per-route permissions are checked.
+  Traefik's forwardAuth does; nginx `auth_request` needs them configured.
+  It must also strip or overwrite any client-sent `X-Auth-Permissions`.
+  On app hosts only `POST /auth/refresh` and `GET`/`HEAD /auth/validate` may reach mero-auth.
+  `/auth/login` must go to merod, which redirects to the node's login page, or be refused, so the login page is never served on an app's origin.
+  `[server.apps] base_domain` must be the node's own host, because mero-auth validates an app-host request by stripping exactly one app label and comparing the rest with the token's host.
   The desktop webview origins (`calimero-app://...`) cannot use the app API from the node; they go through the desktop app instead.
   Never add a route that changes or lists something outside the app's binding, or any page that takes credentials, to the set: an app's script could read what the user types.
   `GET /auth/login` on an app host answers `302` to the node's own login page with the same path, query and port, and no body: the host without its label, and no scheme so the browser keeps its own.

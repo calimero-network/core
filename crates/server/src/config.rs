@@ -132,6 +132,14 @@ pub struct AppsConfig {
     /// would put every app under a name anyone can register.
     #[serde(deserialize_with = "deserialize_base_domain")]
     pub base_domain: String,
+    /// In proxy auth mode, serve the app API on app hosts and trust the proxy's
+    /// `X-Auth-Permissions` for it, as embedded auth would.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub trust_proxy: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 fn deserialize_base_domain<'de, D: serde::Deserializer<'de>>(
@@ -150,6 +158,7 @@ impl Default for AppsConfig {
     fn default() -> Self {
         Self {
             base_domain: DEFAULT_APPS_BASE_DOMAIN.to_owned(),
+            trust_proxy: false,
         }
     }
 }
@@ -312,6 +321,14 @@ impl ServerConfig {
             proxy_identity: false,
             tee_release_version: None,
         }
+    }
+
+    /// Whether an app host passes the app API to the node's routes: where this
+    /// node verifies the token, or where the operator trusts the proxy to.
+    #[must_use]
+    pub fn serves_app_api(&self) -> bool {
+        self.use_embedded_auth()
+            || (self.apps.trust_proxy && matches!(self.auth_mode, AuthMode::Proxy))
     }
 
     #[must_use]

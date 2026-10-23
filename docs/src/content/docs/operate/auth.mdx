@@ -324,7 +324,13 @@ A join of a namespace the node does not hold yet is allowed when the invitation'
 Every other admin route answers `403` on an app's origin.
 Login is never served there: `GET /auth/login` on an app host answers `302` to the node's own login page with the same query and port, so it stays a navigation to the node's own origin.
 An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.
-Proxy deployments get no app API for now, and a reverse proxy in front must forward the original `Host` (`proxy_set_header Host $host` for nginx).
+Proxy deployments get no app API unless `[server.apps] trust_proxy = true` is set, in which case the proxy must authenticate every request to an app host and forward the original `Host` (`proxy_set_header Host $host` for nginx) and its `X-Auth-Permissions`.
+The proxy's forward-auth must send `X-Forwarded-Uri` and `X-Forwarded-Method` to mero-auth's `/auth/validate`, so per-route permissions are checked.
+Traefik's forwardAuth does; nginx `auth_request` needs them configured.
+It must also strip or overwrite any client-sent `X-Auth-Permissions`.
+On app hosts only `POST /auth/refresh` and `GET`/`HEAD /auth/validate` may reach mero-auth.
+`/auth/login` must go to merod, which redirects to the node's login page, or be refused, so the login page is never served on an app's origin.
+`[server.apps] base_domain` must be the node's own host, because mero-auth validates an app-host request by stripping exactly one app label and comparing the rest with the token's host.
 The desktop webview origins (`calimero-app://...`) cannot use the app API from the node and go through the desktop app instead.
 
 Each entry must be an exact `http` or `https` origin (`scheme://host[:port]`):

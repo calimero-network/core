@@ -827,6 +827,23 @@ mod tests {
         assert!(typo.is_err());
     }
 
+    #[test]
+    fn server_apps_trust_proxy_defaults_off_and_is_written_only_when_set() {
+        let absent: super::ServerConfig = toml::from_str("listen = []\n").unwrap();
+        assert!(!absent.apps.trust_proxy);
+
+        let set: super::ServerConfig =
+            toml::from_str("listen = []\n[apps]\ntrust_proxy = true\n").unwrap();
+        assert!(set.apps.trust_proxy);
+        assert!(toml::to_string(&set)
+            .unwrap()
+            .contains("trust_proxy = true"));
+
+        let unset: super::ServerConfig =
+            toml::from_str("listen = []\n[apps]\nbase_domain = \"apps.example\"\n").unwrap();
+        assert!(!toml::to_string(&unset).unwrap().contains("trust_proxy"));
+    }
+
     /// The fallback apps port is gone: a config that still sets it is refused by name.
     #[test]
     fn server_apps_port_is_refused() {

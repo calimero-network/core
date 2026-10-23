@@ -154,6 +154,7 @@ struct Node {
     app_hosts: Router,
     proxied: Router,
     proxied_with_identity: Router,
+    proxied_app_hosts: Router,
     store: Store,
     node_client: calimero_node_primitives::client::NodeClient,
     keys: KeyManager,
@@ -253,6 +254,10 @@ impl Node {
             origins: AppOrigins::new(&AppsConfig::default()),
             app_api: true,
         };
+        let proxied_app_hosts = proxied.clone().layer(axum::middleware::from_fn_with_state(
+            hosts.clone(),
+            serve_app_hosts,
+        ));
         let app_hosts = router
             .clone()
             .layer(axum::middleware::from_fn_with_state(hosts, serve_app_hosts));
@@ -262,6 +267,7 @@ impl Node {
             app_hosts,
             proxied,
             proxied_with_identity,
+            proxied_app_hosts,
             store,
             node_client,
             keys,
@@ -353,6 +359,22 @@ impl Node {
             .uri(format!("/admin-api{path}"))
             .header("X-Auth-Permissions", permissions.join(","));
         Self::send(&self.proxied, request, body).await
+    }
+
+    /// A request to `app`'s own origin behind a proxy that forwards `permissions`, if it names any.
+    async fn call_proxied_on_origin_of(
+        &self,
+        app: &ApplicationId,
+        permissions: Option<&[String]>,
+        path: &str,
+    ) -> (StatusCode, Value) {
+        let mut request = Request::builder()
+            .uri(format!("/admin-api{path}"))
+            .header("Host", format!("{}.localhost:2428", encode_label(app)));
+        if let Some(permissions) = permissions {
+            request = request.header("X-Auth-Permissions", permissions.join(","));
+        }
+        Self::send(&self.proxied_app_hosts, request, None).await
     }
 
     async fn send(
@@ -2050,4 +2072,62 @@ async fn an_app_origin_cannot_cascade_over_a_subtree_holding_another_application
         )
         .await;
     assert_ne!(status, StatusCode::FORBIDDEN, "a tree of one app: {body}");
+}
+
+fn app_token(extra: &[String]) -> Vec<String> {
+    let mut permissions: Vec<String> = APP_TOKEN.iter().map(|p| (*p).to_owned()).collect();
+    permissions.extend_from_slice(extra);
+    permissions
+}
+
+#[actix::test]
+async fn behind_a_trusted_proxy_an_app_origin_needs_the_proxys_permissions() {
+    let node = Node::new().await;
+
+    let (status, _) = node
+        .call_proxied_on_origin_of(&node.mine.app, None, "/contexts")
+        .await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[actix::test]
+async fn behind_a_trusted_proxy_an_app_origin_is_bound_to_its_app() {
+    let node = Node::new().await;
+    let unbound = app_token(&[]);
+
+    for tenant in [&node.mine, &node.theirs] {
+        let (status, body) = node
+            .call_proxied_on_origin_of(&tenant.app, Some(&unbound), "/contexts")
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            ids(&body, "contexts", "id"),
+            vec![tenant.context.to_string()]
+        );
+    }
+    let theirs = format!("/contexts/{}", node.theirs.context);
+    let (status, body) = node
+        .call_proxied_on_origin_of(&node.mine.app, Some(&unbound), &theirs)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+#[actix::test]
+async fn behind_a_trusted_proxy_an_app_origin_refuses_admin_and_foreign_bindings() {
+    let node = Node::new().await;
+    let admin = app_token(&["admin".to_owned()]);
+    let foreign = app_token(&[application_binding(&node.theirs.app.to_string())]);
+    let own = app_token(&[application_binding(&node.mine.app.to_string())]);
+
+    for (permissions, expected) in [
+        (&admin, StatusCode::FORBIDDEN),
+        (&foreign, StatusCode::FORBIDDEN),
+        (&own, StatusCode::OK),
+    ] {
+        let (status, body) = node
+            .call_proxied_on_origin_of(&node.mine.app, Some(permissions), "/contexts")
+            .await;
+        assert_eq!(status, expected, "{permissions:?}: {body}");
+    }
 }

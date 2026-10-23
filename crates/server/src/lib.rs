@@ -409,7 +409,7 @@ fn app_hosts(config: &ServerConfig, node_client: &NodeClient) -> Option<app_host
     (!config.sealed.required).then(|| app_host::AppHosts {
         node_client: node_client.clone(),
         origins: app_host::AppOrigins::new(&config.apps),
-        app_api: config.use_embedded_auth(),
+        app_api: config.serves_app_api(),
     })
 }
 
@@ -985,6 +985,30 @@ mod cors_tests {
         assert!(with_mode(crate::config::AuthMode::Embedded, false));
         assert!(!with_mode(crate::config::AuthMode::Proxy, false));
         assert!(!with_mode(crate::config::AuthMode::Proxy, true));
+    }
+
+    #[actix::test]
+    async fn trust_proxy_opens_the_app_api_in_proxy_mode_only() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (state, _blobs) = admin_state(&store).await;
+        let services = crate::config::ServiceConfigs {
+            admin: None,
+            jsonrpc: None,
+            websocket: None,
+            sse: None,
+        };
+        let mut config = ServerConfig::with_auth(
+            vec![],
+            Keypair::generate_ed25519(),
+            services,
+            crate::config::AuthMode::Proxy,
+            None,
+        );
+        config.apps.trust_proxy = true;
+
+        let hosts = super::app_hosts(&config, &state.node_client).expect("app hosts");
+
+        assert!(hosts.app_api);
     }
 
     /// A node with embedded auth, RPC and the admin API on `port`.
