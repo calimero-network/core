@@ -188,24 +188,33 @@ impl Handler<ChangeNamespaceAdminRequest> for ContextManager {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::collections::HashSet;
 
     use calimero_account::AccountId;
     use calimero_context_client::group::{
-        CreateGroupRequest, OwnerDeleteGroupRequest, SetTeeAdmissionPolicyRequest,
+        AddGroupMembersRequest, CreateGroupRequest, LeaveNamespaceRequest, ListGroupMembersRequest,
+        ListNamespacesRequest, OwnerDeleteGroupRequest, SetTeeAdmissionPolicyRequest,
         SetTeeAuthoringPolicyRequest, SignedReleaseTrust,
     };
-    use calimero_context_client::local_governance::TeeAdmissionMode;
+    use calimero_context_client::local_governance::{SignedNamespaceOp, TeeAdmissionMode};
     use calimero_context_config::types::ContextGroupId;
+    use calimero_dag::DeltaApplier;
     use calimero_governance_store::{
         get_op_head, register_context_in_group, GroupKeyring, KeyringError, MembershipRepository,
-        MetaError, MetaRepository, NodeDeviceRepository,
+        MetaError, MetaRepository, NamespaceGovernance, NamespaceOpLogService,
+        NodeDeviceRepository,
     };
+    use calimero_op::{OpPayload, ScopeId};
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::{ContextId, GroupMemberRole};
+    use calimero_primitives::identity::MemberIdentity;
     use calimero_store::db::InMemoryDB;
+    use calimero_store::key::ScopeUnifiedOp as ScopeUnifiedOpKey;
     use calimero_store::Store;
 
+    use super::*;
+    use crate::governance_dag::{signed_namespace_op_to_delta, NamespaceGovernanceApplier};
+    use crate::scope_projection::ScopeProjections;
     use crate::test_support::{actor, install_application};
 
     const APP: [u8; 32] = [0xE1; 32];
@@ -454,5 +463,343 @@ mod tests {
             "a conversion nobody could be sent was applied here"
         );
         assert!(!harness.published_topics().is_empty());
+    }
+
+    /// The founder's node after she added Bob as an admin and handed him the namespace.
+    struct Transferred {
+        harness: actor::Harness,
+        store: Store,
+        namespace: ContextGroupId,
+        alice: AccountId,
+        bob: AccountId,
+    }
+
+    async fn transferred() -> Transferred {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let alice = NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the founder's root")
+            .account();
+        let bob = AccountId::from([0xB0; 32]);
+        let harness = actor::over(store.clone()).await;
+        let namespace = harness
+            .manager
+            .send(CreateGroupRequest {
+                salt: None,
+                bytecode_id: None,
+                application_id: None,
+                name: None,
+                parent_group_id: None,
+                restricted: true,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created")
+            .group_id;
+        harness
+            .manager
+            .send(AddGroupMembersRequest {
+                group_id: namespace,
+                members: vec![(MemberIdentity::from(bob), GroupMemberRole::Admin)],
+            })
+            .await
+            .expect("the manager answers")
+            .expect("bob is added as an admin");
+        harness
+            .manager
+            .send(TransferOwnershipRequest {
+                group_id: namespace,
+                new_owner: bob,
+                root_proof: None,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the founder transfers ownership");
+        Transferred {
+            harness,
+            store,
+            namespace,
+            alice,
+            bob,
+        }
+    }
+
+    /// A peer holding the namespace key that received every op of `from`, parents first.
+    async fn replayed_on_a_peer(from: &Store, namespace: ContextGroupId) -> Store {
+        let peer = Store::new(Arc::new(InMemoryDB::owned()));
+        let (_, key) = GroupKeyring::new(from, namespace)
+            .load_current_key()
+            .expect("read the keyring")
+            .expect("the namespace is keyed");
+        let _ = GroupKeyring::new(&peer, namespace)
+            .store_key(&key)
+            .expect("the peer holds the key");
+        let log = NamespaceOpLogService::new(from, namespace.to_bytes().into());
+        let mut pending: Vec<SignedNamespaceOp> =
+            ScopeProjections::ops_for_namespace(from, namespace.to_bytes())
+                .expect("the founder's ops")
+                .iter()
+                .map(|op| {
+                    log.get_signed_op(op.id())
+                        .expect("read the op log")
+                        .expect("every folded op is logged")
+                })
+                .collect();
+        let applier = NamespaceGovernanceApplier::new(peer.clone());
+        let mut applied = HashSet::new();
+        while !pending.is_empty() {
+            let (ready, rest): (Vec<_>, Vec<_>) = pending
+                .into_iter()
+                .partition(|op| op.parent_op_hashes.iter().all(|p| applied.contains(p)));
+            assert!(!ready.is_empty(), "the log has a gap");
+            for op in ready {
+                let delta = signed_namespace_op_to_delta(&op).expect("build the delta");
+                applier.apply(&delta).await.expect("the peer applies it");
+                let _ = applied.insert(delta.id);
+            }
+            pending = rest;
+        }
+        peer
+    }
+
+    /// The founder hands the namespace to another admin and stays one, as the
+    /// apply leaves her Admin row: she still lists its members and may leave it.
+    #[actix::test]
+    async fn a_founder_who_transfers_ownership_stays_an_admin() {
+        let Transferred {
+            harness,
+            namespace,
+            alice,
+            bob,
+            ..
+        } = transferred().await;
+
+        let members = harness
+            .manager
+            .send(ListGroupMembersRequest {
+                group_id: namespace,
+                offset: 0,
+                limit: 10,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the former owner is still a member")
+            .members;
+        let roles: Vec<_> = members.into_iter().map(|m| (m.identity, m.role)).collect();
+        assert!(
+            roles.contains(&(alice, GroupMemberRole::Admin))
+                && roles.contains(&(bob, GroupMemberRole::Admin)),
+            "both stay admins after the transfer, got {roles:?}"
+        );
+        let listed = harness
+            .manager
+            .send(ListNamespacesRequest {
+                offset: 0,
+                limit: 10,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespaces list");
+        assert!(listed.iter().any(|ns| ns.namespace_id == namespace));
+
+        let _left = harness
+            .manager
+            .send(LeaveNamespaceRequest {
+                namespace_id: namespace,
+                purge: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the former owner may leave");
+    }
+
+    /// The new owner's node folds the same ops to the same members.
+    #[actix::test]
+    async fn a_peer_sees_the_former_owner_as_an_admin() {
+        let Transferred {
+            store,
+            namespace,
+            alice,
+            bob,
+            ..
+        } = transferred().await;
+        let peer = replayed_on_a_peer(&store, namespace).await;
+
+        let (proj, ns, heads) = ScopeProjections::ephemeral_projection(&peer, &namespace)
+            .expect("the peer folds the namespace");
+        let mut members = proj
+            .member_entries_with(&peer, ns, &namespace, &heads)
+            .expect("the peer's cut is complete");
+        members.sort_by_key(|(account, _)| *account);
+        let mut expected = vec![
+            (alice, GroupMemberRole::Admin),
+            (bob, GroupMemberRole::Admin),
+        ];
+        expected.sort_by_key(|(account, _)| *account);
+        assert_eq!(members, expected);
+    }
+
+    /// A namespace founded by an older build stored its genesis as the bare device
+    /// link; the founder's row is still folded from it.
+    #[actix::test]
+    async fn a_genesis_stored_before_it_seated_the_founder_still_seats_her() {
+        let Transferred {
+            harness,
+            store,
+            namespace,
+            alice,
+            ..
+        } = transferred().await;
+        let scope = ScopeId::from(namespace.to_bytes());
+        let mut genesis = crate::unified_op_store::load_scope_ops(&store, &scope)
+            .expect("read the op store")
+            .into_iter()
+            .find(|op| op.parents.is_empty())
+            .expect("the genesis is stored");
+        let OpPayload::NamespaceFounded { carried, .. } = genesis.payload else {
+            panic!("a genesis folds as a founding, got {:?}", genesis.payload);
+        };
+        genesis.payload = *carried;
+        crate::unified_op_store::persist_op(&store, &genesis).expect("store the old row");
+
+        let members = harness
+            .manager
+            .send(ListGroupMembersRequest {
+                group_id: namespace,
+                offset: 0,
+                limit: 10,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the former owner is still a member")
+            .members;
+        assert!(members
+            .iter()
+            .any(|m| m.identity == alice && m.role == GroupMemberRole::Admin));
+    }
+
+    /// A founder who left cannot seat herself again by signing a second genesis: the
+    /// apply logs it as a no-op on the established namespace, and the fold must too.
+    #[actix::test]
+    async fn a_founder_who_left_cannot_reseat_herself() {
+        let Transferred {
+            harness,
+            store,
+            namespace,
+            alice,
+            ..
+        } = transferred().await;
+        let (_, sk) = NamespaceRepository::new(&store)
+            .identity(&namespace)
+            .expect("read the identity")
+            .expect("the founder signs here");
+        let _left = harness
+            .manager
+            .send(LeaveNamespaceRequest {
+                purge: false,
+                namespace_id: namespace,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the former owner leaves");
+
+        let log = NamespaceOpLogService::new(&store, namespace.to_bytes().into());
+        let genesis = ScopeProjections::ops_for_namespace(&store, namespace.to_bytes())
+            .expect("the namespace's ops")
+            .into_iter()
+            .find(|op| op.parents.is_empty())
+            .and_then(|op| log.get_signed_op(op.id()).expect("read the op log"))
+            .expect("the genesis is logged");
+        let leave = ScopeProjections::ops_for_namespace(&store, namespace.to_bytes())
+            .expect("the namespace's ops")
+            .into_iter()
+            .find(|op| matches!(op.payload, OpPayload::MemberLeft { .. }))
+            .expect("the leave is logged")
+            .id();
+        // Governance ops tie on clock and generation in the streaming fold, so the op id
+        // decides; a founder can grind the nonce until hers outranks the leave.
+        let mut nonce = NamespaceGovernance::new(&store, namespace.to_bytes().into())
+            .read_head_record()
+            .expect("read the head")
+            .next_nonce;
+        let second = loop {
+            let signed = SignedNamespaceOp::sign(
+                &PrivateKey::from(sk),
+                namespace.to_bytes().into(),
+                vec![],
+                nonce,
+                genesis.op.clone(),
+            )
+            .expect("sign a second genesis");
+            if signed_namespace_op_to_delta(&signed)
+                .expect("build the delta")
+                .id
+                > leave
+            {
+                break signed;
+            }
+            nonce += 1;
+        };
+        NamespaceGovernanceApplier::new(store.clone())
+            .apply(&signed_namespace_op_to_delta(&second).expect("build the delta"))
+            .await
+            .expect("an established namespace takes a second genesis as a no-op");
+
+        let (proj, ns, heads) =
+            ScopeProjections::ephemeral_projection(&store, &namespace).expect("fold the namespace");
+        let members = proj
+            .member_entries_with(&store, ns, &namespace, &heads)
+            .expect("the cut is complete");
+        assert!(
+            members.iter().all(|(account, _)| *account != alice),
+            "the leaver is seated again at the cut: {members:?}"
+        );
+        let ops = ScopeProjections::ops_for_namespace(&store, namespace.to_bytes())
+            .expect("the namespace's ops");
+        assert_eq!(ops.iter().filter(|op| op.parents.is_empty()).count(), 2);
+        let streamed = calimero_projection::ScopeState::from_ops(&ops).acl_view();
+        assert_eq!(
+            streamed
+                .groups
+                .get(&namespace)
+                .and_then(|rows| rows.get(&alice)),
+            None,
+            "the leaver is seated again in the streaming fold"
+        );
+    }
+
+    /// A purge that lands between a load and its re-derivation leaves no row behind:
+    /// a stored genesis is re-derived in memory only, so nothing recreates what it deleted.
+    #[actix::test]
+    async fn a_re_derived_genesis_does_not_outlive_a_purge() {
+        let Transferred {
+            store, namespace, ..
+        } = transferred().await;
+        let scope = ScopeId::from(namespace.to_bytes());
+        let mut genesis = crate::unified_op_store::load_scope_ops(&store, &scope)
+            .expect("read the op store")
+            .into_iter()
+            .find(|op| op.parents.is_empty())
+            .expect("the genesis is stored");
+        let OpPayload::NamespaceFounded { carried, .. } = genesis.payload else {
+            panic!("a genesis folds as a founding, got {:?}", genesis.payload);
+        };
+        genesis.payload = *carried;
+        crate::unified_op_store::persist_op(&store, &genesis).expect("store the old row");
+
+        let mut loaded =
+            crate::unified_op_store::load_scope_ops(&store, &scope).expect("read the op store");
+        // The purge itself is not on this branch: it deletes the namespace's op rows.
+        let mut handle = store.handle();
+        for op in &loaded {
+            handle
+                .delete(&ScopeUnifiedOpKey::new(namespace.to_bytes(), op.id()))
+                .expect("purge the row");
+        }
+        ScopeProjections::reclassify_stored_holes(&store, namespace.to_bytes(), &mut loaded);
+
+        assert!(crate::unified_op_store::load_scope_ops(&store, &scope)
+            .expect("read the op store")
+            .is_empty());
     }
 }

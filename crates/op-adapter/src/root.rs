@@ -205,10 +205,17 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
         // every op the founder later signs is judged "not admin" at the cut and
         // rejected by every receiver while the publisher accepts it.
         //
-        // The admin half needs no arm: the root's `admin_identity` reaches the
-        // cut through `auth_cut_context`, which reads it from the root meta that
-        // genesis wrote. Only the device link is missing here.
-        RootOp::NamespaceCreatedV2 { account, .. } => Some(founder_link(op, account)),
+        // The founder's Admin row rides along: the root meta's `admin_identity` moves
+        // with a transfer, so it cannot stand in for the row the apply writes here.
+        RootOp::NamespaceCreatedV2 {
+            founder,
+            account,
+            salt,
+        } => Some(OpPayload::NamespaceFounded {
+            founder: *founder,
+            salt: *salt,
+            carried: Box::new(founder_link(op, account)),
+        }),
         // The same genesis, carrying the founder whose devices its account
         // namespace exempts from scope; the projection checks the id derives from it.
         RootOp::AccountNamespaceCreated {

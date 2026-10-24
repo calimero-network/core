@@ -1008,3 +1008,25 @@ fn an_op_the_projection_models_nothing_about_is_judged_by_the_capability_it_name
     assert!(judged(MemberCapabilities::CAN_MANAGE_METADATA));
     assert!(!judged(MemberCapabilities::empty()));
 }
+
+/// A genesis that is not the founding one grants no admin, so a role change for the
+/// account it names is not taken for a demotion.
+#[test]
+fn a_forged_genesis_grants_no_admin() {
+    let root = ContextGroupId::from([0u8; 32]);
+    let forged = gov(
+        YARA,
+        &[],
+        OpPayload::NamespaceFounded {
+            founder: acct(YARA),
+            salt: [0; 32],
+            carried: Box::new(OpPayload::Noop),
+        },
+    );
+    let role_change = add_in(root, OWNER, &[&forged], YARA, GroupMemberRole::Member);
+    assert!(!crate::void::holds_removal(
+        &[&forged, &role_change],
+        &crate::void::Resolved::default(),
+        base(),
+    ));
+}

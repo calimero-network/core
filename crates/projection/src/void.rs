@@ -192,7 +192,7 @@ fn removes_account(op: &Op) -> Option<AccountId> {
 /// Does `ops` hold an op that takes authority away from someone else: a member
 /// removal, a device revocation, a role change for an account granted `Admin`, or a
 /// capability set leaving out a bit the member could have held?
-fn holds_removal(ops: &[&Op], resolved: &Resolved, base: AuthorityBase) -> bool {
+pub(crate) fn holds_removal(ops: &[&Op], resolved: &Resolved, base: AuthorityBase) -> bool {
     let author = |op: &Op| {
         resolved
             .get(&op.id())
@@ -210,6 +210,9 @@ fn holds_removal(ops: &[&Op], resolved: &Resolved, base: AuthorityBase) -> bool 
     let mut defaults: HashMap<ContextGroupId, u32> = HashMap::new();
     let mut capability_sets: Vec<(ContextGroupId, AccountId, u32)> = Vec::new();
     for op in ops {
+        if let Some(founder) = crate::seated_founder(op, &op.payload) {
+            let _ = admin_grants.insert((ContextGroupId::from(*op.scope.as_bytes()), founder));
+        }
         match &op.payload {
             OpPayload::MemberCapabilitySet {
                 group,
@@ -319,7 +322,7 @@ fn transfer_to(op: &Op) -> Option<AccountId> {
 }
 
 /// The account and device of each op built without an author, by op id.
-type Resolved = HashMap<[u8; 32], (AccountId, DeviceId)>;
+pub(crate) type Resolved = HashMap<[u8; 32], (AccountId, DeviceId)>;
 
 /// The account and device of each op built without an author, from the log's device
 /// links (a revocation drops the binding, not the link). A key linked twice names none.
@@ -333,7 +336,8 @@ fn resolve_unattributed(ops: &[&Op]) -> Resolved {
     let mut linked: HashMap<[u8; 32], Option<(AccountId, DeviceId)>> = HashMap::new();
     for op in ops {
         let payload = match &op.payload {
-            OpPayload::AccountNamespaceFounded { carried, .. } => carried,
+            OpPayload::AccountNamespaceFounded { carried, .. }
+            | OpPayload::NamespaceFounded { carried, .. } => carried,
             payload => payload,
         };
         let (OpPayload::DeviceLinked { cert, .. } | OpPayload::MemberJoinedWithDevice { cert, .. }) =
@@ -412,6 +416,9 @@ impl<'a> Analysis<'a> {
 
         let mut admin_grants: HashSet<(ContextGroupId, AccountId)> = HashSet::new();
         for op in ops {
+            if let Some(founder) = crate::seated_founder(op, &op.payload) {
+                let _ = admin_grants.insert((ContextGroupId::from(*op.scope.as_bytes()), founder));
+            }
             match &op.payload {
                 OpPayload::MemberAdded {
                     group,
