@@ -19,6 +19,58 @@ pub struct ContextConfig {
     /// `config.toml`, it takes [`SearchSettings::default`].
     #[serde(default)]
     pub search: SearchSettings,
+
+    /// `[context.outbound]`: outbound HTTPS requests from apps. Off unless an
+    /// operator turns it on; see [`crate::outbound`].
+    #[serde(default)]
+    pub outbound: OutboundSettings,
+}
+
+/// The operator's knobs for outbound HTTPS requests (`[context.outbound]`).
+///
+/// Off by default. When on, a run may make one request, only to a URL its
+/// app's signed manifest declares, only to a host listed here, and only with
+/// secrets this node can supply for that app. See [`crate::outbound`].
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct OutboundSettings {
+    /// Make outbound requests at all. `false` (the default): `http_request`
+    /// traps in every run.
+    pub enabled: bool,
+    /// The hosts requests may go to, as DNS names. A request to any other host
+    /// is refused, whatever the app declares.
+    pub hosts: Vec<String>,
+    /// Secrets from environment variables, by the name a request uses
+    /// (`{{secret:NAME}}`). Exclusive with `sidecar`.
+    pub env_secrets: std::collections::BTreeMap<String, EnvSecretSettings>,
+    /// Secrets from a loopback service next to the node. Exclusive with
+    /// `env_secrets`.
+    pub sidecar: Option<SidecarSettings>,
+}
+
+/// One secret from an environment variable.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EnvSecretSettings {
+    /// The variable holding the value; read once at start.
+    pub env: String,
+    /// The app packages that may use it, e.g. `com.calimero.mero-forms`.
+    pub packages: Vec<String>,
+    /// The bundle signers (`did:key:…`) whose builds of those packages may use
+    /// it. Both must match: a package name alone is not proof of who built it.
+    pub signers: Vec<String>,
+    /// The hosts it may be sent to.
+    pub hosts: Vec<String>,
+}
+
+/// The loopback secrets service.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SidecarSettings {
+    /// `http://127.0.0.1:<port>/…` or another loopback address.
+    pub url: String,
+    /// The variable holding the bearer token the node sends it.
+    pub token_env: String,
 }
 
 /// Serde default for [`ContextConfig::migration_v2`]: ON, matching

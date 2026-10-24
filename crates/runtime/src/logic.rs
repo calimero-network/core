@@ -111,8 +111,8 @@ pub struct VMContext<'a> {
     pub remote_delta: bool,
     /// The node's outbound HTTPS client, bound to this run's application. The
     /// node supplies it only when its operator turned outbound requests on, the
-    /// app's manifest declares at least one URL, and the run writes state on
-    /// this node's own behalf (never a view, a migration, a check or a peer's
+    /// app's manifest declares at least one URL, and the run writes state and
+    /// executes on this node (never a view, a migration, a check or a peer's
     /// delta). `None` everywhere else, and `http_request` then traps.
     pub outbound: Option<std::sync::Arc<dyn OutboundHost>>,
 }

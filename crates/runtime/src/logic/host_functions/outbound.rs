@@ -31,7 +31,7 @@ impl VMHostFunctions<'_> {
     /// * `HostError::OutboundUnavailable` when the node supplied no outbound
     ///   client for this run: outbound requests are off on this node, the app's
     ///   manifest declares no URL, or the run is a view, a migration, a check,
-    ///   a peer's delta or on someone else's behalf.
+    ///   a state op or a peer's delta.
     /// * `HostError::OutboundRequestsExceeded` past `MAX_REQUESTS_PER_RUN`.
     /// * `HostError::ValueLengthOverflow` for a request over the size limit.
     /// * `HostError::InvalidMemoryAccess` for a bad descriptor.

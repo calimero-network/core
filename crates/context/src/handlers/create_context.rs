@@ -502,6 +502,7 @@ async fn create_context(
         // Nor does it open anything: nothing is sealed to a context not yet made.
         calimero_runtime::logic::SealingContext::default(),
         None,  // init writes, and search is for views only
+        None,  // nor does creating a context reach the network
         false, // nor a peer replay
     )
     .await?;

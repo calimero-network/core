@@ -27,6 +27,7 @@ there and implemented under [`src/logic/host_functions/`](src/logic/host_functio
   - [Storage (Ordered Index)](#storage-ordered-index)
   - [Storage (Private/Local)](#storage-privatelocal)
   - [Full-Text Search](#full-text-search)
+  - [Outbound HTTPS](#outbound-https)
   - [State Management](#state-management)
   - [CRDT Collections (JS)](#crdt-collections-js)
   - [User & Frozen Storage (JS)](#user--frozen-storage-js)
@@ -177,6 +178,14 @@ Node-local, per-context search (`calimero-search`); views only.
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `search_query` | `(request_ptr: u64, register_id: u64) -> u32` | Reads a borsh `SearchRequest` (at most 4 KiB) and queries the **running** context's index (the request names no context). `1`: a borsh `SearchResponse` in the register; `0`: the node's UTF-8 reason. Traps with `SearchUnavailable` outside a read-only run or on a node without search, and with `SearchCallsExceeded` past 32 calls. Charged `search_gas` (`SEARCH_BASE_GAS` + `SEARCH_GAS_PER_MATCH`·matched + `SEARCH_GAS_PER_HIT`·hits + `SEARCH_GAS_PER_BYTE`·response bytes) as it returns; `HostGasExhausted` when the budget cannot cover it. |
+
+### Outbound HTTPS
+
+One request per run, from a run that writes; off unless the node's operator turns it on (`[context.outbound]`). The guide is `docs/src/content/docs/build/guides/outbound.mdx`.
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `http_request` | `(request_ptr: u64, register_id: u64) -> u32` | Reads a borsh `OutboundRequest` (`calimero_primitives::outbound`) and hands it to the node's `OutboundHost` (`VMContext::outbound`), which decides whether and where it goes: the operator's host list, the URL in the app's signed manifest, the size limits, public addresses only, `{{secret:NAME}}` substitution and response redaction. `1`: a borsh `OutboundResponse` (status and body only) in the register; `0`: the node's UTF-8 reason. Traps with `OutboundUnavailable` when the node gave the run no client (feature off, no declared URL, a view, a migration, a state op, a peer's delta), with `OutboundRequestsExceeded` on a second call, and with `ValueLengthOverflow` for an encoded request over the limits. Never charged gas: a write's gas must be the same on every node. |
 
 ### State Management
 

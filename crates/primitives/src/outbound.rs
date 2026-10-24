@@ -9,8 +9,9 @@
 //!   off by default) and listed the request's host;
 //! - the app's signed bundle manifest declares the request's exact URL
 //!   (`outbound`);
-//! - the run writes state on this node's own behalf: never a view, a
-//!   migration, a check or a peer's delta;
+//! - the run writes state and executes on this node (its own write, or one it
+//!   relays for an author): never a view, a migration, a check or a peer's
+//!   delta;
 //! - the request fits the limits below, and its host resolves only to public
 //!   addresses.
 //!

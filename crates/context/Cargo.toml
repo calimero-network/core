@@ -22,8 +22,11 @@ rand.workspace = true
 serde.workspace = true
 sha2.workspace = true
 serde_json.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+url.workspace = true
+zeroize.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
+tokio = { workspace = true, features = ["sync", "macros", "rt", "time", "net"] }
 tracing.workspace = true
 
 calimero-app-downloader.workspace = true
