@@ -43,6 +43,17 @@ node_url() {
     echo "http://127.0.0.1:${_hostport}"
 }
 
+# An operator token for the node at $1, logged in as the admin user; $2 names the client.
+operator_token() {
+    _login=$(curl -sS -X POST "$1/auth/token" \
+        -H 'Content-Type: application/json' \
+        -d "$(printf '{"auth_method":"user_password","public_key":"%s","client_name":"%s","timestamp":%s,"provider_data":{"username":"%s","password":"%s"}}' \
+            "$2" "$1" "$(date +%s)" "${MERO_AUTH_ADMIN_USER:-dev}" "${MERO_AUTH_ADMIN_PASSWORD:-dev-password}")")
+    _token=$(echo "${_login}" | jq -r '.data.access_token // .access_token // empty')
+    [ -n "${_token}" ] || fail "the operator could not log in: ${_login}"
+    echo "${_token}"
+}
+
 # Run a node-free `merod` subcommand, in binary or Docker mode.
 #
 # `account warrant` and `account login-statement` sign from their flags alone --

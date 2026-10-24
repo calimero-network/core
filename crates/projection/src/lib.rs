@@ -58,8 +58,47 @@ pub mod testing;
 ///   regardless of arrival order.
 type Stamp = (HybridTimestamp, u32, [u8; 32]);
 
+/// Below every op's stamp: the clock and generation are the least there are, and no op id is zero.
+fn founding_stamp() -> Stamp {
+    (HybridTimestamp::default(), 0, [0; 32])
+}
+
 fn wins(incoming: Stamp, current: Option<&Stamp>) -> bool {
     current.is_none_or(|cur| incoming > *cur)
+}
+
+/// The founder a genesis `payload` folded as `op` seats, read through a relay's seat: only a
+/// parentless one, signed by her credential key, whose `(founder, salt)` derives the scope id.
+pub(crate) fn seated_founder(op: &Op, payload: &OpPayload) -> Option<AccountId> {
+    let id = op.scope.as_bytes();
+    let (founder, carried, derives) = match payload {
+        OpPayload::NamespaceFounded {
+            founder,
+            salt,
+            carried,
+        } => (
+            founder,
+            carried,
+            calimero_account::is_founded_by(id, founder, salt),
+        ),
+        OpPayload::AccountNamespaceFounded {
+            founder,
+            salt,
+            carried,
+        } => (
+            founder,
+            carried,
+            calimero_account::is_account_namespace_of(id, founder, salt),
+        ),
+        OpPayload::RelaySeated { carried, .. } => return seated_founder(op, carried),
+        _ => return None,
+    };
+    let signed_by_founder = matches!(
+        carried.as_ref(),
+        OpPayload::DeviceLinked { genesis, chain, cert, .. }
+            if calimero_authz::founder_signed(founder, genesis, chain, cert, &op.authorship.device_key)
+    );
+    (signed_by_founder && op.parents.is_empty() && derives).then_some(*founder)
 }
 
 /// Set an LWW register `slot` to `value` iff `stamp` beats the stored stamp.
@@ -781,24 +820,17 @@ impl ScopeState {
                 }
             }
             // Op-local: only a parentless genesis the founder's own credential key signed,
-            // naming the founder the scope id derives from, marks the scope.
-            OpPayload::AccountNamespaceFounded {
-                founder,
-                salt,
-                carried,
-            } => {
-                let signed_by_founder = matches!(
-                    carried.as_ref(),
-                    OpPayload::DeviceLinked { genesis, chain, cert, .. }
-                        if calimero_authz::founder_signed(
-                            founder, genesis, chain, cert, &op.authorship.device_key,
-                        )
-                );
-                if signed_by_founder
-                    && op.parents.is_empty()
-                    && calimero_account::is_account_namespace_of(op.scope.as_bytes(), founder, salt)
-                {
-                    self.account_namespace = Some(*founder);
+            // naming the founder the scope id derives from, marks the scope and seats her.
+            OpPayload::AccountNamespaceFounded { carried, .. } => {
+                if let Some(founder) = seated_founder(op, payload) {
+                    self.account_namespace = Some(founder);
+                    self.seat_founder(op, founder);
+                }
+                self.fold_payload(op, carried, stamp);
+            }
+            OpPayload::NamespaceFounded { carried, .. } => {
+                if let Some(founder) = seated_founder(op, payload) {
+                    self.seat_founder(op, founder);
                 }
                 self.fold_payload(op, carried, stamp);
             }
@@ -919,6 +951,13 @@ impl ScopeState {
             .and_then(|members| members.get(&relay))
             .filter(|role| role.is_tee())
             .cloned()
+    }
+
+    /// The founder's Admin row at the scope root, as the genesis apply writes it, at
+    /// [`founding_stamp`]: any write to the row beats it, so a second genesis restores nothing.
+    fn seat_founder(&mut self, op: &Op, founder: AccountId) {
+        let root = ContextGroupId::from(*op.scope.as_bytes());
+        self.fold_member_added(root, founder, &GroupMemberRole::Admin, founding_stamp());
     }
 
     /// LWW-set `member`'s role in `group`: an admin's add or role change, or a

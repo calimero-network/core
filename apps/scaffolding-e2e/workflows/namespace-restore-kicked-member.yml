@@ -176,7 +176,7 @@ steps:
     args:
       key: "after_kick"
     expected_failure: true
-    expected_error: No owned identity
+    expected_error: NoOwnedIdentity
 
 stop_all_nodes: true
 restart: false

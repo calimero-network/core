@@ -109,6 +109,7 @@
   "namespace-owner-writes-in-a-foreign-open-subgroup": 16,
   "namespace-restore-kicked-member": 82,
   "namespace-restore-without-invitation": 21,
+  "namespace-transfer-ownership-keeps-founder": 45,
   "nested-crdt": 23,
   "nested-crdt-offline-catchup": 74,
   "offline-account-root": 24,

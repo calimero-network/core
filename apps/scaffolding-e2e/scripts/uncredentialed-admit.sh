@@ -43,12 +43,7 @@ URL=$(node_url "${NODE}") || fail "could not resolve ${NODE}'s URL"
 
 # --- The operator mints an invitation (the one credentialed call) ------------
 
-LOGIN=$(curl -sS -X POST "${URL}/auth/token" \
-    -H 'Content-Type: application/json' \
-    -d "$(printf '{"auth_method":"user_password","public_key":"uncredentialed-admit","client_name":"%s","timestamp":%s,"provider_data":{"username":"%s","password":"%s"}}' \
-        "${URL}" "$(date +%s)" "${MERO_AUTH_ADMIN_USER:-dev}" "${MERO_AUTH_ADMIN_PASSWORD:-dev-password}")")
-TOKEN=$(echo "${LOGIN}" | jq -r '.data.access_token // .access_token // empty')
-[ -n "${TOKEN}" ] || fail "the operator could not log in: ${LOGIN}"
+TOKEN=$(operator_token "${URL}" uncredentialed-admit) || exit 1
 
 INVITE=$(curl -sS -X POST "${URL}/admin-api/namespaces/${NAMESPACE}/invite" \
     -H "Authorization: Bearer ${TOKEN}" \

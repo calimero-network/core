@@ -349,12 +349,16 @@ fn namespace_created_folds_the_founders_device_link() {
             account: credential.clone(),
             salt: [0x24u8; 32],
         }),
-        Some(OpPayload::DeviceLinked {
-            genesis: credential.genesis,
-            chain: credential.chain.clone(),
-            cert: credential.statement,
-            scope_epoch: 0,
-            applications: vec![],
+        Some(OpPayload::NamespaceFounded {
+            founder,
+            salt: [0x24u8; 32],
+            carried: Box::new(OpPayload::DeviceLinked {
+                genesis: credential.genesis,
+                chain: credential.chain.clone(),
+                cert: credential.statement,
+                scope_epoch: 0,
+                applications: vec![],
+            }),
         }),
         "genesis is the only place the founder's device is bound"
     );
@@ -369,15 +373,21 @@ fn namespace_created_with_a_foreign_credential_folds_no_device() {
     let founder_pk = PublicKey::from([0x22u8; 32]);
     let stranger = real_join_account_for(PublicKey::from([0x23u8; 32]), 0x23);
 
+    let founder = real_join_account_for(founder_pk, 0x22).statement.account;
+
     assert_eq!(
         payload_from_root_op(&RootOp::NamespaceCreatedV2 {
             // The account the op names is NOT the one the credential
             // certifies, so the pair proves nothing.
-            founder: real_join_account_for(founder_pk, 0x22).statement.account,
+            founder,
             account: stranger,
             salt: [0x25u8; 32],
         }),
-        Some(OpPayload::Noop)
+        Some(OpPayload::NamespaceFounded {
+            founder,
+            salt: [0x25u8; 32],
+            carried: Box::new(OpPayload::Noop),
+        })
     );
 }
 
