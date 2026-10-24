@@ -44,6 +44,7 @@
 
 use calimero_account::{root_key_at_epoch, AccountId, VerifiedDeviceCert};
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::MemberCapabilities;
 use calimero_op::{Op, OpPayload};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_storage::address::Id;
@@ -130,6 +131,8 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
         OpPayload::DeviceLinked { .. }
             | OpPayload::MemberJoinedWithDevice { .. }
             | OpPayload::RelaySeated { .. }
+            | OpPayload::AccountNamespaceFounded { .. }
+            | OpPayload::NamespaceFounded { .. }
     ) {
         check_device_speaks_for_author(op, acl_at_cut)?;
     }
@@ -208,9 +211,9 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
         }
         OpPayload::SubgroupVisibilitySet { scope, restricted } => {
             let group = ContextGroupId::from(*scope.as_bytes());
-            // Closing - and anything on a group with no recorded creator, the
-            // namespace root - is the group's admins' to decide.
-            if *restricted || !acl_at_cut.group_creator.contains_key(&group) {
+            // Closing, and the namespace root, which no creation makes, are the group's
+            // admins' to decide; a subgroup not created at the cut has no creator to open it.
+            if *restricted || *scope == op.scope {
                 if acl_at_cut.is_group_admin(&op.author(), group) {
                     Ok(())
                 } else {
@@ -271,6 +274,7 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
             genesis,
             chain,
             cert,
+            applications,
             ..
         } => {
             let verified = acl_at_cut.admit_device_link(genesis, chain, cert)?;
@@ -284,7 +288,29 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
             if !acl_at_cut.is_scope_member(&verified.account) {
                 return Err(Rejected::AccountNotMember);
             }
+            if !acl_at_cut.scope_reaches(&verified.account, applications) {
+                return Err(Rejected::ScopeDoesNotReach);
+            }
             Ok(())
+        }
+        OpPayload::TargetApplicationSet { group, .. }
+        | OpPayload::CascadeUpgraded { group, .. } => {
+            let manage = MemberCapabilities::MANAGE_APPLICATION.bits();
+            if acl_at_cut.is_group_admin(&op.author(), *group)
+                || acl_at_cut.capability(group, &op.author(), 0) & manage != 0
+            {
+                Ok(())
+            } else {
+                Err(Rejected::MayNotManageApplication)
+            }
+        }
+        // A genesis is decided as the founder's link it carries; the marker and the
+        // seat grant nothing to any account but the founder's own.
+        OpPayload::AccountNamespaceFounded { carried, .. }
+        | OpPayload::NamespaceFounded { carried, .. } => {
+            let mut as_carried = op.clone();
+            as_carried.payload = (**carried).clone();
+            authorize(&as_carried, acl_at_cut)
         }
         OpPayload::DeviceRevoked { account, device } => {
             // Either the account withdraws its own device (the lost-laptop

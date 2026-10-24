@@ -5,6 +5,7 @@
 //! author instead of against the signer.
 
 use calimero_account::ContextCreationDelegation;
+use calimero_app_downloader::registry::RegistryCoords;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::metadata::{validate_metadata_payload, MetadataRecord};
 use eyre::Result as EyreResult;
@@ -18,6 +19,7 @@ pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
     claim: ClaimedRegistration<'_>,
     blob_id: &BlobId,
+    coords: RegistryCoords<'_>,
     delegation: &ContextCreationDelegation,
 ) -> EyreResult<()> {
     let ClaimedRegistration {
@@ -46,9 +48,10 @@ pub(crate) fn apply(
             .map_err(|e| eyre::eyre!(e))?;
     }
 
+    super::context_registered::refuse_registered_elsewhere(ctx, context_id)?;
     super::shared_writers_rotated::refuse_moving_rotated_context(ctx, context_id, Some(group_id))?;
     ctx.context_registration()
-        .register_authorized(context_id, application_id, blob_id)?;
+        .register_authorized(context_id, application_id, blob_id, coords)?;
     if let Some(service) = service_name {
         set_context_service_name(store, context_id, service)?;
     }

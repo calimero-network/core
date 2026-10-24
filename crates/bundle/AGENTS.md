@@ -6,7 +6,7 @@ The `BundleManifest` schema and the RFC 8785 (JCS) canonicalization / Ed25519 si
 
 - **Crate**: `calimero-bundle`
 - **Entry**: `src/lib.rs` (types), `src/signature.rs` (canonicalization, signing, verification)
-- **Key deps**: `serde`/`serde_json` ((de)serialization), `serde_json_canonicalizer` (RFC 8785 JCS), `ed25519-dalek` (sign/verify), `sha2` (bundle hash), `base64`/`bs58`/`hex` (encodings), `eyre` (errors)
+- **Key deps**: `serde`/`serde_json` ((de)serialization), `serde_json_canonicalizer` (RFC 8785 JCS), `ed25519-dalek` (sign/verify), `sha2` (bundle hash), `base64`/`bs58`/`hex` (encodings), `eyre` and `thiserror` (errors), `html5ever` (HTML tokenizer for the frontend check)
 
 ## Commands
 
@@ -22,13 +22,18 @@ cargo test -p calimero-bundle
 
 | Item | Kind | Purpose |
 | --- | --- | --- |
-| `BundleManifest` | struct | The full `manifest.json` shape: `version`, `package`, `app_version`, `signer_id`, `min_runtime_version`, `metadata`, `handlers`, `interfaces`, `wasm`/`abi` (single-service) or `services` (multi-service), `links`, `frontend_aliases`, `signature` |
+| `BundleManifest` | struct | The full `manifest.json` shape: `version`, `package`, `app_version`, `signer_id`, `min_runtime_version`, `metadata`, `handlers`, `interfaces`, `wasm`/`abi` (single-service) or `services` (multi-service), `frontend`, `links`, `frontend_aliases`, `signature` |
 | `BundleManifest::artifacts()` | fn | Every artifact the manifest declares, paired with its field name; a `..`-free destructure, so a new `BundleManifest` field is a compile error here until classified |
 | `BundleManifest::wasm_artifacts()` | fn | Iterates wasm artifacts uniformly across single- and multi-service bundles |
 | `BundleManifest::service_names()` / `is_multi_service()` | fn | Shape queries over `services` |
 | `BundleManifest::to_metadata_json()` | fn | Flattens `package`/`app_version`/`metadata.*`/`links.*`/`frontendAliases` to JSON for on-disk storage, keeping only web URLs (`is_web_url`) |
 | `BundleArtifact`, `BundleMetadata`, `BundleInterfaces`, `BundleLinks`, `BundleHandlers`, `BundleSignature`, `BundleService` | structs | The manifest's nested shapes |
 | `WasmArtifact` | struct | Borrowed `(name, wasm)` pair, the common type `wasm_artifacts()` returns |
+| `BundleFrontend::validate()`, `verify_frontend_file()` | fn | What the node enforces at install and `cargo mero` shares: manifest-level (paths, case-insensitive duplicates, HTML entry, MIME allowlist, `MAX_FRONTEND_BYTES`), then per file size and hash |
+| `check_frontend_html()` | fn (feature `html`) | Build-time HTML feedback for `cargo mero` only (UTF-8, no remote or bundle-escaping URL, no inline code); the node never calls it |
+| `FrontendError` | enum | Each refusal, with a stable `code()` (`FRONTEND_*`) that `Display` also prints, `FRONTEND_MISSING_FILE` included for the node and CLI to raise; tooling matches the code, never the message |
+| `FRONTEND_ROOT` | const | The `frontend/` prefix every frontend archive path starts with |
+| `mime_type()` | fn | The `Content-Type` a frontend file is served with; `None` outside the allowlist |
 | `MAX_MANIFEST_BYTES` | const | 1 MiB cap the node enforces on `manifest.json`, before any signature check |
 | `canonicalize_manifest`, `compute_bundle_hash`, `compute_signing_payload` | fn | RFC 8785 canonical bytes (signature and `_`-prefixed transient fields stripped first), then their SHA-256; the signing payload is that SHA-256 over `MANIFEST_SIGNING_DOMAIN` followed by the canonical bytes |
 | `sign_manifest_json`, `verify_manifest_signature`, `verify_ed25519` | fn | Sign/verify a manifest `Value` in place; `ManifestVerification` carries the result |
@@ -47,6 +52,7 @@ Signing is two SHA-256 hashes over the same canonical bytes (the signing payload
 | Path | What's there |
 | --- | --- |
 | `src/lib.rs` | `BundleManifest` and its nested types, `MAX_MANIFEST_BYTES`, and the manifest-shape tests |
+| `src/frontend.rs` | `BundleFrontend`, `FrontendError` and the shared frontend rules |
 | `src/signature.rs` | Canonicalization, hashing, Ed25519 sign/verify, `did:key` derivation, and their tests |
 
 ## Invariants and Gotchas
@@ -54,6 +60,21 @@ Signing is two SHA-256 hashes over the same canonical bytes (the signing payload
 - **No `..` in `BundleManifest::artifacts()`.** Keep the exhaustive destructure; it is the trip-wire that forces every new field through a deliberate classification instead of silently being skipped.
 - **`_`-prefixed fields never reach the signed bytes.** `canonicalize_manifest` strips them unconditionally; don't add a real (signed) field with a leading underscore.
 - **`frontend_aliases` is a sibling of `links`, on purpose.** The registry refuses any `links` value that is not one URL string, and clients iterate `links` as one URL each. The aliases do reach `to_metadata_json()`: a node's sign-in page reads them there to trust a login callback to an app's old origin.
+- **A frontend path has one spelling.** `frontend/` then non-empty components of only `A-Za-z0-9._~@+-` (no `.` or `..`), compared ASCII-case-insensitively, so the archive entry, the manifest and a served URL cannot name different files.
+- **The node enforces paths, sizes, hashes and the MIME allowlist.** The HTML rules are build-time feedback in `cargo mero`, not a security boundary.
+  The serve-time boundary is the per-app origin (`{label}.{base_domain}`, serving only that app's files) plus the CSP below.
+- **HTML is checked with the spec tokenizer, never by substring and never with a tree build.** `check_html` reads `html5ever`'s decoded attributes, so entity-encoded schemes are caught; a tree build is quadratic on deep nesting.
+  The tokenizer's duplicate-attribute scan is quadratic in one tag's attributes and `check_frontend_html` has no size cap, so it is for trusted build output only.
+  Bound the input before running it on anything untrusted.
+- **The HTML lint is behind the `html` feature, which only `cargo-mero` enables.**
+  `html5ever` is therefore absent from the node's dependency tree, so the node cannot parse HTML.
+- **Raw-text elements hide their content, except after an `svg`, `math` or `select`.** There everything is scanned as markup, and any tag or comment inside a raw-text element (or any CDATA comment) is refused, so a browser's text reading and ours cannot disagree.
+- **The static check mirrors the serving contract.** Each app is served from its own origin `{label}.{base_domain}` under `/{version}/`, so a root-absolute URL resolves outside that version's folder.
+  Root-absolute or climbing resource URLs and any `<base>` (`FRONTEND_ESCAPING_URL`), remote resource URLs (`FRONTEND_REMOTE_RESOURCE`), and inline code including `srcdoc` (`FRONTEND_INLINE_SCRIPT`) are refused.
+  SVG files are left to the CSP.
+- **The server must send this CSP with the frontend.** `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'`.
+  `'wasm-unsafe-eval'` lets an app compile WebAssembly (the SDK's WASM client) and does not allow `eval` or inline script.
+  Loosening it without loosening `check_html` refuses bundles that would work, and tightening it without `check_html` ships pages that break.
 - **`handlers` is a sibling of `metadata`, on purpose.** Keep it out of `to_metadata_json()` - see `handlers_does_not_affect_metadata` in `lib.rs`.
 
 Part of [crates/](../AGENTS.md).

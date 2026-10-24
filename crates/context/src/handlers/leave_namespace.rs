@@ -26,25 +26,36 @@
 //! synchronously by this handler so the unsubscribe is ordered with
 //! the user-visible handler response; the listener also issues an
 //! unsubscribe (idempotent) as part of its TEE-eviction cleanup.
+//!
+//! With `purge`, once an admin confirmed the leave, this node purges the namespace
+//! and announces `AccountNamespacePurged` so the account's other devices do too.
 
 use std::sync::Arc;
 
-use actix::{ActorResponse, Handler, Message, WrapFuture};
+use actix::{ActorResponse, AsyncContext, Handler, Message, WrapFuture};
 use calimero_context_client::group::{LeaveNamespaceRequest, LeaveNamespaceResponse};
-use tracing::info;
+use tracing::{info, warn};
 
+use crate::account_namespace::AccountNamespaceChange;
+use crate::handlers::purge_namespace::PurgeNamespace;
 use crate::ContextManager;
 use calimero_governance_store;
-use calimero_governance_store::governance_broadcast::observe_handler_delivery;
-use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
+use calimero_governance_store::governance_broadcast::{observe_handler_delivery, PublishReadiness};
+use calimero_governance_store::{
+    MembershipRepository, MetaRepository, NamespaceRepository, NodeDeviceRepository,
+    PendingNamespacePurges,
+};
 
 impl Handler<LeaveNamespaceRequest> for ContextManager {
     type Result = ActorResponse<Self, <LeaveNamespaceRequest as Message>::Result>;
 
     fn handle(
         &mut self,
-        LeaveNamespaceRequest { namespace_id }: LeaveNamespaceRequest,
-        _ctx: &mut Self::Context,
+        LeaveNamespaceRequest {
+            namespace_id,
+            purge,
+        }: LeaveNamespaceRequest,
+        ctx: &mut Self::Context,
     ) -> Self::Result {
         let self_identity = match self.require_namespace_signing_key(&namespace_id) {
             Ok(key) => key,
@@ -64,6 +75,20 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
                 "{:?} is not a namespace (root group); use leave_group for subgroups",
                 namespace_id
             )));
+        }
+
+        // The account namespace is how the account's devices find each other.
+        match NodeDeviceRepository::new(&self.datastore).account_namespace() {
+            Ok(Some(account_namespace)) if account_namespace == namespace_id => {
+                return ActorResponse::reply(Err(
+                    crate::error::ContextError::AccountNamespaceNotRemovable {
+                        namespace_id: hex::encode(namespace_id.to_bytes()),
+                    }
+                    .into(),
+                ));
+            }
+            Ok(_) => {}
+            Err(err) => return ActorResponse::reply(Err(err)),
         }
 
         // Direct-row check at the root. Apply re-validates everything.
@@ -93,6 +118,7 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
+        let manager = ctx.address();
 
         // Sign-time hash precomputation, mirroring `MemberRemoved`. The
         // leaver simulates the post-leave state so receivers can detect
@@ -137,35 +163,84 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
                     observe_handler_delivery("leave_namespace", "MemberLeft", report);
                 }
 
+                // The purge deletes this node's only copy of the `MemberLeft`, so it
+                // waits for an admin to confirm it; until then this is a plain leave.
+                let confirmed = report
+                    .as_ref()
+                    .is_some_and(|report| report.readiness == PublishReadiness::Ready);
+                if purge && !confirmed {
+                    warn!(
+                        ?namespace_id,
+                        "no admin confirmed the leave; not purging. The account has left: remove the namespace from each device with DELETE /namespaces/:id"
+                    );
+                }
+                let attempt = if purge && confirmed {
+                    Some(
+                        manager
+                            .send(PurgeNamespace {
+                                namespace: namespace_id,
+                            })
+                            .await
+                            .map_err(eyre::Report::from)
+                            .and_then(|purged| purged),
+                    )
+                } else {
+                    None
+                };
+                if let Some(Err(err)) = &attempt {
+                    warn!(?namespace_id, %err, "the local purge failed; announcing a plain leave");
+                }
+                let change = change_after(attempt.as_ref());
+                let purged = matches!(change, AccountNamespaceChange::Purged);
+
                 // The account left, so every other device of it has to stop
-                // following the namespace too.
+                // following the namespace too, or purge it with this one.
                 crate::account_namespace::announce(
                     &datastore,
                     &node_client,
                     &ack_router,
                     namespace_id,
-                    crate::account_namespace::AccountNamespaceChange::Left,
+                    change,
                     "leave_namespace",
                 )
                 .await;
-
-                let _ = node_client
-                    .unsubscribe_namespace(namespace_id.to_bytes())
-                    .await;
+                // Folding our own `AccountNamespacePurged` armed a purge this node just ran.
+                if purged {
+                    if let Err(err) = PendingNamespacePurges::new(&datastore).disarm(&namespace_id)
+                    {
+                        warn!(?namespace_id, %err, "could not clear the arm of a finished purge");
+                    }
+                } else {
+                    let _ = node_client
+                        .unsubscribe_namespace(namespace_id.to_bytes())
+                        .await;
+                }
 
                 info!(
                     ?namespace_id,
                     %member_public_key,
+                    purge,
+                    purged,
                     "left namespace voluntarily — cascade complete; key rotation deferred"
                 );
 
                 Ok(LeaveNamespaceResponse {
                     namespace_id,
                     member_public_key,
+                    purged,
                 })
             }
             .into_actor(self),
         )
+    }
+}
+
+/// What to tell the account's other devices: a purge only if this node's own
+/// purge ran and succeeded, else a plain leave.
+fn change_after(attempt: Option<&eyre::Result<()>>) -> AccountNamespaceChange {
+    match attempt {
+        Some(Ok(())) => AccountNamespaceChange::Purged,
+        Some(Err(_)) | None => AccountNamespaceChange::Left,
     }
 }
 
@@ -174,12 +249,15 @@ mod tests {
     use std::sync::Arc;
 
     use calimero_context_client::group::CreateGroupRequest;
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::op_events::{self, OpEvent};
     use calimero_governance_store::{
-        AccountNamespaceSet, MembershipRepository, MetaRepository, NodeDeviceRepository,
+        register_context_in_group, AccountNamespaceSet, ForgottenNamespaces, MembershipRepository,
+        MetaRepository, NamespaceRepository, NodeDeviceRepository, PendingNamespacePurges,
     };
-    use calimero_primitives::context::GroupMemberRole;
-    use calimero_primitives::identity::PublicKey;
-    use calimero_store::db::InMemoryDB;
+    use calimero_primitives::context::{ContextId, GroupMemberRole};
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_store::db::{Column, InMemoryDB};
     use calimero_store::Store;
 
     use super::*;
@@ -187,6 +265,7 @@ mod tests {
     use crate::test_support::actor;
 
     const GROUP: [u8; 32] = [0xF1; 32];
+    const CONTEXT: [u8; 32] = [0xF3; 32];
 
     /// Leaving a namespace this node has never heard of is absent (404), not the
     /// untyped "no namespace identity ... nothing to leave" that answered 500.
@@ -199,6 +278,7 @@ mod tests {
             .manager
             .send(LeaveNamespaceRequest {
                 namespace_id: GROUP.into(),
+                purge: false,
             })
             .await
             .expect("the manager answers")
@@ -212,18 +292,13 @@ mod tests {
         );
     }
 
-    /// Leaving is the ACCOUNT leaving, so a device still following reads a
-    /// namespace it may not. Handed to a second admin because the owner and the
-    /// last admin are both refused a self-leave.
-    #[actix::test]
-    async fn leaving_a_namespace_drops_it_from_the_account_namespace() {
-        let store = Store::new(Arc::new(InMemoryDB::owned()));
-        NodeDeviceRepository::new(&store)
-            .provision_account_root()
-            .expect("the holder's root");
-
-        let harness = actor::over(store.clone()).await;
-        let account_namespace = ensure_account_namespace(&store, &harness.context_client)
+    /// A namespace this holder created and handed to a second admin (an owner
+    /// cannot leave), with the account namespace.
+    async fn a_namespace_this_node_may_leave(
+        store: &Store,
+        harness: &actor::Harness,
+    ) -> (ContextGroupId, ContextGroupId) {
+        let account_namespace = ensure_account_namespace(store, &harness.context_client)
             .await
             .expect("the ensure runs")
             .expect("the holder creates its account namespace");
@@ -242,7 +317,7 @@ mod tests {
             .expect("the namespace is created");
         // App-less, so the gain is announced only once its wait for a target
         // runs out - off the create, which is why this polls.
-        let set = AccountNamespaceSet::new(&store, account_namespace);
+        let set = AccountNamespaceSet::new(store, account_namespace);
         assert!(
             crate::test_support::eventually(|| set
                 .contains(created.group_id)
@@ -253,33 +328,318 @@ mod tests {
         );
 
         let other =
-            crate::test_support::enrol(&store, &created.group_id, &PublicKey::from([0xF2; 32]));
-        MembershipRepository::new(&store)
+            crate::test_support::enrol(store, &created.group_id, &the_other_admin().public_key());
+        MembershipRepository::new(store)
             .add_member(&created.group_id, &other, GroupMemberRole::Admin)
             .expect("a second admin");
-        let meta = MetaRepository::new(&store);
+        let meta = MetaRepository::new(store);
         let mut row = meta
             .load(&created.group_id)
             .expect("read the meta")
             .expect("the namespace has one");
         row.owner_identity = other;
         meta.save(&created.group_id, &row).expect("hand it over");
+        (created.group_id, account_namespace)
+    }
 
-        let _left = harness
+    fn holder(store: &Store) {
+        NodeDeviceRepository::new(store)
+            .provision_account_root()
+            .expect("the holder's root");
+    }
+
+    /// A context of `namespace` with a state and a delta row on this node.
+    fn a_context_with_state(store: &Store, namespace: &ContextGroupId) -> [(Column, Vec<u8>); 2] {
+        register_context_in_group(store, namespace, &ContextId::from(CONTEXT)).expect("register");
+        let rows = [
+            (Column::State, [CONTEXT.to_vec(), vec![1; 32]].concat()),
+            (Column::Delta, [CONTEXT.to_vec(), vec![2; 32]].concat()),
+        ];
+        for (column, key) in &rows {
+            store.raw_put(*column, key, b"value").expect("write");
+        }
+        rows
+    }
+
+    async fn leave(
+        harness: &actor::Harness,
+        namespace_id: ContextGroupId,
+        purge: bool,
+    ) -> calimero_context_client::group::LeaveNamespaceResponse {
+        harness
             .manager
             .send(LeaveNamespaceRequest {
-                namespace_id: created.group_id,
+                namespace_id,
+                purge,
             })
             .await
             .expect("the manager answers")
-            .expect("the leave runs");
+            .expect("the leave runs")
+    }
+
+    /// The second admin's key, which acks as the reachable owner would.
+    fn the_other_admin() -> PrivateKey {
+        PrivateKey::from([0xF2; 32])
+    }
+
+    /// Only a purge that ran and succeeded is announced as one.
+    #[test]
+    fn a_failed_or_skipped_purge_is_announced_as_a_plain_leave() {
+        assert!(matches!(
+            change_after(Some(&Ok(()))),
+            AccountNamespaceChange::Purged
+        ));
+        assert!(matches!(
+            change_after(Some(&Err(eyre::eyre!("the store failed")))),
+            AccountNamespaceChange::Left
+        ));
+        assert!(matches!(change_after(None), AccountNamespaceChange::Left));
+    }
+
+    /// Neither leave may end the account namespace, how the devices find each other.
+    #[actix::test]
+    async fn the_account_namespace_cannot_be_left_or_purged() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        holder(&store);
+        let harness = actor::over(store.clone()).await;
+        let account_namespace =
+            crate::test_support::holders_account_namespace(&store, &harness.context_client).await;
+
+        for purge in [false, true] {
+            let err = harness
+                .manager
+                .send(LeaveNamespaceRequest {
+                    namespace_id: account_namespace,
+                    purge,
+                })
+                .await
+                .expect("the manager answers")
+                .expect_err("the account namespace is not leavable");
+            assert!(
+                matches!(
+                    err.downcast_ref::<crate::error::ContextError>(),
+                    Some(crate::error::ContextError::AccountNamespaceNotRemovable { .. })
+                ),
+                "purge={purge}: {err:#}"
+            );
+        }
+        assert!(
+            MetaRepository::new(&store)
+                .load(&account_namespace)
+                .unwrap()
+                .is_some(),
+            "the refused purge left the account namespace in place"
+        );
+    }
+
+    /// A paired device names the account namespace through its device row, not
+    /// through a root it does not hold, and is refused the same way.
+    #[actix::test]
+    async fn a_paired_device_cannot_leave_or_purge_its_account_namespace() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let account_namespace = ContextGroupId::from([0xC1; 32]);
+        let (_device, _root_sk) =
+            crate::test_support::paired_device_scoped_to(&store, &account_namespace, &[]);
+        let _identity = NamespaceRepository::new(&store)
+            .participate_in(&account_namespace)
+            .expect("take part in the account namespace");
+        let harness = actor::over(store.clone()).await;
+
+        for purge in [false, true] {
+            let err = harness
+                .manager
+                .send(LeaveNamespaceRequest {
+                    namespace_id: account_namespace,
+                    purge,
+                })
+                .await
+                .expect("the manager answers")
+                .expect_err("the account namespace is not leavable");
+            assert!(
+                matches!(
+                    err.downcast_ref::<crate::error::ContextError>(),
+                    Some(crate::error::ContextError::AccountNamespaceNotRemovable { .. })
+                ),
+                "purge={purge}: {err:#}"
+            );
+        }
+    }
+
+    /// Leaving is the ACCOUNT leaving, so a device still following reads a
+    /// namespace it may not.
+    #[actix::test]
+    async fn leaving_a_namespace_drops_it_from_the_account_namespace() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        holder(&store);
+        let harness = actor::over(store.clone()).await;
+        let (namespace, account_namespace) =
+            a_namespace_this_node_may_leave(&store, &harness).await;
+
+        leave(&harness, namespace, false).await;
 
         assert_eq!(
             AccountNamespaceSet::new(&store, account_namespace)
-                .contains(created.group_id)
+                .contains(namespace)
                 .expect("read the set"),
             None,
             "a namespace the account left is no longer one of its own"
+        );
+    }
+
+    /// A plain leave keeps the namespace's rows as soft-leave residue: a rejoin
+    /// through inheritance depends on them.
+    #[actix::test]
+    async fn a_plain_leave_keeps_the_namespace_on_this_node() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        holder(&store);
+        let harness = actor::over(store.clone()).await;
+        let (namespace, _) = a_namespace_this_node_may_leave(&store, &harness).await;
+        let rows = a_context_with_state(&store, &namespace);
+
+        leave(&harness, namespace, false).await;
+
+        assert!(MetaRepository::new(&store)
+            .load(&namespace)
+            .unwrap()
+            .is_some());
+        for (column, key) in &rows {
+            assert!(store.raw_get(*column, key).unwrap().is_some(), "{column:?}");
+        }
+    }
+
+    /// A purging leave whose `MemberLeft` no admin confirmed is a plain leave: the
+    /// purge would delete the only copy of the op, so it waits for a retry.
+    #[actix::test]
+    async fn a_purging_leave_no_admin_confirmed_leaves_the_rows_and_says_so() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        holder(&store);
+        let harness = actor::over(store.clone()).await;
+        let (namespace, _account_namespace) =
+            a_namespace_this_node_may_leave(&store, &harness).await;
+        let rows = a_context_with_state(&store, &namespace);
+        let mut events = op_events::subscribe();
+
+        let left = leave(&harness, namespace, true).await;
+
+        assert!(
+            !left.purged,
+            "nothing confirmed the leave, so nothing was purged"
+        );
+        assert!(MetaRepository::new(&store)
+            .load(&namespace)
+            .unwrap()
+            .is_some());
+        for (column, key) in &rows {
+            assert!(store.raw_get(*column, key).unwrap().is_some(), "{column:?}");
+        }
+        let mut announced = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let OpEvent::AccountNamespaceLeft {
+                namespace: n,
+                purge,
+                ..
+            } = event
+            {
+                announced.push((n, purge));
+            }
+        }
+        assert_eq!(
+            announced,
+            vec![(namespace, false)],
+            "the other devices are told of a plain leave, not a purge"
+        );
+    }
+
+    /// A subscriber is known but none acks: `Degraded`, not `Solo`, and still no purge.
+    #[actix::test]
+    async fn a_purging_leave_whose_publish_is_degraded_is_a_plain_leave() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        holder(&store);
+        let harness = actor::over_with_a_subscriber(store.clone()).await;
+        let (namespace, _account_namespace) =
+            a_namespace_this_node_may_leave(&store, &harness).await;
+        let _rows = a_context_with_state(&store, &namespace);
+        // The harness really is Degraded (a subscriber, no ack), not Solo.
+        let (_, signer_sk) = NamespaceRepository::new(&store)
+            .identity(&namespace)
+            .expect("read the identity")
+            .expect("this node signs in the namespace");
+        let report = calimero_governance_store::sign_apply_and_publish(
+            &store,
+            &harness.node_client,
+            harness.context_client.ack_router(),
+            &namespace,
+            &PrivateKey::from(signer_sk),
+            calimero_context_client::local_governance::GroupOp::Noop,
+        )
+        .await
+        .expect("the probe publishes")
+        .expect("the probe reached the op log");
+        assert_eq!(report.readiness, PublishReadiness::Degraded);
+
+        let left = leave(&harness, namespace, true).await;
+
+        assert!(!left.purged);
+        assert!(MetaRepository::new(&store)
+            .load(&namespace)
+            .unwrap()
+            .is_some());
+    }
+
+    /// A purging leave takes the namespace and its contexts off this node, and
+    /// asks every other device of the account to do the same.
+    #[actix::test]
+    async fn a_purging_leave_takes_the_namespace_off_this_node() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        holder(&store);
+        let harness = actor::over_with_a_subscriber(store.clone()).await;
+        let (namespace, account_namespace) =
+            a_namespace_this_node_may_leave(&store, &harness).await;
+        let rows = a_context_with_state(&store, &namespace);
+        let mut events = op_events::subscribe();
+        let acker = crate::test_support::ack_every_publish(
+            Arc::clone(harness.context_client.ack_router()),
+            the_other_admin(),
+        );
+
+        let left = leave(&harness, namespace, true).await;
+        acker.abort();
+
+        assert!(left.purged);
+        assert!(MetaRepository::new(&store)
+            .load(&namespace)
+            .unwrap()
+            .is_none());
+        for (column, key) in &rows {
+            assert!(store.raw_get(*column, key).unwrap().is_none(), "{column:?}");
+        }
+        assert!(!NamespaceRepository::new(&store)
+            .participating_namespaces()
+            .unwrap()
+            .contains(&namespace));
+        assert_eq!(
+            ForgottenNamespaces::new(&store).list().unwrap(),
+            vec![],
+            "the account left: there is nothing to restore"
+        );
+        assert!(
+            !PendingNamespacePurges::new(&store)
+                .is_armed(&namespace)
+                .unwrap(),
+            "the purge ran here, so no arm is left waiting"
+        );
+        let mut asked = false;
+        while let Ok(event) = events.try_recv() {
+            asked |= event
+                == OpEvent::AccountNamespaceLeft {
+                    group_id: account_namespace.to_bytes(),
+                    namespace,
+                    purge: true,
+                };
+        }
+        assert!(
+            asked,
+            "the account namespace carries the purge to the other devices"
         );
     }
 }

@@ -42,24 +42,14 @@ fn invitation_for(group: [u8; 32]) -> SignedGroupOpenInvitation {
 /// in the folded view and absent from the materialized rows — the same split
 /// this encoder exists to close, running the other way.
 #[test]
-fn a_replayed_credential_folds_no_device_on_either_join_shape() {
+fn a_replayed_credential_folds_no_device_on_an_invitation_join() {
     // The op names the account being admitted, while the credential beside
     // it certifies somebody ELSE's — the replay this test is about.
     let m = AccountId::from([7u8; 32]);
     let stranger = PublicKey::from([8u8; 32]);
     let gid = [0x44; 32];
 
-    // Open self-join: back to the graph-only node, no device.
-    assert_eq!(
-        payload_from_root_op(&RootOp::MemberJoinedOpen {
-            member: m,
-            group_id: gid.into(),
-            account: test_join_account_for(stranger),
-        }),
-        Some(OpPayload::Noop)
-    );
-
-    // Invitation join: the membership still stands, the device does not.
+    // The membership still stands, the device does not.
     assert_eq!(
         payload_from_root_op(&RootOp::MemberJoined {
             member: m,
@@ -246,22 +236,16 @@ fn root_op_encoder_mapping() {
             policy_bytes: vec![1, 2, 3],
         })
     );
-    // An open-subgroup self-join folds its CREDENTIAL and nothing else: the
-    // membership is re-derived by the inheritance walk, so a direct row here
-    // would outlive the anchor that grants it.
+    // An open-subgroup self-join folds nothing: the membership is re-derived by
+    // the inheritance walk, and a link made here would carry no device scope.
     let joined_open = real_join_account_for(m_key, 0x61);
     assert_eq!(
         payload_from_root_op(&RootOp::MemberJoinedOpen {
             member: joined_open.statement.account,
             group_id: gid.into(),
-            account: joined_open.clone(),
+            account: joined_open,
         }),
-        Some(OpPayload::DeviceLinked {
-            genesis: joined_open.genesis,
-            chain: joined_open.chain.clone(),
-            cert: joined_open.statement,
-            scope_epoch: 0,
-        })
+        Some(OpPayload::Noop)
     );
     // Invitation-based join: group_id + role decoded off the admin-signed
     // invitation (invited_role 0 = Admin). The joiner can't escalate — the
@@ -365,11 +349,16 @@ fn namespace_created_folds_the_founders_device_link() {
             account: credential.clone(),
             salt: [0x24u8; 32],
         }),
-        Some(OpPayload::DeviceLinked {
-            genesis: credential.genesis,
-            chain: credential.chain.clone(),
-            cert: credential.statement,
-            scope_epoch: 0,
+        Some(OpPayload::NamespaceFounded {
+            founder,
+            salt: [0x24u8; 32],
+            carried: Box::new(OpPayload::DeviceLinked {
+                genesis: credential.genesis,
+                chain: credential.chain.clone(),
+                cert: credential.statement,
+                scope_epoch: 0,
+                applications: vec![],
+            }),
         }),
         "genesis is the only place the founder's device is bound"
     );
@@ -384,15 +373,21 @@ fn namespace_created_with_a_foreign_credential_folds_no_device() {
     let founder_pk = PublicKey::from([0x22u8; 32]);
     let stranger = real_join_account_for(PublicKey::from([0x23u8; 32]), 0x23);
 
+    let founder = real_join_account_for(founder_pk, 0x22).statement.account;
+
     assert_eq!(
         payload_from_root_op(&RootOp::NamespaceCreatedV2 {
             // The account the op names is NOT the one the credential
             // certifies, so the pair proves nothing.
-            founder: real_join_account_for(founder_pk, 0x22).statement.account,
+            founder,
             account: stranger,
             salt: [0x25u8; 32],
         }),
-        Some(OpPayload::Noop)
+        Some(OpPayload::NamespaceFounded {
+            founder,
+            salt: [0x25u8; 32],
+            carried: Box::new(OpPayload::Noop),
+        })
     );
 }
 

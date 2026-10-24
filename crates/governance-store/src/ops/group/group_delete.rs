@@ -3,7 +3,7 @@
 
 use super::context::GroupApplyCtx;
 use crate::{
-    delete_group_local_rows, MembershipError, MetaError, MetaRepository, MetadataRepository,
+    delete_group_and_parent_edge, MembershipError, MetaError, MetaRepository, NamespaceRepository,
 };
 use eyre::{bail, Result as EyreResult};
 
@@ -15,19 +15,30 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>) -> EyreResult<()> {
     // Owner-only. Admins can no longer delete the group on their
     // own — only the owner can. Tightens the previous policy
     // (`require_admin`) which let any admin destroy the group.
-    let meta = MetaRepository::new(store)
-        .load(group_id)?
-        .ok_or_else(|| MembershipError::UnknownGroup(hex::encode(group_id.to_bytes())))?;
+    if MetaRepository::new(store).load(group_id)?.is_none() {
+        bail!(MembershipError::UnknownGroup(hex::encode(
+            group_id.to_bytes()
+        )));
+    }
     // Ownership is recorded against an account, so the signing key is resolved
     // before the comparison. An unresolvable key is not the owner.
-    if ctx.signer_account()? != Some(meta.owner_identity) {
+    let owner = crate::group_owner::owner_at_cut(store, group_id, ctx.cut(), ctx.authorizer())?;
+    if ctx
+        .signer_account()?
+        .is_none_or(|signer| Some(signer) != owner)
+    {
         bail!(MembershipError::OnlyOwnerCanDelete(hex::encode(
             group_id.to_bytes()
         )));
     }
-    if MetadataRepository::new(store).count_contexts(group_id)? > 0 {
+    // A context anywhere below would be left in a group nobody can reach, so the
+    // whole subtree must be empty; its groups then go with it, children first.
+    let subtree = NamespaceRepository::new(store).collect_subtree_for_cascade(group_id)?;
+    if !subtree.contexts.is_empty() {
         bail!(MetaError::HasRegisteredContexts);
     }
-    delete_group_local_rows(store, group_id)?;
+    for group in subtree.descendant_groups.iter().chain([group_id]) {
+        delete_group_and_parent_edge(store, group)?;
+    }
     Ok(())
 }

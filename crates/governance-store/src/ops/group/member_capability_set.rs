@@ -18,16 +18,23 @@ pub(crate) fn apply(
     ctx.permissions().require_admin(signer)?;
     // Only set capabilities on an EXISTING direct member. Otherwise a
     // capability row is written for an identity that has no member row —
-    // an orphan the enumeration/authorization paths never reconcile.
-    if MembershipRepository::new(store)
-        .role_of(group_id, member)?
-        .is_none()
-    {
+    // an orphan the enumeration/authorization paths never reconcile. Read at the
+    // op's cut; a member removed concurrently keeps no row, so none is written.
+    if ctx.direct_role(member)?.is_none() {
         bail!(MembershipError::NotMember {
             group_id: hex::encode(group_id.to_bytes()),
             identity: member.to_string(),
         });
     }
-    CapabilitiesRepository::new(store).set_member_capability(group_id, member, *capabilities)?;
+    if MembershipRepository::new(store)
+        .role_of(group_id, member)?
+        .is_some()
+    {
+        CapabilitiesRepository::new(store).set_member_capability(
+            group_id,
+            member,
+            *capabilities,
+        )?;
+    }
     Ok(())
 }

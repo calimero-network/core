@@ -3,6 +3,7 @@
 
 use super::super::super::now_millis;
 use super::context::GroupApplyCtx;
+use crate::context_registration::registered_at_cut;
 use crate::{get_group_for_context, ContextRegistrationError, MetadataRepository};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::metadata::{validate_metadata_payload, MetadataRecord};
@@ -22,14 +23,18 @@ pub(crate) fn apply(
     ctx.permissions().require_can_manage_metadata(signer)?;
     // Reject metadata for a context that isn't registered in this
     // group — otherwise we'd create orphaned `GroupContextMetadata`
-    // rows for contexts in a different group (or no group at all).
-    if get_group_for_context(store, context_id)? != Some(*group_id) {
+    // rows for contexts in a different group (or no group at all). Read at the op's
+    // cut; a concurrent detach that took the context leaves no row to write here.
+    if !registered_at_cut(store, group_id, context_id, ctx.cut(), ctx.authorizer())? {
         bail!(ContextRegistrationError::NotInGroup {
             group_id: hex::encode(group_id.to_bytes()),
             context_id: context_id.to_string(),
         });
     }
     validate_metadata_payload(name.as_deref(), data).map_err(|e| eyre::eyre!(e))?;
+    if get_group_for_context(store, context_id)? != Some(*group_id) {
+        return Ok(());
+    }
     MetadataRepository::new(store).set_context(
         group_id,
         context_id,

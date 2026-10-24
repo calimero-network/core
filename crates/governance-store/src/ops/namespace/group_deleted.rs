@@ -3,9 +3,9 @@
 
 use super::context::NamespaceApplyCtx;
 use crate::{
-    delete_group_local_rows, enumerate_group_contexts, unregister_context_from_group, ApplyError,
-    CapabilitiesError, GroupDeletedRejection, MetaRepository, NamespaceError, NamespaceRepository,
-    PermissionChecker,
+    delete_group_and_parent_edge, enumerate_group_contexts, unregister_context_from_group,
+    ApplyError, CapabilitiesError, GroupDeletedRejection, MetaRepository, NamespaceError,
+    NamespaceRepository, PermissionChecker,
 };
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
@@ -49,13 +49,15 @@ pub(crate) fn apply(
     // first pass, so we skip the auth check here and let the (idempotent)
     // cascade finish any remaining cleanup.
     let ns_gid = ContextGroupId::from(namespace_id.to_bytes());
-    if let Some(root_meta) = MetaRepository::new(store).load(&root_gid)? {
+    if MetaRepository::new(store).load(&root_gid)?.is_some() {
         ctx.require_in_namespace(&root_gid)?;
         // Ownership names an account, the op carries a key: resolve, then
         // compare. An unresolvable signer is not the owner and falls through to
         // the capability gate below, which refuses it for the same reason.
         let signer_account = ctx.signer_account_live(&ns_gid, &op.signer)?;
-        if signer_account != Some(root_meta.owner_identity) {
+        let (parents, authorizer) = ctx.apply_auth();
+        let owner = crate::group_owner::owner_at_cut(store, &root_gid, parents, authorizer)?;
+        if signer_account.is_none_or(|signer| Some(signer) != owner) {
             if let Err(e) = PermissionChecker::new(store, ns_gid)
                 .with_principal(ctx.principal())
                 .require_can_delete_subgroup(&op.signer)
@@ -160,17 +162,7 @@ pub(crate) fn apply(
             unregister_context_from_group(store, &gid, &context_id)?;
             deleted_contexts += 1;
         }
-        // Capture parent before delete_group_local_rows runs.
-        let parent_for_cleanup = NamespaceRepository::new(store).parent(&gid)?;
-        delete_group_local_rows(store, &gid)?;
-        if let Some(parent) = parent_for_cleanup {
-            let mut handle = store.handle();
-            handle.delete(&calimero_store::key::GroupParentRef::new(gid_bytes))?;
-            handle.delete(&calimero_store::key::GroupChildIndex::new(
-                parent.to_bytes(),
-                gid_bytes,
-            ))?;
-        }
+        delete_group_and_parent_edge(store, &gid)?;
     }
 
     // Counts reflect what was actually deleted locally: groups is the

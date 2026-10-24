@@ -391,6 +391,47 @@ fn the_namespace_owner_survives_a_concurrent_removal() {
     assert!(is_admin(&v, ZED));
 }
 
+/// The owner hands the namespace to Alice: the log so far and the transfer.
+fn transferred_to_alice() -> (Vec<Op>, Op) {
+    let ad = admins();
+    let transfer = gov(
+        OWNER,
+        &[&ad[2]],
+        OpPayload::AdminChanged {
+            new_admin: acct(ALICE),
+        },
+    );
+    let mut log = ad;
+    log.push(transfer.clone());
+    (log, transfer)
+}
+
+#[test]
+fn an_owner_that_handed_the_namespace_over_loses_its_concurrent_ops() {
+    let (mut log, transfer) = transferred_to_alice();
+    let removal = remove(ALICE, &[&transfer], OWNER);
+    let by_old_owner = add(OWNER, &[&transfer], YARA, GroupMemberRole::Member);
+    log.extend([removal.clone(), by_old_owner.clone()]);
+
+    assert!(
+        void(&log).contains(&by_old_owner.id()),
+        "an op made after handing ownership over is not the owner's"
+    );
+}
+
+#[test]
+fn the_incoming_owner_survives_a_concurrent_removal() {
+    let (mut log, transfer) = transferred_to_alice();
+    let removal = remove(BOB, &[&transfer], ALICE);
+    let by_new_owner = add(ALICE, &[&transfer], YARA, GroupMemberRole::Member);
+    log.extend([removal.clone(), by_new_owner.clone()]);
+
+    assert!(
+        !void(&log).contains(&by_new_owner.id()),
+        "the owner at the op's cut is exempt"
+    );
+}
+
 #[test]
 fn a_demoted_admin_loses_its_concurrent_ops() {
     let ad = admins();
@@ -522,6 +563,48 @@ fn a_removal_from_a_subgroup_leaves_the_signers_ops_above_and_beside_it() {
     );
     assert!(!voided.contains(&in_sibling.id()), "nor is a sibling");
     assert!(voided.contains(&in_removed_from.id()));
+}
+
+#[test]
+fn only_a_namespace_removal_voids_its_creators_concurrent_opening_of_a_subgroup() {
+    let ad = admins();
+    let h = create_subgroup(&[&ad[2]], 0x41);
+    // In the namespace's own scope, as the bridge builds it: the scope is the root group.
+    let open = |author: u8| {
+        Op::new(
+            ScopeId::from(group().to_bytes()),
+            vec![h.id()],
+            authorship(author),
+            hlc(),
+            OpPayload::SubgroupVisibilitySet {
+                scope: ScopeId::from(subgroup(0x41).to_bytes()),
+                restricted: false,
+            },
+            [0u8; 32],
+            [0u8; 64],
+        )
+    };
+
+    let mut sealed = ad.clone();
+    let from_subgroup = gov(
+        ALICE,
+        &[&h],
+        OpPayload::MemberRemoved {
+            group: subgroup(0x41),
+            member: acct(SAM),
+        },
+    );
+    let opening = open(SAM);
+    sealed.extend([h.clone(), from_subgroup, opening.clone()]);
+    assert!(
+        !void(&sealed).contains(&opening.id()),
+        "a removal members outside the subgroup cannot read voided the opening"
+    );
+
+    let mut public = ad.clone();
+    let opening = open(SAM);
+    public.extend([h.clone(), remove(ALICE, &[&h], SAM), opening.clone()]);
+    assert!(void(&public).contains(&opening.id()));
 }
 
 #[test]
@@ -924,4 +1007,26 @@ fn an_op_the_projection_models_nothing_about_is_judged_by_the_capability_it_name
     };
     assert!(judged(MemberCapabilities::CAN_MANAGE_METADATA));
     assert!(!judged(MemberCapabilities::empty()));
+}
+
+/// A genesis that is not the founding one grants no admin, so a role change for the
+/// account it names is not taken for a demotion.
+#[test]
+fn a_forged_genesis_grants_no_admin() {
+    let root = ContextGroupId::from([0u8; 32]);
+    let forged = gov(
+        YARA,
+        &[],
+        OpPayload::NamespaceFounded {
+            founder: acct(YARA),
+            salt: [0; 32],
+            carried: Box::new(OpPayload::Noop),
+        },
+    );
+    let role_change = add_in(root, OWNER, &[&forged], YARA, GroupMemberRole::Member);
+    assert!(!crate::void::holds_removal(
+        &[&forged, &role_change],
+        &crate::void::Resolved::default(),
+        base(),
+    ));
 }

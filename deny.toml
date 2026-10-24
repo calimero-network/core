@@ -20,6 +20,7 @@ ignore = [
     { id = "RUSTSEC-2026-0119", reason = "hickory-proto, via libp2p-dns; pending libp2p upgrade" },
     { id = "RUSTSEC-2026-0097", reason = "rand, transitive; pending upstream upgrade" },
     { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing attack, transitive; no upstream fix available" },
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5, via elliptic-curve 0.13; the fix is in 0.7, pending the elliptic-curve 0.14 upgrade" },
     { id = "RUSTSEC-2026-0344", reason = "ruzstd, via wasmer-compiler's object 0.32; only object's read path decompresses and wasmer only writes; pending wasmer 7 upgrade" },
 ]
 

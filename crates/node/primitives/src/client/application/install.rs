@@ -1,14 +1,16 @@
 //! Application installation and uninstallation.
 
+use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::sync::Arc;
 
-use super::bind::InstallOrigin;
+use super::bind::{lock_application_rows, InstallOrigin};
 use super::bundle;
 use calimero_app_downloader::app_source;
 use calimero_app_downloader::registry::RegistryCoords;
 use calimero_app_downloader::registry::PENDING_BLOB_SHARE_SOURCE;
 use calimero_app_downloader::source::AppRequest;
+use calimero_bundle::BundleFrontend;
 use calimero_primitives::application::{ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
 use calimero_store::{key, types};
@@ -16,7 +18,7 @@ use camino::Utf8PathBuf;
 use eyre::bail;
 use futures_util::io::Cursor;
 use reqwest::Url;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::client::NodeClient;
 
@@ -39,8 +41,8 @@ pub(super) async fn derive_bundle_id(bundle_data: Arc<[u8]>) -> eyre::Result<App
 }
 
 impl NodeClient {
-    /// Install a `.mpk`. The signature is mandatory and every wasm artifact is
-    /// digest-checked before any bytes are stored.
+    /// Install a `.mpk`. The signature is mandatory, and every wasm artifact and
+    /// frontend file is verified before any application row or service blob is written.
     ///
     /// `expected` is what the caller asked for, on coordinate-addressed paths.
     /// A remote install older than the row's release keeps the row as it is.
@@ -53,18 +55,18 @@ impl NodeClient {
         expected: Option<RegistryCoords<'_>>,
         origin: InstallOrigin,
     ) -> eyre::Result<ApplicationId> {
-        // Every artifact, including the unnamed single-service one that gets no
-        // blob of its own, so substituted bytes are refused before first execution.
-        let (verified, wasm) = tokio::task::spawn_blocking(move || -> eyre::Result<_> {
+        // Every artifact, including the unnamed single-service one, so substituted
+        // bytes are refused before first execution; a bad frontend is refused here too.
+        let (verified, contents) = tokio::task::spawn_blocking(move || -> eyre::Result<_> {
             let verified = bundle::VerifiedBundle::open(bundle_data)?;
-            let wasm = verified.all_wasm()?;
-            Ok((verified, wasm))
+            let contents = verified.contents()?;
+            Ok((verified, contents))
         })
         .await??;
 
         // Otherwise the application row is written with no bytecode and the
         // bundle only reads as malformed at its first execution.
-        if wasm.is_empty() {
+        if contents.wasm.is_empty() {
             bail!("bundle manifest declares no wasm artifact: expected a top-level 'wasm' or a non-empty 'services' list");
         }
 
@@ -92,7 +94,7 @@ impl NodeClient {
 
         let mut services = Vec::new();
         let mut max_state_version = 0;
-        for artifact in &wasm {
+        for artifact in &contents.wasm {
             // Before the name guard: an unnamed single-service artifact still
             // carries a state version.
             if let Some(schema) =
@@ -130,10 +132,170 @@ impl NodeClient {
         );
         application.services = services;
 
+        let frontend = match &manifest.frontend {
+            Some(frontend) => {
+                match self
+                    .store_frontend(&application_id, version, frontend, &contents.frontend)
+                    .await
+                {
+                    Ok(index) => Some(index),
+                    Err(err) => {
+                        let bytecode = application.services.iter().map(|s| s.bytecode.blob_id());
+                        self.release_blobs(bytecode).await;
+                        return Err(err);
+                    }
+                }
+            }
+            None => None,
+        };
+
         // Bundle ids are version-stable, so a new version overwrites the row in
         // place; a context executes its own binding (marker / group key), not the row.
-        let _written = self.put_bundle_row(&application_id, &application, origin)?;
+        let (frontend_kept, written) = self.commit_install(
+            blob_id,
+            &application_id,
+            &application,
+            origin,
+            frontend.as_ref(),
+        );
+        if let (Some(index), false) = (&frontend, frontend_kept) {
+            self.release_frontend_files(index).await;
+        }
+        if written.is_err() {
+            let bytecode = application.services.iter().map(|s| s.bytecode.blob_id());
+            self.release_blobs(bytecode).await;
+        }
+        written?;
         Ok(application_id)
+    }
+
+    /// Store each verified frontend file as a blob. All or nothing; the
+    /// returned index is not written yet.
+    async fn store_frontend(
+        &self,
+        application_id: &ApplicationId,
+        version: &str,
+        frontend: &BundleFrontend,
+        files: &BTreeMap<String, Arc<[u8]>>,
+    ) -> eyre::Result<types::BundleFrontend> {
+        let mut stored: Vec<types::FrontendFile> = Vec::new();
+        for file in &frontend.files {
+            let bytes = &files[&file.path];
+            match self
+                .add_blob(Cursor::new(&bytes[..]), Some(bytes.len() as u64), None)
+                .await
+            {
+                Ok((blob_id, _size)) => stored.push(types::FrontendFile::new(
+                    file.path.as_str().into(),
+                    key::BlobMeta::new(blob_id),
+                )),
+                Err(err) => {
+                    self.release_blobs(stored.iter().map(|f| f.blob.blob_id()))
+                        .await;
+                    return Err(err);
+                }
+            }
+        }
+        Ok(types::BundleFrontend::new(
+            key::ApplicationMeta::new(*application_id),
+            version.into(),
+            frontend.entry.as_str().into(),
+            stored,
+        ))
+    }
+
+    /// Write the frontend index and the row under the row lock; returns whether
+    /// the index stays (else the caller releases its files) and whether the row was written.
+    fn commit_install(
+        &self,
+        bundle_blob_id: &BlobId,
+        application_id: &ApplicationId,
+        application: &types::ApplicationMeta,
+        origin: InstallOrigin,
+        frontend: Option<&types::BundleFrontend>,
+    ) -> (bool, eyre::Result<bool>) {
+        let rows = lock_application_rows();
+        let index_key = key::BundleFrontend::new(*bundle_blob_id);
+        let mut handle = self.datastore.handle();
+
+        let mut kept = false;
+        if let Some(index) = frontend {
+            // An index already there holds its own references: ours are surplus.
+            match handle.has(&index_key) {
+                Ok(true) => {}
+                Ok(false) => match handle.put(&index_key, index) {
+                    Ok(()) => kept = true,
+                    Err(err) => return (false, Err(err.into())),
+                },
+                Err(err) => return (false, Err(err.into())),
+            }
+        }
+
+        let written = self.put_bundle_row(&rows, application_id, application, origin);
+        if kept && !matches!(written, Ok(true)) {
+            // A dangling index is worse than a leaked blob: keep the files if it stays.
+            kept = handle.delete(&index_key).is_err();
+        }
+        if matches!(written, Ok(true)) {
+            // A missing pointer only makes the release a 404, so a failure here never fails the install.
+            let release = key::ApplicationRelease::new(*application_id, &application.version);
+            let pointer = types::ApplicationRelease {
+                bundle: **bundle_blob_id,
+            };
+            let updated = match frontend {
+                Some(_) => handle.put(&release, &pointer),
+                None => handle.delete(&release),
+            };
+            if let Err(err) = updated {
+                warn!(%application_id, %err, "failed to update a release pointer");
+            }
+        }
+        (kept, written)
+    }
+
+    /// Delete an application's row and every bundle frontend index naming it,
+    /// under the row lock; returns the indexes whose deletion succeeded.
+    fn delete_application_rows(
+        &self,
+        application_id: &ApplicationId,
+    ) -> eyre::Result<Vec<types::BundleFrontend>> {
+        let _rows = lock_application_rows();
+        let mut handle = self.datastore.handle();
+
+        let mut owned = Vec::new();
+        for (index_key, index) in handle.iter::<key::BundleFrontend>()?.entries() {
+            let (index_key, index) = (index_key?, index?);
+            if index.application.application_id() == *application_id {
+                owned.push((index_key, index));
+            }
+        }
+
+        handle.delete(&key::ApplicationMeta::new(*application_id))?;
+        let mut released = Vec::new();
+        for (index_key, index) in owned {
+            let release = key::ApplicationRelease::new(*application_id, &index.version);
+            if let Err(err) = handle.delete(&release) {
+                warn!(%application_id, %err, "failed to delete a release pointer");
+            }
+            match handle.delete(&index_key) {
+                Ok(()) => released.push(index),
+                Err(err) => warn!(%application_id, %err, "failed to delete a frontend index"),
+            }
+        }
+        Ok(released)
+    }
+
+    async fn release_frontend_files(&self, index: &types::BundleFrontend) {
+        self.release_blobs(index.files.iter().map(|f| f.blob.blob_id()))
+            .await;
+    }
+
+    async fn release_blobs(&self, blobs: impl Iterator<Item = BlobId>) {
+        for blob_id in blobs {
+            if let Err(err) = self.delete_blob(blob_id).await {
+                warn!(%blob_id, %err, "failed to release an install blob");
+            }
+        }
     }
 
     /// Install a signed `.mpk` from disk, as an operator. The id derives from the
@@ -317,9 +479,12 @@ impl NodeClient {
         .await
     }
 
-    pub fn uninstall_application(&self, application_id: &ApplicationId) -> eyre::Result<()> {
-        let mut handle = self.datastore.handle();
-        handle.delete(&key::ApplicationMeta::new(*application_id))?;
+    /// Remove the row and release the frontend of every bundle installed under
+    /// it: an upgrade keeps older bundles' files, so uninstall is where they go.
+    pub async fn uninstall_application(&self, application_id: &ApplicationId) -> eyre::Result<()> {
+        for index in self.delete_application_rows(application_id)? {
+            self.release_frontend_files(&index).await;
+        }
         Ok(())
     }
 

@@ -302,6 +302,12 @@ pub fn subgroup_visible_to(&self, parent_group_id, child_group_id, caller) -> Ey
 }
 ```
 
+## Effective visibility
+
+A subgroup's own `VisibilityMode` says how it takes members, not who outside it can reach it. An `Open` subgroup inside a `Restricted` one takes the Restricted parent's members, is covered by its own key (`key_covering_group`), and is closed to every namespace member outside the parent. It is private, though its own setting reads `Open`.
+
+`GET /groups/{id}` therefore answers both: `subgroupVisibility` is the group's own setting, and `effectiveVisibility` is `"open"` only on an Open chain to the namespace (`is_open_chain_to_namespace`) and `"restricted"` otherwise, the namespace root included. A client that shows a group as private, a folder lock for instance, reads `effectiveVisibility`.
+
 ## Worked example: Open auto-join vs Restricted admission
 
 Take a namespace `acme` with three members and two subgroups:

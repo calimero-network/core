@@ -15,6 +15,7 @@ use validator::Validate;
 
 use crate::api::handlers::AuthUiStaticFiles;
 use crate::auth::permissions::PermissionValidator;
+use crate::auth::query_token::{is_query_token_route, query_token};
 use crate::auth::token::Claims;
 use crate::auth::validation::{sanitize_identifier, sanitize_string, ValidatedJson};
 use crate::server::AppState;
@@ -654,8 +655,16 @@ pub async fn validate_handler(
         );
     }
 
-    let token =
-        extract_token_from_headers(&headers).or_else(|| extract_token_from_forwarded_uri(&headers));
+    // A sent `Authorization` header is the caller's choice, as in the embedded guard.
+    let token = match &probe {
+        Probe::Forwarded(request)
+            if !headers.contains_key(header::AUTHORIZATION)
+                && is_query_token_route(request.uri().path()) =>
+        {
+            request.uri().query().and_then(query_token)
+        }
+        _ => extract_token_from_headers(&headers),
+    };
 
     let token = match token {
         Some(token) => token.to_string(),
@@ -787,27 +796,12 @@ pub async fn validate_handler(
 }
 
 /// Extracts the token from the Authorization header.
-fn extract_token_from_headers(headers: &HeaderMap) -> Option<&str> {
+pub fn extract_token_from_headers(headers: &HeaderMap) -> Option<&str> {
     headers
         .get("Authorization")
         .and_then(|value| value.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .map(|s| s.trim())
-}
-
-/// Extracts the token from the X-Forwarded-Uri header.
-fn extract_token_from_forwarded_uri(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get("X-Forwarded-Uri")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|uri_str| {
-            uri_str.split('?').nth(1).and_then(|query| {
-                query
-                    .split('&')
-                    .find(|param| param.starts_with("token="))
-                    .map(|param| &param[6..])
-            })
-        })
 }
 
 /// Revoke token request

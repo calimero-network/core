@@ -7,11 +7,13 @@ use calimero_context_client::messages::{DeleteContextRequest, DeleteContextRespo
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_store::db::Column;
+use calimero_store::key::Aliasable;
 use calimero_store::{key, Store};
 use either::Either;
 use tracing::warn;
 
-use calimero_primitives::identity::PrivateKey;
+use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 
 use crate::scope_projection::ScopeProjections;
 use crate::ContextManager;
@@ -192,7 +194,7 @@ async fn delete_context(
 /// - `ContextLocal` and the single-row migration markers: tiny, and they record
 ///   decisions (a `leave_context`, a pinned bytecode) that must not be undone
 ///   by accident.
-fn purge_context_rows(datastore: &Store, context_id: &ContextId) -> eyre::Result<()> {
+pub(crate) fn purge_context_rows(datastore: &Store, context_id: &ContextId) -> eyre::Result<()> {
     let mut handle = datastore.handle();
     handle.delete(&key::ContextMeta::new(*context_id))?;
     handle.delete(&key::ContextConfig::new(*context_id))?;
@@ -200,7 +202,8 @@ fn purge_context_rows(datastore: &Store, context_id: &ContextId) -> eyre::Result
     // Every key in these columns starts with the context id: synced state, its
     // node-local private half, member identities, the node-local columns
     // derived from state (the ordered indexes, the full-text index and its
-    // dirty log), the blobs held for it and a half-installed snapshot. The search rows go even on a node
+    // dirty log), the blobs held for it, the access grants issued for it and a
+    // half-installed snapshot. The search rows go even on a node
     // that runs search off, so a context that returns later never meets a stale index.
     for column in [
         Column::State,
@@ -213,6 +216,7 @@ fn purge_context_rows(datastore: &Store, context_id: &ContextId) -> eyre::Result
         Column::ContextBlob,
         Column::BlobOwner,
         Column::SnapshotStage,
+        Column::ContextAccessGrant,
     ] {
         datastore.raw_delete_prefix(column, context_id.as_ref())?;
     }
@@ -225,14 +229,66 @@ fn purge_context_rows(datastore: &Store, context_id: &ContextId) -> eyre::Result
     Ok(())
 }
 
+/// Single-row records keyed by the bare context id; in `ContextLocal` it is the
+/// authored-remaining counter, which a left marker's 64-byte key never matches.
+pub const CONTEXT_ROW_COLUMNS: [Column; 6] = [
+    Column::ContextMigrationFailed,
+    Column::ContextExecutingBlob,
+    Column::ContextActivatedBlob,
+    Column::ContextActivatedStateVersion,
+    Column::ContextResyncRequested,
+    Column::ContextLocal,
+];
+
+/// [`purge_context_rows`] plus every other row this node holds for the context
+/// but its replay ledger and left markers, for a node that serves it to no one.
+pub(crate) fn purge_context_with_dag(
+    datastore: &Store,
+    context_id: &ContextId,
+) -> eyre::Result<()> {
+    purge_context_rows(datastore, context_id)?;
+    for column in [Column::Delta, Column::UnifiedOp] {
+        datastore.raw_delete_prefix(column, context_id.as_ref())?;
+    }
+    for column in CONTEXT_ROW_COLUMNS {
+        datastore.raw_delete(column, context_id.as_ref())?;
+    }
+    datastore
+        .handle()
+        .delete(&key::ContextServiceName::new(*context_id))?;
+    purge_context_aliases(datastore, context_id)
+}
+
+/// The context's own aliases and the aliases of its identities, which are
+/// scoped to the context.
+fn purge_context_aliases(datastore: &Store, context_id: &ContextId) -> eyre::Result<()> {
+    let mut identities = vec![<PublicKey as Aliasable>::KIND];
+    identities.extend_from_slice(context_id.as_ref());
+    datastore.raw_delete_prefix(Column::Alias, &identities)?;
+
+    let kind = <ContextId as Aliasable>::KIND;
+    for (alias, target) in datastore.raw_scan(Column::Alias, &[kind], &[kind + 1], None)? {
+        let target: Hash = borsh::from_slice(&target)?;
+        if *target == **context_id {
+            datastore.raw_delete(Column::Alias, &alias)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
     use std::sync::Arc;
 
+    use calimero_primitives::alias::Alias;
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::hash::Hash;
+    use calimero_primitives::identity::PublicKey;
     use calimero_store::db::{Column, InMemoryDB};
     use calimero_store::{key, Store};
 
-    use super::purge_context_rows;
+    use super::{purge_context_rows, purge_context_with_dag};
 
     /// Adjacent ids, so a range that overshot the deleted context's prefix by
     /// one would visibly eat into its neighbour.
@@ -275,6 +331,20 @@ mod tests {
             (Column::ContextWarrantNonce, prefixed(context, &[0x07; 64])),
             (Column::BlobOwner, prefixed(context, &[0x08; 32])),
             (Column::SnapshotStage, prefixed(context, &[0x0b; 33])),
+            // Access grants: context ‖ grant id.
+            (Column::ContextAccessGrant, prefixed(context, &[0x0e; 32])),
+            // A left marker: context ‖ member key.
+            (Column::ContextLocal, prefixed(context, &[0x0c; 32])),
+            // Op-log rows: scope ‖ op id.
+            (Column::UnifiedOp, prefixed(context, &[0x0d; 32])),
+            // Single-row records keyed by the bare context id; in ContextLocal
+            // the authored-remaining counter.
+            (Column::ContextMigrationFailed, context.to_vec()),
+            (Column::ContextExecutingBlob, context.to_vec()),
+            (Column::ContextActivatedBlob, context.to_vec()),
+            (Column::ContextActivatedStateVersion, context.to_vec()),
+            (Column::ContextResyncRequested, context.to_vec()),
+            (Column::ContextLocal, context.to_vec()),
         ]
     }
 
@@ -301,7 +371,23 @@ mod tests {
         purge_context_rows(&store, &DELETED.into()).expect("purge should succeed");
 
         for row in rows(DELETED) {
-            let expected = matches!(row.0, Column::Delta | Column::ContextWarrantNonce);
+            let expected = !matches!(
+                row.0,
+                Column::Meta
+                    | Column::Config
+                    | Column::State
+                    | Column::PrivateState
+                    | Column::Identity
+                    | Column::SortedIndex
+                    | Column::SortedIndexMeta
+                    | Column::SearchIndex
+                    | Column::SearchDirty
+                    | Column::ContextBlob
+                    | Column::AbsorbBuffer
+                    | Column::BlobOwner
+                    | Column::SnapshotStage
+                    | Column::ContextAccessGrant
+            );
             assert_eq!(
                 present(&store, &row),
                 expected,
@@ -316,5 +402,90 @@ mod tests {
                 row.0
             );
         }
+    }
+
+    #[test]
+    fn purging_with_the_dag_also_drops_deltas_op_log_and_single_row_records_but_keeps_the_replay_ledger_and_left_marker(
+    ) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        for row in rows(DELETED).iter().chain(rows(KEPT).iter()) {
+            store
+                .raw_put(row.0, &row.1, b"value")
+                .expect("write should succeed");
+        }
+
+        purge_context_with_dag(&store, &DELETED.into()).expect("purge should succeed");
+
+        for row in rows(DELETED) {
+            // The replay ledger and the 64-byte left marker stay; the rest goes.
+            let expected = row.0 == Column::ContextWarrantNonce
+                || (row.0 == Column::ContextLocal && row.1.len() == 64);
+            assert_eq!(
+                present(&store, &row),
+                expected,
+                "{:?} row of the deleted context: expected present = {expected}",
+                row.0
+            );
+        }
+        for row in rows(KEPT) {
+            assert!(
+                present(&store, &row),
+                "{:?} row of a neighbouring context must survive",
+                row.0
+            );
+        }
+    }
+
+    /// The aliases a user gave the context and its identities, and its service
+    /// name, are about a context that is gone; its neighbour's stay.
+    #[test]
+    fn purging_with_the_dag_also_drops_the_service_name_and_aliases() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let aliased = |context: [u8; 32], name: &str| {
+            let id = ContextId::from(context);
+            let own = Alias::<ContextId>::from_str(name).expect("a context alias");
+            let identity = Alias::<PublicKey>::from_str("me").expect("an identity alias");
+            (
+                key::ContextServiceName::new(id),
+                key::Alias::new(None, own).expect("the context alias key"),
+                key::Alias::new(Some(id), identity).expect("the identity alias key"),
+            )
+        };
+        for (context, name) in [(DELETED, "gone"), (KEPT, "kept")] {
+            let (service, own, identity) = aliased(context, name);
+            let mut handle = store.handle();
+            handle
+                .put(
+                    &service,
+                    &key::ContextServiceNameValue {
+                        service_name: "svc".into(),
+                    },
+                )
+                .expect("write the service name");
+            handle
+                .put(&own, &Hash::from(context))
+                .expect("write the context alias");
+            handle
+                .put(&identity, &Hash::from([0x55; 32]))
+                .expect("write the identity alias");
+        }
+
+        purge_context_with_dag(&store, &DELETED.into()).expect("purge should succeed");
+
+        let handle = store.handle();
+        let (service, own, identity) = aliased(DELETED, "gone");
+        assert!(!handle.has(&service).expect("read"), "service name");
+        assert!(!handle.has(&own).expect("read"), "context alias");
+        assert!(!handle.has(&identity).expect("read"), "identity alias");
+        let (service, own, identity) = aliased(KEPT, "kept");
+        assert!(
+            handle.has(&service).expect("read"),
+            "neighbour's service name"
+        );
+        assert!(handle.has(&own).expect("read"), "neighbour's context alias");
+        assert!(
+            handle.has(&identity).expect("read"),
+            "neighbour's identity alias"
+        );
     }
 }

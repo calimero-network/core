@@ -326,6 +326,14 @@ impl SessionTracker {
         }
     }
 
+    /// Whether the context's last session finished less than `window` ago.
+    pub(super) fn synced_within(&self, ctx: &ContextId, window: Duration) -> bool {
+        self.state
+            .get(ctx)
+            .and_then(SyncState::last_sync)
+            .is_some_and(|last| last.elapsed() < window)
+    }
+
     /// Record a `try_send` returning `Full`. Bumps the per-context
     /// dispatch-attempt timestamp, increments the rollup counter, and
     /// returns whether the caller should emit the loud warn this round.
@@ -776,6 +784,24 @@ mod tests {
             } => {}
             other => panic!("expected forced first-sync eligible, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn synced_within_is_true_only_for_a_context_whose_session_just_finished() {
+        let mut t = tracker();
+        assert!(!t.synced_within(&ctx(1), Duration::from_secs(60)));
+
+        let mut s = SyncState::new();
+        s.on_success(
+            libp2p::PeerId::random(),
+            super::super::tracking::SyncProtocol::DagCatchup,
+        );
+        let _ = t.state.insert(ctx(1), s);
+        assert!(t.synced_within(&ctx(1), Duration::from_secs(60)));
+        assert!(!t.synced_within(&ctx(1), Duration::ZERO));
+
+        let _ = t.state.insert(ctx(2), SyncState::new());
+        assert!(!t.synced_within(&ctx(2), Duration::from_secs(60)));
     }
 
     #[test]

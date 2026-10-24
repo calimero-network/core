@@ -15,18 +15,21 @@
 //! re-binding the authorization context (`signer`, `group_id`,
 //! `store`) within a dispatch call.
 
+use crate::authorizer::ensure_cut_resolvable;
 use crate::{
     ContextRegistrationService, DivergenceReport, GroupSettingsService, MembershipPolicy,
-    PermissionChecker,
+    MembershipRepository, PermissionChecker,
 };
 use calimero_account::AccountId;
-use calimero_app_downloader::registry::{RegistryCoords, PENDING_BLOB_SHARE_SOURCE};
+use calimero_app_downloader::registry::{stored_coords, RegistryCoords, PENDING_BLOB_SHARE_SOURCE};
 use calimero_context_config::types::ContextGroupId;
 use calimero_node_primitives::client::application::lock_application_rows;
 use calimero_primitives::application::{ApplicationId, ZERO_APPLICATION_ID};
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
+use calimero_store::key::GroupTarget;
 use calimero_store::Store;
-use eyre::{bail, Result as EyreResult};
+use eyre::Result as EyreResult;
 
 pub(crate) struct GroupApplyCtx<'a> {
     store: &'a Store,
@@ -117,18 +120,16 @@ impl<'a> GroupApplyCtx<'a> {
     /// it comes off the local application row. Every lookup here is
     /// best-effort: an announcement is observational, so a store error must
     /// degrade the event rather than fail the apply and diverge this replica.
-    /// `previous_application_id` is optional: a group with no meta row yet (its
-    /// first target) still migrated its contexts, and a caller that skipped the
-    /// announcement on `None` went silent on exactly that migration.
+    /// A group with no previous target (its first) still migrated its contexts,
+    /// so the caller passes `"unknown"` for `from_version` rather than skipping.
     pub(crate) fn queue_migration_started(
         &mut self,
-        previous_application_id: Option<&ApplicationId>,
+        from_version: String,
+        to_version: String,
         target_application_id: &ApplicationId,
         to_state_version: Option<u32>,
         local_contexts_total: u32,
     ) {
-        let from_version =
-            migration_from_version(self.store, previous_application_id, target_application_id);
         let to_state_version = to_state_version
             .or_else(|| {
                 self.store
@@ -141,7 +142,6 @@ impl<'a> GroupApplyCtx<'a> {
                     .map(|app| app.state_version)
             })
             .unwrap_or_default();
-        let to_version = application_version(self.store, target_application_id);
         self.queue_event(crate::op_events::OpEvent::MigrationStarted {
             group_id: self.group_id.to_bytes(),
             from_version,
@@ -246,6 +246,47 @@ impl<'a> GroupApplyCtx<'a> {
             .membership_path_at_cut(self.group_id, member, self.parents)
     }
 
+    /// `member`'s direct role in this group at the op's cut, or live where that is sound.
+    pub(crate) fn direct_role(&self, member: &AccountId) -> EyreResult<Option<GroupMemberRole>> {
+        if let Some(role) = self
+            .authorizer
+            .direct_role_at_cut(self.group_id, member, self.parents)
+        {
+            return Ok(role);
+        }
+        self.ensure_live_fallback_is_sound(self.signer)?;
+        MembershipRepository::new(self.store).role_of(self.group_id, member)
+    }
+
+    /// Whether `member` is a member of this group at the op's cut, inherited or direct, or
+    /// live where that is sound.
+    pub(crate) fn is_member_at_cut(&self, member: &AccountId) -> EyreResult<bool> {
+        if let Some(role) =
+            self.authorizer
+                .effective_role_at_cut(self.group_id, member, self.parents)
+        {
+            return Ok(role.is_some());
+        }
+        self.ensure_live_fallback_is_sound(self.signer)?;
+        MembershipRepository::new(self.store).is_member(self.group_id, member)
+    }
+
+    /// The exit among `member`'s latest changes in this group at the op's cut, or live
+    /// where that is sound.
+    pub(crate) fn exit_at_cut(
+        &self,
+        member: &AccountId,
+    ) -> EyreResult<Option<calimero_store::key::GroupExitReason>> {
+        if let Some(exit) = self
+            .authorizer
+            .exit_at_cut(self.group_id, member, self.parents)
+        {
+            return Ok(exit);
+        }
+        self.ensure_live_fallback_is_sound(self.signer)?;
+        crate::ReentryRepository::new(self.store).block_of(self.group_id, member)
+    }
+
     /// Guard a fall-back to the live resolver, mirroring
     /// `PermissionChecker::ensure_live_fallback_is_sound`.
     ///
@@ -259,46 +300,24 @@ impl<'a> GroupApplyCtx<'a> {
     /// differently. In that case refuse to answer; the op is retried once the
     /// missing history arrives.
     pub(crate) fn ensure_live_fallback_is_sound(&self, identity: &PublicKey) -> EyreResult<()> {
-        if self.authorizer.can_resolve_cut(self.group_id, self.parents) {
-            return Ok(());
-        }
-        bail!(crate::ApplyError::AuthorityUndecidable {
-            group_id: self.group_id.to_string(),
-            signer: format!("{identity}"),
-        });
+        ensure_cut_resolvable(self.authorizer, self.group_id, self.parents, identity)
     }
 }
 
-/// The semver string on `id`'s local application row, or `"unknown"`.
-///
-/// Nothing on the wire carries these, so every migration announcement resolves
-/// them against this node's own rows. One reader keeps the announcement and the
-/// per-descendant cascade record from falling back differently.
-/// The `from` side of a migration, for both the persisted record and the
-/// announced event. One predicate, because two sites deriving it independently
-/// is how the record and the event came to disagree on a no-op cascade.
-///
-/// "unknown" when there is no previous id to name, or when it equals the target:
-/// bundle ids are version-stable and every ladder rung names the same one, so an
-/// equal id means the row already holds the NEW version.
-pub(crate) fn migration_from_version(
-    store: &Store,
-    previous_application_id: Option<&ApplicationId>,
-    target_application_id: &ApplicationId,
-) -> String {
-    match previous_application_id {
-        Some(id) if id != target_application_id => application_version(store, id),
-        _ => "unknown".to_owned(),
-    }
+/// The semver of a named release, or `"unknown"` for coordinates governance
+/// never named. Read from the op and the group's target, never a local
+/// application row: bundle ids are version-stable, so that row holds whichever
+/// release this node installed.
+pub(crate) fn release_version(package: &str, version: &str) -> String {
+    stored_coords(package, version).map_or_else(|| "unknown".to_owned(), |c| c.version.to_owned())
 }
 
-pub(crate) fn application_version(store: &Store, id: &ApplicationId) -> String {
-    store
-        .handle()
-        .get(&calimero_store::key::ApplicationMeta::new(*id))
-        .ok()
-        .flatten()
-        .map_or_else(|| "unknown".to_owned(), |app| String::from(app.version))
+/// The `from` side of a migration: the group's previous target, or `"unknown"` for its first.
+pub(crate) fn previous_release_version(previous: Option<&GroupTarget>) -> String {
+    previous.map_or_else(
+        || "unknown".to_owned(),
+        |target| release_version(&target.package, &target.version),
+    )
 }
 
 /// Give the lazy migrate a row to bind fetched bytes to, or it bails and the

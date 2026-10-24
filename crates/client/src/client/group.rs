@@ -3,6 +3,8 @@
 use eyre::Result;
 
 use calimero_server_primitives::admin::AbortMigrationApiResponse;
+use calimero_server_primitives::admin::ActivateGroupUpgradeApiRequest;
+use calimero_server_primitives::admin::ActivateGroupUpgradeApiResponse;
 use calimero_server_primitives::admin::AddGroupMembersApiRequest;
 use calimero_server_primitives::admin::AddGroupMembersApiResponse;
 use calimero_server_primitives::admin::DeleteGroupApiRequest;
@@ -311,6 +313,22 @@ where
         Ok(response)
     }
 
+    pub async fn activate_group_upgrade(
+        &self,
+        namespace_id: &str,
+        request: ActivateGroupUpgradeApiRequest,
+    ) -> Result<ActivateGroupUpgradeApiResponse> {
+        let response = self
+            .connection
+            .post_with_timeout(
+                &format!("admin-api/groups/{namespace_id}/upgrade/activate"),
+                request,
+                NETWORK_BOUND_REQUEST_TIMEOUT,
+            )
+            .await?;
+        Ok(response)
+    }
+
     pub async fn sync_group(
         &self,
         group_id: &str,
@@ -383,11 +401,17 @@ where
     /// every descendant where the leaver has a direct row; multi-scope
     /// owner + last-admin checks run upfront. Rejects with
     /// `MustTransferOwnership` if the leaver owns any group in the
-    /// subtree.
-    pub async fn leave_namespace(&self, namespace_id: &str) -> Result<LeaveNamespaceApiResponse> {
+    /// subtree. With `purge`, every device of the account also takes the
+    /// namespace off its disk once an admin has confirmed the leave.
+    pub async fn leave_namespace(
+        &self,
+        namespace_id: &str,
+        purge: bool,
+    ) -> Result<LeaveNamespaceApiResponse> {
+        let query = if purge { "?purge=true" } else { "" };
         let response = self
             .connection
-            .post_no_body(&format!("admin-api/namespaces/{namespace_id}/leave"))
+            .post_no_body(&format!("admin-api/namespaces/{namespace_id}/leave{query}"))
             .await?;
         Ok(response)
     }

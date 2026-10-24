@@ -205,7 +205,7 @@ impl ContextClient {
                 );
                 let zero_blob = key::BlobMeta::new(BlobId::from([0_u8; 32]));
                 // Re-checked under the lock: an install since the read above must win.
-                // Never held across an await, where put_bundle_row would take it too.
+                // Never held across an await, where commit_install would take it too.
                 let _rows = lock_application_rows();
                 if !handle.has(&bytecode_id)? {
                     handle.put(

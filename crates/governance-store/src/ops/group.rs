@@ -113,7 +113,10 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             application,
         } => account_ops::apply_namespace_gained(ctx, namespace, *application)?,
         GroupOp::AccountNamespaceLeft { namespace } => {
-            account_ops::apply_namespace_left(ctx, namespace)?
+            account_ops::apply_namespace_left(ctx, namespace, false)?
+        }
+        GroupOp::AccountNamespacePurged { namespace } => {
+            account_ops::apply_namespace_left(ctx, namespace, true)?
         }
         GroupOp::AccountDeviceDescoped {
             account,
@@ -159,13 +162,24 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             application_id,
             blob_id,
             service_name,
+            package,
+            version,
             ..
-        } => context_registered::apply(ctx, context_id, application_id, blob_id, service_name)?,
+        } => context_registered::apply(
+            ctx,
+            context_id,
+            application_id,
+            blob_id,
+            service_name,
+            RegistryCoords::new(package, version),
+        )?,
         GroupOp::ContextRegisteredOnBehalf {
             context_id,
             application_id,
             blob_id,
             service_name,
+            package,
+            version,
             name,
             delegation,
             stamped_at,
@@ -178,7 +192,13 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
                 name,
                 stamped_at: *stamped_at,
             };
-            context_registered_on_behalf::apply(ctx, claim, blob_id, delegation)?
+            context_registered_on_behalf::apply(
+                ctx,
+                claim,
+                blob_id,
+                RegistryCoords::new(package, version),
+                delegation,
+            )?
         }
         GroupOp::OnBehalf {
             op,

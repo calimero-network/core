@@ -1,0 +1,95 @@
+name: 45 - Two namespaces on different releases each load their own frontend (1-node)
+description: >
+  One app ships at two releases, each bundling its own frontend whose
+  index.html embeds its version string. A namespace is created on release 1.0.0,
+  then release 2.0.0 is installed and a second namespace is created on it.
+
+  `frontend-serving.sh` checks what the node serves on the app's own host,
+  `{label}.localhost:{port}`, and what it refuses there and on its own host.
+
+  Serving is keyed by release, not namespace (`/?namespace=` is not supported
+  yet), so the assertions run per release on the one app host.
+
+auth_mode: embedded
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-frontend
+  base_port: 9680
+  base_rpc_port: 9780
+
+steps:
+  - name: Login
+    type: login
+    node: app-migration-frontend-1
+    username: dev
+    password: dev-password
+
+  - name: Install release 1.0.0
+    type: install_application
+    node: app-migration-frontend-1
+    path: dist/com.calimero.frontend-release-1.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace A on release 1.0.0
+    type: create_namespace
+    node: app-migration-frontend-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_a: namespaceId
+
+  - name: Create a subgroup in namespace A
+    type: create_group_in_namespace
+    node: app-migration-frontend-1
+    namespace_id: "{{namespace_a}}"
+    group_name: "frontend-a"
+    outputs:
+      group_a: groupId
+
+  - name: Create a context on release 1.0.0
+    type: create_context
+    node: app-migration-frontend-1
+    application_id: "{{app_id}}"
+    group_id: "{{group_a}}"
+    outputs:
+      ctx_a: contextId
+
+  - name: Install release 2.0.0
+    type: install_application
+    node: app-migration-frontend-1
+    path: dist/com.calimero.frontend-release-2.0.0.mpk
+    dev: true
+
+  - name: Create namespace B on release 2.0.0
+    type: create_namespace
+    node: app-migration-frontend-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_b: namespaceId
+
+  - name: Assert both namespaces exist
+    type: assert
+    statements:
+      - "is_set({{namespace_a}})"
+      - "is_set({{namespace_b}})"
+
+  - name: Check each release is served from the app host
+    type: script
+    script: workflows/app-migration/frontend-serving.sh
+    target: local
+    args:
+      - app-migration-frontend-1
+      - "{{app_id}}"
+      - "1.0.0"
+      - "2.0.0"
+      - embedded
+      - "{{ctx_a}}"
+
+stop_all_nodes: true

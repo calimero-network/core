@@ -24,6 +24,7 @@ SUITES=(
     "apps/migrations/scenario-new-enum-variant-v2"
     "apps/migrations/scenario-pure-bugfix-v1"
     "apps/migrations/scenario-pure-bugfix-v2"
+    "apps/migrations/scenario-pure-bugfix-v3"
     "apps/migrations/scenario-crdt-native-v1"
     "apps/migrations/scenario-crdt-native-v2"
     "apps/migrations/scenario-struct-to-enum-v1"
@@ -67,6 +68,15 @@ PATH="$(scripts/setup-cargo-mero.sh):$PATH"
 echo ">>> Bundling unembedded migration-suite-v2 (com.calimero.migration-suite-noabi @ 2.0.0)"
 (cd apps/migrations/migration-suite-v2-add-field && cargo mero bundle --dev --no-abi --no-icon \
     --package com.calimero.migration-suite-noabi --app-version 2.0.0)
+
+# Two releases of one package, each shipping its own frontend, for the
+# frontend-serving scenario (same package, so one ApplicationId).
+for v in 1 2; do
+    echo ">>> Bundling com.calimero.frontend-release @ ${v}.0.0 with its frontend"
+    (cd apps/migrations/migration-suite-v1 && cargo mero bundle --dev --no-icon \
+        --package com.calimero.frontend-release --app-version "${v}.0.0" \
+        --frontend-dir "../frontend-release/v${v}")
+done
 
 for suite in "${SUITES[@]}"; do
     if [ ! -d "$suite" ]; then

@@ -24,8 +24,8 @@ pub(crate) fn apply(
     // clears the deny-list and restores per-context identities. Require a
     // direct membership row so this op only ever mutates the role of someone
     // who is already a member.
-    let membership = MembershipRepository::new(store);
-    let Some(current) = membership.role_of(group_id, member)? else {
+    // Read at the op's cut: a concurrent removal must not refuse it on one node only.
+    let Some(current) = ctx.direct_role(member)? else {
         bail!(MembershipError::NotMember {
             group_id: hex::encode(group_id.to_bytes()),
             identity: member.to_string(),
@@ -58,7 +58,10 @@ pub(crate) fn apply(
         .ensure_not_last_admin_demotion(member, role)?;
     // Role-only update: preserve the member row's other fields
     // (`private_key`/`sender_key`/`auto_follow`) instead of the full-row
-    // overwrite `add_member` would do.
-    membership.set_role(group_id, member, role.clone())?;
+    // overwrite `add_member` would do. A target removed concurrently keeps no row.
+    let membership = MembershipRepository::new(store);
+    if membership.role_of(group_id, member)?.is_some() {
+        membership.set_role(group_id, member, role.clone())?;
+    }
     Ok(())
 }

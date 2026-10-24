@@ -9,6 +9,7 @@
 use std::pin::pin;
 
 use calimero_context_client::client::ContextClient;
+use calimero_context_client::messages::{ExecuteError, InternalErrorKind};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{ExecutionError, ExecutionRequest, ExecutionResponse};
@@ -46,7 +47,7 @@ pub(crate) enum CallerIdentity<'a> {
 /// `granted` is what the token carries: the embedded guard's, or in proxy mode
 /// what the proxy named in `X-Auth-Permissions` (`crate::proxy_permissions`).
 /// With none, only a node whose guard did not run serves the call.
-fn may_execute(
+pub(crate) fn may_execute(
     auth_enabled: bool,
     granted: Option<&GrantedPermissions>,
     context_id: &ContextId,
@@ -164,23 +165,7 @@ pub(crate) async fn execute_request(
     // the higher privilege level. Tracked as a known limitation.
     let executor = {
         let members = ctx_client.get_context_members(&request.context_id, Some(true));
-        let mut members = pin!(members);
-        match members.next().await {
-            Some(Ok((public_key, _))) => public_key,
-            // Keep the "no owned identity" and "lookup failed" cases distinct so
-            // a store/network error during resolution isn't masked as a missing
-            // identity.
-            Some(Err(err)) => {
-                return Err(ExecutionError::FunctionCallError(format!(
-                    "Failed to resolve owned identity for this context: {err}"
-                )));
-            }
-            None => {
-                return Err(ExecutionError::FunctionCallError(
-                    "No owned identity found for this context".to_string(),
-                ));
-            }
-        }
+        resolve_executor(pin!(members).next().await)?
     };
 
     let outcome = ctx_client
@@ -193,6 +178,25 @@ pub(crate) async fn execute_request(
     log_guest_logs(&outcome.logs);
 
     Ok(ExecutionResponse::new(method_output(outcome.returns)?))
+}
+
+/// The executor for a call: this node's first owned identity in the context.
+///
+/// A failed lookup stays distinct from a missing identity, so a store error is
+/// never reported to the caller as a fault of the request.
+fn resolve_executor(
+    first_owned: Option<eyre::Result<(PublicKey, bool)>>,
+) -> Result<PublicKey, ExecutionError> {
+    match first_owned {
+        Some(Ok((public_key, _))) => Ok(public_key),
+        Some(Err(err)) => {
+            error!(%err, "Failed to resolve owned identity for this context");
+            Err(ExecutionError::ExecuteError(ExecuteError::InternalError {
+                kind: InternalErrorKind::Context,
+            }))
+        }
+        None => Err(ExecutionError::NoOwnedIdentity),
+    }
 }
 
 /// Logs a run's guest log lines by audience, as the runtime does for each one.
@@ -281,9 +285,10 @@ mod tests {
     use calimero_context_client::messages::ExecuteResponse;
     use calimero_primitives::context::ContextId;
     use calimero_primitives::hash::Hash;
+    use calimero_primitives::identity::PublicKey;
     use calimero_server_primitives::jsonrpc::ExecutionError;
 
-    use super::refuse_discarded_write;
+    use super::{refuse_discarded_write, resolve_executor, ExecuteError, InternalErrorKind};
 
     fn response(read_only_write_discarded: bool) -> ExecuteResponse {
         ExecuteResponse {
@@ -314,6 +319,26 @@ mod tests {
             refusal.to_string().contains("read-only"),
             "the message names the cause; got: {refusal}"
         );
+    }
+
+    /// No owned member is the typed refusal; a failed lookup is not dressed as one.
+    #[test]
+    fn owned_identity_resolution_tells_missing_from_failed() {
+        let key = PublicKey::from([9; 32]);
+        assert_eq!(
+            resolve_executor(Some(Ok((key, true)))).expect("the first owned member"),
+            key
+        );
+        assert!(matches!(
+            resolve_executor(None),
+            Err(ExecutionError::NoOwnedIdentity)
+        ));
+        assert!(matches!(
+            resolve_executor(Some(Err(eyre::eyre!("store read failed")))),
+            Err(ExecutionError::ExecuteError(ExecuteError::InternalError {
+                kind: InternalErrorKind::Context
+            }))
+        ));
     }
 
     /// Anything else answers as it did.

@@ -91,6 +91,7 @@ src/
 │   ├── events.rs             # SSE events
 │   ├── handlers.rs           # SSE handlers
 │   └── ...
+├── app_host.rs               # App frontends served from `{label}.{base_domain}` and the origins app pages run from
 ├── auth.rs                   # Authentication middleware
 ├── proxy_permissions.rs      # Proxy mode: X-Auth-Permissions → GrantedPermissions
 ├── sealed.rs                 # Sealed transport: /sealed/v2 envelope, wraps the router
@@ -250,6 +251,7 @@ When adding a new `.route(...)`, regenerate `crates/server/endpoints.json` via `
 | `src/admin/handlers/applications/install_application.rs` | App install             |
 | `src/jsonrpc/execute.rs`                                 | JSON-RPC execution      |
 | `src/ws/subscribe.rs`                                    | WS subscriptions        |
+| `src/app_host.rs`                                        | Host dispatch and frontend serving |
 | `src/subscription_grants.rs`                             | Keeping a subscription's authorization true |
 | `src/sse/handlers.rs`                                    | SSE handlers            |
 | `primitives/src/jsonrpc.rs`                              | JSON-RPC types          |
@@ -314,6 +316,21 @@ covers the token path.
 
 `POST /admin-api/contexts/{id}/presence-intents` (`admin/handlers/context/presence_intent.rs`) is how an account with no node publishes ephemeral presence. It sits on the public `delegated_execution_routes()` router with the other intents routes: the device's signature over the `PresenceStatement` is the credential, and the certificate in `authorProof` ties the device to its account. The handler only rebuilds the update (the context from the path, the author from the certificate's key, so a client cannot name another) and hands it to `NodeClient::publish_delegated_ephemeral`, which makes every decision. Each `DelegatedPresenceError` has its own status (`status_for`). It is not `/intents`: presence runs nothing, spends no warrant nonce and changes no state.
 
+## Access grants
+
+`admin/handlers/context/access_grants.rs`. A node issues a token whose holder may call named methods in one context, as the node, with no session: `POST/GET /admin-api/contexts/{id}/grants`, `DELETE .../grants/{grant_id}` (protected, mapped to `context:execute[<ctx>]`), and `POST .../grant-calls` (public on every node, `access_grant_routes()`, sealable under proxy mode). The call runs through `execute_request` as `CallerIdentity::NodeOwner` with `GrantedPermissions` built from the grant's methods, so `may_execute` refuses an unnamed method a second time past the handler. Four rules:
+
+- **A grant only narrows.** `may_grant`: every method it names must pass `may_execute` against the issuer's own token. The same predicate filters the listing and gates revoke (a grant the token could not have issued is a `404`), so a method-scoped token cannot list or revoke others' grants. An account session is refused on all three, since a granted call runs as the node.
+- **No secret is stored.** The row (`key::ContextAccessGrant`, `context ‖ domain_hash(token)`) is looked up by the hash of the presented token. The token is in the create answer once. An unknown and a revoked token get one message.
+- **Method names are `[A-Za-z0-9_]` only** (`is_grantable_method_name`), because each becomes `context:execute[<ctx>,,<method>]` and a `,` or `]` would be read as permission syntax.
+- **`notAfter` is judged on this node's clock**, which is sound only because a grant binds this node alone and nothing about it reaches the wire.
+
+## Direct admission
+
+`POST /admin-api/namespaces/{id}/admit` (`admin/handlers/namespaces/admit_join.rs`) publishes a join a keyholder with no node signed. It sits on the public router on every node (`admission_routes()` in `admin/service.rs`), not behind `delegated_access`: its caller holds a device key and an invitation and nothing on this node, the joiner's signature is the authorization, and the inviter's signed `admitters` list is this node's consent. Gating it on the relay flag would make a peer-to-peer join cloud-only.
+
+Because the caller chooses what a request costs, the handler refuses cheapest first and before anything is signed or published: this node named in `admitters` (a forged list only passes this and fails the invitation check), then decode, join-only, `op.validate()` bounds, the op's invitation is the one presented, the op signature, `validate_open_invitation`, and last a join already applied here (op log or the joiner's nonce window, the two halves the apply guards a relayed join with) answers `published: false` without relaying again, since each relay is a new envelope on every peer's DAG. Keep that order when adding a check. `tests/route_manifest.rs::direct_admission_is_on_the_public_router` fails if the route moves back behind the guard.
+
 ## Client key bindings
 
 A client key minted by `POST /admin/client-key` with `context_id` or `application_id` is bound.
@@ -324,14 +341,20 @@ It executes as the node inside its binding, but it is never the node owner on th
   A context this node does not hold yet runs its owning group's target application.
 - Group subscribe (WS and SSE) and admin routes with a `{group_id}` or `{namespace_id}`: a context binding reaches only the groups on the chain from its context's group up to the namespace; an application binding only groups targeting that application.
   A context binding changes only its context's own group: a route other than `GET`/`HEAD`, a body naming a group and a join need that group exactly (`permits_group_change`).
+- A change under `{group_id}` or `{namespace_id}` by an application binding also needs every descendant group and context to belong to that application (`permits_subtree_change`), because a delete or member change cascades over the subtree.
 - Admin routes with a `{context_id}`, `{application_id}`, and `/contexts/sync/{id}`, are refused with `403` outside the binding (`admin/client_key_scope.rs`).
   `POST /contexts/sync` with no id syncs every context and is refused outright.
   `POST /install-application` is refused outright.
 - `POST /contexts`, `/namespaces`, `/groups`, `/contexts/{id}/application`, `/groups/{id}/upgrade` and `/groups/{id}/reparent` are refused when their body names a group or application outside the binding (`refuse_target_outside_binding`).
-- A join (`POST /groups/join`, `/namespaces/{id}/join`) needs a group this node holds and the binding reaches (`refuse_join_outside_binding`).
-  An invitation's application is an unsigned hint that would seed the group's target, so a group this node does not hold yet is joined by an unbound key.
+- A join (`POST /groups/join`, `/namespaces/{id}/join`) needs a group the binding reaches, or a group with no signed admin on this node yet whose invitation hints the bound application (`refuse_join_outside_binding`).
+  The hint is unsigned, so only an application binding takes it: a context binding never joins a group it does not hold.
+  `refuse_out_of_scope` leaves a `/namespaces/{id}/join` path parameter to that handler.
+  A group still carrying the join's placeholder admin, or whose target application is still only the invitation's hint, is hidden by `verified_meta` (`auth.rs`) from every scope check: an application's key gets `403` on its routes and does not see it in listings.
+  The hint is marked node-locally (`MetaRepository::is_target_unverified`) when the join seeds it, and a signed `TargetApplicationSet`, or a cascade upgrade clears the mark, and a subgroup is refused while its namespace is marked.
+  A signed context registration does not clear it, because any member who may create a context can sign one, so a namespace that never gets a target op stays refused to an app's key.
+  A join refused after that seeding leaves the group and its mark behind, so the key stays refused there.
 - Listings and named reads take the key's `ListScope::ClientKey` (`admin/caller_scope.rs`): the groups its binding reaches, and of their contexts only those it permits.
-  `GET /applications`, the `for-application` listings, `/groups/{id}/contexts` and the alias routes filter by the same binding; an alias to a device is never visible to a bound key.
+  `GET /applications` (an app origin sees only its own application), the `for-application` listings, `/groups/{id}/contexts` and the alias routes filter by the same binding; an alias to a device is never visible to a bound key.
   Blob reads and uploads are confined like an account session's; `DELETE /blobs/{id}` needs the blob held for one of its contexts and gives that association up with the reference it releases (bound-key deletes are serialized), and `GET /blobs` is refused.
 - SSE: a bound key's session principal includes its binding, so it can neither adopt a node-owner session by `Last-Event-ID` nor be adopted by one.
 
@@ -374,7 +397,8 @@ sealed under the session and responses stream back in sealed frames. Seven rules
   `InnerScope::Uncredentialed` (set in `lib.rs` when auth is not embedded):
   `merod` guards nothing itself there, and the proxy sees only `POST /sealed/v2`,
   so an opened request for any route outside `UNCREDENTIALED_ADMIN_PATHS` (plus
-  `.../intents` with `delegated_access`) is refused inside the envelope with
+  `/namespaces/{id}/admit` always, and with `delegated_access` the four `delegated_execution_routes()`:
+  `.../intents`, `.../presence-intents`, `.../context-intents`, `.../governance-intents`) is refused inside the envelope with
   `sealed_route_unguarded`. Matched exactly, never by prefix. Keep the list in
   step with the public router in `admin/service.rs`: a route added there is not
   sealable in proxy mode until it is added here, which is the safe direction.
@@ -463,7 +487,7 @@ A revoked, descoped or withdrawn device keeps its account's membership, so no me
 The WS fan-out and every SSE event task also listen to the governance op events (`next_withdrawal`): a `DeviceRevoked`, `DeviceDescoped` or `DeviceWithdrawn` re-derives the grants that watch its namespace, and a lagged listener re-derives every grant.
 Each listener subscribes before it re-derives what it already holds, and an SSE event task re-derives its session on every (re)connect, so a withdrawal applied while no task listened is not missed.
 A subscribe re-derives once more after it records its ids, since a withdrawal committed between its gate and that write finds nothing to drop.
-A descope or withdrawal skips connections anchored on another account; a revocation does not, since its tombstone spends the device id whatever account the op names.
+A descope or withdrawal skips connections anchored on another account; a revocation does not, since its tombstone spends the device id, and the apply refuses one naming an account the id was not minted for.
 A re-derivation vouches only for the ids it checked, so an id a subscribe added meanwhile stays stale.
 
 The caller identity itself (`EventCaller`) is deliberately not persisted on an
@@ -481,15 +505,53 @@ request re-stamps it.
   `CALIMERO_WEBUI_SHA256`. A local archive in `CALIMERO_WEBUI_SRC` is verified
   only if you pass one, and a local directory is never hashed. Bumping the dashboard
   means updating the version and sha256 constants together
-- Admin API requires authentication
+- Admin API requires authentication, except the public router: probes, the public TEE routes, direct admission (always) and delegated execution (with `delegated_access`)
 - JSON-RPC follows JSON-RPC 2.0 spec
 - WebSocket requires context subscription
 - A WebSocket has no CORS, so `ws_handler` asks `OriginGuard::admits` itself, in every auth mode.
   There is one origin rule for the node; never give a transport its own.
   With embedded auth the auth layer answers first: an upgrade without a valid token (header, `?token=` or proof) gets `401` whatever its origin, so the origin check refuses (`403`) only a page that carries one.
-  A hosted app must therefore be listed in `[server.cors] allowed_origins` to open a socket, as well as hold a token.
+  A page on an app's own origin is let through by the `AppApi` mark its app host sets, and holds a token bound to its app; any other page must be listed in `[server.cors] allowed_origins` to open a socket.
   The handler answers a `GET /ws` that is not an upgrade with `400` before it looks at the origin.
   In proxy mode a loopback page is admitted a socket whatever host it names, so a proxy that authenticates by something a browser attaches by itself (a cookie, HTTP Basic, a client certificate) hands any loopback page an authenticated socket.
+- `app_host::serve_app_hosts` is the outermost layer, so a request whose `Host` is exactly `{label}.{apps.base_domain}` meets no CORS, origin guard, sealed envelope or route of the node, except the app API below.
+  Admin tokens live in the dashboard origin's storage, so an app host serves only `GET` and `HEAD` of that app's files, the app API, the admin routes below and a redirect of the login page.
+  Everything else is `404`, and any other `/admin-api` route is `403` with a short plain-text body.
+  Keep it that way: never route an app host to a handler that is not a frontend file, the app API or a route of the allowlist below.
+  Under `sealed.required` the layer is not mounted at all, so an app host cannot get around the envelope.
+  A `Host` whose first label is 52 lowercase base32 characters but which is not exactly that name (one trailing dot allowed) answers `404` (`AppHosts::is_foreign_label_host`), so a label under a domain someone else controls never reaches the node's routes.
+- A `GET` or `HEAD` under `/{version}/` that names no indexed file, has no `.` in its last segment and whose `Accept` includes `text/html` is answered with the release's entry (`app_host::is_client_route`), so a single-page app's routes survive a reload and carries `Vary: Accept`.
+  Any other path that matches no file is retried with leading segments dropped (`app_host::relative_tails`, longest first, at most `MAX_STRIPPED_SEGMENTS` of them), so an entry built with a relative base loads its assets on a deep link; only files of the same release are served, and no match stays `404`.
+- An app calls the node at its own `window.location.origin`, because its content security policy is `default-src 'self'`.
+  `app_host::is_app_api` is the passthrough set: `{NODE_PATH_PREFIX}/jsonrpc`, `{NODE_PATH_PREFIX}/ws`, `/sse`, `/sse/...`, `POST /auth/refresh` and `GET` or `HEAD /auth/validate`, which exchange or check a token and read nothing else; SSE and auth are not prefixed.
+  It also holds the admin allowlist, `app_host::is_app_admin_route`, matched by method and exact segment shape under `{NODE_PATH_PREFIX}/admin-api`.
+  Never match a prefix there, so `/contexts/{id}/anything` stays refused.
+  The list covers the contexts, groups, members, blobs and context aliases an app manages; each route is confined to the app by `refuse_out_of_scope`, `refuse_target_outside_binding`, `refuse_join_outside_binding` or the blob handlers' context scope.
+  A route with no app scoping (blob listing, blob delete of another's blob, application, node, account and TEE routes) stays out of it.
+  Leaving a namespace is allowed, but never with `purge`, which frees every device of the account; `app_host::purges_account` refuses it, and an unreadable query counts as a purge.
+  `app_host::AppHosts::hand_over` runs them through the normal router, auth middleware included, with the `AppApi` request extension that `origin_guard::refuse_app_origins` and `ws_handler` take as leave to skip their app-origin refusal.
+  It answers `403` when `Origin` is not the `Host` called, and `403` with a plain-text body unless this node verifies the token itself (`ServerConfig::use_embedded_auth`).
+  Proxy mode gets no app API, with or without `proxy_identity`, unless `[server.apps] trust_proxy` is set (`ServerConfig::serves_app_api`): merod mounts no token guard there, so the operator vouches that a proxy authenticates every app-host request.
+  With it, `proxy_permissions::inject` answers `401` to an app-host request without `X-Auth-Permissions`, and `bind_to_app` runs behind it as under embedded auth.
+  A reverse proxy in front must forward the original `Host` (`proxy_set_header Host $host` for nginx), or the node cannot tell an app host from its own.
+  The proxy's forward-auth must send `X-Forwarded-Uri` and `X-Forwarded-Method` to mero-auth's `/auth/validate`, so per-route permissions are checked.
+  Traefik's forwardAuth does; nginx `auth_request` needs them configured.
+  It must also strip or overwrite any client-sent `X-Auth-Permissions`.
+  On app hosts only `POST /auth/refresh` and `GET`/`HEAD /auth/validate` may reach mero-auth.
+  `/auth/login` must go to merod, which redirects to the node's login page, or be refused, so the login page is never served on an app's origin.
+  `[server.apps] base_domain` must be the node's own host, because mero-auth validates an app-host request by stripping exactly one app label and comparing the rest with the token's host.
+  The desktop webview origins (`calimero-app://...`) cannot use the app API from the node; they go through the desktop app instead.
+  Never add a route that changes or lists something outside the app's binding, or any page that takes credentials, to the set: an app's script could read what the user types.
+  `GET /auth/login` on an app host answers `302` to the node's own login page with the same path, query and port, and no body: the host without its label, and no scheme so the browser keeps its own.
+  Login stays a top-level navigation to the node's own origin.
+- Every request an app host hands over is bound to the app of its `Host` label.
+  `AppApi` carries the `ApplicationId`, and `auth::bind_to_app`, mounted by `AuthLayerExt::with_auth_guard` right behind the guard, refuses (`403`) a token that holds `admin` or is bound to another application, and otherwise attaches a `ClientKeyScope` with `application_id` set to that app, keeping the token's own context binding.
+  `auth::refuse_foreign_session` wraps the auth router and gives `/auth/refresh` and `/auth/validate` the same decision (`bindings_on_app`) for the session they carry.
+  A token bound to a context of another application then matches nothing, and a node-owner or account session is narrowed like a bound client key, so the scope-aware checks (`refuse_out_of_scope`, `list_scope`, `refuse_target_outside_binding`, `refuse_join_outside_binding`, the `/jsonrpc` and `/ws` context checks) apply to it.
+  Never mount a route behind the guard by another path: the binding lives in `with_auth_guard`.
+- An app's page runs on `{label}.{base_domain}`, which is a loopback name for `base_domain = localhost`, so an app is third-party code that must not count as a loopback page.
+  `app_host::AppOrigins::is_app_origin` names such an origin, and the desktop app's `calimero-app://{label}` and `http(s)://calimero-app.{label}`: `OriginGuard::admits` never treats it as a loopback page, and `origin_guard::refuse_app_origins` answers `403` to it on every route in every auth mode.
+- An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.
 - In proxy auth mode, `origin_guard::OriginGuard::admits` judges every HTTP request a browser
   sent: one with `Origin` or `Sec-Fetch-Site` (a same-origin `GET` has no `Origin`). Never
   count `Sec-Fetch-Mode` alone: Node's built-in `fetch` sends it on every request, so it would

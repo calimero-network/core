@@ -23,15 +23,17 @@ mod group;
 
 pub use absorb::{AbsorbBufferKey, ABSORB_BUFFER_PREFIX};
 pub use alias::{Alias, Aliasable, StoreScopeCompat};
-pub use application::{ApplicationMeta, ApplicationPreviousBlob};
-pub use blobs::{BlobMeta, BlobOwner, PrefetchedBlob};
+pub use application::{ApplicationMeta, ApplicationPreviousBlob, ApplicationRelease};
+pub use blobs::{BlobMeta, BlobOwner, BundleFrontend, PrefetchedBlob};
 pub use calimero_primitives::context::GroupMemberRole;
 use component::KeyComponents;
 pub use context::{
-    ContextActivatedBytecode, ContextActivatedStateVersion, ContextAuthoredRemaining, ContextBlob,
-    ContextConfig, ContextDagDelta, ContextExecutingBytecode, ContextIdentity, ContextLeftMarker,
-    ContextMeta, ContextMigrationFailed, ContextPrivateState, ContextResyncRequested, ContextState,
-    ContextWarrantNonce, ScopeUnifiedOp, STATE_KEY_LEN,
+    ContextAccessGrant, ContextActivatedBytecode, ContextActivatedStateVersion,
+    ContextAuthoredRemaining, ContextBlob, ContextConfig, ContextDagDelta,
+    ContextExecutingBytecode, ContextIdentity, ContextLeftMarker, ContextMeta,
+    ContextMigrationFailed, ContextPrivateState, ContextResyncRequested, ContextState,
+    ContextWarrantNonce, NamespaceForgotten, ScopeUnifiedOp, NAMESPACE_FORGOTTEN_KEY_LEN,
+    NAMESPACE_FORGOTTEN_PREFIX, STATE_KEY_LEN,
 };
 pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
 pub use group::{
@@ -49,14 +51,14 @@ pub use group::{
     GroupOwnerOpCounter, GroupParentRef, GroupPendingDeviceRotation, GroupPendingKeyRotation,
     GroupReentryBlock, GroupReentryBlockValue, GroupRevokedDevice, GroupRevokedSigner,
     GroupSignerAccount, GroupSignerDevice, GroupSubgroupVis, GroupSubgroupVisValue, GroupTarget,
-    GroupUpgradeKey, GroupUpgradeLadder, GroupUpgradeStatus, GroupUpgradeValue, LadderRung,
-    NamespaceBootstrapInviter, NamespaceGovHead, NamespaceGovHeadValue, NamespaceGovOp,
-    NamespaceGovOpValue, NamespaceParticipation, NamespaceParticipationValue,
-    NodeAccountDeviceCert, NodeAccountDeviceCertValue, NodeAccountNamespace,
-    NodeAccountNamespaceValue, NodeAccountRoot, NodeAccountRootValue, NodeDeviceCertificate,
-    NodeDeviceCertificateValue, NodeDeviceIdentity, NodeDeviceIdentityValue, NodeIdentity,
-    NodeIdentityValue, NodeRevokedFrom, NodeRevokedFromValue, PendingSelfPurge, UpgradeLadderValue,
-    GROUP_ACCOUNT_DEVICE_LABEL_PREFIX, GROUP_ACCOUNT_DEVICE_PREFIX,
+    GroupTargetUnverified, GroupUpgradeKey, GroupUpgradeLadder, GroupUpgradeStatus,
+    GroupUpgradeValue, LadderRung, NamespaceBootstrapInviter, NamespaceGovHead,
+    NamespaceGovHeadValue, NamespaceGovOp, NamespaceGovOpValue, NamespaceParticipation,
+    NamespaceParticipationValue, NodeAccountDeviceCert, NodeAccountDeviceCertValue,
+    NodeAccountNamespace, NodeAccountNamespaceValue, NodeAccountRoot, NodeAccountRootValue,
+    NodeDeviceCertificate, NodeDeviceCertificateValue, NodeDeviceIdentity, NodeDeviceIdentityValue,
+    NodeIdentity, NodeIdentityValue, NodeRevokedFrom, NodeRevokedFromValue, PendingSelfPurge,
+    UpgradeLadderValue, GROUP_ACCOUNT_DEVICE_LABEL_PREFIX, GROUP_ACCOUNT_DEVICE_PREFIX,
     GROUP_ACCOUNT_DEVICE_REVOCATION_PREFIX, GROUP_ACCOUNT_ENDORSER_PREFIX,
     GROUP_ACCOUNT_KEY_PREFIX, GROUP_ACCOUNT_NAMESPACE_PREFIX, GROUP_CHILD_INDEX_PREFIX,
     GROUP_CONSUMED_INVITATION_PREFIX, GROUP_CONTEXT_INDEX_PREFIX, GROUP_CONTEXT_MEMBER_CAP_PREFIX,

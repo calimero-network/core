@@ -132,10 +132,23 @@ impl<'a> GroupSettingsService<'a> {
                 version: coords.version.to_owned(),
             },
         )?;
-        MetaRepository::new(self.store).save(&self.group_id, &meta)
+        let metas = MetaRepository::new(self.store);
+        metas.save(&self.group_id, &meta)?;
+        // A signed op named the target, so it is no longer only an invitation's hint.
+        metas.clear_target_unverified(&self.group_id)
     }
 
     pub fn set_subgroup_visibility(
+        &self,
+        signer: &PublicKey,
+        mode: VisibilityMode,
+    ) -> EyreResult<()> {
+        self.require_may_set_subgroup_visibility(signer, mode)?;
+        CapabilitiesRepository::new(self.store).set_subgroup_visibility(&self.group_id, mode)
+    }
+
+    /// The gate of [`Self::set_subgroup_visibility`], without the write.
+    pub(crate) fn require_may_set_subgroup_visibility(
         &self,
         signer: &PublicKey,
         mode: VisibilityMode,
@@ -144,10 +157,9 @@ impl<'a> GroupSettingsService<'a> {
         match mode {
             // Opening is the creator's alone, and decidable without the
             // subgroup's sealed history (see `require_creator_opens`).
-            VisibilityMode::Open => permissions.require_creator_opens(signer)?,
-            VisibilityMode::Restricted => permissions.require_can_manage_visibility(signer)?,
+            VisibilityMode::Open => permissions.require_creator_opens(signer),
+            VisibilityMode::Restricted => permissions.require_can_manage_visibility(signer),
         }
-        CapabilitiesRepository::new(self.store).set_subgroup_visibility(&self.group_id, mode)
     }
 
     pub fn set_group_migration(

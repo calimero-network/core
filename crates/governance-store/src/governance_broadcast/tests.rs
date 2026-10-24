@@ -109,6 +109,76 @@ fn assert_transport_ready_passes_when_mesh_exceeds_required() {
 }
 
 // ---------------------------------------------------------------------------
+// await_transport_ready
+// ---------------------------------------------------------------------------
+
+/// A mesh that drops to zero for a sample is not a reason to refuse: the
+/// publishes behind this gate apply nothing locally, so a refusal loses the op,
+/// and under load the mesh comes back a few polls later.
+#[tokio::test]
+async fn await_transport_ready_passes_once_the_mesh_returns_within_the_wait() {
+    let samples = std::cell::Cell::new(0_usize);
+    let mesh = await_transport_ready(
+        || {
+            let n = samples.get();
+            samples.set(n + 1);
+            async move { (if n < 3 { 0 } else { 1 }, 1) }
+        },
+        4,
+        Duration::from_secs(5),
+        Duration::from_millis(10),
+    )
+    .await
+    .expect("the mesh came back before the wait ran out");
+    assert_eq!(
+        mesh, 1,
+        "the mesh the gate passed with is the one handed on"
+    );
+    assert_eq!(samples.get(), 4, "re-sampled until the mesh returned");
+}
+
+#[tokio::test]
+async fn await_transport_ready_refuses_a_mesh_still_empty_at_the_deadline() {
+    let started = std::time::Instant::now();
+    let err = await_transport_ready(
+        || async { (0, 2) },
+        4,
+        Duration::from_millis(200),
+        Duration::from_millis(10),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        GovernanceBroadcastError::NamespaceNotReady {
+            mesh: 0,
+            required: 2
+        }
+    ));
+    assert!(
+        started.elapsed() >= Duration::from_millis(200),
+        "the refusal comes only once the wait has run out"
+    );
+}
+
+#[tokio::test]
+async fn await_transport_ready_does_not_wait_for_a_solo_namespace() {
+    let samples = std::cell::Cell::new(0_usize);
+    let mesh = await_transport_ready(
+        || {
+            samples.set(samples.get() + 1);
+            async { (0, 0) }
+        },
+        4,
+        Duration::from_secs(5),
+        Duration::from_millis(10),
+    )
+    .await
+    .expect("no known subscriber means nothing to wait for");
+    assert_eq!((mesh, samples.get()), (0, 1));
+}
+
+// ---------------------------------------------------------------------------
 // timeout_for_namespace_op
 // ---------------------------------------------------------------------------
 
@@ -159,6 +229,7 @@ fn timeout_classifier_assigns_per_op_kind() {
                 nonce: [0u8; 12],
             },
             key_rotation: None,
+            registers: None,
         }),
         OP_ACK_MEMBER_CHANGE_TIMEOUT
     );

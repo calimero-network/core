@@ -25,7 +25,7 @@ const MAX_FOLD_WORK: usize = 50_000_000;
 /// Facts the authority check reads that no op carries, written by the store at genesis.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct AuthorityBase {
-    /// The namespace root group and its genesis admin.
+    /// The namespace root group and its founder, whom a transfer at a cut replaces.
     pub root: Option<(ContextGroupId, AccountId)>,
     /// The root group's default member capabilities.
     pub default_cap_base: u32,
@@ -154,7 +154,14 @@ pub(crate) fn payload_group(op: &Op) -> Option<ContextGroupId> {
         | OpPayload::DefaultCapabilitiesSet { group, .. }
         | OpPayload::TeeAuthoringPolicySet { group, .. }
         | OpPayload::TeeAuthorityEvidence { group, .. }
-        | OpPayload::SharedWritersRotated { group, .. } => Some(*group),
+        | OpPayload::SharedWritersRotated { group, .. }
+        | OpPayload::TargetApplicationSet { group, .. }
+        | OpPayload::CascadeUpgraded { group, .. } => Some(*group),
+        // Opening rests on namespace standing, so only a removal every member can read
+        // voids it: one from the subgroup is sealed from members outside it.
+        OpPayload::SubgroupVisibilitySet {
+            restricted: false, ..
+        } => Some(root()),
         OpPayload::SubgroupVisibilitySet { scope, .. } => {
             Some(ContextGroupId::from(*scope.as_bytes()))
         }
@@ -185,7 +192,7 @@ fn removes_account(op: &Op) -> Option<AccountId> {
 /// Does `ops` hold an op that takes authority away from someone else: a member
 /// removal, a device revocation, a role change for an account granted `Admin`, or a
 /// capability set leaving out a bit the member could have held?
-fn holds_removal(ops: &[&Op], resolved: &Resolved, base: AuthorityBase) -> bool {
+pub(crate) fn holds_removal(ops: &[&Op], resolved: &Resolved, base: AuthorityBase) -> bool {
     let author = |op: &Op| {
         resolved
             .get(&op.id())
@@ -203,6 +210,9 @@ fn holds_removal(ops: &[&Op], resolved: &Resolved, base: AuthorityBase) -> bool 
     let mut defaults: HashMap<ContextGroupId, u32> = HashMap::new();
     let mut capability_sets: Vec<(ContextGroupId, AccountId, u32)> = Vec::new();
     for op in ops {
+        if let Some(founder) = crate::seated_founder(op, &op.payload) {
+            let _ = admin_grants.insert((ContextGroupId::from(*op.scope.as_bytes()), founder));
+        }
         match &op.payload {
             OpPayload::MemberCapabilitySet {
                 group,
@@ -286,6 +296,9 @@ fn capability_by_payload(op: &Op, author: AccountId) -> u32 {
         }
         OpPayload::SubgroupCreated { .. } => MemberCapabilities::CAN_CREATE_SUBGROUP.bits(),
         OpPayload::SubgroupDeleted { .. } => MemberCapabilities::CAN_DELETE_SUBGROUP.bits(),
+        OpPayload::TargetApplicationSet { .. } | OpPayload::CascadeUpgraded { .. } => {
+            MemberCapabilities::MANAGE_APPLICATION.bits()
+        }
         // Opening is the creator's alone and takes no capability (#4522).
         OpPayload::SubgroupVisibilitySet {
             restricted: true, ..
@@ -294,8 +307,22 @@ fn capability_by_payload(op: &Op, author: AccountId) -> u32 {
     }
 }
 
+/// The account `op` hands the namespace to, as the fold reads an `AdminChanged`.
+fn transfer_to(op: &Op) -> Option<AccountId> {
+    match &op.payload {
+        OpPayload::AdminChanged { new_admin } => Some(*new_admin),
+        OpPayload::RootGuarded {
+            carried, account, ..
+        } if *account == op.authorship.account => match carried.as_ref() {
+            OpPayload::AdminChanged { new_admin } => Some(*new_admin),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// The account and device of each op built without an author, by op id.
-type Resolved = HashMap<[u8; 32], (AccountId, DeviceId)>;
+pub(crate) type Resolved = HashMap<[u8; 32], (AccountId, DeviceId)>;
 
 /// The account and device of each op built without an author, from the log's device
 /// links (a revocation drops the binding, not the link). A key linked twice names none.
@@ -308,8 +335,13 @@ fn resolve_unattributed(ops: &[&Op]) -> Resolved {
     }
     let mut linked: HashMap<[u8; 32], Option<(AccountId, DeviceId)>> = HashMap::new();
     for op in ops {
+        let payload = match &op.payload {
+            OpPayload::AccountNamespaceFounded { carried, .. }
+            | OpPayload::NamespaceFounded { carried, .. } => carried,
+            payload => payload,
+        };
         let (OpPayload::DeviceLinked { cert, .. } | OpPayload::MemberJoinedWithDevice { cert, .. }) =
-            &op.payload
+            payload
         else {
             continue;
         };
@@ -351,6 +383,8 @@ struct Analysis<'a> {
     /// Role changes to a non-admin role for an account that was granted `Admin`;
     /// a demotion only when the account was an admin at the change's cut.
     demotion_candidates: Vec<(&'a Op, ContextGroupId, AccountId)>,
+    /// Transfers of the namespace, with the account each hands it to.
+    transfers: Vec<(&'a Op, AccountId)>,
     /// Capability sets for another member; a revocation of the bits the member held
     /// at the set's cut and no longer holds, when an admin made it.
     capability_revokes: Vec<CapabilityRevoke<'a>>,
@@ -382,6 +416,9 @@ impl<'a> Analysis<'a> {
 
         let mut admin_grants: HashSet<(ContextGroupId, AccountId)> = HashSet::new();
         for op in ops {
+            if let Some(founder) = crate::seated_founder(op, &op.payload) {
+                let _ = admin_grants.insert((ContextGroupId::from(*op.scope.as_bytes()), founder));
+            }
             match &op.payload {
                 OpPayload::MemberAdded {
                     group,
@@ -417,6 +454,10 @@ impl<'a> Analysis<'a> {
         let mut removals = Vec::new();
         let mut demotion_candidates = Vec::new();
         let mut capability_revokes = Vec::new();
+        let transfers = ops
+            .iter()
+            .filter_map(|&op| transfer_to(op).map(|heir| (op, heir)))
+            .collect();
         for &op in ops {
             if !attributed(op) {
                 continue;
@@ -474,6 +515,7 @@ impl<'a> Analysis<'a> {
             explicit,
             removals,
             demotion_candidates,
+            transfers,
             capability_revokes,
             revoked: RefCell::default(),
             admin_at_cut: RefCell::default(),
@@ -636,6 +678,21 @@ impl<'a> Analysis<'a> {
         chain
     }
 
+    /// The namespace's owner at `op`'s cut: the heir of the latest transfer behind it, as the
+    /// fold picks it, else the founder. Never void: an owner's ops are exempt.
+    fn owner_at(&self, op: &Op) -> Option<AccountId> {
+        let before = self.ancestors_of(op.id());
+        self.transfers
+            .iter()
+            .filter(|(transfer, _)| before.contains(&transfer.id()))
+            .max_by_key(|(transfer, _)| {
+                let id = transfer.id();
+                (transfer.hlc, self.depth.get(&id).copied().unwrap_or(0), id)
+            })
+            .map(|(_, heir)| *heir)
+            .or_else(|| self.base.root.map(|(_, founder)| founder))
+    }
+
     fn ancestors_of(&self, id: [u8; 32]) -> IdSet {
         if let Some(held) = self.ancestors.borrow().get(&id) {
             return Rc::clone(held);
@@ -718,7 +775,6 @@ impl<'a> Analysis<'a> {
     /// One application of the rule to the void set `void`.
     fn round(&self, void: &BTreeSet<[u8; 32]>) -> BTreeSet<[u8; 32]> {
         let mut next = BTreeSet::new();
-        let owner = self.base.root.map(|(_, admin)| admin);
 
         for removal in self.effective_removals(void) {
             let before = self.ancestors_of(removal.op.id());
@@ -733,7 +789,7 @@ impl<'a> Analysis<'a> {
                 if id == removal.op.id() || before.contains(&id) || after.contains(&id) {
                     continue;
                 }
-                if owner == Some(self.author_of(op)) {
+                if self.owner_at(op) == Some(self.author_of(op)) {
                     continue;
                 }
                 let Some(group) = self.voidable_group(op) else {
@@ -773,7 +829,10 @@ impl<'a> Analysis<'a> {
             let after = self.descendants_of(revoke.op.id());
             for &op in victims {
                 let id = op.id();
-                if before.contains(&id) || after.contains(&id) || owner == Some(revoke.member) {
+                if before.contains(&id)
+                    || after.contains(&id)
+                    || self.owner_at(op) == Some(revoke.member)
+                {
                     continue;
                 }
                 // A capability is held in its own group: it is never inherited.
@@ -930,7 +989,8 @@ impl<'a> Analysis<'a> {
     /// Was the author of `op` an admin of the root group in `view`?
     fn is_admin_at(&self, view: &AclView, op: &Op) -> bool {
         let author = self.author_of(op);
-        self.base.root.map(|(_, admin)| admin) == Some(author)
+        view.root_at_cut(self.base.root)
+            .is_some_and(|(_, owner)| owner == author)
             || view.is_root_admin(&author)
             || view.is_group_admin(&author, ContextGroupId::from(*op.scope.as_bytes()))
     }
@@ -965,7 +1025,6 @@ impl<'a> Analysis<'a> {
             .sort_unstable_by_key(|op| (self.depth.get(&op.id()).copied().unwrap_or(0), op.id()));
         let mut behind_void: HashSet<[u8; 32]> = HashSet::new();
         let mut candidates: Vec<&Op> = Vec::new();
-        let owner = self.base.root.map(|(_, admin)| admin);
         for op in ordered {
             let tainted = op
                 .parents
@@ -978,7 +1037,7 @@ impl<'a> Analysis<'a> {
             // An op already void is judged again, so a round never forgets what the
             // round before established.
             if granted.contains(&self.author_of(op))
-                && owner != Some(self.author_of(op))
+                && self.owner_at(op) != Some(self.author_of(op))
                 && self.voidable_group(op).is_some()
             {
                 candidates.push(op);

@@ -43,6 +43,24 @@ The baseline. The client holds a session on a node that runs the application, ho
 
 See [the write path](/protocol/write-path/) for what happens inside the node.
 
+### Letting someone else call your node: access grants
+
+A node can hand a third party a narrower version of path 1. An **access grant** is a token whose holder may call a few named methods in one context, as the node that issued it, with no session and no account. A booking page is the model case: the guest is nobody to the network, and what they may do is "these five methods, in this calendar".
+
+| | |
+| --- | --- |
+| issued by | `POST /admin-api/contexts/{id}/grants` with `methods`, an optional `label` and `notAfter` (unix seconds); the answer carries the token once |
+| who may issue one | a token that may itself call every method named (`context:execute[<ctx>,,<method>]`); an account session never, since a granted call runs as the node |
+| called with | `POST /admin-api/contexts/{id}/grant-calls` with `token`, `method`, `argsJson`; public on every node, the token is the credential |
+| listed and revoked | `GET .../grants` and `DELETE .../grants/{grantId}`; a token sees and revokes only the grants it could have issued |
+| refused with `403` | an unknown or revoked token (one message for both), an expired grant, a method the grant does not name |
+
+What a grant is **not** matters as much:
+
+- **Not delegated authorship.** The call runs as the node's own identity, exactly as path 1, so peers see an ordinary self-authored delta and no peer can tell a granted call from the owner's own. The application sees the node's account as the caller; one that must tell holders apart takes something from the holder in its arguments.
+- **Node-local.** The grant lives in the issuing node's store (`Column::ContextAccessGrant`), keyed by a hash of the token, and binds only that node. Nothing about it reaches the wire. Deleting the context drops its grants.
+- **No narrower than its methods.** A grant scopes *which* methods, not their arguments. Keep granted methods narrow, and let the method enforce the rest.
+
 ## 2. Through a relay: delegated execution
 
 A browser tab or a phone holds one signing key: no node, no scope key, no application. It cannot run the method or decrypt the state, so a **relay** runs it on its behalf, and the author's consent travels with the write as a signed **warrant**.
@@ -112,7 +130,7 @@ The node opens an envelope and routes the request inside it like a direct one. W
 | Node's auth mode | Who checks requests | Reachable through a sealed request |
 | --- | --- | --- |
 | `embedded` | `merod` itself | everything: login, admin API, JSON-RPC, SSE, intents |
-| `proxy` (hosted TEE nodes) | the proxy in front of `merod` | only what `merod` serves **without a credential**: `.../intents` (with `delegated_access`), `/admin-api/health`, `/admin-api/ready`, `/admin-api/is-authed`, and the public TEE routes |
+| `proxy` (hosted TEE nodes) | the proxy in front of `merod` | only what `merod` serves **without a credential**: `.../intents`, `.../presence-intents`, `.../context-intents` and `.../governance-intents` (with `delegated_access`), `/admin-api/namespaces/{id}/admit`, `/admin-api/contexts/{id}/grant-calls`, `/admin-api/health`, `/admin-api/ready`, `/admin-api/is-authed`, and the public TEE routes |
 | `proxy` with `[server.sealed] forward_auth` | the proxy, and for sealed requests `merod` asking the proxy's auth service | everything the proxy would let the same token reach: login, admin API, queries, SSE, intents |
 
 In proxy mode, the proxy sees only `POST /sealed/v2`, never the route inside. If an opened request could reach a route the proxy guards, the envelope would be a way around the guard. So `merod` refuses such a request inside the envelope with `403` and code `sealed_route_unguarded`. The route is not executed and nothing is published.

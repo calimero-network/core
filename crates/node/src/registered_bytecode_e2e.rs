@@ -74,7 +74,7 @@ fn module_at(root: u8, state_version: u32, edge: Option<(&str, u32)>) -> Vec<u8>
 
 /// Module compiles run on the node's global runtime, which must be
 /// multi-threaded, and outlive any one test.
-fn global_runtime() {
+pub(crate) fn global_runtime() {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     let runtime = RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -318,6 +318,7 @@ async fn squat_application(node: &Node, squat: &[u8]) {
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &registered).expect("encrypt"),
             key_rotation: None,
+            registers: registered.registered_context(),
         },
     )
     .expect("sign the registration");

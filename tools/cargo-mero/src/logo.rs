@@ -22,7 +22,7 @@ pub struct Logo {
 
 /// Renders the icon for a terminal that can show it. `None` when it cannot.
 pub fn render(uri: &str) -> Option<Logo> {
-    let tty = std::io::stdout().is_terminal();
+    let tty = std::io::stderr().is_terminal();
     let no_color = env::var_os("NO_COLOR").is_some();
     render_with(uri, tty, no_color)
 }

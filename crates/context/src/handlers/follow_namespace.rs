@@ -5,7 +5,7 @@
 //! the startup sweep walk it, so a namespace without a row is never synced.
 
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::NamespaceRepository;
+use calimero_governance_store::{ForgottenNamespaces, NamespaceRepository};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
@@ -18,8 +18,24 @@ use tracing::warn;
 /// The pull is best effort: gossip alone can leave a first op pending forever.
 ///
 /// # Errors
-/// Propagates the identity provisioning or the subscribe failure.
+/// `ContextError::NamespaceForgotten` for a namespace the user removed from this
+/// node; otherwise the identity provisioning or the subscribe failure.
 pub(crate) async fn follow(
+    store: &Store,
+    node_client: &NodeClient,
+    namespace: &ContextGroupId,
+) -> EyreResult<(PublicKey, [u8; 32])> {
+    if ForgottenNamespaces::new(store).is_forgotten(namespace)? {
+        return Err(crate::error::ContextError::NamespaceForgotten {
+            namespace_id: hex::encode(namespace.to_bytes()),
+        }
+        .into());
+    }
+    follow_marked(store, node_client, namespace).await
+}
+
+/// [`follow`] for a restore, which keeps the removal marked until the namespace is back.
+pub(crate) async fn follow_marked(
     store: &Store,
     node_client: &NodeClient,
     namespace: &ContextGroupId,
@@ -45,7 +61,7 @@ mod tests {
     use std::sync::Arc;
 
     use calimero_context_config::types::ContextGroupId;
-    use calimero_governance_store::NamespaceRepository;
+    use calimero_governance_store::{ForgottenNamespaces, NamespaceRepository};
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
 
@@ -82,5 +98,34 @@ mod tests {
             vec![format!("ns/{}", hex::encode(NS))],
             "and subscribes once: `TopicManager` short-circuits a topic it holds"
         );
+    }
+
+    /// A removed namespace is left alone by every path that follows: the marker
+    /// is checked where they all pass, before anything is written or subscribed.
+    #[actix::test]
+    async fn following_a_removed_namespace_is_refused_and_leaves_no_trace() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let mut harness = actor::over(store.clone()).await;
+        let namespace = ContextGroupId::from(NS);
+        ForgottenNamespaces::new(&store)
+            .mark(&namespace, None, 1, None)
+            .expect("record the removal");
+
+        let err = follow(&store, &harness.node_client, &namespace)
+            .await
+            .expect_err("a removed namespace is not followed");
+
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::error::ContextError>(),
+                Some(crate::error::ContextError::NamespaceForgotten { .. })
+            ),
+            "got: {err:#}"
+        );
+        assert!(NamespaceRepository::new(&store)
+            .participating_namespaces()
+            .expect("read the participation rows")
+            .is_empty());
+        assert!(harness.subscribed().is_empty());
     }
 }

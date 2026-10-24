@@ -88,19 +88,27 @@ pub enum ContextError {
     /// offline), or one answered that the invitation does not name as an
     /// admitter. Both are retryable once an admitter is reachable, which is why
     /// neither is the generic `500` it used to be.
+    ///
+    /// A third reads differently again: a member answered and refused, and said
+    /// why. That reason is carried, because without it the joiner is told to
+    /// wait for the inviter to come online when someone already said no.
     #[error(
         "join could not be endorsed: {}",
-        if *reached_a_peer {
-            "the peer that answered is not an admitter named by this invitation; retry \
-             once one of the invitation's admitters is online"
-        } else {
-            "could not reach any member of this namespace to complete the join; make sure \
-             the inviting node is online and retry"
+        match refusal {
+            Some(reason) => format!("a member of this namespace refused it: {reason}"),
+            None if *reached_a_peer => "the peer that answered is not an admitter named by \
+                 this invitation; retry once one of the invitation's admitters is online"
+                .to_owned(),
+            None => "could not reach any member of this namespace to complete the join; \
+                 make sure the inviting node is online and retry"
+                .to_owned(),
         }
     )]
     JoinNotEndorsed {
         /// Whether any peer answered the join request.
         reached_a_peer: bool,
+        /// What a refusing member said, when every peer that answered refused.
+        refusal: Option<String>,
     },
 
     #[error("node is not a member of group '{group_id}'")]
@@ -116,6 +124,16 @@ pub enum ContextError {
     /// operator is holding when they hit this.
     #[error("node is not a member of namespace '{namespace_id}'")]
     NotANamespaceMember {
+        /// Hex rendering of the target namespace id (for the message only).
+        namespace_id: String,
+    },
+
+    /// A restore followed the namespace but its group rows and key had not
+    /// landed in time; the removal stands and the restore may be retried.
+    #[error(
+        "namespace '{namespace_id}' was followed again but its state has not arrived yet; retry"
+    )]
+    NamespaceNotRestored {
         /// Hex rendering of the target namespace id (for the message only).
         namespace_id: String,
     },
@@ -233,6 +251,22 @@ pub enum ContextError {
     #[error("namespace '{namespace_id}' not found")]
     NamespaceNotFound {
         /// Hex rendering of the absent namespace id (for the message only).
+        namespace_id: String,
+    },
+
+    /// The user removed this namespace from this node, so nothing follows it again
+    /// until they join it explicitly.
+    #[error("namespace '{namespace_id}' was removed from this device")]
+    NamespaceForgotten {
+        /// Hex rendering of the removed namespace id (for the message only).
+        namespace_id: String,
+    },
+
+    /// The namespace is this node's account namespace, which only the account
+    /// itself can end.
+    #[error("namespace '{namespace_id}' is this node's account namespace and cannot be removed")]
+    AccountNamespaceNotRemovable {
+        /// Hex rendering of the namespace id (for the message only).
         namespace_id: String,
     },
 
@@ -565,6 +599,50 @@ pub enum ContextError {
         reason: &'static str,
     },
 
+    /// A `409`: a group being activated targets another application than the
+    /// caller expected, so activating it would switch to a release they did not name.
+    #[error("group {group_id} targets application {actual}, not the expected {expected}")]
+    UpgradeTargetMismatch {
+        /// Hex rendering of the group whose target differs (for the message only).
+        group_id: String,
+        /// The application the caller expected.
+        expected: String,
+        /// The application the group targets.
+        actual: String,
+    },
+
+    /// A `409`: a namespace being activated targets another version than the
+    /// caller expected, so activating it would switch to a release they did not name.
+    #[error("namespace {group_id} targets version {actual}, not the expected {expected}")]
+    UpgradeVersionMismatch {
+        /// Hex rendering of the namespace whose target differs (for the message only).
+        group_id: String,
+        /// The version the caller expected.
+        expected: String,
+        /// The version the namespace targets.
+        actual: String,
+    },
+
+    /// A context's switch to its group's target failed (a migration or a load), so
+    /// retrying the same switch fails the same way. Wraps the failure itself.
+    #[error("switching context {context_id} to its group's target release failed")]
+    UpgradeSwitchFailed {
+        /// The context that did not switch.
+        context_id: String,
+    },
+
+    /// A `400`: the group an activation names is a subgroup. Activation switches a
+    /// whole namespace, so it names the root.
+    #[error(
+        "{group_id} is a subgroup of namespace {namespace_id}; activate the namespace instead"
+    )]
+    NotANamespaceRoot {
+        /// Hex rendering of the group the caller named (for the message only).
+        group_id: String,
+        /// Hex rendering of the namespace it belongs to.
+        namespace_id: String,
+    },
+
     /// A `400`: the group a leave names is a namespace root. Leaving it here
     /// would apply the cascade without unsubscribing from the namespace topic,
     /// which only the namespace leave does.
@@ -694,6 +772,11 @@ pub enum ContextError {
         /// Hex rendering of the parent the caller named (for the message only).
         parent_id: String,
     },
+
+    /// A `400`: a subgroup, or a group pinned to a `bytecode_id`, has to name its
+    /// `application_id`; only the app-less account namespace goes without.
+    #[error("application_id is required for a subgroup and when bytecode_id is given")]
+    ApplicationRequired,
 
     /// A `400`: the `bytecode_id` a caller chose cannot be bound (zero, not an
     /// application bundle, or another package's bundle).

@@ -119,6 +119,8 @@ pub async fn handler(
         Ok(Some(ns)) => {
             let app_version =
                 super::namespace_app_version(&state.node_client, ns.bytecode_id.to_bytes()).await;
+            let (app_version, app_package) =
+                super::with_target_release(app_version, ns.target_release);
             ApiResponse {
                 payload: calimero_server_primitives::admin::GetNamespaceApiResponse {
                     data: calimero_server_primitives::admin::NamespaceApiResponse {
@@ -131,8 +133,10 @@ pub async fn handler(
                         context_count: ns.context_count,
                         subgroup_count: ns.subgroup_count,
                         app_version,
+                        app_package,
                         founding: super::namespace_founding(&state.store, &ns.namespace_id),
                         held_ops: super::namespace_held_ops(&state.store, &ns.namespace_id),
+                        forgotten: None,
                     },
                 },
             }

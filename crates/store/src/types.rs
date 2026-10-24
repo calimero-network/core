@@ -8,13 +8,15 @@ mod context;
 mod generic;
 mod group;
 
-pub use application::{ApplicationMeta, ApplicationPreviousBlob, PackageInfo, ServiceMeta};
-pub use blobs::BlobMeta;
+pub use application::{
+    ApplicationMeta, ApplicationPreviousBlob, ApplicationRelease, PackageInfo, ServiceMeta,
+};
+pub use blobs::{BlobMeta, BundleFrontend, FrontendFile};
 pub use context::{
-    ContextActivatedBytecode, ContextActivatedStateVersion, ContextAuthoredRemaining,
-    ContextConfig, ContextDagDelta, ContextExecutingBytecode, ContextIdentity, ContextLeftMarker,
-    ContextMeta, ContextMigrationFailed, ContextPrivateState, ContextState, ContextWarrantNonce,
-    ScopeUnifiedOp,
+    ContextAccessGrant, ContextActivatedBytecode, ContextActivatedStateVersion,
+    ContextAuthoredRemaining, ContextConfig, ContextDagDelta, ContextExecutingBytecode,
+    ContextIdentity, ContextLeftMarker, ContextMeta, ContextMigrationFailed, ContextPrivateState,
+    ContextState, ContextWarrantNonce, NamespaceForgotten, ScopeUnifiedOp,
 };
 pub use generic::GenericData;
 

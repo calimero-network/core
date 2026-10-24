@@ -5,6 +5,7 @@ use calimero_account::{
     AccountGenesis, AccountId, DeviceId, KemPublicKey, PairingStatement, SignedDeviceRevocation,
     SignedOwnerOp,
 };
+use calimero_app_downloader::registry::stored_coords;
 use calimero_context_config::types::{BytecodeId, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
@@ -14,7 +15,30 @@ use calimero_primitives::metadata::MetadataRecord;
 use calimero_storage::logical_clock::HybridTimestamp;
 use thiserror::Error as ThisError;
 
+use calimero_store::key::GroupTarget;
+
+use crate::messages::MigrationParams;
+
 pub use calimero_store::key::GroupUpgradeStatus;
+
+/// The release a group's target names, read from the group itself so it is
+/// known on a node that has not installed that release.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TargetRelease {
+    pub package: String,
+    pub version: String,
+}
+
+impl TargetRelease {
+    /// `None` until governance names a release for the group.
+    #[must_use]
+    pub fn of(target: &GroupTarget) -> Option<Self> {
+        stored_coords(&target.package, &target.version).map(|coords| Self {
+            package: coords.package.to_owned(),
+            version: coords.version.to_owned(),
+        })
+    }
+}
 
 /// Snapshot of an in-progress or completed group upgrade, returned by the API.
 ///
@@ -43,7 +67,8 @@ pub struct CreateGroupRequest {
     /// The salt a namespace root's id is derived with
     /// (`calimero_account::founded_namespace_id(founder, salt)`); `None` draws
     /// a random one. Only the account namespace passes one, derived from the
-    /// account root so every device computes the same id. There is no way to
+    /// account root so every device computes the same id; its id is
+    /// `calimero_account::account_namespace_id(founder, salt)` instead. There is no way to
     /// choose an id outright, and a subgroup's id is always random, so this is
     /// refused with a parent.
     pub salt: Option<[u8; 32]>,
@@ -65,14 +90,15 @@ impl Message for CreateGroupRequest {
 pub struct CreateGroupResponse {
     pub group_id: ContextGroupId,
     /// Set when this created a namespace root, whose id is derived from its
-    /// founder (`calimero_account::founded_namespace_id`). `None` for a
-    /// subgroup.
+    /// founder (`calimero_account::founded_namespace_id`, or `account_namespace_id`
+    /// for the account namespace). `None` for a subgroup.
     pub founding: Option<NamespaceFounding>,
 }
 
 /// What a derived namespace id was derived from: `founded_namespace_id(founder,
-/// salt) == group_id`. Showing both lets a third party confirm who founded the
-/// namespace without holding any of its governance state.
+/// salt) == group_id`, or `account_namespace_id` for the account namespace.
+/// Showing both lets a third party confirm who founded the namespace without
+/// holding any of its governance state.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct NamespaceFounding {
     pub founder: AccountId,
@@ -113,6 +139,17 @@ impl Message for DeleteNamespaceRequest {
 #[derive(Copy, Clone, Debug)]
 pub struct DeleteNamespaceResponse {
     pub deleted: bool,
+}
+
+/// Take part in a namespace again with no invitation: one this node's user
+/// removed from it while the account stayed a member.
+#[derive(Clone, Debug)]
+pub struct RejoinNamespaceRequest {
+    pub namespace_id: ContextGroupId,
+}
+
+impl Message for RejoinNamespaceRequest {
+    type Result = eyre::Result<JoinGroupResponse>;
 }
 
 /// A governance op a member asked this node to publish on their behalf, in the
@@ -198,11 +235,18 @@ pub struct GroupInfoResponse {
     pub group_id: ContextGroupId,
     pub bytecode_id: BytecodeId,
     pub target_application_id: ApplicationId,
+    pub target_release: Option<TargetRelease>,
     pub member_count: u64,
     pub context_count: u64,
     pub active_upgrade: Option<GroupUpgradeInfo>,
     pub default_capabilities: u32,
     pub subgroup_visibility: String,
+    /// `"restricted"` when this group or any group above it, short of the
+    /// namespace root, is Restricted; `"open"` only on an Open chain to the
+    /// namespace. `subgroup_visibility` says how the group takes its members,
+    /// this says who outside it can reach it: an Open subgroup inside a
+    /// Restricted one is `"open"` there and `"restricted"` here.
+    pub effective_visibility: String,
     /// Full metadata record for the group (name + opaque `data` map).
     /// The group's metadata record, or `None` if none has been set.
     pub metadata: Option<MetadataRecord>,
@@ -293,6 +337,9 @@ pub struct UpgradeGroupRequest {
     /// being refused. Never bypasses the declared-incompatibility bails
     /// (downgrade, missing edge) or the unknowable-current-side refusal.
     pub force_code_only: bool,
+    /// When `true`, the upgrade is published without first trialling the
+    /// migration on this node's own contexts.
+    pub skip_trial: bool,
 }
 
 impl UpgradeGroupRequest {
@@ -306,6 +353,7 @@ impl UpgradeGroupRequest {
             target_application_id,
             cascade: false,
             force_code_only: false,
+            skip_trial: false,
         }
     }
 }
@@ -318,6 +366,30 @@ impl Message for UpgradeGroupRequest {
 pub struct UpgradeGroupResponse {
     pub group_id: ContextGroupId,
     pub status: GroupUpgradeStatus,
+    /// Contexts this node held and trialled the upgrade on before publishing.
+    pub contexts_trialled: u32,
+    /// Contexts this node knows of but does not hold, so it could not trial them.
+    pub contexts_not_held: u32,
+}
+
+/// One release a context steps through, in ladder order.
+#[derive(Clone, Debug)]
+pub struct TrialRung {
+    pub bytecode_id: [u8; 32],
+    pub migration: Option<MigrationParams>,
+}
+
+/// Run an upgrade's migrations on this node's copy of a context in a buffer that is
+/// thrown away. Answers `true` when it trialled the context and `false` when this node
+/// does not hold it; a migration or check that fails is the error.
+#[derive(Clone, Debug)]
+pub struct TrialUpgradeRequest {
+    pub context_id: ContextId,
+    pub rungs: Vec<TrialRung>,
+}
+
+impl Message for TrialUpgradeRequest {
+    type Result = eyre::Result<bool>;
 }
 
 #[derive(Debug)]
@@ -583,6 +655,9 @@ pub struct LeaveGroupResponse {
 #[derive(Debug)]
 pub struct LeaveNamespaceRequest {
     pub namespace_id: ContextGroupId,
+    /// Every device of the account, this one included, also takes the
+    /// namespace and its contexts off its disk.
+    pub purge: bool,
 }
 
 impl Message for LeaveNamespaceRequest {
@@ -593,6 +668,9 @@ impl Message for LeaveNamespaceRequest {
 pub struct LeaveNamespaceResponse {
     pub namespace_id: ContextGroupId,
     pub member_public_key: PublicKey,
+    /// This node purged the namespace. False when `purge` was not asked for, or no
+    /// admin had acked the `MemberLeft` yet (then `DELETE /namespaces/{id}` is the way).
+    pub purged: bool,
 }
 
 // ---- Metadata getters ----
@@ -1572,11 +1650,15 @@ pub struct NamespaceSummary {
     pub namespace_id: ContextGroupId,
     pub bytecode_id: BytecodeId,
     pub target_application_id: ApplicationId,
+    pub target_release: Option<TargetRelease>,
     pub created_at: u64,
     pub name: Option<String>,
     pub member_count: usize,
     pub context_count: usize,
     pub subgroup_count: usize,
+    /// Removed from this node by its user while the account stayed a member:
+    /// nothing of it is held here, and a join without an invitation restores it.
+    pub forgotten: bool,
 }
 
 #[derive(Debug)]
@@ -1689,6 +1771,57 @@ pub struct ResyncContextRequest {
 
 impl Message for ResyncContextRequest {
     type Result = eyre::Result<ResyncContextResponse>;
+}
+
+/// Switch a context to its group's target release now, as its next call would.
+///
+/// `executor` is who the switch runs as, as for that call. Answers `true` when this
+/// request moved the context, `false` when nothing moved it, and the error when it failed.
+#[derive(Clone, Copy, Debug)]
+pub struct ActivateUpgradeRequest {
+    pub context_id: ContextId,
+    pub executor: PublicKey,
+}
+
+impl Message for ActivateUpgradeRequest {
+    type Result = eyre::Result<bool>;
+}
+
+/// Switch every context of a namespace on this node to its group's stored target
+/// release and replay the deltas held back for it. Never installs a release.
+///
+/// `expected_application_id` and `expected_version`, when set, must each equal the
+/// namespace's stored target.
+#[derive(Clone, Debug)]
+pub struct ActivateNamespaceUpgradeRequest {
+    pub namespace_id: ContextGroupId,
+    pub expected_application_id: Option<ApplicationId>,
+    pub expected_version: Option<String>,
+}
+
+impl Message for ActivateNamespaceUpgradeRequest {
+    type Result = eyre::Result<ActivateNamespaceUpgradeResponse>;
+}
+
+/// Outcome of an [`ActivateNamespaceUpgradeRequest`].
+#[derive(Clone, Debug)]
+pub struct ActivateNamespaceUpgradeResponse {
+    pub target_application_id: ApplicationId,
+    /// Contexts this request moved; `0` when every one was already current.
+    pub switched_contexts: u32,
+    /// Held deltas replayed into the namespace's contexts.
+    pub replayed_deltas: u32,
+    /// Contexts left unswitched or unreplayed; the others went ahead regardless.
+    pub failed_contexts: Vec<FailedContext>,
+}
+
+/// A context an [`ActivateNamespaceUpgradeRequest`] could not finish.
+#[derive(Clone, Debug)]
+pub struct FailedContext {
+    pub context_id: ContextId,
+    pub error: String,
+    /// `false` when the switch itself failed (a migration or load), which a retry repeats.
+    pub retryable: bool,
 }
 
 /// Outcome of a [`ResyncContextRequest`].
@@ -2548,5 +2681,40 @@ mod migration_status_tests {
             mapped.migration_failed,
             Some(MigrationFailureKind::ApplyFailed)
         );
+    }
+}
+
+#[cfg(test)]
+mod target_release_tests {
+    use calimero_primitives::application::ApplicationId;
+    use calimero_store::key::GroupTarget;
+
+    use super::TargetRelease;
+
+    fn target(package: &str, version: &str) -> GroupTarget {
+        GroupTarget {
+            application_id: ApplicationId::from([1; 32]),
+            bytecode_id: [2; 32],
+            package: package.into(),
+            version: version.into(),
+        }
+    }
+
+    #[test]
+    fn a_named_target_reports_its_release() {
+        assert_eq!(
+            TargetRelease::of(&target("com.acme.app", "2.0.0")),
+            Some(TargetRelease {
+                package: "com.acme.app".to_owned(),
+                version: "2.0.0".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn an_unnamed_or_placeholder_target_reports_none() {
+        assert_eq!(TargetRelease::of(&GroupTarget::default()), None);
+        assert_eq!(TargetRelease::of(&target("com.acme.app", "")), None);
+        assert_eq!(TargetRelease::of(&target("unknown", "0.0.0")), None);
     }
 }

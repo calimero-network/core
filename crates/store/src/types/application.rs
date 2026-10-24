@@ -119,6 +119,58 @@ impl PredefinedEntry for key::ApplicationPreviousBlob {
     type DataType<'a> = ApplicationPreviousBlob;
 }
 
+/// Value for [`key::ApplicationRelease`]: the blob id of the bundle that holds
+/// the release. A brand-new key, so a node that never stored one reads `None`.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "single pointer value; additions would need a migration"
+)]
+pub struct ApplicationRelease {
+    pub bundle: [u8; 32],
+}
+
+impl PredefinedEntry for key::ApplicationRelease {
+    type Codec = Borsh;
+    type DataType<'a> = ApplicationRelease;
+}
+
+#[cfg(test)]
+mod application_release_tests {
+    use std::sync::Arc;
+
+    use calimero_primitives::application::ApplicationId;
+
+    use super::ApplicationRelease;
+    use crate::db::InMemoryDB;
+    use crate::{key, Store};
+
+    #[test]
+    fn a_release_is_keyed_by_application_and_version() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let app = ApplicationId::from([3; 32]);
+        let mut handle = store.handle();
+        handle
+            .put(
+                &key::ApplicationRelease::new(app, "1.0.0"),
+                &ApplicationRelease { bundle: [1; 32] },
+            )
+            .unwrap();
+
+        let read = |app, version| {
+            handle
+                .get(&key::ApplicationRelease::new(app, version))
+                .unwrap()
+        };
+        assert_eq!(
+            read(app, "1.0.0"),
+            Some(ApplicationRelease { bundle: [1; 32] })
+        );
+        assert_eq!(read(app, "1.0.1"), None);
+        assert_eq!(read(ApplicationId::from([4; 32]), "1.0.0"), None);
+    }
+}
+
 #[cfg(test)]
 mod application_meta_tests {
     use borsh::BorshDeserialize;

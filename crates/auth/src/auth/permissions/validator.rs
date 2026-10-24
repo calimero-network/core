@@ -59,18 +59,19 @@ static NAMESPACE_REGEX: LazyLock<Regex> =
 static NAMESPACE_READ_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/([^/]+)/(identity|groups)$").unwrap());
 
-/// Membership operations on a namespace, plus `admit`.
+/// Membership operations on a namespace.
 ///
-/// `admit` publishes a join a keyholder signed but cannot publish itself, and
-/// its caller holds **only a key** — no account on this node and no way to be
-/// given one. So this mapping does not make the route usable by its intended
-/// caller; what it does is stop it demanding `admin`, which meant the only way
-/// to serve an admission was handing out node credentials. Making it reachable
-/// by a caller holding nothing is a separate change: the route has to leave the
-/// protected router entirely, the way the intent pair already has.
-static NAMESPACE_MEMBERSHIP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^/admin-api/namespaces/([^/]+)/(invite|join|leave|admit)$").unwrap()
-});
+/// `admit` is deliberately absent. Its caller holds only a device key, nothing
+/// a token could stand for, so `calimero-server` serves it on the public admin
+/// router (`admission_routes`) and never consults this table for it; the
+/// joiner's signed op is the authorization. Mapping it here would only invite
+/// an operator behind a forward-auth proxy to hand keyholders
+/// `namespace:manage`, which also reaches invite, join and leave. Unmapped, it
+/// falls to the `admin` default-deny, so a proxy that has not exempted the
+/// anchored path (as mero-tee's ingress does) keeps it closed rather than
+/// half-open.
+static NAMESPACE_MEMBERSHIP_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/([^/]+)/(invite|join|leave)$").unwrap());
 
 /// The group reads whose handlers narrow to the caller, and ONLY those: the
 /// group itself, its contexts, members, subgroups, metadata, one member's
@@ -98,6 +99,9 @@ static CONTEXT_READ_SUBRESOURCE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^/admin-api/contexts/([^/]+)/(identities|identities-owned|storage|group)$")
         .unwrap()
 });
+
+static CONTEXT_ACCESS_GRANTS_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/grants(?:/[^/]+)?$").unwrap());
 
 static CONTEXT_MEMBERSHIP_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/(join|leave|resync)$").unwrap());
@@ -476,6 +480,32 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
                     UserScope::Any,
                     None,
                 ))],
+                _ => vec![],
+            };
+        }
+    }
+
+    // Access grants: issue, list and revoke the tokens that let a third party
+    // call named methods in this context, as this node.
+    //
+    // `Execute` on the context, with no method: a grant lets its holder run
+    // calls, so issuing one asks for the authority it hands on. A token scoped
+    // to some methods passes this route check, and the handler then refuses a
+    // grant naming any method that token may not call itself, so a grant can
+    // only narrow. The call route (`/grant-calls`) is left to the default-deny:
+    // merod serves it without a credential, the token in its body being the
+    // credential, and a proxy in front exempts that path instead.
+    if let Some(captures) = CONTEXT_ACCESS_GRANTS_REGEX.captures(path) {
+        if let Some(ctx_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![ctx_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::GET | HttpMethod::POST | HttpMethod::DELETE => {
+                    vec![Permission::Context(ContextPermission::Execute(
+                        scope,
+                        UserScope::Any,
+                        None,
+                    ))]
+                }
                 _ => vec![],
             };
         }
@@ -1398,6 +1428,9 @@ mod tests {
             (Method::GET, "/admin-api/network/status"),
             (Method::GET, "/admin-api/peers"),
             (Method::POST, "/admin-api/contexts/invite-specialized-node"),
+            // Public in `calimero-server`, so a token never reaches it there;
+            // through a proxy that does not exempt it, only `admin` does.
+            (Method::POST, "/admin-api/namespaces/ns-1/admit"),
             (Method::GET, "/admin-api/totally-unknown-subpath"),
             // Mapped path, unhandled method (the `_ => vec![]` arms):
             (Method::POST, "/admin-api/contexts/ctx-1"),
@@ -1526,6 +1559,50 @@ mod tests {
         assert!(validator.validate_permissions(&["admin".to_owned()], &required));
     }
 
+    /// Managing access grants asks for `context:execute` on that context, not
+    /// `admin`: an app's own bound token issues the grants it hands out. The
+    /// call route is left to the default-deny, because merod serves it without
+    /// a credential and a proxy exempts it.
+    #[test]
+    fn managing_access_grants_asks_for_execute_on_the_context() {
+        let validator = PermissionValidator::new();
+
+        for (method, uri) in [
+            (Method::POST, "/admin-api/contexts/ctx-1/grants"),
+            (Method::GET, "/admin-api/contexts/ctx-1/grants"),
+            (Method::DELETE, "/admin-api/contexts/ctx-1/grants/abcd"),
+        ] {
+            let request = Request::builder()
+                .method(method.clone())
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&request);
+            assert!(
+                validator.validate_permissions(&["context:execute[ctx-1]".to_owned()], &required),
+                "{method} {uri}: {required:?}"
+            );
+            assert!(
+                !validator.validate_permissions(&["context:execute[ctx-2]".to_owned()], &required),
+                "{method} {uri} reached from another context"
+            );
+            assert!(
+                !validator.validate_permissions(&["context:intent[ctx-1]".to_owned()], &required),
+                "{method} {uri} reached by an intent token"
+            );
+        }
+
+        let call = Request::builder()
+            .method(Method::POST)
+            .uri("/admin-api/contexts/ctx-1/grant-calls")
+            .body(Body::empty())
+            .unwrap();
+        assert!(matches!(
+            validator.determine_required_permissions(&call).as_slice(),
+            [Permission::Admin(_)]
+        ));
+    }
+
     /// Discovery must reach the same token that submits.
     ///
     /// The GET reports the executor account a warrant has to name — a content
@@ -1589,36 +1666,6 @@ mod tests {
 
         assert!(validator.validate_permissions(&["application:list[app-1]".to_owned()], &required));
         assert!(!validator.validate_permissions(&["application:list[app-2]".to_owned()], &required));
-    }
-
-    /// Admission must not cost node credentials.
-    ///
-    /// The caller of this route holds only a key — no account here, and no way
-    /// to be given one — so the mapping does not by itself make the route
-    /// usable; the route also has to leave the protected router. What the
-    /// mapping removes is the state where an operator who wants to serve an
-    /// admission has no option but to hand out `admin`.
-    #[test]
-    fn admitting_a_join_does_not_require_admin() {
-        let validator = PermissionValidator::new();
-
-        let post = Request::builder()
-            .method(Method::POST)
-            .uri("/admin-api/namespaces/ns-1/admit")
-            .body(Body::empty())
-            .unwrap();
-        let required = validator.determine_required_permissions(&post);
-
-        assert!(
-            matches!(
-                required.as_slice(),
-                [Permission::Namespace(NamespacePermission::Manage(_))]
-            ),
-            "expected a scoped namespace permission, got {required:?}",
-        );
-
-        assert!(validator.validate_permissions(&["namespace:manage[ns-1]".to_owned()], &required));
-        assert!(!validator.validate_permissions(&["namespace:manage[ns-2]".to_owned()], &required));
     }
 
     /// A delegated caller can read a namespace it is in, and an operator token
@@ -2201,7 +2248,7 @@ mod tests {
     ///
     /// They take the narrow `group:list-own`, as the group's other reads do,
     /// and the handlers refuse a group outside the caller's scope as missing.
-    /// Starting, retrying or aborting an upgrade stays `group:manage`.
+    /// Starting, retrying, activating or aborting an upgrade stays `group:manage`.
     #[test]
     fn a_delegated_session_reads_its_groups_upgrade_state_but_does_not_drive_it() {
         let validator = PermissionValidator::new();
@@ -2229,6 +2276,7 @@ mod tests {
         for path in [
             "/admin-api/groups/grp-1/upgrade",
             "/admin-api/groups/grp-1/upgrade/retry",
+            "/admin-api/groups/grp-1/upgrade/activate",
             "/admin-api/groups/grp-1/migration/abort",
         ] {
             assert!(

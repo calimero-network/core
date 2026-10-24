@@ -2,25 +2,41 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use crate::app_host::{AppApi, AUTH_REFRESH};
 use crate::proof_auth::{ProofPolicy, Refusal, MAX_PROVEN_BODY, PROOF_HEADER};
 use axum::body::Body;
-use axum::extract::OriginalUri;
+use axum::extract::{OriginalUri, State};
+use axum::http::request::Parts;
 use axum::http::uri::PathAndQuery;
 use axum::http::{HeaderValue, Method, Request, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
-use calimero_governance_store::NamespaceRepository;
+use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::{
+    placeholder_admin_identity, ContextTreeService, MetaRepository, NamespaceRepository,
+};
+use calimero_primitives::application::ApplicationId;
+use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use eyre::Result;
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
+use mero_auth::api::handlers::auth::extract_token_from_headers;
+use mero_auth::auth::bindings::ClientKeyBindings;
 use mero_auth::auth::permissions::PermissionValidator;
+use mero_auth::auth::query_token::{is_query_token_route, query_token};
+use mero_auth::auth::token::TokenManager;
 use mero_auth::embedded::{build_app, default_config, EmbeddedAuthApp};
+use mero_auth::storage::StorageError;
 use mero_auth::{AuthError, AuthService};
 use tower::{Layer, Service};
 use tracing::{debug, info, warn};
 
 use crate::config::ServerConfig;
+
+const MAX_SESSION_BODY: usize = 16 * 1024; // a refresh request is two tokens
+const FORWARDED_URI: &str = "X-Forwarded-Uri"; // a proxy's probe, which /auth/validate reads a token from
 
 /// Build the failure response for a rejected token, keeping the Bearer and
 /// query-param paths in sync.
@@ -130,7 +146,7 @@ impl ClientKeyScope {
     pub(crate) fn permits_group(
         &self,
         store: &calimero_store::Store,
-        group_id: &calimero_context_config::types::ContextGroupId,
+        group_id: &ContextGroupId,
     ) -> bool {
         let bindings = &self.0;
 
@@ -163,14 +179,20 @@ impl ClientKeyScope {
         }
 
         if let Some(application_id) = bindings.application_id.as_deref() {
-            match calimero_governance_store::MetaRepository::new(store).load(group_id) {
-                Ok(Some(meta))
-                    if meta
-                        .target
-                        .application_id
-                        .to_string()
-                        .eq_ignore_ascii_case(application_id) => {}
-                _ => return false,
+            let held = match MetaRepository::new(store).load(group_id) {
+                Ok(Some(_)) => {
+                    verified_meta(store, group_id).map(|meta| meta.target.application_id)
+                }
+                // A removed namespace has no group rows; its marker names the application.
+                Ok(None) => calimero_governance_store::ForgottenNamespaces::new(store)
+                    .get(group_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|removed| removed.application_id),
+                Err(_) => None,
+            };
+            if !held.is_some_and(|app| app.to_string().eq_ignore_ascii_case(application_id)) {
+                return false;
             }
         }
 
@@ -181,7 +203,7 @@ impl ClientKeyScope {
     pub(crate) fn permits_group_change(
         &self,
         store: &calimero_store::Store,
-        group_id: &calimero_context_config::types::ContextGroupId,
+        group_id: &ContextGroupId,
     ) -> bool {
         self.permits_group(store, group_id)
             && self.0.context_id.as_deref().is_none_or(|context_id| {
@@ -195,6 +217,32 @@ impl ClientKeyScope {
                     })
                     .is_some_and(|owning| owning == *group_id)
             })
+    }
+
+    /// [`Self::permits_group_change`] for a change that reaches the group's whole
+    /// subtree: an application binding also needs every group and context below to be its own.
+    pub(crate) fn permits_subtree_change(&self, store: &Store, group_id: &ContextGroupId) -> bool {
+        if !self.permits_group_change(store, group_id) {
+            return false;
+        }
+        let Some(bound) = self.0.application_id.as_deref() else {
+            return true;
+        };
+        let Ok(mut groups) = NamespaceRepository::new(store).collect_descendants(group_id) else {
+            return false;
+        };
+        groups.push(*group_id);
+        let is_bound = |app: ApplicationId| app.to_string().eq_ignore_ascii_case(bound);
+        groups.iter().all(|group| {
+            verified_meta(store, group).is_some_and(|meta| is_bound(meta.target.application_id))
+                && ContextTreeService::new(store, *group)
+                    .enumerate_contexts(0, usize::MAX)
+                    .is_ok_and(|contexts| {
+                        contexts.iter().all(|context| {
+                            context_application(store, context).is_some_and(is_bound)
+                        })
+                    })
+        })
     }
 
     pub(crate) fn principal(&self) -> String {
@@ -236,10 +284,24 @@ fn context_application(
         return Some(meta.application.application_id());
     }
     let group = calimero_governance_store::get_group_for_context(store, context_id).ok()??;
-    let meta = calimero_governance_store::MetaRepository::new(store)
-        .load(&group)
-        .ok()??;
-    Some(meta.target.application_id)
+    Some(verified_meta(store, &group)?.target.application_id)
+}
+
+/// The group's meta once a signed admin has replaced the placeholder a join seeds it with
+/// and a signed op has confirmed the target application the invitation hinted, for the group and its namespace.
+pub(crate) fn verified_meta(store: &Store, group_id: &ContextGroupId) -> Option<GroupMetaValue> {
+    let metas = MetaRepository::new(store);
+    // A subgroup copies its parent's target, so a marked root marks the whole tree.
+    let root = NamespaceRepository::new(store).resolve(group_id).ok()?;
+    for group in [group_id, &root] {
+        if metas.is_target_unverified(group).unwrap_or(true) {
+            return None;
+        }
+    }
+    metas
+        .load(group_id)
+        .ok()?
+        .filter(|meta| meta.admin_identity != placeholder_admin_identity())
 }
 
 /// The authenticated requester's **account**, injected by [`AuthGuardService`]
@@ -284,6 +346,116 @@ pub struct AuthenticatedDevice(pub calimero_primitives::identity::DeviceId);
 #[derive(Clone, Debug)]
 pub struct GrantedPermissions(pub Arc<[String]>);
 
+/// What a token holding `permissions` is bound to on `app`'s origin, or `None`
+/// where it may not be used: an admin token, or one bound to another application.
+fn bindings_on_app(
+    app: &ApplicationId,
+    permissions: &[String],
+    mut bindings: ClientKeyBindings,
+) -> Option<ClientKeyBindings> {
+    let app = app.to_string();
+    let foreign = bindings
+        .application_id
+        .as_deref()
+        .is_some_and(|bound| !bound.eq_ignore_ascii_case(&app));
+    if foreign || permissions.iter().any(|p| p == "admin") {
+        warn!(%app, "refused a token on an app's origin");
+        return None;
+    }
+    bindings.application_id = Some(app);
+    Some(bindings)
+}
+
+/// Narrows a request an app's origin handed over to that app: an unusable token
+/// is refused, and the rest gain a [`ClientKeyScope`] naming it.
+pub(crate) async fn bind_to_app(mut request: Request<Body>, next: Next) -> Response {
+    let Some(AppApi(app)) = request.extensions().get::<AppApi>().cloned() else {
+        return next.run(request).await;
+    };
+    let permissions = request
+        .extensions()
+        .get::<GrantedPermissions>()
+        .map_or(Arc::default(), |granted| Arc::clone(&granted.0));
+    let bindings = request
+        .extensions()
+        .get::<ClientKeyScope>()
+        .map(|scope| scope.0.clone())
+        .unwrap_or_default();
+    let Some(bindings) = bindings_on_app(&app, &permissions, bindings) else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    request.extensions_mut().insert(ClientKeyScope(bindings));
+    next.run(request).await
+}
+
+/// The permissions a token route's request presents, if it has a valid session: a refresh body's token, else the bearer's.
+/// An unreadable key store is an `Err`; a key that is gone is `None`.
+async fn presented_permissions(
+    tokens: &TokenManager,
+    parts: &Parts,
+    body: &[u8],
+) -> Result<Option<Vec<String>>, StorageError> {
+    if parts.uri.path() == AUTH_REFRESH {
+        let Some(key_id) = refresh_key_id(tokens, body).await else {
+            return Ok(None);
+        };
+        // A refresh mints from the key's stored permissions, not the token's claims.
+        let key = tokens.get_key_manager().get_key(&key_id).await?;
+        return Ok(key.map(|key| key.permissions));
+    }
+    let Some(bearer) = extract_token_from_headers(&parts.headers) else {
+        return Ok(None);
+    };
+    Ok(tokens
+        .verify_token(bearer)
+        .await
+        .ok()
+        .map(|auth| auth.permissions))
+}
+
+async fn refresh_key_id(tokens: &TokenManager, body: &[u8]) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let claims = tokens
+        .verify_refresh_token(body["refresh_token"].as_str()?)
+        .await
+        .ok()?;
+    Some(claims.key_id)
+}
+
+/// Holds `/auth/refresh` and `/auth/validate` on an app origin to the rule
+/// `bind_to_app` applies; a request with no valid session is left to the route.
+pub(crate) async fn refuse_foreign_session(
+    State(tokens): State<TokenManager>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let Some(AppApi(app)) = request.extensions().get::<AppApi>().cloned() else {
+        return next.run(request).await;
+    };
+    let (parts, body) = request.into_parts();
+    let Ok(body) = axum::body::to_bytes(body, MAX_SESSION_BODY).await else {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    };
+    // The validate handler also reads a token from this header, which no app page has a reason to send.
+    if parts.headers.contains_key(FORWARDED_URI) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let presented = match presented_permissions(&tokens, &parts, &body).await {
+        Ok(presented) => presented,
+        Err(error) => {
+            warn!(%error, "refused a session on an app's origin: its key could not be read");
+            return StatusCode::FORBIDDEN.into_response();
+        }
+    };
+    if let Some(permissions) = presented {
+        let bindings = ClientKeyBindings::from_permissions(&permissions);
+        if bindings_on_app(&app, &permissions, bindings).is_none() {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+    }
+    next.run(Request::from_parts(parts, Body::from(body))).await
+}
+
 /// Wrapper around the embedded authentication application, keeping the router and shared state.
 pub struct BundledAuth {
     app: EmbeddedAuthApp,
@@ -296,7 +468,11 @@ impl BundledAuth {
     }
 
     pub fn into_router(self) -> Router {
-        self.app.router
+        let tokens = self.app.state.auth_service.get_token_manager().clone();
+        self.app.router.layer(axum::middleware::from_fn_with_state(
+            tokens,
+            refuse_foreign_session,
+        ))
     }
 }
 
@@ -454,8 +630,7 @@ fn accepts_query_token_under(path: &str, prefix: &str) -> bool {
     } else {
         path.strip_prefix(prefix).unwrap_or(path)
     };
-    let path = path.trim_end_matches('/');
-    path == "/ws" || path == "/sse" || path.starts_with("/sse/")
+    is_query_token_route(path)
 }
 
 pub fn guard_layer(service: Arc<AuthService>, proof_policy: Option<ProofPolicy>) -> AuthGuardLayer {
@@ -552,12 +727,8 @@ where
                         let token = accepts_query_token(&full_path)
                             .then(|| uri.query())
                             .flatten()
-                            .and_then(|q| {
-                                q.split('&').find_map(|pair| {
-                                    let (key, value) = pair.split_once('=')?;
-                                    (key == "token").then(|| value.to_owned())
-                                })
-                            });
+                            .and_then(query_token)
+                            .map(str::to_owned);
                         match token {
                             Some(ref t) => {
                                 match service.verify_token_string(t, Some(&headers)).await {
@@ -875,33 +1046,12 @@ mod query_token_route_tests {
     use super::accepts_query_token_under;
 
     #[test]
-    fn streaming_routes_may_carry_the_token_in_the_url() {
-        for path in [
-            "/ws",
-            "/ws/",
-            "/sse",
-            "/sse/",
-            "/sse/subscription",
-            "/sse/session/abc",
-        ] {
-            assert!(accepts_query_token_under(path, ""), "{path}");
-        }
+    fn the_node_prefix_is_stripped_before_the_route_is_judged() {
         assert!(accepts_query_token_under("/node1/ws", "/node1"));
-    }
-
-    #[test]
-    fn nothing_else_may() {
-        for path in [
-            "/admin-api/blobs/ab12",
-            "/admin-api/contexts",
-            "/jsonrpc",
-            "/admin-api/sse",
-            "/wss",
-            "/sse-evil",
-            "/admin-dashboard/",
-        ] {
-            assert!(!accepts_query_token_under(path, ""), "{path}");
-        }
+        assert!(accepts_query_token_under(
+            "/node1/sse/session/abc",
+            "/node1"
+        ));
         assert!(!accepts_query_token_under(
             "/node1/admin-api/blobs/ab12",
             "/node1"
@@ -1103,7 +1253,7 @@ mod tests {
     }
 
     /// An in-memory token manager, the half of the auth service every guard test needs.
-    async fn token_manager(storage: &Arc<dyn Storage>) -> TokenManager {
+    pub(super) async fn token_manager(storage: &Arc<dyn Storage>) -> TokenManager {
         let secrets = Arc::new(SecretManager::new(Arc::clone(storage)));
         secrets.initialize().await.unwrap();
         TokenManager::new(
@@ -1784,6 +1934,350 @@ mod tests {
             assert!(
                 validator.validate_permissions(&admin, &required),
                 "{method} {path}: an admin token must be allowed",
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod app_binding_tests {
+    use std::sync::Arc;
+
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Method, Request, StatusCode};
+    use axum::middleware::{from_fn, Next};
+    use axum::routing::{get, post};
+    use axum::{Extension, Router};
+    use calimero_primitives::application::ApplicationId;
+    use mero_auth::auth::bindings::{application_binding, ClientKeyBindings};
+    use mero_auth::auth::token::TokenManager;
+    use mero_auth::storage::models::prefixes;
+    use mero_auth::storage::{Key, KeyManager, MemoryStorage, Storage};
+    use mero_auth::AuthService;
+    use tower::ServiceExt as _;
+
+    use super::{bind_to_app, refuse_foreign_session, ClientKeyScope, GrantedPermissions};
+    use crate::app_host::AppApi;
+    use crate::service_mounts::AuthLayerExt as _;
+
+    fn app() -> ApplicationId {
+        ApplicationId::from([7; 32])
+    }
+
+    fn other_app() -> ApplicationId {
+        ApplicationId::from([8; 32])
+    }
+
+    /// The scope a handler sees, as `context|application`, or `none`.
+    async fn seen(scope: Option<Extension<ClientKeyScope>>) -> String {
+        scope.map_or_else(
+            || "none".to_owned(),
+            |Extension(ClientKeyScope(b))| format!("{:?}|{:?}", b.context_id, b.application_id),
+        )
+    }
+
+    async fn through_binding(permissions: &[&str], marked: bool) -> (StatusCode, String) {
+        let granted: Arc<[String]> = permissions.iter().map(|p| (*p).to_owned()).collect();
+        let bindings = ClientKeyBindings::from_permissions(&granted);
+        let response = Router::new()
+            .route("/", get(seen))
+            .layer(from_fn(bind_to_app))
+            .layer(from_fn(move |mut request: Request<Body>, next: Next| {
+                let granted = Arc::clone(&granted);
+                let bindings = bindings.clone();
+                async move {
+                    if marked {
+                        request.extensions_mut().insert(AppApi(app()));
+                    }
+                    request.extensions_mut().insert(GrantedPermissions(granted));
+                    if !bindings.is_unbound() {
+                        request.extensions_mut().insert(ClientKeyScope(bindings));
+                    }
+                    next.run(request).await
+                }
+            }))
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn an_unbound_token_is_bound_to_the_origins_app() {
+        let (status, seen) = through_binding(&["context:execute"], true).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(seen, format!("None|Some({:?})", app().to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_context_binding_keeps_its_context_and_gains_the_app() {
+        let (status, seen) = through_binding(&["context[abc,id]", "context:execute"], true).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(seen, format!("Some(\"abc\")|Some({:?})", app().to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_binding_to_the_origins_app_is_kept() {
+        let bound = application_binding(&app().to_string());
+        let (status, seen) = through_binding(&[&bound, "context:execute"], true).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(seen, format!("None|Some({:?})", app().to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_binding_to_another_app_is_refused() {
+        let bound = application_binding(&other_app().to_string());
+
+        let (status, _) = through_binding(&[&bound, "context:execute"], true).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn an_admin_token_is_refused() {
+        let (status, _) = through_binding(&["admin"], true).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_request_no_app_host_handed_over_is_left_alone() {
+        let (status, seen) = through_binding(&["admin"], false).await;
+
+        assert_eq!((status, seen.as_str()), (StatusCode::OK, "none"));
+    }
+
+    /// A root key and the client key `k-1` under it, holding `stored`.
+    async fn seed_keys(storage: &Arc<dyn Storage>, stored: Vec<String>) {
+        let keys = KeyManager::new(Arc::clone(storage));
+        let root = Key::new_root_key_with_permissions(
+            "owner".to_owned(),
+            "user_password".to_owned(),
+            vec!["admin".to_owned()],
+            None,
+        );
+        keys.set_key("root", &root).await.unwrap();
+        let key = Key::new_client_key("root".to_owned(), "app".to_owned(), stored, None);
+        keys.set_key("k-1", &key).await.unwrap();
+    }
+
+    /// `POST /auth/refresh` carrying a token pair.
+    fn refresh_req(access: &str, refresh: &str) -> Request<Body> {
+        let body = serde_json::json!({ "access_token": access, "refresh_token": refresh });
+        Request::post("/auth/refresh")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    /// The guard and the binding as `with_auth_guard` mounts them, with a real token.
+    async fn guarded(permissions: &[&str], marked: bool) -> (StatusCode, String) {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let token_manager = super::tests::token_manager(&storage).await;
+        let permissions: Vec<String> = permissions.iter().map(|p| (*p).to_owned()).collect();
+        seed_keys(&storage, permissions.clone()).await;
+        let (token, _) = token_manager
+            .generate_token_pair("k-1".to_owned(), permissions, None, None)
+            .await
+            .unwrap();
+
+        let response = Router::new()
+            .route("/admin-api/contexts", get(seen))
+            .with_auth_guard(Arc::new(AuthService::new(Vec::new(), token_manager)), None)
+            .layer(from_fn(
+                move |mut request: Request<Body>, next: Next| async move {
+                    if marked {
+                        request.extensions_mut().insert(AppApi(app()));
+                    }
+                    next.run(request).await
+                },
+            ))
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/admin-api/contexts")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn the_guard_binds_a_real_token_to_the_origins_app() {
+        let (status, seen) = guarded(&["context:list"], true).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(seen, format!("None|Some({:?})", app().to_string()));
+    }
+
+    #[tokio::test]
+    async fn the_guard_refuses_a_real_admin_token_on_an_app_origin() {
+        let (marked, _) = guarded(&["admin"], true).await;
+        let (unmarked, _) = guarded(&["admin"], false).await;
+
+        assert_eq!((marked, unmarked), (StatusCode::FORBIDDEN, StatusCode::OK));
+    }
+
+    /// A token pair for `permissions`, and the session routes behind `refuse_foreign_session`.
+    async fn session(permissions: &[&str], marked: bool) -> (Router, String, String) {
+        session_on(
+            Arc::new(MemoryStorage::new()),
+            permissions,
+            permissions,
+            marked,
+        )
+        .await
+    }
+
+    /// [`session`] over `storage`, whose key stores `stored` while its tokens claim `claimed`.
+    async fn session_on(
+        storage: Arc<dyn Storage>,
+        stored: &[&str],
+        claimed: &[&str],
+        marked: bool,
+    ) -> (Router, String, String) {
+        let tokens: TokenManager = super::tests::token_manager(&storage).await;
+        let permissions: Vec<String> = claimed.iter().map(|p| (*p).to_owned()).collect();
+        let stored: Vec<String> = stored.iter().map(|p| (*p).to_owned()).collect();
+        seed_keys(&storage, stored).await;
+        let (access, refresh) = tokens
+            .generate_token_pair("k-1".to_owned(), permissions, None, None)
+            .await
+            .unwrap();
+        let router = Router::new()
+            .route("/auth/refresh", post(|| async { "ok" }))
+            .route("/auth/validate", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                tokens,
+                refuse_foreign_session,
+            ))
+            .layer(from_fn(
+                move |mut request: Request<Body>, next: Next| async move {
+                    if marked {
+                        request.extensions_mut().insert(AppApi(app()));
+                    }
+                    next.run(request).await
+                },
+            ));
+        (router, access, refresh)
+    }
+
+    async fn refreshed(permissions: &[&str], marked: bool) -> StatusCode {
+        let (router, access, refresh) = session(permissions, marked).await;
+        router
+            .oneshot(refresh_req(&access, &refresh))
+            .await
+            .unwrap()
+            .status()
+    }
+
+    async fn validated(permissions: &[&str], marked: bool) -> StatusCode {
+        let (router, access, _) = session(permissions, marked).await;
+        router
+            .oneshot(
+                Request::get("/auth/validate")
+                    .header("Authorization", format!("Bearer {access}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// A refresh mints from the key's stored permissions, not the old token's.
+    #[tokio::test]
+    async fn a_refresh_is_judged_by_the_permissions_it_will_mint() {
+        let (router, access, refresh) = session_on(
+            Arc::new(MemoryStorage::new()),
+            &["admin"],
+            &["context:execute"],
+            true,
+        )
+        .await;
+        let status = router
+            .oneshot(refresh_req(&access, &refresh))
+            .await
+            .unwrap()
+            .status();
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn an_admin_session_is_refused_on_an_app_origin_however_the_handler_reads_it() {
+        let (router, access, _) = session(&["admin"], true).await;
+        let padded = Request::get("/auth/validate")
+            .header("Authorization", format!("Bearer  {access}"))
+            .body(Body::empty())
+            .unwrap();
+        let forwarded = Request::get("/auth/validate")
+            .header("X-Forwarded-Method", "GET")
+            .header("X-Forwarded-Uri", format!("/admin-api/x?token={access}"))
+            .body(Body::empty())
+            .unwrap();
+
+        for request in [padded, forwarded] {
+            let status = router.clone().oneshot(request).await.unwrap().status();
+            assert_eq!(status, StatusCode::FORBIDDEN);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refresh_whose_key_cannot_be_read_is_refused_and_a_missing_key_is_left_to_the_route()
+    {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let (router, access, refresh) =
+            session_on(Arc::clone(&storage), &["admin"], &["admin"], true).await;
+        let refresh = || refresh_req(&access, &refresh);
+
+        let key = format!("{}k-1", prefixes::CLIENT_KEY);
+        storage.set(&key, b"not a key").await.unwrap();
+        let unreadable = router.clone().oneshot(refresh()).await.unwrap().status();
+        storage.delete(&key).await.unwrap();
+        let missing = router.oneshot(refresh()).await.unwrap().status();
+
+        assert_eq!(
+            (unreadable, missing),
+            (StatusCode::FORBIDDEN, StatusCode::OK)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_app_origin_renews_and_checks_only_a_session_it_may_use() {
+        let other = application_binding(&other_app().to_string());
+        let own = application_binding(&app().to_string());
+
+        for (permissions, marked, expected) in [
+            (vec!["admin"], true, StatusCode::FORBIDDEN),
+            (
+                vec![other.as_str(), "context:execute"],
+                true,
+                StatusCode::FORBIDDEN,
+            ),
+            (vec!["context:execute"], true, StatusCode::OK),
+            (vec![own.as_str(), "context:execute"], true, StatusCode::OK),
+            (vec!["admin"], false, StatusCode::OK),
+        ] {
+            assert_eq!(
+                refreshed(&permissions, marked).await,
+                expected,
+                "refresh {permissions:?} {marked}"
+            );
+            assert_eq!(
+                validated(&permissions, marked).await,
+                expected,
+                "validate {permissions:?} {marked}"
             );
         }
     }

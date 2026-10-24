@@ -6,7 +6,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Response, StatusCode, Uri};
 use axum::response::IntoResponse;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Extension, Router};
 use bytes::Bytes;
 use calimero_context_client::messages::{ExecuteError, SharedRotationRefusal};
@@ -27,13 +27,15 @@ use crate::admin::handlers::applications::{
     list_application_versions, list_applications, uninstall_application,
 };
 use crate::admin::handlers::context::{
-    create_context, create_context_intent, delete_context, get_context, get_context_group,
-    get_context_identities, get_context_ids, get_context_storage, get_contexts_for_application,
-    get_contexts_with_executors_for_application, governance_intent, intent_relay, join_context,
-    leave_context, perform_intent, presence_intent, query_context, resync_context, sync,
-    update_context_application,
+    access_grants, create_context, create_context_intent, delete_context, get_context,
+    get_context_group, get_context_identities, get_context_ids, get_context_storage,
+    get_contexts_for_application, get_contexts_with_executors_for_application, governance_intent,
+    intent_relay, join_context, leave_context, perform_intent, presence_intent, query_context,
+    resync_context, sync, update_context_application,
 };
-use crate::admin::handlers::identity::{generate_context_identity, get_node_identity};
+use crate::admin::handlers::identity::{
+    acknowledge_revoked_from, generate_context_identity, get_node_identity,
+};
 use crate::admin::handlers::network;
 use crate::admin::handlers::packages::{get_latest_version, list_packages, list_versions};
 use crate::admin::handlers::peers::get_peers_count_handler;
@@ -253,12 +255,26 @@ pub(crate) fn setup(
             "/contexts/{context_id}/query",
             post(query_context::handler),
         )
+        // Access grants this node issues for a context. Managing them needs a
+        // node token; calling under one is the public `access_grant_routes`.
+        .route(
+            "/contexts/{context_id}/grants",
+            post(access_grants::create_handler).get(access_grants::list_handler),
+        )
+        .route(
+            "/contexts/{context_id}/grants/{grant_id}",
+            delete(access_grants::revoke_handler),
+        )
         // Identity management
         .route(
             "/identity/context",
             post(generate_context_identity::handler),
         )
         .route("/identity", get(get_node_identity::handler))
+        .route(
+            "/identity/revoked-from",
+            delete(acknowledge_revoked_from::handler),
+        )
         .nest(
             "/contexts/sync",
             Router::new()
@@ -371,6 +387,10 @@ pub(crate) fn setup(
         .route(
             "/groups/{group_id}/upgrade/retry",
             post(groups::retry_group_upgrade::handler),
+        )
+        .route(
+            "/groups/{namespace_id}/upgrade/activate",
+            post(groups::activate_group_upgrade::handler),
         )
         .route(
             "/groups/{group_id}/issue-ownership-proof",
@@ -502,11 +522,6 @@ pub(crate) fn setup(
             post(namespaces::join_namespace::handler),
         )
         .route(
-            "/namespaces/{namespace_id}/admit",
-            post(namespaces::admit_join::handler),
-
-        )
-        .route(
             "/namespaces/{namespace_id}/leave",
             post(namespaces::leave_namespace::handler),
         )
@@ -544,6 +559,10 @@ pub(crate) fn setup(
         .route("/ready", get(readiness_check_handler))
         .route("/is-authed", get(is_authed_handler))
         .nest("/tee", tee::service())
+        // On every node, whatever `delegated_access` says; see `admission_routes`.
+        .merge(admission_routes())
+        // On every node too; see `access_grant_routes`.
+        .merge(access_grant_routes())
         .merge(if admin_config.delegated_access {
             info!(
                 "Delegated execution is served publicly: a warrant is the credential on \
@@ -599,6 +618,45 @@ fn delegated_execution_routes() -> Router {
             "/groups/{group_id}/governance-intents",
             post(governance_intent::handler).get(governance_intent::describe_handler),
         )
+}
+
+/// Direct admission: publish a join a keyholder signed but cannot publish
+/// itself.
+///
+/// Public on every node, and deliberately not behind `delegated_access`. Its
+/// caller holds a device key and an invitation, nothing on this node, and so
+/// nothing a guard could check: the joiner's signature over the op is the
+/// authorization, and every peer checks it again at apply
+/// (`signer == credential.statement.sign_pk`). What this node contributes is
+/// its consent to carry the op, which the inviter granted by naming it in the
+/// signed `admitters` list. A node named in no invitation refuses every
+/// request here before it decodes the op, so serving the route grants no
+/// authority. Gating it on the relay flag would make a peer-to-peer flow
+/// cloud-only: the inviter may name a peer's self-hosted node, which is not a
+/// relay and should not have to become one to admit somebody.
+///
+/// Its own function, for the same reason as [`delegated_execution_routes`]:
+/// the route is built once and mounted on exactly one router, and
+/// `tests/route_manifest.rs` checks that the protected router never names it.
+fn admission_routes() -> Router {
+    Router::new().route(
+        "/namespaces/{namespace_id}/admit",
+        post(namespaces::admit_join::handler),
+    )
+}
+
+/// Calling a method under an access grant this node issued.
+///
+/// Public on every node, and not behind `delegated_access`: the caller is a third
+/// party holding a token and nothing on this node, so the token is the whole
+/// credential. A node that issued no grant refuses every call after one hash and
+/// one point read, so serving the route grants nothing until an operator issues
+/// one. See `access_grants` for what a grant lets its holder do.
+fn access_grant_routes() -> Router {
+    Router::new().route(
+        "/contexts/{context_id}/grant-calls",
+        post(access_grants::call_handler),
+    )
 }
 
 /// Creates a router for serving static node-ui files and providing fallback to `index.html` for SPA routing.
@@ -877,6 +935,57 @@ impl ApiError {
     }
 }
 
+impl ApiError {
+    /// The response, with a machine-readable `code` beside `error` when there is
+    /// one. The status says what kind of answer this is; the code says which one,
+    /// for a client that tells a person what to do next and should not have to
+    /// match the message to do it.
+    pub(crate) fn into_coded_response(self, code: Option<&'static str>) -> Response<Body> {
+        let Some(code) = code else {
+            return self.into_response();
+        };
+        let body = json!({ "error": self.message, "code": code }).to_string();
+        Response::builder()
+            .status(self.status_code)
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    }
+}
+
+/// Why a join was refused, as a stable token for clients: the join routes
+/// (`POST /namespaces/{id}/join`, `POST /groups/join`) send it as `code`.
+///
+/// Several of these share a status, and the person joining is told different
+/// things for each: an expired link and a link they already used both need a
+/// new one, a removal needs an admin to re-add them, and a member's refusal may
+/// clear once that member catches up. `None` for anything else.
+pub(crate) fn join_refusal_code(err: &Report) -> Option<&'static str> {
+    use calimero_context::error::ContextError;
+
+    if let Some(refusal) = err.downcast_ref::<MembershipError>() {
+        return match refusal {
+            MembershipError::InvitationAlreadyConsumed { .. } => Some("invitation_already_used"),
+            MembershipError::RemovedFromGroup { .. } => Some("removed_from_group"),
+            MembershipError::ReentryBlocked { .. } => Some("reentry_blocked"),
+            _ => None,
+        };
+    }
+    match err.downcast_ref::<ContextError>()? {
+        ContextError::InvitationExpired { .. } => Some("invitation_expired"),
+        ContextError::InvitationInvalid { .. } => Some("invitation_invalid"),
+        ContextError::JoinNotEndorsed {
+            refusal: Some(_), ..
+        } => Some("join_refused_by_member"),
+        ContextError::JoinNotEndorsed {
+            reached_a_peer: true,
+            ..
+        } => Some("no_admitter_reached"),
+        ContextError::JoinNotEndorsed { .. } => Some("no_member_reachable"),
+        _ => None,
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response<Body> {
         let body = json!({ "error": self.message }).to_string();
@@ -909,6 +1018,7 @@ pub(crate) fn method_error_response(
 
     let status_code = match err {
         ExecutionError::FunctionCallError(_) => StatusCode::BAD_REQUEST,
+        ExecutionError::NoOwnedIdentity => StatusCode::FORBIDDEN,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     let mut body = serde_json::to_value(err).unwrap_or_else(|_| json!({}));
@@ -966,9 +1076,11 @@ fn group_lifecycle_refusal_status(
 
     Some(match err {
         Refusal::LeaveGroupIsNamespace { .. }
+        | Refusal::NotANamespaceRoot { .. }
         | Refusal::InvitationInvalid { .. }
         | Refusal::TeePolicyInvalid { .. }
         | Refusal::OwnershipProofInvalid { .. }
+        | Refusal::ApplicationRequired
         | Refusal::BytecodeIdInvalid { .. } => StatusCode::BAD_REQUEST,
         Refusal::UpgradeNotFound { .. } => StatusCode::NOT_FOUND,
         Refusal::UpgradeInProgress { .. }
@@ -976,6 +1088,8 @@ fn group_lifecycle_refusal_status(
         | Refusal::UpgradeAlreadyTargeting { .. }
         | Refusal::UpgradeNoContexts { .. }
         | Refusal::UpgradeNotRetryable { .. }
+        | Refusal::UpgradeTargetMismatch { .. }
+        | Refusal::UpgradeVersionMismatch { .. }
         | Refusal::UpgradeRefused { .. }
         | Refusal::InvitationExpired { .. }
         | Refusal::GroupAlreadyExists { .. }
@@ -1114,7 +1228,8 @@ fn apply_refusal_status(err: &ApplyError) -> Option<StatusCode> {
             | MemberJoinedOpenRejection::AlreadyDirectMember(_),
         )
         | ApplyError::StateHashMismatch { .. }
-        | ApplyError::StaleNonce { .. } => StatusCode::CONFLICT,
+        | ApplyError::StaleNonce { .. }
+        | ApplyError::NonceRespent { .. } => StatusCode::CONFLICT,
         // Not a refusal: the node lacks the history to decide yet, and the same
         // call succeeds once it has caught up. Same answer as
         // `AuthorityNotYetResolvable` below.
@@ -1128,7 +1243,8 @@ fn apply_refusal_status(err: &ApplyError) -> Option<StatusCode> {
             MemberJoinedOpenRejection::SignerMismatch { .. }
             | MemberJoinedOpenRejection::WrongNamespace { .. },
         )
-        | ApplyError::NamespaceCreatedRejected(_) => return None,
+        | ApplyError::NamespaceCreatedRejected(_)
+        | ApplyError::RegisteredContextMismatch { .. } => return None,
     })
 }
 
@@ -1271,6 +1387,18 @@ pub fn parse_api_error(err: Report) -> ApiError {
             message: err.to_string(),
         };
     }
+    // The request conflicts with what this node holds: a namespace the user removed,
+    // or the account namespace, which cannot be removed.
+    if let Some(
+        calimero_context::error::ContextError::NamespaceForgotten { .. }
+        | calimero_context::error::ContextError::AccountNamespaceNotRemovable { .. },
+    ) = err.downcast_ref::<calimero_context::error::ContextError>()
+    {
+        return ApiError {
+            status_code: StatusCode::CONFLICT,
+            message: err.to_string(),
+        };
+    }
     // A warrant the gate refused, surfacing from inside the execute path. Every
     // variant is about the caller's authorization rather than this node's health,
     // and a replay is the one most likely to be hit in practice: a relay that
@@ -1348,12 +1476,17 @@ pub fn parse_api_error(err: Report) -> ApiError {
     // A join no admitter endorsed. Retryable either way, so never the generic
     // 500: `504` when no peer of the namespace answered at all, which is what a
     // client sees while the inviting node is offline, and `503` when one answered
-    // but is not an admitter the invitation names.
-    if let Some(calimero_context::error::ContextError::JoinNotEndorsed { reached_a_peer }) =
-        err.downcast_ref::<calimero_context::error::ContextError>()
+    // but is not an admitter the invitation names, or answered and refused. A
+    // refusal stays retryable because a peer behind on governance refuses what it
+    // has not seen yet; its reason is in the message, and `join_refusal_code`
+    // names it, so a client can still tell the two apart.
+    if let Some(calimero_context::error::ContextError::JoinNotEndorsed {
+        reached_a_peer,
+        refusal,
+    }) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
         return ApiError {
-            status_code: if *reached_a_peer {
+            status_code: if *reached_a_peer || refusal.is_some() {
                 StatusCode::SERVICE_UNAVAILABLE
             } else {
                 StatusCode::GATEWAY_TIMEOUT
@@ -1361,8 +1494,10 @@ pub fn parse_api_error(err: Report) -> ApiError {
             message: format!("{err:#}"),
         };
     }
-    if let Some(calimero_context::error::ContextError::AuthorityNotYetResolvable { .. }) =
-        err.downcast_ref::<calimero_context::error::ContextError>()
+    if let Some(
+        calimero_context::error::ContextError::AuthorityNotYetResolvable { .. }
+        | calimero_context::error::ContextError::NamespaceNotRestored { .. },
+    ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
         return ApiError {
             status_code: StatusCode::SERVICE_UNAVAILABLE,
@@ -1455,13 +1590,17 @@ pub fn parse_api_error(err: Report) -> ApiError {
             message: format!("{err:#}"),
         };
     }
-    if let Some(ContextRegistrationError::NotInGroup { .. }) =
-        err.downcast_ref::<ContextRegistrationError>()
-    {
-        return ApiError {
-            status_code: StatusCode::NOT_FOUND,
-            message: format!("{err:#}"),
-        };
+    if let Some(refusal) = err.downcast_ref::<ContextRegistrationError>() {
+        if let Some(status_code) = match refusal {
+            ContextRegistrationError::NotInGroup { .. } => Some(StatusCode::NOT_FOUND),
+            ContextRegistrationError::RegisteredElsewhere { .. } => Some(StatusCode::CONFLICT),
+            ContextRegistrationError::HasRotatedCells { .. } => None,
+        } {
+            return ApiError {
+                status_code,
+                message: format!("{err:#}"),
+            };
+        }
     }
     if let Some(refusal) = err.downcast_ref::<MetaError>() {
         return ApiError {
@@ -1920,6 +2059,16 @@ mod parse_api_error_tests {
         );
     }
 
+    #[test]
+    fn a_restore_whose_state_has_not_landed_maps_to_503() {
+        let err = calimero_context::error::ContextError::NamespaceNotRestored {
+            namespace_id: "test-namespace".to_owned(),
+        };
+        let api = parse_api_error(err.into());
+        assert_eq!(api.status_code, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(api.message.contains("retry"), "got: {}", api.message);
+    }
+
     /// The pair that must stay apart: same shape of failure to a caller, opposite
     /// meanings. If these ever collapse to one status, retry logic built on the
     /// first will spin forever on the second.
@@ -2354,12 +2503,36 @@ mod parse_api_error_tests {
                     group_id: group_id(),
                     reason: "is already completed",
                 },
+                ContextError::UpgradeTargetMismatch {
+                    group_id: group_id(),
+                    expected: "app-a".to_owned(),
+                    actual: "app-b".to_owned(),
+                },
+                ContextError::UpgradeVersionMismatch {
+                    group_id: group_id(),
+                    expected: "2.0.0".to_owned(),
+                    actual: "3.0.0".to_owned(),
+                },
             ] {
                 let message = err.to_string();
                 let api = parse_api_error(err.into());
                 assert_eq!(api.status_code, StatusCode::CONFLICT, "{message}");
                 assert_eq!(api.message, message);
             }
+        }
+
+        /// Activating a subgroup rather than its namespace. `400`: the request
+        /// names the wrong group, and the message names the namespace to use.
+        #[test]
+        fn activating_a_subgroup_maps_to_400() {
+            let api = parse_api_error(
+                ContextError::NotANamespaceRoot {
+                    group_id: "ContextGroupId(b2)".to_owned(),
+                    namespace_id: "ContextGroupId(a1)".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
         }
 
         /// The upgrade gate refusing a target. `409`, with the gate's own message
@@ -2442,6 +2615,7 @@ mod parse_api_error_tests {
                     },
                     StatusCode::BAD_REQUEST,
                 ),
+                (ContextError::ApplicationRequired, StatusCode::BAD_REQUEST),
                 (
                     ContextError::BytecodeNotInstalled {
                         blob_id: "b1".to_owned(),
@@ -2592,6 +2766,25 @@ mod parse_api_error_tests {
         }
 
         #[test]
+        fn a_removed_namespace_and_the_account_namespace_are_409() {
+            for err in [
+                ContextError::NamespaceForgotten {
+                    namespace_id: "n".to_owned(),
+                },
+                ContextError::AccountNamespaceNotRemovable {
+                    namespace_id: "n".to_owned(),
+                },
+            ] {
+                let rendered = err.to_string();
+                assert_eq!(
+                    parse_api_error(err.into()).status_code,
+                    StatusCode::CONFLICT,
+                    "{rendered}"
+                );
+            }
+        }
+
+        #[test]
         fn missing_namespace_application_and_context_are_404_too() {
             for err in [
                 ContextError::NamespaceNotFound {
@@ -2719,8 +2912,10 @@ mod parse_api_error_tests {
             NamespaceError,
         };
         use calimero_primitives::context::ContextId;
+        use eyre::Report;
 
         use super::{parse_api_error, StatusCode};
+        use crate::admin::service::join_refusal_code;
 
         fn status(err: eyre::Report) -> StatusCode {
             parse_api_error(err).status_code
@@ -3000,6 +3195,19 @@ mod parse_api_error_tests {
             );
         }
 
+        #[test]
+        fn a_context_another_group_registered_first_is_409() {
+            assert_eq!(
+                status(
+                    ContextRegistrationError::RegisteredElsewhere {
+                        context_id: "c".to_owned(),
+                    }
+                    .into()
+                ),
+                StatusCode::CONFLICT
+            );
+        }
+
         /// Both are retryable, but they are not the same wait: nobody answered,
         /// versus someone answered who cannot admit you.
         #[test]
@@ -3007,12 +3215,14 @@ mod parse_api_error_tests {
             let unreachable = parse_api_error(
                 ContextError::JoinNotEndorsed {
                     reached_a_peer: false,
+                    refusal: None,
                 }
                 .into(),
             );
             let wrong_peer = parse_api_error(
                 ContextError::JoinNotEndorsed {
                     reached_a_peer: true,
+                    refusal: None,
                 }
                 .into(),
             );
@@ -3021,6 +3231,81 @@ mod parse_api_error_tests {
             assert_eq!(wrong_peer.status_code, StatusCode::SERVICE_UNAVAILABLE);
             assert!(unreachable.message.contains("could not reach any member"));
             assert!(wrong_peer.message.contains("not an admitter"));
+        }
+
+        /// A member that answered and refused is not "nobody online": the
+        /// joiner is told what it said. It was answered as the `504` above,
+        /// telling them to wait for an inviter who had already been reached.
+        #[test]
+        fn a_refused_join_carries_the_members_reason() {
+            let refused: Report = ContextError::JoinNotEndorsed {
+                reached_a_peer: false,
+                refusal: Some(
+                    "identity abc was removed from group def and cannot rejoin; an admin \
+                     must re-add them"
+                        .to_owned(),
+                ),
+            }
+            .into();
+
+            assert_eq!(join_refusal_code(&refused), Some("join_refused_by_member"));
+            let answer = parse_api_error(refused);
+            assert_eq!(answer.status_code, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(answer.message.contains("refused it"), "{}", answer.message);
+            assert!(
+                answer.message.contains("was removed from group"),
+                "{}",
+                answer.message
+            );
+        }
+
+        /// Each refusal a person is told something different about has its own
+        /// code, wrapped or not: the join relay wraps the refusal for context.
+        #[test]
+        fn join_refusals_are_named_by_code() {
+            let code = |err: Report| join_refusal_code(&err.wrap_err("joining"));
+
+            assert_eq!(
+                code(
+                    ContextError::InvitationExpired {
+                        group_id: "g".to_owned(),
+                        expired_at: 1,
+                    }
+                    .into()
+                ),
+                Some("invitation_expired")
+            );
+            assert_eq!(
+                code(
+                    MembershipError::InvitationAlreadyConsumed {
+                        group_id: "g".to_owned(),
+                        identity: "i".to_owned(),
+                    }
+                    .into()
+                ),
+                Some("invitation_already_used")
+            );
+            assert_eq!(
+                code(
+                    MembershipError::RemovedFromGroup {
+                        group_id: "g".to_owned(),
+                        identity: "i".to_owned(),
+                    }
+                    .into()
+                ),
+                Some("removed_from_group")
+            );
+            assert_eq!(
+                code(
+                    ContextError::JoinNotEndorsed {
+                        reached_a_peer: false,
+                        refusal: None,
+                    }
+                    .into()
+                ),
+                Some("no_member_reachable")
+            );
+            assert_eq!(code(eyre::eyre!("disk full")), None);
         }
     }
 }

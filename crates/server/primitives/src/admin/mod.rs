@@ -1487,12 +1487,25 @@ pub struct GroupInfoApiResponseData {
     #[serde(rename = "appKey")]
     pub bytecode_id: String,
     pub target_application_id: ApplicationId,
+    /// Package and version the group targets, from the group itself, so they are
+    /// present before that release is installed on this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_package: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
     pub member_count: u64,
     pub context_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_upgrade: Option<GroupUpgradeStatusApiData>,
     pub default_capabilities: u32,
     pub subgroup_visibility: String,
+    /// `"restricted"` when this group or any group above it, short of the
+    /// namespace root, is Restricted; `"open"` only on an Open chain to the
+    /// namespace. Show privacy from this, not `subgroupVisibility`: an Open
+    /// subgroup inside a Restricted one takes the parent's members and is
+    /// closed to everyone else. Empty from a server that predates it.
+    #[serde(default)]
+    pub effective_visibility: String,
     /// Full metadata record for the group (name + opaque `data` map), or
     /// omitted if none has ever been set.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2137,6 +2150,10 @@ pub struct UpgradeGroupApiRequest {
     /// when `false` (default), a missing target ABI refuses the upgrade.
     #[serde(default)]
     pub force_code_only: bool,
+    /// When `true`, the migration is not trialled on this node's contexts before
+    /// the upgrade is published; when `false` (default), a failing trial refuses it.
+    #[serde(default)]
+    pub skip_trial: bool,
 }
 
 impl Validate for UpgradeGroupApiRequest {
@@ -2166,6 +2183,56 @@ pub struct UpgradeGroupApiResponseData {
     /// Contexts whose swap failed on this node; a non-zero value is what
     /// `retry_group_upgrade` picks up.
     pub local_contexts_failed: Option<u32>,
+    /// Contexts this node trialled the migration on before publishing.
+    #[serde(default)]
+    pub contexts_trialled: u32,
+    /// Contexts this node knows of but does not hold, so did not trial.
+    #[serde(default)]
+    pub contexts_not_held: u32,
+}
+
+/// Switch this node's contexts of a namespace to its stored target release.
+/// `expected_application_id` and `expected_version`, when set, must each equal that target.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActivateGroupUpgradeApiRequest {
+    #[serde(default)]
+    pub expected_application_id: Option<ApplicationId>,
+    #[serde(default)]
+    pub expected_version: Option<String>,
+}
+
+impl Validate for ActivateGroupUpgradeApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivateGroupUpgradeApiResponse {
+    pub data: ActivateGroupUpgradeApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivateGroupUpgradeApiResponseData {
+    pub target_application_id: ApplicationId,
+    /// Contexts this request moved to the target; `0` when all were current.
+    pub switched_contexts: u32,
+    /// Held deltas replayed into the namespace's contexts.
+    pub replayed_deltas: u32,
+    /// Contexts this request could not finish; calling again retries only these.
+    pub failed_contexts: Vec<ActivateGroupUpgradeFailedContext>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivateGroupUpgradeFailedContext {
+    pub context_id: ContextId,
+    pub error: String,
+    /// `false` when the switch itself failed (a migration or load), which a retry repeats.
+    pub retryable: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3259,6 +3326,23 @@ impl Validate for JoinGroupApiRequest {
     }
 }
 
+/// Body of `POST namespaces/:id/join`. With no invitation it restores a
+/// namespace this node's user removed while the account stayed a member.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JoinNamespaceApiRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invitation: Option<SignedGroupOpenInvitation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_name: Option<String>,
+}
+
+impl Validate for JoinNamespaceApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JoinGroupApiResponse {
@@ -3612,6 +3696,15 @@ impl Validate for IssueNamespaceOwnershipProofApiRequest {
 
 // ---- Leave Namespace (cascading self-leave) ----
 
+/// `?purge=true`: every device of the account also takes the namespace off its
+/// disk. A query, so a leave sent with no body is the plain one it always was.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LeaveNamespaceQuery {
+    #[serde(default)]
+    pub purge: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LeaveNamespaceApiResponse {
@@ -3623,6 +3716,10 @@ pub struct LeaveNamespaceApiResponse {
 pub struct LeaveNamespaceApiResponseData {
     pub namespace_id: String,
     pub member_public_key: PublicKey,
+    /// This node took the namespace off its disk; false when `purge` was not asked
+    /// for, or no admin had confirmed the leave yet.
+    #[serde(default)]
+    pub purged: bool,
 }
 
 // ---- Get Context Group ----
@@ -4906,10 +5003,14 @@ pub struct NamespaceApiResponse {
     pub subgroup_count: usize,
     /// Bundle-manifest version of this namespace's `bytecode_id` blob — the
     /// per-namespace truth (the shared application row only says "latest
-    /// fetched"). `None` when unresolvable (raw-wasm app, legacy key,
-    /// blob not retained locally).
+    /// fetched"). Falls back to the version the group targets when the blob
+    /// is not held locally; `None` for a raw-wasm app or legacy key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
+    /// Package of the release the namespace targets, from the group itself, so
+    /// it is present before that release is installed on this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_package: Option<String>,
     /// What the id was derived from: the founder and salt carried by the
     /// namespace's `NamespaceCreatedV2` genesis. Present on every node that has
     /// applied that genesis, not only the founder's; absent only on a node that
@@ -4923,6 +5024,10 @@ pub struct NamespaceApiResponse {
     /// another. Absent when nothing is held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_ops: Option<NamespaceHeldOpsApi>,
+    /// `true` for a namespace the user removed from this node, listed only by
+    /// `for-application`; joining it with no invitation restores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forgotten: Option<bool>,
 }
 
 /// The group ops a namespace holds unapplied on this node.
@@ -5020,9 +5125,16 @@ pub struct NodeIdentityApiResponseData {
     pub account_namespace_id: Option<String>,
 
     /// The account that withdrew this node's device, absent on a node no
-    /// revocation has reached.
+    /// revocation has reached or whose operator has acknowledged it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_from: Option<RevokedFromApiEntry>,
+}
+
+/// Acknowledging the withdrawal carries nothing back.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcknowledgeRevokedFromApiResponse {
+    pub data: Empty,
 }
 
 /// Which account withdrew this node's device, and which device it was.
@@ -5097,11 +5209,14 @@ mod naming_back_compat_tests {
             group_id: "g".to_owned(),
             bytecode_id: "b".to_owned(),
             target_application_id: ApplicationId::from([0_u8; 32]),
+            app_package: None,
+            app_version: None,
             member_count: 0,
             context_count: 0,
             active_upgrade: None,
             default_capabilities: 0,
             subgroup_visibility: String::new(),
+            effective_visibility: String::new(),
             metadata: None,
             group_state_hash: String::new(),
             namespace_id: String::new(),
@@ -5110,6 +5225,40 @@ mod naming_back_compat_tests {
         let json = serde_json::to_string(&data).expect("serialize");
         assert!(json.contains("\"appKey\""), "got: {json}");
         assert!(!json.contains("\"bytecodeId\""), "got: {json}");
+    }
+
+    // The release fields are new: an old server omits them and a node with no
+    // named release does too, so neither may be required or serialized as null.
+    #[test]
+    fn group_info_release_fields_are_optional_on_the_wire() {
+        let mut data = GroupInfoApiResponseData {
+            group_id: "g".to_owned(),
+            bytecode_id: "b".to_owned(),
+            target_application_id: ApplicationId::from([0_u8; 32]),
+            app_package: None,
+            app_version: None,
+            member_count: 0,
+            context_count: 0,
+            active_upgrade: None,
+            default_capabilities: 0,
+            subgroup_visibility: String::new(),
+            effective_visibility: String::new(),
+            metadata: None,
+            group_state_hash: String::new(),
+            namespace_id: String::new(),
+            owner_op_counter: 0,
+        };
+        let unnamed = serde_json::to_value(&data).expect("serialize");
+        assert!(unnamed.get("appPackage").is_none(), "got: {unnamed}");
+        assert!(unnamed.get("appVersion").is_none(), "got: {unnamed}");
+        let _: GroupInfoApiResponseData =
+            serde_json::from_value(unnamed).expect("a body without the release fields");
+
+        data.app_package = Some("com.acme.app".to_owned());
+        data.app_version = Some("2.0.0".to_owned());
+        let named = serde_json::to_value(&data).expect("serialize");
+        assert_eq!(named["appPackage"], "com.acme.app");
+        assert_eq!(named["appVersion"], "2.0.0");
     }
 
     // The request half of the same contract: an old server only knows `appKey`,
@@ -5177,4 +5326,165 @@ mod revoked_devices_wire_tests {
             )
         );
     }
+}
+
+/// The most methods one access grant may name. A grant is meant to name the few
+/// calls a third party needs, not to stand in for a node token.
+pub const MAX_ACCESS_GRANT_METHODS: usize = 32;
+/// The longest method name an access grant accepts.
+pub const MAX_ACCESS_GRANT_METHOD_LEN: usize = 128;
+/// The longest label an access grant accepts.
+pub const MAX_ACCESS_GRANT_LABEL_LEN: usize = 128;
+
+/// `POST /admin-api/contexts/:context_id/grants` — let whoever holds the
+/// returned token call these methods in this context, as this node.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateAccessGrantApiRequest {
+    /// The methods the holder may call. Each is a bare method name
+    /// (`[A-Za-z0-9_]`), so it can never widen the permission string it becomes.
+    pub methods: Vec<String>,
+    /// The grantor's own note, for listing. Never shown to the holder.
+    #[serde(default)]
+    pub label: String,
+    /// Unix seconds after which the grant is refused. Absent: until revoked.
+    #[serde(default)]
+    pub not_after: Option<u64>,
+}
+
+impl Validate for CreateAccessGrantApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.methods.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "methods" });
+        }
+        if self.methods.len() > MAX_ACCESS_GRANT_METHODS {
+            errors.push(ValidationError::ValueTooLarge {
+                field: "methods",
+                max: MAX_ACCESS_GRANT_METHODS as u64,
+                actual: self.methods.len() as u64,
+            });
+        }
+        for method in &self.methods {
+            if !is_grantable_method_name(method) {
+                errors.push(ValidationError::InvalidFormat {
+                    field: "methods",
+                    reason: format!(
+                        "'{method}' is not a method name: 1 to {MAX_ACCESS_GRANT_METHOD_LEN} \
+                         characters of [A-Za-z0-9_]"
+                    ),
+                });
+            }
+        }
+        errors.extend(validate_string_length(
+            &self.label,
+            "label",
+            MAX_ACCESS_GRANT_LABEL_LEN,
+        ));
+        errors
+    }
+}
+
+/// Whether `method` can be named in an access grant.
+///
+/// Narrower than what an application may export, on purpose: each name becomes
+/// `context:execute[<context>,,<method>]`, and a `,` or `]` in it would be read
+/// as the permission's own syntax.
+#[must_use]
+pub fn is_grantable_method_name(method: &str) -> bool {
+    !method.is_empty()
+        && method.len() <= MAX_ACCESS_GRANT_METHOD_LEN
+        && method
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// One access grant, as its grantor sees it. The token is never in here: it is
+/// returned once, by the create call, and this node keeps only its hash.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessGrantApiData {
+    /// Hex. What revoking the grant names.
+    pub grant_id: String,
+    pub methods: Vec<String>,
+    pub label: String,
+    /// Unix seconds.
+    pub created_at: u64,
+    /// Unix seconds; absent means until revoked.
+    pub not_after: Option<u64>,
+}
+
+/// What the create call returns: the grant, and the one copy of its token.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedAccessGrantApiData {
+    #[serde(flatten)]
+    pub grant: AccessGrantApiData,
+    /// Hex. The credential the holder presents. This node stores only its
+    /// hash, so it cannot be shown again.
+    pub token: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAccessGrantApiResponse {
+    pub data: CreatedAccessGrantApiData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAccessGrantsApiResponse {
+    pub data: Vec<AccessGrantApiData>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeAccessGrantApiResponseData {
+    pub grant_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeAccessGrantApiResponse {
+    pub data: RevokeAccessGrantApiResponseData,
+}
+
+/// `POST /admin-api/contexts/:context_id/grant-calls` — call one method under
+/// an access grant. The token is the whole credential.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccessGrantCallApiRequest {
+    /// Hex, as the create call returned it.
+    pub token: String,
+    /// The method to call; one the grant names.
+    pub method: String,
+    /// Its arguments, as the JSON the guest will receive.
+    pub args_json: serde_json::Value,
+}
+
+impl Validate for AccessGrantCallApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.token.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "token" });
+        }
+        if self.method.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "method" });
+        }
+        errors
+    }
+}
+
+/// What a granted call returned.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessGrantCallApiResponseData {
+    /// The method's own return value.
+    pub returns: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessGrantCallApiResponse {
+    pub data: AccessGrantCallApiResponseData,
 }

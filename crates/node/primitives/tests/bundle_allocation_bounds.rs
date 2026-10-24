@@ -12,6 +12,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use calimero_node_primitives::bundle::{derive_signer_id_did_key, sign_manifest_json};
+use calimero_node_primitives::client::application::bundle::VerifiedBundle;
 use calimero_node_primitives::client::NodeClient;
 use ed25519_dalek::SigningKey;
 use flate2::write::GzEncoder;
@@ -26,6 +27,7 @@ use calimero_node_primitives::test_fixtures::{hex_lower, node_client, pack_entri
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
+static TOTAL: AtomicUsize = AtomicUsize::new(0); // bytes ever requested, never decremented
 
 fn record(live: usize) {
     let _ = PEAK.fetch_max(live, Ordering::Relaxed);
@@ -37,6 +39,7 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let ptr = unsafe { System.alloc(layout) };
         if !ptr.is_null() {
+            let _ = TOTAL.fetch_add(layout.size(), Ordering::Relaxed);
             record(LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size());
         }
         ptr
@@ -45,6 +48,7 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let ptr = unsafe { System.alloc_zeroed(layout) };
         if !ptr.is_null() {
+            let _ = TOTAL.fetch_add(layout.size(), Ordering::Relaxed);
             record(LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size());
         }
         ptr
@@ -60,6 +64,7 @@ unsafe impl GlobalAlloc for Counting {
         if !new.is_null() {
             if new_size >= layout.size() {
                 let grew = new_size - layout.size();
+                let _ = TOTAL.fetch_add(grew, Ordering::Relaxed);
                 record(LIVE.fetch_add(grew, Ordering::Relaxed) + grew);
             } else {
                 let _ = LIVE.fetch_sub(layout.size() - new_size, Ordering::Relaxed);
@@ -206,9 +211,18 @@ fn services_sharing_one_artifact_cost_one_copy() {
 /// an entry still decompresses it, so this is what a redundant walk pays for.
 const PADDING_BYTES: usize = 64 * 1024 * 1024;
 
-/// A signed `.mpk` with `services` distinct tiny wasm artifacts, each named by
-/// one service, optionally behind a `padding` byte entry the walk must cross.
-fn padded_bundle(dir: &TempDir, name: &str, services: usize, padding: usize) -> Vec<u8> {
+const WALK_BYTES: usize = 32 * 1024; // lower bound of one walk's decoder and buffers
+const INDEX_HTML: &[u8] = b"<html></html>"; // the frontend file every bundle here declares
+
+/// A signed `.mpk` with `services` distinct tiny wasm artifacts behind an optional `padding` entry;
+/// a `Some` index declares `INDEX_HTML` as the frontend and ships the given bytes in its place.
+fn padded_bundle(
+    dir: &TempDir,
+    name: &str,
+    services: usize,
+    padding: usize,
+    index: Option<&[u8]>,
+) -> Vec<u8> {
     let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasms: Vec<Vec<u8>> = (0..services)
         .map(|i| format!("wasm for service {i}").into_bytes())
@@ -236,6 +250,16 @@ fn padded_bundle(dir: &TempDir, name: &str, services: usize, padding: usize) -> 
         "services": declared,
         "migrations": []
     });
+    if index.is_some() {
+        manifest["frontend"] = serde_json::json!({
+            "entry": "frontend/index.html",
+            "files": [{
+                "path": "frontend/index.html",
+                "size": INDEX_HTML.len(),
+                "hash": hex_lower(&Sha256::digest(INDEX_HTML)),
+            }],
+        });
+    }
     sign_manifest_json(&mut manifest, &key).unwrap();
 
     let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
@@ -252,6 +276,9 @@ fn padded_bundle(dir: &TempDir, name: &str, services: usize, padding: usize) -> 
             .map(|p| p.as_str())
             .zip(wasms.iter().map(Vec::as_slice)),
     );
+    if let Some(index) = index {
+        entries.push(("frontend/index.html", index));
+    }
     pack_entries(dir, name, &entries)
 }
 
@@ -278,8 +305,15 @@ fn install_elapsed(bundle: Vec<u8>) -> Duration {
 /// the two installs is identical, so the difference isolates the walk from a
 /// fixed cost that would otherwise swamp it.
 fn walk_cost(dir: &TempDir, services: usize) -> Duration {
-    let padded = padded_bundle(dir, &format!("pad{services}.mpk"), services, PADDING_BYTES);
-    let bare = padded_bundle(dir, &format!("bare{services}.mpk"), services, 0);
+    let index = Some(INDEX_HTML);
+    let padded = padded_bundle(
+        dir,
+        &format!("pad{services}.mpk"),
+        services,
+        PADDING_BYTES,
+        index,
+    );
+    let bare = padded_bundle(dir, &format!("bare{services}.mpk"), services, 0, index);
     install_elapsed(padded).saturating_sub(install_elapsed(bare))
 }
 
@@ -301,5 +335,68 @@ fn distinct_artifacts_cost_one_walk() {
         many < one * 3,
         "crossing {PADDING_BYTES} bytes of padding cost {many:?} for {DISTINCT} distinct \
          artifacts against {one:?} for one: the archive is being walked per artifact"
+    );
+}
+
+/// The frontend files ride the same walk as the wasm. A walk builds its own
+/// gzip decoder and read buffer, tens of KiB, so a walk of its own for the
+/// frontend shows up as bytes allocated, which unlike a clock does not flake.
+#[test]
+fn a_frontend_shares_the_walk() {
+    let _probe = PROBE.lock().unwrap_or_else(|e| e.into_inner());
+
+    let dir = TempDir::new().unwrap();
+    let allocated = |frontend: bool| {
+        let bundle = padded_bundle(&dir, "read.mpk", 1, 0, frontend.then_some(INDEX_HTML));
+        let verified = VerifiedBundle::open(bundle.into()).unwrap();
+        let before = TOTAL.load(Ordering::Relaxed);
+        verified.contents().unwrap();
+        TOTAL.load(Ordering::Relaxed) - before
+    };
+    let without = allocated(false);
+    let with = allocated(true);
+
+    assert!(
+        with < without + WALK_BYTES / 2,
+        "reading a bundle allocated {with} bytes with a frontend against {without} without: \
+         the frontend is read in a walk of its own"
+    );
+}
+
+/// A frontend file declaring a few bytes but shipping `PADDING_BYTES` must be
+/// refused from a bounded read, not after buffering the whole entry.
+#[test]
+fn an_entry_larger_than_declared_is_refused_without_buffering_it() {
+    let _probe = PROBE.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = TempDir::new().unwrap();
+    let huge = vec![b'x'; PADDING_BYTES];
+    let bundle = padded_bundle(&dir, "oversized.mpk", 1, 0, Some(&huge));
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (node, _store, _data, _blobs) = runtime.block_on(node_client());
+    let (blob_id, _) = runtime
+        .block_on(node.add_blob(
+            Cursor::new(bundle.as_slice()),
+            Some(bundle.len() as u64),
+            None,
+        ))
+        .unwrap();
+    let source = "https://registry.example.com/app.mpk".parse().unwrap();
+
+    let (installed, peak) = peak_while(|| {
+        runtime.block_on(node.install_application_from_bundle_blob(&blob_id, &source))
+    });
+
+    assert!(
+        installed
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains("FRONTEND_SIZE_MISMATCH")),
+        "an oversized frontend file must be refused as FRONTEND_SIZE_MISMATCH: {installed:?}"
+    );
+    assert!(
+        peak < PADDING_BYTES / 2,
+        "peak allocation {peak} bytes for a file declaring {} bytes and shipping {PADDING_BYTES}: \
+         the entry was buffered",
+        INDEX_HTML.len()
     );
 }

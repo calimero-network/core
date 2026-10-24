@@ -2,8 +2,8 @@
 //! `BundleManifest` type directly, so a new node-side field is a compile error here.
 
 use calimero_bundle::{
-    BundleArtifact, BundleBuildInfo, BundleHandlers, BundleLinks, BundleManifest, BundleMetadata,
-    BundleService,
+    BundleArtifact, BundleBuildInfo, BundleFrontend, BundleHandlers, BundleLinks, BundleManifest,
+    BundleMetadata, BundleService,
 };
 use eyre::Result;
 use sha2::{Digest, Sha256};
@@ -67,6 +67,7 @@ fn hex_lower(bytes: &[u8]) -> String {
 pub fn render(
     meta: &BundleMeta,
     artifacts: &[StagedArtifact],
+    frontend: Option<&BundleFrontend>,
     sdk: Option<&SdkResolution>,
 ) -> Result<serde_json::Value> {
     let single = match artifacts {
@@ -125,6 +126,7 @@ pub fn render(
             github: meta.github.clone(),
             docs: meta.docs.clone(),
         }),
+        frontend: frontend.cloned(),
         frontend_aliases: meta.frontend_aliases.clone(),
         signature: None,
     };
@@ -155,6 +157,7 @@ mod tests {
             min_runtime_version: "0.1.0".into(),
             frontend: None,
             frontend_aliases: vec![],
+            frontend_dir: None,
             app_version: "1.0.0".into(),
             services: vec![],
             manifest_dir: Utf8PathBuf::new(),
@@ -170,7 +173,7 @@ mod tests {
             abi: Some(artifact_from_bytes("abi.json", b"abi-bytes")),
         }];
 
-        let manifest = render(&meta, &artifacts, None).unwrap();
+        let manifest = render(&meta, &artifacts, None, None).unwrap();
 
         assert_eq!(
             manifest,
@@ -217,7 +220,7 @@ mod tests {
             rev: Some("6c6fb4ab4fe02500ab1262c643f52dcc6d6278bf".into()),
         };
 
-        let manifest = render(&meta, &artifacts, Some(&sdk)).unwrap();
+        let manifest = render(&meta, &artifacts, None, Some(&sdk)).unwrap();
 
         assert_eq!(
             manifest["buildInfo"],
@@ -248,7 +251,7 @@ mod tests {
             rev: Some("abc123".into()),
         };
 
-        let manifest = render(&single_meta(), &artifacts, Some(&sdk)).unwrap();
+        let manifest = render(&single_meta(), &artifacts, None, Some(&sdk)).unwrap();
 
         assert_eq!(
             manifest["buildInfo"],
@@ -266,7 +269,7 @@ mod tests {
             abi: None,
         }];
 
-        let manifest = render(&meta, &artifacts, None).unwrap();
+        let manifest = render(&meta, &artifacts, None, None).unwrap();
 
         assert_eq!(manifest["metadata"]["guide"], "## Overview\nA demo app.\n");
         assert!(
@@ -293,6 +296,7 @@ mod tests {
             min_runtime_version: "0.0.0".into(),
             frontend: Some("https://example.com".into()),
             frontend_aliases: Vec::new(),
+            frontend_dir: None,
             app_version: "0.5.0".into(),
             services: vec![],
             manifest_dir: Utf8PathBuf::new(),
@@ -316,7 +320,7 @@ mod tests {
             },
         ];
 
-        let manifest = render(&meta, &artifacts, None).unwrap();
+        let manifest = render(&meta, &artifacts, None, None).unwrap();
 
         assert_eq!(
             manifest,

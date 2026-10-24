@@ -1,5 +1,5 @@
 use actix::{ActorResponse, Handler, Message};
-use calimero_context_client::group::{GetGroupInfoRequest, GroupInfoResponse};
+use calimero_context_client::group::{GetGroupInfoRequest, GroupInfoResponse, TargetRelease};
 use calimero_governance_store::{
     CapabilitiesRepository, MembershipRepository, MetaRepository, MetadataRepository,
     UpgradesRepository,
@@ -108,6 +108,15 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
 
             let namespace_id = calimero_governance_store::NamespaceRepository::new(&self.datastore)
                 .resolve(&group_id)?;
+            // The namespace root is not a subgroup and is Restricted in its own
+            // right, which `is_open_chain_to_namespace` answers for it too.
+            let effective_visibility = if CapabilitiesRepository::new(&self.datastore)
+                .is_open_chain_to_namespace(&group_id, &namespace_id)?
+            {
+                "open".to_owned()
+            } else {
+                "restricted".to_owned()
+            };
             let owner_op_counter =
                 calimero_governance_store::owner_op_counter(&self.datastore, &group_id)?;
 
@@ -115,11 +124,13 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                 group_id,
                 bytecode_id: meta.target.bytecode_id.into(),
                 target_application_id: meta.target.application_id,
+                target_release: TargetRelease::of(&meta.target),
                 member_count,
                 context_count,
                 active_upgrade,
                 default_capabilities,
                 subgroup_visibility,
+                effective_visibility,
                 metadata,
                 state_hash,
                 namespace_id,

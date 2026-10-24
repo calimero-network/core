@@ -97,6 +97,7 @@ fn op_payload_discriminants_are_pinned() {
             chain: vec![],
             cert,
             scope_epoch: 3,
+            applications: vec![],
         },
         OpPayload::DeviceRevoked { account, device },
         OpPayload::AccountKeysRotated { handoff },
@@ -154,6 +155,27 @@ fn op_payload_discriminants_are_pinned() {
             new: BTreeMap::new(),
         },
         OpPayload::MemberLeft { group, member: pk },
+        OpPayload::TargetApplicationSet {
+            group,
+            application: calimero_primitives::application::ApplicationId::from([6; 32]),
+            bytecode: [8; 32],
+        },
+        OpPayload::AccountNamespaceFounded {
+            founder: account,
+            salt: [7; 32],
+            carried: Box::new(OpPayload::Noop),
+        },
+        OpPayload::CascadeUpgraded {
+            group,
+            from_bytecode: [8; 32],
+            bytecode: [9; 32],
+            application: calimero_primitives::application::ApplicationId::from([6; 32]),
+        },
+        OpPayload::NamespaceFounded {
+            founder: account,
+            salt: [7; 32],
+            carried: Box::new(OpPayload::Noop),
+        },
     ];
 
     // Exhaustive: a new variant forces a new arm here.
@@ -185,10 +207,14 @@ fn op_payload_discriminants_are_pinned() {
             OpPayload::RootGuarded { .. } => 23,
             OpPayload::SharedWritersRotated { .. } => 24,
             OpPayload::MemberLeft { .. } => 25,
+            OpPayload::TargetApplicationSet { .. } => 26,
+            OpPayload::AccountNamespaceFounded { .. } => 27,
+            OpPayload::CascadeUpgraded { .. } => 28,
+            OpPayload::NamespaceFounded { .. } => 29,
         }
     }
 
-    assert_eq!(all.len(), 26, "every OpPayload variant must be listed");
+    assert_eq!(all.len(), 30, "every OpPayload variant must be listed");
     for payload in &all {
         let bytes = borsh::to_vec(payload).expect("serialize");
         assert_eq!(

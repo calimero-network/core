@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_config::MemberCapabilities as Caps;
+use calimero_context_config::{MemberCapabilities as Caps, VisibilityMode};
 use calimero_op::{Op, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -23,7 +23,7 @@ use crate::{
     NamespaceGovernance, NamespaceRepository,
 };
 
-const NS: [u8; 32] = [0xB8; 32];
+pub(crate) const NS: [u8; 32] = [0xB8; 32];
 
 /// The authorizer a node runs, built on the op-store the apply writes.
 struct LogAuthorizer<'s> {
@@ -77,8 +77,9 @@ impl<'s> LogAuthorizer<'s> {
                 }
             }
         }
-        // A group op stored before its key arrived folds as a hole; once the key
+        // A sealed op stored before its key arrived folds as a hole; once the key
         // is held it reads as what it is, as the node's own load re-derives it.
+        // An op refused at its cut stays nothing.
         let op_log = crate::NamespaceOpLogService::new(self.store, NS.into());
         for op in &mut ops {
             if !matches!(
@@ -87,39 +88,51 @@ impl<'s> LogAuthorizer<'s> {
             ) {
                 continue;
             }
+            if matches!(
+                crate::void_ledger::VoidLedger::new(self.store, NS.into()).parked(op.id()),
+                Ok(Some(crate::void_ledger::Parked::Refused))
+            ) {
+                continue;
+            }
             let Ok(Some(signed)) = op_log.get_signed_op(op.id()) else {
                 continue;
             };
-            let NamespaceOp::Group {
-                group_id,
-                key_id,
-                encrypted,
-                ..
-            } = &signed.op
-            else {
-                continue;
+            let opened = match &signed.op {
+                NamespaceOp::Group {
+                    group_id,
+                    key_id,
+                    encrypted,
+                    ..
+                } => crate::OpenedNamespaceOp {
+                    group_op: crate::decrypt_group_op(
+                        self.store,
+                        NS.into(),
+                        *group_id,
+                        key_id.as_bytes(),
+                        encrypted,
+                    )
+                    .ok()
+                    .flatten(),
+                    ..Default::default()
+                },
+                NamespaceOp::RootSealed { key_id, encrypted } => crate::OpenedNamespaceOp {
+                    sealed_root: crate::open_sealed_root_op(
+                        self.store,
+                        NS.into(),
+                        key_id.as_bytes(),
+                        encrypted,
+                    )
+                    .ok()
+                    .flatten(),
+                    ..Default::default()
+                },
+                _ => continue,
             };
-            let Some(inner) = crate::decrypt_group_op(
-                self.store,
-                NS.into(),
-                *group_id,
-                key_id.as_bytes(),
-                encrypted,
-            )
-            .ok()
-            .flatten() else {
-                continue;
-            };
-            let binding = crate::unified_op_decode::signer_binding_for(
-                self.store,
-                &Self::group(),
-                &signed.signer,
-            );
-            *op = crate::unified_op_decode::op_from_namespace_op_with_binding(
+            *op = opened.to_op(
                 &signed,
-                Some(&inner),
-                None,
-                binding,
+                |signer| {
+                    crate::unified_op_decode::signer_binding_for(self.store, &Self::group(), signer)
+                },
                 op.id(),
                 op.hlc,
                 &op.parents,
@@ -254,11 +267,80 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
 
     fn effective_role_at_cut(
         &self,
-        _: &ContextGroupId,
-        _: &AccountId,
-        _: &[[u8; 32]],
+        group: &ContextGroupId,
+        member: &AccountId,
+        parents: &[[u8; 32]],
     ) -> Option<Option<GroupMemberRole>> {
-        None
+        if parents.is_empty() {
+            return None;
+        }
+        let view = self.view(parents);
+        if view.is_authorized_admin(*group, member, self.base().root) {
+            return Some(Some(GroupMemberRole::Admin));
+        }
+        Some(
+            view.groups
+                .get(group)
+                .and_then(|members| members.get(member))
+                .cloned(),
+        )
+    }
+
+    fn direct_role_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        if parents.is_empty() {
+            return None;
+        }
+        let path = self
+            .view(parents)
+            .member_path_at_cut(*group, member, self.base().root, 0);
+        Some(match path {
+            calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
+            _ => None,
+        })
+    }
+
+    fn group_creator_at_cut(
+        &self,
+        group: &ContextGroupId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<AccountId>> {
+        if parents.is_empty() || !self.can_resolve_cut(group, parents) {
+            return None;
+        }
+        Some(self.view(parents).group_creator.get(group).copied())
+    }
+
+    fn at_cut(&self) -> Option<&dyn AtCutAuthorizer> {
+        Some(self)
+    }
+
+    /// As the projection: a cut missing an op, or holding one still parked, does not read whole.
+    fn can_resolve_cut(&self, _: &ContextGroupId, parents: &[[u8; 32]]) -> bool {
+        let log = crate::NamespaceOpLogService::new(self.store, NS.into());
+        let mut seen = BTreeSet::new();
+        let mut queue = parents.to_vec();
+        while let Some(id) = queue.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let parked = crate::void_ledger::VoidLedger::new(self.store, NS.into()).parked(id);
+            if matches!(
+                parked,
+                Ok(Some(crate::void_ledger::Parked::Undecided)) | Err(_)
+            ) {
+                return false;
+            }
+            let Ok(Some(op)) = log.get_signed_op(id) else {
+                return false;
+            };
+            queue.extend(op.parent_op_hashes);
+        }
+        true
     }
 
     fn context_rotation_group_at_cut(
@@ -336,6 +418,16 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
                 .chain(self.base().root.as_ref().map(|(_, owner)| owner))
                 .copied()
                 .collect(),
+            visibility: view
+                .subgroups
+                .get(&ScopeId::from(group.to_bytes()))
+                .map(|edge| {
+                    if edge.restricted {
+                        VisibilityMode::Restricted
+                    } else {
+                        VisibilityMode::Open
+                    }
+                }),
         })
     }
 }
@@ -363,30 +455,34 @@ impl Seeds {
     }
 }
 
-struct World {
-    store: Store,
+pub(crate) struct World {
+    pub(crate) store: Store,
     seeds: Seeds,
     owner: Person,
     alice: Person,
     sam: Person,
     bob: Person,
     xavier: Person,
-    k0: [u8; 32],
+    pub(crate) k0: [u8; 32],
     nonces: RefCell<BTreeMap<PublicKey, u64>>,
 }
 
 impl World {
-    fn new() -> Self {
-        Self::build(Seeds::random(), true)
+    pub(crate) fn new() -> Self {
+        Self::build(test_store(), Seeds::random(), true)
     }
 
     /// A second node of the same namespace, which holds the group key or not.
     fn replica(&self, keyed: bool) -> Self {
-        Self::build(self.seeds, keyed)
+        self.replica_on(test_store(), keyed)
     }
 
-    fn build(seeds: Seeds, keyed: bool) -> Self {
-        let store = test_store();
+    /// [`Self::replica`] on `store`, which must be shaped like [`test_store`]'s.
+    pub(crate) fn replica_on(&self, store: Store, keyed: bool) -> Self {
+        Self::build(store, self.seeds, keyed)
+    }
+
+    fn build(store: Store, seeds: Seeds, keyed: bool) -> Self {
         let ns = LogAuthorizer::group();
         let person = |store: &Store, bytes: [u8; 32]| {
             let sk = PrivateKey::from(bytes);
@@ -505,16 +601,18 @@ impl World {
                 key_id: GroupKeyring::key_id_for(key).into(),
                 encrypted,
                 key_rotation,
+                registers: None,
             },
         )
         .expect("sign")
     }
 
-    fn apply(&self, op: &SignedNamespaceOp) -> eyre::Result<()> {
+    pub(crate) fn apply(&self, op: &SignedNamespaceOp) -> eyre::Result<()> {
         let authorizer = LogAuthorizer::new(&self.store);
         NamespaceGovernance::new(&self.store, NS.into())
             .with_apply_auth(&op.parent_op_hashes, &authorizer)
             .apply_signed_op(op)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
             .map(|_| ())
     }
 
@@ -527,6 +625,7 @@ impl World {
         NamespaceGovernance::new(&self.store, NS.into())
             .with_apply_auth(&op.parent_op_hashes, &authorizer)
             .apply_signed_op(op)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
             .map(|_| ())
     }
 
@@ -568,7 +667,7 @@ impl World {
     }
 
     /// Owner adds Alice and Sam as admins and Bob as a member; all applied.
-    fn founded(&self) -> [SignedNamespaceOp; 3] {
+    pub(crate) fn founded(&self) -> [SignedNamespaceOp; 3] {
         let a = self.add(&self.owner, &[], &self.alice, GroupMemberRole::Admin);
         self.apply(&a).expect("owner adds alice");
         let s = self.add(&self.owner, &[&a], &self.sam, GroupMemberRole::Admin);
@@ -609,6 +708,7 @@ struct FromTheOldCut {
 
 const K_SAM: [u8; 32] = [0x42; 32];
 const K_ALICE: [u8; 32] = [0x43; 32];
+const K_LATE: [u8; 32] = [0x44; 32];
 
 fn sam_from_the_old_cut(w: &World, head: &SignedNamespaceOp) -> FromTheOldCut {
     FromTheOldCut {
@@ -1330,6 +1430,7 @@ fn unreadable_op(who: &Person, nonce: u64) -> SignedNamespaceOp {
                 ciphertext: vec![nonce as u8; 1 << 20],
             },
             key_rotation: None,
+            registers: None,
         },
     )
     .expect("sign")
@@ -1392,12 +1493,13 @@ fn caps(w: &World, who: &Person) -> Option<u32> {
 #[test]
 fn a_capability_a_void_op_granted_is_taken_back_when_the_removal_arrives() {
     let w = World::new();
-    let [_, s, _] = w.founded();
+    let [_, s, b] = w.founded();
     let before = caps(&w, &w.bob);
 
     let grant = w.sign(
         &w.sam,
-        &[&s],
+        // Bob's add is in the grant's cut: a capability is set only on a member there.
+        &[&b],
         &GroupOp::MemberCapabilitySet {
             member: w.bob.account,
             capabilities: calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS,
@@ -2160,5 +2262,618 @@ fn an_admin_whose_capability_is_revoked_needed_none_of_it() {
         w.role(&w.xavier),
         Some(GroupMemberRole::Member),
         "Sam added Xavier as an admin, not through the bit"
+    );
+}
+
+fn sign_root(
+    w: &World,
+    who: &Person,
+    parents: &[&SignedNamespaceOp],
+    op: calimero_context_client::local_governance::RootOp,
+) -> SignedNamespaceOp {
+    let sealed = crate::test_fixtures::seal_for_test(&w.store, LogAuthorizer::group(), op);
+    SignedNamespaceOp::sign(
+        &who.sk,
+        NS.into(),
+        parents
+            .iter()
+            .map(|p| p.content_hash().expect("hash"))
+            .collect(),
+        w.next_nonce(who),
+        sealed,
+    )
+    .expect("sign a root op")
+}
+
+fn sign_in_group(
+    w: &World,
+    who: &Person,
+    group: ContextGroupId,
+    parents: &[&SignedNamespaceOp],
+    op: &GroupOp,
+) -> SignedNamespaceOp {
+    SignedNamespaceOp::sign(
+        &who.sk,
+        NS.into(),
+        parents
+            .iter()
+            .map(|p| p.content_hash().expect("hash"))
+            .collect(),
+        w.next_nonce(who),
+        NamespaceOp::Group {
+            group_id: group.to_bytes().into(),
+            key_id: GroupKeyring::key_id_for(&w.k0).into(),
+            encrypted: GroupKeyring::encrypt_op(&w.k0, op).expect("encrypt"),
+            key_rotation: None,
+            registers: op.registered_context(),
+        },
+    )
+    .expect("sign a group op")
+}
+
+/// Alice, an admin, makes a Restricted subgroup of the namespace.
+fn alice_creates_a_restricted_subgroup(
+    w: &World,
+    parent: &SignedNamespaceOp,
+) -> (SignedNamespaceOp, ContextGroupId) {
+    let namespace = LogAuthorizer::group().to_bytes();
+    let create = sign_root(
+        w,
+        &w.alice,
+        &[parent],
+        crate::test_fixtures::group_created(w.alice.account, namespace, true, 0x71),
+    );
+    let subgroup = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+        &w.alice.account,
+        namespace,
+        true,
+        0x71,
+    ));
+    (create, subgroup)
+}
+
+fn visibility(w: &World, subgroup: &ContextGroupId) -> calimero_context_config::VisibilityMode {
+    CapabilitiesRepository::new(&w.store)
+        .subgroup_visibility(subgroup)
+        .expect("visibility")
+}
+
+/// What reaches a node, in the order it arrives.
+#[derive(Clone, Copy)]
+enum Arrival<'a> {
+    Op(&'a SignedNamespaceOp),
+    Key([u8; 32]),
+}
+
+/// Play `arrivals` on `replica`: an op applies once its parents are logged, as in the
+/// DAG, and a key is stored and replays what it opens.
+fn play(replica: &World, groups: &[ContextGroupId], arrivals: &[Arrival<'_>]) {
+    let log = crate::NamespaceOpLogService::new(&replica.store, NS.into());
+    let mut pending: Vec<&SignedNamespaceOp> = Vec::new();
+    for arrival in arrivals {
+        match arrival {
+            Arrival::Op(op) => pending.push(op),
+            Arrival::Key(key) => {
+                let _ = GroupKeyring::new(&replica.store, LogAuthorizer::group())
+                    .store_key(key)
+                    .expect("the key arrives");
+                for group in groups {
+                    let authorizer = LogAuthorizer::new(&replica.store);
+                    let _ = crate::retry_encrypted_ops_for_group_with(
+                        &replica.store,
+                        NS.into(),
+                        group.to_bytes(),
+                        &authorizer,
+                    )
+                    .expect("the key arrival replays");
+                }
+            }
+        }
+        while let Some(at) = pending.iter().position(|op| {
+            op.parent_op_hashes
+                .iter()
+                .all(|parent| log.contains_op(*parent).expect("read the op log"))
+        }) {
+            let _verdict = replica.apply(pending.remove(at));
+        }
+    }
+}
+
+/// The owner, no creator, opens Alice's subgroup. A node still without the creation reads
+/// no creator, which is no verdict: it judges the flip once the creation lands, as refused.
+#[test]
+fn a_flip_whose_creation_is_still_sealed_is_judged_once_the_creation_reads() {
+    use calimero_context_config::VisibilityMode;
+
+    let w = World::new();
+    let founding = w.founded();
+    let _ = GroupKeyring::new(&w.store, LogAuthorizer::group())
+        .store_key(&K_LATE)
+        .expect("the signer holds the later key");
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &founding[2]);
+    w.apply(&create)
+        .expect("alice creates a Restricted subgroup");
+    let flip = sign_in_group(
+        &w,
+        &w.owner,
+        subgroup,
+        &[&create],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    assert!(w.apply(&flip).is_err(), "control: only the creator opens");
+    let groups = [LogAuthorizer::group(), subgroup];
+    let mark = |node: &World| {
+        crate::void_ledger::VoidLedger::new(&node.store, NS.into())
+            .parked(flip.content_hash().expect("hash"))
+            .expect("read the mark")
+    };
+
+    for key_at in 0..=2 {
+        let replica = replica_after(&w, &founding.iter().collect::<Vec<_>>());
+        let mut arrivals = vec![Arrival::Op(&create), Arrival::Op(&flip)];
+        arrivals.insert(key_at, Arrival::Key(K_LATE));
+        play(&replica, &groups, &arrivals);
+
+        assert_eq!(
+            (visibility(&replica, &subgroup), mark(&replica)),
+            (VisibilityMode::Restricted, mark(&w)),
+            "the flip lands differently with the key at {key_at}"
+        );
+    }
+}
+
+#[test]
+fn a_creator_removed_from_the_namespace_cannot_open_its_restricted_subgroup() {
+    use calimero_context_config::VisibilityMode;
+
+    let w = World::new();
+    let [_, _, b] = w.founded();
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &b);
+    w.apply(&create)
+        .expect("alice creates a Restricted subgroup");
+    let removal = w.remove(&w.owner, &[&create], &w.alice, None);
+    w.apply(&removal).expect("the owner removes alice");
+    assert_eq!(w.role(&w.alice), None, "control: alice left the namespace");
+    assert_eq!(visibility(&w, &subgroup), VisibilityMode::Restricted);
+
+    let flip = sign_in_group(
+        &w,
+        &w.alice,
+        subgroup,
+        &[&removal],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let applied = w.apply(&flip);
+
+    assert_eq!(
+        visibility(&w, &subgroup),
+        VisibilityMode::Restricted,
+        "a removed creator opened its subgroup (apply: {:?})",
+        applied.map_err(|err| format!("{err:#}")),
+    );
+}
+
+#[test]
+fn a_flip_voided_by_a_concurrent_removal_leaves_the_subgroup_restricted_on_every_node() {
+    use calimero_context_config::VisibilityMode;
+
+    let flip_first = World::new();
+    let removal_first = flip_first.replica(true);
+    let w = &flip_first;
+    let founding = w.founded();
+    for op in &founding {
+        removal_first.apply(op).expect("the replica follows");
+    }
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(w, &founding[2]);
+    for node in [&flip_first, &removal_first] {
+        node.apply(&create)
+            .expect("alice creates a Restricted subgroup");
+    }
+
+    let flip = sign_in_group(
+        w,
+        &w.alice,
+        subgroup,
+        &[&create],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let removal = w.remove(&w.owner, &[&create], &w.alice, None);
+    flip_first.apply(&flip).expect("alice's flip applies first");
+    flip_first
+        .apply(&removal)
+        .expect("the removal applies and rolls the flip back");
+    removal_first
+        .apply(&removal)
+        .expect("the owner removes alice");
+    let _ = removal_first.apply(&flip);
+
+    assert_eq!(
+        (
+            visibility(&flip_first, &subgroup),
+            visibility(&removal_first, &subgroup)
+        ),
+        (VisibilityMode::Restricted, VisibilityMode::Restricted),
+        "a flip voided by its creator's concurrent removal opened the subgroup"
+    );
+}
+
+#[test]
+fn a_flip_that_counts_again_after_its_removal_is_voided_does_not_open_the_subgroup() {
+    use calimero_context_config::VisibilityMode;
+
+    let w = World::new();
+    let founding = w.founded();
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &founding[2]);
+    w.apply(&create)
+        .expect("alice creates a Restricted subgroup");
+
+    // Bob, no creator, opens it while Sam removes Bob and Alice removes Sam.
+    let flip = sign_in_group(
+        &w,
+        &w.bob,
+        subgroup,
+        &[&create],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let removes_bob = w.remove(&w.sam, &[&create], &w.bob, None);
+    let removes_sam = w.remove(&w.alice, &[&create], &w.sam, None);
+    w.apply(&removes_bob).expect("sam removes bob");
+    let _void = w.apply(&flip);
+    let _voids_the_removal = w.apply(&removes_sam);
+
+    assert_eq!(
+        visibility(&w, &subgroup),
+        VisibilityMode::Restricted,
+        "a flip no gate judged opened the subgroup once its removal was voided"
+    );
+}
+
+/// Every order of `items`.
+fn permutations<T: Copy>(items: &[T]) -> Vec<Vec<T>> {
+    if items.len() <= 1 {
+        return vec![items.to_vec()];
+    }
+    let mut all = Vec::new();
+    for at in 0..items.len() {
+        let mut rest = items.to_vec();
+        let first = rest.remove(at);
+        for mut tail in permutations(&rest) {
+            tail.insert(0, first);
+            all.push(tail);
+        }
+    }
+    all
+}
+
+/// Alice's opening flip, Sam's concurrent removal of Alice, and Bob's concurrent
+/// removal of Sam, which voids Sam's removal and so lets the flip count again.
+struct FlipCountsAgain {
+    history: Vec<SignedNamespaceOp>,
+    flip: SignedNamespaceOp,
+    sam_removes_alice: SignedNamespaceOp,
+    bob_removes_sam: SignedNamespaceOp,
+    subgroup: ContextGroupId,
+}
+
+fn flip_counts_again(w: &World) -> FlipCountsAgain {
+    use calimero_context_config::VisibilityMode;
+
+    let [a, s, b] = w.founded();
+    let promote = w.add(&w.owner, &[&b], &w.bob, GroupMemberRole::Admin);
+    w.apply(&promote).expect("bob is an admin");
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(w, &promote);
+    w.apply(&create)
+        .expect("alice creates a Restricted subgroup");
+    let flip = sign_in_group(
+        w,
+        &w.alice,
+        subgroup,
+        &[&create],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let sam_removes_alice = w.remove(&w.sam, &[&create], &w.alice, None);
+    let bob_removes_sam = w.remove(&w.bob, &[&create], &w.sam, None);
+    FlipCountsAgain {
+        history: vec![a, s, b, promote, create],
+        flip,
+        sam_removes_alice,
+        bob_removes_sam,
+        subgroup,
+    }
+}
+
+#[test]
+fn a_flip_that_counts_again_ends_with_the_same_visibility_in_every_arrival_order() {
+    use calimero_context_config::VisibilityMode;
+
+    let w = World::new();
+    let f = flip_counts_again(&w);
+    let ops = [&f.flip, &f.sam_removes_alice, &f.bob_removes_sam];
+    let mut landed = Vec::new();
+    for order in permutations(&[0, 1, 2]) {
+        let replica = replica_after(&w, &f.history.iter().collect::<Vec<_>>());
+        for at in &order {
+            let _verdict = replica.apply(ops[*at]);
+        }
+        landed.push((order, visibility(&replica, &f.subgroup)));
+    }
+
+    assert!(
+        landed.iter().all(|(_, mode)| *mode == VisibilityMode::Open),
+        "Sam's removal of Alice is void, so her flip stands in every order: {landed:?}"
+    );
+}
+
+/// The subgroup's creation and the removal that voids Sam's are sealed under a key the
+/// replica takes late: neither the flip's sealed ancestor nor where the key falls decides.
+#[test]
+fn a_flip_that_counts_again_lands_the_same_wherever_its_sealed_ops_and_key_arrive() {
+    use calimero_context_config::VisibilityMode;
+
+    let w = World::new();
+    let [a, s, b] = w.founded();
+    let promote = w.add(&w.owner, &[&b], &w.bob, GroupMemberRole::Admin);
+    w.apply(&promote).expect("bob is an admin");
+    let replica_history = [&a, &s, &b, &promote];
+    let _ = GroupKeyring::new(&w.store, LogAuthorizer::group())
+        .store_key(&K_LATE)
+        .expect("the signer holds the later key");
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &promote);
+    w.apply(&create)
+        .expect("alice creates a Restricted subgroup");
+    let flip = sign_in_group(
+        &w,
+        &w.alice,
+        subgroup,
+        &[&create],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let sam_removes_alice = w.remove(&w.sam, &[&create], &w.alice, None);
+    let bob_removes_sam = w.sign_under(
+        &K_LATE,
+        &w.bob,
+        &[&create],
+        &GroupOp::MemberRemoved {
+            member: w.sam.account,
+            expected_group_state_hash: [0u8; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+        None,
+    );
+    let groups = [LogAuthorizer::group(), subgroup];
+
+    let ops = [&create, &flip, &sam_removes_alice, &bob_removes_sam];
+    let mut landed = Vec::new();
+    for order in permutations(&[0, 1, 2, 3]) {
+        for key_at in 0..=order.len() {
+            let replica = replica_after(&w, &replica_history);
+            let mut arrivals: Vec<Arrival<'_>> =
+                order.iter().map(|at| Arrival::Op(ops[*at])).collect();
+            arrivals.insert(key_at, Arrival::Key(K_LATE));
+            play(&replica, &groups, &arrivals);
+            let mode = visibility(&replica, &subgroup);
+            if mode != VisibilityMode::Open {
+                landed.push((order.clone(), key_at, mode));
+            }
+        }
+    }
+
+    assert!(
+        landed.is_empty(),
+        "Sam's removal of Alice is void, so her flip stands; these schedules \
+         (order of [create, flip, sam, bob], key slot) did not open it: {landed:?}"
+    );
+}
+
+/// Alice opens her subgroup from a cut that does not hold its creation: no creator opened
+/// it there, whether or not the creation landed first.
+#[test]
+fn a_flip_concurrent_with_its_creation_lands_the_same_in_either_order() {
+    use calimero_context_config::VisibilityMode;
+
+    let w = World::new();
+    let founding = w.founded();
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &founding[2]);
+    let flip = sign_in_group(
+        &w,
+        &w.alice,
+        subgroup,
+        &[&founding[2]],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let history = founding.iter().collect::<Vec<_>>();
+    let create_first = replica_after(&w, &history);
+    let flip_first = replica_after(&w, &history);
+    let _ = create_first.apply(&create);
+    let _ = create_first.apply(&flip);
+    let _ = flip_first.apply(&flip);
+    let _ = flip_first.apply(&create);
+
+    let mark = |node: &World| {
+        crate::void_ledger::VoidLedger::new(&node.store, NS.into())
+            .parked(flip.content_hash().expect("hash"))
+            .expect("read the mark")
+    };
+    assert_eq!(
+        (visibility(&create_first, &subgroup), mark(&create_first)),
+        (visibility(&flip_first, &subgroup), mark(&flip_first)),
+        "the flip lands differently by arrival order"
+    );
+}
+
+/// No transfer ever moved the namespace's owner, so its owner at a cut holding a parked op
+/// is the live one rather than undecidable until that op's key arrives.
+#[test]
+fn an_owner_no_transfer_moved_is_read_live_at_a_cut_holding_a_parked_op() {
+    let w = World::new();
+    let founding = w.founded();
+    // A root op sealed under a key this node does not hold yet: no op of the group itself.
+    let sealer = test_store();
+    let _ = GroupKeyring::new(&sealer, LogAuthorizer::group())
+        .store_key(&K_LATE)
+        .expect("the sealer holds the later key");
+    let parked = SignedNamespaceOp::sign(
+        &w.alice.sk,
+        NS.into(),
+        vec![founding[2].content_hash().expect("hash")],
+        w.next_nonce(&w.alice),
+        crate::test_fixtures::seal_for_test(
+            &sealer,
+            LogAuthorizer::group(),
+            crate::test_fixtures::group_created(w.alice.account, NS, true, 0x73),
+        ),
+    )
+    .expect("sign the sealed create");
+    w.apply(&parked).expect("the op parks unread");
+
+    let owner = crate::group_owner::owner_at_cut(
+        &w.store,
+        &LogAuthorizer::group(),
+        &[parked.content_hash().expect("hash")],
+        &LogAuthorizer::new(&w.store),
+    );
+
+    assert_eq!(
+        owner.map_err(|err| format!("{err:#}")),
+        Ok(Some(w.owner.account)),
+        "an owner no transfer moved was not read live"
+    );
+}
+
+/// A transfer judged void after it applied still moved the live owner, so the owner at a
+/// cut that does not read whole is undecidable rather than that moved row.
+#[test]
+fn an_owner_a_void_transfer_moved_is_not_read_live_at_a_cut_holding_a_parked_op() {
+    let w = World::new();
+    let founding = w.founded();
+    let transfer = w.sign(
+        &w.owner,
+        &[&founding[2]],
+        &crate::test_fixtures::guarded_group_op(
+            &w.store,
+            &LogAuthorizer::group(),
+            &w.owner.pk,
+            GroupOp::TransferOwnership {
+                new_owner: w.alice.account,
+            },
+        ),
+        None,
+    );
+    w.apply(&transfer).expect("the owner transfers to alice");
+    let transfer_id = transfer.content_hash().expect("hash");
+    crate::void_ledger::VoidLedger::new(&w.store, NS.into())
+        .set_voided(&BTreeSet::from([transfer_id]))
+        .expect("the transfer is judged void after it applied");
+    let sealer = test_store();
+    let _ = GroupKeyring::new(&sealer, LogAuthorizer::group())
+        .store_key(&K_LATE)
+        .expect("the sealer holds the later key");
+    let parked = SignedNamespaceOp::sign(
+        &w.alice.sk,
+        NS.into(),
+        vec![transfer_id],
+        w.next_nonce(&w.alice),
+        crate::test_fixtures::seal_for_test(
+            &sealer,
+            LogAuthorizer::group(),
+            crate::test_fixtures::group_created(w.alice.account, NS, true, 0x74),
+        ),
+    )
+    .expect("sign the sealed create");
+    w.apply(&parked).expect("the op parks unread");
+
+    let owner = crate::group_owner::owner_at_cut(
+        &w.store,
+        &LogAuthorizer::group(),
+        &[parked.content_hash().expect("hash")],
+        &LogAuthorizer::new(&w.store),
+    );
+
+    assert!(
+        owner.as_ref().is_err_and(|err| matches!(
+            err.downcast_ref::<crate::ApplyError>(),
+            Some(crate::ApplyError::AuthorityUndecidable { .. })
+        )),
+        "the row a void transfer moved was read as the owner: {owner:?}"
+    );
+}
+
+/// A rollback's visibility event is announced only once the removal that caused it is
+/// logged, like every other event of an applied op.
+#[test]
+#[serial_test::serial]
+fn a_rollbacks_visibility_event_fires_after_the_removal_is_logged() {
+    use std::sync::{Arc, Barrier};
+
+    use crate::op_events::{self, OpEvent};
+
+    let w = World::new();
+    let founding = w.founded();
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &founding[2]);
+    w.apply(&create)
+        .expect("alice creates a Restricted subgroup");
+    let flip = sign_in_group(
+        &w,
+        &w.alice,
+        subgroup,
+        &[&create],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    w.apply(&flip).expect("alice's flip applies first");
+    let removal = w.remove(&w.owner, &[&create], &w.alice, None);
+    let removal_id = removal.content_hash().expect("hash");
+
+    let mut rx = op_events::subscribe();
+    let observer_store = w.store.clone();
+    let barrier = Arc::new(Barrier::new(2));
+    let observer_barrier = Arc::clone(&barrier);
+    let observer = std::thread::spawn(move || {
+        observer_barrier.wait();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(OpEvent::SubgroupVisibilityChanged {
+                    group_id,
+                    open: false,
+                }) if group_id == subgroup.to_bytes() => {
+                    return Some(
+                        crate::NamespaceOpLogService::new(&observer_store, NS.into())
+                            .contains_op(removal_id)
+                            .expect("read the log"),
+                    );
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                    panic!("observer lagged by {n} events: inconclusive");
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return None,
+                _ => std::thread::yield_now(),
+            }
+        }
+        None
+    });
+    barrier.wait();
+    w.apply(&removal)
+        .expect("the removal applies and rolls the flip back");
+
+    assert_eq!(
+        observer.join().expect("the observer"),
+        Some(true),
+        "the rollback announced its visibility before the removal was logged"
     );
 }

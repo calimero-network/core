@@ -1,0 +1,279 @@
+name: E2E Account - Removing An Account From A Restricted Subgroup Shuts Out Its Paired Device
+description: >
+  Node 2 founds a namespace and opens a Restricted subgroup holding node 1 and
+  node 4. Node 3 is paired into node 1's account and proves it works by joining
+  and reading the subgroup's context. Node 2 then removes node 1's account from
+  the subgroup and opens a second context there. Node 4 still joins and reads it;
+  node 1 and its paired node 3 must both fail to join it, and node 3 can no
+  longer read the first context, which node 2 wrote into after the removal.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 4
+  image: merod:local
+  prefix: removed-paired
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: removed-paired-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: removed-paired-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: removed-paired-3
+    username: dev
+    password: dev-password
+
+  - name: Login on node-4
+    type: login
+    node: removed-paired-4
+    username: dev
+    password: dev-password
+
+  - name: Install the application on node-2
+    type: install_application
+    node: removed-paired-2
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Node-2 creates the namespace
+    type: create_namespace
+    node: removed-paired-2
+    application_id: '{{app}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-1 to the namespace
+    type: create_namespace_invitation
+    node: removed-paired-2
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node1: invitation
+
+  - name: Node-1 joins the namespace
+    type: join_namespace
+    node: removed-paired-1
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node1}}'
+    outputs:
+      account_node1: memberAccount
+
+  - name: Invite node-4 to the namespace
+    type: create_namespace_invitation
+    node: removed-paired-2
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node4: invitation
+
+  - name: Node-4 joins the namespace
+    type: join_namespace
+    node: removed-paired-4
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node4}}'
+    outputs:
+      account_node4: memberAccount
+
+  - name: Node-2 creates a Restricted subgroup
+    type: create_group_in_namespace
+    node: removed-paired-2
+    namespace_id: '{{namespace_id}}'
+    group_name: team
+    outputs:
+      team_group: groupId
+
+  - name: Node-2 marks the subgroup Restricted
+    type: set_subgroup_visibility
+    node: removed-paired-2
+    group_id: '{{team_group}}'
+    visibility: restricted
+
+  - name: Node-2 adds node-1 and node-4 to the subgroup
+    type: add_group_members
+    node: removed-paired-2
+    group_id: '{{team_group}}'
+    members:
+      - identity: '{{account_node1}}'
+        role: Member
+      - identity: '{{account_node4}}'
+        role: Member
+
+  - name: Node-2 creates a context in the subgroup
+    type: create_context
+    node: removed-paired-2
+    application_id: '{{app}}'
+    group_id: '{{team_group}}'
+    outputs:
+      first_ctx: contextId
+
+  - name: Node-2 writes into the subgroup's context
+    type: call
+    node: removed-paired-2
+    context_id: '{{first_ctx}}'
+    method: set
+    args:
+      key: first_key
+      value: before_removal
+
+  - name: What node-1 speaks as
+    type: node_identity
+    node: removed-paired-1
+    outputs:
+      root_key: accountRootPublicKey
+      account_ns: accountNamespaceId
+
+  - name: Pair node-3 into node-1's account, naming only the account namespace
+    type: account_pair
+    node: removed-paired-3
+    holder: removed-paired-1
+    root_key: '{{root_key}}'
+    account_namespace: '{{account_ns}}'
+    await_self: true
+
+  - name: Node-3 converges on the subgroup
+    type: wait_for_sync
+    group_id: '{{team_group}}'
+    nodes:
+      - removed-paired-1
+      - removed-paired-2
+      - removed-paired-3
+      - removed-paired-4
+    timeout: 90
+    trigger_sync: true
+
+  # The control: without it, the refused joins below could be a device that never worked.
+  - name: Node-3 joins the subgroup's context
+    type: join_context
+    node: removed-paired-3
+    context_id: '{{first_ctx}}'
+
+  - name: Node-3 reads node-2's write
+    type: wait_for_sync
+    context_id: '{{first_ctx}}'
+    nodes:
+      - removed-paired-2
+      - removed-paired-3
+    timeout: 60
+    trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: first_key
+      equals:
+        output: before_removal
+
+  - name: Node-2 removes node-1's account from the subgroup
+    type: remove_group_members
+    node: removed-paired-2
+    group_id: '{{team_group}}'
+    members:
+      - '{{account_node1}}'
+
+  - name: Node-2 writes into the first context after the removal
+    type: call
+    node: removed-paired-2
+    context_id: '{{first_ctx}}'
+    method: set
+    args:
+      key: first_key
+      value: after_removal
+
+  - name: Node-4 reads the write made after the removal
+    type: wait_for_sync
+    context_id: '{{first_ctx}}'
+    nodes:
+      - removed-paired-2
+      - removed-paired-4
+    timeout: 60
+    trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: first_key
+      equals:
+        output: after_removal
+
+  - name: Node-2 creates a second context in the subgroup
+    type: create_context
+    node: removed-paired-2
+    application_id: '{{app}}'
+    group_id: '{{team_group}}'
+    outputs:
+      second_ctx: contextId
+
+  - name: Node-2 writes into the second context
+    type: call
+    node: removed-paired-2
+    context_id: '{{second_ctx}}'
+    method: set
+    args:
+      key: second_key
+      value: after_removal
+
+  - name: Node-4 converges on the subgroup after the removal
+    type: wait_for_sync
+    group_id: '{{team_group}}'
+    nodes:
+      - removed-paired-2
+      - removed-paired-4
+    timeout: 90
+    trigger_sync: true
+
+  - name: Node-4 joins the second context
+    type: join_context
+    node: removed-paired-4
+    context_id: '{{second_ctx}}'
+
+  - name: Node-4, still a member, reads the write made after the removal
+    type: wait_for_sync
+    context_id: '{{second_ctx}}'
+    nodes:
+      - removed-paired-2
+      - removed-paired-4
+    timeout: 60
+    trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: second_key
+      equals:
+        output: after_removal
+
+  - name: Node-1, removed, cannot join the second context
+    type: join_context
+    node: removed-paired-1
+    context_id: '{{second_ctx}}'
+    expected_failure: true
+    expected_error: not found
+
+  - name: Node-3, a device of the removed account, cannot join the second context
+    type: join_context
+    node: removed-paired-3
+    context_id: '{{second_ctx}}'
+    expected_failure: true
+    expected_error: not found
+
+  # The removal purges the device's identity in the context, so the read is refused outright.
+  - name: Node-3 can no longer read the first context
+    type: call
+    node: removed-paired-3
+    context_id: '{{first_ctx}}'
+    method: get
+    args:
+      key: first_key
+    expected_failure: true
+    expected_error: NoOwnedIdentity
+
+stop_all_nodes: true

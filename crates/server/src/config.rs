@@ -17,6 +17,8 @@ pub const DEFAULT_ADDRS: [IpAddr; 2] = [
     IpAddr::V6(Ipv6Addr::LOCALHOST),
 ];
 
+pub const DEFAULT_APPS_BASE_DOMAIN: &str = "localhost"; // app hosts are `{label}.localhost`
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMode {
@@ -120,6 +122,54 @@ impl SealedConfig {
     }
 }
 
+/// Where each installed app's frontend is served (`[server.apps]`): from its
+/// own origin, `{label}.{base_domain}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+#[non_exhaustive]
+pub struct AppsConfig {
+    /// Must be `localhost` or have at least two labels: a bare public suffix
+    /// would put every app under a name anyone can register.
+    #[serde(deserialize_with = "deserialize_base_domain")]
+    pub base_domain: String,
+    /// In proxy auth mode, serve the app API on app hosts and trust the proxy's
+    /// `X-Auth-Permissions` for it, as embedded auth would.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub trust_proxy: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+fn deserialize_base_domain<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    let domain = String::deserialize(deserializer)?;
+    if domain.contains('.') || domain.eq_ignore_ascii_case(DEFAULT_APPS_BASE_DOMAIN) {
+        return Ok(domain);
+    }
+    Err(serde::de::Error::custom(format!(
+        "apps base_domain {domain:?} must be `localhost` or have at least two labels"
+    )))
+}
+
+impl Default for AppsConfig {
+    fn default() -> Self {
+        Self {
+            base_domain: DEFAULT_APPS_BASE_DOMAIN.to_owned(),
+            trust_proxy: false,
+        }
+    }
+}
+
+impl AppsConfig {
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 impl Default for CorsConfig {
     fn default() -> Self {
         Self {
@@ -197,6 +247,8 @@ pub struct ServerConfig {
 
     pub sealed: SealedConfig,
 
+    pub apps: AppsConfig,
+
     /// Take an account-anchored caller's identity from the proxy in front of
     /// this node (`server.proxy_identity`). Read only under
     /// [`AuthMode::Proxy`]; see [`crate::proxy_identity`] for what it trusts.
@@ -209,7 +261,7 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         listen: Vec<Multiaddr>,
         identity: Keypair,
         admin: Option<AdminConfig>,
@@ -231,13 +283,14 @@ impl ServerConfig {
                 allow_private_network: true,
             },
             sealed: SealedConfig::new(false),
+            apps: AppsConfig::default(),
             proxy_identity: false,
             tee_release_version: None,
         }
     }
 
     #[must_use]
-    pub const fn with_auth(
+    pub fn with_auth(
         listen: Vec<Multiaddr>,
         identity: Keypair,
         services: ServiceConfigs,
@@ -264,9 +317,18 @@ impl ServerConfig {
                 allow_private_network: true,
             },
             sealed: SealedConfig::new(false),
+            apps: AppsConfig::default(),
             proxy_identity: false,
             tee_release_version: None,
         }
+    }
+
+    /// Whether an app host passes the app API to the node's routes: where this
+    /// node verifies the token, or where the operator trusts the proxy to.
+    #[must_use]
+    pub fn serves_app_api(&self) -> bool {
+        self.use_embedded_auth()
+            || (self.apps.trust_proxy && matches!(self.auth_mode, AuthMode::Proxy))
     }
 
     #[must_use]

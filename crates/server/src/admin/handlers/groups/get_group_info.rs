@@ -54,6 +54,10 @@ pub async fn handler(
         Ok(info) => {
             info!(group_id=%group_id_str, "Group info retrieved successfully");
             let active_upgrade = info.active_upgrade.as_ref().map(upgrade_info_to_api_data);
+            let (app_package, app_version) = info
+                .target_release
+                .map(|release| (release.package, release.version))
+                .unzip();
 
             ApiResponse {
                 payload: GroupInfoApiResponse {
@@ -61,11 +65,14 @@ pub async fn handler(
                         group_id: hex::encode(info.group_id.to_bytes()),
                         bytecode_id: hex::encode(info.bytecode_id.to_bytes()),
                         target_application_id: info.target_application_id,
+                        app_package,
+                        app_version,
                         member_count: info.member_count,
                         context_count: info.context_count,
                         active_upgrade,
                         default_capabilities: info.default_capabilities,
                         subgroup_visibility: info.subgroup_visibility,
+                        effective_visibility: info.effective_visibility,
                         metadata: info.metadata,
                         group_state_hash: hex::encode(info.state_hash),
                         namespace_id: hex::encode(info.namespace_id.to_bytes()),

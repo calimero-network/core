@@ -22,20 +22,25 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::VisibilityMode;
 use calimero_governance_store::metrics::{
     record_at_cut_undecidable, UndecidableCause, UndecidableRemedy,
 };
 use calimero_governance_store::{
-    CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
-    NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
+    namespace_founder, CapabilitiesRepository, DenyListRepository, MembershipRepository,
+    NamespaceDagService, NamespaceOpLogService, NamespaceRepository, OpenedNamespaceOp,
+    ReentryAtCut,
 };
+use calimero_governance_types::{NamespaceOp, RootOp};
 use calimero_op::{Op, OpPayload, ScopeId};
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_projection::{Acting, AuthorityBase, CutAncestry, ScopeState};
 use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
 use calimero_storage::shared_writers::{CellWriters, OverBudget, WritersUnavailable};
+use calimero_store::key::GroupExitReason;
 use calimero_store::Store;
 
 use crate::governance_dag::signed_namespace_op_to_delta;
@@ -114,19 +119,19 @@ fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> Option
 }
 
 /// The two immutable bases every at-cut membership walk in a namespace takes:
-/// the namespace root's genesis admin (no governance op carries it) and the
-/// root's default member capability (`CAN_JOIN_OPEN_SUBGROUPS` is set there at
-/// creation as a store write, not an op) — the inheritance walk's cap fallback.
+/// the namespace root's founder (a transfer at a cut replaces it, see
+/// `AclView::root_at_cut`) and the root's default member capability
+/// (`CAN_JOIN_OPEN_SUBGROUPS` is set there at creation as a store write, not an
+/// op) — the inheritance walk's cap fallback.
 fn membership_bases(
     store: &Store,
     namespace_id: [u8; 32],
 ) -> (Option<(ContextGroupId, AccountId)>, u32) {
     let root_group = ContextGroupId::from(namespace_id);
-    let root = MetaRepository::new(store)
-        .load(&root_group)
+    let root = namespace_founder(store, &root_group)
         .ok()
         .flatten()
-        .map(|meta| (root_group, meta.admin_identity));
+        .map(|founder| (root_group, founder));
     let default_cap_base = CapabilitiesRepository::new(store)
         .default_capabilities(&root_group)
         .ok()
@@ -251,10 +256,18 @@ pub struct ScopeProjections {
     /// Each scope's void set, and the state its log leaves without those ops,
     /// valid until the scope's log next changes.
     voided: Mutex<HashMap<ScopeId, Voided>>,
+    /// The subgroup rows root TEE removals took at each cut, valid until the scope's log
+    /// next changes; each is read again at every removal's parents, so recomputing recurses.
+    evicted: Mutex<HashMap<EvictionCut, EvictedRows>>,
     /// The cut that last showed an account seated as a relay for a group. Only a
     /// hint of where to look first: the cut is asked again on every read.
     relay_seats: Mutex<HashMap<(ContextGroupId, AccountId), [u8; 32]>>,
 }
+
+/// A cut [`ScopeProjections::evicted`] is keyed by: its scope, authority base and sorted heads.
+type EvictionCut = (ScopeId, AuthorityBase, Vec<[u8; 32]>);
+
+type EvictedRows = Arc<Vec<(ContextGroupId, AccountId)>>;
 
 /// What a scope's log holds that carries no authority (see
 /// [`ScopeState::void_ops`]), computed for one [`AuthorityBase`].
@@ -295,10 +308,9 @@ impl Deref for StateRef<'_> {
 pub(crate) fn authority_base(store: &Store, namespace_id: [u8; 32]) -> Option<AuthorityBase> {
     let root_group = ContextGroupId::from(namespace_id);
     Some(AuthorityBase {
-        root: MetaRepository::new(store)
-            .load(&root_group)
+        root: namespace_founder(store, &root_group)
             .ok()?
-            .map(|meta| (root_group, meta.admin_identity)),
+            .map(|founder| (root_group, founder)),
         default_cap_base: CapabilitiesRepository::new(store)
             .default_capabilities(&root_group)
             .ok()?
@@ -324,6 +336,10 @@ impl ScopeProjections {
             .get_mut()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&op.scope);
+        self.evicted
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(scope, ..), _| *scope != op.scope);
         self.states.entry(op.scope).or_default().apply(op);
         // O(1) dedup: `insert` is true only for a not-yet-seen id.
         if self.seen.entry(op.scope).or_default().insert(op.id()) {
@@ -566,9 +582,19 @@ impl ScopeProjections {
                 .get(group)
                 .into_iter()
                 .chain(view.root_admin.as_ref())
-                .chain(base.root.as_ref().map(|(_, owner)| owner))
                 .copied()
+                .chain(view.root_at_cut(base.root).map(|(_, owner)| owner))
                 .collect(),
+            visibility: view
+                .subgroups
+                .get(&ScopeId::from(group.to_bytes()))
+                .map(|edge| {
+                    if edge.restricted {
+                        VisibilityMode::Restricted
+                    } else {
+                        VisibilityMode::Open
+                    }
+                }),
         })
     }
 
@@ -1439,17 +1465,7 @@ impl ScopeProjections {
         namespace_id: [u8; 32],
         group: &ContextGroupId,
     ) -> std::collections::BTreeSet<AccountId> {
-        let root_group = ContextGroupId::from(namespace_id);
-        let root = MetaRepository::new(store)
-            .load(&root_group)
-            .ok()
-            .flatten()
-            .map(|meta| (root_group, meta.admin_identity));
-        let default_cap_base = CapabilitiesRepository::new(store)
-            .default_capabilities(&root_group)
-            .ok()
-            .flatten()
-            .unwrap_or(0);
+        let (root, default_cap_base) = membership_bases(store, namespace_id);
         Self::member_accounts_in_view_with_ctx(
             view,
             store,
@@ -1461,11 +1477,11 @@ impl ScopeProjections {
     }
 
     /// [`member_accounts_in_view`](Self::member_accounts_in_view) with the
-    /// genesis `root` tuple + `default_cap_base` supplied by the caller instead of
+    /// founder `root` tuple + `default_cap_base` supplied by the caller instead of
     /// re-read here. `member_entries_with` passes the SAME values its role walk
     /// (`member_path_at_cut`) uses, so the candidate filter and the role resolution
     /// can't disagree on the admin/cap base across two store reads, and the
-    /// `MetaRepository`/`CapabilitiesRepository` reads happen once per request.
+    /// founder/`CapabilitiesRepository` reads happen once per request.
     #[must_use]
     pub fn member_accounts_in_view_with_ctx(
         view: &calimero_authz::AclView,
@@ -1490,8 +1506,8 @@ impl ScopeProjections {
             candidates.extend(members.keys().copied());
         }
         candidates.extend(view.group_admin.values().copied());
-        if let Some((_, admin)) = root {
-            let _ = candidates.insert(admin);
+        if let Some((_, owner)) = view.root_at_cut(root) {
+            let _ = candidates.insert(owner);
         }
 
         let deny = DenyListRepository::new(store);
@@ -1968,10 +1984,10 @@ impl ScopeProjections {
         // admin (subgroup creator / `Admin` role), or inherited through an open-
         // subgroup chain — a faithful port of the live `check_path` +
         // `acl_view_at` carve-outs, but over the cut's state, so a membership the
-        // cut revoked (e.g. remove-from-root) is NOT granted. The ONLY live read
-        // is the immutable namespace-root genesis admin (no governance op carries
-        // it); every mutable input — memberships, caps, visibility, the subgroup
-        // tree, subgroup-creator admin — comes from the fold.
+        // cut revoked (e.g. remove-from-root) is NOT granted. The ONLY store read
+        // is the immutable namespace founder, whom a transfer in the cut replaces;
+        // every mutable input — memberships, caps, visibility, the subgroup tree,
+        // subgroup-creator admin — comes from the fold.
         let view = self.acl_view_at(&scope, heads);
         let (root, default_cap_base) = membership_bases(store, namespace_id);
         if view.as_ref().is_some_and(|v| {
@@ -2244,6 +2260,35 @@ impl ScopeProjections {
         )
     }
 
+    /// The account `key` speaks for at the cut, `Some(None)` when nothing binds it
+    /// there. `None` on incomplete ancestry.
+    #[must_use]
+    pub fn signer_account_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        key: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> Option<Option<AccountId>> {
+        let (view, _, _) = self.auth_cut_context(store, group, heads)?;
+        Some(bound_account(&view, key))
+    }
+
+    /// Does a device of `account` scoped to `applications` reach `group`'s namespace
+    /// at the cut? `None` on incomplete ancestry.
+    #[must_use]
+    pub fn scope_reaches_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        account: &AccountId,
+        applications: &[ApplicationId],
+        heads: &[[u8; 32]],
+    ) -> Option<bool> {
+        let (view, _, _) = self.auth_cut_context(store, group, heads)?;
+        Some(view.scope_reaches(account, applications))
+    }
+
     /// If the cut holds a revocation of `account`'s `device`, or a narrowing past every
     /// link, the widest link epoch folded for it there. `None` on incomplete ancestry.
     #[must_use]
@@ -2328,8 +2373,8 @@ impl ScopeProjections {
     /// reads.
     ///
     /// `member` is an admin via a direct `Admin`-role row OR the genesis admin
-    /// (`group_admin` / namespace-root). "another admin" = another `Admin`-role ROW
-    /// (`groups[group]`) OR the genesis admin when it is some other identity.
+    /// (`group_admin`, or the namespace owner at the cut). "another admin" = another
+    /// `Admin`-role ROW (`groups[group]`) OR the genesis admin when it is some other identity.
     ///
     /// Causal position: this reads the op's PARENT cut (admin set as of the op's own
     /// ancestry) — the correct state for a pre-mutation invariant — whereas the live
@@ -2346,9 +2391,10 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<bool> {
         let (view, root, _) = self.auth_cut_context(store, group, heads)?;
+        let root = view.root_at_cut(root);
         let rows = view.groups.get(&group);
         // `member` is an admin: a direct `Admin` row, or the genesis admin (the
-        // folded subgroup creator, or the namespace-root genesis admin).
+        // folded subgroup creator, or the namespace owner at the cut).
         let member_is_admin = rows
             .and_then(|m| m.get(member))
             .is_some_and(|r| *r == GroupMemberRole::Admin)
@@ -2534,7 +2580,7 @@ impl ScopeProjections {
         if !walked.is_complete() {
             return Err(self.classify_unresolvable_cut(&scope, heads));
         }
-        let view = ScopeState::acl_view_from_ancestry(&walked);
+        let mut view = ScopeState::acl_view_from_ancestry(&walked);
 
         // Complete is not enough to ANSWER with. An `Opaque` op folds to nothing,
         // so a verdict taken over one describes a history this node cannot see —
@@ -2561,8 +2607,82 @@ impl ScopeProjections {
         if walked.first_opaque_in_any(&relevant).is_some() {
             return Err(UndecidableCause::AncestryUnreadable);
         }
+        let mut sorted_heads = heads.to_vec();
+        sorted_heads.sort_unstable();
+        let key = (scope, base, sorted_heads);
+        let cached = self
+            .evicted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+            .cloned();
+        let evicted = match cached {
+            Some(rows) => rows,
+            None => {
+                let cut = MembershipCut {
+                    namespace: namespace_id,
+                    log,
+                    walked,
+                };
+                let rows = Arc::new(self.root_evicted_rows(store, &cut, &view));
+                let _ = self
+                    .evicted
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(key, Arc::clone(&rows));
+                rows
+            }
+        };
+        for (group, member) in evicted.iter() {
+            if let Some(rows) = view.groups.get_mut(group) {
+                let _row = rows.remove(member);
+            }
+            let _caps = view.member_caps.remove(&(*group, *member));
+        }
 
         Ok((view, base.root, base.default_cap_base))
+    }
+
+    /// The subgroup rows in `view` a root removal of a TEE took, as the apply's cascade
+    /// does: the fold removes only the root row. A change that follows the removal stands.
+    fn root_evicted_rows(
+        &self,
+        store: &Store,
+        cut: &MembershipCut<'_>,
+        view: &calimero_authz::AclView,
+    ) -> Vec<(ContextGroupId, AccountId)> {
+        let root = ContextGroupId::from(cut.namespace);
+        let removed: BTreeSet<AccountId> = cut
+            .walked
+            .ops()
+            .iter()
+            .filter(|op| !cut.walked.is_void(op))
+            .filter_map(|op| match &op.payload {
+                OpPayload::MemberRemoved { group, member } if *group == root => Some(*member),
+                _ => None,
+            })
+            .collect();
+        let mut evicted = Vec::new();
+        for member in removed {
+            let groups: Vec<ContextGroupId> = view
+                .groups
+                .iter()
+                .filter(|(group, rows)| **group != root && rows.contains_key(&member))
+                .map(|(group, _)| *group)
+                .collect();
+            for group in groups {
+                // An unreadable history of `group` leaves every question about it undecided.
+                let Some(changes) = self.membership_changes(store, cut, group, &member) else {
+                    continue;
+                };
+                if latest_changes(cut.log, &changes).any(|(op, _)| {
+                    matches!(op.payload, OpPayload::MemberRemoved { group: g, .. } if g == root)
+                }) {
+                    evicted.push((group, member));
+                }
+            }
+        }
+        evicted
     }
 
     /// Why can't this scope's retained log resolve the cut at `heads`?
@@ -2800,6 +2920,218 @@ impl ScopeProjections {
         effective_role_in(&view, group, member, root, default_cap_base)
     }
 
+    /// `member`'s direct role in `group` at the cut, inheritance aside: `Some(None)` is no
+    /// direct row, `None` a cut not fully folded.
+    #[must_use]
+    pub fn direct_role_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        member: &AccountId,
+        heads: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
+        let calimero_authz::MemberPathAtCut::Direct { role } =
+            view.member_path_at_cut(group, member, root, default_cap_base)
+        else {
+            return Some(None);
+        };
+        Some(Some(role))
+    }
+
+    /// The account whose `GroupCreated` made `group`, at the cut: `Some(None)` is no creation
+    /// there, `None` a cut not fully folded.
+    #[must_use]
+    pub fn group_creator_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> Option<Option<AccountId>> {
+        // A creation is a root op: the subgroup's own sealed history does not hide it.
+        let namespace = NamespaceRepository::new(store).resolve(&group).ok()?;
+        let (view, _, _) = self.auth_cut_context(store, namespace, heads)?;
+        Some(view.group_creator.get(&group).copied())
+    }
+
+    /// What a join of `member` into `group` with the invitation `nonce` meets at the cut:
+    /// the exit among its latest changes there, and whether a join of its own already
+    /// spent `nonce` there. `None` when the cut is not fully folded or a join does not read.
+    #[must_use]
+    pub fn reentry_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        member: &AccountId,
+        nonce: &[u8; 32],
+        heads: &[[u8; 32]],
+    ) -> Option<ReentryAtCut> {
+        let cut = self.membership_cut(store, group, heads)?;
+        let changes = self.membership_changes(store, &cut, group, member)?;
+        let op_log = NamespaceOpLogService::new(store, cut.namespace.into());
+        let mut reentry = ReentryAtCut {
+            exit: latest_exit(cut.log, &changes),
+            spent: false,
+        };
+        for (op, exit) in changes {
+            // A join admits, and so spends its invitation, only where its cut holds no row.
+            if exit.is_none()
+                && joins_with(store, &op_log, op.id(), group, member, nonce)?
+                && self
+                    .direct_role_at_cut(store, group, member, &op.parents)?
+                    .is_none()
+            {
+                reentry.spent = true;
+            }
+        }
+        Some(reentry)
+    }
+
+    /// The exit among `member`'s latest changes in `group` at the cut; `Some(None)` is
+    /// none, `None` a cut not fully folded.
+    #[must_use]
+    pub fn exit_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        member: &AccountId,
+        heads: &[[u8; 32]],
+    ) -> Option<Option<GroupExitReason>> {
+        let cut = self.membership_cut(store, group, heads)?;
+        let changes = self.membership_changes(store, &cut, group, member)?;
+        Some(latest_exit(cut.log, &changes))
+    }
+
+    /// Where `member`'s inheritance into `group` stops at the cut: `group` itself if it
+    /// exited it, else the Open ancestor it exited below any row it holds or group it
+    /// administers. `Some(None)` is no wall, `None` a cut not fully folded.
+    #[must_use]
+    pub fn inheritance_wall_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        member: &AccountId,
+        heads: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
+        let cut = self.membership_cut(store, group, heads)?;
+        let exited = |at: ContextGroupId| {
+            self.membership_changes(store, &cut, at, member)
+                .map(|changes| latest_exit(cut.log, &changes).is_some())
+        };
+        if exited(group)? {
+            return Some(Some(group));
+        }
+        if matches!(
+            view.member_path_at_cut(group, member, root, default_cap_base),
+            calimero_authz::MemberPathAtCut::Direct { .. }
+        ) {
+            return Some(None);
+        }
+        let mut unread = false;
+        let wall = view.exited_ancestor(group, member, root, |at| {
+            exited(at).unwrap_or_else(|| {
+                unread = true;
+                false
+            })
+        });
+        (!unread).then_some(wall)
+    }
+
+    /// The walked cut the membership reads take, once its ancestry reads whole.
+    fn membership_cut<'s>(
+        &'s self,
+        store: &Store,
+        group: ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> Option<MembershipCut<'s>> {
+        let _readable = self.auth_cut_context(store, group, heads)?;
+        let namespace = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        let scope = ScopeId::from(namespace);
+        let log = self.logs.get(&scope)?;
+        let walked = self.walk(&scope, log, heads, authority_base(store, namespace)?);
+        Some(MembershipCut {
+            namespace,
+            log,
+            walked,
+        })
+    }
+
+    /// `member`'s changes to its direct row in `group` within `cut`, each with the exit it
+    /// is; `None` when one cannot be read.
+    fn membership_changes<'c>(
+        &self,
+        store: &Store,
+        cut: &MembershipCut<'c>,
+        group: ContextGroupId,
+        member: &AccountId,
+    ) -> Option<Vec<(&'c Op, Option<GroupExitReason>)>> {
+        let root = ContextGroupId::from(cut.namespace);
+        let mut changes = Vec::new();
+        for op in cut
+            .walked
+            .ops()
+            .iter()
+            .copied()
+            .filter(|op| !cut.walked.is_void(op))
+        {
+            let exit = match &op.payload {
+                OpPayload::MemberAdded {
+                    group: g,
+                    member: m,
+                    ..
+                }
+                | OpPayload::MemberJoinedWithDevice {
+                    group: g,
+                    member: m,
+                    ..
+                } if *g == group && m == member => None,
+                OpPayload::MemberRemoved {
+                    group: g,
+                    member: m,
+                } if *g == group && m == member => Some(GroupExitReason::Removed),
+                OpPayload::MemberLeft {
+                    group: g,
+                    member: m,
+                } if *g == group && m == member => Some(GroupExitReason::Left),
+                // A root removal of a TEE evicts it from every subgroup it holds a row in.
+                OpPayload::MemberRemoved {
+                    group: g,
+                    member: m,
+                } if *g == root
+                    && group != root
+                    && m == member
+                    && self
+                        .direct_role_at_cut(store, root, member, &op.parents)?
+                        .is_some_and(|role| role.is_tee())
+                    && self
+                        .direct_role_at_cut(store, group, member, &op.parents)?
+                        .is_some() =>
+                {
+                    Some(GroupExitReason::Removed)
+                }
+                // A namespace leave exits only the subgroups it took a direct row from.
+                OpPayload::MemberLeft {
+                    group: g,
+                    member: m,
+                } if *g == root
+                    && m == member
+                    && self
+                        .direct_role_at_cut(store, group, member, &op.parents)?
+                        .is_some() =>
+                {
+                    Some(GroupExitReason::Left)
+                }
+                _ => continue,
+            };
+            changes.push((op, exit));
+        }
+        Some(changes)
+    }
+
     /// The group `context`'s cells were rotated in, if `group`, at the cut; `None` when the
     /// cut is unreadable. Counts a step from a cell's genesis set by a standing admin of it.
     #[must_use]
@@ -2870,16 +3202,7 @@ impl ScopeProjections {
         namespace_id: [u8; 32],
     ) -> impl Fn(&calimero_authz::AclView, &PublicKey) -> Option<AccountId> + 's {
         let root_group = ContextGroupId::from(namespace_id);
-        let root = MetaRepository::new(store)
-            .load(&root_group)
-            .ok()
-            .flatten()
-            .map(|meta| (root_group, meta.admin_identity));
-        let default_cap_base = CapabilitiesRepository::new(store)
-            .default_capabilities(&root_group)
-            .ok()
-            .flatten()
-            .unwrap_or(0);
+        let (root, default_cap_base) = membership_bases(store, namespace_id);
         move |view, key| {
             let account = bound_account(view, key)?;
             let stands = effective_role_in(view, group, &account, root, default_cap_base)
@@ -3240,6 +3563,81 @@ fn effective_role_in(
     }
 }
 
+/// A namespace's op log walked from a cut, for the membership reads.
+struct MembershipCut<'a> {
+    namespace: [u8; 32],
+    log: &'a [Op],
+    walked: CutAncestry<'a>,
+}
+
+/// The exit among the latest of `changes`, those no other one follows; `Removed`
+/// outranks `Left`.
+fn latest_exit(log: &[Op], changes: &[(&Op, Option<GroupExitReason>)]) -> Option<GroupExitReason> {
+    latest_changes(log, changes)
+        .filter_map(|(_, exit)| *exit)
+        .max_by_key(|exit| *exit == GroupExitReason::Removed)
+}
+
+/// The changes no other one of `changes` follows.
+fn latest_changes<'a, 'o>(
+    log: &[Op],
+    changes: &'a [(&'o Op, Option<GroupExitReason>)],
+) -> impl Iterator<Item = &'a (&'o Op, Option<GroupExitReason>)> {
+    let superseded: BTreeSet<[u8; 32]> = changes
+        .iter()
+        .flat_map(|(op, _)| ScopeState::cut_ancestry(log, &op.parents).ops().to_vec())
+        .map(Op::id)
+        .collect();
+    changes
+        .iter()
+        .filter(move |(op, _)| !superseded.contains(&op.id()))
+}
+
+/// Whether the logged op `id` is `member`'s join of `group` with the invitation `nonce`;
+/// `None` when a sealed op there does not open here.
+fn joins_with(
+    store: &Store,
+    op_log: &NamespaceOpLogService<'_>,
+    id: [u8; 32],
+    group: ContextGroupId,
+    member: &AccountId,
+    nonce: &[u8; 32],
+) -> Option<bool> {
+    let signed = op_log.get_signed_op(id).ok()??;
+    let root = match &signed.op {
+        NamespaceOp::Root(root) => root.clone(),
+        NamespaceOp::Group { .. } => return Some(false),
+        _ => {
+            let opened = OpenedNamespaceOp::open(store, &signed);
+            match (opened.sealed_root, opened.relayed_join) {
+                (Some(root), _) => root,
+                (None, Some(inner)) => match inner.op {
+                    NamespaceOp::Root(root) => root,
+                    _ => return Some(false),
+                },
+                (None, None) => return None,
+            }
+        }
+    };
+    Some(match root {
+        RootOp::MemberJoined {
+            member: joiner,
+            signed_invitation,
+            ..
+        }
+        | RootOp::MemberJoinedAt {
+            member: joiner,
+            signed_invitation,
+            ..
+        } => {
+            joiner == *member
+                && signed_invitation.invitation.group_id == group
+                && signed_invitation.invitation.invitation_nonce == *nonce
+        }
+        _ => false,
+    })
+}
+
 /// The account `key` is bound to in `view`, if any.
 /// The shared projection the node and the context manager hold, read for the
 /// live TEE authority checks at this node's own heads.
@@ -3388,6 +3786,7 @@ mod tests {
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation,
     };
+    use calimero_governance_store::MetaRepository;
     use calimero_governance_types::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_op::OpPayload;
     use calimero_primitives::context::GroupMemberRole;
@@ -3463,7 +3862,7 @@ mod tests {
     }
 
     #[test]
-    fn open_subgroup_join_folds_its_device_but_no_membership() {
+    fn open_subgroup_join_folds_neither_membership_nor_device() {
         // `MemberJoinedOpen` is an open-subgroup inheritance-join PROOF — live
         // writes no persistent direct row and re-derives membership from the
         // anchor — so it must NOT fold a direct `MemberAdded`. The inheritance
@@ -3472,9 +3871,8 @@ mod tests {
         // anchor removal and restored on rejoin. Cross-validated against the live
         // resolver in tests/projection_membership_equivalence.rs.
         //
-        // The credential it carries is a different fact and does fold: the apply
-        // path writes that binding either way, and a binding the projection never
-        // sees is one the joiner's peers resolve differently than the joiner does.
+        // Nor does its credential fold: the joiner's device is linked by the op that
+        // carried it in, and a link here would carry no scope to check it against.
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
         let member = PublicKey::from([0x55; 32]);
@@ -3486,12 +3884,9 @@ mod tests {
                 ns,
                 signer,
                 RootOp::MemberJoinedOpen {
-                    // The account the credential certifies. The decode pairs the
-                    // two, and a member naming anything else folds as a Noop —
-                    // it cannot tell whose device it is looking at.
                     member: account.statement.account,
                     group_id: group.into(),
-                    account: account.clone(),
+                    account,
                 },
             ),
             None,
@@ -3503,19 +3898,10 @@ mod tests {
         assert_eq!(op.id(), [0x99; 32], "op still occupies its DAG node");
         assert_eq!(op.scope, ScopeId::from(ns));
         assert_eq!(op.parents, vec![[0x88; 32]], "with its real parents");
-        // The device half folds; the MEMBERSHIP half must not. A direct row here
-        // would outlive the anchor that grants it — the inheritance walk in
-        // `AclView::is_member_at_cut` is what derives it, so it is revoked on
-        // anchor removal and restored on rejoin.
         assert_eq!(
             op.payload,
-            OpPayload::DeviceLinked {
-                genesis: account.genesis,
-                chain: account.chain.clone(),
-                cert: account.statement,
-                scope_epoch: 0,
-            },
-            "open-subgroup inheritance join folds its credential and no membership"
+            OpPayload::Noop,
+            "open-subgroup inheritance join folds no device and no membership"
         );
     }
 
@@ -4810,15 +5196,13 @@ mod tests {
             hlc(10),
             &[],
         );
-        // Folds the member's device and no membership anywhere.
-        let device = op_from_namespace_op(
+        // The member's device link and no membership anywhere.
+        let mut device = op_from_namespace_op(
             &signed_root(
                 ns,
                 member,
-                RootOp::MemberJoinedOpen {
-                    member: m,
-                    group_id: s.to_bytes().into(),
-                    account: credential,
+                RootOp::PolicyUpdated {
+                    policy_bytes: vec![],
                 },
             ),
             None,
@@ -4826,6 +5210,13 @@ mod tests {
             hlc(20),
             &[[0xD1; 32]],
         );
+        device.payload = OpPayload::DeviceLinked {
+            genesis: credential.genesis,
+            chain: credential.chain.clone(),
+            cert: credential.statement,
+            scope_epoch: 0,
+            applications: vec![],
+        };
         let group_op = |op: GroupOp, id: [u8; 32], t: u64, parent: [u8; 32]| {
             op_from_namespace_op(
                 &signed_group(ns, founder, s),
@@ -5556,6 +5947,7 @@ mod tests {
                     ciphertext: Vec::new(),
                 },
                 key_rotation: None,
+                registers: None,
             },
             signature: [0u8; 64],
             admitter_endorsement: None,

@@ -88,6 +88,7 @@ content. A blob is treated as a bundle when it contains a `manifest.json` entry
 | `wasm` + `abi` | single-service artifacts, each a `{path, hash, size}` record; `hash` is required |
 | `services` | named multi-service modules; overrides `wasm` / `abi` when present and non-empty |
 | `migrations` | migration artifacts |
+| `frontend` | the app's static web build: `entry` plus `files`, each a `{path, hash, size}` record under `frontend/` (below) |
 | `links` | `frontend` / `github` / `docs` URLs |
 | `signature` | the Ed25519 signature object (below) |
 
@@ -100,6 +101,129 @@ That path check runs over *every* artifact the manifest declares - `wasm`, `abi`
 single exhaustive destructure of the manifest, so a new artifact field stops compiling
 until it is classified
 (`crates/node/primitives/src/client/application/bundle.rs`).
+
+### The bundled frontend
+
+A bundle may carry its own web build, so the UI a namespace loads can match the contract it runs instead of one externally hosted latest build.
+Every file is listed in the manifest with its hash, so the manifest signature covers the UI as it covers the WASM.
+An older node ignores the field and the app still runs from `links.frontend`.
+A node that understands the field checks every listed file against the manifest before any application row or service blob is written, and refuses the whole install on the first mismatch, missing file or rule violation, naming the code below.
+Once verified, each file is stored as its own content-addressed blob, and an index under the bundle blob id lists the application id, the entry and the path and blob id of every file.
+The index is keyed by the bundle, not the application, because a new version overwrites the application row while contexts keep running the bundle they are bound to.
+Identical files across versions share one refcounted blob.
+An upgrade keeps the frontend of every older bundle, because the node does not count the contexts still bound to it.
+Uninstalling an application releases the frontend of every bundle installed under it.
+
+#### Serving the frontend
+
+Each application is served from its own browser origin, `{label}.{base_domain}`, for example `http://{label}.localhost:2428/`.
+`{label}` is the application id as unpadded lowercase base32, 52 characters.
+`base_domain` is `[server.apps] base_domain` and defaults to `localhost`.
+A config with a one-label `base_domain` other than `localhost`, such as `com`, is refused, because a public suffix would put every app under a name anyone can register.
+A request whose `Host` is exactly that name, with at most one trailing dot, is answered before any other route, CORS or auth layer.
+A `Host` whose first label looks like an app label (52 lowercase base32 characters) but is not exactly that name answers `404`, so a name another party controls never reaches the node's own routes.
+Every other host reaches the node's normal routes unchanged.
+Admin tokens live in the dashboard origin, so an app host serves nothing but that app's files, `GET` and `HEAD` of `/{version}/` (the entry) and `/{version}/{path}`, the app API below and a redirect of the login page.
+Any other `/admin-api` route answers `403` with a short plain-text body, and everything else answers `404`.
+`{version}` is found by two point reads, the release pointer stored under the application id and a hash of the version, then the bundle's index, so an older release keeps its own files after an upgrade.
+When two bundles claim one release, the latest install wins.
+`{path}` is only a key into the index's file list and never touches a filesystem, so `..` and encoded dots simply match no file.
+A `GET` or `HEAD` under `/{version}/` that matches no file, has no extension in its last segment and accepts `text/html` is answered with the release's entry and its headers, so a single-page app's client routes survive a reload; that response carries `Vary: Accept`.
+A path with an extension, or a request that does not accept `text/html`, that matches no file is tried again with its leading segments dropped one at a time, and the longest remainder that is a file of the same release is served, trying at most 16 leading segments.
+This resolves an entry's relative `./assets/...` URLs on a deep link such as `/{version}/p/123`, and answers `404` when no remainder is a file.
+`/` redirects (`302`) to the application row's current version, and `/{version}` redirects to `/{version}/`.
+`/?namespace={id}` is not supported yet and answers `404`, because a namespace records the bytecode blob it runs and not the release that blob came from.
+
+Files stream from their blobs, whose chunks are re-hashed as they are read.
+A file declares its `Content-Length` from the blob size.
+A blob that is missing or fails its hash in the first chunk answers `500` before any header is sent, and one that fails later breaks the body, never delivering other bytes.
+Every response carries the content security policy from `crates/bundle/AGENTS.md`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
+A node that sets `[server.sealed] required` mounts no app host, because a browser cannot seal a request.
+A page on an app's origin is third-party code, so the node answers it `403` on every route of its own, in every auth mode, and never counts it as a loopback page.
+A file also carries its `Content-Type`, an `ETag` of its blob id (answered with `304` on a match) and `Cache-Control: public, max-age=31536000, immutable`.
+
+#### App origins
+
+An app's page calls the node at `window.location.origin`, because its content security policy allows requests to its own origin only.
+On an app host the node passes `/jsonrpc`, `/ws`, `/sse`, `/sse/...`, `POST /auth/refresh` and `GET` or `HEAD /auth/validate` to its normal handlers, so auth applies as on the node's own host.
+It also passes the admin routes an app needs to find and make its contexts and namespaces, matched by method and exact path:
+`GET /admin-api/contexts`, `GET /admin-api/contexts/{id}`, `GET /admin-api/contexts/for-application/{app}`, `GET /admin-api/namespaces/for-application/{app}`, `GET /admin-api/applications`, `GET /admin-api/applications/{id}`, `GET /admin-api/contexts/{id}/identities-owned`, `GET /admin-api/contexts/{id}/group`, `POST /admin-api/contexts`, `POST /admin-api/contexts/{id}/join`, `GET` and `POST /admin-api/namespaces`, `POST /admin-api/namespaces/{id}/invite`, `POST /admin-api/namespaces/{id}/join`, `POST /admin-api/namespaces/{id}/groups`, `GET /admin-api/groups/{id}/members`, `GET /admin-api/namespaces/{id}`, `GET /admin-api/namespaces/{id}/groups`, `GET /admin-api/groups/{id}/contexts`, `GET /admin-api/identity`, `GET /admin-api/health` and `GET /admin-api/is-authed`.
+It also passes the routes an app uses to manage what it made, each held to the app by the binding below:
+`GET /admin-api/contexts/{id}/identities`, `POST /admin-api/contexts/{id}/leave`, `POST /admin-api/namespaces/{id}/leave`, `DELETE /admin-api/contexts/{id}`, `DELETE /admin-api/namespaces/{id}`, `GET` and `DELETE /admin-api/groups/{id}`, `GET` and `PUT /admin-api/groups/{id}/metadata`, `PUT /admin-api/groups/{id}/contexts/{context}/metadata`, `POST /admin-api/groups/{id}/members`, `POST /admin-api/groups/{id}/members/remove`, `PUT /admin-api/groups/{id}/members/{account}/role`, `PUT /admin-api/groups/{id}/members/{account}/capabilities`, `GET` and `PUT /admin-api/groups/{id}/members/{account}/metadata`, `GET /admin-api/groups/{id}/members/{account}/capabilities`, `GET /admin-api/groups/{id}/contexts/{context}/metadata`, `PUT /admin-api/groups/{id}/settings/default-capabilities`, `PUT /admin-api/groups/{id}/settings/subgroup-visibility`, `GET /admin-api/groups/{id}/subgroups`, `POST /admin-api/groups/{id}/reparent`, `POST /admin-api/groups/{id}/sync`, `POST /admin-api/groups/{id}/leave`, `POST /admin-api/groups/join`, `PUT /admin-api/blobs`, `GET` and `HEAD /admin-api/blobs/{id}`, `POST /admin-api/alias/create/context` and `POST /admin-api/alias/lookup/context/{name}`.
+A route that names a context, group, namespace or application outside the app answers `403`, a body that names a group outside it is refused, and a blob is reached only through a context of the app.
+Leaving a namespace with `purge`, which frees every device of the account, is refused.
+Installing or uninstalling an application, the node's peers, network and usage, accounts, devices, TEE routes, listing or deleting blobs and every other alias route stay refused.
+Every request passed on is bound to the app of the host's label.
+The node refuses a token that holds `admin` or is bound to another application on an app host, so a page there cannot use the owner's token.
+Any other token acts as if bound to that app, narrowed by its own binding, so RPC, sockets, events and the routes above reach only that app's contexts and namespaces.
+`/auth/refresh` and `/auth/validate` hold the session they carry to the same rule, so an `admin` session is not renewed or checked on an app host.
+A refresh is judged by the permissions it would mint, and `/auth/validate` refuses an `X-Forwarded-Uri` there.
+`GET /admin-api/applications` lists only the bound application, and `GET /admin-api/applications/{id}` and the `for-application` listings refuse any other.
+An app's key may join a namespace on an invitation that names its app, because a node that does not hold the namespace has no signed application to check.
+The invitation's application is an unsigned hint, so the node marks it as unverified when the join seeds it.
+An app's key is refused on that namespace, and the namespace is left out of its listings, until a signed op confirms the application.
+Only a signed target op or cascade upgrade confirms it: a context registration does not, because any member allowed to create a context can sign one.
+A namespace that never gets such an op stays refused to an app's key, and so do its subgroups.
+A join that is refused after seeding the hint leaves the mark in place, so the key stays refused there.
+A token bound to a context never joins a group it does not hold.
+These work only where the node's embedded auth verifies the token, and only for a page whose `Origin` is the host it calls.
+Under proxy mode they answer `403` with a plain-text reason, unless `[server.apps] trust_proxy = true` is set.
+With it, the app API works in proxy mode too, and every request needs the proxy's `X-Auth-Permissions` (`401` without), which is held to the same app binding as an embedded token.
+Set it only where a proxy in front authenticates every request to an app host and sets that header itself, and where mero-auth sees the original `Host` (it accepts `{label}.{node host}` as the node host).
+A reverse proxy in front must forward the original `Host` (`proxy_set_header Host $host` for nginx).
+The proxy's forward-auth must send `X-Forwarded-Uri` and `X-Forwarded-Method` to mero-auth's `/auth/validate`, so per-route permissions are checked.
+Traefik's forwardAuth does; nginx `auth_request` needs them configured.
+It must also strip or overwrite any client-sent `X-Auth-Permissions`.
+On app hosts only `POST /auth/refresh` and `GET`/`HEAD /auth/validate` may reach mero-auth.
+`/auth/login` must go to merod, which redirects to the node's login page, or be refused, so the login page is never served on an app's origin.
+`[server.apps] base_domain` must be the node's own host, because mero-auth validates an app-host request by stripping exactly one app label and comparing the rest with the token's host.
+The desktop webview origins (`calimero-app://...`) cannot use the app API from the node and go through the desktop app instead.
+A login page is never served there, because an app's script could read what the user types.
+`GET /auth/login` on an app host answers `302` to the node's own login page with the same query and port: the host without its label.
+Login is a top-level navigation to the node's own origin.
+
+The app origins are `{label}.{base_domain}` with any port, `calimero-app://{label}` and `http(s)://calimero-app.{label}`, where `{label}` is the canonical base32 of an application id.
+
+An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.
+
+#### Threat model for served frontends
+
+A bundled frontend is code the node serves to a browser, so the boundary has to hold even for a bundle the operator did not write.
+
+- **Per-app origin.** Each app is a separate browser origin, so one app's page cannot read another app's storage or the dashboard's admin tokens.
+- **CSP.** Every response carries a policy that allows only same-origin files, so a bundle cannot load code from another origin or run inline script.
+  Its `script-src` adds `'wasm-unsafe-eval'` so an app can compile WebAssembly, which does not allow `eval`.
+- **App hosts serve files and a narrow API.** `GET` and `HEAD` of a release's indexed files, the app API and a short list of admin routes are the whole surface.
+  A token used there is bound to the app of the host, a token that holds `admin` is refused, every other admin route answers `403`, and the dashboard answers `404`.
+- **Sealed nodes do not serve.** A browser cannot seal a request, so a node that requires sealed requests mounts no app host.
+
+Out of scope here:
+
+- A relay serving frontends to other users.
+  A relay that does so must give each app its own origin and keep its own credentials off those origins.
+- The desktop app's `calimero-app` custom scheme, which lives in `tauri-app`.
+  This node treats the scheme's origins as app origins and refuses them on its own routes, as listed above.
+
+`calimero-bundle` holds the rules (`crates/bundle/src/frontend.rs`), and each refusal carries a stable code.
+The node enforces paths, sizes, hashes and the MIME allowlist at install.
+The HTML rules are build-time feedback that only `cargo mero` runs; at serve time the boundary is the per-app origin plus the CSP.
+
+| Code | Raised by | Refused when |
+| --- | --- | --- |
+| `FRONTEND_UNSAFE_PATH` | both | a path is not under `frontend/`, or has an empty, `.` or `..` component, or any character outside `A-Z a-z 0-9 . _ ~ @ + -` |
+| `FRONTEND_DUPLICATE_PATH` | both | a path is listed twice, ignoring ASCII case |
+| `FRONTEND_NO_ENTRY` | both | `entry` is not one of the listed files |
+| `FRONTEND_ENTRY_NOT_HTML` | both | `entry` is not an HTML file |
+| `FRONTEND_UNSUPPORTED_TYPE` | both | a file's extension is outside the served MIME allowlist (source maps included) |
+| `FRONTEND_TOO_LARGE` | both | the declared sizes sum past `MAX_FRONTEND_BYTES` (32 MiB) |
+| `FRONTEND_SIZE_MISMATCH` / `FRONTEND_HASH_MISMATCH` | both | a file's bytes differ from its manifest entry |
+| `FRONTEND_REMOTE_RESOURCE` | CLI | an HTML file loads a URL from another origin: a `src`, `href`, `srcset` or `poster` with a scheme or `//host` on any element except `<a>` and `<area>`; `data:` and `blob:` are refused only on `script`, `modulepreload` and `preload` loaders |
+| `FRONTEND_ESCAPING_URL` | CLI | an HTML file loads a root-absolute URL (`/assets/app.js`, `/vite.svg`; Vite's default `base: '/'`), or a relative one whose `..` climbs above the frontend root, in any of those attributes; or has any `<base>`; build with `base: './'` |
+| `FRONTEND_INLINE_SCRIPT` | CLI | an HTML file has an executable inline `<script>`, an `on*` event-handler attribute, a `javascript:` URL in `href`, `src`, `action` or `formaction`, a `srcdoc` attribute, or markup a browser could read as text inside a raw-text element; the served page's CSP forbids inline code |
+| `FRONTEND_INVALID_HTML` | CLI | an HTML file is not UTF-8 |
+| `FRONTEND_MISSING_FILE` | both | a file the manifest lists is not in the archive or the build output |
+
+`cargo mero` reads HTML with the `html5ever` tokenizer, so attribute values are decoded and URLs normalised the way a browser does them: `h&#116;tps://`, a tab inside the scheme and `\\host` are all caught.
 
 ### Signing
 
@@ -552,6 +676,7 @@ The cascade is driven and observed through the admin API
 | `POST /groups/:group_id/upgrade` | trigger the upgrade (set `cascade: true` for the whole subtree) |
 | `GET /groups/:group_id/upgrade/status` | signed-group upgrade status |
 | `POST /groups/:group_id/upgrade/retry` | re-drive a stalled upgrade |
+| `POST /groups/:namespace_id/upgrade/activate` | switch this node's contexts to the stored target now and replay the held deltas (`meroctl group upgrade activate`); every release a context steps through, each upgrade rung and the target, must already be installed |
 | `GET /groups/:namespace_id/cascade-status` | per-subgroup cascade rollout rollup |
 | `GET /groups/:namespace_id/migration-status` | cohort migration rollup (incl. `authored_remaining`), admin-only |
 | `POST /groups/:namespace_id/migration/abort` | admin stop of a rolling migration |
@@ -561,6 +686,13 @@ marker, cascading to every descendant carrying the same pending migration. It is
 forward "stop" (un-migrated contexts stop switching), **not** a rewind of any context
 that already migrated. Operationally these are reachable via
 [meroctl](/operate/meroctl/) and the admin surface.
+
+`activate` answers `200` with `targetApplicationId`, `switchedContexts`, `replayedDeltas` and `failedContexts`.
+One context failing does not stop the others: each failure is listed as `{contextId, error, retryable}`, and the list is empty when every context finished.
+The node itself retries a failure of its own (a store read, a dropped message) a few times before listing it with `retryable: true`.
+`retryable: false` means the switch itself failed (a migration or a load), which another call repeats until the release or the state changes.
+Calling `activate` again retries only what failed, since contexts already on the target switch nothing.
+`meroctl group upgrade activate` exits non-zero when `failedContexts` is not empty.
 
 ### Identity-gated data: owner-driven follow-up
 

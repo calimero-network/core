@@ -20,6 +20,7 @@ use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyH
 use calimero_authz::{AccountBinding, AclView, DeviceBinding};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::{scope_root, Op, OpPayload, ScopeId};
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
@@ -57,8 +58,47 @@ pub mod testing;
 ///   regardless of arrival order.
 type Stamp = (HybridTimestamp, u32, [u8; 32]);
 
+/// Below every op's stamp: the clock and generation are the least there are, and no op id is zero.
+fn founding_stamp() -> Stamp {
+    (HybridTimestamp::default(), 0, [0; 32])
+}
+
 fn wins(incoming: Stamp, current: Option<&Stamp>) -> bool {
     current.is_none_or(|cur| incoming > *cur)
+}
+
+/// The founder a genesis `payload` folded as `op` seats, read through a relay's seat: only a
+/// parentless one, signed by her credential key, whose `(founder, salt)` derives the scope id.
+pub(crate) fn seated_founder(op: &Op, payload: &OpPayload) -> Option<AccountId> {
+    let id = op.scope.as_bytes();
+    let (founder, carried, derives) = match payload {
+        OpPayload::NamespaceFounded {
+            founder,
+            salt,
+            carried,
+        } => (
+            founder,
+            carried,
+            calimero_account::is_founded_by(id, founder, salt),
+        ),
+        OpPayload::AccountNamespaceFounded {
+            founder,
+            salt,
+            carried,
+        } => (
+            founder,
+            carried,
+            calimero_account::is_account_namespace_of(id, founder, salt),
+        ),
+        OpPayload::RelaySeated { carried, .. } => return seated_founder(op, carried),
+        _ => return None,
+    };
+    let signed_by_founder = matches!(
+        carried.as_ref(),
+        OpPayload::DeviceLinked { genesis, chain, cert, .. }
+            if calimero_authz::founder_signed(founder, genesis, chain, cert, &op.authorship.device_key)
+    );
+    (signed_by_founder && op.parents.is_empty() && derives).then_some(*founder)
 }
 
 /// Set an LWW register `slot` to `value` iff `stamp` beats the stored stamp.
@@ -227,6 +267,16 @@ pub struct ScopeState {
     /// Per-`(account, device)` floor: the highest epoch a narrowing took this
     /// device out at, recorded whether or not anything is bound.
     device_scope_floor: BTreeMap<(AccountId, DeviceId), u32>,
+    /// The applications of the highest-epoch scope folded for an `(account, device)`;
+    /// a tie keeps the greater list, so the fold is order-independent.
+    device_scope_applications: BTreeMap<(AccountId, DeviceId), (u32, Vec<ApplicationId>)>,
+    /// The scope root's last `TargetApplicationSet`: its application and bytecode.
+    target_application: Option<(Stamp, ApplicationId, [u8; 32])>,
+    /// The scope root's cascades by stamp: from, to bytecode and application.
+    cascades: BTreeMap<Stamp, ([u8; 32], [u8; 32], ApplicationId)>,
+    /// The founder whose account namespace this scope is, from a genesis whose
+    /// `(founder, salt)` derives the scope id; only one founder can.
+    account_namespace: Option<AccountId>,
     // --- TEE authorship plane ---
     /// The TEE authoring policy, one LWW register per scope. Not part of
     /// `governance_hash`: it decides who may author `TeeOnly` state, which the
@@ -665,7 +715,8 @@ impl ScopeState {
                 chain,
                 cert,
                 scope_epoch,
-            } => self.fold_device_linked(genesis, chain, cert, *scope_epoch),
+                applications,
+            } => self.fold_device_linked(genesis, chain, cert, *scope_epoch, applications),
 
             // The deny direction, written unconditionally like the revocation
             // tombstone: a narrowing folded before its link must still win.
@@ -700,8 +751,9 @@ impl ScopeState {
                 } else {
                     self.fold_member_joined(*group, *member, role, stamp);
                 }
-                // A join carries no scope statement: epoch 0, as the live apply writes.
-                self.fold_device_linked(genesis, chain, cert, 0);
+                // A join carries no scope statement: epoch 0, every application, as
+                // the live apply writes.
+                self.fold_device_linked(genesis, chain, cert, 0, &[]);
             }
             OpPayload::DeviceRevoked { device, .. } => {
                 // The one account-plane arm with NO ownership gate, and the only
@@ -739,6 +791,48 @@ impl ScopeState {
                 // set union is a join by construction.
                 let _ = self.revoked_devices.insert(*device);
                 let _ = self.devices.remove(device);
+            }
+            // ---- application plane ----
+            // Only the scope root's target decides which device scopes reach it.
+            OpPayload::TargetApplicationSet {
+                group,
+                application,
+                bytecode,
+            } => {
+                if group.to_bytes() == *op.scope.as_bytes()
+                    && wins(stamp, self.target_application.as_ref().map(|(at, ..)| at))
+                {
+                    self.target_application = Some((stamp, *application, *bytecode));
+                }
+            }
+            // Resolved when the target is read: whether it applies depends on what the
+            // root runs then, which a streaming fold cannot know mid-stream.
+            OpPayload::CascadeUpgraded {
+                group,
+                from_bytecode,
+                bytecode,
+                application,
+            } => {
+                if group.to_bytes() == *op.scope.as_bytes() {
+                    let _ = self
+                        .cascades
+                        .insert(stamp, (*from_bytecode, *bytecode, *application));
+                }
+            }
+            // Op-local: only a parentless genesis the founder's own credential key signed,
+            // naming the founder the scope id derives from, marks the scope and seats her.
+            OpPayload::AccountNamespaceFounded { carried, .. } => {
+                if let Some(founder) = seated_founder(op, payload) {
+                    self.account_namespace = Some(founder);
+                    self.seat_founder(op, founder);
+                }
+                self.fold_payload(op, carried, stamp);
+            }
+            OpPayload::NamespaceFounded { carried, .. } => {
+                if let Some(founder) = seated_founder(op, payload) {
+                    self.seat_founder(op, founder);
+                }
+                self.fold_payload(op, carried, stamp);
             }
             OpPayload::AccountKeysRotated { handoff } => {
                 // Only the account may write its own epoch slots. `authorize`
@@ -792,9 +886,9 @@ impl ScopeState {
             } => {
                 self.fold_payload(op, carried, stamp);
                 if let Some(device) = device {
-                    // No scope statement rides with it: epoch 0, as the live
-                    // apply binds it.
-                    self.fold_device_linked(&device.genesis, &device.chain, &device.cert, 0);
+                    // No scope statement rides with it: epoch 0, every application,
+                    // as the live apply binds it.
+                    self.fold_device_linked(&device.genesis, &device.chain, &device.cert, 0, &[]);
                 }
                 let key = (*group, *relay);
                 self.fold_namespace_leave_into(key);
@@ -857,6 +951,13 @@ impl ScopeState {
             .and_then(|members| members.get(&relay))
             .filter(|role| role.is_tee())
             .cloned()
+    }
+
+    /// The founder's Admin row at the scope root, as the genesis apply writes it, at
+    /// [`founding_stamp`]: any write to the row beats it, so a second genesis restores nothing.
+    fn seat_founder(&mut self, op: &Op, founder: AccountId) {
+        let root = ContextGroupId::from(*op.scope.as_bytes());
+        self.fold_member_added(root, founder, &GroupMemberRole::Admin, founding_stamp());
     }
 
     /// LWW-set `member`'s role in `group`: an admin's add or role change, or a
@@ -998,6 +1099,7 @@ impl ScopeState {
         chain: &[RootKeyHandoff],
         cert: &DeviceCert,
         scope_epoch: u32,
+        applications: &[ApplicationId],
     ) {
         // Learn the account FIRST, and unconditionally — the genesis is
         // self-certifying (it hashes to the id it claims), so absorbing it is
@@ -1048,6 +1150,11 @@ impl ScopeState {
                 .entry((cert.account, cert.device))
                 .or_default();
             *recorded = (*recorded).max(scope_epoch);
+            let reach = self
+                .device_scope_applications
+                .entry((cert.account, cert.device))
+                .or_default();
+            *reach = std::mem::take(reach).max((scope_epoch, applications.to_vec()));
         }
         let Ok(verified) = admitted else {
             // Deterministically inadmissible on every node, so ignoring it keeps
@@ -1129,11 +1236,13 @@ impl ScopeState {
         &self,
         accounts: &BTreeMap<AccountId, AccountBinding>,
     ) -> BTreeMap<DeviceId, DeviceBinding> {
+        let target = self.target();
         let unsuperseded = self.devices.iter().filter(|(device, binding)| {
             accounts
                 .get(&binding.account)
                 .is_none_or(|account| binding.key_epoch >= account.epoch)
                 && !self.is_descoped(**device, binding)
+                && self.reaches(**device, binding, target)
         });
         unsuperseded
             .map(|(device, binding)| (*device, *binding))
@@ -1150,6 +1259,49 @@ impl ScopeState {
             })
             .map(|(key, _)| *key)
             .collect()
+    }
+
+    /// Does this binding's scope reach the scope's target at the end of the fold?
+    /// Read here, like the floor, so the answer is a function of the op set.
+    fn reaches(
+        &self,
+        device: DeviceId,
+        binding: &DeviceBinding,
+        target: Option<ApplicationId>,
+    ) -> bool {
+        let applications = self
+            .device_scope_applications
+            .get(&(binding.account, device))
+            .map_or(&[][..], |(_, applications)| applications.as_slice());
+        calimero_authz::scope_reaches(
+            applications,
+            target,
+            self.account_namespace == Some(binding.account),
+        )
+    }
+
+    /// The application the scope root targets: its last set, then one pass over the later
+    /// cascades in stamp order, each moving it only from the bytecode it runs by then.
+    fn target_with_bytecode(&self) -> Option<(ApplicationId, [u8; 32])> {
+        let base = self.target_application.map(|(stamp, ..)| stamp);
+        let mut current = self
+            .target_application
+            .map(|(_, application, bytecode)| (application, bytecode));
+        let later = self
+            .cascades
+            .iter()
+            .filter(|(stamp, _)| base.is_none_or(|base| **stamp > base));
+        for (_, (from, bytecode, application)) in later {
+            if *from == current.map_or([0; 32], |(_, running)| running) {
+                current = Some((*application, *bytecode));
+            }
+        }
+        current
+    }
+
+    fn target(&self) -> Option<ApplicationId> {
+        self.target_with_bytecode()
+            .map(|(application, _)| application)
     }
 
     /// Has a narrowing withdrawn this binding? Read here rather than at fold time,
@@ -1309,6 +1461,8 @@ impl ScopeState {
                 .iter()
                 .map(|(group, ops)| (*group, u64::try_from(ops.len()).unwrap_or(u64::MAX)))
                 .collect(),
+            target_application: self.target(),
+            account_namespace: self.account_namespace,
         }
     }
 
@@ -1852,6 +2006,30 @@ impl ScopeState {
             hasher.update(account.as_bytes());
             hasher.update(device.as_bytes());
             hasher.update(floor.to_le_bytes());
+        }
+        // What a device's scope reaches, and what it is judged against, decide who may
+        // write as much as the floor does.
+        for ((account, device), (epoch, applications)) in &self.device_scope_applications {
+            hasher.update(account.as_bytes());
+            hasher.update(device.as_bytes());
+            hasher.update(epoch.to_le_bytes());
+            hasher.update(
+                u64::try_from(applications.len())
+                    .unwrap_or(u64::MAX)
+                    .to_le_bytes(),
+            );
+            for application in applications {
+                hasher.update(AsRef::<[u8; 32]>::as_ref(application));
+            }
+        }
+        if let Some((application, bytecode)) = self.target_with_bytecode() {
+            hasher.update(b"target");
+            hasher.update(AsRef::<[u8; 32]>::as_ref(&application));
+            hasher.update(bytecode);
+        }
+        if let Some(founder) = &self.account_namespace {
+            hasher.update(b"account-namespace");
+            hasher.update(founder.as_bytes());
         }
         for (group, admin) in &self.group_admin {
             hasher.update(group.to_bytes());

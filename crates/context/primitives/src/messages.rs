@@ -9,7 +9,8 @@ use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AbortMigrationRequest, AddGroupMembersRequest, AdmitTeeNodeRequest, AttestFoundingRelayRequest,
+    AbortMigrationRequest, ActivateNamespaceUpgradeRequest, ActivateUpgradeRequest,
+    AddGroupMembersRequest, AdmitTeeNodeRequest, AttestFoundingRelayRequest,
     BroadcastGroupLocalStateRequest, ChangeNamespaceAdminRequest, CreateGroupInvitationRequest,
     CreateGroupRequest, DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
     GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
@@ -21,17 +22,21 @@ use crate::group::{
     LeaveNamespaceRequest, LinkAccountDeviceRequest, ListAllGroupsRequest,
     ListGroupContextsRequest, ListGroupMembersRequest, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, OwnerDeleteGroupRequest, PairDeviceCompleteRequest,
-    PairDeviceInitRequest, RelinkDeviceRequest, RemoveGroupMembersRequest, RescopeDeviceRequest,
-    ResyncContextRequest, RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
-    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
-    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
-    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, SetTeeAuthoringPolicyRequest,
-    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
-    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
-    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
-    TransferOwnershipRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    PairDeviceInitRequest, RejoinNamespaceRequest, RelinkDeviceRequest, RemoveGroupMembersRequest,
+    RescopeDeviceRequest, ResyncContextRequest, RetryGroupUpgradeRequest, RevokeDeviceRequest,
+    RotateGroupKeyRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
+    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
+    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
+    SetTeeAuthoringPolicyRequest, StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest,
+    StoreGroupContextRequest, StoreGroupMetaRequest, StoreGroupMetadataRequest,
+    StoreMemberCapabilityRequest, StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest,
+    SyncGroupRequest, TransferOwnershipRequest, TrialUpgradeRequest, UpdateMemberRoleRequest,
+    UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
+
+/// Prefix of the SDK's own exports, which no event may name as its handler.
+pub const SDK_EXPORT_PREFIX: &str = "__calimero";
 
 #[derive(Debug)]
 pub struct CreateContextRequest {
@@ -192,6 +197,20 @@ pub struct ExecuteRequest {
     /// Only the `__calimero_sync_next` merge-apply of a peer's delta has one to
     /// give. Every other constructor leaves it `None`.
     pub governance_position: Option<GovernanceParentEdge>,
+}
+
+impl ExecuteRequest {
+    /// A call made directly to this node, not one nested in other work (an xcall,
+    /// an event handler, a TEE trigger, a batch, a peer's delta, an internal export).
+    #[must_use]
+    pub fn is_direct_call(&self) -> bool {
+        self.write_source == WriteSource::Local
+            && self.atomic.is_none()
+            && self.xcall_origin.is_none()
+            && !self.event_handler
+            && self.tee_trigger.is_none()
+            && !self.method.starts_with(SDK_EXPORT_PREFIX)
+    }
 }
 
 /// Who authored the state an execution commits, which decides whose right to
@@ -688,6 +707,10 @@ pub enum ContextMessage {
         request: DeleteNamespaceRequest,
         outcome: oneshot::Sender<<DeleteNamespaceRequest as Message>::Result>,
     },
+    RejoinNamespace {
+        request: RejoinNamespaceRequest,
+        outcome: oneshot::Sender<<RejoinNamespaceRequest as Message>::Result>,
+    },
     AddGroupMembers {
         request: AddGroupMembersRequest,
         outcome: oneshot::Sender<<AddGroupMembersRequest as Message>::Result>,
@@ -964,4 +987,74 @@ pub enum ContextMessage {
         request: ResyncContextRequest,
         outcome: oneshot::Sender<<ResyncContextRequest as Message>::Result>,
     },
+    ActivateUpgrade {
+        request: ActivateUpgradeRequest,
+        outcome: oneshot::Sender<<ActivateUpgradeRequest as Message>::Result>,
+    },
+    ActivateNamespaceUpgrade {
+        request: ActivateNamespaceUpgradeRequest,
+        outcome: oneshot::Sender<<ActivateNamespaceUpgradeRequest as Message>::Result>,
+    },
+    TrialUpgrade {
+        request: TrialUpgradeRequest,
+        outcome: oneshot::Sender<<TrialUpgradeRequest as Message>::Result>,
+    },
+}
+
+#[cfg(test)]
+mod direct_call_tests {
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::identity::PublicKey;
+
+    use super::{ExecuteRequest, WriteSource};
+    use crate::ContextAtomic;
+
+    fn call(method: &str) -> ExecuteRequest {
+        ExecuteRequest {
+            context: ContextId::from([1; 32]),
+            executor: PublicKey::from([2; 32]),
+            method: method.to_owned(),
+            payload: Vec::new(),
+            atomic: None,
+            xcall_origin: None,
+            xcall_depth: 0,
+            delegation: None,
+            read_as: None,
+            tee_trigger: None,
+            event_handler: false,
+            write_source: WriteSource::Local,
+            governance_position: None,
+        }
+    }
+
+    #[test]
+    fn a_plain_call_is_direct() {
+        assert!(call("get_value").is_direct_call());
+    }
+
+    #[test]
+    fn nested_and_internal_runs_are_not_direct() {
+        let nested = [
+            ExecuteRequest {
+                atomic: Some(ContextAtomic::Lock),
+                ..call("get_value")
+            },
+            ExecuteRequest {
+                xcall_origin: Some(ContextId::from([3; 32])),
+                ..call("get_value")
+            },
+            ExecuteRequest {
+                event_handler: true,
+                ..call("on_event")
+            },
+            ExecuteRequest {
+                write_source: WriteSource::RemoteDelta,
+                ..call("__calimero_sync_next")
+            },
+            call("__calimero_merge_root_state"),
+        ];
+        for request in nested {
+            assert!(!request.is_direct_call(), "{request:?}");
+        }
+    }
 }

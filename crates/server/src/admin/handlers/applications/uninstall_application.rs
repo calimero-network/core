@@ -17,7 +17,11 @@ pub async fn handler(
 ) -> impl IntoResponse {
     info!(application_id=%application_id, "Uninstalling application");
 
-    match state.node_client.uninstall_application(&application_id) {
+    match state
+        .node_client
+        .uninstall_application(&application_id)
+        .await
+    {
         Ok(()) => {
             info!(application_id=%application_id, "Application uninstalled successfully");
             ApiResponse {

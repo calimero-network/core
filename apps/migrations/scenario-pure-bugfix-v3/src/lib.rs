@@ -1,0 +1,58 @@
+use calimero_sdk::abi::AbiType;
+use calimero_sdk::app;
+use calimero_sdk::serde::Serialize;
+use calimero_storage::collections::{LwwRegister, UnorderedMap};
+
+const SCHEMA_VERSION_V3: &str = "3.0.0";
+
+// Same code and borsh layout as ScenarioPureBugfixV2, released under a newer
+// version. No `#[app::migrate]` is needed.
+#[app::state]
+pub struct ScenarioPureBugfixV3 {
+    items: UnorderedMap<String, LwwRegister<u64>>,
+    last_sum: LwwRegister<u64>,
+}
+
+#[derive(Debug, Serialize, AbiType)]
+#[serde(crate = "calimero_sdk::serde")]
+pub struct SchemaInfo {
+    pub schema_version: String,
+    pub last_sum: u64,
+}
+
+#[app::logic]
+impl ScenarioPureBugfixV3 {
+    #[app::init]
+    pub fn init() -> ScenarioPureBugfixV3 {
+        ScenarioPureBugfixV3 {
+            items: UnorderedMap::new(),
+            last_sum: LwwRegister::new(0),
+        }
+    }
+
+    pub fn add_value(&mut self, key: String, value: u64) -> app::Result<()> {
+        self.items.insert(key, value.into())?;
+        Ok(())
+    }
+
+    pub fn get_value(&self, key: &str) -> app::Result<Option<u64>> {
+        Ok(self.items.get(key)?.map(|v| *v.get()))
+    }
+
+    pub fn sum_all_values(&mut self) -> app::Result<u64> {
+        let mut total: u64 = 0;
+        for (_k, v) in self.items.entries()? {
+            total += *v.get();
+        }
+        // Bug fixed: no spurious off-by-one.
+        self.last_sum.set(total);
+        Ok(total)
+    }
+
+    pub fn schema_info(&self) -> app::Result<SchemaInfo> {
+        Ok(SchemaInfo {
+            schema_version: SCHEMA_VERSION_V3.to_owned(),
+            last_sum: *self.last_sum.get(),
+        })
+    }
+}

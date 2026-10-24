@@ -4,7 +4,7 @@
 use calimero_account::WarrantStatement;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
-use calimero_governance_types::RootOp;
+use calimero_governance_types::{JoinAccountCredential, RootOp};
 use calimero_op::{OpPayload, ScopeId, SeatDevice};
 use calimero_primitives::context::GroupMemberRole;
 
@@ -15,7 +15,7 @@ use crate::credential::{credential_binds_the_member, join_credential_binds};
 /// **Coverage (admin + membership + scope-tree planes):**
 /// `RootGuarded { AdminChanged }` → `RootGuarded { AdminChanged }` (a bare
 /// `AdminChanged` folds to nothing, see `crate::guard`); `PolicyUpdated` → `PolicyUpdated`; `MemberJoinedOpen` →
-/// `MemberAdded` (open-subgroup self-join grants `Member`); `GroupCreated` →
+/// `Noop` (membership is inherited, and the join links no device); `GroupCreated` →
 /// `SubgroupCreated`; `GroupReparented` → `SubgroupReparented`; `GroupDeleted`
 /// → `SubgroupDeleted` (see caveats).
 ///
@@ -134,21 +134,10 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
         }
         // No membership half: an open-subgroup self-join is a PROOF of
         // inheritance, never a direct row (see `op_from_namespace_op`, which
-        // folds this op's membership as a graph-only node for that reason). The
-        // credential it carries is still a real device link and folds as one —
-        // or, if it is not the joiner's, as the graph-only node it used to be.
-        RootOp::MemberJoinedOpen { account, .. } => Some(if credential_binds_the_member(op) {
-            OpPayload::DeviceLinked {
-                genesis: account.genesis,
-                chain: account.chain.clone(),
-                cert: account.statement,
-                // A join op carries no scope statement; it binds at epoch 0,
-                // as the live apply does.
-                scope_epoch: 0,
-            }
-        } else {
-            OpPayload::Noop
-        }),
+        // folds this op's membership as a graph-only node for that reason). No
+        // device half either: the account is already in the namespace, and a link
+        // made here would carry no root-signed scope for the projection to check.
+        RootOp::MemberJoinedOpen { .. } => Some(OpPayload::Noop),
         // A TEE admission is a direct membership like an invitation join — the
         // replica gets a real row, not an inherited path — so it folds the same
         // way: membership and device as one indivisible fact, or membership
@@ -216,26 +205,48 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
         // every op the founder later signs is judged "not admin" at the cut and
         // rejected by every receiver while the publisher accepts it.
         //
-        // The admin half needs no arm: the root's `admin_identity` reaches the
-        // cut through `auth_cut_context`, which reads it from the root meta that
-        // genesis wrote. Only the device link is missing here.
-        RootOp::NamespaceCreatedV2 { account, .. } => {
-            Some(if credential_binds_the_member(op) {
-                OpPayload::DeviceLinked {
-                    genesis: account.genesis,
-                    chain: account.chain.clone(),
-                    cert: account.statement,
-                    // A join op carries no scope statement; it binds at epoch 0,
-                    // as the live apply does.
-                    scope_epoch: 0,
-                }
-            } else {
-                OpPayload::Noop
-            })
-        }
+        // The founder's Admin row rides along: the root meta's `admin_identity` moves
+        // with a transfer, so it cannot stand in for the row the apply writes here.
+        RootOp::NamespaceCreatedV2 {
+            founder,
+            account,
+            salt,
+        } => Some(OpPayload::NamespaceFounded {
+            founder: *founder,
+            salt: *salt,
+            carried: Box::new(founder_link(op, account)),
+        }),
+        // The same genesis, carrying the founder whose devices its account
+        // namespace exempts from scope; the projection checks the id derives from it.
+        RootOp::AccountNamespaceCreated {
+            founder,
+            account,
+            salt,
+        } => Some(OpPayload::AccountNamespaceFounded {
+            founder: *founder,
+            salt: *salt,
+            carried: Box::new(founder_link(op, account)),
+        }),
         // Out-of-model: `KeyDelivery` is key transport, not authorization
         // state. (`RootOp` is `#[non_exhaustive]`, so a `_` arm is mandatory.)
         _ => None,
+    }
+}
+
+/// The founder's device link a genesis carries, or `Noop` when the credential is
+/// not the founder's.
+fn founder_link(op: &RootOp, account: &JoinAccountCredential) -> OpPayload {
+    if !credential_binds_the_member(op) {
+        return OpPayload::Noop;
+    }
+    OpPayload::DeviceLinked {
+        genesis: account.genesis,
+        chain: account.chain.clone(),
+        cert: account.statement,
+        // A genesis carries no scope statement; it binds at epoch 0, for every
+        // application, as the live apply does.
+        scope_epoch: 0,
+        applications: vec![],
     }
 }
 

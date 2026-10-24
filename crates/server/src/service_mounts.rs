@@ -179,7 +179,8 @@ impl AuthLayerExt for Router {
         service: Arc<mero_auth::AuthService>,
         proof_policy: Option<crate::proof_auth::ProofPolicy>,
     ) -> Self {
-        self.layer(auth::guard_layer(service, proof_policy))
+        self.layer(axum::middleware::from_fn(auth::bind_to_app))
+            .layer(auth::guard_layer(service, proof_policy))
     }
 
     fn with_proxy_identity(self) -> Self {
@@ -187,7 +188,8 @@ impl AuthLayerExt for Router {
     }
 
     fn with_proxy_permissions(self) -> Self {
-        self.layer(axum::middleware::from_fn(proxy_permissions::inject))
+        self.layer(axum::middleware::from_fn(auth::bind_to_app))
+            .layer(axum::middleware::from_fn(proxy_permissions::inject))
     }
 }
 
@@ -197,7 +199,8 @@ impl AuthLayerExt for axum::routing::MethodRouter {
         service: Arc<mero_auth::AuthService>,
         proof_policy: Option<crate::proof_auth::ProofPolicy>,
     ) -> Self {
-        self.layer(auth::guard_layer(service, proof_policy))
+        self.layer(axum::middleware::from_fn(auth::bind_to_app))
+            .layer(auth::guard_layer(service, proof_policy))
     }
 
     fn with_proxy_identity(self) -> Self {
@@ -205,7 +208,8 @@ impl AuthLayerExt for axum::routing::MethodRouter {
     }
 
     fn with_proxy_permissions(self) -> Self {
-        self.layer(axum::middleware::from_fn(proxy_permissions::inject))
+        self.layer(axum::middleware::from_fn(auth::bind_to_app))
+            .layer(axum::middleware::from_fn(proxy_permissions::inject))
     }
 }
 

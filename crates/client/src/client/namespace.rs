@@ -3,11 +3,12 @@ use calimero_server_primitives::admin::{
     AccountPairInitApiRequest, AdmitJoinApiRequest, AdmitJoinApiResponse,
     CreateGroupInvitationApiRequest, CreateNamespaceApiRequest, CreateNamespaceApiResponse,
     DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, GetNamespaceApiResponse,
-    JoinGroupApiRequest, JoinNamespaceApiResponse, LabelDeviceApiRequest, LabelDeviceApiResponse,
-    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, NamespaceApiResponse,
-    NodeIdentityApiResponse, PairDeviceCompleteApiResponse, PairDeviceInitApiResponse,
-    RelinkDeviceApiRequest, RelinkDeviceApiResponse, RescopeDeviceApiRequest,
-    RescopeDeviceApiResponse, RevokeDeviceApiRequest, RevokeDeviceApiResponse,
+    JoinNamespaceApiRequest, JoinNamespaceApiResponse, LabelDeviceApiRequest,
+    LabelDeviceApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
+    NamespaceApiResponse, NodeIdentityApiResponse, PairDeviceCompleteApiResponse,
+    PairDeviceInitApiResponse, RelinkDeviceApiRequest, RelinkDeviceApiResponse,
+    RescopeDeviceApiRequest, RescopeDeviceApiResponse, RevokeDeviceApiRequest,
+    RevokeDeviceApiResponse,
 };
 use eyre::Result;
 use serde::Serialize;
@@ -251,7 +252,7 @@ where
     pub async fn join_namespace(
         &self,
         namespace_id: &str,
-        request: JoinGroupApiRequest,
+        request: JoinNamespaceApiRequest,
     ) -> Result<JoinNamespaceApiResponse> {
         let response = self
             .connection

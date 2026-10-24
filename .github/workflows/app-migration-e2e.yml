@@ -217,10 +217,18 @@ jobs:
           - 37-stranded-resync
           - 38-namespace-invite-join-regression
           - 39-missing-abi-refused
-        # The only suite that advances a group's target, so the only place registry
-        # coordinates resolve; dht ignores them, so this needs an http lane to exercise it.
+          - 41-reader-sees-post-upgrade-writes
+          - 42-activate-upgrade-on-an-idle-node
+          - 43-retarget-before-activate
+          - 44-context-reports-the-release-it-runs
+          - 45-frontend-two-releases
+          - 46-frontend-proxy-mode
+        # Scenarios that depend on a group's registry coordinates; dht ignores them,
+        # so they need an http lane to exercise them.
         include:
           - workflow: 01-namespace-cascade-migration
+            mode: http
+          - workflow: 40-paired-device-holds-newer-release
             mode: http
     env:
       WORKFLOW: ${{ matrix.workflow }}
@@ -260,6 +268,10 @@ jobs:
           scripts/set-registry-mode.sh merod:local http "$url"
 
       - name: Run workflow
+        env:
+          # An embedded-auth scenario provisions its admin at init from these; CI-only test values.
+          MERO_AUTH_ADMIN_USER: dev
+          MERO_AUTH_ADMIN_PASSWORD: dev-password
         run: |
           mkdir -p docker-logs
           LOGDIR="$GITHUB_WORKSPACE/docker-logs"

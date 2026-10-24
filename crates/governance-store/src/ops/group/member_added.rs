@@ -27,7 +27,8 @@ pub(crate) fn apply(
     ctx.permissions().require_admin_to_add_admin(signer, role)?;
     // `add_member` is an upsert, so re-adding a member is a role change held to
     // `MemberRoleSet`'s rules: a TEE row keeps a TEE role, and demoting an admin needs an admin.
-    if let Some(current) = MembershipRepository::new(store).role_of(group_id, member)? {
+    // The row is read at the op's cut, as `MemberRoleSet` reads it.
+    if let Some(current) = ctx.direct_role(member)? {
         MembershipPolicy::require_tee_row_keeps_tee_role(member, &current, role)?;
     }
     ctx.permissions()

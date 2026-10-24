@@ -407,6 +407,9 @@ pub struct ContextManager {
     /// An entry lives only while its compile runs.
     compiling: HashMap<(BlobId, Option<String>), handlers::execute::SharedCompile>,
 
+    /// Namespaces with a rejoin in flight, so a second rejoin waits for the first.
+    rejoining: handlers::rejoin_namespace::RejoinLocks,
+
     /// Cumulative hit/miss counters for the `contexts` hot cache, driving the
     /// periodic effectiveness log (see [`ContextCacheStats`] and
     /// [`Self::log_cache_stats`]). Independent of `metrics` so the log line
@@ -490,6 +493,7 @@ impl ContextManager {
             applications: BoundedCache::new(MAX_CACHED_APPLICATIONS, "applications"),
             modules: BoundedCache::new(MAX_CACHED_MODULES, "modules"),
             compiling: HashMap::new(),
+            rejoining: Default::default(),
             cache_stats: ContextCacheStats::default(),
 
             metrics: prometheus_registry.map(Metrics::new),
@@ -776,15 +780,17 @@ impl ContextManager {
         namespace_id: &[u8; 32],
     ) -> Arc<Mutex<DagStore<SignedNamespaceOp>>> {
         self.namespace_dags
-            .get_or_insert_with(*namespace_id, || {
-                // Namespace heads are not capped when an op is signed, so the
-                // op layer's own parent bound applies here, not the delta one.
-                let mut dag = DagStore::new([0u8; 32]);
-                dag.set_max_parents(calimero_governance_types::bounds::MAX_PARENT_OP_HASHES);
-                Arc::new(Mutex::new(dag))
-            })
+            .get_or_insert_with(*namespace_id, || Arc::new(Mutex::new(new_namespace_dag())))
             .clone()
     }
+}
+
+/// An empty governance DAG. Namespace heads are not capped when an op is signed,
+/// so the op layer's own parent bound applies here, not the delta one.
+pub(crate) fn new_namespace_dag() -> DagStore<SignedNamespaceOp> {
+    let mut dag = DagStore::new([0u8; 32]);
+    dag.set_max_parents(calimero_governance_types::bounds::MAX_PARENT_OP_HASHES);
+    dag
 }
 
 /// Implements the `Actor` trait for `ContextManager`, allowing it to run within the Actix framework.
@@ -878,6 +884,7 @@ impl Actor for ContextManager {
             self.datastore.clone(),
             self.node_client.clone(),
             Arc::clone(&self.ack_router),
+            ctx.address(),
         );
 
         // Hands the namespace TEE key to every TEE authority; a no-op on a node

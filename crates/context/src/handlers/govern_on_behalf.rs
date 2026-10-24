@@ -474,12 +474,27 @@ mod tests {
         /// The author creates a Restricted subgroup under the root, salted
         /// `[tag; 32]`, with the id that create derives.
         async fn create_subgroup(&self, tag: u8) -> eyre::Result<ContextGroupId> {
+            self.create_subgroup_under(NS.into(), tag, true).await
+        }
+
+        /// The author creates a subgroup under `parent`, salted `[tag; 32]`.
+        async fn create_subgroup_under(
+            &self,
+            parent: ContextGroupId,
+            tag: u8,
+            restricted: bool,
+        ) -> eyre::Result<ContextGroupId> {
             let salt = [tag; 32];
             let op = RootOp::GroupCreated {
-                group_id: calimero_account::created_subgroup_id(&self.author, &NS, true, &salt)
-                    .into(),
-                parent_id: NS.into(),
-                restricted: true,
+                group_id: calimero_account::created_subgroup_id(
+                    &self.author,
+                    &parent.to_bytes(),
+                    restricted,
+                    &salt,
+                )
+                .into(),
+                parent_id: parent,
+                restricted,
                 admin: self.author,
                 salt,
             };
@@ -493,6 +508,18 @@ mod tests {
                 })
                 .await?;
             Ok(response.group_id)
+        }
+
+        async fn group_info(
+            &self,
+            group_id: ContextGroupId,
+        ) -> calimero_context_client::group::GroupInfoResponse {
+            self.harness
+                .manager
+                .send(calimero_context_client::group::GetGroupInfoRequest { group_id })
+                .await
+                .expect("the manager answers")
+                .expect("the relay may read the group")
         }
 
         async fn add(&self, group: ContextGroupId, member: AccountId) -> eyre::Result<()> {
@@ -609,6 +636,59 @@ mod tests {
             .await
             .expect("the manager answers")
             .expect("the seated relay may read the group");
+    }
+
+    /// A folder made inside a private folder reads as private.
+    ///
+    /// The inner subgroup is Open, so it takes the outer one's members, and the
+    /// Restricted parent still closes it to the rest of the namespace. Its
+    /// `subgroup_visibility` answers how it takes members; a client drawing a
+    /// lock from that showed the inner folder as unlocked.
+    #[actix::test]
+    async fn an_open_subgroup_inside_a_restricted_one_is_effectively_restricted() {
+        let fx = fixture_with(MemberCapabilities::CAN_CREATE_SUBGROUP, true).await;
+        // Below the root only a namespace admin creates subgroups.
+        MembershipRepository::new(&fx.store)
+            .add_member(&fx.ns, &fx.author, GroupMemberRole::Admin)
+            .expect("the author administers the namespace");
+        let outer = fx
+            .create_subgroup(0xD4)
+            .await
+            .expect("create the outer folder");
+        let inner = fx
+            .create_subgroup_under(outer, 0xD5, false)
+            .await
+            .expect("the outer folder's admin creates an Open folder inside it");
+
+        let inner_info = fx.group_info(inner).await;
+        assert_eq!(inner_info.subgroup_visibility, "open");
+        assert_eq!(
+            inner_info.effective_visibility, "restricted",
+            "an Open folder behind a Restricted one is closed to the namespace"
+        );
+        assert_eq!(
+            fx.group_info(outer).await.effective_visibility,
+            "restricted"
+        );
+        assert!(
+            !MembershipRepository::new(&fx.store)
+                .is_member(&inner, &fx.other)
+                .expect("read"),
+            "a namespace member outside the outer folder does not inherit the inner one"
+        );
+    }
+
+    /// An Open subgroup straight under the namespace is open to it.
+    #[actix::test]
+    async fn an_open_subgroup_under_the_namespace_is_effectively_open() {
+        let fx = fixture_with(MemberCapabilities::CAN_CREATE_SUBGROUP, true).await;
+        let open = fx
+            .create_subgroup_under(fx.ns, 0xD6, false)
+            .await
+            .expect("create an Open subgroup");
+        let info = fx.group_info(open).await;
+        assert_eq!(info.subgroup_visibility, "open");
+        assert_eq!(info.effective_visibility, "open");
     }
 
     /// A refused creation leaves no key behind for a subgroup that does not

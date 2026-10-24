@@ -5,12 +5,12 @@ use serde::{Deserialize, Serialize};
 #[cfg(fuzzing)]
 #[doc(hidden)]
 pub mod fuzz_api {
-    use std::collections::{BTreeSet, HashMap};
+    use std::collections::{BTreeMap, HashMap};
     use std::sync::Arc;
 
     pub fn extract_bundle_files<'a>(
         bundle_data: &[u8],
-        wanted: &BTreeSet<&'a str>,
+        wanted: &BTreeMap<&'a str, u64>,
     ) -> eyre::Result<HashMap<&'a str, Arc<[u8]>>> {
         crate::client::application::bundle::extract_bundle_files(bundle_data, wanted)
     }
@@ -25,7 +25,7 @@ pub mod tombstone_gc;
 pub use tombstone_gc::GcConfig;
 pub mod delta_buffer;
 pub mod join_bundle;
-pub use join_bundle::JoinBundle;
+pub use join_bundle::{JoinBundle, NamespaceJoinRefused};
 pub mod messages;
 pub mod presence;
 pub mod sync;

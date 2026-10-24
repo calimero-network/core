@@ -3,13 +3,40 @@ use std::time::Duration;
 
 use actix::{AsyncContext, WrapFuture};
 use calimero_context_client::group::ListAllGroupsRequest;
+use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::ForgottenNamespaces;
 use calimero_primitives::context::ContextId;
+use calimero_store::Store;
 use futures_util::StreamExt;
 use tracing::{debug, error, warn};
 
 use super::NodeManager;
 use crate::constants;
 use crate::delta_store::DeltaStore;
+
+/// Whether the start-up sweep subscribes to `group`: this device's scope reaches it
+/// and the user did not remove it. An unreadable removal marker counts as removed.
+fn follows_at_startup(datastore: &Store, group: &ContextGroupId) -> bool {
+    // Membership is the account's, and a narrowed device reaches fewer namespaces.
+    if !calimero_context::account_follow::node_reaches(datastore, group).unwrap_or(true) {
+        debug!(
+            ?group,
+            "this device's scope no longer reaches this namespace; not subscribing"
+        );
+        return false;
+    }
+    match ForgottenNamespaces::new(datastore).is_forgotten(group) {
+        Ok(false) => true,
+        Ok(true) => {
+            debug!(?group, "removed from this device; not subscribing");
+            false
+        }
+        Err(err) => {
+            warn!(?group, %err, "failed to read the removal marker; not subscribing");
+            false
+        }
+    }
+}
 
 impl NodeManager {
     pub(super) fn setup_startup_subscriptions(&self, ctx: &mut actix::Context<Self>) {
@@ -48,15 +75,7 @@ impl NodeManager {
                 {
                     Ok(groups) => {
                         for group in groups {
-                            // Membership is the account's, and a narrowed device
-                            // of it reaches fewer namespaces than the account does.
-                            if !calimero_context::account_follow::node_reaches(
-                                &datastore,
-                                &group.group_id,
-                            )
-                            .unwrap_or(true)
-                            {
-                                debug!(?group.group_id, "this device's scope no longer reaches this namespace; not subscribing");
+                            if !follows_at_startup(&datastore, &group.group_id) {
                                 continue;
                             }
                             let ns_bytes = group.group_id.to_bytes();
@@ -387,4 +406,28 @@ fn sign_state_beacon(
         context_id, signer, root_hash, heads,
     )?;
     Ok(Some(key.sign(&payload)?.to_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_store::db::InMemoryDB;
+
+    use super::*;
+
+    #[test]
+    fn a_removed_namespace_is_left_out_of_the_start_up_sweep() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (kept, removed) = (
+            ContextGroupId::from([0x01; 32]),
+            ContextGroupId::from([0x02; 32]),
+        );
+        ForgottenNamespaces::new(&store)
+            .mark(&removed, None, 1, None)
+            .expect("remove the namespace");
+
+        assert!(follows_at_startup(&store, &kept));
+        assert!(!follows_at_startup(&store, &removed));
+    }
 }

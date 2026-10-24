@@ -55,10 +55,12 @@ mod deny_list;
 pub mod device_link;
 mod errors;
 pub mod first_target_gate;
+mod forgotten;
 mod governance_signer;
 pub mod group_creator;
 mod group_governance_publisher;
 mod group_keys;
+mod group_owner;
 mod group_settings;
 pub mod held_ops;
 mod local_state;
@@ -68,12 +70,14 @@ mod metadata;
 mod namespace;
 mod namespace_founding;
 mod node_device;
+mod nonce_spenders;
 pub mod nonce_window;
 mod on_behalf;
 mod op_budget;
 mod ops;
 mod owner_guard;
 mod pending_admission;
+mod pending_namespace_purge;
 mod pending_rotation;
 mod pending_self_purge;
 mod permission_checker;
@@ -95,7 +99,7 @@ use self::local_state::{op_log_contains_content_hash, persist_group_governance_p
 pub use self::absorb::AbsorbRepository;
 pub use self::absorb_record::{AbsorbRecord, AbsorbedEntity, AbsorbedLeaf};
 pub use self::authorizer::{
-    AtCutAuthorizer, AtCutMembershipPath, GroupRows, LiveFallbackAuthorizer,
+    AtCutAuthorizer, AtCutMembershipPath, GroupRows, LiveFallbackAuthorizer, ReentryAtCut,
     LIVE_FALLBACK_AUTHORIZER,
 };
 pub use self::capabilities::CapabilitiesRepository;
@@ -119,6 +123,7 @@ pub use self::device_link::{
     bind_device_everywhere, bind_known_devices, plan_carried_link, publish_carried_link,
     replay_known_revocations, withdraw_device_in, CarriedLink, CarriedLinkRefusal,
 };
+pub use self::forgotten::{ForgottenNamespace, ForgottenNamespaces};
 pub use self::ops::group::shared_writers_rotated::require_context_not_rotated;
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
@@ -126,16 +131,17 @@ pub use self::void_ledger::{parked_op, Parked};
 
 pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;
-pub use self::namespace_founding::NamespaceFoundingRepository;
+pub use self::group_owner::namespace_founder;
+pub use self::namespace_founding::{GenesisKind, NamespaceFoundingRepository};
 
 pub use self::group_keys::{
     key_covering_group, EntitledRecipient, GroupKeyring, KeyRecipient, KeyRequester, StoredGroupKey,
 };
 pub use self::group_settings::GroupSettingsService;
 pub use self::local_state::{
-    delete_group_local_rows, delete_namespace_local_state, get_local_gov_nonce,
-    get_member_context_joins, get_op_head, load_nonce_window, read_op_log_after,
-    remove_all_member_context_joins, set_local_gov_nonce, store_nonce_window,
+    delete_group_and_parent_edge, delete_group_local_rows, delete_namespace_local_state,
+    get_local_gov_nonce, get_member_context_joins, get_op_head, load_nonce_window,
+    read_op_log_after, remove_all_member_context_joins, set_local_gov_nonce, store_nonce_window,
     track_member_context_join,
 };
 pub use self::membership::MembershipRepository;
@@ -157,7 +163,7 @@ pub use self::namespace::{
     namespace_groups_member_but_keyless, namespace_groups_with_held_key_buffered_ops,
     namespace_root_participating_but_unbootstrapped, open_relayed_join_for_read,
     open_sealed_root_op, open_sealed_root_op_for_group, redrive_buffered_ops_for_group,
-    redrive_buffered_ops_for_group_with, redrive_sealed_root_ops_with,
+    redrive_buffered_ops_for_group_with, redrive_namespace_with, relayed_join_applied,
     retry_encrypted_ops_for_group, retry_encrypted_ops_for_group_with,
     seal_root_op_for_group_if_keyed, seal_root_op_for_publish, seal_root_op_if_keyed,
     sign_and_apply_namespace_op_without_publish, sign_and_publish_namespace_op,
@@ -172,6 +178,7 @@ pub use self::node_device::{
 };
 pub use self::owner_guard::{check_root_proof, owner_op_counter, GuardedOp, OwnerGuardRefusal};
 pub use self::pending_admission::{pending_standing, PendingStanding};
+pub use self::pending_namespace_purge::PendingNamespacePurges;
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::{ActingPrincipal, PermissionChecker};
 
@@ -1593,6 +1600,21 @@ pub async fn sign_apply_and_publish(
 ) -> EyreResult<Option<crate::governance_broadcast::DeliveryReport>> {
     GroupGovernancePublisher::new(store, node_client, *group_id)
         .sign_apply_and_publish(ack_router, signer_sk, op)
+        .await
+}
+
+/// [`sign_apply_and_publish`] for an op peers must receive. See
+/// [`GroupGovernancePublisher::sign_apply_and_publish_required`].
+pub async fn sign_apply_and_publish_required(
+    store: &Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &calimero_context_client::local_governance::AckRouter,
+    group_id: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    op: GroupOp,
+) -> EyreResult<crate::governance_broadcast::DeliveryReport> {
+    GroupGovernancePublisher::new(store, node_client, *group_id)
+        .sign_apply_and_publish_required(ack_router, signer_sk, op)
         .await
 }
 

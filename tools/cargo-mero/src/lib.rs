@@ -9,6 +9,7 @@ use clap::Parser;
 mod abi;
 mod build;
 mod bundle;
+mod frontend;
 mod guide;
 mod icon;
 mod logo;
@@ -161,13 +162,37 @@ struct BundleArgs {
     #[arg(long)]
     no_logo: bool,
 
-    /// Print the built .mpk path as the last line of output, for scripts that
-    /// need it without reconstructing the versioned filename themselves
+    /// Print the built .mpk path on stdout (stderr with `--format json`), for
+    /// scripts that need it without reconstructing the versioned filename
     #[arg(long)]
     print_output_path: bool,
 
+    /// Directory holding a built web frontend (with an index.html) to ship in the
+    /// bundle; overrides `frontend-dir` in `[package.metadata.calimero]`
+    #[arg(long, value_name = "DIR")]
+    frontend_dir: Option<PathBuf>,
+
+    /// Check the web frontend inside an existing .mpk instead of building one
+    #[arg(
+        long,
+        value_name = "MPK",
+        conflicts_with_all = ["key", "dev", "app_version", "package", "output", "profiling", "manifest_path", "no_abi", "no_icon", "no_logo", "print_output_path", "frontend_dir", "bump", "features", "no_default_features"]
+    )]
+    check_frontend: Option<Utf8PathBuf>,
+
+    /// How the result is printed: `json` puts exactly one object on stdout and
+    /// every progress line on stderr
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    format: OutputFormat,
+
     #[command(flatten)]
     features: workspace::FeatureArgs,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy)]
+enum OutputFormat {
+    Human,
+    Json,
 }
 
 /// CLI spelling of `registry::Bump`, kept separate so `registry` stays
@@ -312,7 +337,10 @@ fn dispatch(cmd: Command) -> eyre::Result<()> {
         Command::New(args) => new::run(&args),
         Command::Build(args) => build::run(&args).map(|_| ()),
         Command::Test(args) => test_cmd::run(&args),
-        Command::Bundle(args) => bundle::run(&args).map(|_| ()),
+        Command::Bundle(args) => match &args.check_frontend {
+            Some(mpk) => frontend::run_check(mpk, args.format),
+            None => frontend::report(args.format, bundle::run(&args)),
+        },
         Command::Abi(cmd) => dispatch_abi(cmd),
         Command::Key(cmd) => dispatch_key(cmd),
         Command::Sign(args) => dispatch_sign(&args),

@@ -1,5 +1,14 @@
+mod frontend;
+#[cfg(feature = "html")]
+mod html;
 mod signature;
 
+pub use frontend::{
+    mime_type, verify_frontend_file, BundleFrontend, FrontendError, FRONTEND_ROOT,
+    MAX_FRONTEND_BYTES,
+};
+#[cfg(feature = "html")]
+pub use html::check_frontend_html;
 pub use signature::{
     canonicalize_manifest, compute_bundle_hash, compute_signing_payload, decode_public_key,
     decode_signature, derive_signer_id_did_key, format_bundle_hash, sign_manifest_json,
@@ -220,6 +229,11 @@ pub struct BundleManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub services: Option<Vec<BundleService>>,
 
+    /// The app's static web build, served by the node per version. An older node
+    /// ignores it and the app still runs from `links.frontend`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontend: Option<BundleFrontend>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub links: Option<BundleLinks>,
 
@@ -297,6 +311,7 @@ impl BundleManifest {
             wasm,
             abi,
             services,
+            frontend,
             version: _,
             package: _,
             app_version: _,
@@ -323,6 +338,9 @@ impl BundleManifest {
             if let Some(abi) = &service.abi {
                 artifacts.push((format!("services[{i}].abi"), abi));
             }
+        }
+        for (i, file) in frontend.iter().flat_map(|f| &f.files).enumerate() {
+            artifacts.push((format!("frontend.files[{i}]"), file));
         }
         artifacts
     }
@@ -688,6 +706,40 @@ mod tests {
                 "version": "1.0.0",
                 "name": "Mero Chat"
             })
+        );
+    }
+
+    #[test]
+    fn frontend_files_are_artifacts_the_node_path_checks() {
+        let manifest: BundleManifest = serde_json::from_str(&manifest_json(
+            r#""frontend": {
+                "entry": "frontend/index.html",
+                "files": [
+                    { "path": "frontend/index.html", "hash": "00", "size": 1 },
+                    { "path": "frontend/assets/app.js", "hash": "00", "size": 1 }
+                ]
+            },"#,
+        ))
+        .unwrap();
+
+        let fields: Vec<_> = manifest
+            .artifacts()
+            .into_iter()
+            .map(|(field, artifact)| (field, artifact.path.clone()))
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                ("wasm".to_owned(), "app.wasm".to_owned()),
+                (
+                    "frontend.files[0]".to_owned(),
+                    "frontend/index.html".to_owned()
+                ),
+                (
+                    "frontend.files[1]".to_owned(),
+                    "frontend/assets/app.js".to_owned()
+                ),
+            ]
         );
     }
 

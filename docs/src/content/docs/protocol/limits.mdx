@@ -55,6 +55,7 @@ Caps on what crosses the network — RPC requests, signed governance ops, sync s
 | Entity data size (per record) | **1 MiB** | `MAX_ENTITY_DATA_SIZE` |
 | Total pages per snapshot | **10 000** | `MAX_SNAPSHOT_PAGES` (≈2.5 GB at 256 KiB/page) |
 | Compressed page payload | **8 MiB** | `MAX_COMPRESSED_PAYLOAD_SIZE` |
+| Bundled frontend (sum of declared file sizes) | **32 MiB** (`32 × 1024 × 1024`) | `MAX_FRONTEND_BYTES` (`crates/bundle/src/frontend.rs`) |
 
 :::note
 There are two distinct DAG-head caps and they are not the same number. **32** bounds the *governance* DAG (`MAX_GOVERNANCE_DAG_HEADS`); **100** bounds the *sync snapshot* head set (`MAX_DAG_HEADS` in `snapshot.rs`). The governance store internally also triggers head compaction at **64** heads (its own `MAX_DAG_HEADS`), which is a compaction threshold, not a wire cap.

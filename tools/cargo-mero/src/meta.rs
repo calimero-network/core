@@ -46,6 +46,8 @@ pub struct BundleMeta {
     pub frontend: Option<String>,
     /// Other URLs the same frontend is served at; see `BundleManifest::frontend_aliases`.
     pub frontend_aliases: Vec<String>,
+    /// Built web frontend to ship in the bundle, relative to `manifest_dir`.
+    pub frontend_dir: Option<String>,
     pub app_version: String,
     pub services: Vec<ServiceMeta>,
     /// Directory of the table that supplied this metadata, so a relative
@@ -84,6 +86,7 @@ struct RawCalimeroMeta {
     frontend: Option<String>,
     #[serde(default)]
     frontend_aliases: Vec<String>,
+    frontend_dir: Option<String>,
     #[serde(default)]
     services: Vec<RawServiceMeta>,
 }
@@ -387,6 +390,7 @@ fn load_from_values(
             .unwrap_or_else(|| "0.1.0".to_string()),
         frontend: raw.frontend,
         frontend_aliases: raw.frontend_aliases,
+        frontend_dir: raw.frontend_dir,
         app_version: crate_version.to_string(),
         services,
         // Set by `load`, which knows which table (workspace vs. package) won.
@@ -660,6 +664,19 @@ mod tests {
         )
         .expect("parses");
         assert!(none.frontend_aliases.is_empty());
+    }
+
+    #[test]
+    fn parses_frontend_dir() {
+        let meta = parse_for_test(
+            r#"
+            [package.metadata.calimero]
+            package = "com.example.app"
+            frontend-dir = "web/dist"
+        "#,
+        )
+        .expect("parses");
+        assert_eq!(meta.frontend_dir.as_deref(), Some("web/dist"));
     }
 
     #[test]

@@ -7,7 +7,7 @@ use calimero_primitives::blobs::BlobId as PrimitiveBlobId;
 use calimero_primitives::context::ContextId as PrimitiveContextId;
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 use generic_array::sequence::Concat;
-use generic_array::typenum::{U32, U33};
+use generic_array::typenum::{U1, U32, U33};
 use generic_array::GenericArray;
 
 use crate::db::Column;
@@ -535,6 +535,76 @@ impl Debug for ContextLeftMarker {
     }
 }
 
+/// First byte of a [`NamespaceForgotten`] key. Together with its 33-byte length it
+/// keeps the row apart from the 32-byte and 64-byte keys that share `ContextLocal`.
+pub const NAMESPACE_FORGOTTEN_PREFIX: u8 = 0x4E;
+
+/// Length of a [`NamespaceForgotten`] key: `prefix ‖ namespace_id`.
+pub const NAMESPACE_FORGOTTEN_KEY_LEN: usize = 33;
+
+#[derive(Clone, Copy, Debug)]
+pub struct NamespaceForgottenPrefix;
+
+impl KeyComponent for NamespaceForgottenPrefix {
+    type LEN = U1;
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct NamespaceIdComponent;
+
+impl KeyComponent for NamespaceIdComponent {
+    type LEN = U32;
+}
+
+/// Node-local record, in `ContextLocal` and never synced, that the user removed a
+/// namespace from this device; only an explicit join clears it.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NamespaceForgotten(Key<(NamespaceForgottenPrefix, NamespaceIdComponent)>);
+
+impl NamespaceForgotten {
+    #[must_use]
+    pub fn new(namespace_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([NAMESPACE_FORGOTTEN_PREFIX])
+            .concat(GenericArray::from(namespace_id))))
+    }
+
+    #[must_use]
+    pub fn namespace_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; NAMESPACE_FORGOTTEN_KEY_LEN]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for NamespaceForgotten {
+    type Components = (NamespaceForgottenPrefix, NamespaceIdComponent);
+
+    fn column() -> Column {
+        Column::ContextLocal
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NamespaceForgotten {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for NamespaceForgotten {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NamespaceForgotten")
+            .field("namespace_id", &self.namespace_id())
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct StateKey;
 
@@ -852,6 +922,75 @@ impl Debug for ContextBlob {
         f.debug_struct("ContextBlob")
             .field("context_id", &self.context_id())
             .field("blob_id", &self.blob_id())
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct AccessGrantId;
+
+impl KeyComponent for AccessGrantId {
+    type LEN = U32;
+}
+
+/// One access grant this node holds for a context: `context_id(32) ‖
+/// grant_id(32)`, in the node-local [`Column::ContextAccessGrant`].
+///
+/// The grant id is a hash of the grant's secret, so a presented secret is
+/// looked up rather than compared, and the secret itself is never stored.
+/// Context first so a deleted context's grants go with one prefix delete.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextAccessGrant(Key<(ContextId, AccessGrantId)>);
+
+impl ContextAccessGrant {
+    #[must_use]
+    pub fn new(context_id: PrimitiveContextId, grant_id: [u8; 32]) -> Self {
+        Self(Key(
+            GenericArray::from(*context_id).concat(GenericArray::from(grant_id))
+        ))
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        let mut context_id = [0; 32];
+        context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
+        context_id.into()
+    }
+
+    #[must_use]
+    pub fn grant_id(&self) -> [u8; 32] {
+        let mut grant_id = [0; 32];
+        grant_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
+        grant_id
+    }
+}
+
+impl AsKeyParts for ContextAccessGrant {
+    type Components = (ContextId, AccessGrantId);
+
+    fn column() -> Column {
+        Column::ContextAccessGrant
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for ContextAccessGrant {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for ContextAccessGrant {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextAccessGrant")
+            .field("context_id", &self.context_id())
+            .field("grant_id", &self.grant_id())
             .finish()
     }
 }

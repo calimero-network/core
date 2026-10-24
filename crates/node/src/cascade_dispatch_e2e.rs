@@ -72,8 +72,12 @@ pub(crate) struct AppBlobs {
     other: [u8; 32],
 }
 
-/// Minimal valid wasm module: magic + version, no sections.
-const EMPTY_WASM: [u8; 8] = [0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
+/// Minimal wasm module the runtime accepts: it exports a linear memory and nothing else.
+pub(crate) const EMPTY_WASM: [u8; 25] = [
+    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // magic, version
+    0x05, 0x03, 0x01, 0x00, 0x01, // memory section: one memory, 1 page
+    0x07, 0x0A, 0x01, 0x06, b'm', b'e', b'm', b'o', b'r', b'y', 0x02, 0x00, // export "memory"
+];
 
 pub(crate) async fn seed_app_blobs(node: &TestNode) -> AppBlobs {
     use calimero_wasm_abi::embed::write_embedded_state_schema;
@@ -144,8 +148,8 @@ fn meta_for(
         target: GroupTarget {
             application_id: target,
             bytecode_id,
-            package: Box::default(),
-            version: Box::default(),
+            package: "com.example.app".into(),
+            version: "1.0.0".into(),
         },
         created_at: 1_700_000_000,
         admin_identity: admin,
@@ -450,6 +454,7 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
             target_application_id: app_id_v2(),
             cascade: true,
             force_code_only: false,
+            skip_trial: false,
         })
         .await
         .expect("cascade upgrade should succeed");
@@ -557,6 +562,7 @@ async fn cascade_emits_migration_started_on_the_namespace_root() {
             target_application_id: app_id_v2(),
             cascade: true,
             force_code_only: false,
+            skip_trial: false,
         })
         .await
         .expect("cascade upgrade should succeed");
@@ -650,8 +656,8 @@ async fn receiver_announces_a_cascade_it_did_not_initiate() {
             to_state_version,
             local_contexts_total,
         } => {
-            assert_eq!(from_version, "0.1.0");
-            assert_eq!(to_version, "0.2.0");
+            assert_eq!(from_version, "1.0.0", "the group's previous target");
+            assert_eq!(to_version, "2.0.0", "the op's release, not the local row's");
             assert_eq!(
                 to_state_version, 2,
                 "the initiator's resolved version rides on the op"
@@ -699,7 +705,7 @@ async fn receiver_announces_a_single_group_upgrade_once_per_ladder() {
 
     let mut events = pin!(node.node_client.receive_events());
 
-    let rung = |nonce: u64, bytecode_id: [u8; 32]| {
+    let rung = |nonce: u64, bytecode_id: [u8; 32], version: &str| {
         SignedGroupOp::sign(
             &peer_sk,
             fx.g1.to_bytes().into(),
@@ -709,7 +715,7 @@ async fn receiver_announces_a_single_group_upgrade_once_per_ladder() {
                 bytecode_id: bytecode_id.into(),
                 target_application_id: app_id_v2(),
                 package: "com.example.app".to_owned(),
-                version: "2.0.0".to_owned(),
+                version: version.to_owned(),
             },
         )
         .expect("sign TargetApplicationSet")
@@ -717,7 +723,7 @@ async fn receiver_announces_a_single_group_upgrade_once_per_ladder() {
 
     // Intermediate rung: lands on a blob that is not the target's bytecode, so
     // the upgrade has not arrived yet and nothing is announced.
-    apply_local_signed_group_op(&node.store, &rung(1, blobs.other))
+    apply_local_signed_group_op(&node.store, &rung(1, blobs.other, "1.5.0"))
         .expect("receiver applies the intermediate rung");
     assert!(
         next_migration_started(&mut events, NO_SECOND_EVENT_WINDOW)
@@ -726,7 +732,7 @@ async fn receiver_announces_a_single_group_upgrade_once_per_ladder() {
         "an intermediate ladder rung is not its own migration"
     );
 
-    apply_local_signed_group_op(&node.store, &rung(2, blobs.v2_migrating))
+    apply_local_signed_group_op(&node.store, &rung(2, blobs.v2_migrating, "2.0.0"))
         .expect("receiver applies the final rung");
     let event = next_migration_started(&mut events, Duration::from_secs(5))
         .await
@@ -738,13 +744,10 @@ async fn receiver_announces_a_single_group_upgrade_once_per_ladder() {
             to_state_version,
             local_contexts_total,
         } => {
-            assert_eq!(to_version, "0.2.0");
-            // The first rung already moved the group's target to this same id,
-            // so the row cannot answer the from side by the rung that announces.
-            assert_eq!(
-                from_version, "unknown",
-                "a from-version that cannot be resolved must say so, not echo the to-version"
-            );
+            assert_eq!(to_version, "2.0.0");
+            // The first rung already moved the group's target, so the from side
+            // is the previous rung's release.
+            assert_eq!(from_version, "1.5.0");
             assert_eq!(
                 to_state_version, 2,
                 "read from the local application row, not the 0 sentinel"
@@ -790,6 +793,7 @@ async fn cascade_progress_mirrors_the_persisted_counters() {
             target_application_id: app_id_v2(),
             cascade: true,
             force_code_only: false,
+            skip_trial: true,
         })
         .await
         .expect("cascade upgrade should succeed");
@@ -967,6 +971,7 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
             target_application_id: app_id_v2(),
             cascade: true,
             force_code_only: false,
+            skip_trial: false,
         })
         .await
         .expect("cascade upgrade should succeed");
@@ -1032,7 +1037,7 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
 /// `app.wasm` carrying an embedded ABI. The signature and the artifact digest
 /// are both mandatory on the node-side read path, so a fixture without them
 /// reads back as an absent ABI rather than an error.
-fn build_bundle_blob(package: &str, app_version: &str, wasm: &[u8]) -> Vec<u8> {
+pub(crate) fn build_bundle_blob(package: &str, app_version: &str, wasm: &[u8]) -> Vec<u8> {
     use calimero_node_primitives::bundle::sign_manifest_json;
     use flate2::write::GzEncoder;
     use flate2::Compression;
@@ -1175,6 +1180,7 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
             target_application_id: app_id,
             cascade: false,
             force_code_only: false,
+            skip_trial: false,
         })
         .await
         .expect("multi-hop lazy upgrade should succeed");
@@ -1193,12 +1199,8 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
             local_contexts_total,
         } => {
             assert_eq!(to_version, "0.3.0");
-            // Every rung names the same bundle id, so by the announcing rung the
-            // "from" id IS the target and its row already reads the new version.
-            assert_eq!(
-                from_version, "unknown",
-                "a from-version that cannot be resolved must say so, not echo the to-version"
-            );
+            // The from side is the previous rung's release.
+            assert_eq!(from_version, "0.2.0");
             assert_eq!(to_state_version, 3, "the ladder's final target");
             assert_eq!(local_contexts_total, 1);
         }
@@ -1268,6 +1270,7 @@ async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
             target_application_id: app_id,
             cascade: false,
             force_code_only: false,
+            skip_trial: false,
         })
         .await
         .expect_err("missing intermediate must reject");

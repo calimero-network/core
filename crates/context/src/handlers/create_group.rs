@@ -12,6 +12,7 @@ use calimero_store::Store;
 use rand::RngExt;
 use tracing::{debug, warn};
 
+use crate::handlers::ensure_account_namespace::is_established;
 use crate::ContextManager;
 use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
@@ -43,7 +44,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // and every replica that applies it keeps the pair
         // (`NamespaceFoundingRepository`). The salt is random unless the caller
         // passes one, which only the account namespace does (its salt is
-        // derived from the account root's secret, deliberately unlinkable).
+        // derived from the account root's secret, deliberately unlinkable), and
+        // its id is `account_namespace_id(founder, salt)`, under its own domain.
         //
         // A subgroup's id is derived too, from the create itself:
         // `created_subgroup_id(creator, parent, restricted, salt)`. It is not a
@@ -51,6 +53,15 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // binding it to its creator is what stops another member who saw the
         // id from racing a concurrent create for it. That needs the creator's
         // account, so it is derived below, once the account is resolved.
+
+        if application_id.is_none() && (parent_group_id.is_some() || bytecode_id.is_some()) {
+            return ActorResponse::reply(Err(
+                crate::error::ContextError::ApplicationRequired.into()
+            ));
+        }
+
+        // Only the account namespace passes a salt, so its genesis marks it as one.
+        let account_namespace = salt.is_some();
         let (root_id, founding) = match parent_group_id {
             None => {
                 let founder = match crate::join_credential::founding_account(&self.datastore) {
@@ -63,8 +74,12 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 };
                 let salt: [u8; calimero_account::NAMESPACE_SALT_LEN] =
                     salt.unwrap_or_else(|| rand::rng().random());
-                let group_id =
-                    ContextGroupId::from(calimero_account::founded_namespace_id(&founder, &salt));
+                let derive = if account_namespace {
+                    calimero_account::account_namespace_id
+                } else {
+                    calimero_account::founded_namespace_id
+                };
+                let group_id = ContextGroupId::from(derive(&founder, &salt));
                 (Some(group_id), Some((founder, salt)))
             }
             Some(_) if salt.is_some() => {
@@ -176,7 +191,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
             }
         };
 
-        if let Ok(Some(_)) = MetaRepository::new(&self.datastore).load(&group_id) {
+        if let Ok(true) = is_established(&self.datastore, &group_id) {
             return ActorResponse::reply(Err(crate::error::ContextError::GroupAlreadyExists {
                 group_id: group_id.to_string(),
             }
@@ -483,10 +498,18 @@ impl Handler<CreateGroupRequest> for ContextManager {
                              the salt its id was derived with"
                         );
                     };
-                    let genesis_op = NamespaceOp::Root(RootOp::NamespaceCreatedV2 {
-                        founder: admin_account,
-                        account: founder_credential,
-                        salt,
+                    let genesis_op = NamespaceOp::Root(if account_namespace {
+                        RootOp::AccountNamespaceCreated {
+                            founder: admin_account,
+                            account: founder_credential,
+                            salt,
+                        }
+                    } else {
+                        RootOp::NamespaceCreatedV2 {
+                            founder: admin_account,
+                            account: founder_credential,
+                            salt,
+                        }
                     });
                     match calimero_governance_store::sign_apply_and_publish_namespace_op(
                         &datastore,
@@ -1013,11 +1036,11 @@ mod tests {
     use calimero_primitives::metadata::MAX_METADATA_NAME_LEN;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
-    use calimero_store::{key, types, Store};
+    use calimero_store::Store;
 
     use super::{initial_default_capabilities, rollback_local_group_rows};
     use crate::handlers::ensure_account_namespace::ensure_account_namespace;
-    use crate::test_support::{actor, certify_device};
+    use crate::test_support::{actor, certify_device, install_application};
 
     const APP: [u8; 32] = [0xC1; 32];
     const SALT: [u8; 32] = [0xC2; 32];
@@ -1182,29 +1205,6 @@ mod tests {
         assert!(MetaRepository::new(&store).load(&group).unwrap().is_none());
     }
 
-    /// The application row a creation resolves its bytecode through.
-    fn install_application(store: &Store, application: ApplicationId) {
-        let mut handle = store.handle();
-        handle
-            .put(
-                &key::ApplicationMeta::new(application),
-                &types::ApplicationMeta::new(
-                    key::BlobMeta::new([0x01; 32].into()),
-                    1024,
-                    "file://test.wasm".into(),
-                    vec![].into(),
-                    key::BlobMeta::new([0x02; 32].into()),
-                    types::PackageInfo {
-                        package: "com.test.app".into(),
-                        version: "1.0.0".into(),
-                        signer_id: "test".into(),
-                        state_version: 0,
-                    },
-                ),
-            )
-            .expect("install the application");
-    }
-
     /// A namespace this node creates is a namespace it has just gained, and the
     /// devices it already certified belong there. Without the auto-bind the
     /// creation succeeds and the paired device silently never sees the group.
@@ -1301,6 +1301,79 @@ mod tests {
         );
     }
 
+    /// A subgroup with no `application_id` used to silently take its parent's.
+    #[actix::test]
+    async fn a_subgroup_with_no_application_id_is_refused_by_name() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+        let harness = actor::over(store.clone()).await;
+        let request = |application_id, parent_group_id| CreateGroupRequest {
+            salt: None,
+            bytecode_id: None,
+            application_id,
+            name: None,
+            parent_group_id,
+            restricted: true,
+        };
+        let root = harness
+            .manager
+            .send(request(Some(ApplicationId::from(APP)), None))
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        let err = harness
+            .manager
+            .send(request(None, Some(root.group_id)))
+            .await
+            .expect("the manager answers")
+            .expect_err("a subgroup must name its application");
+
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::error::ContextError>(),
+                Some(crate::error::ContextError::ApplicationRequired)
+            ),
+            "{err:?}"
+        );
+    }
+
+    /// A `bytecode_id` pins a version of an application, so it has nothing to
+    /// pin without one.
+    #[actix::test]
+    async fn a_bytecode_id_with_no_application_id_is_refused_by_name() {
+        let store = store();
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+        let harness = actor::over(store.clone()).await;
+
+        let err = harness
+            .manager
+            .send(CreateGroupRequest {
+                salt: None,
+                bytecode_id: Some([0x77; 32].into()),
+                application_id: None,
+                name: None,
+                parent_group_id: None,
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("a bytecode_id needs an application");
+
+        assert!(
+            matches!(
+                err.downcast_ref::<crate::error::ContextError>(),
+                Some(crate::error::ContextError::ApplicationRequired)
+            ),
+            "{err:?}"
+        );
+    }
+
     /// Two roots from one account get different ids: the salt is what tells
     /// one founder's namespaces apart.
     #[actix::test]
@@ -1361,7 +1434,7 @@ mod tests {
 
         assert_eq!(
             created.group_id,
-            ContextGroupId::from(calimero_account::founded_namespace_id(&founder, &SALT))
+            ContextGroupId::from(calimero_account::account_namespace_id(&founder, &SALT))
         );
         assert_eq!(
             created.founding,

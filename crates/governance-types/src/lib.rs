@@ -1000,6 +1000,14 @@ pub enum GroupOp {
         nonce: u64,
         new: BTreeMap<AccountId, calimero_storage::entities::OpMask>,
     },
+    /// [`GroupOp::AccountNamespaceLeft`], and every device of the account takes
+    /// `namespace` off its disk as it applies this.
+    ///
+    /// Published by a leave that asked for the purge, in place of the plain one.
+    AccountNamespacePurged {
+        /// The namespace the account has left.
+        namespace: ContextGroupId,
+    },
 }
 
 impl GroupOp {
@@ -1177,6 +1185,17 @@ impl GroupOp {
     /// the match is naturally exhaustive — adding a new variant
     /// surfaces as a compile error here, keeping the metric label set
     /// in sync with the wire format.
+    /// The context a bare `ContextRegistered` / `ContextRegisteredOnBehalf` registers;
+    /// `None` for every other op, wrappers included.
+    #[must_use]
+    pub const fn registered_context(&self) -> Option<ContextId> {
+        match self {
+            GroupOp::ContextRegistered { context_id, .. }
+            | GroupOp::ContextRegisteredOnBehalf { context_id, .. } => Some(*context_id),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub fn op_kind_label(&self) -> &'static str {
         match self {
@@ -1224,6 +1243,7 @@ impl GroupOp {
             GroupOp::FoundingRelayAttested { .. } => "founding_relay_attested",
             GroupOp::RootGuarded { .. } => "root_guarded",
             GroupOp::SharedWritersRotated { .. } => "shared_writers_rotated",
+            GroupOp::AccountNamespacePurged { .. } => "account_namespace_purged",
         }
     }
 }
@@ -1259,6 +1279,9 @@ pub enum NamespaceOp {
         /// each remaining member. Lives outside the encrypted payload so
         /// the removed member cannot read it.
         key_rotation: Option<KeyRotation>,
+        /// The context a bare registration inside registers, in the clear so a node
+        /// without the group key still sees which group took it. Apply binds it to the payload.
+        registers: Option<ContextId>,
     },
     /// A root op sealed under the namespace key.
     ///
@@ -1509,7 +1532,7 @@ pub fn root_op_is_sealable(op: &RootOp) -> bool {
         // publish it, not who may read it.
         RootOp::RootGuarded { op, .. } => root_op_is_sealable(op),
         // Genesis, before any key exists.
-        RootOp::NamespaceCreatedV2 { .. } => false,
+        RootOp::NamespaceCreatedV2 { .. } | RootOp::AccountNamespaceCreated { .. } => false,
     }
 }
 
@@ -1847,6 +1870,13 @@ pub enum RootOp {
         op: Box<RootOp>,
         proof: Box<SignedOwnerOp>,
     },
+    /// [`Self::NamespaceCreatedV2`] for the founder's account namespace, its id derived under
+    /// its own domain, where its devices need no scope naming an application. Never delegable.
+    AccountNamespaceCreated {
+        founder: AccountId,
+        account: Box<JoinAccountCredential>,
+        salt: [u8; 32],
+    },
 }
 
 impl RootOp {
@@ -1935,6 +1965,9 @@ impl NamespaceOp {
             NamespaceOp::Root(RootOp::OnBehalf { .. }) => "root_on_behalf",
             NamespaceOp::Root(RootOp::RootGuarded { .. }) => "root_guarded",
             NamespaceOp::Root(RootOp::NamespaceCreatedV2 { .. }) => "namespace_created_v2",
+            NamespaceOp::Root(RootOp::AccountNamespaceCreated { .. }) => {
+                "account_namespace_created"
+            }
             NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation { .. }) => {
                 "member_joined_via_tee_root"
             }
@@ -2386,8 +2419,25 @@ pub struct SignedNamespaceOp {
 /// subgroup's admins: a coordinated upgrade.
 ///
 /// v25: `RootOp::OnBehalf` and the group-op wrappers gained the relay's signed
-/// `stamped_at`, judged against the warrant's `not_after` on apply.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 25;
+/// `stamped_at`, judged against the warrant's `not_after` on apply. In the same release,
+/// a device link, unlink or descope the apply refuses on the op alone or at its cut is an
+/// error, so it is never logged or folded; `RootOp::AccountNamespaceCreated` is appended,
+/// and a link's endorser and a descope's signer are named at the op's cut.
+///
+/// v26: verdicts are reached at the op's cut, and `NamespaceOp::Group` carries the
+/// context id it registers in the clear (`registers`), a layout change. In the same
+/// release, an `AccountDeviceLinked` scope is judged against every application the
+/// group may have targeted at the link's cut, read from its ancestry, not the live
+/// target (core#4603).
+///
+/// `GroupOp::AccountNamespacePurged` is appended without a bump: an older device of
+/// the same account stalls on it until it upgrades, so it ships in a batched release.
+///
+/// v27: a namespace genesis folds its founder's Admin row at the root, so a founder
+/// who transfers ownership stays an admin at every cut. No layout moves, but every
+/// signer, the SDK included, signs at 27, a v26 node folds a different scope root, and
+/// an older build cannot read the op-store rows this one writes: a coordinated upgrade.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 27;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
 /// proof. An op signed under an earlier schema was applied under the old rule,

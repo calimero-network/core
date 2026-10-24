@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::blobs::BlobId;
-use calimero_store::key;
+use calimero_store::{key, types};
 use semver::Version;
 
 use super::application_from_meta;
@@ -23,6 +23,38 @@ pub fn compare_versions(a: &str, b: &str) -> Ordering {
 }
 
 impl NodeClient {
+    /// The frontend files stored for a bundle blob; `None` when it shipped none.
+    pub fn get_bundle_frontend(
+        &self,
+        bundle_blob_id: &BlobId,
+    ) -> eyre::Result<Option<types::BundleFrontend>> {
+        Ok(self
+            .datastore
+            .handle()
+            .get(&key::BundleFrontend::new(*bundle_blob_id))?)
+    }
+
+    /// The frontend of one release of an installed application, by point reads:
+    /// the row, the release pointer, then the bundle's index.
+    pub fn find_bundle_frontend(
+        &self,
+        application_id: &ApplicationId,
+        version: &str,
+    ) -> eyre::Result<Option<types::BundleFrontend>> {
+        let handle = self.datastore.handle();
+        if !handle.has(&key::ApplicationMeta::new(*application_id))? {
+            return Ok(None);
+        }
+        let release = key::ApplicationRelease::new(*application_id, version);
+        let Some(release) = handle.get(&release)? else {
+            return Ok(None);
+        };
+        let index = handle.get(&key::BundleFrontend::new(release.bundle.into()))?;
+        Ok(index.filter(|index| {
+            index.application.application_id() == *application_id && &*index.version == version
+        }))
+    }
+
     /// List all installed applications.
     pub fn list_applications(&self) -> eyre::Result<Vec<Application>> {
         let handle = self.datastore.handle();

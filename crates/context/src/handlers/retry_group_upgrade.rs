@@ -131,7 +131,12 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
                 act.active_propagators.remove(&group_id);
             }));
 
-            Ok(UpgradeGroupResponse { group_id, status })
+            Ok(UpgradeGroupResponse {
+                group_id,
+                status,
+                contexts_trialled: 0,
+                contexts_not_held: 0,
+            })
         }))
     }
 }

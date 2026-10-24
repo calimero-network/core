@@ -222,11 +222,13 @@ impl<'a> MetadataRepository<'a> {
             namespace_id: *group_id,
             bytecode_id: meta.target.bytecode_id.into(),
             target_application_id: meta.target.application_id,
+            target_release: calimero_context_client::group::TargetRelease::of(&meta.target),
             created_at: meta.created_at,
             name,
             member_count,
             context_count,
             subgroup_count,
+            forgotten: false,
         }))
     }
 }
@@ -247,6 +249,35 @@ mod tests {
             updated_at: 1_700_000_000,
             updated_by: PublicKey::from([0x01; 32]),
         }
+    }
+
+    #[test]
+    fn a_namespace_summary_names_the_target_release_with_nothing_installed() {
+        let store = test_store();
+        let ns_id = [0x42; 32];
+        let (_sk, pk) = crate::test_fixtures::bootstrap_namespace_with_admin(&store, ns_id);
+        let ns = ContextGroupId::from(ns_id);
+        let mut meta = crate::MetaRepository::new(&store)
+            .load(&ns)
+            .unwrap()
+            .expect("meta");
+        let summary = |meta: &GroupMetaValue| {
+            MetadataRepository::new(&store)
+                .build_namespace_summary(&ns, meta, &pk)
+                .unwrap()
+                .expect("the admin sees the namespace")
+        };
+        assert_eq!(summary(&meta).target_release, None, "no release named yet");
+
+        meta.target.package = "com.acme.app".into();
+        meta.target.version = "2.0.0".into();
+        assert_eq!(
+            summary(&meta).target_release,
+            Some(calimero_context_client::group::TargetRelease {
+                package: "com.acme.app".to_owned(),
+                version: "2.0.0".to_owned(),
+            })
+        );
     }
 
     #[test]

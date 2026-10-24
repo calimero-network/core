@@ -317,6 +317,23 @@ desktop app edits it under **Settings → Advanced → Trusted App Origins**
 `trusted_callback_origins`, and the login page reads it from its own node only,
 never from a URL parameter, so a link cannot add to it.
 
+An app calls the node at its own origin (`window.location.origin`), where `/jsonrpc`, `/ws`, `/sse`, `/auth/refresh`, `/auth/validate` and a short list of admin routes for contexts and namespaces reach the node's handlers when the node's embedded auth verifies the token.
+A token used there acts as if bound to that app, narrowed by its own binding, and a token that holds `admin` or is bound to another application is refused with `403`, on `/auth/refresh` and `/auth/validate` as well.
+The admin routes there include `GET /admin-api/applications`, which lists only the bound application, and `GET /admin-api/namespaces/for-application/{app}`.
+A join of a namespace the node does not hold yet is allowed when the invitation's application, an unsigned hint, is the bound one.
+Every other admin route answers `403` on an app's origin.
+Login is never served there: `GET /auth/login` on an app host answers `302` to the node's own login page with the same query and port, so it stays a navigation to the node's own origin.
+An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.
+Proxy deployments get no app API unless `[server.apps] trust_proxy = true` is set, in which case the proxy must authenticate every request to an app host and forward the original `Host` (`proxy_set_header Host $host` for nginx) and its `X-Auth-Permissions`.
+The proxy's forward-auth must send `X-Forwarded-Uri` and `X-Forwarded-Method` to mero-auth's `/auth/validate`, so per-route permissions are checked.
+Traefik's forwardAuth does; nginx `auth_request` needs them configured.
+It must also overwrite any client-sent `X-Auth-Permissions`, `X-Auth-Account` and `X-Auth-Device`; merod cannot check that it does, so a proxy that forwards them lets a client name its own permissions.
+[App hosts behind the proxy](/operate/deployment/#app-hosts-behind-the-proxy) shows an nginx configuration.
+On app hosts only `POST /auth/refresh` and `GET`/`HEAD /auth/validate` may reach mero-auth.
+`/auth/login` must go to merod, which redirects to the node's login page, or be refused, so the login page is never served on an app's origin.
+`[server.apps] base_domain` must be the node's own host, because mero-auth validates an app-host request by stripping exactly one app label and comparing the rest with the token's host.
+The desktop webview origins (`calimero-app://...`) cannot use the app API from the node and go through the desktop app instead.
+
 Each entry must be an exact `http` or `https` origin (`scheme://host[:port]`):
 an entry with a path, query, credentials or a wildcard is dropped with a
 warning. Changes take effect when the node restarts.

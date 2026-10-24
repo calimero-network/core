@@ -67,6 +67,25 @@ pub async fn handler(
             let mut version_memo: std::collections::HashMap<[u8; 32], Option<String>> =
                 std::collections::HashMap::new();
             for ns in entries {
+                // A removed namespace holds no bytecode, founding or held ops to look up.
+                if ns.forgotten {
+                    data.push(NamespaceApiResponse {
+                        namespace_id: hex::encode(ns.namespace_id.to_bytes()),
+                        bytecode_id: hex::encode(ns.bytecode_id.to_bytes()),
+                        target_application_id: ns.target_application_id.to_string(),
+                        created_at: ns.created_at,
+                        name: ns.name,
+                        member_count: ns.member_count,
+                        context_count: ns.context_count,
+                        subgroup_count: ns.subgroup_count,
+                        app_version: None,
+                        app_package: None,
+                        founding: None,
+                        held_ops: None,
+                        forgotten: Some(true),
+                    });
+                    continue;
+                }
                 let bytecode_id = ns.bytecode_id.to_bytes();
                 let app_version = match version_memo.get(&bytecode_id) {
                     Some(v) => v.clone(),
@@ -76,6 +95,8 @@ pub async fn handler(
                         v
                     }
                 };
+                let (app_version, app_package) =
+                    super::with_target_release(app_version, ns.target_release);
                 data.push(NamespaceApiResponse {
                     namespace_id: hex::encode(ns.namespace_id.to_bytes()),
                     bytecode_id: hex::encode(ns.bytecode_id.to_bytes()),
@@ -86,8 +107,10 @@ pub async fn handler(
                     context_count: ns.context_count,
                     subgroup_count: ns.subgroup_count,
                     app_version,
+                    app_package,
                     founding: super::namespace_founding(&state.store, &ns.namespace_id),
                     held_ops: super::namespace_held_ops(&state.store, &ns.namespace_id),
+                    forgotten: None,
                 });
             }
             ApiResponse {

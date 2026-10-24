@@ -525,6 +525,9 @@ pub enum ContextRegistrationError {
         group_id: String,
         context_id: String,
     },
+    /// The op's cut holds a registration of the context in another group, which owns it.
+    #[error("context {context_id} was registered in another group first")]
+    RegisteredElsewhere { context_id: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -761,6 +764,14 @@ pub enum ApplyError {
     #[error("unsupported group op variant")]
     UnsupportedOp,
 
+    /// The signer's nonce was spent by another op in this op's causal past.
+    #[error("nonce {nonce} of signer {signer} was already spent by op {spent_by}")]
+    NonceRespent {
+        signer: String,
+        nonce: u64,
+        spent_by: String,
+    },
+
     /// The apply gate could not decide the signer's authority AT THE OP'S CUT: the
     /// op cites a real causal cut, but this node has not folded that cut's ancestry,
     /// so the projection has no authoritative verdict.
@@ -818,4 +829,12 @@ pub enum ApplyError {
     /// cause (currently only signer != founder).
     #[error("NamespaceCreated rejected: {0}")]
     NamespaceCreatedRejected(#[source] NamespaceCreatedRejection),
+
+    /// A `NamespaceOp::Group`'s cleartext `registers` names another context than
+    /// the sealed op registers (or claims one for an op that registers none).
+    #[error("the envelope claims to register {claimed:?}, the sealed op registers {sealed:?}")]
+    RegisteredContextMismatch {
+        claimed: Option<String>,
+        sealed: Option<String>,
+    },
 }

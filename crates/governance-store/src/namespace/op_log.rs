@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use calimero_context_client::local_governance::{
     NamespaceOp, OpaqueSkeleton, SignedNamespaceOp, StoredNamespaceEntry,
 };
@@ -15,6 +17,8 @@ pub(crate) enum Hole {
     Unreadable,
     /// An op that carries no authority: it keeps the payload the void rule reads.
     Void,
+    /// An op refused at its cut: it folds as nothing, so no reader abstains on it.
+    Refused,
 }
 
 /// Typed namespace group entry decoded from the namespace op-log.
@@ -48,6 +52,46 @@ impl<'a> NamespaceOpLogService<'a> {
         handle
             .has(&key)
             .map_err(|e| eyre::eyre!("contains_op: {e}"))
+    }
+
+    /// Which of `targets` the causal past of the cut `parents` reaches first, walked
+    /// over the stored DAG so every node holding that past answers alike; `None` when part of it is missing.
+    pub(crate) fn past_reaches(
+        &self,
+        parents: &[[u8; 32]],
+        targets: &HashSet<[u8; 32]>,
+    ) -> EyreResult<Option<Option<[u8; 32]>>> {
+        let mut seen = HashSet::new();
+        let mut queue = parents.to_vec();
+        while let Some(id) = queue.pop() {
+            if targets.contains(&id) {
+                return Ok(Some(Some(id)));
+            }
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(parents) = self.parents_of(id)? else {
+                return Ok(None);
+            };
+            queue.extend(parents);
+        }
+        Ok(Some(None))
+    }
+
+    /// The parents of a logged op, read from its skeleton when its bytes were not kept.
+    fn parents_of(&self, delta_id: [u8; 32]) -> EyreResult<Option<Vec<[u8; 32]>>> {
+        let key = calimero_store::key::NamespaceGovOp::new(self.namespace_id.to_bytes(), delta_id);
+        let Some(value) = self.store.handle().get(&key)? else {
+            return Ok(None);
+        };
+        let bytes = &value.skeleton_bytes;
+        match decode_signed_namespace_op(bytes) {
+            Some(op) => Ok(Some(op.parent_op_hashes)),
+            None => match decode_opaque_skeleton(bytes) {
+                Some(skeleton) => Ok(Some(skeleton.parent_op_hashes)),
+                None => bail!("op {} is logged but does not decode", hex::encode(delta_id)),
+            },
+        }
     }
 
     /// Direct fetch of a `SignedNamespaceOp` by its content hash within this
@@ -86,6 +130,26 @@ impl<'a> NamespaceOpLogService<'a> {
                     hex::encode(delta_id)
                 )
             })
+    }
+
+    /// Every op in the ancestry of `parents`, by id; `None` when one is missing here.
+    pub(crate) fn ancestry(
+        &self,
+        parents: &[[u8; 32]],
+    ) -> EyreResult<Option<HashMap<[u8; 32], SignedNamespaceOp>>> {
+        let mut seen = HashMap::new();
+        let mut queue = parents.to_vec();
+        while let Some(id) = queue.pop() {
+            if seen.contains_key(&id) {
+                continue;
+            }
+            let Some(op) = self.get_signed_op(id)? else {
+                return Ok(None);
+            };
+            queue.extend(op.parent_op_hashes.iter().copied());
+            let _ = seen.insert(id, op);
+        }
+        Ok(Some(seen))
     }
 
     pub fn store_signed_operation(&self, op: &SignedNamespaceOp) -> EyreResult<()> {
@@ -177,9 +241,13 @@ impl<'a> NamespaceOpLogService<'a> {
             &self.namespace_id.to_bytes().into(),
             &op.signer,
         );
+        let payload = match hole {
+            Hole::Refused => calimero_op::OpPayload::Noop,
+            _ => calimero_op::OpPayload::Opaque { group },
+        };
         let hole_op = crate::unified_op_decode::hole_op_from_namespace_op(
             op,
-            calimero_op::OpPayload::Opaque { group },
+            payload,
             binding,
             delta_id,
             &op.parent_op_hashes,
@@ -483,6 +551,21 @@ impl<'a> NamespaceOpLogService<'a> {
     /// instead is what made the same fan-in blind a second time, once the
     /// admission became a sealed op.
     pub fn collect_root_ops(&self) -> EyreResult<Vec<SignedNamespaceOp>> {
+        self.collect_ops(|op| {
+            matches!(
+                op,
+                NamespaceOp::Root(_)
+                    | NamespaceOp::RootSealed { .. }
+                    | NamespaceOp::RootSealedForGroup { .. }
+            )
+        })
+    }
+
+    /// Every op in this namespace's log that `keep` selects, oldest first.
+    pub(crate) fn collect_ops(
+        &self,
+        keep: impl Fn(&NamespaceOp) -> bool,
+    ) -> EyreResult<Vec<SignedNamespaceOp>> {
         let mut entries = Vec::new();
         let handle = self.store.handle();
         let start =
@@ -567,12 +650,7 @@ impl<'a> NamespaceOpLogService<'a> {
             let Some(signed_op) = decode_signed_namespace_op(&value.skeleton_bytes) else {
                 continue;
             };
-            if matches!(
-                signed_op.op,
-                NamespaceOp::Root(_)
-                    | NamespaceOp::RootSealed { .. }
-                    | NamespaceOp::RootSealedForGroup { .. }
-            ) {
+            if keep(&signed_op.op) {
                 entries.push(signed_op);
             }
         }
@@ -580,8 +658,9 @@ impl<'a> NamespaceOpLogService<'a> {
         Ok(entries)
     }
 
-    /// Every buffered `NamespaceOp::Group` op for this namespace, as
-    /// `(group_id, key_id)` pairs. Same column walk and prefix-collision
+    /// Every buffered op sealed under a group key (`Group` and the sealed root
+    /// variants), as `(group_id, key_id)` pairs; a root op sealed under the
+    /// namespace key is keyed by the namespace id. Same column walk and prefix-collision
     /// termination as [`collect_signed_group_ops_for_group`](Self::collect_signed_group_ops_for_group)
     /// — see the long comment there — but across all groups, carrying the
     /// per-op `key_id` so the caller can decide decryptability per op
@@ -631,14 +710,20 @@ impl<'a> NamespaceOpLogService<'a> {
             let Some(signed_op) = decode_signed_namespace_op(&value.skeleton_bytes) else {
                 continue;
             };
-            if let NamespaceOp::Group {
-                group_id: op_group_id,
-                key_id,
-                ..
-            } = signed_op.op
-            {
-                seen.insert((op_group_id.to_bytes(), key_id.to_bytes()));
-            }
+            let sealed_under = match signed_op.op {
+                NamespaceOp::Group {
+                    group_id, key_id, ..
+                }
+                | NamespaceOp::RootSealedForGroup {
+                    group_id, key_id, ..
+                } => Some((group_id.to_bytes(), key_id.to_bytes())),
+                NamespaceOp::RootSealed { key_id, .. }
+                | NamespaceOp::RootRelaySealed { key_id, .. } => {
+                    Some((self.namespace_id.to_bytes(), key_id.to_bytes()))
+                }
+                _ => None,
+            };
+            seen.extend(sealed_under);
         }
 
         Ok(seen.into_iter().collect())

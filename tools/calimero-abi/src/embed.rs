@@ -31,7 +31,7 @@ pub fn run_embed(wasm: &Path, schema: &Path) -> eyre::Result<()> {
         .map_err(|e| eyre::eyre!("failed to embed schema into {}: {e}", wasm.display()))?;
     std::fs::write(wasm, updated)
         .map_err(|e| eyre::eyre!("failed to write {}: {e}", wasm.display()))?;
-    println!(
+    eprintln!(
         "✓ embedded calimero_abi_v1 ({} types) into {}",
         manifest.types.len(),
         wasm.display()

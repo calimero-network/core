@@ -36,6 +36,7 @@ use calimero_node_primitives::client::{
 };
 use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_primitives::context::ContextId;
+use calimero_store::Store;
 use eyre::Result;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use libp2p::PeerId;
@@ -57,6 +58,10 @@ use crate::sync_session_bridge::{
 /// enough that a namespace with genuinely nothing to pull stops asking.
 const MAX_NS_SYNC_RETRIES: u8 = 5;
 
+/// Floor between unforced syncs of a context that holds deltas for a release this
+/// node has not switched to; a sync cannot close that gap, only switching does.
+const BEHIND_SYNC_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Retries still owed to a namespace pull after an attempt that delivered
 /// nothing, or `None` when the budget is spent and the driver should stop
 /// re-arming it.
@@ -67,6 +72,19 @@ const MAX_NS_SYNC_RETRIES: u8 = 5;
 /// retried at all.
 fn retries_left_after_failure(remaining: u8) -> Option<u8> {
     remaining.checked_sub(1).filter(|left| *left > 0)
+}
+
+/// Whether an unforced sync of a context behind its group's release waits out
+/// [`BEHIND_SYNC_INTERVAL`] after its last one.
+fn waits_for_release_switch(
+    tracker: &SessionTracker,
+    store: &Store,
+    context_id: &ContextId,
+    force: bool,
+) -> bool {
+    !force
+        && tracker.synced_within(context_id, BEHIND_SYNC_INTERVAL)
+        && super::helpers::holds_absorbed(store, context_id)
 }
 
 /// Cross-actor message handlers and store accessors the driver calls
@@ -545,6 +563,19 @@ impl SyncDriver {
             }
         };
 
+        if waits_for_release_switch(
+            &self.tracker,
+            self.context_client.datastore(),
+            &context_id,
+            force,
+        ) {
+            debug!(
+                %context_id,
+                "Skipping sync, this node holds deltas for a release it has not switched to"
+            );
+            return;
+        }
+
         debug!(%context_id, "Scheduled sync");
 
         // Phase 2: dispatch BEFORE mutating state — so a
@@ -794,6 +825,81 @@ mod tests {
     fn a_spent_budget_stops_re_arming() {
         assert_eq!(retries_left_after_failure(1), None);
         assert_eq!(retries_left_after_failure(0), None);
+    }
+}
+
+#[cfg(test)]
+mod release_switch_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use calimero_governance_store::{AbsorbRecord, AbsorbRepository};
+    use calimero_node_primitives::sync::SyncProtocol;
+    use calimero_primitives::context::ContextId;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use dashmap::DashMap;
+    use libp2p::PeerId;
+
+    use super::waits_for_release_switch;
+    use crate::sync::session::SessionTracker;
+    use crate::sync_session_bridge::SyncSessionResult;
+    use crate::test_support::seed_context_release;
+
+    const V1: [u8; 32] = [0x11; 32]; // the release the context still runs
+    const V2: [u8; 32] = [0x22; 32]; // its group's target release
+    const CONTEXT: [u8; 32] = [0xCC; 32];
+
+    /// A tracker whose last session for `context` finished just now.
+    fn just_synced(context: ContextId) -> SessionTracker {
+        let mut tracker = SessionTracker::new(
+            Duration::from_secs(30),
+            Duration::from_secs(5),
+            Arc::new(DashMap::new()),
+            None,
+        );
+        let generation = tracker.begin_dispatch_generation(context);
+        tracker.record_dispatch_succeeded(context, true);
+        tracker.apply_result(SyncSessionResult {
+            context_id: context,
+            peer_id: PeerId::random(),
+            took: Duration::ZERO,
+            generation,
+            result: Ok(Ok(SyncProtocol::None)),
+        });
+        tracker
+    }
+
+    /// A store where the context runs `V1`, targets `V2`, and holds one record produced on `slot`.
+    fn holding_a_record_under(slot: [u8; 32]) -> Store {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let context = ContextId::from(CONTEXT);
+        seed_context_release(&store, &context, V1, V2);
+        AbsorbRepository::new(&store)
+            .save(
+                &context,
+                slot,
+                &AbsorbRecord::from_leaf([1; 32], vec![1], slot),
+            )
+            .expect("save the record");
+        store
+    }
+
+    #[test]
+    fn a_context_holding_a_record_for_its_target_waits() {
+        let context = ContextId::from(CONTEXT);
+        let tracker = just_synced(context);
+        let store = holding_a_record_under(V2);
+        assert!(waits_for_release_switch(&tracker, &store, &context, false));
+        assert!(!waits_for_release_switch(&tracker, &store, &context, true));
+    }
+
+    #[test]
+    fn a_context_holding_only_a_lagging_peers_record_does_not_wait() {
+        let context = ContextId::from(CONTEXT);
+        let tracker = just_synced(context);
+        let store = holding_a_record_under(V1);
+        assert!(!waits_for_release_switch(&tracker, &store, &context, false));
     }
 }
 

@@ -179,6 +179,7 @@ impl Cast {
                 key_id: KeyId::from(GroupKeyring::key_id_for(&GROUP_KEY)),
                 encrypted: GroupKeyring::encrypt_op(&GROUP_KEY, &op).expect("op seals"),
                 key_rotation: None,
+                registers: op.registered_context(),
             },
         )
         .expect("a fixed-seed op signs")

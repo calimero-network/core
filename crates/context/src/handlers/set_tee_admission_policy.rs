@@ -126,7 +126,7 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let report = calimero_governance_store::sign_apply_and_publish(
+                let report = calimero_governance_store::sign_apply_and_publish_required(
                     &datastore,
                     &node_client,
                     &ack_router,
@@ -155,7 +155,7 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
                 // decides relaying, so it only mislabels the row.
                 let target = mode.role();
                 for (group, member) in tee_rows_to_convert(&datastore, &group_id, &target)? {
-                    match calimero_governance_store::sign_apply_and_publish(
+                    match calimero_governance_store::sign_apply_and_publish_required(
                         &datastore,
                         &node_client,
                         &ack_router,

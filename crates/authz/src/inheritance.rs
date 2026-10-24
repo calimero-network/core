@@ -31,11 +31,11 @@
 //! immediately, even when an admin sits further up past it — visibility is not
 //! something an ancestor's authority reaches through.
 //!
-//! **`root` is the one un-folded fact.** The namespace's genesis admin has no
-//! governance op (it is set at backfill), so it arrives as an explicit parameter
-//! rather than from the view. Every *mutable* input — memberships, caps,
-//! visibility, the subgroup tree, the subgroup-creator admin — comes from the
-//! view, which is what makes the result honor the cut.
+//! **`root` is the one un-folded fact.** The namespace's founder has no op the
+//! fold reads, so it arrives as an explicit parameter; a transfer folded at the
+//! cut replaces it ([`AclView::root_at_cut`]). Every *mutable* input — memberships,
+//! caps, visibility, the subgroup tree, the subgroup-creator admin — comes from
+//! the view, which is what makes the result honor the cut.
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
@@ -127,6 +127,32 @@ impl AclView {
         )
     }
 
+    /// The Open ancestor of `group` that `author` exited (`exited` says which), below any
+    /// row it holds and any group it administers: the wall its inheritance stops at.
+    pub fn exited_ancestor(
+        &self,
+        group: ContextGroupId,
+        author: &AccountId,
+        root: Option<(ContextGroupId, AccountId)>,
+        mut exited: impl FnMut(ContextGroupId) -> bool,
+    ) -> Option<ContextGroupId> {
+        let mut exit = None;
+        for parent in self.open_ancestors(group) {
+            if self.is_membership_admin(parent, author, root) {
+                return None;
+            }
+            if exit.is_none() {
+                if self.has_direct_row(parent, author) {
+                    return None;
+                }
+                if exited(parent) {
+                    exit = Some(parent);
+                }
+            }
+        }
+        exit
+    }
+
     /// Does `author` hold a direct membership row in `group`?
     fn has_direct_row(&self, group: ContextGroupId, author: &AccountId) -> bool {
         self.groups
@@ -135,8 +161,8 @@ impl AclView {
     }
 
     /// Admin of `g` for **membership** purposes: a folded group admin (subgroup
-    /// creator / `Admin`-role holder) or the immutable namespace-root genesis
-    /// admin.
+    /// creator / `Admin`-role holder) or the namespace root's owner at the cut
+    /// ([`AclView::root_at_cut`]: the founder `root` names until a transfer folds).
     ///
     /// Deliberately **not** the global [`AclView::is_root_admin`]: the root admin
     /// is a member of a *subgroup* only over the open chain, never of a Restricted
@@ -151,7 +177,9 @@ impl AclView {
         root: Option<(ContextGroupId, AccountId)>,
     ) -> bool {
         self.is_group_admin(author, group)
-            || root.is_some_and(|(root_g, root_admin)| group == root_g && *author == root_admin)
+            || self
+                .root_at_cut(root)
+                .is_some_and(|(root_g, owner)| group == root_g && *author == owner)
     }
 
     /// `author`'s effective capability at `group`, falling back to

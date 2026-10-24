@@ -50,6 +50,7 @@ exclude = [
     "./apps/migrations/scenario-new-enum-variant-v2",
     "./apps/migrations/scenario-pure-bugfix-v1",
     "./apps/migrations/scenario-pure-bugfix-v2",
+    "./apps/migrations/scenario-pure-bugfix-v3",
     "./apps/migrations/scenario-crdt-native-v1",
     "./apps/migrations/scenario-crdt-native-v2",
     "./apps/migrations/scenario-struct-to-enum-v1",
@@ -176,6 +177,7 @@ members = [
     "./apps/migrations/scenario-new-enum-variant-v2",
     "./apps/migrations/scenario-pure-bugfix-v1",
     "./apps/migrations/scenario-pure-bugfix-v2",
+    "./apps/migrations/scenario-pure-bugfix-v3",
     "./apps/migrations/scenario-crdt-native-v1",
     "./apps/migrations/scenario-crdt-native-v2",
     "./apps/migrations/scenario-struct-to-enum-v1",
@@ -270,11 +272,12 @@ futures-util = "0.3.30"
 generic-array = "1.0.0"
 hex = "0.4.3"
 hkdf = "0.13"
+html5ever = "0.39"
 http = "1"
 indexmap = "2.6.0"
 infer = "0.22.0"
 itertools = "0.15.0"
-jsonschema = { version = "0.58", default-features = false }
+jsonschema = { version = "0.59", default-features = false }
 jsonwebtoken = { version = "11.0.0", features = ["aws_lc_rs"] }
 lazy_static = "1.4"
 libp2p = "0.56.0"
@@ -308,14 +311,14 @@ rustc_version = "0.4"
 semver = "1.0.22"
 serde = "1.0.196"
 serde_json = "1.0.113"
-serde_json_canonicalizer = "0.3.2"
+serde_json_canonicalizer = "0.4.1"
 serde_with = "3.9.0"
 sha2 = "0.11"
 snow = { version = "0.9.6", default-features = false }
 subtle = "2.6.1"
 strum = "0.28.0"
 syn = { version = "3.0", features = ["full"] }
-tantivy = { version = "0.26.2", default-features = false, features = ["lz4-compression"] }
+tantivy = { version = "0.27.0", default-features = false, features = ["lz4-compression"] }
 tar = "0.4"
 tempfile = "3.10"
 windows-sys = "0.61"
@@ -370,12 +373,12 @@ wasmer = "6.1.0"
 wasmer-types = "6.1.0"
 wasmer-middlewares = "6.1.0"
 wasm-opt = "0.116"
-wasmparser = "0.261"
+wasmparser = "0.262"
 wat = "1.243.0"
 web3 = "0.19.0"
 webbrowser = "1.2.2"
 zeroize = "1.8"
-zip = { version = "8.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0", default-features = false, features = ["deflate"] }
 
 pyo3 = "0.20"
 

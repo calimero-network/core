@@ -17,7 +17,7 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_account::PairingOffer;
 use calimero_context_client::group::{PairDeviceInitRequest, PairDeviceInitResponse};
-use calimero_governance_store::NodeDeviceRepository;
+use calimero_governance_store::{ForgottenNamespaces, NodeDeviceRepository};
 use calimero_primitives::identity::PrivateKey;
 use tracing::debug;
 
@@ -49,11 +49,25 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
                 // Follow each namespace named: it records participation,
                 // subscribes and pulls - all three needed before the link lands.
                 let mut identity = None;
+                let mut removed = None;
+                let mut followed = 0;
                 for namespace_id in &namespaces {
+                    if ForgottenNamespaces::new(&store).is_forgotten(namespace_id)? {
+                        debug!(?namespace_id, "removed from this device; not following");
+                        removed = Some(*namespace_id);
+                        continue;
+                    }
                     let (sign_pk, sign_sk) = follow(&store, &node_client, namespace_id).await?;
                     _ = identity.get_or_insert((sign_pk, PrivateKey::from(sign_sk)));
+                    followed += 1;
                 }
                 let Some((sign_pk, sign_sk)) = identity else {
+                    if let Some(namespace) = removed {
+                        return Err(crate::error::ContextError::NamespaceForgotten {
+                            namespace_id: hex::encode(namespace.to_bytes()),
+                        }
+                        .into());
+                    }
                     eyre::bail!("pair-init reached the handler with no namespace to enroll into")
                 };
 
@@ -111,7 +125,7 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
                 );
 
                 debug!(
-                    namespaces = namespaces.len(),
+                    namespaces = followed,
                     account = %response.account,
                     device = %response.device,
                     "minted a device for an existing account; awaiting its certificate"
@@ -378,5 +392,69 @@ mod tests {
             .expect("an unlinked row yields to the new pairing");
 
         assert_eq!(devices.account_namespace().expect("read"), Some(theirs));
+    }
+
+    /// A namespace the user removed from this node is left out of a pairing, not a
+    /// reason to refuse it.
+    #[actix::test]
+    async fn a_removed_namespace_is_skipped_rather_than_failing_the_pairing() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        ForgottenNamespaces::new(&store)
+            .mark(&ContextGroupId::from(ONE), None, 1, None)
+            .expect("remove the namespace");
+        let mut harness = actor::over(store.clone()).await;
+
+        harness
+            .manager
+            .send(PairDeviceInitRequest {
+                namespaces: vec![ONE.into(), TWO.into()],
+                genesis: adopted_account(),
+                account_namespace: None,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace that remains is enough");
+
+        assert_eq!(
+            NamespaceRepository::new(&store)
+                .participating_namespaces()
+                .expect("read"),
+            vec![ContextGroupId::from(TWO)]
+        );
+        assert_eq!(harness.subscribed(), vec![topic(TWO)]);
+    }
+
+    /// With every namespace offered removed there is nothing to pair into, which is
+    /// the caller's conflict and not a server fault.
+    #[actix::test]
+    async fn a_pairing_whose_namespaces_were_all_removed_is_refused_as_removed() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        ForgottenNamespaces::new(&store)
+            .mark(&ContextGroupId::from(ONE), None, 1, None)
+            .expect("remove the namespace");
+        let harness = actor::over(store.clone()).await;
+
+        let err = harness
+            .manager
+            .send(PairDeviceInitRequest {
+                namespaces: vec![ONE.into()],
+                genesis: adopted_account(),
+                account_namespace: None,
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("nothing remains to follow");
+
+        assert!(matches!(
+            err.downcast_ref::<crate::error::ContextError>(),
+            Some(crate::error::ContextError::NamespaceForgotten { .. })
+        ));
+        assert!(
+            NodeDeviceRepository::new(&store)
+                .get()
+                .expect("read")
+                .is_none(),
+            "no device is minted for a refused pairing"
+        );
     }
 }

@@ -149,6 +149,20 @@ CI builds the nodes from the PR's own code (`.github/actions/build-local-merod` 
 A failed group re-runs all its scenarios.
 Its step summary names the scenario that failed, and that scenario's node logs are under `docker-logs/<scenario>/` in the group's `logs-*` artifact.
 
+### Reproducing a CI flake locally
+
+A flake that only shows up in CI is usually timing, so reproduce it with CI's build and loop it.
+
+1. Build `merod` the way CI does: `CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256 cargo build -p merod --release`.
+   A debug build runs several times slower, and that alone can hide a race: one ordering bug in `account-pairing-application-scope` never reproduced on a debug build in 17 runs, and failed 2 runs in 11 on this build.
+2. Package it as `merod:local` with `.github/workflows/deps/prebuilt.Dockerfile`, as `.github/actions/build-local-merod` does.
+   For a scenario on the http registry image, serve the bundles with `url=$(./scripts/e2e-fixture-registry.sh)` and stamp the image with `scripts/set-registry-mode.sh merod:local http "$url"`.
+3. Run the scenario from its app directory as `scripts/e2e-run-scenario-group.sh` does: `merobox bootstrap run <scenario.yml> --image merod:local --e2e-mode`.
+   Embedded-auth scenarios need `MERO_AUTH_ADMIN_USER` and `MERO_AUTH_ADMIN_PASSWORD` set, matching the scenario's login steps.
+   The node logs land under `data/container-logs/` in the app directory, and a `stop_all_nodes` scenario removes its containers, so copy that directory before the next run.
+4. Loop it and keep every run's logs, so a failing run can be compared against a passing one.
+   If it still will not fail, add CPU load (one busy process per core): a gossip-mesh race in the same scenario needed it.
+
 <Aside type="caution" title="What E2E cannot catch">
   Every node in a merobox run is the **same build against fresh state**.
   It validates a uniform, new-from-scratch network, and by construction never tests mixed old and new nodes or data persisted by an older version.

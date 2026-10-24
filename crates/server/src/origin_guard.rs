@@ -9,7 +9,8 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use tracing::{debug, warn};
 
-use crate::config::ServerConfig;
+use crate::app_host::{AppApi, AppOrigins};
+use crate::config::{AppsConfig, ServerConfig};
 
 static FIRST_REFUSAL_LOGGED: AtomicBool = AtomicBool::new(false);
 
@@ -30,12 +31,20 @@ pub(crate) struct OriginGuard {
     allowed: Arc<[String]>,
     /// Lowercase hosts, without a port, of the `allowed` origins.
     allowed_hosts: Arc<[String]>,
+    apps: AppOrigins,
 }
 
 impl OriginGuard {
     /// The router-wide guard: `None` where this process or its proxy authenticates callers.
     pub(crate) fn router_wide(config: &ServerConfig) -> Option<Self> {
-        (!config.authenticates_callers()).then(|| Self::new(config.cors.allowed_origins.as_deref()))
+        (!config.authenticates_callers()).then(|| Self::for_config(config))
+    }
+
+    pub(crate) fn for_config(config: &ServerConfig) -> Self {
+        Self {
+            apps: AppOrigins::new(&config.apps),
+            ..Self::new(config.cors.allowed_origins.as_deref())
+        }
     }
 
     pub(crate) fn new(allowed_origins: Option<&[String]>) -> Self {
@@ -48,6 +57,7 @@ impl OriginGuard {
         Self {
             allowed,
             allowed_hosts,
+            apps: AppOrigins::new(&AppsConfig::default()),
         }
     }
 
@@ -80,7 +90,14 @@ impl OriginGuard {
         if origin.is_none() && !headers.contains_key(FETCH_SITE) {
             return true;
         }
-        if origin.is_some_and(|origin| self.is_listed(origin) || is_loopback_page(origin)) {
+        let from_app = origin.is_some_and(|origin| {
+            origin
+                .to_str()
+                .is_ok_and(|origin| self.apps.is_app_origin(origin))
+        });
+        if origin
+            .is_some_and(|origin| self.is_listed(origin) || (!from_app && is_loopback_page(origin)))
+        {
             return true;
         }
 
@@ -120,16 +137,9 @@ impl OriginGuard {
             return false;
         };
 
-        let default_port = match scheme.as_str() {
-            "http" => 80,
-            "https" => 443,
-            _ => return false,
-        };
-        let port = authority.port_u16().unwrap_or(default_port);
-        hosts.iter().any(|host| {
-            host.host().eq_ignore_ascii_case(authority.host())
-                && host.port_u16().unwrap_or(default_port) == port
-        })
+        hosts
+            .iter()
+            .any(|host| names_origin(host, &scheme, &authority))
     }
 
     fn is_own_host(&self, host: &str) -> bool {
@@ -142,6 +152,18 @@ impl OriginGuard {
                 .is_ok()
             || self.allowed_hosts.contains(&host)
     }
+}
+
+/// Whether a `Host` is the `authority` of an `http(s)` origin, a scheme's
+/// default port being the one a browser leaves out.
+pub(crate) fn names_origin(host: &Authority, scheme: &str, authority: &Authority) -> bool {
+    let default_port = match scheme {
+        "http" => 80,
+        "https" => 443,
+        _ => return false,
+    };
+    host.host().eq_ignore_ascii_case(authority.host())
+        && host.port_u16().unwrap_or(default_port) == authority.port_u16().unwrap_or(default_port)
 }
 
 /// A page served from this machine: a local dev server or a Tauri webview.
@@ -170,6 +192,28 @@ fn is_loopback_host(host: &str) -> bool {
         .trim_end_matches(']')
         .parse::<IpAddr>()
         .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Refuses a page on an app's origin every route, in every auth mode, but the
+/// ones its own origin's app host handed over.
+pub(crate) async fn refuse_app_origins(
+    State(apps): State<AppOrigins>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let from_app = request
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|origin| origin.to_str().ok())
+        .is_some_and(|origin| apps.is_app_origin(origin));
+    if from_app && request.extensions().get::<AppApi>().is_none() {
+        return (
+            StatusCode::FORBIDDEN,
+            "an app's page may not call this node",
+        )
+            .into_response();
+    }
+    next.run(request).await
 }
 
 /// The router-wide guard of a node whose callers neither it nor its proxy
@@ -218,8 +262,10 @@ mod tests {
     use libp2p::identity::Keypair;
     use tower::ServiceExt;
 
-    use super::{refuse_foreign_origins, OriginGuard};
+    use super::{refuse_app_origins, refuse_foreign_origins, OriginGuard};
+    use crate::app_host::{encode_label, AppApi, AppOrigins};
     use crate::config::{AuthMode, ServerConfig, ServiceConfigs};
+    use calimero_primitives::application::ApplicationId;
 
     fn headers(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
         let mut map = HeaderMap::new();
@@ -233,7 +279,7 @@ mod tests {
         guard.admits(&headers(&[("origin", origin), ("host", host)]), None)
     }
 
-    fn guard_for(auth_mode: AuthMode, proxy_identity: bool) -> Option<OriginGuard> {
+    fn node(auth_mode: AuthMode, proxy_identity: bool) -> ServerConfig {
         let mut config = ServerConfig::with_auth(
             vec![],
             Keypair::generate_ed25519(),
@@ -247,7 +293,124 @@ mod tests {
             None,
         );
         config.proxy_identity = proxy_identity;
-        OriginGuard::router_wide(&config)
+        config
+    }
+
+    fn guard_for(auth_mode: AuthMode, proxy_identity: bool) -> Option<OriginGuard> {
+        OriginGuard::router_wide(&node(auth_mode, proxy_identity))
+    }
+
+    /// `POST path` from a page on `origin` to a node whose layers are the
+    /// ones `start` stacks around its routes.
+    async fn page_posts(config: &ServerConfig, origin: &str, path: &str) -> StatusCode {
+        let router = Router::new()
+            .route("/admin-api/x", post(|| async { "ok" }))
+            .route("/jsonrpc", post(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                OriginGuard::router_wide(config),
+                refuse_foreign_origins,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                AppOrigins::new(&config.apps),
+                refuse_app_origins,
+            ));
+        router
+            .oneshot(
+                Request::post(path)
+                    .header(header::HOST, "127.0.0.1:2428")
+                    .header(header::ORIGIN, origin)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// A request an app host answered for its own origin carries the marker
+    /// the app host layer adds, and only that lets an app origin through.
+    #[tokio::test]
+    async fn a_request_the_app_host_handed_over_is_not_refused_for_its_origin() {
+        let config = node(AuthMode::Embedded, false);
+        let origin = format!(
+            "http://{}.localhost:2428",
+            encode_label(&ApplicationId::from([7; 32]))
+        );
+        let router = |marked: bool| {
+            Router::new()
+                .route("/jsonrpc", post(|| async { "ok" }))
+                .layer(axum::middleware::from_fn_with_state(
+                    AppOrigins::new(&config.apps),
+                    refuse_app_origins,
+                ))
+                .layer(axum::middleware::from_fn(
+                    move |mut request: axum::extract::Request, next: axum::middleware::Next| async move {
+                        if marked {
+                            request.extensions_mut().insert(AppApi(ApplicationId::from([7; 32])));
+                        }
+                        next.run(request).await
+                    },
+                ))
+        };
+        let status = |marked| {
+            let request = Request::post("/jsonrpc")
+                .header(header::ORIGIN, &origin)
+                .body(Body::empty())
+                .unwrap();
+            async move { router(marked).oneshot(request).await.unwrap().status() }
+        };
+
+        assert_eq!(status(true).await, StatusCode::OK);
+        assert_eq!(status(false).await, StatusCode::FORBIDDEN);
+    }
+
+    /// An app is third-party code on a `*.localhost` name that is loopback for
+    /// every other purpose: it must not inherit a loopback page's reach.
+    #[tokio::test]
+    async fn an_app_origin_never_reaches_the_nodes_routes() {
+        let origins = [format!(
+            "http://{}.localhost:2428",
+            encode_label(&ApplicationId::from([7; 32]))
+        )];
+        for config in [
+            node(AuthMode::Proxy, false),
+            node(AuthMode::Proxy, true),
+            node(AuthMode::Embedded, false),
+        ] {
+            for origin in &origins {
+                for path in ["/admin-api/x", "/jsonrpc"] {
+                    assert_eq!(
+                        page_posts(&config, origin, path).await,
+                        StatusCode::FORBIDDEN,
+                        "{origin} {path}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_plain_loopback_dev_page_keeps_its_reach() {
+        let config = node(AuthMode::Proxy, false);
+
+        for path in ["/admin-api/x", "/jsonrpc"] {
+            assert_eq!(
+                page_posts(&config, "http://localhost:5173", path).await,
+                StatusCode::OK,
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_app_origin_is_never_a_loopback_page() {
+        let guard = OriginGuard::new(None);
+        let label = encode_label(&ApplicationId::from([7; 32]));
+        let origin: &'static str =
+            Box::leak(format!("http://{label}.localhost:2428").into_boxed_str());
+
+        assert!(!admits(&guard, origin, "127.0.0.1:2428"));
+        assert!(admits(&guard, "http://short.localhost", "127.0.0.1:2428"));
     }
 
     /// The guard stands in for an authenticating layer only where there is

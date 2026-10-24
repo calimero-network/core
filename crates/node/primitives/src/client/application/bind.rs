@@ -75,14 +75,14 @@ impl NodeClient {
     }
 
     /// Write a signed bundle's row unless the rule refuses it, re-checked under
-    /// the row lock. Returns whether the row was written.
+    /// the row lock the caller holds. Returns whether the row was written.
     pub(super) fn put_bundle_row(
         &self,
+        _rows: &MutexGuard<'static, ()>,
         application_id: &ApplicationId,
         row: &types::ApplicationMeta,
         origin: InstallOrigin,
     ) -> eyre::Result<bool> {
-        let _rows = lock_application_rows();
         if !self.bundle_may_replace(application_id, &row.version, origin)? {
             return Ok(false);
         }

@@ -1,3 +1,24 @@
+use calimero_primitives::context::ContextId;
+
+use crate::AdminState;
+
+/// The release `context_id` executes, when it differs from the application
+/// row's version (the row names the latest install).
+pub(crate) async fn executing_application_version(
+    state: &AdminState,
+    context_id: &ContextId,
+) -> Option<String> {
+    let blob = calimero_context::activation::executing_blob_off_row(
+        state.ctx_client.datastore(),
+        context_id,
+    )?;
+    state
+        .node_client
+        .blob_app_version(&calimero_primitives::blobs::BlobId::from(blob))
+        .await
+}
+
+pub mod access_grants;
 pub mod create_context;
 pub mod create_context_intent;
 pub mod delete_context;

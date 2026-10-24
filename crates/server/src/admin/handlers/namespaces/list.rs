@@ -90,6 +90,8 @@ pub async fn handler(
                         v
                     }
                 };
+                let (app_version, app_package) =
+                    super::with_target_release(app_version, ns.target_release);
                 data.push(NamespaceApiResponse {
                     namespace_id: hex::encode(ns.namespace_id.to_bytes()),
                     bytecode_id: hex::encode(ns.bytecode_id.to_bytes()),
@@ -100,8 +102,10 @@ pub async fn handler(
                     context_count: ns.context_count,
                     subgroup_count: ns.subgroup_count,
                     app_version,
+                    app_package,
                     founding: super::namespace_founding(&state.store, &ns.namespace_id),
                     held_ops: super::namespace_held_ops(&state.store, &ns.namespace_id),
+                    forgotten: None,
                 });
             }
             ApiResponse {

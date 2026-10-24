@@ -121,6 +121,24 @@ pub enum BindingRejected {
     /// membership is the caller's question.
     #[error("account is not a member of this group")]
     AccountNotMember,
+    /// The scope a link carries is not the account root's statement for this device.
+    #[error("the device scope does not authorise this device: {0}")]
+    ScopeInvalid(calimero_account::AccountError),
+    /// A withdrawal signed by neither an admin at the op's cut nor the holder of a
+    /// valid revocation proof.
+    #[error(
+        "signer is neither an admin at the op's cut nor the holder of a valid revocation proof"
+    )]
+    WithdrawalUnauthorised,
+    /// A descope whose carried scope still reaches this group narrows nothing.
+    #[error("the carried scope still reaches this group")]
+    NotANarrowing,
+    /// A withdrawal naming an account its device id was not minted for.
+    #[error("the device id was not minted for the account the op names")]
+    DeviceNotMintedForAccount,
+    /// A descope whose signer does not speak for the account at the op's cut.
+    #[error("the signer does not speak for the account at the op's cut")]
+    SignerNotTheAccount,
 }
 
 impl BindingRejected {
@@ -1098,6 +1116,12 @@ impl<'a> AccountBindingRepository<'a> {
             calimero_store::key::GROUP_DEVICE_SCOPE_FLOOR_PREFIX,
             |k| k.group_id() == gid,
         )?;
+        let endorsers = collect_keys_with_prefix(
+            self.store,
+            GroupAccountEndorser::new(gid, [0u8; 32], AccountId::from([0u8; 32])),
+            calimero_store::key::GROUP_ACCOUNT_ENDORSER_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
 
         let mut handle = self.store.handle();
         for key in bindings {
@@ -1119,6 +1143,9 @@ impl<'a> AccountBindingRepository<'a> {
             handle.delete(&key)?;
         }
         for key in floors {
+            handle.delete(&key)?;
+        }
+        for key in endorsers {
             handle.delete(&key)?;
         }
         Ok(())
@@ -1982,8 +2009,26 @@ mod tests {
         repo.narrow(&other, g.account_id(), doomed.device, 3)
             .expect("narrow");
 
+        let member = AccountId::from([0x42u8; 32]);
+        for group in [&gid, &other] {
+            repo.record_endorser(group, g.account_id(), &member)
+                .expect("record the endorser");
+        }
+
         repo.clear_all_for_group(&gid).expect("clear");
 
+        assert!(
+            repo.accounts_by_endorsing_member(&gid)
+                .expect("read")
+                .is_empty(),
+            "an endorser row names a member of a group that is gone"
+        );
+        assert_eq!(
+            repo.accounts_by_endorsing_member(&other)
+                .expect("read")
+                .len(),
+            1
+        );
         assert_eq!(
             repo.scope_floor(&gid, g.account_id(), live.device)
                 .expect("read"),

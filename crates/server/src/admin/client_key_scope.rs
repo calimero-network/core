@@ -7,8 +7,10 @@ use axum::http::{Method, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use calimero_context_config::types::{ContextGroupId, SignedGroupOpenInvitation};
+use calimero_governance_store::{placeholder_admin_identity, MetaRepository};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
+use calimero_store::Store;
 use tracing::warn;
 
 use crate::admin::handlers::groups::parse_group_id;
@@ -53,7 +55,7 @@ pub(crate) async fn refuse_out_of_scope(
                 |raw| {
                     parse_group_id(raw).is_ok_and(|id| {
                         if changes {
-                            scope.permits_group_change(store, &id)
+                            scope.permits_subtree_change(store, &id)
                         } else {
                             scope.permits_group(store, &id)
                         }
@@ -121,16 +123,19 @@ pub(crate) fn refuse_target_outside_binding(
     )
 }
 
-/// Refuse a bound key's join unless this node holds the group and the binding may
-/// change it. An unheld group's application is only the invitation's unsigned hint.
+/// Refuse a bound key's join unless the binding may change the group, or the
+/// group has no signed admin here yet and an invitation's unsigned hint names the bound application.
 pub(crate) fn refuse_join_outside_binding(
     state: &AdminState,
     client_key: Option<&ClientKeyScope>,
-    invitation: &SignedGroupOpenInvitation,
+    group_id: &ContextGroupId,
+    invitation: Option<&SignedGroupOpenInvitation>,
 ) -> Option<Response> {
     let scope = client_key?;
-    let group_id = invitation.invitation.group_id;
-    if scope.permits_group_change(state.ctx_client.datastore(), &group_id) {
+    let store = state.ctx_client.datastore();
+    if scope.permits_group_change(store, group_id)
+        || invitation.is_some_and(|invitation| hints_bound_application(scope, store, invitation))
+    {
         return None;
     }
     warn!(bindings = ?scope.0, ?group_id, "client key refused: join outside its binding");
@@ -141,6 +146,27 @@ pub(crate) fn refuse_join_outside_binding(
         }
         .into_response(),
     )
+}
+
+fn hints_bound_application(
+    scope: &ClientKeyScope,
+    store: &Store,
+    invitation: &SignedGroupOpenInvitation,
+) -> bool {
+    let unverified = MetaRepository::new(store)
+        .load(&invitation.invitation.group_id)
+        .is_ok_and(|meta| {
+            meta.is_none_or(|meta| meta.admin_identity == placeholder_admin_identity())
+        });
+    let hint = invitation.application_id.map(ApplicationId::from);
+    unverified
+        && scope.0.context_id.is_none()
+        && scope
+            .0
+            .application_id
+            .as_deref()
+            .zip(hint)
+            .is_some_and(|(bound, hint)| bound.eq_ignore_ascii_case(&hint.to_string()))
 }
 
 fn refusal(
@@ -163,10 +189,17 @@ fn refusal(
 
     params.iter().find_map(|&(name, value)| match name {
         "context_id" => (!may_act_on_context(value)).then_some(CONTEXT_REFUSAL),
-        "group_id" | "namespace_id" => (!may_act_on_group(value)).then_some(GROUP_REFUSAL),
+        "group_id" => (!may_act_on_group(value)).then_some(GROUP_REFUSAL),
+        // A join is judged by its handler, which weighs the invitation's hint for a namespace not held yet.
+        "namespace_id" if is_join(path) => None,
+        "namespace_id" => (!may_act_on_group(value)).then_some(GROUP_REFUSAL),
         "application_id" => (!may_name_application(value)).then_some(APPLICATION_REFUSAL),
         _ => None,
     })
+}
+
+fn is_join(path: &str) -> bool {
+    path.trim_end_matches('/').ends_with("/join")
 }
 
 fn sync_target(path: &str) -> Option<Option<&str>> {
@@ -180,10 +213,22 @@ fn sync_target(path: &str) -> Option<Option<&str>> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use calimero_primitives::context::ContextId;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use mero_auth::auth::bindings::ClientKeyBindings;
+    use tower::ServiceExt as _;
+
     use super::{
         refusal, sync_target, APPLICATION_REFUSAL, CONTEXT_REFUSAL, GROUP_REFUSAL, INSTALL_REFUSAL,
         SYNC_ALL_REFUSAL,
     };
+    use crate::auth::ClientKeyScope;
+    use crate::test_support::protected_router;
 
     const MINE: &str = "aa";
     const OTHER: &str = "bb";
@@ -244,6 +289,18 @@ mod tests {
     }
 
     #[test]
+    fn a_namespace_join_is_left_to_its_handler() {
+        assert_eq!(
+            decide("/namespaces/x/join", &[("namespace_id", OTHER)]),
+            None
+        );
+        assert_eq!(
+            decide("/namespaces/x/leave", &[("namespace_id", OTHER)]),
+            Some(GROUP_REFUSAL)
+        );
+    }
+
+    #[test]
     fn routes_naming_nothing_pass() {
         assert_eq!(decide("/contexts", &[]), None);
         assert_eq!(decide("/peers", &[]), None);
@@ -274,6 +331,45 @@ mod tests {
         assert_eq!(sync_target("/contexts/abc/resync"), None);
         assert_eq!(sync_target("/contexts/sync/abc/extra"), None);
         assert_eq!(sync_target("/groups/abc/sync"), None);
+    }
+
+    async fn get_as_bound_key(
+        router: axum::Router,
+        bound: u8,
+        context: u8,
+    ) -> (StatusCode, String) {
+        let scope = ClientKeyScope(ClientKeyBindings::from_permissions(&[format!(
+            "context[{},identity]",
+            ContextId::from([bound; 32])
+        )]));
+        let mut request = Request::get(format!("/contexts/{}", ContextId::from([context; 32])))
+            .body(Body::empty())
+            .expect("a request");
+        drop(request.extensions_mut().insert(scope));
+
+        let response = router.oneshot(request).await.expect("the route answers");
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read the response");
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    #[actix::test]
+    async fn the_admin_router_refuses_a_bound_key_naming_another_context() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (router, _blobs) = protected_router(&store).await;
+
+        let (status, body) = get_as_bound_key(router.clone(), 0xA1, 0xB2).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains(CONTEXT_REFUSAL), "{body}");
+
+        let (status, body) = get_as_bound_key(router, 0xA1, 0xA1).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "the bound context reaches its handler: {body}"
+        );
     }
 }
 

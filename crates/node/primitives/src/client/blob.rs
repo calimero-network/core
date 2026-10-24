@@ -1272,6 +1272,17 @@ impl NodeClient {
         }
     }
 
+    /// The size a stored blob was recorded with, from one store read: no chunk is
+    /// read or hashed, so it is cheap enough for an unauthenticated request path.
+    pub fn blob_size(&self, blob_id: &BlobId) -> eyre::Result<Option<u64>> {
+        let meta = self
+            .datastore
+            .clone()
+            .handle()
+            .get(&key::BlobMeta::new(*blob_id))?;
+        Ok(meta.map(|meta| meta.size))
+    }
+
     /// Get blob metadata
     ///
     /// Returns blob metadata including size, hash, and detected MIME type.

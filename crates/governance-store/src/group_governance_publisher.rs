@@ -1,6 +1,7 @@
 use crate::{
-    CapabilitiesRepository, GroupKeyring, KeyRecipient, MembershipRepository, MetaRepository,
-    NamespaceRepository, PermissionChecker,
+    CapabilitiesRepository, GroupKeyring, KeyRecipient, KeyringError, MembershipRepository,
+    MetaRepository, NamespaceError, NamespaceIdentityRecord, NamespaceRepository,
+    PermissionChecker, StoredGroupKey,
 };
 use calimero_account::{AccountId, DeviceId};
 use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp};
@@ -63,6 +64,14 @@ impl RotationPlan<'_> {
             Self::ExcludingMember(excluded) => member != *excluded,
         }
     }
+}
+
+/// What a group op is sealed and sent with, read before the op is applied.
+struct Sealing {
+    namespace_id: ContextGroupId,
+    mesh: usize,
+    namespace_identity: NamespaceIdentityRecord,
+    stored_key: StoredGroupKey,
 }
 
 impl<'a> GroupGovernancePublisher<'a> {
@@ -159,13 +168,32 @@ impl<'a> GroupGovernancePublisher<'a> {
         signer_sk: &PrivateKey,
         op: GroupOp,
     ) -> EyreResult<Option<DeliveryReport>> {
-        let rotation = if flip_rotation_is_owed(self.store, self.group_id, None, &op)? {
+        let rotation = self.flip_rotation(&op)?;
+        self.sign_apply_and_publish_inner(ack_router, signer_sk, op, rotation)
+            .await
+    }
+
+    /// Like [`sign_apply_and_publish`](Self::sign_apply_and_publish), for an op
+    /// peers must receive: when this node cannot seal it, it is refused unapplied.
+    pub async fn sign_apply_and_publish_required(
+        &self,
+        ack_router: &AckRouter,
+        signer_sk: &PrivateKey,
+        op: GroupOp,
+    ) -> EyreResult<DeliveryReport> {
+        let rotation = self.flip_rotation(&op)?;
+        let sealing = self.sealing_for(&op).await??;
+        self.apply_and_publish(ack_router, signer_sk, op, rotation, sealing)
+            .await
+    }
+
+    fn flip_rotation(&self, op: &GroupOp) -> EyreResult<RotationPlan<'static>> {
+        let owed = flip_rotation_is_owed(self.store, self.group_id, None, op)?;
+        Ok(if owed {
             RotationPlan::AllEntitled
         } else {
             RotationPlan::None
-        };
-        self.sign_apply_and_publish_inner(ack_router, signer_sk, op, rotation)
-            .await
+        })
     }
 
     /// Refuse a removal this node cannot also ROTATE for.
@@ -336,36 +364,42 @@ impl<'a> GroupGovernancePublisher<'a> {
         op: GroupOp,
         rotation: RotationPlan<'_>,
     ) -> EyreResult<Option<DeliveryReport>> {
-        // Apply-FIRST, publish best-effort. `sign_apply_local_group_op_borsh`
-        // below commits the local group-store mutation unconditionally; the
-        // namespace publish at the end is best-effort (`best_effort = true`)
-        // so an unformed mesh downgrades readiness instead of failing the
-        // call. The op propagates to peers via sync. See the
-        // best-effort-readiness design doc. `mesh` is still sampled here —
-        // it feeds the cleartext-labelled metric below and is handed to
-        // `sign_and_publish_post_gate`.
+        match self.sealing_for(&op).await? {
+            Ok(sealing) => self
+                .apply_and_publish(ack_router, signer_sk, op, rotation, sealing)
+                .await
+                .map(Some),
+            Err(unsealable) => {
+                let _output =
+                    sign_apply_local_group_op_borsh(self.store, &self.group_id, signer_sk, op)?;
+                tracing::debug!(
+                    group_id = %hex::encode(self.group_id.to_bytes()),
+                    %unsealable,
+                    "skipping namespace publish"
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    /// The identity and key `op` is sealed with, read before a delete's apply drops it.
+    /// The inner `Err` is why this node cannot publish `op`.
+    async fn sealing_for(&self, op: &GroupOp) -> EyreResult<Result<Sealing, eyre::Report>> {
         let namespace_id = NamespaceRepository::new(self.store).resolve(&self.group_id)?;
-        let namespace_bytes = namespace_id.to_bytes();
+        // Sampled for the cleartext-labelled metric and handed to
+        // `sign_and_publish_post_gate`.
         let mesh = self
             .node_client
-            .mesh_peer_count_for_namespace(namespace_bytes)
+            .mesh_peer_count_for_namespace(namespace_id.to_bytes())
             .await;
-
-        // C5.S3b: the op-level pre-apply state_hash capture was removed with the
-        // field (`scope_root` is the convergence signal now). The `MemberRemoved` /
-        // `MemberLeft` `expected_group_state_hash` claims above are a SEPARATE
-        // post-apply convergence mechanism and are unaffected.
-        let _output =
-            sign_apply_local_group_op_borsh(self.store, &self.group_id, signer_sk, op.clone())?;
 
         let Some(namespace_identity) =
             NamespaceRepository::new(self.store).identity_record(&namespace_id)?
         else {
-            tracing::debug!(
-                group_id = %hex::encode(self.group_id.to_bytes()),
-                "no namespace identity, skipping namespace publish"
-            );
-            return Ok(None);
+            return Ok(Err(NamespaceError::NoNamespaceIdentity(
+                namespace_id.to_string(),
+            )
+            .into()));
         };
 
         // Issue #2256: an `Open` subgroup whose entire ancestor chain up
@@ -390,17 +424,8 @@ impl<'a> GroupGovernancePublisher<'a> {
         // Restricted subgroups (or any subgroup behind a Restricted
         // ancestor) keep their per-subgroup key, unchanged.
         //
-        // **Visibility-flip ops are special-cased:**
-        // `sign_apply_local_group_op_borsh` above has *already* applied
-        // the op locally, so the post-apply visibility of `self.group_id`
-        // is the *new* mode. For ordinary ops (member add/remove,
-        // capability set, etc.) that's exactly what we want: the new
-        // state defines the access boundary the op should be encrypted
-        // for. But for `SubgroupVisibilitySet`, post-apply state would
-        // strand inheritance-eligible members on an `Open → Restricted`
-        // flip — they hold only the namespace key, the post-apply check
-        // selects the per-subgroup key, and they can never decrypt the
-        // very op that says "you're no longer a member here."
+        // **Visibility-flip ops are special-cased:** a flip changes the visibility this
+        // check reads, so its boundary comes from the parent chain, as below.
         //
         // Resolution: for `SubgroupVisibilitySet`, decide the encryption
         // boundary from the **parent chain** (excluding `self.group_id`),
@@ -421,7 +446,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         //   nobody outside the wall is owed visibility into the flip.
         // - Subgroup directly under the namespace (parent IS namespace):
         //   namespace key. The parent chain is trivially Open.
-        let parent_chain_open = match &op {
+        let parent_chain_open = match op {
             GroupOp::SubgroupVisibilitySet { .. } => {
                 match NamespaceRepository::new(self.store).parent(&self.group_id)? {
                     Some(parent) => {
@@ -444,13 +469,40 @@ impl<'a> GroupGovernancePublisher<'a> {
         let Some(stored_key) =
             GroupKeyring::new(self.store, encrypting_group_id).load_current_key_record()?
         else {
-            tracing::debug!(
-                group_id = %hex::encode(self.group_id.to_bytes()),
-                encrypting_group_id = %hex::encode(encrypting_group_id.to_bytes()),
-                "no group key stored, skipping namespace publish"
-            );
-            return Ok(None);
+            return Ok(Err(KeyringError::NoGroupKey(hex::encode(
+                encrypting_group_id.to_bytes(),
+            ))
+            .into()));
         };
+        Ok(Ok(Sealing {
+            namespace_id,
+            mesh,
+            namespace_identity,
+            stored_key,
+        }))
+    }
+
+    /// Apply `op` locally, then publish it sealed under `sealing`.
+    async fn apply_and_publish(
+        &self,
+        ack_router: &AckRouter,
+        signer_sk: &PrivateKey,
+        op: GroupOp,
+        rotation: RotationPlan<'_>,
+        sealing: Sealing,
+    ) -> EyreResult<DeliveryReport> {
+        let Sealing {
+            namespace_id,
+            mesh,
+            namespace_identity,
+            stored_key,
+        } = sealing;
+        let namespace_bytes = namespace_id.to_bytes();
+
+        // Apply first, publish best-effort: an unformed mesh downgrades readiness
+        // instead of failing the call, and the op reaches peers via sync.
+        let _output =
+            sign_apply_local_group_op_borsh(self.store, &self.group_id, signer_sk, op.clone())?;
 
         let encrypted = GroupKeyring::encrypt_op(&stored_key.group_key, &op)?;
 
@@ -551,6 +603,7 @@ impl<'a> GroupGovernancePublisher<'a> {
             key_id: stored_key.key_id.into(),
             encrypted,
             key_rotation,
+            registers: op.registered_context(),
         };
 
         // Stage-0 baseline: observe mesh-peer count *with the cleartext
@@ -558,7 +611,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         // hides it inside an encrypted envelope. `NamespaceGovernance::sign_*`
         // skips emission for `NamespaceOp::Group { .. }` so this is the
         // single source of truth for group-op observations. Reuse the
-        // `mesh` value sampled at the top of the function — issuing a
+        // `mesh` value `sealing_for` sampled - issuing a
         // second `mesh_peer_count_for_namespace` round-trip here would
         // burn an actor-mailbox hop per publish without observable benefit.
         record_governance_publish_mesh_peers(op.op_kind_label(), mesh);
@@ -591,7 +644,7 @@ impl<'a> GroupGovernancePublisher<'a> {
             op_hash = %hex::encode(report.op_hash),
             "group governance op published"
         );
-        Ok(Some(report))
+        Ok(report)
     }
 }
 

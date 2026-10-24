@@ -74,13 +74,21 @@ mod local_governance_node_e2e;
 #[cfg(test)]
 mod migration_events_e2e;
 #[cfg(test)]
+mod namespace_forget_e2e;
+#[cfg(test)]
+mod namespace_leave_purge_e2e;
+#[cfg(test)]
 mod parent_plan_applied_flag_test;
 #[cfg(test)]
 mod registered_bytecode_e2e;
+#[cfg(test)]
+mod upgrade_trial_e2e;
 // Also on the ungated harness: no mock attestation, runs in the default
 // `cargo test`.
 #[cfg(test)]
 mod membership_republish_e2e;
+#[cfg(test)]
+mod owner_delete_e2e;
 #[cfg(test)]
 mod sync_responder_e2e;
 /// Feature-ungated (`#[cfg(test)]`-only) in-process node harness shared by

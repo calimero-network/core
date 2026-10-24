@@ -5,7 +5,7 @@ use calimero_context::config::ContextConfig;
 use calimero_network_primitives::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};
 use calimero_runtime::RuntimeConfig;
 use calimero_server::admin::service::AdminConfig;
-use calimero_server::config::{AuthMode, CorsConfig, SealedConfig};
+use calimero_server::config::{AppsConfig, AuthMode, CorsConfig, SealedConfig};
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::sse::SseConfig;
 use calimero_server::ws::WsConfig;
@@ -422,6 +422,11 @@ pub struct ServerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cors: Option<CorsConfig>,
 
+    /// `[server.apps]`: the base domain app frontends are served under. Left
+    /// out of a written config while it is the default.
+    #[serde(default, skip_serializing_if = "AppsConfig::is_default")]
+    pub apps: AppsConfig,
+
     /// `server.proxy_identity`: under `auth_mode = "proxy"`, take an
     /// account-anchored caller's account and device from the `X-Auth-Account`
     /// and `X-Auth-Device` headers the proxy forwards.
@@ -436,7 +441,7 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         listen: Vec<Multiaddr>,
         admin: Option<AdminConfig>,
         jsonrpc: Option<JsonRpcConfig>,
@@ -452,13 +457,14 @@ impl ServerConfig {
             auth_mode: AuthMode::Proxy,
             embedded_auth: None,
             sealed: SealedConfig::new(false),
+            apps: AppsConfig::default(),
             cors: None,
             proxy_identity: false,
         }
     }
 
     #[must_use]
-    pub const fn with_auth(
+    pub fn with_auth(
         listen: Vec<Multiaddr>,
         admin: Option<AdminConfig>,
         jsonrpc: Option<JsonRpcConfig>,
@@ -476,6 +482,7 @@ impl ServerConfig {
             auth_mode,
             embedded_auth,
             sealed: SealedConfig::new(false),
+            apps: AppsConfig::default(),
             cors: None,
             proxy_identity: false,
         }
@@ -798,6 +805,70 @@ mod tests {
             typo.is_err(),
             "a misspelled key must not silently leave sealing off"
         );
+    }
+
+    /// Apps are served under `localhost` unless told otherwise, and a node on
+    /// the default does not grow the section when its config is written back.
+    #[test]
+    fn server_apps_base_domain_defaults_and_is_written_only_when_set() {
+        let absent: super::ServerConfig = toml::from_str("listen = []\n").unwrap();
+        assert_eq!(absent.apps.base_domain, "localhost");
+        assert!(!toml::to_string(&absent).unwrap().contains("apps"));
+
+        let set: super::ServerConfig =
+            toml::from_str("listen = []\n[apps]\nbase_domain = \"apps.example\"\n").unwrap();
+        assert_eq!(set.apps.base_domain, "apps.example");
+        assert!(toml::to_string(&set)
+            .unwrap()
+            .contains("[apps]\nbase_domain = \"apps.example\""));
+
+        let typo: Result<super::ServerConfig, _> =
+            toml::from_str("listen = []\n[apps]\nbase_domains = \"x\"\n");
+        assert!(typo.is_err());
+    }
+
+    #[test]
+    fn server_apps_trust_proxy_defaults_off_and_is_written_only_when_set() {
+        let absent: super::ServerConfig = toml::from_str("listen = []\n").unwrap();
+        assert!(!absent.apps.trust_proxy);
+
+        let set: super::ServerConfig =
+            toml::from_str("listen = []\n[apps]\ntrust_proxy = true\n").unwrap();
+        assert!(set.apps.trust_proxy);
+        assert!(toml::to_string(&set)
+            .unwrap()
+            .contains("trust_proxy = true"));
+
+        let unset: super::ServerConfig =
+            toml::from_str("listen = []\n[apps]\nbase_domain = \"apps.example\"\n").unwrap();
+        assert!(!toml::to_string(&unset).unwrap().contains("trust_proxy"));
+    }
+
+    /// The fallback apps port is gone: a config that still sets it is refused by name.
+    #[test]
+    fn server_apps_port_is_refused() {
+        let parsed: Result<super::ServerConfig, _> =
+            toml::from_str("listen = []\n[apps]\nport = 2429\n");
+        let error = parsed
+            .expect_err("the apps port is not a setting")
+            .to_string();
+        assert!(error.contains("unknown field `port`"), "{error}");
+    }
+
+    /// A one-label base domain other than `localhost` is a public suffix, which
+    /// would put every app under a name anyone can register.
+    #[test]
+    fn server_apps_base_domain_must_not_be_a_public_suffix() {
+        for bad in ["com", "", "Com"] {
+            let parsed: Result<super::ServerConfig, _> =
+                toml::from_str(&format!("listen = []\n[apps]\nbase_domain = \"{bad}\"\n"));
+            assert!(parsed.is_err(), "{bad:?}");
+        }
+        for good in ["localhost", "apps.example", "Apps.Example"] {
+            let parsed: Result<super::ServerConfig, _> =
+                toml::from_str(&format!("listen = []\n[apps]\nbase_domain = \"{good}\"\n"));
+            assert!(parsed.is_ok(), "{good:?}");
+        }
     }
 
     /// `forward_auth` is opt-in too, round-trips, and a config without it is

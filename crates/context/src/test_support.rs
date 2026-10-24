@@ -17,8 +17,9 @@
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::Store;
+use calimero_store::{key, types, Store};
 
 /// The credential `sign_pk` would present, derived deterministically from the
 /// key so the same key always speaks for the same account.
@@ -119,6 +120,29 @@ pub fn unverified_invitation(
         bytecode_id: None,
         admitter_addrs: Vec::new(),
     }
+}
+
+/// The application row a creation resolves its bytecode through.
+pub fn install_application(store: &Store, application: ApplicationId) {
+    let mut handle = store.handle();
+    handle
+        .put(
+            &key::ApplicationMeta::new(application),
+            &types::ApplicationMeta::new(
+                key::BlobMeta::new([0x01; 32].into()),
+                1024,
+                "file://test.wasm".into(),
+                vec![].into(),
+                key::BlobMeta::new([0x02; 32].into()),
+                types::PackageInfo {
+                    package: "com.test.app".into(),
+                    version: "1.0.0".into(),
+                    signer_id: "test".into(),
+                    state_version: 0,
+                },
+            ),
+        )
+        .expect("install the application");
 }
 
 /// The account `sign_pk` will speak for once enrolled.
@@ -358,6 +382,41 @@ pub fn holder_device_scoped_to(
         )
         .expect("record the holder's own device in its registry");
     (account_namespace, device)
+}
+
+/// Acks every publish awaiting one as `signer`, an admin of the namespace, which
+/// lifts it to `PublishReadiness::Ready`. Abort the handle when done.
+pub fn ack_every_publish(
+    router: std::sync::Arc<calimero_context_client::local_governance::AckRouter>,
+    signer: PrivateKey,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            for op_hash in router.in_flight() {
+                if let Ok(ack) =
+                    calimero_governance_store::governance_broadcast::sign_ack(&signer, op_hash)
+                {
+                    let _routed = router.route(ack);
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+}
+
+/// This holder's account namespace, created the way its first pairing creates it.
+///
+/// # Panics
+///
+/// Panics if this node holds no account root or the creation fails.
+pub async fn holders_account_namespace(
+    store: &Store,
+    context_client: &calimero_context_client::client::ContextClient,
+) -> ContextGroupId {
+    crate::handlers::ensure_account_namespace::ensure_account_namespace(store, context_client)
+        .await
+        .expect("the ensure runs")
+        .expect("the holder creates its account namespace")
 }
 
 /// Replace this node's own scope with `applications` at `scope_epoch`, as folding
@@ -728,6 +787,7 @@ impl RotationWorld {
                     ciphertext: Vec::new(),
                 },
                 key_rotation: None,
+                registers: None,
             },
             signature: [0u8; 64],
             admitter_endorsement: None,
@@ -1103,7 +1163,9 @@ pub(crate) mod actor {
     use calimero_network_primitives::client::NetworkClient;
     use calimero_network_primitives::messages::{MessageId, NetworkMessage};
     use calimero_node_primitives::client::NodeClient;
-    use calimero_node_primitives::test_fixtures::node_client_over;
+    use calimero_node_primitives::messages::NodeMessage;
+    use calimero_node_primitives::test_fixtures::{node_client_over, node_client_switching_over};
+    use calimero_primitives::context::ContextId;
     use calimero_store::Store;
     use calimero_utils_actix::LazyRecipient;
     use tempfile::TempDir;
@@ -1118,11 +1180,14 @@ pub(crate) mod actor {
         subscribed: UnboundedSender<String>,
         unsubscribed: UnboundedSender<String>,
         broadcast: UnboundedSender<String>,
+        published: UnboundedSender<String>,
         /// The topics subscribed to and not since dropped, as the swarm would hold them.
         live: Arc<Mutex<BTreeSet<String>>>,
         /// A topic whose subscribe is not answered until the semaphore hands out a
         /// permit, so a test can hold a caller part-way through its work.
         held: Option<(String, Arc<Semaphore>)>,
+        /// Reports one peer subscribed to every topic, so a publish waits for acks.
+        subscriber: bool,
     }
 
     impl Actor for StubNetwork {
@@ -1143,19 +1208,21 @@ pub(crate) mod actor {
                         .filter(|(held, _)| *held == topic)
                         .map(|(_, gate)| Arc::clone(gate));
                     let live = Arc::clone(&self.live);
-                    let answer = move || {
+                    let answer = move |accepted: bool| {
+                        if !accepted {
+                            let _ignored =
+                                outcome.send(Err(eyre::eyre!("the swarm refused {topic}")));
+                            return;
+                        }
                         let _ = live.lock().expect("live topics").insert(topic);
                         let _ignored = outcome.send(Ok(request.0));
                     };
                     match gate {
-                        None => answer(),
+                        None => answer(true),
                         Some(gate) => {
+                            // A closed gate refuses the subscribe instead of answering it.
                             let held = async move {
-                                gate.acquire()
-                                    .await
-                                    .expect("the gate is never closed")
-                                    .forget();
-                                answer();
+                                answer(gate.acquire().await.map(|permit| permit.forget()).is_ok());
                             };
                             let _handle = ctx.spawn(actix::fut::wrap_future(held));
                         }
@@ -1172,13 +1239,47 @@ pub(crate) mod actor {
                     let _ignored = outcome.send(0);
                 }
                 NetworkMessage::SubscribedPeers { outcome, .. } => {
-                    let _ignored = outcome.send(Vec::new());
+                    let peers = if self.subscriber {
+                        vec![calimero_network_primitives::messages::PeerId::random()]
+                    } else {
+                        Vec::new()
+                    };
+                    let _ignored = outcome.send(peers);
                 }
                 NetworkMessage::Publish { request, outcome } => {
                     let _ignored = self.broadcast.send(request.topic.to_string());
+                    let _ignored = self.published.send(request.topic.to_string());
                     let _ignored = outcome.send(Ok(MessageId(b"stub".to_vec())));
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// Records each absorbed-delta replay asked of the node and answers it. Any
+    /// other message is held unanswered, as an unbound recipient would hold it.
+    struct StubNodeManager {
+        drains: UnboundedSender<ContextId>,
+        held: Vec<NodeMessage>,
+    }
+
+    impl Actor for StubNodeManager {
+        type Context = Context<Self>;
+    }
+
+    impl Handler<NodeMessage> for StubNodeManager {
+        type Result = ();
+
+        fn handle(&mut self, msg: NodeMessage, _ctx: &mut Self::Context) {
+            match msg {
+                NodeMessage::DrainAbsorbed {
+                    context_id,
+                    outcome,
+                } => {
+                    let _ignored = self.drains.send(context_id);
+                    let _ignored = outcome.send(0);
+                }
+                other => self.held.push(other),
             }
         }
     }
@@ -1193,10 +1294,13 @@ pub(crate) mod actor {
         subscribed: UnboundedReceiver<String>,
         unsubscribed: UnboundedReceiver<String>,
         broadcast: UnboundedReceiver<String>,
+        drains: UnboundedReceiver<ContextId>,
+        published: UnboundedReceiver<String>,
         live: Arc<Mutex<BTreeSet<String>>>,
         // The blob filesystem and the node's data root outlive the manager.
         _dirs: (TempDir, TempDir),
         _network: Addr<StubNetwork>,
+        _node_manager: Addr<StubNodeManager>,
     }
 
     impl Harness {
@@ -1244,10 +1348,22 @@ pub(crate) mod actor {
         pub(crate) fn broadcast_topics(&mut self) -> Vec<String> {
             drain(&mut self.broadcast)
         }
+
+        /// Every context an absorbed-delta replay was asked for, on an
+        /// [`over_switching`] harness. Drains.
+        pub(crate) fn drains(&mut self) -> Vec<ContextId> {
+            drain(&mut self.drains)
+        }
+
+        /// Every topic a message was actually published on, unlike
+        /// [`Self::broadcast_topics`], which also counts the mesh-count probe.
+        pub(crate) fn published_topics(&mut self) -> Vec<String> {
+            drain(&mut self.published)
+        }
     }
 
     /// Everything a recorder holds, in the order it arrived.
-    fn drain(rx: &mut UnboundedReceiver<String>) -> Vec<String> {
+    fn drain<T>(rx: &mut UnboundedReceiver<T>) -> Vec<T> {
         let mut topics = Vec::new();
         while let Ok(topic) = rx.try_recv() {
             topics.push(topic);
@@ -1268,7 +1384,15 @@ pub(crate) mod actor {
         topic: String,
     ) -> (Harness, Arc<Semaphore>) {
         let gate = Arc::new(Semaphore::new(0));
-        let harness = build(store, None, None, Some((topic, Arc::clone(&gate)))).await;
+        let harness = build(
+            store,
+            None,
+            None,
+            Some((topic, Arc::clone(&gate))),
+            false,
+            false,
+        )
+        .await;
         (harness, gate)
     }
 
@@ -1282,7 +1406,42 @@ pub(crate) mod actor {
         store: Store,
         bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
     ) -> Harness {
-        build(store, bundle, None, None).await
+        build(store, bundle.map(Ok), None, None, false, false).await
+    }
+
+    /// [`over_answering_joins`] with every subscribe to `topic` held as in
+    /// [`over_holding_subscribe`].
+    pub(crate) async fn over_answering_joins_holding_subscribe(
+        store: Store,
+        bundle: calimero_node_primitives::join_bundle::JoinBundle,
+        topic: String,
+    ) -> (Harness, Arc<Semaphore>) {
+        let gate = Arc::new(Semaphore::new(0));
+        let harness = build(
+            store,
+            Some(Ok(bundle)),
+            None,
+            Some((topic, Arc::clone(&gate))),
+            false,
+            false,
+        )
+        .await;
+        (harness, gate)
+    }
+
+    /// [`over`], with every peer asked refusing the join for `reason`.
+    pub(crate) async fn over_refusing_joins(store: Store, reason: &str) -> Harness {
+        let refused = calimero_node_primitives::NamespaceJoinRefused {
+            reason: reason.to_owned(),
+            refusers: 1,
+        };
+        build(store, Some(Err(refused)), None, None, false, false).await
+    }
+
+    /// [`over`], with one peer subscribed to every topic: a publish then waits for
+    /// acks instead of returning at once.
+    pub(crate) async fn over_with_a_subscriber(store: Store) -> Harness {
+        build(store, None, None, None, false, true).await
     }
 
     /// [`over`], with full-text search turned on.
@@ -1290,18 +1449,32 @@ pub(crate) mod actor {
         store: Store,
         search: std::sync::Arc<calimero_search::SearchService>,
     ) -> Harness {
-        build(store, None, Some(search), None).await
+        build(store, None, Some(search), None, false, false).await
+    }
+
+    /// [`over`], on a node that can switch a context's release, recording the
+    /// absorbed-delta replays it is asked for.
+    pub(crate) async fn over_switching(store: Store) -> Harness {
+        build(store, None, None, None, true, false).await
     }
 
     async fn build(
         store: Store,
-        bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
+        joins: Option<
+            Result<
+                calimero_node_primitives::join_bundle::JoinBundle,
+                calimero_node_primitives::NamespaceJoinRefused,
+            >,
+        >,
         search: Option<std::sync::Arc<calimero_search::SearchService>>,
         held: Option<(String, Arc<Semaphore>)>,
+        switching: bool,
+        subscriber: bool,
     ) -> Harness {
         let (subscribed_tx, subscribed) = unbounded_channel();
         let (unsubscribed_tx, unsubscribed) = unbounded_channel();
         let (broadcast_tx, broadcast) = unbounded_channel();
+        let (published_tx, published) = unbounded_channel();
         let live = Arc::new(Mutex::new(BTreeSet::new()));
         let network = LazyRecipient::<NetworkMessage>::new();
         let recipient = network.clone();
@@ -1312,19 +1485,36 @@ pub(crate) mod actor {
                 subscribed: subscribed_tx,
                 unsubscribed: unsubscribed_tx,
                 broadcast: broadcast_tx,
+                published: published_tx,
                 live: stub_live,
                 held,
+                subscriber,
             }
         });
 
-        let (node_client, data_dir, blob_dir) = match bundle {
-            Some(bundle) => {
-                calimero_node_primitives::test_fixtures::node_client_over_answering_joins(
+        let (drains_tx, drains) = unbounded_channel();
+        let node_manager = LazyRecipient::<NodeMessage>::new();
+        let recipient = node_manager.clone();
+        let stub_node_manager = StubNodeManager::create(move |ctx| {
+            assert!(recipient.init(ctx), "node manager recipient init");
+            StubNodeManager {
+                drains: drains_tx,
+                held: Vec::new(),
+            }
+        });
+
+        let (node_client, data_dir, blob_dir) = match joins {
+            Some(answer) => {
+                calimero_node_primitives::test_fixtures::node_client_over_join_answer(
                     store.clone(),
                     NetworkClient::new(network),
-                    bundle,
+                    answer,
                 )
                 .await
+            }
+            None if switching => {
+                node_client_switching_over(store.clone(), NetworkClient::new(network), node_manager)
+                    .await
             }
             None => node_client_over(store.clone(), NetworkClient::new(network)).await,
         };
@@ -1352,9 +1542,12 @@ pub(crate) mod actor {
             subscribed,
             unsubscribed,
             broadcast,
+            drains,
+            published,
             live,
             _dirs: (data_dir, blob_dir),
             _network: stub,
+            _node_manager: stub_node_manager,
         }
     }
 }

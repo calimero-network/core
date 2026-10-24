@@ -26,9 +26,9 @@ struct Release {
 const USER_AGENT: &str = "calimero-server-build";
 const FRESHNESS_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 7);
 const CALIMERO_WEBUI_REPO: &str = "calimero-network/admin-dashboard";
-const CALIMERO_WEBUI_VERSION: &str = "v1.21.3";
+const CALIMERO_WEBUI_VERSION: &str = "v1.22.1";
 const CALIMERO_WEBUI_SHA256: &str =
-    "8bf1b9d9986eea3423734bea9b33b9ec0eb2681a6e28db29dc4616cc11de5d70";
+    "ffaf2e5045f94a762d2b1804c58d1f8af22790130fb87d7171e000440b80c228";
 const CALIMERO_WEBUI_DEFAULT_ASSET: &str = "admin-dashboard-build.zip";
 const CALIMERO_WEBUI_RELEASE_API_URL: &str =
     "https://api.github.com/repos/{repo}/releases/{version}";

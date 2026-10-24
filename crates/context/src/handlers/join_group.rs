@@ -1,6 +1,7 @@
 use calimero_governance_store::{
-    account_for_group, CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
-    MetadataRepository, NamespaceMembershipService, ReentryRepository,
+    account_for_group, CapabilitiesRepository, ForgottenNamespaces, GroupKeyring,
+    MembershipRepository, MetaRepository, MetadataRepository, NamespaceMembershipService,
+    NamespaceRepository, ReentryRepository,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +23,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tracing::{info, warn};
 
 use crate::error::ContextError;
+use crate::handlers::rejoin_namespace::RejoinLock;
 use crate::ContextManager;
 use calimero_governance_store::op_events::subscribe as subscribe_op_events;
 use calimero_governance_store::op_events::OpEvent;
@@ -74,9 +76,13 @@ impl Handler<JoinGroupRequest> for ContextManager {
         let ack_router = Arc::clone(&self.ack_router);
         let context_client = self.context_client.clone();
         let key_delivery_fallback_wait = self.config.key_delivery_fallback_wait;
+        let rejoining = Arc::clone(&self.rejoining);
 
         ActorResponse::r#async(
             async move {
+                // A restore in flight may undo its follow; the join runs after it, on its own.
+                let _in_flight = RejoinLock::acquire(rejoining, namespace_id).await;
+                NamespaceRepository::new(&datastore).participate_in(&group_id)?;
                 let sk = PrivateKey::from(sk_bytes);
                 let role = match invited_role {
                     0 => GroupMemberRole::Admin,
@@ -188,6 +194,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         created_at: 0,
                         auto_join: true,
                     };
+                    // Marked before the meta is written: a crash in between leaves
+                    // an orphan marker, which only refuses, never an unmarked hint.
+                    if target_application_id != calimero_primitives::application::ZERO_APPLICATION_ID {
+                        MetaRepository::new(&datastore).mark_target_unverified(&group_id)?;
+                    }
                     MetaRepository::new(&datastore).save(&group_id, &meta)?;
 
                     // The hint goes to its own node-local row, not to a
@@ -261,6 +272,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // Whether the direct request reached anyone, for the refusal
                 // below if nobody endorses the join.
                 let mut reached_a_peer = true;
+                // What a member said when it refused, for that same refusal.
+                let mut refusal: Option<String> = None;
                 let join_result = match node_client
                     .request_namespace_join(
                         namespace_id,
@@ -278,6 +291,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             "direct namespace-join request found no reachable mesh peer; \
                              recording local membership and relying on gossip/sync catch-up"
                         );
+                        refusal = e
+                            .downcast_ref::<calimero_node_primitives::NamespaceJoinRefused>()
+                            .map(|refused| refused.reason.clone());
                         reached_a_peer = false;
                         JoinBundle::empty()
                     }
@@ -591,7 +607,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // preference.
                 let Some(endorsement_bytes) = join_result.admitter_endorsement_bytes.as_ref()
                 else {
-                    return Err(ContextError::JoinNotEndorsed { reached_a_peer }.into());
+                    return Err(ContextError::JoinNotEndorsed {
+                        reached_a_peer,
+                        refusal,
+                    }
+                    .into());
                 };
                 let admitter_endorsement = Box::new(
                     borsh::from_slice::<calimero_governance_types::AdmitterEndorsement>(
@@ -1020,6 +1040,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     "member joined group via direct request-response"
                 );
 
+                // An explicit join lifts a removal, or no automatic path follows it again.
+                ForgottenNamespaces::new(&datastore).clear(&ns_id)?;
+
                 // Resolved after the join has applied, so a joiner that enrolled
                 // as part of it reports the account it actually writes as rather
                 // than the stand-in its key would have derived a moment earlier.
@@ -1251,6 +1274,7 @@ mod authz_matrix;
 mod tests {
     use std::sync::Arc;
 
+    use calimero_context_client::group::RejoinNamespaceRequest;
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
@@ -1535,9 +1559,7 @@ mod tests {
         bundle
     }
 
-    async fn join_with_bundle(
-        bundle: calimero_node_primitives::join_bundle::JoinBundle,
-    ) -> (Store, eyre::Result<JoinGroupResponse>) {
+    fn a_store_with_a_joiner() -> Store {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let group = ContextGroupId::from(GROUP);
         let joiner_sk = [0xE1; 32];
@@ -1551,7 +1573,51 @@ mod tests {
                 &joiner_sk,
             )
             .expect("hold the joiner's namespace identity");
+        store
+    }
+
+    async fn join_with_bundle(
+        bundle: calimero_node_primitives::join_bundle::JoinBundle,
+    ) -> (Store, eyre::Result<JoinGroupResponse>) {
+        let store = a_store_with_a_joiner();
+        let outcome = join_over(&store, bundle).await;
+        (store, outcome)
+    }
+
+    async fn join_over(
+        store: &Store,
+        bundle: calimero_node_primitives::join_bundle::JoinBundle,
+    ) -> eyre::Result<JoinGroupResponse> {
         let harness = actor::over_answering_joins(store.clone(), Some(bundle)).await;
+        harness
+            .manager
+            .send(JoinGroupRequest {
+                invitation: an_invitation(ContextGroupId::from(GROUP)),
+                group_name: None,
+            })
+            .await
+            .expect("the manager answers")
+    }
+
+    /// A node that removed the namespace follows it again once the user joins it
+    /// by invitation; a join that fails leaves the removal in force.
+    #[actix::test]
+    async fn a_join_lifts_the_removal_only_once_it_succeeds() {
+        let group = ContextGroupId::from(GROUP);
+        let removed = |store: &Store| {
+            ForgottenNamespaces::new(store)
+                .mark(
+                    &group,
+                    Some(calimero_primitives::application::ApplicationId::from(APP)),
+                    1,
+                    None,
+                )
+                .expect("remove the namespace");
+        };
+
+        let refused = a_store_with_a_joiner();
+        removed(&refused);
+        let harness = actor::over_refusing_joins(refused.clone(), "not admitted").await;
         let outcome = harness
             .manager
             .send(JoinGroupRequest {
@@ -1560,7 +1626,166 @@ mod tests {
             })
             .await
             .expect("the manager answers");
-        (store, outcome)
+        assert!(outcome.is_err(), "the join is refused");
+        assert!(
+            ForgottenNamespaces::new(&refused)
+                .is_forgotten(&group)
+                .expect("read"),
+            "a refused join keeps the removal"
+        );
+
+        let joined = a_store_with_a_joiner();
+        removed(&joined);
+        let outcome = join_over(
+            &joined,
+            a_bundle_keyed_by(&PrivateKey::from([0xD3; 32]), &[0xE1; 32]),
+        )
+        .await;
+        assert!(outcome.is_ok(), "the join completes: {outcome:?}");
+        assert!(
+            !ForgottenNamespaces::new(&joined)
+                .is_forgotten(&group)
+                .expect("read"),
+            "the join lifts the removal, or a restart stops following the namespace"
+        );
+    }
+
+    /// A restore that times out undoes its follow while the join is in flight; the
+    /// join then lifts the removal, so it must run after the restore is done.
+    #[actix::test]
+    async fn a_join_waits_for_a_restore_in_flight_and_keeps_its_follow() {
+        let group = ContextGroupId::from(GROUP);
+        let store = a_store_with_a_joiner();
+        ForgottenNamespaces::new(&store)
+            .mark(
+                &group,
+                Some(calimero_primitives::application::ApplicationId::from(APP)),
+                1,
+                None,
+            )
+            .expect("remove the namespace");
+        let (harness, gate) = actor::over_answering_joins_holding_subscribe(
+            store.clone(),
+            a_bundle_keyed_by(&PrivateKey::from([0xD3; 32]), &[0xE1; 32]),
+            format!("ns/{}", hex::encode(GROUP)),
+        )
+        .await;
+        gate.add_permits(1);
+
+        let restore = harness.manager.send(RejoinNamespaceRequest {
+            namespace_id: group,
+        });
+        let join = async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let join = harness.manager.send(JoinGroupRequest {
+                invitation: an_invitation(group),
+                group_name: None,
+            });
+            let release = async {
+                tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+                gate.add_permits(1);
+            };
+            tokio::join!(join, release).0
+        };
+        let (restored, joined) = tokio::join!(restore, join);
+
+        assert!(restored.expect("answers").is_err(), "no state ever lands");
+        joined.expect("answers").expect("the join completes");
+        assert!(NamespaceRepository::new(&store)
+            .participating_namespaces()
+            .expect("read participation")
+            .contains(&group));
+    }
+
+    /// The invitation's application id is unsigned, so a join that seeds it as
+    /// the group's target leaves it marked until a signed op confirms it.
+    #[actix::test]
+    async fn a_joined_groups_target_is_unverified_until_a_signed_op_confirms_it() {
+        let group = ContextGroupId::from(GROUP);
+        let (store, outcome) = join_with_bundle(a_bundle_keyed_by(
+            &PrivateKey::from([0xD3; 32]),
+            &[0xE1; 32],
+        ))
+        .await;
+        assert!(outcome.is_ok(), "the join completes: {outcome:?}");
+
+        let metas = calimero_governance_store::MetaRepository::new(&store);
+        let seeded = metas
+            .load(&group)
+            .expect("read")
+            .expect("the join seeds meta");
+        assert_eq!(
+            seeded.target.application_id,
+            calimero_primitives::application::ApplicationId::from(APP)
+        );
+        assert!(metas.is_target_unverified(&group).expect("read"));
+    }
+
+    /// A join no member endorses still leaves the seeded meta behind, so the
+    /// marker has to be there for the hint it holds.
+    #[actix::test]
+    async fn a_refused_join_leaves_its_seeded_target_marked() {
+        let group = ContextGroupId::from(GROUP);
+        let store = a_store_with_a_joiner();
+        let harness = actor::over_refusing_joins(store.clone(), "not admitted").await;
+        let outcome = harness
+            .manager
+            .send(JoinGroupRequest {
+                invitation: an_invitation(group),
+                group_name: None,
+            })
+            .await
+            .expect("the manager answers");
+        assert!(outcome.is_err(), "the join is refused");
+
+        let metas = calimero_governance_store::MetaRepository::new(&store);
+        assert!(metas.load(&group).expect("read").is_some());
+        assert!(metas.is_target_unverified(&group).expect("read"));
+    }
+
+    /// A join every member refused carries the member's reason.
+    ///
+    /// It used to read as "could not reach any member": the joiner loop gave
+    /// the refusal back untyped, so the join took its no-peer branch and the
+    /// person was told to wait for the inviter to come online when a member had
+    /// already said why it would not admit them.
+    #[actix::test]
+    async fn a_refused_join_keeps_the_members_reason() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let group = ContextGroupId::from(GROUP);
+        let joiner_sk = [0xE1; 32];
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("hold an account root, as an initialised node does");
+        calimero_governance_store::NamespaceRepository::new(&store)
+            .store_identity(
+                &group,
+                &PrivateKey::from(joiner_sk).public_key(),
+                &joiner_sk,
+            )
+            .expect("hold the joiner's namespace identity");
+        let reason = "identity abc was removed from group def and cannot rejoin";
+
+        let harness = actor::over_refusing_joins(store, reason).await;
+        let outcome = harness
+            .manager
+            .send(JoinGroupRequest {
+                invitation: an_invitation(group),
+                group_name: None,
+            })
+            .await
+            .expect("the manager answers");
+
+        let refusal = match outcome
+            .as_ref()
+            .map_err(|e| e.downcast_ref::<crate::error::ContextError>())
+        {
+            Err(Some(crate::error::ContextError::JoinNotEndorsed { refusal, .. })) => {
+                refusal.clone()
+            }
+            other => panic!("expected an unendorsed join, got: {other:?}"),
+        };
+        assert_eq!(refusal.as_deref(), Some(reason));
     }
 
     /// A join that reached no peer, retried once one answers, still leaves the
@@ -1610,7 +1835,8 @@ mod tests {
                     .as_ref()
                     .map_err(|e| e.downcast_ref::<crate::error::ContextError>()),
                 Err(Some(crate::error::ContextError::JoinNotEndorsed {
-                    reached_a_peer: false
+                    reached_a_peer: false,
+                    refusal: None,
                 }))
             ),
             "got: {first:?}"

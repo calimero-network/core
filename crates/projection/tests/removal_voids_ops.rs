@@ -3,6 +3,7 @@
 
 use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey};
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::MemberCapabilities;
 use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
@@ -76,6 +77,10 @@ struct Device {
 
 impl Device {
     fn op(&self, ns: u64, parents: &[&Op], payload: OpPayload) -> Op {
+        self.op_in(scope(), ns, parents, payload)
+    }
+
+    fn op_in(&self, scope: ScopeId, ns: u64, parents: &[&Op], payload: OpPayload) -> Op {
         let parents: Vec<[u8; 32]> = parents.iter().map(|p| p.id()).collect();
         let authorship = Authorship {
             account: self.account,
@@ -83,9 +88,9 @@ impl Device {
             device_key: self.sk.public_key(),
         };
         let h = hlc(ns);
-        let id = Op::compute_id(scope(), &parents, &authorship, &h, &payload);
+        let id = Op::compute_id(scope, &parents, &authorship, &h, &payload);
         Op::new(
-            scope(),
+            scope,
             parents,
             authorship,
             h,
@@ -96,16 +101,17 @@ impl Device {
     }
 
     fn link(&self, ns: u64, parents: &[&Op]) -> Op {
-        self.op(
-            ns,
-            parents,
-            OpPayload::DeviceLinked {
-                genesis: self.genesis,
-                chain: Vec::new(),
-                cert: self.cert,
-                scope_epoch: 0,
-            },
-        )
+        self.op(ns, parents, self.link_payload())
+    }
+
+    fn link_payload(&self) -> OpPayload {
+        OpPayload::DeviceLinked {
+            genesis: self.genesis,
+            chain: Vec::new(),
+            cert: self.cert,
+            scope_epoch: 0,
+            applications: vec![],
+        }
     }
 }
 
@@ -618,4 +624,169 @@ fn a_revocation_cited_from_a_cut_before_the_link_is_entitled_to_an_admin_only() 
         !by_member,
         "a member has no binding to rest a self-service claim on"
     );
+}
+
+/// Once she has handed the namespace over, its founder is an admin like any other:
+/// demoted by the new owner, she loses the ops she made concurrently.
+#[test]
+fn a_founder_demoted_after_a_transfer_loses_her_concurrent_ops() {
+    founder_demoted_after_a_transfer(|founding, _| founding);
+}
+
+/// The same for a founder whose genesis a relay published on her behalf.
+#[test]
+fn a_relayed_founder_demoted_after_a_transfer_loses_her_concurrent_ops() {
+    founder_demoted_after_a_transfer(|founding, root| OpPayload::RelaySeated {
+        carried: Box::new(founding),
+        group: root,
+        relay: Person::new(9).id,
+        capabilities: MemberCapabilities::CAN_AUTHOR_ON_BEHALF,
+        device: None,
+        tee_role_from: None,
+    });
+}
+
+/// Alice founds the namespace with `published(founding, root)`, makes Bob an admin and
+/// hands it to him; Bob demotes her while she adds Zed as an admin.
+fn founder_demoted_after_a_transfer(published: impl Fn(OpPayload, ContextGroupId) -> OpPayload) {
+    let alice = Person::new(1);
+    let bob = Person::new(2);
+    let zed = Person::new(4);
+    let alice_device = alice.device(11);
+    let bob_device = bob.device(21);
+    let salt = [0x5A; 32];
+    let founded = ScopeId::from(calimero_account::founded_namespace_id(&alice.id, &salt));
+    let root = ContextGroupId::from(*founded.as_bytes());
+    let member_added = |member, role| OpPayload::MemberAdded {
+        group: root,
+        member,
+        role,
+    };
+
+    let genesis = alice_device.op_in(
+        founded,
+        10,
+        &[],
+        published(
+            OpPayload::NamespaceFounded {
+                founder: alice.id,
+                salt,
+                carried: Box::new(alice_device.link_payload()),
+            },
+            root,
+        ),
+    );
+    let bob_admin = alice_device.op_in(
+        founded,
+        20,
+        &[&genesis],
+        member_added(bob.id, GroupMemberRole::Admin),
+    );
+    let link_bob = bob_device.op_in(founded, 30, &[&bob_admin], bob_device.link_payload());
+    let transfer = alice_device.op_in(
+        founded,
+        40,
+        &[&link_bob],
+        OpPayload::AdminChanged { new_admin: bob.id },
+    );
+    let demotion = bob_device.op_in(
+        founded,
+        50,
+        &[&transfer],
+        member_added(alice.id, GroupMemberRole::Member),
+    );
+    let by_alice = alice_device.op_in(
+        founded,
+        51,
+        &[&transfer],
+        member_added(zed.id, GroupMemberRole::Admin),
+    );
+    let log = vec![
+        genesis,
+        bob_admin,
+        link_bob,
+        transfer,
+        demotion.clone(),
+        by_alice.clone(),
+    ];
+
+    let void = ScopeState::void_ops(
+        &log,
+        AuthorityBase {
+            root: Some((root, bob.id)),
+            default_cap_base: 0,
+        },
+    );
+    assert!(void.contains(&by_alice.id()));
+    assert!(!void.contains(&demotion.id()));
+}
+
+/// A founder whose only link is the one her genesis carries is still seen behind a
+/// removal her node built without an author.
+#[test]
+fn a_removal_built_without_an_author_is_seen_from_the_genesis_link() {
+    let alice = Person::new(1);
+    let bob = Person::new(2);
+    let zed = Person::new(4);
+    let alice_device = alice.device(11);
+    let bob_device = bob.device(21);
+    let salt = [0x5A; 32];
+    let founded = ScopeId::from(calimero_account::founded_namespace_id(&alice.id, &salt));
+    let root = ContextGroupId::from(*founded.as_bytes());
+
+    let genesis = alice_device.op_in(
+        founded,
+        10,
+        &[],
+        OpPayload::NamespaceFounded {
+            founder: alice.id,
+            salt,
+            carried: Box::new(alice_device.link_payload()),
+        },
+    );
+    let bob_admin = alice_device.op_in(
+        founded,
+        20,
+        &[&genesis],
+        OpPayload::MemberAdded {
+            group: root,
+            member: bob.id,
+            role: GroupMemberRole::Admin,
+        },
+    );
+    let link_bob = bob_device.op_in(founded, 30, &[&bob_admin], bob_device.link_payload());
+    let payload = OpPayload::MemberRemoved {
+        group: root,
+        member: bob.id,
+    };
+    let authorship = Authorship::unattributed(alice_device.sk.public_key());
+    let parents = vec![link_bob.id()];
+    let h = hlc(40);
+    let id = Op::compute_id(founded, &parents, &authorship, &h, &payload);
+    let removal = Op::new(
+        founded,
+        parents,
+        authorship,
+        h,
+        payload,
+        [0u8; 32],
+        alice_device.sk.sign(&id).expect("sign").to_bytes(),
+    );
+    let by_bob = bob_device.op_in(
+        founded,
+        41,
+        &[&link_bob],
+        OpPayload::MemberAdded {
+            group: root,
+            member: zed.id,
+            role: GroupMemberRole::Member,
+        },
+    );
+    let log = vec![genesis, bob_admin, link_bob, removal, by_bob.clone()];
+
+    let base = AuthorityBase {
+        root: Some((root, alice.id)),
+        default_cap_base: 0,
+    };
+    assert!(ScopeState::void_ops(&log, base).contains(&by_bob.id()));
 }

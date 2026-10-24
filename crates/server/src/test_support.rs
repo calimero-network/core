@@ -11,13 +11,26 @@ use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
 use calimero_node_primitives::messages::NodeMessage;
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::context::ContextId;
 use calimero_primitives::events::NodeEvent;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
+use calimero_store::key::{ApplicationMeta, ContextMeta};
+use calimero_store::types::ContextMeta as ContextMetaValue;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
 use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
+
+/// Records `context` as running `app`.
+pub(crate) fn put_context_app(store: &Store, context: ContextId, app: ApplicationId) {
+    let meta = ContextMetaValue::new(ApplicationMeta::new(app), [0; 32], vec![], None);
+    store
+        .handle()
+        .put(&ContextMeta::new(context), &meta)
+        .unwrap();
+}
 
 /// One live presence entry as the node's awareness store reports it:
 /// `(author, slice, age_ms)`.
@@ -211,6 +224,18 @@ pub(crate) fn author_proof_hex() -> String {
 /// The admin API's unauthenticated router as a relay serves it
 /// (`delegated_access`), over `store` with this node's identity provisioned.
 pub(crate) async fn public_router(store: &Store) -> (axum::Router, TempDir) {
+    let (_protected, public, blob_dir) = admin_routers(store).await;
+    (public, blob_dir)
+}
+
+/// The admin API's credentialed router, over `store` with this node's identity
+/// provisioned.
+pub(crate) async fn protected_router(store: &Store) -> (axum::Router, TempDir) {
+    let (protected, _public, blob_dir) = admin_routers(store).await;
+    (protected, blob_dir)
+}
+
+async fn admin_routers(store: &Store) -> (axum::Router, axum::Router, TempDir) {
     let (state, blob_dir) = admin_state(store).await;
     let config = crate::config::ServerConfig::new(
         vec![],
@@ -220,9 +245,9 @@ pub(crate) async fn public_router(store: &Store) -> (axum::Router, TempDir) {
         None,
         None,
     );
-    let (_path, _protected, public) =
+    let (_path, protected, public) =
         crate::admin::service::setup(&config, state).expect("admin api enabled");
-    (public, blob_dir)
+    (protected, public, blob_dir)
 }
 
 /// `GET`s `uri` from `router`, answering the status and the body.
@@ -316,15 +341,14 @@ pub(crate) fn apply_through_governance(
     namespace: &calimero_context_config::types::ContextGroupId,
     signer: &calimero_primitives::identity::PrivateKey,
     op: calimero_context_client::local_governance::GroupOp,
-) {
+) -> eyre::Result<()> {
     use calimero_governance_store::test_fixtures::test_meta;
 
     calimero_governance_store::MetaRepository::new(store)
         .save(namespace, &test_meta())
         .unwrap();
-    let _applied =
-        calimero_governance_store::sign_apply_local_group_op_borsh(store, namespace, signer, op)
-            .expect("the op applies");
+    calimero_governance_store::sign_apply_local_group_op_borsh(store, namespace, signer, op)
+        .map(|_| ())
 }
 
 /// Withdraw `device` from `namespace` the way a peer's revocation lands: an
@@ -335,6 +359,16 @@ pub(crate) fn revoke_through_governance(
     account: calimero_account::AccountId,
     device: calimero_primitives::identity::DeviceId,
 ) {
+    admin_revokes(store, namespace, account, device).expect("the op applies");
+}
+
+/// [`revoke_through_governance`], returning the apply's result.
+pub(crate) fn admin_revokes(
+    store: &Store,
+    namespace: &calimero_context_config::types::ContextGroupId,
+    account: calimero_account::AccountId,
+    device: calimero_primitives::identity::DeviceId,
+) -> eyre::Result<()> {
     use calimero_governance_store::test_fixtures::enrol_member;
     use calimero_governance_store::MembershipRepository;
     use calimero_primitives::context::GroupMemberRole;
@@ -354,7 +388,7 @@ pub(crate) fn revoke_through_governance(
             device,
             proof: None,
         },
-    );
+    )
 }
 
 /// The account whose root is `root` withdrawing its own `device`, by root-signed proof.
@@ -407,4 +441,52 @@ pub(crate) fn descope_by_root(
             .expect("the root signs its own device's scope"),
         }),
     }
+}
+
+/// The embedded auth service a node with `auth_mode = "embedded"` runs, over
+/// in-memory storage and with no providers: it can verify tokens, and no
+/// caller here holds one.
+pub(crate) async fn embedded_auth_service() -> std::sync::Arc<mero_auth::AuthService> {
+    use mero_auth::auth::token::TokenManager;
+    use mero_auth::config::JwtConfig;
+    use mero_auth::secrets::SecretManager;
+    use mero_auth::storage::{MemoryStorage, Storage};
+
+    let storage: std::sync::Arc<dyn Storage> = std::sync::Arc::new(MemoryStorage::new());
+    let secrets = std::sync::Arc::new(SecretManager::new(std::sync::Arc::clone(&storage)));
+    secrets.initialize().await.expect("auth secrets");
+    let tokens = TokenManager::new(
+        JwtConfig {
+            issuer: "test".to_owned(),
+            access_token_expiry: 3600,
+            refresh_token_expiry: 86400,
+            client_access_token_expiry: mero_auth::config::default_client_access_token_expiry(),
+            client_refresh_token_expiry: mero_auth::config::default_client_refresh_token_expiry(),
+            node_host: None,
+        },
+        storage,
+        secrets,
+    );
+    std::sync::Arc::new(mero_auth::AuthService::new(Vec::new(), tokens))
+}
+
+/// `POST`s `body` as JSON to `uri` on `router`, carrying no credential of any
+/// kind, and answers the status and the body.
+pub(crate) async fn post_json_uncredentialed(
+    router: axum::Router,
+    uri: &str,
+    body: &serde_json::Value,
+) -> (axum::http::StatusCode, String) {
+    use tower::ServiceExt as _;
+
+    let request = axum::http::Request::post(uri)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body.to_string()))
+        .expect("a request");
+    let response = router.oneshot(request).await.expect("the route answers");
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read the response");
+    (status, String::from_utf8_lossy(&body).into_owned())
 }

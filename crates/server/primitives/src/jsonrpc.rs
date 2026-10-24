@@ -194,6 +194,9 @@ pub enum ExecutionError {
          read-only, so its writes are discarded"
     )]
     ReadOnlyWriteRefused { context_id: ContextId },
+    /// This node holds no identity in the context, so it cannot execute there.
+    #[error("no owned identity found for this context")]
+    NoOwnedIdentity,
     #[serde(untagged)]
     #[error(transparent)]
     ExecuteError(ExecuteError),

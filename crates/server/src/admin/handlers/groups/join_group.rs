@@ -9,7 +9,7 @@ use calimero_server_primitives::admin::{
 use tracing::{debug, error, info};
 
 use crate::admin::handlers::validation::ValidatedJson;
-use crate::admin::service::{parse_api_error, ApiResponse};
+use crate::admin::service::{join_refusal_code, parse_api_error, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
@@ -20,7 +20,8 @@ pub async fn handler(
     if let Some(refusal) = crate::admin::client_key_scope::refuse_join_outside_binding(
         &state,
         client_key.as_deref(),
-        &req.invitation,
+        &req.invitation.invitation.group_id,
+        Some(&req.invitation),
     ) {
         return refusal;
     }
@@ -34,7 +35,10 @@ pub async fn handler(
             group_name: req.group_name,
         })
         .await
-        .map_err(parse_api_error);
+        .map_err(|err| {
+            let code = join_refusal_code(&err);
+            (parse_api_error(err), code)
+        });
 
     match result {
         Ok(resp) => {
@@ -51,9 +55,9 @@ pub async fn handler(
             }
             .into_response()
         }
-        Err(err) => {
-            error!(error=?err, "Failed to join group");
-            err.into_response()
+        Err((err, code)) => {
+            error!(error=?err, ?code, "Failed to join group");
+            err.into_coded_response(code)
         }
     }
 }
