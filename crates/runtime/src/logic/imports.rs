@@ -69,6 +69,10 @@ impl VMLogic<'_> {
             // host to the running context.
             fn search_query(request_ptr: u64, register_id: u64) -> u32;
 
+            // One outbound HTTPS request — off unless the operator, the
+            // app's manifest and the run all allow it.
+            fn http_request(request_ptr: u64, register_id: u64) -> u32;
+
             // Private storage functions (node-local, NOT synchronized)
             fn private_storage_read(key_ptr: u64, register_id: u64) -> u32;
             fn private_storage_remove(key_ptr: u64, register_id: u64) -> u32;

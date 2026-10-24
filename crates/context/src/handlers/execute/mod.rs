@@ -3434,6 +3434,8 @@ pub(crate) async fn execute(
                     tee_trigger,
                     sealing,
                     search,
+                    // Outbound requests are not wired to the node yet.
+                    None,
                     remote_delta,
                 )?
             } else {
@@ -3449,6 +3451,7 @@ pub(crate) async fn execute(
                     xcall_origin,
                     tee_trigger,
                     sealing,
+                    None,
                     None,
                     remote_delta,
                 )?

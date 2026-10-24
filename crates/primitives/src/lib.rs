@@ -14,6 +14,7 @@ pub mod events;
 pub mod hash;
 pub mod identity;
 pub mod metadata;
+pub mod outbound;
 pub mod reflect;
 pub mod search;
 pub mod sync_status;
