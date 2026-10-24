@@ -86,13 +86,10 @@ steps:
     check_interval: 2
 
   - name: Node-1 hands the namespace to node-2
-    type: script
-    script: scripts/transfer-ownership.sh
-    target: local
-    args:
-      - transfer-owner-node-1
-      - '{{namespace_id}}'
-      - '{{account_node2}}'
+    type: transfer_ownership
+    node: transfer-owner-node-1
+    group_id: '{{namespace_id}}'
+    new_owner: '{{account_node2}}'
 
   - name: Node-1 still lists the namespace
     type: assert_api_response
@@ -150,14 +147,12 @@ steps:
     interval: 2
 
   - name: Node-1 is no longer the owner and cannot transfer again
-    type: script
-    script: scripts/transfer-ownership.sh
-    target: local
-    args:
-      - transfer-owner-node-1
-      - '{{namespace_id}}'
-      - '{{account_node1}}'
-      - '403'
+    type: transfer_ownership
+    node: transfer-owner-node-1
+    group_id: '{{namespace_id}}'
+    new_owner: '{{account_node1}}'
+    expected_failure: true
+    expected_error: 'HTTP 403'
 
   - name: Node-1 leaves the namespace
     type: leave_namespace
