@@ -1738,10 +1738,14 @@ async fn behind_an_auth_proxy_a_sealed_login_reaches_the_auth_service() {
 
 #[tokio::test]
 async fn behind_an_auth_proxy_an_unreachable_auth_service_is_a_502() {
-    // Bound and released: nothing listens there.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    // Hangs up on every connect while holding the port, so a parallel test cannot take it over.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
-    drop(listener);
+    let _auth = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            drop(stream);
+        }
+    });
     let transport = guarded_transport(&origin);
 
     let (head, _) = sealed_call_with(
