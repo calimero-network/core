@@ -28,8 +28,9 @@ pub struct ContextConfig {
 
 /// The operator's knobs for outbound HTTPS requests (`[context.outbound]`).
 ///
-/// Off by default. When on, a run may make one request, only to a URL its
-/// app's signed manifest declares, only to a host listed here, and only with
+/// Off by default. When on, a run may make one request, only under a URL
+/// prefix its app's signed manifest declares, only to a host allowed here,
+/// and only with
 /// secrets this node can supply for that app. See [`crate::outbound`].
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -37,8 +38,10 @@ pub struct OutboundSettings {
     /// Make outbound requests at all. `false` (the default): `http_request`
     /// traps in every run.
     pub enabled: bool,
-    /// The hosts requests may go to, as DNS names. A request to any other host
-    /// is refused, whatever the app declares.
+    /// The hosts requests may go to, as DNS names; `"*"` allows any host an
+    /// installed app's signed manifest declares. A request to any other host
+    /// is refused, whatever the app declares. Every host is still public-only,
+    /// and a secret still goes only to the hosts it is bound to.
     pub hosts: Vec<String>,
     /// Secrets from environment variables, by the name a request uses
     /// (`{{secret:NAME}}`). Exclusive with `sidecar`.

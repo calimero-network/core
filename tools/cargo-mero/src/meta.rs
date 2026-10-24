@@ -364,7 +364,7 @@ fn load_from_values(
     for url in &raw.outbound {
         if !calimero_bundle::is_outbound_url(url) {
             return Err(eyre!(
-                "invalid outbound entry `{url}`: must be an https:// URL with a host"
+                "invalid outbound entry `{url}`: must be an https:// URL prefix with a host and no query or fragment"
             ));
         }
     }

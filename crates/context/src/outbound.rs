@@ -5,13 +5,15 @@
 //! makes a request only when every gate holds:
 //!
 //! 1. **The operator turned it on** (`[context.outbound] enabled`, off by
-//!    default) and lists the request's host (`hosts`).
-//! 2. **The app declared the exact URL** in its signed bundle manifest
-//!    (`outbound`). A run gets a client only when its app declares one.
+//!    default) and allows the request's host (`hosts`: listed, or `"*"` for
+//!    any host an app declares).
+//! 2. **The app declared a prefix covering the URL** in its signed bundle
+//!    manifest (`outbound`): same host, and a path at or below the prefix's
+//!    at a `/`. A run gets a client only when its app declares one.
 //! 3. **The run writes on this node**: never a view, a peer's delta, a state
 //!    op, a search export or a migration. `internal_execute` decides that.
 //! 4. **The request fits**: `https` on port 443 to a DNS name that resolves
-//!    only to public addresses, a `GET` or `POST`, the size limits in
+//!    only to public addresses, no fragment, the size limits in
 //!    `calimero_primitives::outbound`, no redirect followed, one per run.
 //!
 //! # Secrets
@@ -285,6 +287,8 @@ pub trait Transport: Send + Sync + fmt::Debug {
 #[derive(Debug)]
 pub struct OutboundService {
     hosts: BTreeSet<String>,
+    /// `hosts` held `"*"`: any host an app declares, still public-only.
+    any_host: bool,
     secrets: Option<Arc<dyn SecretProvider>>,
     transport: Arc<dyn Transport>,
 }
@@ -314,8 +318,16 @@ impl OutboundService {
                 (None, false) => Some(Arc::new(EnvSecrets::from_settings(settings)?)),
                 (None, true) => None,
             };
+        let any_host = settings.hosts.iter().any(|h| h.trim() == "*");
+        let named: Vec<String> = settings
+            .hosts
+            .iter()
+            .filter(|h| h.trim() != "*")
+            .cloned()
+            .collect();
         Ok(Some(Arc::new(Self {
-            hosts: normalize_hosts(&settings.hosts)?.into_iter().collect(),
+            hosts: normalize_hosts(&named)?.into_iter().collect(),
+            any_host,
             secrets,
             transport: Arc::new(HttpsTransport),
         })))
@@ -329,14 +341,19 @@ impl OutboundService {
         transport: Arc<dyn Transport>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            hosts: hosts.iter().map(|h| (*h).to_owned()).collect(),
+            hosts: hosts
+                .iter()
+                .filter(|h| **h != "*")
+                .map(|h| (*h).to_owned())
+                .collect(),
+            any_host: hosts.contains(&"*"),
             secrets,
             transport,
         })
     }
 
-    /// The client for one run of `app`, which declared `declared`; `None` when
-    /// it declared no URL.
+    /// The client for one run of `app`, which declared the URL prefixes
+    /// `declared`; `None` when it declared none this node can use.
     #[must_use]
     pub fn for_run(
         self: &Arc<Self>,
@@ -346,7 +363,7 @@ impl OutboundService {
     ) -> Option<Arc<dyn OutboundHost>> {
         let declared: BTreeSet<String> = declared
             .into_iter()
-            .filter(|u| u.len() <= MAX_URL && u.starts_with("https://"))
+            .filter(|u| u.len() <= MAX_URL && prefix(u).is_some())
             .collect();
         if declared.is_empty() {
             return None;
@@ -372,15 +389,12 @@ impl OutboundService {
         if request.url.len() > MAX_URL {
             bail!("the URL is longer than {MAX_URL} bytes");
         }
-        if !declared.contains(&request.url) {
-            bail!(
-                "{} is not a URL this app's manifest declares under `outbound`",
-                request.url
-            );
-        }
         let url = reqwest::Url::parse(&request.url)?;
         if url.scheme() != "https" {
             bail!("only https is allowed");
+        }
+        if url.fragment().is_some() {
+            bail!("a URL with a fragment is not allowed");
         }
         if !url.username().is_empty() || url.password().is_some() {
             bail!("a URL with credentials is not allowed");
@@ -392,8 +406,18 @@ impl OutboundService {
             Some(url::Host::Domain(d)) => d.to_ascii_lowercase(),
             _ => bail!("the URL must name a host by DNS name, not an address"),
         };
-        if !self.hosts.contains(&host) {
+        if !self.any_host && !self.hosts.contains(&host) {
             bail!("{host} is not a host this node's operator allows");
+        }
+        if !declared
+            .iter()
+            .filter_map(|p| prefix(p))
+            .any(|p| covers(&p, &url))
+        {
+            bail!(
+                "{} is under no URL prefix this app's manifest declares under `outbound`",
+                request.url
+            );
         }
         if request.headers.len() > MAX_HEADERS {
             bail!("at most {MAX_HEADERS} headers");
@@ -546,12 +570,17 @@ impl Transport for HttpsTransport {
                 .connect_timeout(Duration::from_millis(TIMEOUT_MS))
                 .timeout(Duration::from_millis(TIMEOUT_MS))
                 .build()?;
-            let mut builder = match request.method {
-                OutboundMethod::Get => client.get(request.url.clone()),
-                OutboundMethod::Post => {
-                    client.post(request.url.clone()).body(request.body.to_vec())
-                }
+            let method = match request.method {
+                OutboundMethod::Get => reqwest::Method::GET,
+                OutboundMethod::Post => reqwest::Method::POST,
+                OutboundMethod::Put => reqwest::Method::PUT,
+                OutboundMethod::Patch => reqwest::Method::PATCH,
+                OutboundMethod::Delete => reqwest::Method::DELETE,
             };
+            let mut builder = client.request(method, request.url.clone());
+            if !request.body.is_empty() {
+                builder = builder.body(request.body.to_vec());
+            }
             for (name, value) in &request.headers {
                 builder = builder.header(name.as_str(), value.as_str());
             }
@@ -648,6 +677,37 @@ fn run_blocking<T>(future: impl core::future::Future<Output = T>) -> EyreResult<
         .enable_all()
         .build()?;
     Ok(runtime.block_on(future))
+}
+
+/// A declared prefix this node can match against: `https`, a DNS host, no
+/// credentials, query or fragment. `None` for anything else, which then
+/// covers nothing.
+fn prefix(declared: &str) -> Option<reqwest::Url> {
+    let url = reqwest::Url::parse(declared).ok()?;
+    let usable = url.scheme() == "https"
+        && matches!(url.host(), Some(url::Host::Domain(_)))
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none();
+    usable.then_some(url)
+}
+
+/// Whether `prefix` covers `url`: the same host and port, and a path equal to
+/// the prefix's or below it at a `/`. Both paths are the parser's normalized
+/// ones, so a `..` cannot climb out of the prefix.
+fn covers(prefix: &reqwest::Url, url: &reqwest::Url) -> bool {
+    if prefix.host_str() != url.host_str()
+        || prefix.port_or_known_default() != url.port_or_known_default()
+    {
+        return false;
+    }
+    let (base, path) = (prefix.path(), url.path());
+    path == base
+        || (base.ends_with('/') && path.starts_with(base))
+        || path
+            .strip_prefix(base)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {

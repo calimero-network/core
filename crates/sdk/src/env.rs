@@ -1295,15 +1295,16 @@ pub fn search(
     }
 }
 
-/// Ask the node to make one outbound HTTPS request, for what a contract
-/// cannot know by itself: whether a captcha was solved, say.
+/// Ask the node to make one outbound HTTPS request to an outside service: a
+/// captcha check, a payment API, any HTTPS API.
 ///
 /// The node makes it only when every gate holds, and answers with its reason
 /// otherwise:
 ///
 /// - the node's operator turned outbound requests on (`[context.outbound]`,
 ///   off by default) and allows the request's host;
-/// - the app's signed manifest lists `request.url` exactly (`outbound`);
+/// - a URL prefix in the app's signed manifest (`outbound`) covers
+///   `request.url`: the same host, the prefix's path or one below it;
 /// - the run writes state and executes on this node, as its own write or one
 ///   it relays for an author (never a view, a migration, a state op or a
 ///   peer's delta);

@@ -1,14 +1,16 @@
 //! The wire between an app and the node for an outbound HTTPS request.
 //!
-//! A run may ask its node to make **one** HTTPS request, for what a contract
-//! cannot know by itself: whether a captcha was solved, say. The node makes it
+//! A run may ask its node to make **one** HTTPS request to an outside
+//! service, for what a contract cannot know by itself: whether a captcha was
+//! solved, whether a payment went through, what an API answers. The node makes it
 //! only if every gate holds, and refuses otherwise (see the runtime's
 //! `http_request` host function and `calimero-context`'s outbound policy):
 //!
 //! - the node's operator turned outbound requests on (`[context.outbound]`,
-//!   off by default) and listed the request's host;
-//! - the app's signed bundle manifest declares the request's exact URL
-//!   (`outbound`);
+//!   off by default) and allows the request's host (listed, or `"*"` for any
+//!   host an app declares);
+//! - the app's signed bundle manifest declares a URL prefix that covers the
+//!   request's URL (`outbound`);
 //! - the run writes state and executes on this node (its own write, or one it
 //!   relays for an author): never a view, a migration, a check or a peer's
 //!   delta;
@@ -28,12 +30,12 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
-/// Requests one run may make. One: enough to check a captcha or a payment,
-/// and no loop a run could spend sending state out piece by piece.
+/// Requests one run may make. One: enough to ask a service one question, and
+/// no loop a run could spend sending state out piece by piece.
 pub const MAX_REQUESTS_PER_RUN: u64 = 1;
 
 /// Largest request body, in bytes.
-pub const MAX_REQUEST_BODY: usize = 8 * 1024;
+pub const MAX_REQUEST_BODY: usize = 64 * 1024;
 
 /// Largest URL, in bytes.
 pub const MAX_URL: usize = 2048;
@@ -46,11 +48,11 @@ pub const MAX_HEADER_BYTES: usize = 1024;
 
 /// Largest response body the node reads, in bytes. A longer one is refused,
 /// not truncated, so an app never acts on half an answer.
-pub const MAX_RESPONSE_BODY: usize = 64 * 1024;
+pub const MAX_RESPONSE_BODY: usize = 1024 * 1024;
 
 /// How long the node waits for the whole request, in milliseconds. The run
 /// holds its context's write lock meanwhile.
-pub const TIMEOUT_MS: u64 = 5_000;
+pub const TIMEOUT_MS: u64 = 10_000;
 
 /// How a request names a secret the node fills in: `{{secret:NAME}}`.
 pub const SECRET_PREFIX: &str = "{{secret:";
@@ -58,7 +60,7 @@ pub const SECRET_PREFIX: &str = "{{secret:";
 /// The end of a secret placeholder.
 pub const SECRET_SUFFIX: &str = "}}";
 
-/// The two methods a request may use.
+/// The methods a request may use. Append only: the borsh tag is the index.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "borsh", derive(BorshDeserialize, BorshSerialize))]
 pub enum OutboundMethod {
@@ -66,6 +68,12 @@ pub enum OutboundMethod {
     Get,
     /// `POST`, with the body as given.
     Post,
+    /// `PUT`, with the body as given.
+    Put,
+    /// `PATCH`, with the body as given.
+    Patch,
+    /// `DELETE`, with the body as given (usually empty).
+    Delete,
 }
 
 /// What an app asks its node to send.
@@ -73,7 +81,8 @@ pub enum OutboundMethod {
 #[cfg_attr(feature = "borsh", derive(BorshDeserialize, BorshSerialize))]
 pub struct OutboundRequest {
     pub method: OutboundMethod,
-    /// The exact URL, one the app's manifest declares. `https` only.
+    /// The URL, under a prefix the app's manifest declares. `https` only; a
+    /// query string is allowed, a fragment is not.
     pub url: String,
     /// Header names and values. `Host`, `Connection`, `Content-Length`,
     /// `Transfer-Encoding`, `Proxy-*` and `Cookie` are refused; the node sets

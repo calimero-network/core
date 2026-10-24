@@ -116,23 +116,75 @@ fn a_declared_request_reaches_the_host_with_its_secret_and_comes_back_redacted()
 }
 
 #[test]
-fn only_the_exact_declared_url() {
+fn only_urls_under_a_declared_prefix() {
     let fake = Arc::new(Fake::default());
     let s = service(&fake);
-    assert!(refusal(&s, post(&format!("{VERIFY}?x=1"), "")).contains("manifest declares"));
-    assert!(
-        refusal(&s, post("https://challenges.cloudflare.com/other", ""))
-            .contains("manifest declares")
-    );
-    // An app that declares nothing gets no client at all.
-    assert!(s.for_run(forms(), vec![], "ctx".to_owned()).is_none());
+    // The prefix itself, with a query string, and a path below it.
+    assert!(s.prepare(&forms(), &declared(), post(VERIFY, "")).is_ok());
     assert!(s
-        .for_run(
-            forms(),
-            vec!["http://challenges.cloudflare.com/x".to_owned()],
-            "ctx".to_owned()
+        .prepare(&forms(), &declared(), post(&format!("{VERIFY}?x=1"), ""))
+        .is_ok());
+    assert!(s
+        .prepare(&forms(), &declared(), post(&format!("{VERIFY}/v2"), ""))
+        .is_ok());
+    // Not at a `/`, beside it, above it, or out of it through `..`.
+    let outside = [
+        format!("{VERIFY}2"),
+        "https://challenges.cloudflare.com/other".to_owned(),
+        "https://challenges.cloudflare.com/turnstile/v0".to_owned(),
+        format!("{VERIFY}/../../admin"),
+        format!("{VERIFY}/%2e%2e/%2e%2e/admin"),
+    ];
+    for url in outside {
+        assert!(
+            refusal(&s, post(&url, "")).contains("no URL prefix"),
+            "{url}"
+        );
+    }
+    assert!(refusal(&s, post(&format!("{VERIFY}#x"), "")).contains("fragment"));
+    // An app that declares nothing usable gets no client at all.
+    assert!(s.for_run(forms(), vec![], "ctx".to_owned()).is_none());
+    for unusable in [
+        "http://challenges.cloudflare.com/x",
+        "https://challenges.cloudflare.com/x?key=1",
+        "https://10.0.0.1/x",
+    ] {
+        assert!(s
+            .for_run(forms(), vec![unusable.to_owned()], "ctx".to_owned())
+            .is_none());
+    }
+}
+
+#[test]
+fn any_method_and_a_star_allows_every_host_an_app_declares() {
+    let fake = Arc::new(Fake::default());
+    let s = OutboundService::with_parts(&["*"], Some(Arc::new(OneSecret)), fake);
+    let api = "https://api.example.com/v1/";
+    let mut r = post("https://api.example.com/v1/customers/cus_1", "{}");
+    for method in [
+        OutboundMethod::Post,
+        OutboundMethod::Put,
+        OutboundMethod::Patch,
+        OutboundMethod::Delete,
+    ] {
+        r.method = method;
+        assert!(s
+            .prepare(&forms(), &BTreeSet::from([api.to_owned()]), r.clone())
+            .is_ok());
+    }
+    // The secret is still bound to its own host.
+    let leaked = s
+        .prepare(
+            &forms(),
+            &BTreeSet::from([api.to_owned()]),
+            post(
+                "https://api.example.com/v1/x",
+                "{{secret:TURNSTILE_SECRET}}",
+            ),
         )
-        .is_none());
+        .unwrap_err()
+        .to_string();
+    assert!(leaked.contains("may not be sent"), "{leaked}");
 }
 
 #[test]

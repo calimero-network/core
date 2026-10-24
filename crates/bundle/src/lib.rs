@@ -98,7 +98,9 @@ pub fn is_web_url(url: &str) -> bool {
 }
 
 /// Whether `url` may be declared under a manifest's `outbound`: `https://`,
-/// a host, no credentials, no control characters, at most 2048 bytes.
+/// a host, no credentials, no query or fragment, no whitespace or control
+/// characters, at most 2048 bytes. It is a prefix: it covers itself and every
+/// URL below it at a `/`, with any query string.
 #[must_use]
 pub fn is_outbound_url(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://") else {
@@ -108,6 +110,7 @@ pub fn is_outbound_url(url: &str) -> bool {
     url.len() <= 2048
         && !authority.is_empty()
         && !authority.contains('@')
+        && !url.contains(['?', '#'])
         && !url.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
@@ -264,12 +267,13 @@ pub struct BundleManifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub frontend_aliases: Vec<String>,
 
-    /// The exact `https://` URLs the app's runs may send an outbound request
-    /// to (the SDK's `env::http_request`). Signed with the rest, shown at
-    /// install, and stored with the application, where the node reads it: a
-    /// request to any other URL is refused, and an app that lists none never
-    /// gets a client. A node still sends nothing unless its operator turned
-    /// outbound requests on and lists the URL's host.
+    /// The `https://` URL prefixes the app's runs may send an outbound request
+    /// under (the SDK's `env::http_request`): `https://api.example.com/v1/`
+    /// covers every path below it, with any query string. Signed with the
+    /// rest, shown at install, and stored with the application, where the
+    /// node reads it: a request no prefix covers is refused, and an app that
+    /// lists none never gets a client. A node still sends nothing unless its
+    /// operator turned outbound requests on and allows the URL's host.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outbound: Vec<String>,
 
@@ -585,6 +589,9 @@ mod tests {
         assert!(!is_outbound_url("https://"));
         assert!(!is_outbound_url("https://user:pw@host.example/x"));
         assert!(!is_outbound_url("https://host.example/a b"));
+        assert!(is_outbound_url("https://api.example.com"));
+        assert!(!is_outbound_url("https://api.example.com/v1/?key=1"));
+        assert!(!is_outbound_url("https://api.example.com/v1/#top"));
         let meta = stored_meta(
             r#""outbound": ["https://api.example.com/v1/check", "http://insecure.example/x"],"#,
         );

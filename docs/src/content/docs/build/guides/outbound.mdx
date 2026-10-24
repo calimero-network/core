@@ -7,24 +7,23 @@ sidebar:
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 
-**Task:** ask a service outside the network something a contract cannot know
-by itself — whether a captcha was solved, whether a payment went through —
-and write the answer into state.
+**Task:** call a service outside the network — a captcha check, a payment
+API, a model, any HTTPS API — and write what it answers into state.
 
 A run may ask its node for **one** HTTPS request. The node makes it only when
 every gate below holds and answers with its reason otherwise. Outbound requests
 are **off on every node by default**: an app that needs them runs only on nodes
-whose operator turned them on, for its hosts.
+whose operator turned them on, for its hosts or for any host an app declares.
 
 ## The gates
 
 | Gate | Who sets it |
 | --- | --- |
-| `[context.outbound] enabled = true`, and the request's host is in `hosts` | The node's operator |
-| The request's URL is listed, exactly, in the app's signed manifest (`outbound`) | The app's publisher |
+| `[context.outbound] enabled = true`, and the request's host is in `hosts` (or `hosts` holds `"*"`: any host an installed app declares) | The node's operator |
+| The request's URL is under a prefix in the app's signed manifest (`outbound`): the same host, and the prefix's path or one below it at a `/`, with any query string | The app's publisher |
 | The run writes state and executes on this node, as its own write or one it relays for an author: not a view, a migration, a state op or a peer's delta | The node |
-| One request per run; `GET` or `POST`; `https` on port 443 to a DNS name that resolves only to public addresses; no redirect followed; no proxy | The node |
-| Request body ≤ 8 KiB, URL ≤ 2 KiB, ≤ 8 headers of ≤ 1 KiB, response body ≤ 64 KiB (a longer one is refused, not cut), 5 s for the whole request | The node (`calimero_primitives::outbound`) |
+| One request per run; `GET`, `POST`, `PUT`, `PATCH` or `DELETE`; `https` on port 443 to a DNS name that resolves only to public addresses; no fragment; no redirect followed; no proxy | The node |
+| Request body ≤ 64 KiB, URL ≤ 2 KiB, ≤ 8 headers of ≤ 1 KiB, response body ≤ 1 MiB (a longer one is refused, not cut), 10 s for the whole request | The node (`calimero_primitives::outbound`) |
 | `Host`, `Cookie`, `Connection`, `Content-Length`, `Transfer-Encoding`, `Proxy-*` and `X-Forwarded-*` headers are refused | The node |
 
 A refusal is a reason the method can handle (`Err(String)`). A run with no
@@ -43,11 +42,16 @@ secret into state, where it would replicate to every member.
 
 <Steps>
 
-1. Declare the URL in `Cargo.toml`. It is signed into the bundle's manifest:
+1. Declare the URL prefixes in `Cargo.toml`. They are signed into the
+   bundle's manifest and shown at install, so declare the narrowest that
+   works:
 
    ```toml
    [package.metadata.calimero]
-   outbound = ["https://challenges.cloudflare.com/turnstile/v0/siteverify"]
+   outbound = [
+     "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+     "https://api.stripe.com/v1/",   # every path below /v1/
+   ]
    ```
 
 2. Make the request from a method that writes, and store the decision:
@@ -95,7 +99,7 @@ second node agreeing with the first.
 ```toml
 [context.outbound]
 enabled = true
-hosts = ["challenges.cloudflare.com"]
+hosts = ["challenges.cloudflare.com", "api.stripe.com"]   # or ["*"]
 
 # Secrets from environment variables, read once at start: a missing one
 # fails the start.
@@ -105,6 +109,10 @@ packages = ["com.calimero.mero-forms"]
 signers = ["did:key:z6Mk…"]   # the bundle's signerId
 hosts = ["challenges.cloudflare.com"]
 ```
+
+`hosts = ["*"]` lets every installed app reach the hosts its own signed
+manifest declares, so a new app needs no config change. Every other gate
+still holds, and a secret still goes only to the hosts bound to it.
 
 Instead of `env_secrets`, a node can ask a secrets service beside it
 (exclusive with `env_secrets`):
