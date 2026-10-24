@@ -3,6 +3,8 @@ description: >
   place on every node after edits before it, after it, and a delete of its character.
 name: Fugue Collab Anchors
 
+auth_mode: proxy
+
 nodes:
   count: 2
   image: ghcr.io/calimero-network/merod:edge

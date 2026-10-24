@@ -77,7 +77,7 @@ daemon, then point `meroctl` at it.
     { label: 'Network', color: '#a371f7' },
   ]}
   steps={[
-    { from: 0, to: 1, label: 'merod --node node1 init' },
+    { from: 0, to: 1, label: 'merod --node node1 init --admin-user admin ...' },
     { from: 1, to: 1, label: 'create home dir + write config.toml' },
     { from: 1, to: 1, label: 'generate node identity keypair', color: '#a5ff11' },
     { from: 1, to: 1, label: 'create data + blobs dirs, open datastore' },
@@ -98,11 +98,15 @@ daemon, then point `meroctl` at it.
    node's identity keypair, writes `config.toml`, and opens the datastore.
 
    ```bash
-   merod --node node1 init
+   merod --node node1 init --admin-user admin --admin-password-stdin
    ```
 
-   `init` defaults to `--auth-mode proxy`, which authenticates no caller.
-   Any page served from localhost can then reach the admin API, so use it only on a development machine.
+   `init` defaults to embedded auth, so the node authenticates its own callers and
+   needs an admin account: pass `--admin-user` with `--admin-password-stdin` or
+   `--admin-password-file` (or set `MERO_AUTH_ADMIN_USER` and `MERO_AUTH_ADMIN_PASSWORD`),
+   or pass `--no-admin` to provision one later.
+   Pass `--auth-mode proxy` only when a proxy in front of the node checks every caller.
+   `--auth-mode proxy` authenticates no caller itself, so any page served from localhost can reach the admin API.
 
    It prints a single confirmation line naming the node home it created:
 
@@ -117,7 +121,8 @@ daemon, then point `meroctl` at it.
 
    ```sh
    mkdir data
-   merod --home data/ --node node1 init --server-port 2528 --swarm-port 2428
+   merod --home data/ --node node1 init --admin-user admin --admin-password-stdin \
+     --server-port 2528 --swarm-port 2428
    ```
 
    :::tip
@@ -161,6 +166,8 @@ daemon, then point `meroctl` at it.
 
    `peers` returns the connected-peer count; the `ls` commands return empty lists
    on a fresh node. Any successful response confirms the RPC server is up.
+   Against an embedded-auth node, `meroctl` logs in with the admin account from step 1
+   (see [meroctl](/operate/meroctl/)).
 
 </Steps>
 

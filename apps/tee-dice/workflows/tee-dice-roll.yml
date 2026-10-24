@@ -30,6 +30,8 @@ force_pull_image: false
 
 log_level: "info,calimero_node::handlers::state_delta=debug"
 
+auth_mode: proxy
+
 nodes:
   tee-dice-owner:
     port: 2428

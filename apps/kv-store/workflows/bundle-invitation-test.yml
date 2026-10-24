@@ -4,6 +4,8 @@ name: Bundle Invitation Flow Test
 # Use local Docker image (set to false since we're testing locally)
 force_pull_image: false
 
+auth_mode: proxy
+
 nodes:
   count: 2
   image: ghcr.io/calimero-network/merod:edge

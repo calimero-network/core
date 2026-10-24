@@ -22,6 +22,8 @@ no_docker: false
 nuke_on_start: true
 nuke_on_end: false
 
+auth_mode: proxy
+
 nodes:
   count: 2
   image: merod:local
