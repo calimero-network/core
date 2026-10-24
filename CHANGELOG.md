@@ -85,9 +85,9 @@ below, on top of the 0.11.0-rc.1 to 0.11.0-rc.10 entries that follow it.
   must overwrite `X-Auth-Permissions`, `X-Auth-Account` and `X-Auth-Device`
   on every app-host request (`operate/deployment.mdx` has an nginx example).
   A namespace joined by invitation keeps its application unverified until a
-  signed `TargetApplicationSet` or cascade names it, and an app key acting
-  on it or its subgroups gets `403` until then, because the invitation's
-  application hint is unsigned. (#4648, #4653)
+  signed `TargetApplicationSet` or cascade names it, and an application's
+  client key acting on it or its subgroups gets `403` until then, because the
+  invitation's application hint is unsigned. (#4648, #4653)
 
 - **A removed namespace can be restored without an invitation.** `POST
   /admin-api/namespaces/{id}/join` with no `invitation` restores a namespace
