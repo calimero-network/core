@@ -272,7 +272,10 @@ impl AppHosts {
         });
         let current = self.node_client.get_application(app).ok().flatten();
         match current.and_then(|row| row.version) {
-            Some(version) if !names_namespace => redirect(&format!("/{version}/")),
+            Some(version) if !names_namespace => {
+                let query = query.map_or(String::new(), |q| format!("?{q}"));
+                redirect(&format!("/{version}/{query}"))
+            }
             _ => status(StatusCode::NOT_FOUND),
         }
     }
@@ -1573,6 +1576,19 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FOUND);
         assert_eq!(header_of(&response, "location"), "/2.0.0/");
         assert_hardened(&response);
+    }
+
+    #[actix::test]
+    async fn the_root_redirect_keeps_the_query() {
+        let f = fixture().await;
+
+        let (response, _) = get(&f, "/?invitation=abc&x=1").await;
+
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            header_of(&response, "location"),
+            "/2.0.0/?invitation=abc&x=1"
+        );
     }
 
     #[actix::test]
