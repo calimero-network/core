@@ -39,7 +39,10 @@ impl SecretProvider for OneSecret {
 /// Records what it was asked to send and answers with a body that echoes the
 /// secret, as a careless API might.
 #[derive(Debug, Default)]
-struct Fake(Mutex<Vec<(String, Vec<u8>, Vec<(String, String)>)>>);
+struct Fake(Mutex<Vec<Sent>>);
+
+/// The URL, body and headers of a request the fake transport was given.
+type Sent = (String, Vec<u8>, Vec<(String, String)>);
 
 impl Transport for Fake {
     fn send(&self, request: &Prepared) -> EyreResult<(u16, Vec<u8>)> {
