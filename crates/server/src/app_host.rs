@@ -210,7 +210,7 @@ impl AppHosts {
             }
         };
         let Some(rest) = rest else {
-            return redirect(&format!("/{version}/"));
+            return redirect(&with_query(&format!("/{version}/"), request.uri.query()));
         };
         let in_index = |tail: &str| {
             index
@@ -272,7 +272,9 @@ impl AppHosts {
         });
         let current = self.node_client.get_application(app).ok().flatten();
         match current.and_then(|row| row.version) {
-            Some(version) if !names_namespace => redirect(&format!("/{version}/")),
+            Some(version) if !names_namespace => {
+                redirect(&with_query(&format!("/{version}/"), query))
+            }
             _ => status(StatusCode::NOT_FOUND),
         }
     }
@@ -336,6 +338,11 @@ fn purges_account(uri: &Uri) -> bool {
     Query::<HashMap<String, String>>::try_from_uri(uri).map_or(true, |Query(query)| {
         query.get("purge").is_some_and(|value| value != "false")
     })
+}
+
+/// `path` with the request's query kept, so a link's parameters survive a redirect.
+fn with_query(path: &str, query: Option<&str>) -> String {
+    query.map_or_else(|| path.to_owned(), |query| format!("{path}?{query}"))
 }
 
 /// A page request for a path no file answers: the app's own router resolves it.
@@ -1576,6 +1583,19 @@ mod tests {
     }
 
     #[actix::test]
+    async fn the_root_redirect_keeps_the_query() {
+        let f = fixture().await;
+
+        let (response, _) = get(&f, "/?invitation=abc&x=1").await;
+
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            header_of(&response, "location"),
+            "/2.0.0/?invitation=abc&x=1"
+        );
+    }
+
+    #[actix::test]
     async fn the_root_with_a_namespace_is_404() {
         let f = fixture().await;
 
@@ -1713,6 +1733,9 @@ mod tests {
         assert_eq!(found.status(), StatusCode::FOUND);
         assert_eq!(header_of(&found, "location"), "/1.0.0/");
         assert_hardened(&found);
+
+        let (with_query, _) = get(&f, "/1.0.0?invitation=abc").await;
+        assert_eq!(header_of(&with_query, "location"), "/1.0.0/?invitation=abc");
     }
 
     #[actix::test]
