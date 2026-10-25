@@ -4095,16 +4095,17 @@ pub fn redrive_buffered_ops_for_group_with(
 }
 
 /// Replay every op of `namespace_id` this node can open, root and group, judging them
-/// against `authorizer`, as a key arrival does. Returns how many landed.
+/// against `authorizer`, as a key arrival does, then set the rows the void ops wrote to
+/// what the current void rule holds. Returns how many landed.
 pub fn redrive_namespace_with(
     store: &Store,
     namespace_id: NamespaceId,
     authorizer: &dyn crate::authorizer::AtCutAuthorizer,
 ) -> EyreResult<usize> {
-    Ok(NamespaceGovernance::new(store, namespace_id)
-        .with_apply_auth(&[], authorizer)
-        .replay(namespace_id.to_bytes(), 0)?
-        .applied)
+    let governance = NamespaceGovernance::new(store, namespace_id).with_apply_auth(&[], authorizer);
+    let applied = governance.replay(namespace_id.to_bytes(), 0)?.applied;
+    let _events = governance.reconcile_voided(None)?;
+    Ok(applied)
 }
 
 pub async fn sign_apply_and_publish_namespace_op(

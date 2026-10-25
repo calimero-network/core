@@ -1239,6 +1239,32 @@ fn the_replay_a_key_pull_runs_judges_void_ops_when_given_an_authorizer() {
     );
 }
 
+/// Rows an earlier void rule left are set to what the current one holds when the node starts,
+/// with no op arriving to trigger it.
+#[test]
+fn the_startup_sweep_sets_rows_to_what_the_current_void_rule_holds() {
+    let w = World::new();
+    let [_, s, _] = w.founded();
+    let removal = w.remove(&w.alice, &[&s], &w.sam, None);
+    w.apply(&removal).expect("alice removes sam");
+    let old = sam_from_the_old_cut(&w, &s);
+    w.apply(&old.promote)
+        .expect("sam's op from the old cut is logged void");
+    assert_eq!(w.role(&w.xavier), None, "setup: the op took no effect");
+    MembershipRepository::new(&w.store)
+        .add_member(
+            &LogAuthorizer::group(),
+            &w.xavier.account,
+            GroupMemberRole::Admin,
+        )
+        .expect("the row an earlier rule left");
+
+    let authorizer = LogAuthorizer::new(&w.store);
+    let _ = crate::redrive_namespace_with(&w.store, NS.into(), &authorizer).expect("sweep");
+
+    assert_eq!(w.role(&w.xavier), None, "the sweep left the stale row");
+}
+
 #[test]
 fn the_startup_sweep_judges_void_ops_when_given_an_authorizer() {
     let w = World::new();
