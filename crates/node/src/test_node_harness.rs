@@ -394,6 +394,7 @@ async fn boot_node(store: Store, subscriber: bool) -> TestNode {
     let state_delta_tx = crate::state_delta_bridge::start_state_delta_actor(
         &state_delta_arbiter,
         crate::state_delta_bridge::STATE_DELTA_CHANNEL_CAPACITY,
+        &mut registry,
     );
 
     let sync_session_arbiter = pool.get().await.expect("sync-session arbiter");
