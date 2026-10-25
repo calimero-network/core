@@ -3,7 +3,7 @@
 //! The void set depends only on the set of ops, never on their arrival order.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use calimero_account::{AccountId, DeviceId};
@@ -117,6 +117,30 @@ impl ScopeState {
         held: &[([u8; 32], ContextGroupId)],
         budget: usize,
     ) -> BTreeSet<[u8; 32]> {
+        Self::judged(log, base, candidate, held, budget).0
+    }
+
+    /// Whether `candidate`, about to join `log`, carries no authority; `None` when the answer
+    /// rests on an op of the groups that decide its reach that this node cannot read.
+    #[must_use]
+    pub fn void_verdict(
+        log: &[Op],
+        base: AuthorityBase,
+        candidate: &Op,
+        acting: Option<Acting>,
+    ) -> Option<bool> {
+        let (void, undecided) =
+            Self::judged(log, base, Some((candidate, acting)), &[], MAX_FOLD_WORK);
+        (!undecided.contains(&candidate.id())).then(|| void.contains(&candidate.id()))
+    }
+
+    fn judged(
+        log: &[Op],
+        base: AuthorityBase,
+        candidate: Option<(&Op, Option<Acting>)>,
+        held: &[([u8; 32], ContextGroupId)],
+        budget: usize,
+    ) -> (BTreeSet<[u8; 32]>, HashSet<[u8; 32]>) {
         let mut ops: Vec<&Op> = log.iter().collect();
         let mut explicit: HashMap<[u8; 32], Acting> = held
             .iter()
@@ -133,9 +157,12 @@ impl ScopeState {
         // Most logs hold no removal that could matter; say so before building anything.
         let resolved = resolve_unattributed(&ops);
         if !holds_removal(&ops, &resolved, base) {
-            return BTreeSet::new();
+            return (BTreeSet::new(), HashSet::new());
         }
-        Analysis::new(&ops, base, explicit, resolved, budget).run()
+        let analysis = Analysis::new(&ops, base, explicit, resolved, budget);
+        let void = analysis.run();
+        let undecided = analysis.undecided.take();
+        (void, undecided)
     }
 }
 
@@ -366,6 +393,14 @@ fn resolve_unattributed(ops: &[&Op]) -> Resolved {
         .collect()
 }
 
+/// The groups whose removals reach an op, and whether the cut it was made at holds an op of
+/// one of them this node cannot read.
+#[derive(Clone)]
+struct Reach {
+    groups: BTreeSet<ContextGroupId>,
+    unreadable: bool,
+}
+
 struct Analysis<'a> {
     base: AuthorityBase,
     budget: usize,
@@ -398,8 +433,11 @@ struct Analysis<'a> {
     by_device: HashMap<DeviceId, Vec<&'a Op>>,
     depth: HashMap<[u8; 32], u32>,
     children: HashMap<[u8; 32], Vec<[u8; 32]>>,
-    parent_group: BTreeMap<ContextGroupId, ContextGroupId>,
-    restricted_groups: BTreeSet<ContextGroupId>,
+    /// The authority set of each victim op at its cut, and whether an unreadable op of one of
+    /// its groups sits in that cut, while no void op is behind it.
+    reach: RefCell<HashMap<[u8; 32], Reach>>,
+    /// The victims of the last round whose reach rests on an op this node cannot read.
+    undecided: RefCell<HashSet<[u8; 32]>>,
     ancestors: RefCell<HashMap<[u8; 32], IdSet>>,
     descendants: RefCell<HashMap<[u8; 32], IdSet>>,
     work: Cell<usize>,
@@ -524,8 +562,8 @@ impl<'a> Analysis<'a> {
             by_device: HashMap::new(),
             depth: HashMap::new(),
             children: HashMap::new(),
-            parent_group: BTreeMap::new(),
-            restricted_groups: BTreeSet::new(),
+            reach: RefCell::default(),
+            undecided: RefCell::default(),
             ancestors: RefCell::default(),
             descendants: RefCell::default(),
             work: Cell::new(0),
@@ -550,8 +588,6 @@ impl<'a> Analysis<'a> {
             }
         }
         analysis.depth = analysis.depths(ops);
-        analysis.parent_group = analysis.group_tree(ops);
-        analysis.restricted_groups = analysis.restricted_set(ops);
         // Causal order, so what a spent budget leaves unjudged does not follow the log's.
         let mut removals = std::mem::take(&mut analysis.removals);
         removals.sort_unstable_by_key(|removal| {
@@ -644,71 +680,44 @@ impl<'a> Analysis<'a> {
         depth
     }
 
-    /// Each subgroup's parent, the latest creation or reparent winning as the
-    /// fold does.
-    fn group_tree(&self, ops: &[&Op]) -> BTreeMap<ContextGroupId, ContextGroupId> {
-        let mut latest: BTreeMap<ContextGroupId, ((u32, [u8; 32]), ContextGroupId)> =
-            BTreeMap::new();
-        for &op in ops {
-            let (child, parent) = match &op.payload {
-                OpPayload::SubgroupCreated { child, parent, .. } => (child, parent),
-                OpPayload::SubgroupReparented { child, new_parent } => (child, new_parent),
-                _ => continue,
-            };
-            let stamp = (self.depth.get(&op.id()).copied().unwrap_or(0), op.id());
-            let child = ContextGroupId::from(*child.as_bytes());
-            if latest.get(&child).is_none_or(|(held, _)| stamp > *held) {
-                let _ = latest.insert(child, (stamp, ContextGroupId::from(*parent.as_bytes())));
+    /// The groups whose removals reach `op`, acting in `group`, with the flags of the cut it
+    /// was made at: what `AclView::authority_groups` says there, `void` left out. `None`
+    /// past the fold budget.
+    fn reach_at_cut(
+        &self,
+        op: &Op,
+        group: ContextGroupId,
+        void: &BTreeSet<[u8; 32]>,
+    ) -> Option<Reach> {
+        let id = op.id();
+        let before = self.ancestors_of(id);
+        let cacheable = !void.iter().any(|voided| before.contains(voided));
+        if cacheable {
+            if let Some(known) = self.reach.borrow().get(&id) {
+                return Some(known.clone());
             }
         }
-        latest
-            .into_iter()
-            .map(|(child, (_, parent))| (child, parent))
-            .collect()
-    }
-
-    /// The subgroups whose latest creation or visibility set made them restricted.
-    fn restricted_set(&self, ops: &[&Op]) -> BTreeSet<ContextGroupId> {
-        let mut latest: BTreeMap<ContextGroupId, ((u32, [u8; 32]), bool)> = BTreeMap::new();
-        for &op in ops {
-            let (child, restricted) = match &op.payload {
-                OpPayload::SubgroupCreated {
-                    child, restricted, ..
-                } => (child, *restricted),
-                OpPayload::SubgroupVisibilitySet { scope, restricted } => (scope, *restricted),
-                _ => continue,
-            };
-            let stamp = (self.depth.get(&op.id()).copied().unwrap_or(0), op.id());
-            let child = ContextGroupId::from(*child.as_bytes());
-            if latest.get(&child).is_none_or(|(held, _)| stamp > *held) {
-                let _ = latest.insert(child, (stamp, restricted));
-            }
+        if self.over_budget() {
+            return None;
         }
-        latest
-            .into_iter()
-            .filter_map(|(child, (_, restricted))| restricted.then_some(child))
-            .collect()
-    }
-
-    /// The groups whose removals reach `group`: itself, its open ancestors, and the root
-    /// when the group has a parent edge. The same set as `AclView::authority_groups`.
-    fn authority_chain(&self, group: ContextGroupId, root: ContextGroupId) -> Vec<ContextGroupId> {
-        let mut chain = vec![group];
-        let mut at = group;
-        while !self.restricted_groups.contains(&at) {
-            let Some(parent) = self.parent_group.get(&at) else {
-                break;
-            };
-            if chain.contains(parent) || chain.len() > 64 {
-                break;
-            }
-            chain.push(*parent);
-            at = *parent;
+        let view = self.fold(
+            before
+                .iter()
+                .filter(|held| !void.contains(*held))
+                .filter_map(|held| self.by_id.get(held).copied()),
+        );
+        let groups = view.authority_groups(group, ContextGroupId::from(*op.scope.as_bytes()));
+        let unreadable = before.iter().any(|held| {
+            matches!(
+                self.by_id.get(held).map(|op| &op.payload),
+                Some(OpPayload::Opaque { group }) if groups.contains(group)
+            )
+        });
+        let reach = Reach { groups, unreadable };
+        if cacheable {
+            let _ = self.reach.borrow_mut().insert(id, reach.clone());
         }
-        if self.parent_group.contains_key(&group) && !chain.contains(&root) {
-            chain.push(root);
-        }
-        chain
+        Some(reach)
     }
 
     /// The namespace's owner at `op`'s cut: the heir of the latest transfer behind it, as the
@@ -808,6 +817,7 @@ impl<'a> Analysis<'a> {
     /// One application of the rule to the void set `void`.
     fn round(&self, void: &BTreeSet<[u8; 32]>) -> BTreeSet<[u8; 32]> {
         let mut next = BTreeSet::new();
+        self.undecided.borrow_mut().clear();
 
         for removal in self.effective_removals(void) {
             let before = self.ancestors_of(removal.op.id());
@@ -828,13 +838,15 @@ impl<'a> Analysis<'a> {
                 let Some(group) = self.voidable_group(op) else {
                     continue;
                 };
-                let root = self.base.root.map_or_else(
-                    || ContextGroupId::from(*op.scope.as_bytes()),
-                    |(root, _)| root,
-                );
-                let reaches = removal
-                    .group
-                    .is_none_or(|lost| self.authority_chain(group, root).contains(&lost));
+                let reaches = match removal.group {
+                    None => true,
+                    Some(lost) => self.reach_at_cut(op, group, void).is_none_or(|reach| {
+                        if reach.unreadable {
+                            let _ = self.undecided.borrow_mut().insert(id);
+                        }
+                        reach.groups.contains(&lost)
+                    }),
+                };
                 if !reaches {
                     continue;
                 }

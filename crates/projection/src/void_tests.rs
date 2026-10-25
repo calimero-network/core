@@ -54,7 +54,7 @@ fn hlc() -> HybridTimestamp {
 /// A governance op by `author` citing `parents`, as the bridge builds them.
 fn gov(author: u8, parents: &[&Op], payload: OpPayload) -> Op {
     Op::new(
-        ScopeId::from([0u8; 32]),
+        ScopeId::from(group().to_bytes()),
         parents.iter().map(|p| p.id()).collect(),
         authorship(author),
         hlc(),
@@ -896,7 +896,7 @@ fn a_void_policy_with_its_bytes_dropped_is_still_void() {
     let mut log = ad.clone();
 
     // A policy acts in the scope's root group, which is the group Sam is removed from.
-    let root = ContextGroupId::from([0u8; 32]);
+    let root = group();
     let removal = gov(
         ALICE,
         &[head],
@@ -1113,4 +1113,125 @@ fn a_removal_from_a_group_still_voids_the_signers_concurrent_ops_in_it_and_its_o
 fn a_namespace_removal_still_voids_the_signers_concurrent_ops_in_a_restricted_child() {
     let (log, add) = removal_and_concurrent_add(&board_tree(), group(), subgroup(MINUTES), true);
     assert!(void(&log).contains(&add.id()));
+}
+
+fn flip(author: u8, parents: &[&Op], restricted: bool) -> Op {
+    gov(
+        author,
+        parents,
+        OpPayload::SubgroupVisibilitySet {
+            scope: ScopeId::from(subgroup(MINUTES).to_bytes()),
+            restricted,
+        },
+    )
+}
+
+fn board_removes_will(parents: &[&Op], readable: bool) -> Op {
+    if readable {
+        gov(
+            ALICE,
+            parents,
+            OpPayload::MemberRemoved {
+                group: subgroup(BOARD),
+                member: acct(WILL),
+            },
+        )
+    } else {
+        gov(
+            ALICE,
+            parents,
+            OpPayload::Opaque {
+                group: subgroup(BOARD),
+            },
+        )
+    }
+}
+
+fn will_adds_in_minutes(parents: &[&Op]) -> Op {
+    add_in(
+        subgroup(MINUTES),
+        WILL,
+        parents,
+        YARA,
+        GroupMemberRole::Member,
+    )
+}
+
+/// A flip after the ops it would change the reach of does not change it.
+#[test]
+fn a_later_opening_of_the_restricted_child_leaves_the_earlier_concurrent_op_alone() {
+    for readable in [true, false] {
+        let mut log = board_tree();
+        let head = log.last().expect("a head").clone();
+        let removal = board_removes_will(&[&head], readable);
+        let add = will_adds_in_minutes(&[&head]);
+        let opening = flip(SAM, &[&removal, &add], false);
+        log.extend([removal, add.clone(), opening]);
+        assert!(
+            !void(&log).contains(&add.id()),
+            "removal readable: {readable}"
+        );
+    }
+}
+
+/// A flip that is itself void leaves the child restricted.
+#[test]
+fn a_void_opening_of_the_restricted_child_leaves_it_restricted() {
+    for readable in [true, false] {
+        let mut log = board_tree();
+        let head = log.last().expect("a head").clone();
+        let sam_removed = remove(ALICE, &[&head], SAM);
+        let opening = flip(SAM, &[&head], false);
+        let removal = board_removes_will(&[&head], readable);
+        let add = will_adds_in_minutes(&[&head]);
+        log.extend([sam_removed, opening.clone(), removal, add.clone()]);
+        let voided = void(&log);
+        assert!(voided.contains(&opening.id()), "setup: the opening is void");
+        assert!(!voided.contains(&add.id()), "removal readable: {readable}");
+    }
+}
+
+/// An opening in the op's cut puts the parent's removals in reach.
+#[test]
+fn an_opening_of_the_restricted_child_in_the_cut_puts_the_parents_removal_in_reach() {
+    let mut log = board_tree();
+    let head = log.last().expect("a head").clone();
+    let opening = flip(SAM, &[&head], false);
+    let removal = board_removes_will(&[&opening], true);
+    let add = will_adds_in_minutes(&[&opening]);
+    log.extend([opening, removal, add.clone()]);
+    assert!(void(&log).contains(&add.id()));
+}
+
+/// A node that cannot read the flip closing a child abstains on an op whose reach rests on it.
+#[test]
+fn an_unreadable_closing_of_the_child_leaves_the_verdict_undecided() {
+    let tail = |readable: bool| {
+        let mut log = admins();
+        let board = create_under(&[&log[2]], BOARD, group(), true);
+        let minutes = create_under(&[&board], MINUTES, subgroup(BOARD), false);
+        let closing = if readable {
+            flip(SAM, &[&minutes], true)
+        } else {
+            gov(
+                SAM,
+                &[&minutes],
+                OpPayload::Opaque {
+                    group: subgroup(MINUTES),
+                },
+            )
+        };
+        let sub = create_under(&[&closing], 0x54, subgroup(MINUTES), false);
+        let removal = board_removes_will(&[&sub], true);
+        let add = add_in(subgroup(0x54), WILL, &[&sub], YARA, GroupMemberRole::Member);
+        log.extend([board, minutes, closing, sub, removal]);
+        (log, add)
+    };
+    let (log, add) = tail(true);
+    assert_eq!(
+        ScopeState::void_verdict(&log, base(), &add, None),
+        Some(false)
+    );
+    let (log, add) = tail(false);
+    assert_eq!(ScopeState::void_verdict(&log, base(), &add, None), None);
 }

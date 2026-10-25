@@ -37,6 +37,7 @@ cargo test -p calimero-authz inherited_membership_requires_open_chain_and_cap --
 | `AclView::is_owner(author, object)` | fn | Owner = holds `OpMask::ADMIN` on `object` (confers writer-set rotation rights) |
 | `AclView::is_group_admin(author, group)` | fn | Folded group admin (subgroup creator / `Admin`-role holder) |
 | `AclView::is_root_admin(author)` | fn | Is `author` the scope's `root_admin` at the cut |
+| `AclView::authority_groups(group, root)` | fn | The groups whose ops can move an authority question about `group`: itself, its open ancestors, and `root` when the group has a parent edge. The one definition the at-cut readability checks and the void rule share |
 | `AclView::root_at_cut(root)` | fn | The namespace root with its owner at the cut: the folded `root_admin`, else the founder `root` names |
 | `MemberPathAtCut` | enum | `None` / `Direct { role }` / `Inherited { anchor, via_admin }` - how `author` reaches membership |
 | `SubgroupEdge` | struct | `{ parent: ScopeId, restricted: bool }` - a live subgroup's tree position + visibility at the cut |

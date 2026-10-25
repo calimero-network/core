@@ -600,7 +600,7 @@ impl ScopeProjections {
 
     /// Would `op`, about to join `scope`'s log, carry no authority? `acting` names where
     /// it acts, and what admits it, when its payload does not; `None` when its cut is
-    /// not whole here.
+    /// not whole here or its reach rests on an op of the groups that decide it that is unreadable.
     #[must_use]
     pub fn op_is_void(
         &self,
@@ -616,7 +616,7 @@ impl ScopeProjections {
         if !ScopeState::cut_ancestry(log, &op.parents).is_complete() {
             return None;
         }
-        Some(ScopeState::void_ops_with(log, base, Some((op, acting))).contains(&op.id()))
+        ScopeState::void_verdict(log, base, op, acting)
     }
 
     /// The convergence `scope_root` for `scope`, folding this scope's ACL +
@@ -3156,9 +3156,11 @@ impl ScopeProjections {
         let standing = Self::standing_reader(store, group, namespace_id);
         // As for the fold, standing is read at the step's own parents, so the group's
         // ancestors there must be readable too.
-        let mut relevant: std::collections::BTreeSet<ContextGroupId> =
-            [ContextGroupId::from(namespace_id)].into();
-        relevant.extend(ScopeState::acl_view_from_ancestry(&walked).group_and_ancestors(group));
+        let root_group = ContextGroupId::from(namespace_id);
+        let mut relevant: std::collections::BTreeSet<ContextGroupId> = [root_group].into();
+        relevant.extend(
+            ScopeState::acl_view_from_ancestry(&walked).authority_groups(group, root_group),
+        );
         let mut pinned = false;
         for op in walked.ops().iter().filter(|op| !walked.is_void(op)) {
             let OpPayload::SharedWritersRotated {
@@ -3179,7 +3181,7 @@ impl ScopeProjections {
             }
             let view =
                 ScopeState::acl_view_from_ancestry(&self.walk(&scope, log, &op.parents, base));
-            relevant.extend(view.group_and_ancestors(group));
+            relevant.extend(view.authority_groups(group, root_group));
             pinned |= standing(&view, op.device_key()).is_some_and(|account| {
                 prior
                     .get(&account)
@@ -3282,7 +3284,7 @@ impl ScopeProjections {
         // may differ from the cut's, so every one of them must be readable.
         let head_view = ScopeState::acl_view_from_ancestry(&walked);
         let mut relevant: std::collections::BTreeSet<ContextGroupId> = [root_group].into();
-        relevant.extend(head_view.group_and_ancestors(group));
+        relevant.extend(head_view.authority_groups(group, root_group));
         let mut views: std::collections::HashMap<Vec<[u8; 32]>, calimero_authz::AclView> =
             std::collections::HashMap::new();
         let steps: Vec<_> = ScopeState::shared_writer_steps(
@@ -3297,7 +3299,7 @@ impl ScopeProjections {
                 let view = views.entry(parents).or_insert_with(|| {
                     ScopeState::acl_view_from_ancestry(&self.walk(&scope, log, &op.parents, base))
                 });
-                relevant.extend(view.group_and_ancestors(group));
+                relevant.extend(view.authority_groups(group, root_group));
                 standing(view, op.device_key())
             },
         )
@@ -5822,6 +5824,41 @@ mod tests {
             .collect();
         assert_eq!(answers[0], answers[1], "reading node vs blind node");
         assert_eq!(answers[0], (true, Some(Some(GroupMemberRole::Member))));
+    }
+
+    /// The data plane reads a context under a restricted child as the authority questions do:
+    /// the restricted parent's unreadable history does not stall it.
+    #[test]
+    fn a_context_under_a_restricted_child_is_decided_past_its_unreadable_parent() {
+        let (board, minutes) = (
+            ContextGroupId::from([0x93; 32]),
+            ContextGroupId::from([0x94; 32]),
+        );
+        let e = Edges::new(&[(ContextGroupId::from([0x91; 32]), board), (board, minutes)]);
+        let context = ContextId::from([0x45; 32]);
+        calimero_governance_store::register_context_in_group(&e.store, &minutes, &context)
+            .expect("register the context");
+        let make_board = e.created(board, ContextGroupId::from(e.ns), [0xB1; 32], &[]);
+        let make_minutes = e.created(minutes, board, [0xB2; 32], &[[0xB1; 32]]);
+        let unread = e.group_op(
+            PublicKey::from([3u8; 32]),
+            board,
+            None,
+            [0xB3; 32],
+            &[[0xB2; 32]],
+        );
+        let heads = [[0xB3; 32]];
+        let reg = fed(&[&make_board, &make_minutes, &unread]);
+
+        assert_eq!(
+            reg.context_rotation_group_at_cut(&e.store, minutes, &context, &heads),
+            Some(None)
+        );
+        let cell = calimero_storage::collections::cell_id(Id::new([0x11; 32]), &Default::default());
+        assert_eq!(
+            reg.shared_writers_at_cut(&e.store, &context, cell, &heads),
+            Ok(CellWriters::Genesis)
+        );
     }
 
     fn ever_at(w: &Rotations, heads: &[[u8; 32]]) -> Result<CellWriters, WritersUnavailable> {

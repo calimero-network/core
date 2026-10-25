@@ -100,38 +100,11 @@ impl AclView {
         .take(MAX_NAMESPACE_DEPTH + 1)
     }
 
-    /// `group` and every ancestor above it, nearest first; not the set an authority
-    /// question reads, see [`Self::authority_groups`].
-    ///
-    /// Deliberately climbs THROUGH a `restricted` edge, unlike
-    /// [`Self::open_ancestors`]. That walk stops there because inheritance stops
-    /// there; this one cannot, because whether an edge is restricted is itself
-    /// decided by a `SubgroupVisibilitySet` op of that subgroup — which may be
-    /// exactly the op a reader cannot decrypt. Stopping at an edge whose state is
-    /// unknown would silently shorten the set and let an unreadable ancestor pass
-    /// as irrelevant.
-    ///
-    /// Same `MAX_NAMESPACE_DEPTH` bound as the inheritance climb, so a cyclic or
-    /// adversarial tree cannot spin.
-    pub fn group_and_ancestors(
-        &self,
-        group: ContextGroupId,
-    ) -> impl Iterator<Item = ContextGroupId> + '_ {
-        let mut current = Some(group);
-        core::iter::once(group).chain(
-            core::iter::from_fn(move || {
-                let edge = self.subgroups.get(&ScopeId::from(current?.to_bytes()))?;
-                let parent = ContextGroupId::from(*edge.parent.as_bytes());
-                current = Some(parent);
-                Some(parent)
-            })
-            .take(MAX_NAMESPACE_DEPTH + 1),
-        )
-    }
-
     /// The groups whose ops can move an authority question asked about `group`: itself, its
-    /// open ancestors, and `root` when the group has a parent edge here. A restricted parent's
-    /// ops do not reach its restricted child; the root's do (admin, creation, parent, flag).
+    /// open ancestors, and `root` when the group has a parent edge here.
+    /// Stopping at a restricted edge is safe because the group whose flag is read is in the
+    /// set, so an unreadable flip is caught there; the root's ops (admin, creation, parent,
+    /// initial flag) still reach every group, so it stays.
     pub fn authority_groups(
         &self,
         group: ContextGroupId,
