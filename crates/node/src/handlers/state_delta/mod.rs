@@ -2062,6 +2062,7 @@ async fn request_missing_deltas(
         fetched_deltas.reverse();
 
         let mut batch = Vec::with_capacity(DELTA_BATCH_MAX.min(fetched_deltas.len()));
+        let mut tee_markers = Vec::new();
         for (
             dag_delta,
             delta_id,
@@ -2073,8 +2074,8 @@ async fn request_missing_deltas(
         ) in fetched_deltas
         {
             record_accepted_events_hash(&datastore, &context_id, &delta_id, events_hash.as_ref());
-            if let Some(envelope) = &envelope {
-                verify::record_accepted_tee_delta(&datastore, &context_id, &delta_id, envelope);
+            if let Some(envelope) = envelope {
+                tee_markers.push((delta_id, envelope));
             }
             // The wire-received author + governance position + envelope
             // signature are persisted on the row so subsequent DAG-catchup
@@ -2097,13 +2098,21 @@ async fn request_missing_deltas(
                     &datastore,
                     &context_id,
                     std::mem::take(&mut batch),
+                    std::mem::take(&mut tee_markers),
                 )
                 .await;
                 cascaded_events.extend(result.forwarded_events);
             }
         }
-        let result =
-            flush_delta_batch(&delta_store, node_state, &datastore, &context_id, batch).await;
+        let result = flush_delta_batch(
+            &delta_store,
+            node_state,
+            &datastore,
+            &context_id,
+            batch,
+            tee_markers,
+        )
+        .await;
         cascaded_events.extend(result.forwarded_events);
 
         // Log warning for very large syncs (informational, not a hard limit)

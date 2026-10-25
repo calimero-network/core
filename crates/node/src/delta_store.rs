@@ -133,6 +133,11 @@ impl BatchAddResult {
     pub fn admitted(&self) -> usize {
         self.applied.len() + self.pending.len()
     }
+
+    /// Whether the DAG took `delta_id` in, applied or still pending.
+    pub fn was_admitted(&self, delta_id: &[u8; 32]) -> bool {
+        self.applied.contains(delta_id) || self.pending.contains(delta_id)
+    }
 }
 
 /// Max orphaned member deltas held across all anchors before the buffer stops

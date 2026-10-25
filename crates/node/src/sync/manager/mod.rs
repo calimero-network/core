@@ -2314,6 +2314,7 @@ impl SyncManager {
                 let mut heads_attempted: u32 = 0;
                 let mut heads_admitted: usize = 0;
                 let mut head_batch: Vec<crate::delta_store::BatchDeltaInput> = Vec::new();
+                let mut head_tee_markers = Vec::new();
                 // Hoist the datastore handle outside the loop —
                 // `datastore_handle().into_inner()` clones an `Arc`
                 // and can take a brief lock; per-iteration creation
@@ -2688,14 +2689,7 @@ impl SyncManager {
                                 head_id,
                                 events_hash.as_ref(),
                             );
-                            // Verified above, so its trigger is one an attested TEE
-                            // signed: it has fired, and this node now serves it.
-                            crate::handlers::state_delta::record_accepted_tee_delta(
-                                &datastore_for_heads,
-                                &context_id,
-                                head_id,
-                                &envelope,
-                            );
+                            head_tee_markers.push((*head_id, envelope));
                             head_batch.push(crate::delta_store::BatchDeltaInput {
                                 delta: dag_delta,
                                 events: None,
@@ -2716,6 +2710,7 @@ impl SyncManager {
                                         &datastore_for_heads,
                                         &context_id,
                                         std::mem::take(&mut head_batch),
+                                        std::mem::take(&mut head_tee_markers),
                                     )
                                     .await
                                     .admitted(),
@@ -2747,6 +2742,7 @@ impl SyncManager {
                                 &datastore_for_heads,
                                 &context_id,
                                 std::mem::take(&mut head_batch),
+                                std::mem::take(&mut head_tee_markers),
                             )
                             .await;
                             return self
@@ -2777,6 +2773,7 @@ impl SyncManager {
                         &datastore_for_heads,
                         &context_id,
                         std::mem::take(&mut head_batch),
+                        std::mem::take(&mut head_tee_markers),
                     )
                     .await
                     .admitted(),
