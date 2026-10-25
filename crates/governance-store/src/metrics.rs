@@ -11,6 +11,8 @@ use prometheus_client::registry::Registry;
 pub struct Metrics {
     pub execution_count: Family<ExecutionLabels, Counter>,
     pub execution_duration: Family<ExecutionLabels, Histogram>,
+    pub gas_used: Histogram,
+    pub gas_exhausted: Counter,
 
     /// Cumulative count of in-memory context-cache hits (the requested
     /// context was already resident in `ContextManager::contexts`).
@@ -153,6 +155,17 @@ struct GroupStoreMetricSink {
 static GROUP_STORE_METRICS: OnceLock<GroupStoreMetricSink> = OnceLock::new();
 
 impl Metrics {
+    /// Record one execution's metering outcome. `gas_used` is `None` when the
+    /// module was not metered.
+    pub fn record_gas(&self, gas_used: Option<u64>, exhausted: bool) {
+        if let Some(used) = gas_used {
+            self.gas_used.observe(used as f64);
+        }
+        if exhausted {
+            let _prev = self.gas_exhausted.inc();
+        }
+    }
+
     pub fn new(registry: &mut Registry) -> Self {
         let context_registry = registry.sub_registry_with_prefix("context");
 
@@ -179,6 +192,20 @@ impl Metrics {
             "execution_duration_seconds",
             "Context runtime execution in seconds",
             execution_duration.clone(),
+        );
+
+        // 1e3 .. ~1e9 points, up to the default `DEFAULT_MAX_GAS` budget.
+        let gas_used = Histogram::new(exponential_buckets(1_000.0, 4.0, 11));
+        runtime_registry.register(
+            "gas_used",
+            "WASM metering points consumed per execution",
+            gas_used.clone(),
+        );
+        let gas_exhausted = Counter::default();
+        runtime_registry.register(
+            "gas_exhausted",
+            "Executions trapped for exhausting their gas budget",
+            gas_exhausted.clone(),
         );
 
         // Context in-memory cache effectiveness. Hits/misses are
@@ -388,6 +415,8 @@ impl Metrics {
         Self {
             execution_count,
             execution_duration,
+            gas_used,
+            gas_exhausted,
             context_cache_hits,
             context_cache_misses,
             context_cache_size,
@@ -775,6 +804,28 @@ mod tests {
         assert!(
             out.contains("context_cache_application_size 3"),
             "missing application size gauge:\n{out}"
+        );
+    }
+
+    #[test]
+    fn record_gas_observes_usage_and_counts_exhaustion() {
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+
+        metrics.record_gas(Some(5_000_000), false);
+        metrics.record_gas(Some(200_000), true);
+        metrics.record_gas(None, false);
+
+        assert_eq!(metrics.gas_exhausted.get(), 1);
+        let mut out = String::new();
+        encode(&mut out, &registry).expect("encode registry");
+        assert!(
+            out.contains("context_runtime_gas_used_count 2"),
+            "two metered runs, one unmetered:\n{out}"
+        );
+        assert!(
+            out.contains("context_runtime_gas_exhausted_total 1"),
+            "{out}"
         );
     }
 
