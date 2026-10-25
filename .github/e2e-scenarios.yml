@@ -56,6 +56,7 @@ scenarios:
   - workflow: delegated-invitation-routing
     file: workflows/delegated-invitation-routing.yml
     app: scaffolding-e2e
+    registry_fetch: "false"
   - workflow: delegated-proof
     file: workflows/delegated-proof.yml
     app: scaffolding-e2e

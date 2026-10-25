@@ -40,6 +40,7 @@
   "collaborative-editor-concurrent": 19,
   "components-demo": 36,
   "delegated-authorship": 26,
+  "delegated-invitation-routing": 45,
   "delegated-proof": 24,
   "delegated-session": 32,
   "discovery-bootstrap-only-2node": 21,
