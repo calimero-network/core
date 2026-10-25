@@ -9,7 +9,7 @@ that the state had actually arrived. The failures are worse than flaky — they 
 those name a timing problem, so each one costs a real investigation into whichever
 feature the PR happened to touch.
 
-Two rules, each derived from an observed failure rather than invented:
+Three rules, each derived from an observed failure rather than invented:
 
 R1 — INCOMPLETE BARRIER. A `wait_for_sync` that omits a node the scenario then uses
      before the next barrier. This is the `account-device-revoke-lockout` bug: the
@@ -20,6 +20,11 @@ R2 — MISSING BARRIER. A step that claims cross-node convergence with no barrie
      between it and the last mutation. This is the `32-authored-migrate-ux` bug:
      three reads asserted "converged" with nothing between them and the writes, and
      the one reading the *other* node's last write returned null.
+
+R3 — WEAK BARRIER. A `wait_for_sync` with no `expect:` followed by a read on a node
+     that did not make the last mutation. The barrier only proves the nodes agree on
+     a hash, not that the read's data has been applied (a pending delta can finish
+     applying milliseconds after the hashes match). Give the barrier an `expect`.
 
 R2 needs care to stay useful. A step named "Insert Hello from Node 1" *running on*
 node 1 is a write naming its own actor, not a cross-node read — flagging those was
@@ -130,6 +135,8 @@ def lint(path: str) -> list[str]:
     dirty: set[str] = set()
     last_barrier_covered: set[str] | None = None
     last_barrier_name = ""
+    # Set by a barrier with no `expect`: (its name, nodes that mutated before it).
+    weak: tuple[str, set[str]] | None = None
 
     for step in steps:
         if not isinstance(step, dict):
@@ -147,10 +154,19 @@ def lint(path: str) -> list[str]:
                     f"since the last barrier — a later step on those nodes races the sync "
                     f"this step was supposed to establish"
                 )
+            weak = None if step.get("expect") or not dirty else (name, dirty)
             dirty = set()
             last_barrier_covered = touched
             last_barrier_name = name
             continue
+
+        if weak and stype in READING_TYPES and touched - weak[1] and not suppressed(step):
+            findings.append(
+                f"{path}: R3 '{name}' reads on {sorted(touched - weak[1])} after "
+                f"barrier '{weak[0]}', which has no `expect` - the hashes agreeing "
+                f"does not prove the data this read needs has been applied"
+            )
+            weak = None
 
         if stype in READING_TYPES and CLAIMS_CONVERGENCE.search(name) and not suppressed(step):
             # Only a genuine cross-node claim: the step must run somewhere other than
