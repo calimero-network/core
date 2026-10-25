@@ -52,6 +52,8 @@ The crucial structural fact: **a `Restricted` subgroup is a wall regardless of w
 The membership walk MUST treat an absent visibility key as `Restricted`, and MUST stop ascending at the first non-`Open` ancestor. A subgroup is a member-inheritance conduit only while it — and every ancestor between it and the anchor — is explicitly `Open`.
 :::
 
+The wall also bounds what a node must be able to read to judge an op in a group. An authority question about a group depends on that group, the ancestors the walk reaches and the namespace root, so a node needs those histories readable at the op's cut and nothing above the first `Restricted` edge. The edge only counts as a wall when the node reads what decides it: the root's `GroupCreated` and `GroupReparented`, and the subgroup's own `SubgroupVisibilitySet` ops. Where one of those is sealed under a key the node lacks, the edge's state is unknown and the node needs the ancestors above it too. So a member of a `Restricted` subgroup nested under a `Restricted` group it is not in judges its own group's ops without ever holding the parent's key.
+
 ## How the membership-path walk actually runs
 
 Resolving "is this identity a member of this subgroup?" is a parent-chain walk. The live implementation is `MembershipRepository::check_path`; it returns a `MembershipPath` describing *how* the decision was reached:

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A member of a Restricted subgroup nested under a Restricted group it is
+  not in now sees the subgroup.** Its node parked every op of the subgroup
+  (`AuthorityUndecidable`, cause `AncestryUnreadable`), because judging one
+  required the parent's sealed history readable at the op's cut, and only the
+  parent's members ever get the parent's key. So the subgroup's name, members
+  and contexts never applied there: in Mero Docs, a folder shared from inside
+  a private folder showed no name and no documents to the person it was
+  shared with. A node now needs a group's ancestors readable only up to the
+  first Restricted edge whose state it reads (the root's `GroupCreated` and
+  `GroupReparented` and the subgroup's own `SubgroupVisibilitySet`), plus the
+  namespace root, which is as far as any inheritance or admin question climbs.
+  An edge in a state the node cannot read still needs everything above it.
+
 ## [0.11.0] - 2026-10-24
 
 The first stable 0.11 release. It carries every change shipped across
