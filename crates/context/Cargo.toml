@@ -70,6 +70,13 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 wat.workspace = true
 # Ids of a cell's members and owned entries, for tests that play a run writing them.
 calimero-storage = { workspace = true, features = ["testing"] }
+# A local TLS server with its own CA, for the outbound transport's tests.
+rcgen.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
 
 [features]
 profiling = ["calimero-runtime/profiling"]
+# DEV/TEST ONLY: `[context.outbound.testing]`, which answers requests to `.test`
+# hosts in-process and takes literal secrets. merod's test image enables it.
+outbound-testing = []

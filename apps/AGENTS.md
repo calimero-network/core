@@ -52,6 +52,7 @@ cargo mero build --manifest-path apps/kv-store/Cargo.toml
 | `team-metrics-macro`     | Metrics with macros    | Macro usage            |
 | `team-metrics-custom`    | Metrics custom impl    | Custom CRDT usage      |
 | `xcall-example`          | Cross-context calls    | XCall pattern          |
+| `outbound-probe`         | Outbound HTTPS         | `env::http_request` from each kind of run; E2E fixture for the outbound gates, against the test build's `.test` echo |
 
 ## App Structure
 

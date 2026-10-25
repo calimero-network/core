@@ -114,12 +114,24 @@ pub struct EnvSecrets {
     secrets: BTreeMap<String, EnvSecret>,
 }
 
-#[derive(Debug)]
 struct EnvSecret {
     value: Zeroizing<String>,
     packages: BTreeSet<String>,
     signers: BTreeSet<String>,
     hosts: Vec<String>,
+}
+
+/// Never the value: the service is `Debug`, and a log line must not carry a
+/// secret.
+impl fmt::Debug for EnvSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EnvSecret")
+            .field("value", &"[redacted]")
+            .field("packages", &self.packages)
+            .field("signers", &self.signers)
+            .field("hosts", &self.hosts)
+            .finish()
+    }
 }
 
 impl EnvSecrets {
@@ -180,10 +192,17 @@ impl SecretProvider for EnvSecrets {
 /// `Authorization: Bearer <token>`, and expects `200 {"value", "hosts"}` or
 /// `404`. The service decides which secrets an app gets; the node still binds
 /// each to the hosts the answer names, and to its own host list.
-#[derive(Debug)]
 pub struct SidecarSecrets {
     url: reqwest::Url,
     token: Zeroizing<String>,
+}
+
+impl fmt::Debug for SidecarSecrets {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SidecarSecrets")
+            .field("url", &self.url.as_str())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Serialize)]
@@ -265,7 +284,6 @@ impl SecretProvider for SidecarSecrets {
 }
 
 /// A request that passed every check, with its secrets filled in.
-#[derive(Debug)]
 pub struct Prepared {
     pub method: OutboundMethod,
     pub url: reqwest::Url,
@@ -274,6 +292,22 @@ pub struct Prepared {
     pub body: Zeroizing<Vec<u8>>,
     /// The secrets substituted, to redact from the response.
     secrets: Vec<Zeroizing<String>>,
+}
+
+/// Header names and sizes only: the values and the body carry secrets.
+impl fmt::Debug for Prepared {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Prepared")
+            .field("method", &self.method)
+            .field("url", &self.url.as_str())
+            .field(
+                "headers",
+                &self.headers.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+            )
+            .field("body_len", &self.body.len())
+            .field("secrets", &self.secrets.len())
+            .finish()
+    }
 }
 
 /// Sends a prepared request. Real HTTPS in production; a fake in tests.
@@ -306,7 +340,8 @@ impl OutboundService {
         if settings.hosts.is_empty() {
             bail!("[context.outbound] is enabled but lists no hosts");
         }
-        let secrets: Option<Arc<dyn SecretProvider>> =
+        #[cfg_attr(not(feature = "outbound-testing"), allow(unused_mut))]
+        let mut secrets: Option<Arc<dyn SecretProvider>> =
             match (&settings.sidecar, settings.env_secrets.is_empty()) {
                 (Some(_), false) => {
                     bail!("[context.outbound] takes env_secrets or a sidecar, not both")
@@ -325,11 +360,17 @@ impl OutboundService {
             .filter(|h| h.trim() != "*")
             .cloned()
             .collect();
+        #[cfg_attr(not(feature = "outbound-testing"), allow(unused_mut))]
+        let mut transport: Arc<dyn Transport> = Arc::new(HttpsTransport::public());
+        #[cfg(feature = "outbound-testing")]
+        if let Some(testing) = &settings.testing {
+            testing::apply(settings, testing, &mut secrets, &mut transport)?;
+        }
         Ok(Some(Arc::new(Self {
             hosts: normalize_hosts(&named)?.into_iter().collect(),
             any_host,
             secrets,
-            transport: Arc::new(HttpsTransport),
+            transport,
         })))
     }
 
@@ -555,21 +596,53 @@ impl OutboundHost for RunOutbound {
     }
 }
 
-/// HTTPS through reqwest, resolving only to public addresses.
-#[derive(Debug)]
-struct HttpsTransport;
+/// HTTPS through reqwest: no proxy, no redirect, a capped response, and in
+/// production a resolver that answers only public addresses.
+struct HttpsTransport {
+    resolver: Arc<dyn reqwest::dns::Resolve>,
+    /// Roots trusted instead of the built-in ones; only tests set any.
+    roots: Vec<reqwest::Certificate>,
+    timeout: Duration,
+}
+
+impl fmt::Debug for HttpsTransport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpsTransport")
+            .field("roots", &self.roots.len())
+            .field("timeout", &self.timeout)
+            .finish_non_exhaustive()
+    }
+}
+
+impl HttpsTransport {
+    /// What a node uses: public addresses only, the built-in roots,
+    /// `TIMEOUT_MS`.
+    fn public() -> Self {
+        Self {
+            resolver: Arc::new(PublicOnly),
+            roots: Vec::new(),
+            timeout: Duration::from_millis(TIMEOUT_MS),
+        }
+    }
+}
 
 impl Transport for HttpsTransport {
     fn send(&self, request: &Prepared) -> EyreResult<(u16, Vec<u8>)> {
         run_blocking(async {
-            let client = reqwest::Client::builder()
+            let mut client = reqwest::Client::builder()
                 .https_only(true)
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
-                .dns_resolver(Arc::new(PublicOnly))
-                .connect_timeout(Duration::from_millis(TIMEOUT_MS))
-                .timeout(Duration::from_millis(TIMEOUT_MS))
-                .build()?;
+                .dns_resolver2(Arc::clone(&self.resolver))
+                .connect_timeout(self.timeout)
+                .timeout(self.timeout);
+            if !self.roots.is_empty() {
+                client = client.tls_built_in_root_certs(false);
+                for root in &self.roots {
+                    client = client.add_root_certificate(root.clone());
+                }
+            }
+            let client = client.build()?;
             let method = match request.method {
                 OutboundMethod::Get => reqwest::Method::GET,
                 OutboundMethod::Post => reqwest::Method::POST,
@@ -789,6 +862,14 @@ pub fn app_outbound(
     })
 }
 
+#[cfg(feature = "outbound-testing")]
+#[path = "outbound_testing.rs"]
+mod testing;
+
 #[cfg(test)]
 #[path = "outbound_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "outbound_transport_tests.rs"]
+mod transport_tests;

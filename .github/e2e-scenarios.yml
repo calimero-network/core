@@ -423,6 +423,14 @@ scenarios:
     file: workflows/tee-dice-roll.yml
     app: tee-dice
     image: merod:local-mock-tee
+  # Outbound HTTPS from an app method, every gate end to end: off by default, the
+  # operator's hosts, the manifest's prefix, one request per run, never from a view
+  # or a peer's delta, the secret filled in and redacted. The mock-tee image is the
+  # test build whose `[context.outbound.testing]` echoes `.test` hosts in-process.
+  - workflow: outbound
+    file: workflows/outbound.yml
+    app: outbound-probe
+    image: merod:local-mock-tee
   # The namespace TEE admission policy's `mode` decides who relays: a mock TEE admitted under
   # `mode: relay` is a RelayTee and runs a member's /intents (200); under the default it is a
   # ReadOnlyTee and is refused by role (403). Needs merobox >= 0.6.80.

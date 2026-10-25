@@ -135,6 +135,37 @@ and the URL, never the secret.
 A secret is matched on both the package and the bundle's signer: anyone can
 name a package, only its publisher can sign it.
 
+## Test it
+
+`env::http_request` needs a node: under `TestHost` it returns
+`Err("outbound requests need a node")`, so unit-test the logic around the
+answer by passing the answer in.
+
+End to end, run merobox against the test build of `merod`
+(`--features mock-attestation`, the `merod:local-mock-tee` image). It accepts a
+`[context.outbound.testing]` table that a release build refuses:
+
+```toml
+[context.outbound]
+enabled = true
+hosts = ["echo.outbound.test"]
+
+[context.outbound.testing]
+echo = true          # .test hosts are answered in-process
+
+[context.outbound.testing.secrets.ECHO_KEY]
+value = "s3cr3t-e2e" # a literal, since a merobox node's environment is fixed
+packages = ["com.calimero.outbound-probe"]
+signers = ["did:key:z6Mk…"]
+hosts = ["echo.outbound.test"]
+```
+
+The echo answers `200` with the request the node sent, as JSON: method, URL,
+path, query, headers, body and the number of secrets filled in. It answers only
+after every gate has passed, and its answer is redacted like any other, so a
+scenario sees exactly what left the node. `apps/outbound-probe` and its
+`workflows/outbound.yml` cover every gate this way.
+
 ## Where it stops
 
 - A request never runs in a view. Read the answer back from state.

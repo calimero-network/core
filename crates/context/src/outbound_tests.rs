@@ -426,3 +426,40 @@ fn an_env_secret_is_for_its_packages_built_by_its_signers_only() {
         .to_string();
     assert!(err.contains("signers"), "{err}");
 }
+
+#[test]
+fn no_debug_output_carries_a_secret() {
+    const VAR: &str = "CALIMERO_OUTBOUND_TEST_DEBUG_REDACTED";
+    // No other test reads or writes this variable.
+    std::env::set_var(VAR, SECRET);
+    let settings = OutboundSettings {
+        enabled: true,
+        hosts: vec![HOST.to_owned()],
+        env_secrets: [(
+            "TURNSTILE_SECRET".to_owned(),
+            crate::config::EnvSecretSettings {
+                env: VAR.to_owned(),
+                packages: vec!["com.calimero.mero-forms".to_owned()],
+                signers: vec!["did:key:zForms".to_owned()],
+                hosts: vec![HOST.to_owned()],
+            },
+        )]
+        .into(),
+        ..OutboundSettings::default()
+    };
+    let service = OutboundService::from_settings(&settings).unwrap().unwrap();
+    assert!(!format!("{service:?}").contains(SECRET));
+
+    let prepared = service
+        .prepare(
+            &forms(),
+            &declared(),
+            post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}"),
+        )
+        .unwrap();
+    assert_eq!(
+        prepared.body.as_slice(),
+        format!("secret={SECRET}").as_bytes()
+    );
+    assert!(!format!("{prepared:?}").contains(SECRET));
+}

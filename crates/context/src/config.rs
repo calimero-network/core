@@ -21,8 +21,10 @@ pub struct ContextConfig {
     pub search: SearchSettings,
 
     /// `[context.outbound]`: outbound HTTPS requests from apps. Off unless an
-    /// operator turns it on; see [`crate::outbound`].
-    #[serde(default)]
+    /// operator turns it on; see [`crate::outbound`]. Left out of a written
+    /// `config.toml` while it is the default, so `merod init` adds no table an
+    /// operator would have to find and edit rather than write.
+    #[serde(default, skip_serializing_if = "OutboundSettings::is_default")]
     pub outbound: OutboundSettings,
 }
 
@@ -49,6 +51,42 @@ pub struct OutboundSettings {
     /// Secrets from a loopback service next to the node. Exclusive with
     /// `env_secrets`.
     pub sidecar: Option<SidecarSettings>,
+    /// Test builds only: answer `.test` hosts in-process, take literal secrets.
+    #[cfg(feature = "outbound-testing")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub testing: Option<OutboundTestSettings>,
+}
+
+/// `[context.outbound.testing]`, compiled only with `outbound-testing`. A
+/// release node refuses the table as an unknown field.
+#[cfg(feature = "outbound-testing")]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct OutboundTestSettings {
+    /// Answer a request to a host ending in `.test` (RFC 2606: never a public
+    /// name) in-process, with a JSON echo of what would have been sent, once
+    /// every gate has passed and the secrets are filled in.
+    pub echo: bool,
+    /// Secrets given as values, scoped as `env_secrets` are. Exclusive with
+    /// `env_secrets` and a sidecar.
+    pub secrets: std::collections::BTreeMap<String, TestSecretSettings>,
+}
+
+/// One literal test secret.
+#[cfg(feature = "outbound-testing")]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TestSecretSettings {
+    pub value: String,
+    pub packages: Vec<String>,
+    pub signers: Vec<String>,
+    pub hosts: Vec<String>,
+}
+
+impl OutboundSettings {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// One secret from an environment variable.
