@@ -601,7 +601,7 @@ jobs:
               && rm -rf /var/lib/apt/lists/*
           USER user
           EOF
-          docker run --rm --entrypoint tc merod:local-fault -V
+          docker run --rm --cap-add NET_ADMIN --entrypoint tc merod:local-fault -V
 
       # Only the mock-TEE groups need it, and it is a second full image —
       # not worth pulling into every group.
