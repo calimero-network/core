@@ -1030,3 +1030,87 @@ fn a_forged_genesis_grants_no_admin() {
         base(),
     ));
 }
+
+/// Board is a restricted subgroup of the namespace and Minutes a restricted child of Board;
+/// `Open` is an open child of Board.
+const BOARD: u8 = 0x51;
+const MINUTES: u8 = 0x52;
+const OPEN: u8 = 0x53;
+
+fn create_under(parents: &[&Op], n: u8, parent: ContextGroupId, restricted: bool) -> Op {
+    gov(
+        OWNER,
+        parents,
+        OpPayload::SubgroupCreated {
+            child: ScopeId::from([n; 32]),
+            parent: ScopeId::from(parent.to_bytes()),
+            restricted,
+            admin: acct(SAM),
+        },
+    )
+}
+
+/// The admins, Board, and Minutes and Open under it; the log's last op is the head.
+fn board_tree() -> Vec<Op> {
+    let mut log = admins();
+    let board = create_under(&[&log[2]], BOARD, group(), true);
+    let minutes = create_under(&[&board], MINUTES, subgroup(BOARD), true);
+    let open = create_under(&[&minutes], OPEN, subgroup(BOARD), false);
+    log.extend([board, minutes, open]);
+    log
+}
+
+/// Alice's removal of Will from `from`, and Will's concurrent add in `acts_in`.
+fn removal_and_concurrent_add(
+    log: &[Op],
+    from: ContextGroupId,
+    acts_in: ContextGroupId,
+    readable: bool,
+) -> (Vec<Op>, Op) {
+    let head = log.last().expect("a head");
+    let removal = if readable {
+        gov(
+            ALICE,
+            &[head],
+            OpPayload::MemberRemoved {
+                group: from,
+                member: acct(WILL),
+            },
+        )
+    } else {
+        gov(ALICE, &[head], OpPayload::Opaque { group: from })
+    };
+    let add = add_in(acts_in, WILL, &[head], YARA, GroupMemberRole::Member);
+    let mut judged = log.to_vec();
+    judged.extend([removal, add.clone()]);
+    (judged, add)
+}
+
+/// What a restricted parent holds does not reach its restricted child, so a node that cannot
+/// read the parent's removal and one that can keep the same ops.
+#[test]
+fn a_removal_from_a_restricted_parent_leaves_the_signers_concurrent_ops_in_its_restricted_child() {
+    for readable in [true, false] {
+        let (log, add) =
+            removal_and_concurrent_add(&board_tree(), subgroup(BOARD), subgroup(MINUTES), readable);
+        assert!(
+            !void(&log).contains(&add.id()),
+            "removal readable: {readable}"
+        );
+    }
+}
+
+#[test]
+fn a_removal_from_a_group_still_voids_the_signers_concurrent_ops_in_it_and_its_open_children() {
+    for acts_in in [BOARD, OPEN] {
+        let (log, add) =
+            removal_and_concurrent_add(&board_tree(), subgroup(BOARD), subgroup(acts_in), true);
+        assert!(void(&log).contains(&add.id()), "acting in {acts_in:#x}");
+    }
+}
+
+#[test]
+fn a_namespace_removal_still_voids_the_signers_concurrent_ops_in_a_restricted_child() {
+    let (log, add) = removal_and_concurrent_add(&board_tree(), group(), subgroup(MINUTES), true);
+    assert!(void(&log).contains(&add.id()));
+}

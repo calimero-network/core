@@ -100,8 +100,8 @@ impl AclView {
         .take(MAX_NAMESPACE_DEPTH + 1)
     }
 
-    /// `group` and every ancestor above it, nearest first — the set of groups
-    /// whose ops can move an authority question asked about `group`.
+    /// `group` and every ancestor above it, nearest first; not the set an authority
+    /// question reads, see [`Self::authority_groups`].
     ///
     /// Deliberately climbs THROUGH a `restricted` edge, unlike
     /// [`Self::open_ancestors`]. That walk stops there because inheritance stops
@@ -130,14 +130,22 @@ impl AclView {
     }
 
     /// The groups whose ops can move an authority question asked about `group`: itself, its
-    /// open ancestors, and the top of its climb, the root when the climb reaches it.
-    /// A restricted parent's ops do not reach its restricted child; the root's still do,
-    /// as they decide the root admin and the child's creation, parent and initial flag.
-    pub fn authority_groups(&self, group: ContextGroupId) -> BTreeSet<ContextGroupId> {
+    /// open ancestors, and `root` when the group has a parent edge here. A restricted parent's
+    /// ops do not reach its restricted child; the root's do (admin, creation, parent, flag).
+    pub fn authority_groups(
+        &self,
+        group: ContextGroupId,
+        root: ContextGroupId,
+    ) -> BTreeSet<ContextGroupId> {
         let mut groups: BTreeSet<_> = core::iter::once(group)
             .chain(self.open_ancestors(group))
             .collect();
-        groups.extend(self.group_and_ancestors(group).last());
+        if self
+            .subgroups
+            .contains_key(&ScopeId::from(group.to_bytes()))
+        {
+            let _ = groups.insert(root);
+        }
         groups
     }
 

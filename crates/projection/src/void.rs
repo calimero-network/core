@@ -399,6 +399,7 @@ struct Analysis<'a> {
     depth: HashMap<[u8; 32], u32>,
     children: HashMap<[u8; 32], Vec<[u8; 32]>>,
     parent_group: BTreeMap<ContextGroupId, ContextGroupId>,
+    restricted_groups: BTreeSet<ContextGroupId>,
     ancestors: RefCell<HashMap<[u8; 32], IdSet>>,
     descendants: RefCell<HashMap<[u8; 32], IdSet>>,
     work: Cell<usize>,
@@ -524,6 +525,7 @@ impl<'a> Analysis<'a> {
             depth: HashMap::new(),
             children: HashMap::new(),
             parent_group: BTreeMap::new(),
+            restricted_groups: BTreeSet::new(),
             ancestors: RefCell::default(),
             descendants: RefCell::default(),
             work: Cell::new(0),
@@ -549,6 +551,7 @@ impl<'a> Analysis<'a> {
         }
         analysis.depth = analysis.depths(ops);
         analysis.parent_group = analysis.group_tree(ops);
+        analysis.restricted_groups = analysis.restricted_set(ops);
         // Causal order, so what a spent budget leaves unjudged does not follow the log's.
         let mut removals = std::mem::take(&mut analysis.removals);
         removals.sort_unstable_by_key(|removal| {
@@ -664,16 +667,46 @@ impl<'a> Analysis<'a> {
             .collect()
     }
 
-    /// `group` and the groups above it.
-    fn group_and_ancestors(&self, group: ContextGroupId) -> Vec<ContextGroupId> {
+    /// The subgroups whose latest creation or visibility set made them restricted.
+    fn restricted_set(&self, ops: &[&Op]) -> BTreeSet<ContextGroupId> {
+        let mut latest: BTreeMap<ContextGroupId, ((u32, [u8; 32]), bool)> = BTreeMap::new();
+        for &op in ops {
+            let (child, restricted) = match &op.payload {
+                OpPayload::SubgroupCreated {
+                    child, restricted, ..
+                } => (child, *restricted),
+                OpPayload::SubgroupVisibilitySet { scope, restricted } => (scope, *restricted),
+                _ => continue,
+            };
+            let stamp = (self.depth.get(&op.id()).copied().unwrap_or(0), op.id());
+            let child = ContextGroupId::from(*child.as_bytes());
+            if latest.get(&child).is_none_or(|(held, _)| stamp > *held) {
+                let _ = latest.insert(child, (stamp, restricted));
+            }
+        }
+        latest
+            .into_iter()
+            .filter_map(|(child, (_, restricted))| restricted.then_some(child))
+            .collect()
+    }
+
+    /// The groups whose removals reach `group`: itself, its open ancestors, and the root
+    /// when the group has a parent edge. The same set as `AclView::authority_groups`.
+    fn authority_chain(&self, group: ContextGroupId, root: ContextGroupId) -> Vec<ContextGroupId> {
         let mut chain = vec![group];
         let mut at = group;
-        while let Some(parent) = self.parent_group.get(&at) {
+        while !self.restricted_groups.contains(&at) {
+            let Some(parent) = self.parent_group.get(&at) else {
+                break;
+            };
             if chain.contains(parent) || chain.len() > 64 {
                 break;
             }
             chain.push(*parent);
             at = *parent;
+        }
+        if self.parent_group.contains_key(&group) && !chain.contains(&root) {
+            chain.push(root);
         }
         chain
     }
@@ -795,9 +828,13 @@ impl<'a> Analysis<'a> {
                 let Some(group) = self.voidable_group(op) else {
                     continue;
                 };
+                let root = self.base.root.map_or_else(
+                    || ContextGroupId::from(*op.scope.as_bytes()),
+                    |(root, _)| root,
+                );
                 let reaches = removal
                     .group
-                    .is_none_or(|lost| self.group_and_ancestors(group).contains(&lost));
+                    .is_none_or(|lost| self.authority_chain(group, root).contains(&lost));
                 if !reaches {
                     continue;
                 }

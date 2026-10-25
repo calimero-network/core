@@ -2166,8 +2166,8 @@ impl ScopeProjections {
         // for the same reason it abstains on a gap. The walk is shared, so both
         // answers come from one pass.
         //
-        // Scoped to the groups that can move THIS membership — the target and its
-        // ancestors, since inheritance climbs — and not to the namespace. A hole in
+        // Scoped to the groups that can move THIS membership — the target, its open
+        // ancestors (inheritance stops at a restricted edge) and the root — not the namespace. A hole in
         // a sibling subgroup is one this node may never be able to fill, so
         // abstaining on it would park the question permanently rather than
         // conservatively.
@@ -2178,7 +2178,7 @@ impl ScopeProjections {
             return None;
         }
         let view = ScopeState::acl_view_from_ancestry(&walked);
-        let relevant = view.authority_groups(group);
+        let relevant = view.authority_groups(group, ContextGroupId::from(namespace_id));
         if walked.first_opaque_in_any(&relevant).is_some() {
             return None;
         }
@@ -2587,10 +2587,10 @@ impl ScopeProjections {
         // `Some(false)` straight back as a refusal. Two nodes with different keys
         // would decide the same op differently.
         //
-        // Scoped to the groups whose ops can MOVE this question — the target and
-        // its ancestors — not to the namespace. Every input to an
-        // admin-or-capability answer at `group` is an op naming `group` or an
-        // ancestor of it: roles and caps name their group, a visibility wall names
+        // Scoped to the groups whose ops can MOVE this question — the target, its open
+        // ancestors and the root — not to the namespace. Every input to an
+        // admin-or-capability answer at `group` is an op naming `group`, an open
+        // ancestor of it or the root: roles and caps name their group, a visibility wall names
         // its subgroup, and the root admin arrives on readable root ops. A sibling
         // subgroup's hole cannot change any of them.
         //
@@ -2601,7 +2601,7 @@ impl ScopeProjections {
         // its own group, whose every op it reads. `dm-subgroup-privacy` is that
         // exact shape and its legitimate join failed. A refusal that cannot clear
         // is not the conservative choice.
-        let relevant = view.authority_groups(group);
+        let relevant = view.authority_groups(group, ContextGroupId::from(namespace_id));
         if walked.first_opaque_in_any(&relevant).is_some() {
             return Err(UndecidableCause::AncestryUnreadable);
         }
@@ -5759,6 +5759,69 @@ mod tests {
         let blind = fed(&[&make_board, &make_minutes, &unread, &flip]);
 
         assert!(!blind.can_resolve_cut(&e.store, minutes, &heads));
+    }
+
+    /// A removal from a restricted parent is sealed from a node outside it; it does not reach
+    /// the parent's restricted child, so that node and one that reads it give one answer.
+    #[test]
+    fn a_removal_from_a_restricted_parent_changes_no_answer_about_its_restricted_child() {
+        use calimero_governance_types::GroupOp;
+        let (board, minutes) = (
+            ContextGroupId::from([0x93; 32]),
+            ContextGroupId::from([0x94; 32]),
+        );
+        let e = Edges::new(&[(ContextGroupId::from([0x91; 32]), board), (board, minutes)]);
+        let (board_admin, carol) = (PublicKey::from([3u8; 32]), PublicKey::from([4u8; 32]));
+        let dave = test_account(&PublicKey::from([5u8; 32]));
+        let make_board = e.created(board, ContextGroupId::from(e.ns), [0xB1; 32], &[]);
+        let make_minutes = e.created(minutes, board, [0xB2; 32], &[[0xB1; 32]]);
+        let bound = |pk: PublicKey| {
+            Some((
+                test_account(&pk),
+                calimero_account::DeviceId::mint(test_account(&pk), [0x3E; 16]),
+            ))
+        };
+        let removal = |readable: bool| {
+            let op = GroupOp::MemberRemoved {
+                member: test_account(&carol),
+                expected_group_state_hash: [0; 32],
+                expected_context_state_hashes: Vec::new(),
+            };
+            calimero_governance_store::op_from_namespace_op_with_binding(
+                &signed_group(e.ns, board_admin, board),
+                readable.then_some(&op),
+                None,
+                bound(board_admin),
+                [0xB3; 32],
+                hlc(20),
+                &[[0xB2; 32]],
+            )
+        };
+        let add = calimero_governance_store::op_from_namespace_op_with_binding(
+            &signed_group(e.ns, carol, minutes),
+            Some(&GroupOp::MemberAdded {
+                member: dave,
+                role: GroupMemberRole::Member,
+            }),
+            None,
+            bound(carol),
+            [0xB4; 32],
+            hlc(20),
+            &[[0xB2; 32]],
+        );
+        let heads = [[0xB3; 32], [0xB4; 32]];
+        let answers: Vec<_> = [true, false]
+            .into_iter()
+            .map(|readable| {
+                let reg = fed(&[&make_board, &make_minutes, &removal(readable), &add]);
+                (
+                    reg.can_resolve_cut(&e.store, minutes, &heads),
+                    reg.direct_role_at_cut(&e.store, minutes, &dave, &heads),
+                )
+            })
+            .collect();
+        assert_eq!(answers[0], answers[1], "reading node vs blind node");
+        assert_eq!(answers[0], (true, Some(Some(GroupMemberRole::Member))));
     }
 
     fn ever_at(w: &Rotations, heads: &[[u8; 32]]) -> Result<CellWriters, WritersUnavailable> {
