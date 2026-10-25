@@ -57,7 +57,7 @@ DEFAULT_DURATIONS = "scripts/e2e-scenario-durations.json"
 # pay setup more often; fewer save setup and lengthen it. At 20 the longest group
 # runs about half a minute past the longest single scenario (tee-cards-late-tee,
 # which bounds the job however many groups there are).
-GROUP_COUNT = 20
+GROUP_COUNT = 21
 # A scenario with no measured duration yet.
 DEFAULT_SECONDS = 90
 # A scenario is killed after FACTOR x its duration, never sooner than FLOOR, so a
@@ -73,6 +73,7 @@ DEFAULT_IMAGE = "merod:local"
 IMAGES = {
     "merod:local": "local",
     "merod:local-dht": "dht",
+    "merod:local-fault": "fault",
     "merod:local-mock-tee": "mock-tee",
 }
 # Image -> the e2e test job that runs its groups. A job waits only for the image
@@ -82,6 +83,7 @@ IMAGES = {
 JOBS = {
     "merod:local": "default",
     "merod:local-dht": "default",
+    "merod:local-fault": "default",
     "merod:local-mock-tee": "mock-tee",
 }
 REQUIRED_FIELDS = ("workflow", "file", "app")
