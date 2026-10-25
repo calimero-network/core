@@ -1447,9 +1447,9 @@ impl SyncManager {
     /// Reuses the per-peer stream-open timeout rather than adding a second
     /// knob: both answer "how long is one unreachable peer worth", and a dial
     /// that has not completed in that long will not be what unblocks this join.
-    async fn dial_admitters(&self, routes_by_machine: Vec<(PeerId, Vec<libp2p::Multiaddr>)>) {
+    async fn dial_admitters(&self, _routes_by_machine: Vec<(PeerId, Vec<libp2p::Multiaddr>)>) {
         super::namespace_join::dial_admitter_machines(
-            routes_by_machine,
+            Vec::new(),
             self.sync_config.open_stream_timeout,
             |addr| async move { self.network_client.dial(addr).await },
         )
