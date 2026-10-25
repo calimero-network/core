@@ -20,7 +20,7 @@
   package and its bundle signer), sends it only to the hosts it is bound to,
   and removes it from the response, so the app never reads it. Nothing
   changes on a node that does not turn it on: `http_request` traps there.
-  Guide: *Call an external service*.
+  Guide: *Call an external service*. (#4670)
 
 - **A refused join says which refusal it was.** `POST /namespaces/{id}/join`
   and `POST /groups/join` answer a refusal with a `code` beside `error`:
