@@ -2166,8 +2166,9 @@ impl ScopeProjections {
         // for the same reason it abstains on a gap. The walk is shared, so both
         // answers come from one pass.
         //
-        // Scoped to the groups that can move THIS membership — the target and its
-        // ancestors, since inheritance climbs — and not to the namespace. A hole in
+        // Scoped to the groups that can move THIS membership — the target and the
+        // ancestors inheritance climbs to ([`deciding_groups`]) — and not to the
+        // namespace. A hole in
         // a sibling subgroup is one this node may never be able to fill, so
         // abstaining on it would park the question permanently rather than
         // conservatively.
@@ -2178,8 +2179,7 @@ impl ScopeProjections {
             return None;
         }
         let view = ScopeState::acl_view_from_ancestry(&walked);
-        let relevant: std::collections::BTreeSet<ContextGroupId> =
-            view.group_and_ancestors(group).collect();
+        let relevant = deciding_groups(&walked, &view, group, ContextGroupId::from(namespace_id));
         if walked.first_opaque_in_any(&relevant).is_some() {
             return None;
         }
@@ -2588,12 +2588,14 @@ impl ScopeProjections {
         // `Some(false)` straight back as a refusal. Two nodes with different keys
         // would decide the same op differently.
         //
-        // Scoped to the groups whose ops can MOVE this question — the target and
-        // its ancestors — not to the namespace. Every input to an
+        // Scoped to the groups whose ops can MOVE this question — the target, its
+        // ancestors up to a Restricted edge this node reads, and the root
+        // ([`deciding_groups`]) — not to the namespace. Every input to an
         // admin-or-capability answer at `group` is an op naming `group` or an
-        // ancestor of it: roles and caps name their group, a visibility wall names
-        // its subgroup, and the root admin arrives on readable root ops. A sibling
-        // subgroup's hole cannot change any of them.
+        // ancestor of it the climb reaches: roles and caps name their group, a
+        // visibility wall names its subgroup, and the root admin arrives on
+        // readable root ops. A sibling subgroup's hole cannot change any of them,
+        // and neither can the history above a known wall.
         //
         // The namespace-wide version of this check is what an earlier attempt
         // shipped, and e2e refused it within the hour: a node legitimately not a
@@ -2602,8 +2604,7 @@ impl ScopeProjections {
         // its own group, whose every op it reads. `dm-subgroup-privacy` is that
         // exact shape and its legitimate join failed. A refusal that cannot clear
         // is not the conservative choice.
-        let relevant: std::collections::BTreeSet<ContextGroupId> =
-            view.group_and_ancestors(group).collect();
+        let relevant = deciding_groups(&walked, &view, group, ContextGroupId::from(namespace_id));
         if walked.first_opaque_in_any(&relevant).is_some() {
             return Err(UndecidableCause::AncestryUnreadable);
         }
@@ -3158,9 +3159,13 @@ impl ScopeProjections {
         let standing = Self::standing_reader(store, group, namespace_id);
         // As for the fold, standing is read at the step's own parents, so the group's
         // ancestors there must be readable too.
-        let mut relevant: std::collections::BTreeSet<ContextGroupId> =
-            [ContextGroupId::from(namespace_id)].into();
-        relevant.extend(ScopeState::acl_view_from_ancestry(&walked).group_and_ancestors(group));
+        let root_group = ContextGroupId::from(namespace_id);
+        let mut relevant = deciding_groups(
+            &walked,
+            &ScopeState::acl_view_from_ancestry(&walked),
+            group,
+            root_group,
+        );
         let mut pinned = false;
         for op in walked.ops().iter().filter(|op| !walked.is_void(op)) {
             let OpPayload::SharedWritersRotated {
@@ -3181,7 +3186,7 @@ impl ScopeProjections {
             }
             let view =
                 ScopeState::acl_view_from_ancestry(&self.walk(&scope, log, &op.parents, base));
-            relevant.extend(view.group_and_ancestors(group));
+            relevant.extend(deciding_groups(&walked, &view, group, root_group));
             pinned |= standing(&view, op.device_key()).is_some_and(|account| {
                 prior
                     .get(&account)
@@ -3283,8 +3288,7 @@ impl ScopeProjections {
         // Standing is read at each step's own parents, where the group's ancestors
         // may differ from the cut's, so every one of them must be readable.
         let head_view = ScopeState::acl_view_from_ancestry(&walked);
-        let mut relevant: std::collections::BTreeSet<ContextGroupId> = [root_group].into();
-        relevant.extend(head_view.group_and_ancestors(group));
+        let mut relevant = deciding_groups(&walked, &head_view, group, root_group);
         let mut views: std::collections::HashMap<Vec<[u8; 32]>, calimero_authz::AclView> =
             std::collections::HashMap::new();
         let steps: Vec<_> = ScopeState::shared_writer_steps(
@@ -3299,7 +3303,7 @@ impl ScopeProjections {
                 let view = views.entry(parents).or_insert_with(|| {
                     ScopeState::acl_view_from_ancestry(&self.walk(&scope, log, &op.parents, base))
                 });
-                relevant.extend(view.group_and_ancestors(group));
+                relevant.extend(deciding_groups(&walked, view, group, root_group));
                 standing(view, op.device_key())
             },
         )
@@ -3660,6 +3664,40 @@ impl calimero_governance_store::FoldedTeeAuthority for FoldedProjections<'_> {
             .read()
             .is_ok_and(|folded| folded.relay_was_seated(store, *group, relay))
     }
+}
+
+/// The groups whose ops can move an authority question about `group` at a cut: the
+/// namespace root, `group`, and its ancestors up to the first Restricted edge whose state
+/// this node reads.
+///
+/// No inheritance or admin climb passes a Restricted edge, so nothing above one moves
+/// the answer. The edge's state comes from the root's `GroupCreated` and
+/// `GroupReparented` and the subgroup's own `SubgroupVisibilitySet`, so it is known
+/// where neither the root nor that subgroup has an op this node cannot open in the cut.
+/// Where one does, the climb goes on through the edge, as
+/// [`calimero_authz::AclView::group_and_ancestors`] does: an edge in an unknown state
+/// must not shorten the set. So a member of a Restricted subgroup nested under one it is
+/// not in, which reads its own group and the root but is never given the parent's key,
+/// is not parked behind the parent's history.
+fn deciding_groups(
+    walked: &CutAncestry<'_>,
+    view: &calimero_authz::AclView,
+    group: ContextGroupId,
+    root: ContextGroupId,
+) -> BTreeSet<ContextGroupId> {
+    let root_reads = walked.first_opaque_in(root).is_none();
+    let mut groups = BTreeSet::from([root]);
+    for ancestor in view.group_and_ancestors(group) {
+        let _new = groups.insert(ancestor);
+        let walled = view
+            .subgroups
+            .get(&ScopeId::from(ancestor.to_bytes()))
+            .is_some_and(|edge| edge.restricted);
+        if walled && root_reads && walked.first_opaque_in(ancestor).is_none() {
+            break;
+        }
+    }
+    groups
 }
 
 /// The account `key` signs for at this view. A certificate names its signing key
