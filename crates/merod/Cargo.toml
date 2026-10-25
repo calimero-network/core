@@ -63,7 +63,10 @@ calimero-build-utils.workspace = true
 # DEV/TEST ONLY. Compiles the mock TEE attestation path across merod (KMS mock
 # verify, `merod tee probe --mock-tee`, mock-tee admin wiring). Default OFF, so
 # release `merod` binaries contain no mock-attestation code. See crate docs.
+# The same test image also answers outbound requests to `.test` hosts in-process
+# (`[context.outbound.testing]`), so merobox can drive outbound end to end.
 mock-attestation = [
+    "calimero-context/outbound-testing",
     "calimero-node/mock-attestation",
     "calimero-server/mock-attestation",
     "calimero-tee-attestation/mock-attestation",

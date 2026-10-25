@@ -719,6 +719,7 @@ impl InitCommand {
             ContextConfig {
                 migration_v2: true,
                 search: SearchSettings::default(),
+                outbound: calimero_context::config::OutboundSettings::default(),
             },
         );
 

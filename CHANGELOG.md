@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Added
+
+- **A method can call an outside HTTPS service, off unless the node's
+  operator turns it on.** The new host function `http_request`
+  (`calimero_sdk::env::http_request`) sends one `GET`, `POST`, `PUT`, `PATCH`
+  or `DELETE` per run and returns the status and body. A node makes the
+  request only when `[context.outbound]` is enabled and allows the host
+  (listed, or `"*"` for any host an installed app declares), a URL prefix in
+  the app's signed manifest covers the URL (`outbound = [...]` in
+  `[package.metadata.calimero]`), and the run writes state on this node: never
+  a view, a migration, a state op or a peer's delta. https on port 443 to a
+  host that resolves only to public addresses, no redirects, no proxy, a
+  64 KiB body, a 1 MiB answer and 10 s. A request names a secret as
+  `{{secret:NAME}}`; the node fills it in from its operator's secrets
+  (`env_secrets`, or a loopback `sidecar` service) for that app only (its
+  package and its bundle signer), sends it only to the hosts it is bound to,
+  and removes it from the response, so the app never reads it. Nothing
+  changes on a node that does not turn it on: `http_request` traps there.
+  Guide: *Call an external service*. (#4670)
+
 ## [0.11.1] - 2026-10-25
 
 A patch release of 0.11.0 with one fix.

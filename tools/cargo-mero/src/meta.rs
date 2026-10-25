@@ -46,6 +46,8 @@ pub struct BundleMeta {
     pub frontend: Option<String>,
     /// Other URLs the same frontend is served at; see `BundleManifest::frontend_aliases`.
     pub frontend_aliases: Vec<String>,
+    /// URLs the app's runs may send an outbound request to; see `BundleManifest::outbound`.
+    pub outbound: Vec<String>,
     /// Built web frontend to ship in the bundle, relative to `manifest_dir`.
     pub frontend_dir: Option<String>,
     pub app_version: String,
@@ -86,6 +88,8 @@ struct RawCalimeroMeta {
     frontend: Option<String>,
     #[serde(default)]
     frontend_aliases: Vec<String>,
+    #[serde(default)]
+    outbound: Vec<String>,
     frontend_dir: Option<String>,
     #[serde(default)]
     services: Vec<RawServiceMeta>,
@@ -355,6 +359,16 @@ fn load_from_values(
         }
     }
 
+    // A node drops an outbound URL that is not one, and the app's request to
+    // it would then be refused at run time; fail the build instead.
+    for url in &raw.outbound {
+        if !calimero_bundle::is_outbound_url(url) {
+            return Err(eyre!(
+                "invalid outbound entry `{url}`: must be an https:// URL prefix with a host and no query or fragment"
+            ));
+        }
+    }
+
     // A category typo should fail at `cargo mero build`, not after a signed
     // publish round-trip. The registry enforces the same closed set; these two
     // lists must not drift.
@@ -390,6 +404,7 @@ fn load_from_values(
             .unwrap_or_else(|| "0.1.0".to_string()),
         frontend: raw.frontend,
         frontend_aliases: raw.frontend_aliases,
+        outbound: raw.outbound,
         frontend_dir: raw.frontend_dir,
         app_version: crate_version.to_string(),
         services,
@@ -664,6 +679,31 @@ mod tests {
         )
         .expect("parses");
         assert!(none.frontend_aliases.is_empty());
+    }
+
+    #[test]
+    fn parses_and_checks_outbound_urls() {
+        let meta = parse_for_test(
+            r#"
+            [package.metadata.calimero]
+            package = "com.example.demo"
+            outbound = ["https://challenges.cloudflare.com/turnstile/v0/siteverify"]
+        "#,
+        )
+        .expect("parses");
+        assert_eq!(
+            meta.outbound,
+            vec!["https://challenges.cloudflare.com/turnstile/v0/siteverify"]
+        );
+        let err = parse_for_test(
+            r#"
+            [package.metadata.calimero]
+            package = "com.example.demo"
+            outbound = ["http://insecure.example/x"]
+        "#,
+        )
+        .expect_err("http is refused");
+        assert!(err.to_string().contains("https://"), "{err}");
     }
 
     #[test]

@@ -137,6 +137,7 @@ mod tests {
             min_runtime_version: "0.1.0".to_owned(),
             frontend: None,
             frontend_aliases: Vec::new(),
+            outbound: Vec::new(),
             frontend_dir: None,
             app_version: "0.1.0".to_owned(),
             services: Vec::new(),

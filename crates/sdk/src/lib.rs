@@ -58,6 +58,8 @@ pub use calimero_account::AccountId;
 pub use calimero_primitives::blobs::BlobId;
 pub use calimero_primitives::context::ContextId;
 pub use calimero_primitives::identity::PublicKey;
+/// The request and response types of [`env::http_request`].
+pub use calimero_primitives::outbound;
 pub use state::{read_raw, MigrateMyEntriesSummary};
 
 pub mod app {

@@ -343,6 +343,18 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         context_manager
     };
 
+    // Outbound HTTPS requests (`[context.outbound]`, off by default). A bad
+    // setting fails the start rather than a request.
+    let context_manager =
+        match calimero_context::outbound::OutboundService::from_settings(&config.context.outbound)?
+        {
+            Some(outbound) => {
+                info!(hosts = ?config.context.outbound.hosts, "outbound requests enabled");
+                context_manager.with_outbound(outbound)
+            }
+            None => context_manager,
+        };
+
     let _ignored = exit_on_panic(&arbiter_pool.get().await?, move |ctx| {
         assert!(context_recipient.init(ctx), "failed to initialize");
         context_manager
