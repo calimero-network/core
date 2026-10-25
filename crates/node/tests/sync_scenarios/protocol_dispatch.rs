@@ -300,6 +300,24 @@ fn test_dispatch_diverged_initialized_avoids_snapshot() {
 }
 
 /// Verify unimplemented protocols are identified for fallback.
+/// A deep tree reported with its sampled depth routes to subtree prefetch; the
+/// hardcoded depth of 1 the manager used to report sent the same tree to a bloom filter.
+#[test]
+fn test_dispatch_selects_subtree_prefetch_for_a_deep_tree() {
+    let local = build_handshake_from_raw([1; 32], 95, 4, vec![[7; 32]]);
+    let deep = build_handshake_from_raw([2; 32], 100, 4, vec![[8; 32]]);
+    let flat = build_handshake_from_raw([2; 32], 100, 1, vec![[8; 32]]);
+
+    assert!(matches!(
+        select_protocol(&local, &deep).protocol,
+        SyncProtocol::SubtreePrefetch { .. }
+    ));
+    assert!(matches!(
+        select_protocol(&local, &flat).protocol,
+        SyncProtocol::BloomFilter { .. }
+    ));
+}
+
 #[test]
 fn test_dispatch_identifies_unimplemented_protocols() {
     // Force deep tree scenario (would select SubtreePrefetch)
