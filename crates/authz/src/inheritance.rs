@@ -37,6 +37,8 @@
 //! caps, visibility, the subgroup tree, the subgroup-creator admin — comes from
 //! the view, which is what makes the result honor the cut.
 
+use std::collections::BTreeSet;
+
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
@@ -125,6 +127,18 @@ impl AclView {
             })
             .take(MAX_NAMESPACE_DEPTH + 1),
         )
+    }
+
+    /// The groups whose ops can move an authority question asked about `group`: itself, its
+    /// open ancestors, and the top of its climb, the root when the climb reaches it.
+    /// A restricted parent's ops do not reach its restricted child; the root's still do,
+    /// as they decide the root admin and the child's creation, parent and initial flag.
+    pub fn authority_groups(&self, group: ContextGroupId) -> BTreeSet<ContextGroupId> {
+        let mut groups: BTreeSet<_> = core::iter::once(group)
+            .chain(self.open_ancestors(group))
+            .collect();
+        groups.extend(self.group_and_ancestors(group).last());
+        groups
     }
 
     /// The Open ancestor of `group` that `author` exited (`exited` says which), below any

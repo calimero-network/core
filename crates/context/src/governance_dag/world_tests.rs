@@ -957,6 +957,101 @@ mod held_ops {
         );
     }
 
+    /// A Restricted child nested under the Restricted subgroup, its metadata sealed under a
+    /// key the outside node is later given, the parent's history staying sealed to it.
+    #[actix::test]
+    async fn a_node_given_a_restricted_childs_key_applies_its_ops_under_a_parent_it_is_not_in() {
+        const CHILD_KEY: [u8; 32] = [0x79; 32];
+        let f = unauthorized_op_under_the_namespace_key().await;
+        let namespace = f.world.namespace;
+        let owner = f.world.actor(ActorState::NamespaceAdmin);
+        let child = ContextGroupId::from(derived_group_id(
+            &owner.account,
+            namespace.to_bytes(),
+            true,
+            0x73,
+        ));
+        let create = sign_next(
+            &f.inside,
+            &namespace,
+            &owner.sign_sk,
+            seal_for_test(
+                &f.inside,
+                namespace,
+                group_created(owner.account, namespace.to_bytes(), true, 0x73),
+            ),
+        );
+        for store in [&f.inside, &f.outside] {
+            apply(store, &create)
+                .await
+                .expect("the owner makes the child");
+        }
+        let nest = sign_next(
+            &f.inside,
+            &namespace,
+            &owner.sign_sk,
+            seal_for_test(
+                &f.inside,
+                namespace,
+                calimero_governance_types::RootOp::GroupReparented {
+                    child_group_id: child,
+                    new_parent_id: f.subgroup,
+                },
+            ),
+        );
+        for store in [&f.inside, &f.outside] {
+            apply(store, &nest)
+                .await
+                .expect("the owner nests the child");
+        }
+        let child_key_id = GroupKeyring::new(&f.inside, child)
+            .store_key(&CHILD_KEY)
+            .expect("the inside node holds the child's key");
+        let name = sign_next(
+            &f.inside,
+            &namespace,
+            &owner.sign_sk,
+            NamespaceOp::Group {
+                group_id: child.to_bytes().into(),
+                key_id: child_key_id.into(),
+                encrypted: GroupKeyring::encrypt_op(
+                    &CHILD_KEY,
+                    &GroupOp::GroupMetadataSet {
+                        name: Some("child".to_owned()),
+                        data: BTreeMap::new(),
+                    },
+                )
+                .expect("seal under the child's key"),
+                key_rotation: None,
+                registers: None,
+            },
+        );
+        apply(&f.inside, &name)
+            .await
+            .expect("inside applies the name");
+        apply(&f.outside, &name)
+            .await
+            .expect("outside holds the name");
+
+        let _key_id = crate::group_key_pull::adopt_pulled_group_key(
+            &f.outside,
+            namespace.to_bytes().into(),
+            child,
+            &CHILD_KEY,
+        )
+        .expect("the child's key reaches the outside node");
+
+        let read = calimero_governance_store::MetadataRepository::new(&f.outside)
+            .group_metadata(&child)
+            .expect("read the metadata")
+            .and_then(|record| record.name);
+        assert_eq!(
+            read.as_deref(),
+            Some("child"),
+            "the replay never applied it"
+        );
+    }
+
     #[actix::test]
     async fn a_refused_op_stays_refused_through_a_replay_without_a_judge() {
         let f = unauthorized_op_under_the_namespace_key().await;

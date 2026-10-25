@@ -2178,8 +2178,7 @@ impl ScopeProjections {
             return None;
         }
         let view = ScopeState::acl_view_from_ancestry(&walked);
-        let relevant: std::collections::BTreeSet<ContextGroupId> =
-            view.group_and_ancestors(group).collect();
+        let relevant = view.authority_groups(group);
         if walked.first_opaque_in_any(&relevant).is_some() {
             return None;
         }
@@ -2602,8 +2601,7 @@ impl ScopeProjections {
         // its own group, whose every op it reads. `dm-subgroup-privacy` is that
         // exact shape and its legitimate join failed. A refusal that cannot clear
         // is not the conservative choice.
-        let relevant: std::collections::BTreeSet<ContextGroupId> =
-            view.group_and_ancestors(group).collect();
+        let relevant = view.authority_groups(group);
         if walked.first_opaque_in_any(&relevant).is_some() {
             return Err(UndecidableCause::AncestryUnreadable);
         }
@@ -5582,6 +5580,185 @@ mod tests {
             None,
             "an ancestor of the context's group is unreadable"
         );
+    }
+
+    /// The ops of a restricted subgroup `s` under the root `ns`, and of `board` and its
+    /// restricted child `minutes` for the nested cases; each node ingests its own read of
+    /// the ops it cannot open.
+    struct Edges {
+        store: Store,
+        ns: [u8; 32],
+        founder: PublicKey,
+    }
+
+    impl Edges {
+        fn new(nested: &[(ContextGroupId, ContextGroupId)]) -> Self {
+            let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+            let ns = [0x91; 32];
+            for (parent, child) in nested {
+                NamespaceRepository::new(&store)
+                    .nest(parent, child)
+                    .expect("nest the group");
+            }
+            Self {
+                store,
+                ns,
+                founder: PublicKey::from([1u8; 32]),
+            }
+        }
+
+        fn created(
+            &self,
+            group: ContextGroupId,
+            parent: ContextGroupId,
+            id: [u8; 32],
+            parents: &[[u8; 32]],
+        ) -> Op {
+            op_from_namespace_op(
+                &signed_root(
+                    self.ns,
+                    self.founder,
+                    RootOp::GroupCreated {
+                        admin: test_account(&self.founder),
+                        group_id: group.to_bytes().into(),
+                        parent_id: parent.to_bytes().into(),
+                        restricted: true,
+                        salt: [0; 32],
+                    },
+                ),
+                None,
+                id,
+                hlc(10),
+                parents,
+            )
+        }
+
+        fn group_op(
+            &self,
+            signer: PublicKey,
+            group: ContextGroupId,
+            op: Option<&calimero_governance_types::GroupOp>,
+            id: [u8; 32],
+            parents: &[[u8; 32]],
+        ) -> Op {
+            op_from_namespace_op(
+                &signed_group(self.ns, signer, group),
+                op,
+                id,
+                hlc(20),
+                parents,
+            )
+        }
+    }
+
+    fn fed(ops: &[&Op]) -> ScopeProjections {
+        let mut reg = ScopeProjections::new();
+        for op in ops {
+            reg.ingest_op(op);
+        }
+        reg
+    }
+
+    /// A restricted subgroup is judged by the root's ops too: a node that cannot open a sealed
+    /// root admin change abstains instead of answering as if there were none.
+    #[test]
+    fn an_unreadable_root_op_leaves_a_restricted_subgroups_question_undecided() {
+        let e = Edges::new(&[(
+            ContextGroupId::from([0x91; 32]),
+            ContextGroupId::from([0x92; 32]),
+        )]);
+        let s = ContextGroupId::from([0x92; 32]);
+        let d = PublicKey::from([2u8; 32]);
+        let create = e.created(s, ContextGroupId::from(e.ns), [0xA1; 32], &[]);
+        let sealed = signed_root_sealed(e.ns, e.founder);
+        let heads = [[0xA2; 32]];
+        let opened = calimero_governance_store::op_from_namespace_op_with_binding(
+            &sealed,
+            None,
+            Some(&RootOp::AdminChanged {
+                new_admin: test_account(&d),
+            }),
+            None,
+            heads[0],
+            hlc(20),
+            &[[0xA1; 32]],
+        );
+        let opaque = op_from_namespace_op(&sealed, None, heads[0], hlc(20), &[[0xA1; 32]]);
+        let (reading, blind) = (fed(&[&create, &opened]), fed(&[&create, &opaque]));
+
+        assert!(reading.can_resolve_cut(&e.store, s, &heads));
+        assert_eq!(
+            reading.is_admin_account_at_cut(&e.store, s, &test_account(&d), &heads),
+            Some(true),
+            "control: the new root admin administers the subgroup"
+        );
+        assert!(!blind.can_resolve_cut(&e.store, s, &heads));
+        assert_eq!(
+            blind.is_admin_account_at_cut(&e.store, s, &test_account(&d), &heads),
+            None,
+            "a node that cannot read the root op must not answer"
+        );
+    }
+
+    /// What a restricted parent holds does not reach its restricted child, so a node that cannot
+    /// read the parent's history decides the child as one that can.
+    #[test]
+    fn an_unreadable_restricted_parent_does_not_change_its_childs_verdict() {
+        let (board, minutes) = (
+            ContextGroupId::from([0x93; 32]),
+            ContextGroupId::from([0x94; 32]),
+        );
+        let e = Edges::new(&[(ContextGroupId::from([0x91; 32]), board), (board, minutes)]);
+        let board_admin = PublicKey::from([3u8; 32]);
+        let make_board = e.created(board, ContextGroupId::from(e.ns), [0xB1; 32], &[]);
+        let make_minutes = e.created(minutes, board, [0xB2; 32], &[[0xB1; 32]]);
+        let rename = calimero_governance_types::GroupOp::GroupMetadataSet {
+            name: Some("board".to_owned()),
+            data: std::collections::BTreeMap::new(),
+        };
+        let heads = [[0xB3; 32]];
+        let read = e.group_op(board_admin, board, Some(&rename), heads[0], &[[0xB2; 32]]);
+        let unread = e.group_op(board_admin, board, None, heads[0], &[[0xB2; 32]]);
+        let (reading, blind) = (
+            fed(&[&make_board, &make_minutes, &read]),
+            fed(&[&make_board, &make_minutes, &unread]),
+        );
+
+        for (node, reg) in [("reading", &reading), ("blind", &blind)] {
+            assert!(reg.can_resolve_cut(&e.store, minutes, &heads), "{node}");
+            assert_eq!(
+                reg.is_admin_account_at_cut(&e.store, minutes, &test_account(&board_admin), &heads),
+                Some(false),
+                "{node}: a parent's admin does not administer its restricted child"
+            );
+        }
+    }
+
+    /// Once the child's edge is opened, the parent's history reaches it again.
+    #[test]
+    fn opening_a_restricted_child_makes_its_parents_unreadable_history_matter() {
+        let (board, minutes) = (
+            ContextGroupId::from([0x93; 32]),
+            ContextGroupId::from([0x94; 32]),
+        );
+        let e = Edges::new(&[(ContextGroupId::from([0x91; 32]), board), (board, minutes)]);
+        let make_board = e.created(board, ContextGroupId::from(e.ns), [0xB1; 32], &[]);
+        let make_minutes = e.created(minutes, board, [0xB2; 32], &[[0xB1; 32]]);
+        let unread = e.group_op(
+            PublicKey::from([3u8; 32]),
+            board,
+            None,
+            [0xB3; 32],
+            &[[0xB2; 32]],
+        );
+        let open = calimero_governance_types::GroupOp::SubgroupVisibilitySet {
+            mode: calimero_context_config::VisibilityMode::Open,
+        };
+        let heads = [[0xB4; 32]];
+        let flip = e.group_op(e.founder, minutes, Some(&open), heads[0], &[[0xB3; 32]]);
+        let blind = fed(&[&make_board, &make_minutes, &unread, &flip]);
+
+        assert!(!blind.can_resolve_cut(&e.store, minutes, &heads));
     }
 
     fn ever_at(w: &Rotations, heads: &[[u8; 32]]) -> Result<CellWriters, WritersUnavailable> {
