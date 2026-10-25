@@ -1901,7 +1901,10 @@ impl DeltaStore {
             self.applier
                 .retain_apply_lock
                 .store(true, std::sync::atomic::Ordering::Release);
-            let processed = dag.try_process_pending(&*self.applier).await;
+            let processed = dag
+                .try_process_pending(&*self.applier)
+                .await
+                .map(|drained| drained.len());
             self.applier
                 .retain_apply_lock
                 .store(false, std::sync::atomic::Ordering::Release);
@@ -2360,7 +2363,11 @@ impl DeltaStore {
                 .retain_apply_lock
                 .store(true, std::sync::atomic::Ordering::Release);
             if added {
-                match dag.try_process_pending(&*self.applier).await {
+                match dag
+                    .try_process_pending(&*self.applier)
+                    .await
+                    .map(|drained| drained.len())
+                {
                     Ok(0) => {}
                     Ok(n) => {
                         let pending_after: HashSet<[u8; 32]> =
@@ -3183,7 +3190,11 @@ impl DeltaStore {
                 // stay stuck without this explicit nudge. Closes the
                 // up-to-DEFAULT_SYNC_FREQUENCY_SECS (10 s) stall
                 // otherwise incurred before the periodic sync fires.
-                match dag.try_process_pending(&*self.applier).await {
+                match dag
+                    .try_process_pending(&*self.applier)
+                    .await
+                    .map(|drained| drained.len())
+                {
                     Ok(0) => {}
                     Ok(n) => {
                         tracing::info!(
@@ -3890,7 +3901,10 @@ impl DeltaStore {
             self.applier
                 .retain_apply_lock
                 .store(true, std::sync::atomic::Ordering::Release);
-            let processed = dag.try_process_pending(&*self.applier).await;
+            let processed = dag
+                .try_process_pending(&*self.applier)
+                .await
+                .map(|drained| drained.len());
             self.applier
                 .retain_apply_lock
                 .store(false, std::sync::atomic::Ordering::Release);
