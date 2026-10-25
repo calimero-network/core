@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-25
+
+A patch release of 0.11.0 with one fix.
+
 ### Fixed
 
 - **A member of a Restricted subgroup nested under a Restricted group it is
