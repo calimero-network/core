@@ -403,15 +403,15 @@ fn head_author_is_revoked(
 ///
 /// The key-to-account resolver is armed for each delta at its own cut just before it is
 /// added, so a chunk that spans a device revocation resolves every delta where it was signed.
-async fn flush_delta_batch(
+pub(crate) async fn flush_delta_batch(
     delta_store: &crate::delta_store::DeltaStore,
     node_state: &crate::NodeState,
     datastore: &calimero_store::Store,
     context_id: &ContextId,
     batch: Vec<crate::delta_store::BatchDeltaInput>,
-) {
+) -> crate::delta_store::BatchAddResult {
     if batch.is_empty() {
-        return;
+        return Default::default();
     }
     let batch_count = batch.len();
     let arm = |input: &crate::delta_store::BatchDeltaInput| {
@@ -429,14 +429,18 @@ async fn flush_delta_batch(
             calimero_storage::logical_clock::physical_time_secs(&input.delta.hlc),
         );
     };
-    if let Err(e) = delta_store.add_deltas_batch(batch, arm).await {
-        warn!(
-            ?e,
-            %context_id,
-            batch_count,
-            "Failed to persist fetched delta batch to DAG"
-        );
-    }
+    delta_store
+        .add_deltas_batch(batch, arm)
+        .await
+        .unwrap_or_else(|e| {
+            warn!(
+                ?e,
+                %context_id,
+                batch_count,
+                "Failed to persist fetched delta batch to DAG"
+            );
+            Default::default()
+        })
 }
 
 impl SyncManager {
