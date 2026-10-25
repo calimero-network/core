@@ -596,3 +596,14 @@ TRYBUILD=overwrite cargo test -p calimero-sdk --test macros
 
 then verify the diff only shows rustc wording/cascade noise - never a dropped
 `(calimero)>` line.
+
+The code generated for valid input is pinned by macrotest goldens in
+`tests/expand/*.expanded.rs` (`tests/expand.rs`), expanded for wasm32.
+They need `cargo-expand` on PATH. After an intentional macro or toolchain
+change, re-bless with:
+
+```bash
+MACROTEST=overwrite cargo test -p calimero-sdk --test expand
+```
+
+then review the golden diff.
