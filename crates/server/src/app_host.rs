@@ -430,7 +430,11 @@ fn is_app_admin_route(method: &Method, route: &str) -> bool {
                 | ["contexts", _, "join" | "leave"]
                 | ["namespaces", _, "invite" | "join" | "groups" | "leave"]
                 | ["groups", "join"]
-                | ["groups", _, "members" | "reparent" | "sync" | "leave"]
+                | [
+                    "groups",
+                    _,
+                    "members" | "reparent" | "sync" | "leave" | "join-via-inheritance"
+                ]
                 | ["groups", _, "members", "remove"]
                 | ["alias", "create", "context"]
                 | ["alias", "lookup", "context", _]
@@ -1179,6 +1183,18 @@ mod tests {
                 false,
             ),
             (Method::DELETE, "/node1/admin-api/blobs/c", "/node1", false),
+            (
+                Method::POST,
+                "/node1/admin-api/groups/g/join-via-inheritance",
+                "/node1",
+                true,
+            ),
+            (
+                Method::GET,
+                "/node1/admin-api/groups/g/join-via-inheritance",
+                "/node1",
+                false,
+            ),
             (Method::GET, "/admin-apix/contexts", "", false),
             (Method::GET, "/auth/validate", "/node1", true),
             (Method::HEAD, "/auth/validate", "", true),
