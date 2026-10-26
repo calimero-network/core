@@ -136,6 +136,13 @@ pub(crate) struct AtCutUndecidableLabels {
     pub(crate) cause: &'static str,
 }
 
+/// Labels for `warrant_outcome_total`. `outcome` comes from
+/// `warrant_gate::warrant_outcome_label`, a closed set, never from the caller.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct WarrantOutcomeLabels {
+    pub(crate) outcome: &'static str,
+}
+
 #[derive(Clone, Debug)]
 struct GroupStoreMetricSink {
     namespace_retry_events: Family<NamespaceRetryLabels, Counter>,
@@ -148,6 +155,7 @@ struct GroupStoreMetricSink {
     self_purge_reconcile: Family<SelfPurgeReconcileLabels, Counter>,
     self_purge_events_dropped: Counter,
     at_cut_undecidable: Family<AtCutUndecidableLabels, Counter>,
+    warrant_outcomes: Family<WarrantOutcomeLabels, Counter>,
 }
 
 static GROUP_STORE_METRICS: OnceLock<GroupStoreMetricSink> = OnceLock::new();
@@ -372,6 +380,14 @@ impl Metrics {
             at_cut_undecidable.clone(),
         );
 
+        let warrant_outcomes = Family::<WarrantOutcomeLabels, Counter>::default();
+        group_store_registry.register(
+            "warrant_outcome_total",
+            "Delegated-write warrant gate decisions: accepted, one label per refusal \
+             variant, or error for an undecidable cut or store failure",
+            warrant_outcomes.clone(),
+        );
+
         let _ = GROUP_STORE_METRICS.set(GroupStoreMetricSink {
             namespace_retry_events: namespace_retry_events.clone(),
             namespace_decode_events: namespace_decode_events.clone(),
@@ -383,6 +399,7 @@ impl Metrics {
             self_purge_reconcile: self_purge_reconcile.clone(),
             self_purge_events_dropped: self_purge_events_dropped.clone(),
             at_cut_undecidable: at_cut_undecidable.clone(),
+            warrant_outcomes: warrant_outcomes.clone(),
         });
 
         Self {
@@ -736,6 +753,18 @@ pub fn record_at_cut_undecidable(cause: UndecidableCause) {
         .inc();
 }
 
+pub(crate) fn record_warrant_outcome(outcome: &'static str) {
+    if let Some(metrics) = GROUP_STORE_METRICS.get() {
+        bump_warrant_outcome(&metrics.warrant_outcomes, outcome);
+    }
+}
+
+fn bump_warrant_outcome(family: &Family<WarrantOutcomeLabels, Counter>, outcome: &'static str) {
+    family
+        .get_or_create(&WarrantOutcomeLabels { outcome })
+        .inc();
+}
+
 #[cfg(test)]
 mod tests {
     use prometheus_client::encoding::text::encode;
@@ -889,6 +918,27 @@ mod tests {
             );
             assert!(out.contains(&series), "missing {series}:\n{out}");
         }
+    }
+
+    #[test]
+    fn warrant_outcomes_route_to_their_own_label() {
+        let mut registry = Registry::default();
+        let family = Family::<WarrantOutcomeLabels, Counter>::default();
+        registry.register("warrant_outcome", "test", family.clone());
+        bump_warrant_outcome(&family, "accepted");
+        bump_warrant_outcome(&family, "nonce_already_spent");
+        bump_warrant_outcome(&family, "nonce_already_spent");
+
+        let mut out = String::new();
+        encode(&mut out, &registry).expect("encode registry");
+        assert!(
+            out.contains("warrant_outcome_total{outcome=\"accepted\"} 1"),
+            "{out}"
+        );
+        assert!(
+            out.contains("warrant_outcome_total{outcome=\"nonce_already_spent\"} 2"),
+            "{out}"
+        );
     }
 
     /// The `self_purge_failures_total` family registers against a fresh
