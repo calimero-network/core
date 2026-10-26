@@ -3,6 +3,7 @@
 
 use super::context::NamespaceApplyCtx;
 use crate::op_events::OpEvent;
+use crate::private_space::Tree;
 use crate::{
     ApplyError, CapabilitiesRepository, GroupCreatedRejection, MembershipRepository,
     MetaRepository, NamespaceError, NamespaceFoundingRepository, NamespaceRepository,
@@ -102,7 +103,11 @@ pub(crate) fn apply(
         ));
     }
 
-    crate::private_space::require_may_create(store, &parent_gid, restricted)?;
+    if restricted {
+        let (parents, authorizer) = ctx.apply_auth();
+        Tree::at_cut(store, authorizer, &ns_gid, parents)?
+            .require_may_create(&parent_gid, restricted)?;
+    }
 
     // The originating node's `create_group` handler pre-populates
     // `GroupMeta` (and related state) BEFORE publishing this op, so a

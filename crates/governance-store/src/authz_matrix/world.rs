@@ -290,7 +290,10 @@ fn add_member(
     role: GroupMemberRole,
 ) {
     // A folder inside a space takes no member op, so its rows are seeded directly.
-    if crate::private_space::require_member_row_target(store, group).is_err() {
+    if crate::private_space::Tree::live(store, group)
+        .and_then(|tree| tree.require_member_row_target(group))
+        .is_err()
+    {
         crate::MembershipRepository::new(store)
             .add_member(group, &seat.account, role)
             .expect("seed a member row");

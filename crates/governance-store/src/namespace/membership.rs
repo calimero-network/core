@@ -56,6 +56,10 @@ impl<'a> NamespaceMembershipService<'a> {
         self
     }
 
+    fn namespace_group(&self) -> ContextGroupId {
+        ContextGroupId::from(self.namespace_id.to_bytes())
+    }
+
     /// The permission checker for `group`, carrying this join's cut.
     fn permissions(&self, group: &ContextGroupId) -> PermissionChecker<'a> {
         PermissionChecker::new(self.store, *group).with_apply_auth(self.parents, self.authorizer)
@@ -121,6 +125,7 @@ impl<'a> NamespaceMembershipService<'a> {
         let group_id = inv.group_id;
 
         self.verify_member_join_signature(signer, member, signed_invitation, account)?;
+        crate::private_space::require_root_invitation_target(&self.namespace_group(), &group_id)?;
         self.verify_admitter_endorsement(member, signed_invitation, admitter_endorsement)?;
 
         // Deterministic expiry gate: reject when the joiner's signed
@@ -295,6 +300,7 @@ impl<'a> NamespaceMembershipService<'a> {
         let group_id = inv.group_id;
 
         self.verify_inviter_signature(signed_invitation)?;
+        crate::private_space::require_root_invitation_target(&self.namespace_group(), &group_id)?;
 
         let resolved_ns = NamespaceRepository::new(self.store).resolve(&group_id)?;
         if resolved_ns.to_bytes() != self.namespace_id.to_bytes() {

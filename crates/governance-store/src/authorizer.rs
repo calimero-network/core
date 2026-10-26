@@ -275,6 +275,18 @@ pub trait AtCutAuthorizer: Send + Sync {
         None
     }
 
+    /// The subgroup edges of `group`'s namespace at the cut, `child -> (parent, restricted)`;
+    /// the root has no entry. `None` = the cut is not answered here (see
+    /// [`Self::can_resolve_cut`]); the private-space rules then read live only when
+    /// the cut is resolvable. Default `None`, as for [`Self::direct_role_at_cut`].
+    fn subgroup_edges_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _parents: &[[u8; 32]],
+    ) -> Option<SubgroupEdges> {
+        None
+    }
+
     /// Drop what this authorizer has folded: the store changed under it, as when a key
     /// arrives and ops parked unreadable can now be read.
     fn forget(&self) {}
@@ -375,6 +387,9 @@ pub(crate) fn ensure_cut_resolvable(
         signer: subject.to_string(),
     });
 }
+
+/// A namespace's subgroup edges, `child -> (parent, restricted)`.
+pub type SubgroupEdges = BTreeMap<ContextGroupId, (ContextGroupId, bool)>;
 
 /// A group's direct rows as the log minus its void ops leaves them.
 #[derive(Clone, Debug, Default, PartialEq)]

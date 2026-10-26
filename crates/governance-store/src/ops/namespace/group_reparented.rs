@@ -3,6 +3,7 @@
 
 use super::context::NamespaceApplyCtx;
 use crate::op_events::OpEvent;
+use crate::private_space::Tree;
 use crate::{NamespaceRepository, ReparentOutcome};
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
@@ -19,7 +20,10 @@ pub(crate) fn apply(
     let new_parent = ContextGroupId::from(new_parent_id);
     // `reparent` keeps child and new parent in one namespace; this makes it the op's.
     ctx.require_in_namespace(&child)?;
-    crate::private_space::require_may_reparent(ctx.store(), &child, &new_parent)?;
+    let (parents, authorizer) = ctx.apply_auth();
+    let ns_gid = ContextGroupId::from(ctx.namespace_id().to_bytes());
+    Tree::at_cut(ctx.store(), authorizer, &ns_gid, parents)?
+        .require_may_reparent(&child, &new_parent)?;
     match NamespaceRepository::new(ctx.store()).reparent(&child, &new_parent)? {
         ReparentOutcome::Reparented { old_parent } => {
             let ns_id = ctx.namespace_id();

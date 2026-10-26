@@ -2,6 +2,7 @@
 //! `apply_group_op_mutations` in #2304.
 
 use super::context::GroupApplyCtx;
+use crate::private_space::Tree;
 use calimero_context_config::VisibilityMode;
 use eyre::Result as EyreResult;
 
@@ -9,7 +10,8 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, mode: &VisibilityMode) -> EyreR
     let signer = ctx.signer();
     let group_id = ctx.group_id();
     if matches!(mode, VisibilityMode::Restricted) {
-        crate::private_space::require_may_make_private(ctx.store(), group_id)?;
+        Tree::at_cut(ctx.store(), ctx.authorizer(), group_id, ctx.cut())?
+            .require_may_make_private(group_id)?;
     }
     ctx.settings().set_subgroup_visibility(signer, *mode)?;
     // Re-trigger inherited auto-follow for this subgroup's contexts. A

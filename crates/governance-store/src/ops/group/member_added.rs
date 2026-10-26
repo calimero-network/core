@@ -4,7 +4,10 @@
 use super::super::super::build_auto_follow_set_if_enabled;
 use super::super::super::contexts::restore_member_context_identities;
 use super::context::GroupApplyCtx;
-use crate::{MembershipError, MembershipPolicy, MembershipRepository, ReentryRepository};
+use crate::private_space::Tree;
+use crate::{
+    MembershipError, MembershipPolicy, MembershipRepository, NamespaceRepository, ReentryRepository,
+};
 use calimero_account::AccountId;
 use calimero_primitives::context::GroupMemberRole;
 use eyre::{bail, Result as EyreResult};
@@ -22,7 +25,11 @@ pub(crate) fn apply(
     if role.is_tee() {
         bail!(MembershipError::TeeRoleViaAttestationOnly);
     }
-    crate::private_space::require_member_row_target(store, group_id)?;
+    // The root never has a parent, so only a subgroup's target needs the tree.
+    if NamespaceRepository::new(store).parent(group_id)?.is_some() {
+        Tree::at_cut(store, ctx.authorizer(), group_id, ctx.cut())?
+            .require_member_row_target(group_id)?;
+    }
     ctx.permissions()
         .require_manage_members(signer, "add member")?;
     ctx.permissions().require_admin_to_add_admin(signer, role)?;

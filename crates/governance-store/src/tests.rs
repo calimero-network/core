@@ -5788,11 +5788,10 @@ fn member_joined_clears_deny_list_for_rejoiner() {
     let mut rng = UnwrapErr(SysRng);
     let store = test_store();
 
-    // namespace (root) ── subgroup; the member re-joins the subgroup via
-    // an admin-signed open invitation.
+    // The member re-joins the namespace via an admin-signed open invitation.
     let ns_id = [0xB0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    let subgroup = ContextGroupId::from([0xB1u8; 32]);
+    let subgroup = ns_gid;
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -5802,9 +5801,6 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         .unwrap();
     MembershipRepository::new(&store)
         .add_member(&subgroup, &admin, GroupMemberRole::Admin)
-        .unwrap();
-    NamespaceRepository::new(&store)
-        .nest(&ns_gid, &subgroup)
         .unwrap();
 
     // Rejoiner: signs their own `MemberJoined` op, not yet a direct member.
@@ -7746,20 +7742,17 @@ fn reentry_fixture(
 ) -> ([u8; 32], ContextGroupId, ContextGroupId, AccountId) {
     let ns_id = [0xE0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    let subgroup = ContextGroupId::from([0xE1u8; 32]);
     let admin = enrol_member(store, &ns_gid, admin_pk);
 
     MetaRepository::new(store)
-        .save(&subgroup, &sample_meta_with_admin(admin))
+        .save(&ns_gid, &sample_meta_with_admin(admin))
         .unwrap();
     MembershipRepository::new(store)
-        .add_member(&subgroup, &admin, GroupMemberRole::Admin)
-        .unwrap();
-    NamespaceRepository::new(store)
-        .nest(&ns_gid, &subgroup)
+        .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
         .unwrap();
 
-    (ns_id, ns_gid, subgroup, admin)
+    // Invitations admit to the namespace root, so it is the group joins target.
+    (ns_id, ns_gid, ns_gid, admin)
 }
 
 /// Sealing a subgroup join is a rule, not a convention.
@@ -7778,7 +7771,12 @@ fn a_cleartext_subgroup_join_is_refused_but_a_namespace_root_join_is_not() {
 
     let store = test_store();
     let admin_sk = PrivateKey::from([0x91u8; 32]);
-    let (ns_id, ns_gid, subgroup, _admin) = reentry_fixture(&store, &admin_sk.public_key());
+    let (ns_id, ns_gid, _root, _admin) = reentry_fixture(&store, &admin_sk.public_key());
+    let subgroup = ContextGroupId::from([0xE1u8; 32]);
+    MetaRepository::new(&store)
+        .save(&subgroup, &test_meta())
+        .unwrap();
+    nest_for_test(&store, &ns_gid, &subgroup);
 
     let joiner_sk = PrivateKey::from([0x92u8; 32]);
     let joiner = crate::test_fixtures::account_for(&joiner_sk.public_key());
@@ -8390,15 +8388,25 @@ fn the_projection_agrees_with_the_apply_across_a_namespace_leave() {
     use calimero_projection::ScopeState;
     use calimero_storage::logical_clock::HybridTimestamp;
 
-    // How the member is first seated in the subgroup (an admin's add of Admin,
-    // or a Member invitation), and the invitation it later rejoins on.
-    for (seated_by_add, rejoin_role, rejoined_as) in [
-        (true, 2, GroupMemberRole::ReadOnly),
-        (false, 0, GroupMemberRole::Admin),
-    ] {
+    // The role an admin's add seats the member at once it is back in the namespace.
+    for rejoined_as in [GroupMemberRole::ReadOnly, GroupMemberRole::Admin] {
         let store = test_store();
         let admin_sk = PrivateKey::from([0x91u8; 32]);
-        let (ns_id, ns_gid, subgroup, admin) = reentry_fixture(&store, &admin_sk.public_key());
+        let (ns_id, ns_gid, _root, admin) = reentry_fixture(&store, &admin_sk.public_key());
+        let subgroup = ContextGroupId::from([0xE1u8; 32]);
+        MetaRepository::new(&store)
+            .save(&subgroup, &sample_meta_with_admin(admin))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&subgroup, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        nest_for_test(&store, &ns_gid, &subgroup);
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(
+                &subgroup,
+                calimero_context_config::VisibilityMode::Restricted,
+            )
+            .unwrap();
         MetaRepository::new(&store)
             .save(&ns_gid, &sample_meta_with_admin(admin))
             .unwrap();
@@ -8431,7 +8439,7 @@ fn the_projection_agrees_with_the_apply_across_a_namespace_leave() {
                         .role_of(&group, &member)
                         .unwrap()
                         .as_ref(),
-                    "step {step}, seated by add: {seated_by_add}"
+                    "step {step}, rejoined as {rejoined_as:?}"
                 );
             }
         };
@@ -8454,21 +8462,22 @@ fn the_projection_agrees_with_the_apply_across_a_namespace_leave() {
                 account: real_join_account(&member_pk),
             })
         };
-        let group_op = |signer: &PrivateKey, group: ContextGroupId, op: GroupOp| {
+        let group_op = |signer: &PrivateKey, group: ContextGroupId, op: GroupOp, nonce: u64| {
             let signed =
-                SignedGroupOp::sign(signer, group.to_bytes().into(), vec![], 9, op.clone())
+                SignedGroupOp::sign(signer, group.to_bytes().into(), vec![], nonce, op.clone())
                     .expect("sign the group op");
             apply_local_signed_group_op(&store, &signed).expect("apply the group op");
             calimero_op_adapter::payload_from_group_op(group, &op)
         };
 
         agree_after(join(ns_gid, 1, 1));
-        agree_after(if seated_by_add {
-            let role = GroupMemberRole::Admin;
-            group_op(&admin_sk, subgroup, GroupOp::MemberAdded { member, role })
-        } else {
-            join(subgroup, 1, 2)
-        });
+        let role = GroupMemberRole::Admin;
+        agree_after(group_op(
+            &admin_sk,
+            subgroup,
+            GroupOp::MemberAdded { member, role },
+            9,
+        ));
         agree_after(group_op(
             &member_sk,
             ns_gid,
@@ -8477,9 +8486,18 @@ fn the_projection_agrees_with_the_apply_across_a_namespace_leave() {
                 expected_group_state_hash: [0u8; 32],
                 expected_context_state_hashes: Vec::new(),
             },
+            9,
         ));
         agree_after(join(ns_gid, 1, 3));
-        agree_after(join(subgroup, rejoin_role, 4));
+        agree_after(group_op(
+            &admin_sk,
+            subgroup,
+            GroupOp::MemberAdded {
+                member,
+                role: rejoined_as.clone(),
+            },
+            10,
+        ));
 
         assert_eq!(
             MembershipRepository::new(&store)

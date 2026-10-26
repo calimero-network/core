@@ -15,11 +15,12 @@ use eyre::Result as EyreResult;
 
 use crate::namespace::NamespaceGovernance;
 use crate::test_fixtures::{
-    bootstrap_namespace_with_admin_account, derived_group_id, enrol_member, group_created,
-    seal_for_test, test_store,
+    apply_member_joined, bootstrap_namespace_with_admin_account, derived_group_id, enrol_member,
+    group_created, seal_for_test, signed_invitation_for, test_store,
 };
 use crate::{
-    apply_local_signed_group_op, CapabilitiesRepository, MetaRepository, NamespaceRepository,
+    apply_local_signed_group_op, CapabilitiesRepository, MetaRepository,
+    NamespaceMembershipService, NamespaceRepository, PrivateSpaceError,
 };
 
 const NS: [u8; 32] = [0xB1; 32];
@@ -276,4 +277,48 @@ fn members_are_added_at_the_root_or_a_space_root() {
     assert!(s.add_member(inner).is_err(), "a folder in a space");
     s.add_member(NS).expect("the workspace root");
     s.add_member(space).expect("a space root");
+}
+
+fn refused_as_invitation_target(err: &eyre::Report) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<PrivateSpaceError>(),
+            Some(PrivateSpaceError::InvitationTargetNotRoot(_))
+        )
+    })
+}
+
+#[test]
+fn the_responder_gate_admits_invitations_to_the_namespace_root_only() {
+    let s = Space::new();
+    let folder = s.open(NS);
+    let space = s.private(NS);
+    let service = NamespaceMembershipService::new(&s.store, NS.into());
+    let invite = |group: [u8; 32]| signed_invitation_for(&s.sk, group.into(), [0x31; 32]);
+
+    service
+        .validate_open_invitation(&invite(NS), 0)
+        .expect("the namespace root");
+    for target in [folder, space] {
+        let err = service
+            .validate_open_invitation(&invite(target), 0)
+            .expect_err("a subgroup is not an invitation target");
+        assert!(refused_as_invitation_target(&err), "{err:#}");
+    }
+}
+
+#[test]
+fn a_join_naming_a_subgroup_is_refused_when_applied() {
+    let s = Space::new();
+    let space = s.private(NS);
+    let joiner = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+
+    let invitation = signed_invitation_for(&s.sk, space.into(), [0x32; 32]);
+    let err = apply_member_joined(&s.store, NS, &joiner, invitation, 1, &s.sk)
+        .expect_err("a join into a space root is not a join");
+    assert!(refused_as_invitation_target(&err), "{err:#}");
+
+    let invitation = signed_invitation_for(&s.sk, NS.into(), [0x33; 32]);
+    apply_member_joined(&s.store, NS, &joiner, invitation, 2, &s.sk)
+        .expect("a join into the namespace root");
 }
