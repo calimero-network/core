@@ -117,6 +117,9 @@ pub struct AppState {
     pub kv: BTreeMap<Bytes, Bytes>,
     pub bundle: Option<String>,
     pub initialized: bool,
+    /// Why `init` failed, if it did (`{ status, error }`).
+    #[serde(default)]
+    pub init_error: Option<Value>,
     pub last_index: u64,
     idempotency: BTreeMap<String, IdemRecord>,
     pub events: VecDeque<EventRecord>,
@@ -220,6 +223,12 @@ impl Machine for AppMachine {
                 if !a.conflict {
                     self.state.bundle = Some(bundle);
                     self.state.initialized = outcome.status == Status::Ok;
+                    if !self.state.initialized {
+                        self.state.init_error = Some(serde_json::json!({
+                            "status": outcome.status,
+                            "error": outcome.error,
+                        }));
+                    }
                 }
                 a
             }

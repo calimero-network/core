@@ -757,8 +757,13 @@ async fn app_create(
     // Wait for the app's first entry (init) to commit somewhere.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
-        if app_ready(&node, &app_id).await {
-            break;
+        match app_ready(&node, &app_id).await {
+            Some(Ok(())) => break,
+            Some(Err(error)) => {
+                return Err(ApiError::new(422, "INIT_FAILED", "the app's init failed")
+                    .with_details(json!({ "appId": app_id, "error": error })));
+            }
+            None => {}
         }
         if tokio::time::Instant::now() > deadline {
             return Err(ApiError::unavailable(
@@ -773,26 +778,33 @@ async fn app_create(
 }
 
 /// Whether the app has run `init`, asking a replica if this node hosts none.
-pub async fn app_ready(node: &Node, app_id: &str) -> bool {
+/// Whether the app's init has committed: `None` not yet, `Some(Err(why))` failed.
+pub async fn app_ready(node: &Node, app_id: &str) -> Option<Result<(), Value>> {
     if let Some(g) = node.hosted(app_id) {
-        return g.read_local(|m, _| m.state.bundle.is_some());
+        return g.read_local(|m, _| init_state(&m.state));
     }
-    let Ok(app) = node.app(app_id).await else {
-        return false;
-    };
+    let app = node.app(app_id).await.ok()?;
     let addr = node.sys(|s| {
         app.replicas
             .iter()
             .find_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
-    });
-    match addr {
-        Some(addr) => node
-            .peer_post(&addr, "internal/app-ready", &json!({ "appId": app_id }))
-            .await
-            .ok()
-            .and_then(|v| v.get("ready").and_then(Value::as_bool))
-            .unwrap_or(false),
-        None => false,
+    })?;
+    let v = node
+        .peer_post(&addr, "internal/app-ready", &json!({ "appId": app_id }))
+        .await
+        .ok()?;
+    match (v.get("ready").and_then(Value::as_bool), v.get("initError")) {
+        (_, Some(e)) if !e.is_null() => Some(Err(e.clone())),
+        (Some(true), _) => Some(Ok(())),
+        _ => None,
+    }
+}
+
+fn init_state(state: &crate::app::AppState) -> Option<Result<(), Value>> {
+    match (&state.bundle, &state.init_error) {
+        (None, _) => None,
+        (Some(_), Some(e)) => Some(Err(e.clone())),
+        (Some(_), None) => Some(Ok(())),
     }
 }
 
@@ -1501,10 +1513,14 @@ async fn internal_app_ready(
     Json(b): Json<ReadyBody>,
 ) -> ApiResult {
     peer_only(&node, &headers)?;
-    let ready = node
+    let state = node
         .hosted(&b.app_id)
-        .is_some_and(|g| g.read_local(|m, _| m.state.bundle.is_some()));
-    Ok(Json(json!({ "ready": ready })))
+        .and_then(|g| g.read_local(|m, _| init_state(&m.state)));
+    Ok(Json(match state {
+        Some(Ok(())) => json!({ "ready": true }),
+        Some(Err(e)) => json!({ "ready": true, "initError": e }),
+        None => json!({ "ready": false }),
+    }))
 }
 
 #[derive(Deserialize)]

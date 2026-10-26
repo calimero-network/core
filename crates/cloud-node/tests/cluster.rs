@@ -649,3 +649,18 @@ async fn ops_moves_an_app_and_points_followers_at_the_leader() {
         .await
         .unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_failed_init_is_reported_not_hidden() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    // `(module (memory (export "memory") 1))`: it compiles, but has no `init`.
+    let empty = b"\0asm\x01\0\0\0\x05\x03\x01\x00\x01\x07\x0a\x01\x06memory\x02\x00".to_vec();
+    let bundle = alice.upload_bundle(empty).await.unwrap();
+    let err = alice
+        .create_app("broken", &bundle, json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("INIT_FAILED"), "{err}");
+    assert!(err.details().unwrap()["appId"].is_string());
+}
