@@ -5932,6 +5932,47 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_lists_the_members_of_its_space_root() {
+        let root = ContextGroupId::from([0x51; 32]);
+        let (space, inner) = (
+            ContextGroupId::from([0x52; 32]),
+            ContextGroupId::from([0x53; 32]),
+        );
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        let namespaces = calimero_governance_store::NamespaceRepository::new(&store);
+        namespaces.nest(&root, &space).expect("nest the space");
+        namespaces.nest(&space, &inner).expect("nest the folder");
+        let capabilities = calimero_governance_store::CapabilitiesRepository::new(&store);
+        capabilities
+            .set_subgroup_visibility(&space, calimero_context_config::VisibilityMode::Restricted)
+            .expect("restrict the space");
+        capabilities
+            .set_subgroup_visibility(&inner, calimero_context_config::VisibilityMode::Open)
+            .expect("open the folder");
+        let created = |child: ContextGroupId, parent: ContextGroupId, restricted: bool| {
+            OpPayload::SubgroupCreated {
+                child: ScopeId::from(child.to_bytes()),
+                parent: ScopeId::from(parent.to_bytes()),
+                restricted,
+                admin: AccountId::from([1; 32]),
+            }
+        };
+        let view = chain_view(
+            root,
+            vec![
+                created(space, root, true),
+                created(inner, space, false),
+                member_op(root, 9, GroupMemberRole::Member),
+                member_op(space, 9, GroupMemberRole::Member),
+            ],
+        );
+
+        let listed =
+            ScopeProjections::member_accounts_in_view(&view, &store, root.to_bytes(), &inner);
+        assert!(listed.contains(&AccountId::from([9; 32])));
+    }
+
+    #[test]
     fn a_tee_that_never_held_a_root_row_keeps_its_space_row() {
         let (root, space) = (ContextGroupId::from([3; 32]), ContextGroupId::from([4; 32]));
         let view = chain_view(
