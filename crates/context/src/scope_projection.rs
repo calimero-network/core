@@ -3967,6 +3967,73 @@ fn loss_order(walked: &CutAncestry<'_>, root: ContextGroupId) -> Option<LossOrde
     Some(LossOrder { before, after })
 }
 
+/// Drops the admin seat of a creator who left or was removed from the group after it was
+/// seated, unless a seat was written again beyond that exit. `None` past the fold budget.
+fn end_seats_after_exits(
+    walked: &CutAncestry<'_>,
+    live: &[&Op],
+    root: ContextGroupId,
+    view: &mut calimero_authz::AclView,
+) -> Option<()> {
+    let exits: Vec<(&Op, ContextGroupId, AccountId)> = live
+        .iter()
+        .filter_map(|op| match folded_payload_of(op) {
+            OpPayload::MemberRemoved { group, member }
+            | OpPayload::MemberLeft { group, member }
+                if *group != root && view.group_admin.get(group) == Some(member) =>
+            {
+                Some((*op, *group, *member))
+            }
+            _ => None,
+        })
+        .collect();
+    if exits.is_empty() {
+        return Some(());
+    }
+    let parents: HashMap<[u8; 32], &Vec<[u8; 32]>> = walked
+        .ops()
+        .iter()
+        .map(|op| (op.id(), &op.parents))
+        .collect();
+    let mut work = 0usize;
+    for (exit, group, member) in exits {
+        let mut before: HashSet<[u8; 32]> = HashSet::new();
+        let mut queue = vec![exit.id()];
+        while let Some(id) = queue.pop() {
+            work += 1;
+            if work > calimero_projection::MAX_FOLD_WORK {
+                return None;
+            }
+            if let Some(held) = parents.get(&id) {
+                queue.extend(held.iter().copied().filter(|p| before.insert(*p)));
+            }
+        }
+        let seats: Vec<&&Op> = live
+            .iter()
+            .filter(|op| {
+                row_writes(op)
+                    .iter()
+                    .any(|w| w.seat && w.group == group && w.account == member)
+            })
+            .collect();
+        if !seats.is_empty() && seats.iter().all(|op| before.contains(&op.id())) {
+            let _ = view.group_admin.remove(&group);
+        }
+    }
+    Some(())
+}
+
+/// The payload an op folds as, through relay seats and root guards.
+fn folded_payload_of(op: &Op) -> &OpPayload {
+    let mut payload = &op.payload;
+    while let OpPayload::RelaySeated { carried, .. } | OpPayload::RootGuarded { carried, .. } =
+        payload
+    {
+        payload = carried;
+    }
+    payload
+}
+
 /// The at-cut view with the space rows that ended with a root membership dropped:
 /// those written before the account's latest root removal or leave, even after it
 /// rejoined, and all of them for an account with no root row, bar a TEE that never
@@ -4033,6 +4100,7 @@ fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero
             let _ = view.member_caps.remove(&(group, account));
         }
     }
+    end_seats_after_exits(walked, &live, root, &mut view)?;
     let in_root: BTreeSet<AccountId> = view
         .groups
         .get(&root)
@@ -4057,6 +4125,26 @@ fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero
         .retain(|(group, account), _| held(group, account));
     view.group_admin
         .retain(|group, account| held(group, account));
+    // A folder's own admin seat needs standing in its space, the owner's included.
+    let seats = view.group_admin.clone();
+    let standing = |space: &ContextGroupId, account: &AccountId| {
+        seats.get(space) == Some(account)
+            || view
+                .groups
+                .get(space)
+                .is_some_and(|rows| rows.contains_key(account))
+    };
+    let stranded: Vec<ContextGroupId> = seats
+        .iter()
+        .filter(|(group, account)| {
+            view.private_space(**group)
+                .is_some_and(|space| space != **group && !standing(&space, account))
+        })
+        .map(|(group, _)| *group)
+        .collect();
+    for group in stranded {
+        let _ = view.group_admin.remove(&group);
+    }
     Some(view)
 }
 
@@ -6010,6 +6098,41 @@ mod tests {
         let listed =
             ScopeProjections::member_accounts_in_view(&view, &store, root.to_bytes(), &inner);
         assert!(listed.contains(&AccountId::from([9; 32])));
+    }
+
+    #[test]
+    fn a_creator_that_left_its_space_keeps_no_admin_seat_in_it() {
+        let (root, space, folder) = (
+            ContextGroupId::from([3; 32]),
+            ContextGroupId::from([4; 32]),
+            ContextGroupId::from([5; 32]),
+        );
+        let created = |child: ContextGroupId, parent: ContextGroupId, restricted: bool| {
+            OpPayload::SubgroupCreated {
+                child: ScopeId::from(child.to_bytes()),
+                parent: ScopeId::from(parent.to_bytes()),
+                restricted,
+                admin: AccountId::from([9; 32]),
+            }
+        };
+        let view = chain_view(
+            root,
+            vec![
+                member_op(root, 9, GroupMemberRole::Member),
+                created(space, root, true),
+                created(folder, space, false),
+                OpPayload::MemberLeft {
+                    group: space,
+                    member: AccountId::from([9; 32]),
+                },
+            ],
+        );
+
+        assert_ne!(
+            view.group_admin.get(&space),
+            Some(&AccountId::from([9; 32]))
+        );
+        assert!(!view.is_member_at_cut(folder, &AccountId::from([9; 32]), None, 0));
     }
 
     #[test]
