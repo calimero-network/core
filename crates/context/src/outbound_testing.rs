@@ -147,7 +147,15 @@ mod tests {
             signer: "did:key:zProbe".to_owned(),
         };
         let run = service
-            .for_run(app, vec![URL.to_owned()], "ctx".to_owned())
+            .for_run(
+                app,
+                vec![URL.to_owned()],
+                Some(Approval {
+                    prefixes: vec![URL.to_owned()],
+                    reviewed: vec![URL.to_owned()],
+                }),
+                "ctx".to_owned(),
+            )
             .unwrap();
         let request = OutboundRequest {
             method: OutboundMethod::Post,

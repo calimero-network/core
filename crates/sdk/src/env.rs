@@ -1323,6 +1323,10 @@ pub fn search(
 /// # Errors
 ///
 /// The node's reason for refusing the request, or the transport's failure.
+/// [`OutboundRefusal::of`](calimero_primitives::outbound::OutboundRefusal::of)
+/// picks out the two an app should handle: `NotApproved` (ask an admin of the
+/// namespace) and `AwaitingApproval` (an admin should approve what this version
+/// added).
 ///
 /// # Panics
 ///

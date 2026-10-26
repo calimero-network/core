@@ -2569,7 +2569,8 @@ async fn internal_execute(
     // a state op (this node did not decide them), or a search export. A
     // migration and its check run through `update_application`, which passes
     // none. The app is the installed one, identified by this node: its
-    // package and signer scope the secrets, its manifest the URLs.
+    // package and signer scope the secrets, its manifest the URLs, and what
+    // the context's namespace approved for that signer the URLs it may reach.
     let outbound_host = match outbound {
         Some(service)
             if !is_read_only_call
@@ -2581,7 +2582,18 @@ async fn internal_execute(
                 .get_application(&context.application_id)?
                 .as_ref()
                 .and_then(crate::outbound::app_outbound)
-                .and_then(|(app, declared)| service.for_run(app, declared, context.id.to_string()))
+                .map(|(app, declared)| {
+                    let approval =
+                        crate::outbound::namespace_approval(&datastore, &context.id, &app.signer)?;
+                    Ok::<_, eyre::Report>(service.for_run(
+                        app,
+                        declared,
+                        approval,
+                        context.id.to_string(),
+                    ))
+                })
+                .transpose()?
+                .flatten()
         }
         _ => None,
     };

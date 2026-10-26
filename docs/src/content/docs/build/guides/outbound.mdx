@@ -21,12 +21,38 @@ whose operator turned them on, for its hosts or for any host an app declares.
 | --- | --- |
 | `[context.outbound] enabled = true`, and the request's host is in `hosts` (or `hosts` holds `"*"`: any host an installed app declares) | The node's operator |
 | The request's URL is under a prefix in the app's signed manifest (`outbound`): the same host, and the prefix's path or one below it at a `/`, with any query string | The app's publisher |
+| The namespace the run belongs to approved a prefix that covers the URL, for the app's publisher | The namespace's admins, at install or upgrade |
 | The run writes state and executes on this node, as its own write or one it relays for an author: not a view, a migration, a state op or a peer's delta | The node |
 | One request per run; `GET`, `POST`, `PUT`, `PATCH` or `DELETE`; `https` on port 443 to a DNS name that resolves only to public addresses; no fragment; no redirect followed; no proxy | The node |
 | Request body ≤ 64 KiB, URL ≤ 2 KiB, ≤ 8 headers of ≤ 1 KiB, response body ≤ 1 MiB (a longer one is refused, not cut), 10 s for the whole request | The node (`calimero_primitives::outbound`) |
 | `Host`, `Cookie`, `Connection`, `Content-Length`, `Transfer-Encoding`, `Proxy-*` and `X-Forwarded-*` headers are refused | The node |
 
-A refusal is a reason the method can handle (`Err(String)`). A run with no
+A refusal is a reason the method can handle (`Err(String)`). A refusal by the
+namespace starts with a stable word an app can match on:
+
+- `NotApproved:` the namespace has not approved the prefix the URL is under.
+  It never approved anything for this publisher, or an admin saw the prefix and
+  left it out or revoked it. Tell a member to ask an admin.
+- `AwaitingApproval:` a later version of the app declares the prefix and no
+  admin has been asked about it yet. The prefixes approved before keep working.
+  Show an admin what to approve.
+
+`OutboundRefusal::of` reads the word for you:
+
+```rust
+use calimero_sdk::outbound::OutboundRefusal;
+
+match env::http_request(&request) {
+    Ok(response) => { /* decide, and store the decision */ }
+    Err(reason) => match OutboundRefusal::of(&reason) {
+        Some(OutboundRefusal::NotApproved) => { /* ask an admin of the namespace */ }
+        Some(OutboundRefusal::AwaitingApproval) => { /* an admin approves the upgrade's new prefix */ }
+        None => { /* anything else is a bug in the app or its deployment */ }
+    },
+}
+```
+
+A run with no
 outbound client at all (the node's feature is off, the manifest declares
 nothing, or the run is a view) and a second request in one run trap the run.
 
@@ -92,6 +118,43 @@ Store the decision, not the response, and do not make a write depend on a
 second node agreeing with the first.
 </Aside>
 
+## The namespace's side
+
+The namespace's data is what a run can send, so the namespace agrees to the
+hosts too: the operator allowing a host and the publisher declaring it are not
+enough. An admin (or a member holding `MANAGE_APPLICATION`, who may also set
+the namespace's application) approves in the call that installs or upgrades
+the app, so the install screen lists the hosts in the confirm the admin
+already clicks:
+
+```json
+POST /admin-api/namespaces
+{ "applicationId": "…", "approveOutbound": "manifest" }
+
+POST /admin-api/groups/{groupId}/upgrade
+{ "targetApplicationId": "…", "approveOutbound": ["https://api.stripe.com/v1/"] }
+```
+
+`"manifest"` approves every prefix the app declares; a list approves those.
+Leave the field out and the app's requests answer `NotApproved` until an
+admin approves. An app that declares no `outbound` needs and publishes nothing.
+
+- **Once per namespace.** The approval is published at the namespace root as
+  a `GroupOp::OutboundApprovalSet` and every subgroup and context reads it.
+- **Per publisher.** It is keyed by the bundle's signer, so a fork or a
+  transferred app signed by someone else starts with nothing approved.
+- **Upgrades only add.** An upgrade's approval is added to what the namespace
+  approves. A prefix the new version declares that nobody approved waits
+  (`AwaitingApproval`); the rest keep working.
+- **Revoke by setting the list.** `PUT /admin-api/namespaces/{id}/outbound-approvals`
+  with `{ "applicationId": "…", "approve": [ … ] }` sets the publisher's list
+  exactly, and an empty list revokes everything. It takes effect at the next
+  run. `GET` on the same path lists what the namespace approves, per publisher.
+
+With `meroctl`: `namespace create --approve-outbound manifest`,
+`group upgrade trigger --approve-outbound <prefixes>`, and
+`namespace outbound ls|set`.
+
 ## The operator's side
 
 `[context.outbound]` in the node's `config.toml`:
@@ -111,8 +174,9 @@ hosts = ["challenges.cloudflare.com"]
 ```
 
 `hosts = ["*"]` lets every installed app reach the hosts its own signed
-manifest declares, so a new app needs no config change. Every other gate
-still holds, and a secret still goes only to the hosts bound to it.
+manifest declares and its namespace approved, so a new app needs no config
+change. Every other gate still holds, and a secret still goes only to the hosts
+bound to it.
 
 Instead of `env_secrets`, a node can ask a secrets service beside it
 (exclusive with `env_secrets`):

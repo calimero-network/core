@@ -17974,3 +17974,170 @@ mod unverified_target_marker {
         assert!(unverified(&store, &gid));
     }
 }
+
+mod outbound_approval {
+    use super::*;
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    const PUBLISHER: &str = "did:key:z6MkPublisher";
+    const API: &str = "https://api.example/v1/";
+    const CAPTCHA: &str = "https://challenges.example/";
+
+    fn approval(prefixes: &[&str], reviewed: &[&str]) -> GroupOp {
+        GroupOp::OutboundApprovalSet {
+            signer: PUBLISHER.to_owned(),
+            prefixes: prefixes.iter().map(|p| (*p).to_owned()).collect(),
+            reviewed: reviewed.iter().map(|p| (*p).to_owned()).collect(),
+        }
+    }
+
+    fn sign(sk: &PrivateKey, gid: &ContextGroupId, nonce: u64, op: GroupOp) -> SignedGroupOp {
+        SignedGroupOp::sign(sk, gid.to_bytes().into(), vec![], nonce, op).expect("sign")
+    }
+
+    /// A namespace root with an admin, and a plain member.
+    fn root() -> (Store, ContextGroupId, PrivateKey, PrivateKey, AccountId) {
+        let mut rng = UnwrapErr(SysRng);
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = PrivateKey::random(&mut rng);
+        let admin = enrol_member(&store, &gid, &admin_sk.public_key());
+        MembershipRepository::new(&store)
+            .add_member(&gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        let member_sk = PrivateKey::random(&mut rng);
+        let member = enrol_member(&store, &gid, &member_sk.public_key());
+        MembershipRepository::new(&store)
+            .add_member(&gid, &member, GroupMemberRole::Member)
+            .unwrap();
+        (store, gid, admin_sk, member_sk, member)
+    }
+
+    fn approved(store: &Store, gid: &ContextGroupId) -> Option<OutboundApproval> {
+        OutboundApprovalRepository::new(store)
+            .get(gid, PUBLISHER)
+            .unwrap()
+    }
+
+    #[test]
+    fn an_admin_approves_and_a_later_approval_replaces_the_set() {
+        let (store, gid, admin_sk, _, _) = root();
+        assert_eq!(
+            approved(&store, &gid),
+            None,
+            "nothing is approved by default"
+        );
+
+        apply_local_signed_group_op(&store, &sign(&admin_sk, &gid, 1, approval(&[API], &[API])))
+            .unwrap();
+        let first = approved(&store, &gid).expect("approved");
+        assert_eq!(first.prefixes, vec![API.to_owned()]);
+        assert_eq!(first.reviewed, vec![API.to_owned()]);
+
+        // A revocation keeps what was reviewed, so the node can tell a revoked
+        // prefix from one a later version of the app added.
+        apply_local_signed_group_op(
+            &store,
+            &sign(&admin_sk, &gid, 2, approval(&[], &[API, CAPTCHA])),
+        )
+        .unwrap();
+        let second = approved(&store, &gid).expect("still a row");
+        assert!(second.prefixes.is_empty(), "the set was replaced whole");
+        assert_eq!(second.reviewed, vec![API.to_owned(), CAPTCHA.to_owned()]);
+        assert_eq!(
+            OutboundApprovalRepository::new(&store).list(&gid).unwrap(),
+            vec![second],
+            "one row per publisher"
+        );
+    }
+
+    #[test]
+    fn a_member_without_manage_application_cannot_approve() {
+        let (store, gid, _, member_sk, _) = root();
+        let err = apply_local_signed_group_op(
+            &store,
+            &sign(&member_sk, &gid, 1, approval(&[API], &[API])),
+        )
+        .expect_err("a plain member approved outbound requests");
+        assert!(
+            err.chain()
+                .any(|e| e.to_string().contains("approve outbound requests")),
+            "refused for another reason: {err:?}"
+        );
+        assert_eq!(approved(&store, &gid), None);
+    }
+
+    #[test]
+    fn manage_application_is_enough_to_approve() {
+        let (store, gid, _, member_sk, member) = root();
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &gid,
+                &member,
+                calimero_context_config::MemberCapabilities::MANAGE_APPLICATION.bits(),
+            )
+            .unwrap();
+        apply_local_signed_group_op(&store, &sign(&member_sk, &gid, 1, approval(&[API], &[API])))
+            .unwrap();
+        assert!(approved(&store, &gid).is_some());
+    }
+
+    #[test]
+    fn a_removed_manager_can_no_longer_approve() {
+        let (store, gid, _, member_sk, member) = root();
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &gid,
+                &member,
+                calimero_context_config::MemberCapabilities::MANAGE_APPLICATION.bits(),
+            )
+            .unwrap();
+        MembershipRepository::new(&store)
+            .remove_member(&gid, &member)
+            .unwrap();
+        // The capability row may outlive the membership; the removal is what counts.
+        assert!(
+            apply_local_signed_group_op(
+                &store,
+                &sign(&member_sk, &gid, 1, approval(&[API], &[API]))
+            )
+            .is_err(),
+            "a removed member approved outbound requests"
+        );
+        assert_eq!(approved(&store, &gid), None);
+    }
+
+    #[test]
+    fn an_approval_on_a_subgroup_is_refused() {
+        let (store, root_gid, admin_sk, _, _) = root();
+        let child = ContextGroupId::from([0xA7; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&root_gid, &child)
+            .unwrap();
+
+        let err = apply_local_signed_group_op(
+            &store,
+            &sign(&admin_sk, &child, 1, approval(&[API], &[API])),
+        )
+        .expect_err("a subgroup approval applied");
+        assert!(
+            err.chain().any(|e| e
+                .downcast_ref::<NamespaceError>()
+                .is_some_and(|e| matches!(e, NamespaceError::OutboundApprovalNotOnSubgroup(_)))),
+            "refused for another reason: {err:?}"
+        );
+        assert_eq!(approved(&store, &child), None);
+    }
+
+    #[test]
+    fn deleting_the_group_drops_its_approvals() {
+        let (store, gid, admin_sk, _, _) = root();
+        apply_local_signed_group_op(&store, &sign(&admin_sk, &gid, 1, approval(&[API], &[API])))
+            .unwrap();
+        crate::local_state::delete_group_local_rows(&store, &gid).unwrap();
+        assert_eq!(approved(&store, &gid), None);
+    }
+}

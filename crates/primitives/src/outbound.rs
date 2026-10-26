@@ -11,6 +11,9 @@
 //!   host an app declares);
 //! - the app's signed bundle manifest declares a URL prefix that covers the
 //!   request's URL (`outbound`);
+//! - the namespace the run belongs to approved a prefix that covers it for the
+//!   app's publisher (`GroupOp::OutboundApprovalSet`), which an admin does in
+//!   the same call that installs or upgrades the app ([`OutboundSelection`]);
 //! - the run writes state and executes on this node (its own write, or one it
 //!   relays for an author): never a view, a migration, a check or a peer's
 //!   delta;
@@ -99,4 +102,124 @@ pub struct OutboundRequest {
 pub struct OutboundResponse {
     pub status: u16,
     pub body: Vec<u8>,
+}
+
+/// A refusal an app can act on, read from the reason `env::http_request`
+/// returns. Every other refusal (a host the operator does not allow, a URL
+/// outside the manifest, a bound) is a bug in the app or its deployment, and
+/// reads as `None`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutboundRefusal {
+    /// The namespace has not approved the URL's prefix for the app's
+    /// publisher, or revoked it: a member should ask an admin.
+    NotApproved,
+    /// A newer version of the app declares the prefix and nobody has been
+    /// asked about it yet: an admin should approve it from the upgrade.
+    AwaitingApproval,
+}
+
+impl OutboundRefusal {
+    /// The word a refusal's reason starts with. Stable: the node writes it and
+    /// apps match on it.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::NotApproved => "NotApproved",
+            Self::AwaitingApproval => "AwaitingApproval",
+        }
+    }
+
+    /// The refusal a reason names, if it is one an app can act on.
+    #[must_use]
+    pub fn of(reason: &str) -> Option<Self> {
+        [Self::NotApproved, Self::AwaitingApproval]
+            .into_iter()
+            .find(|refusal| {
+                reason
+                    .strip_prefix(refusal.word())
+                    .is_some_and(|rest| rest.starts_with(':'))
+            })
+    }
+}
+
+/// Which URL prefixes an admin approves for an app's publisher: exactly the
+/// ones its manifest declares, or a list of their own (what an install screen
+/// showed, a subset of it, or a narrower prefix).
+///
+/// On the wire, the string `"manifest"` or an array of prefixes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OutboundSelection {
+    /// Every prefix the app's manifest declares, read by the node.
+    Manifest,
+    /// These prefixes.
+    Prefixes(Vec<String>),
+}
+
+impl Serialize for OutboundSelection {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Manifest => serializer.serialize_str("manifest"),
+            Self::Prefixes(prefixes) => serde::Serialize::serialize(prefixes, serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OutboundSelection {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Keyword(String),
+            Prefixes(Vec<String>),
+        }
+        match Wire::deserialize(deserializer)? {
+            Wire::Keyword(word) if word == "manifest" => Ok(Self::Manifest),
+            Wire::Keyword(word) => Err(serde::de::Error::custom(format!(
+                "expected \"manifest\" or a list of URL prefixes, got {word:?}"
+            ))),
+            Wire::Prefixes(prefixes) => Ok(Self::Prefixes(prefixes)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::{OutboundRefusal, OutboundSelection};
+
+    #[test]
+    fn a_reason_names_the_refusal_an_app_can_act_on() {
+        assert_eq!(
+            OutboundRefusal::of(
+                "NotApproved: the namespace has not approved https://a/ for this app"
+            ),
+            Some(OutboundRefusal::NotApproved)
+        );
+        assert_eq!(
+            OutboundRefusal::of("AwaitingApproval: https://a/ is a URL prefix this app declares"),
+            Some(OutboundRefusal::AwaitingApproval)
+        );
+        assert_eq!(
+            OutboundRefusal::of("no URL prefix the app declares covers it"),
+            None
+        );
+        assert_eq!(OutboundRefusal::of("NotApprovedYet: something else"), None);
+    }
+
+    #[test]
+    fn a_selection_is_the_manifest_keyword_or_a_list() {
+        let manifest: OutboundSelection = serde_json::from_str(r#""manifest""#).unwrap();
+        assert_eq!(manifest, OutboundSelection::Manifest);
+        let list: OutboundSelection =
+            serde_json::from_str(r#"["https://api.example/v1/"]"#).unwrap();
+        assert_eq!(
+            list,
+            OutboundSelection::Prefixes(vec!["https://api.example/v1/".to_owned()])
+        );
+        assert!(serde_json::from_str::<OutboundSelection>(r#""all""#).is_err());
+        for value in [manifest, list] {
+            let back: OutboundSelection =
+                serde_json::from_str(&serde_json::to_string(&value).unwrap()).unwrap();
+            assert_eq!(back, value);
+        }
+    }
 }

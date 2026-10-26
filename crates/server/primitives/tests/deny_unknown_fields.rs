@@ -47,6 +47,7 @@ fn every_request_body_is_a_closed_set() {
         admin::SetMetadataApiRequest,
         admin::DetachContextFromGroupApiRequest,
         admin::UpgradeGroupApiRequest,
+        admin::SetOutboundApprovalApiRequest,
         admin::RetryGroupUpgradeApiRequest,
         admin::ActivateGroupUpgradeApiRequest,
         admin::IssueOwnershipProofApiRequest,

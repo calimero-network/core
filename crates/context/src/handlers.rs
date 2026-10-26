@@ -11,6 +11,7 @@ pub mod add_group_members;
 pub mod admit_tee_node;
 pub mod apply_signed_group_op;
 pub mod apply_signed_namespace_op;
+pub mod approve_outbound;
 pub mod broadcast_group_local_state;
 pub mod create_context;
 pub mod create_group;
@@ -215,6 +216,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SetTeeAdmissionPolicy { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::ApproveOutbound { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SetTeeAuthoringPolicy { request, outcome } => {

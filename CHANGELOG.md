@@ -21,6 +21,27 @@
   and removes it from the response, so the app never reads it. Nothing
   changes on a node that does not turn it on: `http_request` traps there.
   Guide: *Call an external service*. (#4670)
+- **The namespace approves the hosts its data may reach.** An outbound
+  request now also needs a URL prefix the run's namespace approved for the
+  app's publisher, so a node that allows any host (`hosts = ["*"]`) no longer
+  lets an app send a namespace's state to whatever its publisher declared. An
+  admin (or a member with `MANAGE_APPLICATION`) approves in the same call that
+  installs or upgrades the app: `approveOutbound` (`"manifest"` or a list of
+  prefixes) on `POST /admin-api/namespaces` and `POST
+  /admin-api/groups/{id}/upgrade`, published as a new
+  `GroupOp::OutboundApprovalSet` at the namespace root that every subgroup and
+  context reads. Approvals are per publisher signer; an upgrade adds to them,
+  and a prefix it declares that nobody approved answers `AwaitingApproval`
+  while the approved ones keep working. A refused request returns a reason
+  starting `NotApproved:` or `AwaitingApproval:`. `GET`/`PUT
+  /admin-api/namespaces/{id}/outbound-approvals` list and set them (an empty
+  list revokes); `meroctl` gains `--approve-outbound` and `namespace outbound
+  ls|set`. Nothing is approved by default, so an app installed on
+  `0.12.0-rc.1` makes no requests until an admin approves. The op is appended
+  at the `GroupOp` tail without a schema bump, so SDKs keep signing at 27, and
+  a node that predates it stalls only on that op. (#4673)
+- `calimero_sdk::outbound::OutboundRefusal::of` tells an app's method which of
+  the two namespace refusals a failed `env::http_request` was. (#4673)
 
 ## [0.11.1] - 2026-10-25
 

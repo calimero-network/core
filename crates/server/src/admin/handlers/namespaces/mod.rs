@@ -13,6 +13,7 @@ pub mod link_device;
 pub mod list;
 pub mod list_for_application;
 pub mod list_namespace_groups;
+pub mod outbound_approvals;
 pub mod revoke_device;
 pub mod revoked_devices;
 
