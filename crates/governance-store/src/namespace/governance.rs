@@ -3791,10 +3791,7 @@ fn ensure_subgroup_sealed_carries_a_join(
 ) -> EyreResult<()> {
     // An inner folder's tree op rides the space's key; the handler checks it is the space it
     // belongs to, which only the tree at the op's cut can say.
-    if matches!(
-        op,
-        RootOp::GroupCreated { .. } | RootOp::GroupReparented { .. } | RootOp::GroupDeleted { .. }
-    ) {
+    if crate::private_space::tree_op(op).is_some() {
         return Ok(());
     }
     let signed_invitation = match op {
@@ -4003,10 +4000,7 @@ pub fn seal_root_op_for_publish(
     let ns_typed = ContextGroupId::from(namespace_id.to_bytes());
     // An inner folder's tree op is sealed under its space's key, so a node outside the space
     // never has to judge what it cannot read.
-    if matches!(
-        op,
-        RootOp::GroupCreated { .. } | RootOp::GroupReparented { .. } | RootOp::GroupDeleted { .. }
-    ) {
+    if crate::private_space::tree_op(&op).is_some() {
         let tree = crate::private_space::Tree::live(store, &ns_typed)?;
         let space = tree.root_op_seal_group(&ns_typed, &op)?;
         if space != ns_typed {

@@ -80,10 +80,19 @@ pub(crate) fn apply(
         let signer_account = ctx.signer_account_live(&ns_gid, &op.signer)?;
         let (parents, authorizer) = ctx.apply_auth();
         let owner = crate::group_owner::owner_at_cut(store, &root_gid, parents, authorizer)?;
-        if let Some(space) = tree.space_of(&root_gid)?.filter(|space| *space != root_gid) {
-            // In a space the folder's owner or the space's admin may delete it; the namespace's
-            // admins and capabilities reach no further than the open space.
-            let owns = signer_account.is_some_and(|signer| Some(signer) == owner);
+        let owns = signer_account.is_some_and(|signer| Some(signer) == owner);
+        let space = tree.space_of(&root_gid)?;
+        if space == Some(root_gid) {
+            // Workspace admins and capabilities have no authority over a space: only its owner,
+            // read from cleartext, deletes its root.
+            if !owns {
+                bail!(crate::MembershipError::OnlyOwnerCanDelete(hex::encode(
+                    root_group_id
+                )));
+            }
+        } else if let Some(space) = space {
+            // An inner folder: its owner or the space's admin. The namespace's reach stops at the
+            // open space.
             if !owns && !ctx.permissions_for(space).is_admin(&op.signer)? {
                 bail!(crate::MembershipError::NotAdmin {
                     group_id: space.to_string(),
@@ -116,11 +125,26 @@ pub(crate) fn apply(
     // because a previous apply attempt may have crashed mid-cascade,
     // leaving the local subtree as a partial-delete state.
     let local_payload = NamespaceRepository::new(store).collect_subtree_for_cascade(&root_gid)?;
-    let local_groups: std::collections::BTreeSet<[u8; 32]> = local_payload
-        .descendant_groups
-        .iter()
-        .map(|g| g.to_bytes())
-        .collect();
+    // What lies below a space root is the space's to keep current; a board verdict never reads it.
+    let board_tree = Tree::at_cut(
+        store,
+        ctx.apply_auth().1,
+        &ns_gid,
+        ctx.apply_auth().0,
+        TreeReads {
+            chains: &[],
+            subtrees: &[root_gid],
+        },
+    )?;
+    let local_groups: std::collections::BTreeSet<[u8; 32]> = {
+        let mut groups = std::collections::BTreeSet::new();
+        for group in &local_payload.descendant_groups {
+            if !board_tree.below_a_space_root(group)? {
+                let _ = groups.insert(group.to_bytes());
+            }
+        }
+        groups
+    };
     let local_contexts: std::collections::BTreeSet<[u8; 32]> =
         local_payload.contexts.iter().map(|c| **c).collect();
     let payload_groups: std::collections::BTreeSet<[u8; 32]> =

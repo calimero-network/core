@@ -432,3 +432,55 @@ fn a_node_outside_a_space_keeps_advancing_through_its_inner_folder_ops() {
         assert_eq!(after.parent_hashes, vec![signed.content_hash().unwrap()]);
     }
 }
+
+/// A space root is deleted by its owner alone: neither a root `CAN_DELETE_SUBGROUP` holder
+/// nor a namespace admin who does not own it may.
+#[test]
+fn only_a_spaces_owner_deletes_its_root() {
+    let s = Space::new();
+    let space = s.private(NS);
+    let account = |role: GroupMemberRole| {
+        let sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+        let who = enrol_member(&s.store, &ContextGroupId::from(NS), &sk.public_key());
+        crate::MembershipRepository::new(&s.store)
+            .add_member(&NS.into(), &who, role)
+            .unwrap();
+        (sk, who)
+    };
+    let (delegate_sk, delegate) = account(GroupMemberRole::Member);
+    crate::CapabilitiesRepository::new(&s.store)
+        .set_member_capability(
+            &NS.into(),
+            &delegate,
+            calimero_context_config::MemberCapabilities::CAN_DELETE_SUBGROUP.bits(),
+        )
+        .unwrap();
+    let (admin_sk, _) = account(GroupMemberRole::Admin);
+    let delete = RootOp::GroupDeleted {
+        root_group_id: space.into(),
+        cascade_group_ids: vec![space.into()],
+        cascade_context_ids: vec![],
+    };
+
+    assert!(s.root_op_as(&delegate_sk, delete.clone()).is_err());
+    assert!(s.root_op_as(&admin_sk, delete.clone()).is_err());
+    s.root_op(delete).expect("the owner deletes its space");
+}
+
+/// A folder an outsider still holds below a space root, though the space's ops removed it, does
+/// not split a board verdict: deleting the space applies on the stale node too.
+#[test]
+fn a_stale_folder_below_a_space_root_does_not_split_a_board_delete() {
+    let s = Space::new();
+    let space = s.private(NS);
+    let _stale = s.open(space);
+    let payload = RootOp::GroupDeleted {
+        root_group_id: space.into(),
+        cascade_group_ids: vec![space.into()],
+        cascade_context_ids: vec![],
+    };
+
+    s.root_op(payload)
+        .expect("the stale folder is the space's to keep current");
+    assert!(!s.exists(space));
+}

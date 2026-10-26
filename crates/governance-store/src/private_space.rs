@@ -88,22 +88,33 @@ impl Tree {
         op: &calimero_context_client::local_governance::RootOp,
     ) -> EyreResult<ContextGroupId> {
         use calimero_context_client::local_governance::RootOp;
-        let space = match op {
-            RootOp::GroupCreated { parent_id, .. } => self.private_on_chain(parent_id)?,
-            RootOp::GroupReparented {
-                child_group_id,
-                new_parent_id,
-            } => {
-                let source = self.private_on_chain(child_group_id)?;
-                let destination = self.private_on_chain(new_parent_id)?;
-                source.filter(|space| space != child_group_id && Some(*space) == destination)
-            }
-            RootOp::GroupDeleted { root_group_id, .. } => self
-                .private_on_chain(root_group_id)?
-                .filter(|space| space != root_group_id),
-            _ => None,
+        let space = match tree_op(op) {
+            None => None,
+            Some(op) => match op {
+                RootOp::GroupCreated { parent_id, .. } => self.private_on_chain(parent_id)?,
+                RootOp::GroupReparented {
+                    child_group_id,
+                    new_parent_id,
+                } => {
+                    let source = self.private_on_chain(child_group_id)?;
+                    let destination = self.private_on_chain(new_parent_id)?;
+                    source.filter(|space| space != child_group_id && Some(*space) == destination)
+                }
+                RootOp::GroupDeleted { root_group_id, .. } => self
+                    .private_on_chain(root_group_id)?
+                    .filter(|space| space != root_group_id),
+                _ => None,
+            },
         };
         Ok(space.unwrap_or(*namespace))
+    }
+
+    /// Whether `group` sits strictly below a space root. A node outside the space cannot keep
+    /// what lies there current, so a board verdict never reads it.
+    pub fn below_a_space_root(&self, group: &ContextGroupId) -> EyreResult<bool> {
+        Ok(self
+            .private_on_chain(group)?
+            .is_some_and(|space| space != *group))
     }
 
     fn is_private(&self, group: &ContextGroupId) -> bool {
@@ -238,4 +249,19 @@ pub fn require_root_invitation_target(
         ));
     }
     Ok(())
+}
+
+/// The folder tree op a root op is or relays: a create, move or delete, looked for through
+/// a relay's `OnBehalf`.
+pub fn tree_op(
+    op: &calimero_context_client::local_governance::RootOp,
+) -> Option<&calimero_context_client::local_governance::RootOp> {
+    use calimero_context_client::local_governance::RootOp;
+    match op {
+        RootOp::OnBehalf { op, .. } => tree_op(op),
+        RootOp::GroupCreated { .. }
+        | RootOp::GroupReparented { .. }
+        | RootOp::GroupDeleted { .. } => Some(op),
+        _ => None,
+    }
 }
