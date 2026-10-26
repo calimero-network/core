@@ -1183,30 +1183,24 @@ async fn a_bound_key_cannot_retarget_its_namespace_or_install() {
 async fn an_app_origin_joins_by_inheritance_only_inside_its_own_application() {
     let node = Node::new().await;
     let token = node.bound_to_mine().await;
-    let join = |group: &ContextGroupId| {
-        format!(
-            "/groups/{}/join-via-inheritance",
-            hex::encode(group.to_bytes())
-        )
-    };
-
     let (status, body) = node
         .call_on_origin_of(
             &node.mine.app,
             Some(&token),
             Method::POST,
-            &join(&node.mine.namespace),
+            &join_path(&node.mine.namespace),
             None,
         )
         .await;
     assert_ne!(status, StatusCode::FORBIDDEN, "its own group: {body}");
+    assert!(!body.to_string().contains(GROUP_REFUSAL), "{body}");
 
     let (status, body) = node
         .call_on_origin_of(
             &node.mine.app,
             Some(&token),
             Method::POST,
-            &join(&node.theirs.namespace),
+            &join_path(&node.theirs.namespace),
             None,
         )
         .await;
@@ -1218,11 +1212,93 @@ async fn an_app_origin_joins_by_inheritance_only_inside_its_own_application() {
             &node.mine.app,
             Some(&token),
             Method::POST,
-            &join(&ContextGroupId::from(NAMESPACE)),
+            &join_path(&ContextGroupId::from(NAMESPACE)),
             None,
         )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "a group outside: {body}");
+    assert!(body.to_string().contains(GROUP_REFUSAL), "{body}");
+}
+
+fn join_path(group: &ContextGroupId) -> String {
+    format!(
+        "/groups/{}/join-via-inheritance",
+        hex::encode(group.to_bytes())
+    )
+}
+
+/// A group under `parent` that carries `meta_of`'s signed meta, so it runs that tenant's application.
+fn nest_group_of(node: &Node, parent: &ContextGroupId, meta_of: &ContextGroupId) -> ContextGroupId {
+    let child = ContextGroupId::from([0xe1; 32]);
+    let meta = MetaRepository::new(&node.store)
+        .load(meta_of)
+        .expect("read")
+        .expect("the tenant meta");
+    MetaRepository::new(&node.store)
+        .save(&child, &meta)
+        .expect("the subgroup meta");
+    NamespaceRepository::new(&node.store)
+        .nest(parent, &child)
+        .expect("nest");
+    child
+}
+
+#[actix::test]
+async fn an_app_bound_key_cannot_join_by_inheritance_above_another_applications_subgroup() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+    let path = join_path(&node.mine.namespace);
+
+    let (status, body) = node.call(&token, Method::POST, &path, None).await;
+    assert_ne!(status, StatusCode::FORBIDDEN, "a clean tree: {body}");
+
+    nest_group_of(&node, &node.mine.namespace, &node.theirs.namespace);
+    let (status, body) = node.call(&token, Method::POST, &path, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a foreign subgroup: {body}");
+    assert!(body.to_string().contains(GROUP_REFUSAL), "{body}");
+}
+
+#[actix::test]
+async fn an_app_bound_key_cannot_join_by_inheritance_above_another_applications_context() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+    let foreign = ContextId::from([0xe2; 32]);
+    ContextTreeService::new(&node.store, node.mine.namespace)
+        .register_context(&foreign)
+        .expect("register");
+    node.store
+        .handle()
+        .put(
+            &ContextMetaKey::new(foreign),
+            &ContextMeta::new(ApplicationMeta::new(node.theirs.app), [0; 32], vec![], None),
+        )
+        .expect("context meta");
+
+    let (status, body) = node
+        .call(&token, Method::POST, &join_path(&node.mine.namespace), None)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a foreign context: {body}");
+    assert!(body.to_string().contains(GROUP_REFUSAL), "{body}");
+}
+
+#[actix::test]
+async fn a_context_bound_key_joins_by_inheritance_only_into_its_contexts_group() {
+    let node = Node::new().await;
+    let sibling = nest_group_of(&node, &node.mine.namespace, &node.mine.namespace);
+    let mut permissions: Vec<String> = APP_TOKEN.iter().map(|p| (*p).to_owned()).collect();
+    permissions.push(format!("context[{},identity]", node.mine.context));
+    let token = node.client_token(permissions).await;
+
+    let (status, body) = node
+        .call(&token, Method::POST, &join_path(&node.mine.namespace), None)
+        .await;
+    assert_ne!(status, StatusCode::FORBIDDEN, "its context's group: {body}");
+    assert!(!body.to_string().contains(GROUP_REFUSAL), "{body}");
+
+    let (status, body) = node
+        .call(&token, Method::POST, &join_path(&sibling), None)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "another group: {body}");
     assert!(body.to_string().contains(GROUP_REFUSAL), "{body}");
 }
 
