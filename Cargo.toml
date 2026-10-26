@@ -136,6 +136,7 @@ members = [
     "./crates/storage-macros",
     "./crates/tee-attestation",
     "./crates/tee-release",
+    "./crates/log",
 
     "./crates/store",
     "./crates/store/blobs",
