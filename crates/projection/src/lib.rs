@@ -32,7 +32,7 @@ mod void;
 #[cfg(test)]
 mod void_tests;
 
-pub use void::{Acting, AuthorityBase, MAX_FOLD_WORK};
+pub use void::{fold_budget_for, Acting, AuthorityBase, MAX_FOLD_WORK};
 
 #[cfg(test)]
 mod shared_writers_tests;

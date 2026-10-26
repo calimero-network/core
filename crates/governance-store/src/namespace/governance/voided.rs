@@ -208,7 +208,14 @@ impl NamespaceGovernance<'_> {
             None => false,
             Some(Ok(void)) => void,
             Some(Err(Undecidable)) => {
-                bail!("the void set is undecidable within the fold budget; the op is not judged")
+                tracing::warn!(
+                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                    "the void set is undecidable within the fold budget; the op stays parked"
+                );
+                bail!(crate::ApplyError::AuthorityUndecidable {
+                    group_id: group.to_string(),
+                    signer: op.author().to_string(),
+                });
             }
         };
         if void {

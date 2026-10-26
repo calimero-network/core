@@ -1344,3 +1344,30 @@ fn an_undecidable_ancestry_reads_as_incomplete() {
     assert!(walked.is_complete());
     assert!(!walked.undecidable().is_complete());
 }
+
+#[test]
+fn a_large_honest_log_stays_decidable() {
+    let ad = admins();
+    let mut log = ad.clone();
+    let mut head = ad[2].clone();
+    for n in 0..5_000u32 {
+        let member = 0x20 + (n % 200) as u8;
+        let op = if n % 50 == 49 {
+            remove(ALICE, &[&head], member)
+        } else {
+            add(ALICE, &[&head], member, GroupMemberRole::Member)
+        };
+        head = op.clone();
+        log.push(op);
+    }
+    let concurrent = add(SAM, &[&ad[2]], WILL, GroupMemberRole::Member);
+    log.push(concurrent);
+
+    assert!(ScopeState::void_ops(&log, base()).is_ok());
+}
+
+#[test]
+fn the_fold_budget_grows_with_the_log() {
+    assert_eq!(crate::fold_budget_for(10), crate::MAX_FOLD_WORK);
+    assert!(crate::fold_budget_for(1_000_000) > crate::MAX_FOLD_WORK);
+}

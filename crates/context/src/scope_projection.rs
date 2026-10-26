@@ -337,9 +337,9 @@ impl ScopeProjections {
         self
     }
 
-    fn fold_budget(&self) -> usize {
+    fn fold_budget(&self, ops: usize) -> usize {
         self.fold_budget
-            .unwrap_or(calimero_projection::MAX_FOLD_WORK)
+            .unwrap_or_else(|| calimero_projection::fold_budget_for(ops))
     }
 
     /// Fold a single op into its own scope's projection and op-log.
@@ -491,6 +491,13 @@ impl ScopeProjections {
         at_cut_view(&walked, base)
     }
 
+    /// Whether the void set of `scope` could not be decided within budget, so no read
+    /// of it may fall back to what the store holds.
+    fn void_undecidable(&self, scope: &ScopeId) -> bool {
+        self.voided_for(scope, self.authority_base_of(scope))
+            .undecidable
+    }
+
     fn authority_base_of(&self, scope: &ScopeId) -> AuthorityBase {
         self.authority_bases.get(scope).copied().unwrap_or_default()
     }
@@ -507,7 +514,8 @@ impl ScopeProjections {
             };
         }
         let log = self.logs.get(scope).map_or(&[][..], Vec::as_slice);
-        let decided = ScopeState::void_ops_bounded(log, base, None, &[], self.fold_budget());
+        let decided =
+            ScopeState::void_ops_bounded(log, base, None, &[], self.fold_budget(log.len()));
         let undecidable = decided.is_err();
         let ops = decided.unwrap_or_default();
         let state = (!ops.is_empty()).then(|| {
@@ -580,7 +588,7 @@ impl ScopeProjections {
                 base,
                 extra.map(|op| (op, None)),
                 held,
-                self.fold_budget(),
+                self.fold_budget(log.len()),
             )
             .map_err(|_| Undecidable),
         )
@@ -601,7 +609,8 @@ impl ScopeProjections {
         if let Some(op) = extra.filter(|op| !log.iter().any(|held| held.id() == op.id())) {
             log.push(op.clone());
         }
-        let void = ScopeState::void_ops_bounded(&log, base, None, &[], self.fold_budget()).ok()?;
+        let void = ScopeState::void_ops_bounded(&log, base, None, &[], self.fold_budget(log.len()))
+            .ok()?;
         let ancestry = ScopeState::cut_ancestry_with_void(&log, heads, &void);
         // Rows taken back on a partial log could be rows the whole log keeps.
         if !ancestry.is_complete() {
@@ -657,9 +666,15 @@ impl ScopeProjections {
             return None;
         }
         Some(
-            ScopeState::void_ops_bounded(log, base, Some((op, acting)), &[], self.fold_budget())
-                .map(|void| void.contains(&op.id()))
-                .map_err(|_| Undecidable),
+            ScopeState::void_ops_bounded(
+                log,
+                base,
+                Some((op, acting)),
+                &[],
+                self.fold_budget(log.len()),
+            )
+            .map(|void| void.contains(&op.id()))
+            .map_err(|_| Undecidable),
         )
     }
 
@@ -2023,6 +2038,9 @@ impl ScopeProjections {
             .ok()?
             .to_bytes();
         let scope = ScopeId::from(namespace_id);
+        if self.void_undecidable(&scope) {
+            return None;
+        }
 
         // Resolve membership entirely from the AT-CUT folded view: direct, group
         // admin (subgroup creator / `Admin` role), or inherited through an open-
@@ -2146,6 +2164,9 @@ impl ScopeProjections {
             .ok()?
             .to_bytes();
         let scope = ScopeId::from(namespace_id);
+        if self.void_undecidable(&scope) {
+            return None;
+        }
         let view = self.acl_view_at(&scope, heads);
         let (root, default_cap_base) = membership_bases(store, namespace_id);
         if view
@@ -5663,6 +5684,41 @@ mod tests {
             ],
         );
         assert!(!holds_row(&view, space, 9));
+    }
+
+    #[test]
+    fn an_undecidable_walk_never_grants_membership_through_the_store_fallback() {
+        let root = ContextGroupId::from([0x31; 32]);
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        let member = AccountId::from([9; 32]);
+        MembershipRepository::new(&store)
+            .add_member(&root, &member, GroupMemberRole::Member)
+            .expect("a stored row");
+        let op = |parents: Vec<[u8; 32]>, payload| {
+            Op::new(
+                ScopeId::from(root.to_bytes()),
+                parents,
+                calimero_op::Authorship {
+                    account: AccountId::from([1u8; 32]),
+                    device: calimero_account::DeviceId::from([1u8; 32]),
+                    device_key: PublicKey::from([1u8; 32]),
+                },
+                hlc(0),
+                payload,
+                [0u8; 32],
+                [0u8; 64],
+            )
+        };
+        let add = op(vec![], member_op(root, 8, GroupMemberRole::Member));
+        let removal = op(vec![add.id()], removed_op(root, 8));
+        let mut projections = ScopeProjections::new().with_fold_budget(0);
+        projections.ingest_op(&add);
+        projections.ingest_op(&removal);
+
+        assert_eq!(
+            projections.account_member_at_cut(&store, root, &member, &[removal.id()]),
+            None
+        );
     }
 
     #[test]

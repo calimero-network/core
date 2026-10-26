@@ -25,6 +25,8 @@ const MAX_ROUNDS: usize = 32;
 /// The fold work a void judgement may spend before it is undecidable.
 pub const MAX_FOLD_WORK: usize = 50_000_000;
 
+const FOLD_WORK_PER_OP: usize = 10_000; // keeps a big honest log decidable
+
 /// Facts the authority check reads that no op carries, written by the store at genesis.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct AuthorityBase {
@@ -203,7 +205,7 @@ impl ScopeState {
         candidate: Option<(&Op, Option<Acting>)>,
         held: &[([u8; 32], ContextGroupId)],
     ) -> Result<BTreeSet<[u8; 32]>, OverBudget> {
-        Self::void_ops_bounded(log, base, candidate, held, MAX_FOLD_WORK)
+        Self::void_ops_bounded(log, base, candidate, held, fold_budget_for(log.len()))
     }
 
     /// [`Self::void_ops_judging`] with an explicit bound on the ops folded.
@@ -234,6 +236,11 @@ impl ScopeState {
         }
         Analysis::new(&ops, base, explicit, resolved, budget).run()
     }
+}
+
+/// The fold work a void judgement over `ops` ops may spend: the floor, or more as the log grows.
+pub fn fold_budget_for(ops: usize) -> usize {
+    MAX_FOLD_WORK.max(ops.saturating_mul(FOLD_WORK_PER_OP))
 }
 
 /// The group `op` acts in, for payloads whose authority a removal can take away.
