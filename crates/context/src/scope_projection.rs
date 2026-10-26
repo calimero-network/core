@@ -456,7 +456,7 @@ impl ScopeProjections {
         if walked.is_undecidable() {
             return None;
         }
-        Some(at_cut_view(&walked, base))
+        at_cut_view(&walked, base)
     }
 
     /// The at-cut ACL view, but **only** when the cut's whole causal ancestry is
@@ -488,7 +488,7 @@ impl ScopeProjections {
         if !walked.is_complete() {
             return None;
         }
-        Some(at_cut_view(&walked, base))
+        at_cut_view(&walked, base)
     }
 
     fn authority_base_of(&self, scope: &ScopeId) -> AuthorityBase {
@@ -607,7 +607,7 @@ impl ScopeProjections {
         if !ancestry.is_complete() {
             return None;
         }
-        let view = at_cut_view(&ancestry, base);
+        let view = at_cut_view(&ancestry, base)?;
         Some(calimero_governance_store::GroupRows {
             members: view.groups.get(group).cloned().unwrap_or_default(),
             member_caps: view
@@ -2222,7 +2222,7 @@ impl ScopeProjections {
         if !walked.is_complete() {
             return None;
         }
-        let view = at_cut_view(&walked, base);
+        let view = at_cut_view(&walked, base)?;
         let relevant = deciding_groups(&view, group, ContextGroupId::from(namespace_id));
         if walked.first_opaque_in_any(&relevant).is_some() {
             return None;
@@ -2624,7 +2624,8 @@ impl ScopeProjections {
         if !walked.is_complete() {
             return Err(self.classify_unresolvable_cut(&scope, heads));
         }
-        let mut view = at_cut_view(&walked, base);
+        let mut view = at_cut_view(&walked, base)
+            .ok_or_else(|| self.classify_unresolvable_cut(&scope, heads))?;
 
         // Complete is not enough to ANSWER with. An `Opaque` op folds to nothing,
         // so a verdict taken over one describes a history this node cannot see —
@@ -3233,7 +3234,7 @@ impl ScopeProjections {
         // As for the fold, standing is read at the step's own parents, so the group's
         // ancestors there must be readable too.
         let root_group = ContextGroupId::from(namespace_id);
-        let mut relevant = deciding_groups(&at_cut_view(&walked, base), group, root_group);
+        let mut relevant = deciding_groups(&at_cut_view(&walked, base)?, group, root_group);
         let mut pinned = false;
         for op in walked.ops().iter().filter(|op| !walked.is_void(op)) {
             let OpPayload::SharedWritersRotated {
@@ -3252,7 +3253,7 @@ impl ScopeProjections {
             {
                 continue;
             }
-            let view = at_cut_view(&self.walk(&scope, log, &op.parents, base), base);
+            let view = at_cut_view(&self.walk(&scope, log, &op.parents, base), base)?;
             relevant.extend(deciding_groups(&view, group, root_group));
             pinned |= standing(&view, op.device_key()).is_some_and(|account| {
                 prior
@@ -3354,7 +3355,7 @@ impl ScopeProjections {
         let standing = Self::standing_reader(store, group, namespace_id);
         // Standing is read at each step's own parents, where the group's ancestors
         // may differ from the cut's, so every one of them must be readable.
-        let head_view = at_cut_view(&walked, base);
+        let head_view = at_cut_view(&walked, base).ok_or(cut)?;
         let mut relevant = deciding_groups(&head_view, group, root_group);
         let mut views: std::collections::HashMap<Vec<[u8; 32]>, calimero_authz::AclView> =
             std::collections::HashMap::new();
@@ -3367,9 +3368,11 @@ impl ScopeProjections {
             |op| {
                 let mut parents = op.parents.clone();
                 parents.sort_unstable();
-                let view = views.entry(parents).or_insert_with(|| {
-                    at_cut_view(&self.walk(&scope, log, &op.parents, base), base)
-                });
+                if !views.contains_key(&parents) {
+                    let folded = at_cut_view(&self.walk(&scope, log, &op.parents, base), base)?;
+                    let _ = views.insert(parents.clone(), folded);
+                }
+                let view = &views[&parents];
                 relevant.extend(deciding_groups(view, group, root_group));
                 standing(view, op.device_key())
             },
@@ -3733,25 +3736,134 @@ impl calimero_governance_store::FoldedTeeAuthority for FoldedProjections<'_> {
     }
 }
 
-/// The payload an op folds as, through relay seats and root guards.
-fn folded_payload(op: &Op) -> &OpPayload {
+/// One row an op writes: `account`'s in `group`, or its admin seat there. `whole` is
+/// whether the row is all the op does, so voiding the op takes back exactly the row.
+struct RowWrite {
+    group: ContextGroupId,
+    account: AccountId,
+    whole: bool,
+}
+
+/// Every row `op` writes, through relay seats and root guards, the seat itself included.
+fn row_writes(op: &Op) -> Vec<RowWrite> {
+    let mut writes = Vec::new();
+    let mut payload = &op.payload;
+    let mut wrapped = false;
+    loop {
+        match payload {
+            OpPayload::RelaySeated {
+                carried,
+                group,
+                relay,
+                ..
+            } => {
+                writes.push(RowWrite {
+                    group: *group,
+                    account: *relay,
+                    whole: false,
+                });
+                wrapped = true;
+                payload = carried;
+            }
+            OpPayload::RootGuarded { carried, .. } => payload = carried,
+            OpPayload::MemberAdded { group, member, .. }
+            | OpPayload::MemberJoinedWithDevice { group, member, .. }
+            | OpPayload::MemberCapabilitySet { group, member, .. } => {
+                writes.push(RowWrite {
+                    group: *group,
+                    account: *member,
+                    whole: !wrapped,
+                });
+                return writes;
+            }
+            OpPayload::SubgroupCreated { child, admin, .. } => {
+                writes.push(RowWrite {
+                    group: ContextGroupId::from(*child.as_bytes()),
+                    account: *admin,
+                    whole: false,
+                });
+                return writes;
+            }
+            _ => return writes,
+        }
+    }
+}
+
+/// The root membership `op` ends: the account it removes or that leaves.
+fn root_loss(op: &Op, root: ContextGroupId) -> Option<AccountId> {
     let mut payload = &op.payload;
     while let OpPayload::RelaySeated { carried, .. } | OpPayload::RootGuarded { carried, .. } =
         payload
     {
         payload = carried;
     }
-    payload
+    match payload {
+        OpPayload::MemberRemoved { group, member } | OpPayload::MemberLeft { group, member }
+            if *group == root =>
+        {
+            Some(*member)
+        }
+        _ => None,
+    }
+}
+
+/// The ops, per account, that lie causally before one of its root losses, found in one
+/// pass from the heads down over every op (void ones included); `None` past the fold
+/// budget.
+fn ops_before_root_losses(
+    walked: &CutAncestry<'_>,
+    root: ContextGroupId,
+) -> Option<HashMap<[u8; 32], BTreeSet<AccountId>>> {
+    let ops = walked.ops();
+    let known: HashSet<[u8; 32]> = ops.iter().map(|op| op.id()).collect();
+    let mut waiting: HashMap<[u8; 32], usize> = HashMap::new();
+    for op in ops {
+        for parent in op.parents.iter().filter(|p| known.contains(*p)) {
+            *waiting.entry(*parent).or_default() += 1;
+        }
+    }
+    let by_id: HashMap<[u8; 32], &Op> = ops.iter().map(|op| (op.id(), *op)).collect();
+    let mut behind: HashMap<[u8; 32], BTreeSet<AccountId>> = HashMap::new();
+    let mut ready: Vec<[u8; 32]> = ops
+        .iter()
+        .map(|op| op.id())
+        .filter(|id| !waiting.contains_key(id))
+        .collect();
+    let mut work = 0usize;
+    while let Some(id) = ready.pop() {
+        let op = by_id[&id];
+        let mut passed = behind.get(&id).cloned().unwrap_or_default();
+        if !walked.is_void(op) {
+            passed.extend(root_loss(op, root));
+        }
+        work += passed.len() + 1;
+        if work > calimero_projection::MAX_FOLD_WORK {
+            return None;
+        }
+        for parent in op.parents.iter().filter(|p| known.contains(*p)) {
+            behind
+                .entry(*parent)
+                .or_default()
+                .extend(passed.iter().copied());
+            if let Some(left) = waiting.get_mut(parent) {
+                *left -= 1;
+                if *left == 0 {
+                    ready.push(*parent);
+                }
+            }
+        }
+    }
+    Some(behind)
 }
 
 /// The at-cut view with the space rows that ended with a root membership dropped:
 /// those written before the account's latest root removal or leave, even after it
 /// rejoined, and all of them for an account with no root row, bar a TEE that never
-/// held one. The owner is exempt.
-fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> calimero_authz::AclView {
+/// held one. The owner is exempt. `None` when the cut is too large to decide.
+fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero_authz::AclView> {
     let view = ScopeState::acl_view_from_ancestry(walked);
     let Some((root, founder)) = base.root else {
-        return view;
+        return Some(view);
     };
     let owner = view
         .root_at_cut(base.root)
@@ -3762,31 +3874,45 @@ fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> calimero_authz:
         .copied()
         .filter(|op| !walked.is_void(op))
         .collect();
-    let mut lost: Vec<([u8; 32], AccountId)> = Vec::new();
+    let behind = ops_before_root_losses(walked, root)?;
     let mut held_root: BTreeSet<AccountId> = BTreeSet::new();
+    let mut stale: BTreeSet<[u8; 32]> = BTreeSet::new();
+    let mut ended: Vec<(ContextGroupId, AccountId)> = Vec::new();
+    let mut fresh: HashSet<(ContextGroupId, AccountId)> = HashSet::new();
     for op in &live {
-        match folded_payload(op) {
-            OpPayload::MemberRemoved { group, member }
-            | OpPayload::MemberLeft { group, member }
-                if *group == root =>
-            {
-                lost.push((op.id(), *member));
+        let before = behind.get(&op.id());
+        for write in row_writes(op) {
+            if write.group == root {
+                let _ = held_root.insert(write.account);
+                continue;
             }
-            OpPayload::MemberAdded { group, member, .. }
-            | OpPayload::MemberJoinedWithDevice { group, member, .. }
-                if *group == root =>
+            if before.is_some_and(|accounts| accounts.contains(&write.account))
+                && write.account != owner
             {
-                let _ = held_root.insert(*member);
+                if write.whole {
+                    let _ = stale.insert(op.id());
+                } else {
+                    ended.push((write.group, write.account));
+                }
+            } else {
+                let _ = fresh.insert((write.group, write.account));
             }
-            _ => {}
         }
     }
-    let ended = ended_rows(walked, &live, &lost, root, owner);
-    let mut view = if ended.is_empty() {
+    let mut view = if stale.is_empty() {
         view
     } else {
-        ScopeState::acl_view_from_ancestry(&walked.without(&ended.stale))
+        ScopeState::acl_view_from_ancestry(&walked.without(&stale))
     };
+    for (group, account) in ended.iter().filter(|key| !fresh.contains(*key)) {
+        if let Some(rows) = view.groups.get_mut(group) {
+            let _ = rows.remove(account);
+        }
+        let _ = view.member_caps.remove(&(*group, *account));
+        if view.group_admin.get(group) == Some(account) {
+            let _ = view.group_admin.remove(group);
+        }
+    }
     let in_root: BTreeSet<AccountId> = view
         .groups
         .get(&root)
@@ -3811,72 +3937,7 @@ fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> calimero_authz:
         .retain(|(group, account), _| held(group, account));
     view.group_admin
         .retain(|group, account| held(group, account));
-    for (child, admin) in &ended.admin_seats {
-        if view.group_admin.get(child) == Some(admin) {
-            let _ = view.group_admin.remove(child);
-        }
-    }
-    view
-}
-
-/// What a root loss ended: the row-writing ops before it, and the admin seats it ends.
-#[derive(Default)]
-struct EndedRows {
-    stale: BTreeSet<[u8; 32]>,
-    admin_seats: Vec<(ContextGroupId, AccountId)>,
-}
-
-impl EndedRows {
-    fn is_empty(&self) -> bool {
-        self.stale.is_empty() && self.admin_seats.is_empty()
-    }
-}
-
-/// The ops before each of `lost` (root losses of an account) that wrote it a row outside
-/// the root, walked over every op so a void one does not hide what lies behind it.
-fn ended_rows(
-    walked: &CutAncestry<'_>,
-    live: &[&Op],
-    lost: &[([u8; 32], AccountId)],
-    root: ContextGroupId,
-    owner: AccountId,
-) -> EndedRows {
-    let mut ended = EndedRows::default();
-    if lost.is_empty() {
-        return ended;
-    }
-    let parents: HashMap<[u8; 32], &Vec<[u8; 32]>> = walked
-        .ops()
-        .iter()
-        .map(|op| (op.id(), &op.parents))
-        .collect();
-    for (loss, account) in lost.iter().filter(|(_, account)| *account != owner) {
-        let mut before: HashSet<[u8; 32]> = HashSet::new();
-        let mut queue = vec![*loss];
-        while let Some(id) = queue.pop() {
-            if let Some(held) = parents.get(&id) {
-                queue.extend(held.iter().copied().filter(|p| before.insert(*p)));
-            }
-        }
-        for op in live.iter().filter(|op| before.contains(&op.id())) {
-            match folded_payload(op) {
-                OpPayload::MemberAdded { group, member, .. }
-                | OpPayload::MemberJoinedWithDevice { group, member, .. }
-                | OpPayload::MemberCapabilitySet { group, member, .. }
-                    if *group != root && member == account =>
-                {
-                    let _ = ended.stale.insert(op.id());
-                }
-                OpPayload::SubgroupCreated { child, admin, .. } if admin == account => {
-                    ended
-                        .admin_seats
-                        .push((ContextGroupId::from(*child.as_bytes()), *admin));
-                }
-                _ => {}
-            }
-        }
-    }
-    ended
+    Some(view)
 }
 
 /// The groups whose ops can move an authority question about `group` at a cut, and so
@@ -5509,7 +5570,7 @@ mod tests {
             root: Some((root, AccountId::from([1u8; 32]))),
             default_cap_base: 0,
         };
-        at_cut_view(&ScopeState::cut_ancestry(&log, &head), base)
+        at_cut_view(&ScopeState::cut_ancestry(&log, &head), base).expect("decided")
     }
 
     fn member_op(group: ContextGroupId, who: u8, role: GroupMemberRole) -> OpPayload {
@@ -5557,6 +5618,47 @@ mod tests {
             vec![
                 member_op(root, 9, GroupMemberRole::ReadOnlyTee),
                 member_op(space, 9, GroupMemberRole::ReadOnlyTee),
+                removed_op(root, 9),
+            ],
+        );
+        assert!(!holds_row(&view, space, 9));
+    }
+
+    fn seat_op(group: ContextGroupId, relay: u8, tee_from: Option<ContextGroupId>) -> OpPayload {
+        OpPayload::RelaySeated {
+            carried: Box::new(OpPayload::Noop),
+            group,
+            relay: AccountId::from([relay; 32]),
+            capabilities: calimero_context_config::MemberCapabilities::empty(),
+            device: None,
+            tee_role_from: tee_from,
+        }
+    }
+
+    #[test]
+    fn a_relay_rejoining_the_root_gets_no_old_seat_back() {
+        let (root, space) = (ContextGroupId::from([3; 32]), ContextGroupId::from([4; 32]));
+        let view = chain_view(
+            root,
+            vec![
+                member_op(root, 9, GroupMemberRole::Member),
+                seat_op(space, 9, None),
+                removed_op(root, 9),
+                member_op(root, 9, GroupMemberRole::Member),
+            ],
+        );
+        assert!(holds_row(&view, root, 9));
+        assert!(!holds_row(&view, space, 9));
+    }
+
+    #[test]
+    fn a_tee_relay_removed_from_the_root_loses_its_seat() {
+        let (root, space) = (ContextGroupId::from([3; 32]), ContextGroupId::from([4; 32]));
+        let view = chain_view(
+            root,
+            vec![
+                member_op(root, 9, GroupMemberRole::RelayTee),
+                seat_op(space, 9, Some(root)),
                 removed_op(root, 9),
             ],
         );
