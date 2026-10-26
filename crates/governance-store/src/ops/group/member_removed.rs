@@ -68,8 +68,9 @@ pub(crate) fn apply(
              inherited membership); skipping TeeMemberRemoved follow-up"
         );
     }
-    // A namespace-root removal of a TEE member (`ReadOnlyTee` or `RelayTee`)
-    // evicts it namespace-wide:
+    // A namespace-root removal ends every row the account holds below the root: a seat in a
+    // private space does not outlive the seat in the workspace. A subgroup it owns is kept.
+    // For a TEE member (`ReadOnlyTee` or `RelayTee`) this also evicts it namespace-wide:
     // the TEE's presence in any subgroup came from namespace-level
     // attestation policy (`tee_subgroup_admit`), not the subgroup admin's
     // choice, so root authority extends to it. Cascade per-receiver like a
@@ -89,7 +90,7 @@ pub(crate) fn apply(
     //
     // Gate the namespace-root check behind the already-loaded role check:
     // only a TEE removal cascades, so every non-TEE removal skips it.
-    if removed_role.as_ref().is_some_and(GroupMemberRole::is_tee) {
+    if removed_role.is_some() {
         let namespaces = NamespaceRepository::new(store);
         // A namespace root is exactly a group with no parent edge, so a single
         // O(1) `parent` lookup decides this — cheaper than walking the whole
@@ -123,6 +124,11 @@ pub(crate) fn apply(
                 // `cascade_remove_member` ever started touching `GroupMember`
                 // rows, this gate would stay correct.
                 let direct_role = membership.role_of(sub, member)?;
+                if crate::group_owner::owner_at_cut(store, sub, ctx.cut(), ctx.authorizer())?
+                    == Some(*member)
+                {
+                    continue;
+                }
                 // `ContextIdentity` hygiene runs for EVERY descendant —
                 // INCLUDING Open subgroups the TEE only *inherited* into (no
                 // direct `GroupMember` row) yet still auto-followed contexts of

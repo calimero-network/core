@@ -7939,6 +7939,73 @@ fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
     );
 }
 
+/// A space row that outlived the account's workspace row is no standing to be served the
+/// space's key; with the workspace row back, it is.
+#[test]
+fn a_space_key_is_served_only_to_an_account_with_a_workspace_row() {
+    use crate::group_keys::GroupKeyring;
+    use crate::{build_group_key_delivery, KeyRequester};
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let namespace_id = [0xF8u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let space_id = [0xF9u8; 32];
+    let space = ContextGroupId::from(space_id);
+    let responder_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let responder_sk = PrivateKey::from(responder_sk_bytes);
+    let responder_account = crate::test_fixtures::account_for(&responder_sk.public_key());
+    let joiner_pk = PrivateKey::from([0x5Au8; 32]).public_key();
+
+    let store = test_store();
+    let (joiner_account, joiner_device, credential) =
+        crate::test_fixtures::enrol_local_device(&store, &ns_gid, &joiner_pk);
+    crate::test_fixtures::record_credential(&store, &ns_gid, &credential);
+    let _ = enrol_member(&store, &ns_gid, &responder_sk.public_key());
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &responder_sk.public_key(), &responder_sk_bytes)
+        .unwrap();
+    for group in [&ns_gid, &space] {
+        MetaRepository::new(&store)
+            .save(group, &sample_meta_with_admin(responder_account))
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &space)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&space, calimero_context_config::VisibilityMode::Restricted)
+        .unwrap();
+    GroupKeyring::new(&store, space)
+        .store_key(&[0x6Cu8; 32])
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&space, &joiner_account, GroupMemberRole::Member)
+        .unwrap();
+
+    let serve = || {
+        build_group_key_delivery(
+            &store,
+            namespace_id.into(),
+            space_id,
+            KeyRequester {
+                identity: joiner_pk,
+                device: Some(joiner_device),
+            },
+            None,
+        )
+        .unwrap()
+        .0
+    };
+    assert!(serve().is_empty(), "no workspace row, no space key");
+
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &joiner_account, GroupMemberRole::Member)
+        .unwrap();
+    assert!(!serve().is_empty(), "control: a workspace row is served");
+}
+
 /// **The security property.** A member that holds a group key can wrap a key of
 /// its OWN choosing for a joiner, and the authenticated-sender gate does not
 /// stop it: that gate binds WHO wrapped the envelope, not WHAT is inside.
@@ -8003,6 +8070,9 @@ fn a_responder_serving_a_key_other_than_the_awaited_one_is_refused() {
         .unwrap();
     NamespaceRepository::new(&responder_store)
         .nest(&ns_gid, &subgroup_gid)
+        .unwrap();
+    MembershipRepository::new(&responder_store)
+        .add_member(&ns_gid, &joiner_account, GroupMemberRole::Member)
         .unwrap();
     MembershipRepository::new(&responder_store)
         .add_member(&subgroup_gid, &joiner_account, GroupMemberRole::Member)
@@ -8174,6 +8244,9 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
         .unwrap();
     NamespaceRepository::new(&responder_store)
         .nest(&ns_gid, &subgroup_gid)
+        .unwrap();
+    MembershipRepository::new(&responder_store)
+        .add_member(&ns_gid, &joiner_account, GroupMemberRole::Member)
         .unwrap();
     MembershipRepository::new(&responder_store)
         .add_member(&subgroup_gid, &joiner_account, GroupMemberRole::Member)
@@ -12389,85 +12462,6 @@ fn an_added_member_with_no_namespace_binding_is_served_nothing_by_the_pull() {
     );
 }
 
-/// The case sealing DID change: a subgroup member that is not a member of the
-/// owning namespace root, and so cannot open a `KeyDelivery` sealed under the
-/// namespace key. The pull has to carry it, and this is what says it does.
-///
-/// `responder_delivery_round_trips_key_to_read_only_tee_joiner` covers the same
-/// shape for a `ReadOnlyTee`; this is the plain `Member` case, which is the one
-/// an ordinary `add_group_members` to a Restricted subgroup produces. The
-/// difference that matters is not the role — the responder gate is
-/// role-agnostic — but that this member holds a namespace BINDING while holding
-/// no namespace MEMBERSHIP, which is exactly the combination the sealed push
-/// leaves stranded.
-#[test]
-fn a_subgroup_member_outside_the_namespace_root_is_still_served_by_the_pull() {
-    let namespace_id = [0xC3u8; 32];
-    let ns_gid = ContextGroupId::from(namespace_id);
-    let subgroup_id = [0xC4u8; 32];
-    let subgroup_gid = ContextGroupId::from(subgroup_id);
-    let group_key = [0x7Bu8; 32];
-
-    let admin_sk = PrivateKey::from([0x41u8; 32]);
-    let admin_pk = admin_sk.public_key();
-
-    let store = test_store();
-    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
-    NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &admin_pk, admin_sk.as_bytes())
-        .unwrap();
-    MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_account))
-        .unwrap();
-    MetaRepository::new(&store)
-        .save(&subgroup_gid, &sample_meta_with_admin(admin_account))
-        .unwrap();
-    NamespaceRepository::new(&store)
-        .nest(&ns_gid, &subgroup_gid)
-        .unwrap();
-    GroupKeyring::new(&store, subgroup_gid)
-        .store_key(&group_key)
-        .unwrap();
-
-    // Bound in the namespace (so it is resolvable) but a member ONLY of the
-    // subgroup — never added at the root.
-    let member_sk = PrivateKey::from([0x42u8; 32]);
-    let member_pk = member_sk.public_key();
-    let member_store = test_store();
-    let (member_account, member_device, member_credential) =
-        crate::test_fixtures::enrol_local_device(&member_store, &ns_gid, &member_pk);
-    crate::test_fixtures::record_credential(&store, &ns_gid, &member_credential);
-    MembershipRepository::new(&store)
-        .add_member(&subgroup_gid, &member_account, GroupMemberRole::Member)
-        .unwrap();
-
-    assert!(
-        !MembershipRepository::new(&store)
-            .is_member(&ns_gid, &member_account)
-            .unwrap(),
-        "precondition: this member is NOT in the namespace root, so it holds no \
-         namespace key and cannot open a sealed KeyDelivery"
-    );
-
-    let (envelope_bytes, _responder) = build_group_key_delivery(
-        &store,
-        namespace_id.into(),
-        subgroup_id,
-        crate::KeyRequester {
-            identity: member_pk,
-            device: Some(member_device),
-        },
-        None,
-    )
-    .unwrap();
-
-    assert!(
-        !envelope_bytes.is_empty(),
-        "the pull must carry a subgroup member that the sealed push cannot reach, \
-         or sealing KeyDelivery locked this member out of its own subgroup"
-    );
-}
-
 /// A sealed `GroupDeleted` keeps the heavy ack budget it had in the clear — and
 /// the wire form alone cannot know that.
 ///
@@ -13659,93 +13653,6 @@ fn a_joiner_seals_its_own_join_only_when_it_holds_the_namespace_key() {
     );
 }
 
-/// The namespace-key boundary, which sealing a subgroup join must not move.
-///
-/// #3858 rejected handing a subgroup-invited joiner the namespace key (its
-/// "Option 1", dead) precisely because that key reads all namespace-level
-/// governance and every Open-chain subgroup's application state, and is retained
-/// after leaving unless rotated. Sealing under the *subgroup* key was chosen so
-/// no new principal receives the namespace key.
-///
-/// This pins the pull arm of that boundary: a member of only the subgroup asking
-/// for the NAMESPACE key is served nothing. The positive control matters as much
-/// as the refusal — the same requester asking for its own subgroup's key is
-/// served an envelope, so a fixture that simply failed to enrol anybody could
-/// not make this test pass.
-#[test]
-fn a_subgroup_only_member_is_served_no_namespace_key() {
-    use crate::build_group_key_delivery;
-    use crate::group_keys::GroupKeyring;
-
-    let namespace_id = [0x71u8; 32];
-    let ns_gid = ContextGroupId::from(namespace_id);
-    let subgroup_id = [0x72u8; 32];
-    let subgroup_gid = ContextGroupId::from(subgroup_id);
-
-    let joiner_sk = PrivateKey::from([0x73u8; 32]);
-    let joiner_pk = joiner_sk.public_key();
-    let responder_sk_bytes = [0x74u8; 32];
-    let responder_sk = PrivateKey::from(responder_sk_bytes);
-    let responder_pk = responder_sk.public_key();
-    let responder_account = crate::test_fixtures::account_for(&responder_pk);
-
-    let store = test_store();
-    let (joiner_account, joiner_device, joiner_credential) =
-        crate::test_fixtures::enrol_local_device(&store, &ns_gid, &joiner_pk);
-    crate::test_fixtures::record_credential(&store, &ns_gid, &joiner_credential);
-    let _ = enrol_member(&store, &ns_gid, &responder_pk);
-    NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes)
-        .unwrap();
-    MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(responder_account))
-        .unwrap();
-    MetaRepository::new(&store)
-        .save(&subgroup_gid, &sample_meta_with_admin(responder_account))
-        .unwrap();
-    NamespaceRepository::new(&store)
-        .nest(&ns_gid, &subgroup_gid)
-        .unwrap();
-
-    // Keyed apart, and the joiner is a member of the SUBGROUP ONLY — never a
-    // direct row of the root. That is exactly the standing a subgroup-targeted
-    // invitation confers.
-    GroupKeyring::new(&store, ns_gid)
-        .store_key(&[0x75; 32])
-        .unwrap();
-    GroupKeyring::new(&store, subgroup_gid)
-        .store_key(&[0x76; 32])
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&subgroup_gid, &joiner_account, GroupMemberRole::Member)
-        .unwrap();
-
-    let requester = crate::KeyRequester {
-        identity: joiner_pk,
-        device: Some(joiner_device),
-    };
-
-    // The refusal. Empty rather than an error: the responder answers every
-    // request, and a non-member's answer carries no key.
-    let (ns_bytes, _) =
-        build_group_key_delivery(&store, namespace_id.into(), namespace_id, requester, None)
-            .unwrap();
-    assert!(
-        ns_bytes.is_empty(),
-        "a member of only the subgroup must be served no namespace key"
-    );
-
-    // The positive control, on the same store and the same requester.
-    let (sub_bytes, _) =
-        build_group_key_delivery(&store, namespace_id.into(), subgroup_id, requester, None)
-            .unwrap();
-    assert!(
-        !sub_bytes.is_empty(),
-        "precondition: the same requester IS served its own subgroup's key, so \
-         the refusal above is the membership gate and not a broken fixture"
-    );
-}
-
 /// An Open subgroup under a Restricted parent, two members that reach it only by
 /// inheritance (each with a live device), and a responder holding its own key.
 struct InheritedSubgroup {
@@ -13798,6 +13705,9 @@ fn inherited_subgroup_fixture() -> InheritedSubgroup {
         let pk = PrivateKey::from([seed; 32]).public_key();
         let account = enrol_member(&store, &ns_gid, &pk);
         let device = crate::test_fixtures::device_secret_for(&pk).device;
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &account, GroupMemberRole::Member)
+            .unwrap();
         MembershipRepository::new(&store)
             .add_member(&parent, &account, GroupMemberRole::Member)
             .unwrap();

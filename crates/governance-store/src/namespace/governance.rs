@@ -1731,6 +1731,36 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(())
     }
 
+    /// A seat in a private space stands only with a seat in the workspace. The group's owner,
+    /// and a TEE that never held a workspace row, are exempt.
+    fn holds_workspace_row_for_space(
+        &self,
+        group: &ContextGroupId,
+        namespace: &ContextGroupId,
+        account: &calimero_account::AccountId,
+    ) -> EyreResult<bool> {
+        let membership = MembershipRepository::new(self.store);
+        let Some(space) = crate::private_space::Tree::live(self.store, group)?.space_root(group)?
+        else {
+            return Ok(true);
+        };
+        if membership.is_live_member(namespace, account)? {
+            return Ok(true);
+        }
+        for held in [group, &space] {
+            let owner = MetaRepository::new(self.store)
+                .load(held)?
+                .is_some_and(|meta| meta.owner_identity == *account);
+            let tee = membership
+                .role_of(held, account)?
+                .is_some_and(|role| role.is_tee());
+            if owner || tee {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Responder side of direct key delivery — the counterpart to
     /// [`apply_received_group_key`](Self::apply_received_group_key). Build
     /// an ECDH-wrapped group key for `requester` when they are a current
@@ -1776,6 +1806,7 @@ impl<'a> NamespaceGovernance<'a> {
         let is_member = match requester_account {
             Some(account) => {
                 MembershipRepository::new(self.store).is_live_member(&group_gid, &account)?
+                    && self.holds_workspace_row_for_space(&group_gid, &ns_gid, &account)?
             }
             None => false,
         };
