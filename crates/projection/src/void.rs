@@ -732,9 +732,16 @@ impl<'a> Analysis<'a> {
         )
     }
 
-    /// Whether `op` is the namespace owner's: its authority no removal can take.
-    fn is_owner_op(&self, op: &Op) -> bool {
+    /// Whether `op` is the namespace owner's, outside any private space: the one place
+    /// an owner's op carries authority no removal can take.
+    fn is_owner_in_open_space(&self, op: &Op) -> bool {
         self.owner_at(op) == Some(self.author_of(op))
+            && self.voidable_group(op).is_some_and(|group| {
+                !self
+                    .group_and_ancestors(group)
+                    .iter()
+                    .any(|g| self.restricted_groups.contains(g))
+            })
     }
 
     /// The namespace's owner at `op`'s cut: the heir of the latest transfer behind it, as the
@@ -848,7 +855,7 @@ impl<'a> Analysis<'a> {
                 if id == removal.op.id() || before.contains(&id) || after.contains(&id) {
                     continue;
                 }
-                if self.is_owner_op(op) {
+                if self.is_owner_in_open_space(op) {
                     continue;
                 }
                 let Some(group) = self.voidable_group(op) else {
@@ -888,7 +895,7 @@ impl<'a> Analysis<'a> {
             let after = self.descendants_of(revoke.op.id());
             for &op in victims {
                 let id = op.id();
-                if before.contains(&id) || after.contains(&id) || self.is_owner_op(op) {
+                if before.contains(&id) || after.contains(&id) || self.is_owner_in_open_space(op) {
                     continue;
                 }
                 // A capability is held in its own group: it is never inherited.
@@ -1093,7 +1100,7 @@ impl<'a> Analysis<'a> {
             // An op already void is judged again, so a round never forgets what the
             // round before established.
             if granted.contains(&self.author_of(op))
-                && !self.is_owner_op(op)
+                && !self.is_owner_in_open_space(op)
                 && self.voidable_group(op).is_some()
             {
                 candidates.push(op);

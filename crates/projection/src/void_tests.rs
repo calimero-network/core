@@ -708,6 +708,31 @@ fn a_removal_from_an_open_folder_still_reaches_it_and_the_folders_below() {
 }
 
 #[test]
+fn the_owner_is_voidable_inside_a_private_space_only() {
+    let (mut log, head) = eng_private_space();
+    let removal = remove_from(subgroup(0x42), ALICE, &[&head], OWNER);
+    let in_space = add_in(
+        subgroup(0x42),
+        OWNER,
+        &[&head],
+        WILL,
+        GroupMemberRole::Member,
+    );
+    let in_open = add_in(
+        subgroup(0x41),
+        OWNER,
+        &[&head],
+        YARA,
+        GroupMemberRole::Member,
+    );
+    log.extend([removal, in_space.clone(), in_open.clone()]);
+
+    let voided = void(&log);
+    assert!(voided.contains(&in_space.id()));
+    assert!(!voided.contains(&in_open.id()));
+}
+
+#[test]
 fn a_role_change_for_an_account_that_was_no_admin_at_its_cut_demotes_nobody() {
     let ad = admins();
     let head = &ad[2];
