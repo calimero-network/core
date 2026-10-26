@@ -536,7 +536,7 @@ steps:
     path: /admin-api/groups/{{f_board}}/metadata
     match:
       data.name: Board
-      data.data.topic: board
+      data.data.topic: after-dave
     retries: 30
     interval: 2
 
@@ -566,7 +566,7 @@ steps:
     path: /admin-api/groups/{{f_board}}/metadata
     match:
       data.name: Board
-      data.data.topic: board
+      data.data.topic: after-dave
     retries: 30
     interval: 2
 
