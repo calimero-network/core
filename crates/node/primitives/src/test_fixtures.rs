@@ -422,6 +422,7 @@ fn pack_signed(package: &str, version: &str, wasm: &[u8], signing_key: &SigningK
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),
+        outbound: Vec::new(),
         services: None,
         signature: None,
     };

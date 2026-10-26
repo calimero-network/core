@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+### Added
+
+- **A method can call an outside HTTPS service, off unless the node's
+  operator turns it on.** The new host function `http_request`
+  (`calimero_sdk::env::http_request`) sends one `GET`, `POST`, `PUT`, `PATCH`
+  or `DELETE` per run and returns the status and body. A node makes the
+  request only when `[context.outbound]` is enabled and allows the host
+  (listed, or `"*"` for any host an installed app declares), a URL prefix in
+  the app's signed manifest covers the URL (`outbound = [...]` in
+  `[package.metadata.calimero]`), and the run writes state on this node: never
+  a view, a migration, a state op or a peer's delta. https on port 443 to a
+  host that resolves only to public addresses, no redirects, no proxy, a
+  64 KiB body, a 1 MiB answer and 10 s. A request names a secret as
+  `{{secret:NAME}}`; the node fills it in from its operator's secrets
+  (`env_secrets`, or a loopback `sidecar` service) for that app only (its
+  package and its bundle signer), sends it only to the hosts it is bound to,
+  and removes it from the response, so the app never reads it. Nothing
+  changes on a node that does not turn it on: `http_request` traps there.
+  Guide: *Call an external service*. (#4670)
+
+## [0.11.1] - 2026-10-25
+
+A patch release of 0.11.0 with one fix.
+
+### Fixed
+
+- **A member of a Restricted subgroup nested under a Restricted group it is
+  not in now sees the subgroup.** Its node parked every op of the subgroup
+  (`AuthorityUndecidable`, cause `AncestryUnreadable`), because judging one
+  required the parent's sealed history readable at the op's cut, and only the
+  parent's members ever get the parent's key. So the subgroup's name, members
+  and contexts never applied there: in Mero Docs, a folder shared from inside
+  a private folder showed no name and no documents to the person it was
+  shared with. A node now needs a group's ancestors readable only up to the
+  first Restricted edge whose state it reads (the root's `GroupCreated` and
+  `GroupReparented` and the subgroup's own `SubgroupVisibilitySet`), plus the
+  namespace root, which is as far as any inheritance or admin question climbs.
+  An edge in a state the node cannot read still needs everything above it.
+
 ## [0.11.0] - 2026-10-24
 
 The first stable 0.11 release. It carries every change shipped across

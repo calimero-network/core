@@ -203,6 +203,7 @@ async fn every_ingest_entry_point_refuses_a_delta_naming_too_many_parents() {
         .expect("the rest of the batch goes on");
     assert_eq!(result.failed, vec![in_batch]);
     assert_eq!(result.pending, vec![honest]);
+    assert_eq!(result.admitted(), 1, "a refused input is not admitted");
 
     for id in [single, with_events, in_batch] {
         assert!(

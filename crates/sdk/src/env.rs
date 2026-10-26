@@ -1295,6 +1295,63 @@ pub fn search(
     }
 }
 
+/// Ask the node to make one outbound HTTPS request to an outside service: a
+/// captcha check, a payment API, any HTTPS API.
+///
+/// The node makes it only when every gate holds, and answers with its reason
+/// otherwise:
+///
+/// - the node's operator turned outbound requests on (`[context.outbound]`,
+///   off by default) and allows the request's host;
+/// - a URL prefix in the app's signed manifest (`outbound`) covers
+///   `request.url`: the same host, the prefix's path or one below it;
+/// - the run writes state and executes on this node, as its own write or one
+///   it relays for an author (never a view, a migration, a state op or a
+///   peer's delta);
+/// - it is the run's only request, within the limits in
+///   [`calimero_primitives::outbound`], to a host with public addresses only.
+///
+/// A secret the request needs is written `{{secret:NAME}}` in a header value
+/// or the body. The node fills it in from its operator's secrets, only for a
+/// host that secret is bound to, and removes any copy of it from the response:
+/// the app never reads it.
+///
+/// The request and its response stay on this node. Only the state the run
+/// writes because of them replicates, so decide from the response and store
+/// the decision, not the response.
+///
+/// # Errors
+///
+/// The node's reason for refusing the request, or the transport's failure.
+///
+/// # Panics
+///
+/// When the node gives this run no outbound client at all, or on a second
+/// request in one run, the host traps the run.
+pub fn http_request(
+    request: &calimero_primitives::outbound::OutboundRequest,
+) -> Result<calimero_primitives::outbound::OutboundResponse, String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let bytes = borsh::to_vec(request).map_err(|e| e.to_string())?;
+        let ok: bool =
+            unsafe { sys::http_request(Ref::new(&Buffer::from(&*bytes)), DATA_REGISTER) }
+                .try_into()
+                .unwrap_or_else(expected_boolean::<bool>);
+        let out = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+        if ok {
+            borsh::from_slice(&out).map_err(|e| e.to_string())
+        } else {
+            Err(String::from_utf8_lossy(&out).into_owned())
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = request;
+        Err("outbound requests need a node".to_owned())
+    }
+}
+
 /// The borsh-encoded writers of the `SharedStorage` cell `cell` at this run's
 /// governance cut, for the storage crate to decode.
 ///

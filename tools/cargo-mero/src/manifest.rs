@@ -128,6 +128,7 @@ pub fn render(
         }),
         frontend: frontend.cloned(),
         frontend_aliases: meta.frontend_aliases.clone(),
+        outbound: meta.outbound.clone(),
         signature: None,
     };
     Ok(serde_json::to_value(manifest)?)
@@ -157,6 +158,7 @@ mod tests {
             min_runtime_version: "0.1.0".into(),
             frontend: None,
             frontend_aliases: vec![],
+            outbound: Vec::new(),
             frontend_dir: None,
             app_version: "1.0.0".into(),
             services: vec![],
@@ -296,6 +298,7 @@ mod tests {
             min_runtime_version: "0.0.0".into(),
             frontend: Some("https://example.com".into()),
             frontend_aliases: Vec::new(),
+            outbound: Vec::new(),
             frontend_dir: None,
             app_version: "0.5.0".into(),
             services: vec![],

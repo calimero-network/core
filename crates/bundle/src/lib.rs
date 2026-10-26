@@ -97,6 +97,23 @@ pub fn is_web_url(url: &str) -> bool {
     !rest.is_empty() && !url.chars().any(char::is_control)
 }
 
+/// Whether `url` may be declared under a manifest's `outbound`: `https://`,
+/// a host, no credentials, no query or fragment, no whitespace or control
+/// characters, at most 2048 bytes. It is a prefix: it covers itself and every
+/// URL below it at a `/`, with any query string.
+#[must_use]
+pub fn is_outbound_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    url.len() <= 2048
+        && !authority.is_empty()
+        && !authority.contains('@')
+        && !url.contains(['?', '#'])
+        && !url.chars().any(|c| c.is_control() || c.is_whitespace())
+}
+
 /// Deep-link handler declarations for the application.
 ///
 /// Lets an app declare its own deep-link `slug` (e.g. `mero-chat`) so links
@@ -250,6 +267,16 @@ pub struct BundleManifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub frontend_aliases: Vec<String>,
 
+    /// The `https://` URL prefixes the app's runs may send an outbound request
+    /// under (the SDK's `env::http_request`): `https://api.example.com/v1/`
+    /// covers every path below it, with any query string. Signed with the
+    /// rest, shown at install, and stored with the application, where the
+    /// node reads it: a request no prefix covers is refused, and an app that
+    /// lists none never gets a client. A node still sends nothing unless its
+    /// operator turned outbound requests on and allows the URL's host.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outbound: Vec<String>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<BundleSignature>,
 }
@@ -323,6 +350,7 @@ impl BundleManifest {
             interfaces: _,
             links: _,
             frontend_aliases: _,
+            outbound: _,
             signature: _,
         } = self;
 
@@ -416,6 +444,16 @@ impl BundleManifest {
             .collect();
         if !aliases.is_empty() {
             obj.insert("frontendAliases".into(), serde_json::Value::Array(aliases));
+        }
+
+        let outbound: Vec<serde_json::Value> = self
+            .outbound
+            .iter()
+            .filter(|v| is_outbound_url(v))
+            .map(|v| serde_json::Value::String(v.clone()))
+            .collect();
+        if !outbound.is_empty() {
+            obj.insert("outbound".into(), serde_json::Value::Array(outbound));
         }
 
         Ok(serde_json::to_vec(&serde_json::Value::Object(obj))?)
@@ -540,6 +578,28 @@ mod tests {
         );
         assert!(links.get("frontend").is_none());
         assert_eq!(links["github"], "https://github.com/x");
+    }
+
+    #[test]
+    fn outbound_urls_are_https_with_a_host_and_reach_stored_metadata() {
+        assert!(is_outbound_url(
+            "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+        ));
+        assert!(!is_outbound_url("http://challenges.cloudflare.com/x"));
+        assert!(!is_outbound_url("https://"));
+        assert!(!is_outbound_url("https://user:pw@host.example/x"));
+        assert!(!is_outbound_url("https://host.example/a b"));
+        assert!(is_outbound_url("https://api.example.com"));
+        assert!(!is_outbound_url("https://api.example.com/v1/?key=1"));
+        assert!(!is_outbound_url("https://api.example.com/v1/#top"));
+        let meta = stored_meta(
+            r#""outbound": ["https://api.example.com/v1/check", "http://insecure.example/x"],"#,
+        );
+        assert_eq!(
+            meta["outbound"],
+            serde_json::json!(["https://api.example.com/v1/check"])
+        );
+        assert!(stored_meta("").get("outbound").is_none());
     }
 
     #[test]

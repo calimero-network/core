@@ -78,6 +78,7 @@ export default defineConfig({
                 'build/guides/cross-context',
                 'build/guides/blobs',
                 'build/guides/search',
+                'build/guides/outbound',
                 'build/guides/access-control',
                 'build/guides/securing-state',
                 'build/cargo-mero',

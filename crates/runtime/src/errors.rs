@@ -135,6 +135,10 @@ pub enum HostError {
     SearchUnavailable,
     #[error("more than {max} search_query calls in one execution")]
     SearchCallsExceeded { max: u64 },
+    #[error("http_request is not available here: the node's operator, the app's manifest and the run must all allow outbound requests, and a view, a migration or a peer's delta never may")]
+    OutboundUnavailable,
+    #[error("more than {max} http_request calls in one execution")]
+    OutboundRequestsExceeded { max: u64 },
     #[error("more than {max} host calls in one execution")]
     HostCallLimitExceeded { max: u64 },
     #[error("host calls moved {attempted} bytes across the host boundary (max: {max})")]

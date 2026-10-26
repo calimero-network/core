@@ -1,5 +1,6 @@
 mod blobs;
 mod js_collections;
+mod outbound;
 mod sealing;
 pub(crate) mod search;
 mod shared_writers;

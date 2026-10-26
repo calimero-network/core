@@ -11,6 +11,8 @@ use prometheus_client::registry::Registry;
 pub struct Metrics {
     pub execution_count: Family<ExecutionLabels, Counter>,
     pub execution_duration: Family<ExecutionLabels, Histogram>,
+    pub gas_used: Histogram,
+    pub gas_exhausted: Counter,
 
     /// Cumulative count of in-memory context-cache hits (the requested
     /// context was already resident in `ContextManager::contexts`).
@@ -136,6 +138,13 @@ pub(crate) struct AtCutUndecidableLabels {
     pub(crate) cause: &'static str,
 }
 
+/// Labels for `warrant_outcome_total`. `outcome` comes from
+/// `warrant_gate::warrant_outcome_label`, a closed set, never from the caller.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct WarrantOutcomeLabels {
+    pub(crate) outcome: &'static str,
+}
+
 #[derive(Clone, Debug)]
 struct GroupStoreMetricSink {
     namespace_retry_events: Family<NamespaceRetryLabels, Counter>,
@@ -148,11 +157,23 @@ struct GroupStoreMetricSink {
     self_purge_reconcile: Family<SelfPurgeReconcileLabels, Counter>,
     self_purge_events_dropped: Counter,
     at_cut_undecidable: Family<AtCutUndecidableLabels, Counter>,
+    warrant_outcomes: Family<WarrantOutcomeLabels, Counter>,
 }
 
 static GROUP_STORE_METRICS: OnceLock<GroupStoreMetricSink> = OnceLock::new();
 
 impl Metrics {
+    /// Record one execution's metering outcome. `gas_used` is `None` when the
+    /// module was not metered.
+    pub fn record_gas(&self, gas_used: Option<u64>, exhausted: bool) {
+        if let Some(used) = gas_used {
+            self.gas_used.observe(used as f64);
+        }
+        if exhausted {
+            let _prev = self.gas_exhausted.inc();
+        }
+    }
+
     pub fn new(registry: &mut Registry) -> Self {
         let context_registry = registry.sub_registry_with_prefix("context");
 
@@ -179,6 +200,20 @@ impl Metrics {
             "execution_duration_seconds",
             "Context runtime execution in seconds",
             execution_duration.clone(),
+        );
+
+        // 1e3 .. ~1e9 points, up to the default `DEFAULT_MAX_GAS` budget.
+        let gas_used = Histogram::new(exponential_buckets(1_000.0, 4.0, 11));
+        runtime_registry.register(
+            "gas_used",
+            "WASM metering points consumed per execution",
+            gas_used.clone(),
+        );
+        let gas_exhausted = Counter::default();
+        runtime_registry.register(
+            "gas_exhausted",
+            "Executions trapped for exhausting their gas budget",
+            gas_exhausted.clone(),
         );
 
         // Context in-memory cache effectiveness. Hits/misses are
@@ -372,6 +407,14 @@ impl Metrics {
             at_cut_undecidable.clone(),
         );
 
+        let warrant_outcomes = Family::<WarrantOutcomeLabels, Counter>::default();
+        group_store_registry.register(
+            "warrant_outcome_total",
+            "Delegated-write warrant gate decisions: accepted, one label per refusal \
+             variant, or error for an undecidable cut or store failure",
+            warrant_outcomes.clone(),
+        );
+
         let _ = GROUP_STORE_METRICS.set(GroupStoreMetricSink {
             namespace_retry_events: namespace_retry_events.clone(),
             namespace_decode_events: namespace_decode_events.clone(),
@@ -383,11 +426,14 @@ impl Metrics {
             self_purge_reconcile: self_purge_reconcile.clone(),
             self_purge_events_dropped: self_purge_events_dropped.clone(),
             at_cut_undecidable: at_cut_undecidable.clone(),
+            warrant_outcomes: warrant_outcomes.clone(),
         });
 
         Self {
             execution_count,
             execution_duration,
+            gas_used,
+            gas_exhausted,
             context_cache_hits,
             context_cache_misses,
             context_cache_size,
@@ -736,6 +782,18 @@ pub fn record_at_cut_undecidable(cause: UndecidableCause) {
         .inc();
 }
 
+pub(crate) fn record_warrant_outcome(outcome: &'static str) {
+    if let Some(metrics) = GROUP_STORE_METRICS.get() {
+        bump_warrant_outcome(&metrics.warrant_outcomes, outcome);
+    }
+}
+
+fn bump_warrant_outcome(family: &Family<WarrantOutcomeLabels, Counter>, outcome: &'static str) {
+    family
+        .get_or_create(&WarrantOutcomeLabels { outcome })
+        .inc();
+}
+
 #[cfg(test)]
 mod tests {
     use prometheus_client::encoding::text::encode;
@@ -775,6 +833,28 @@ mod tests {
         assert!(
             out.contains("context_cache_application_size 3"),
             "missing application size gauge:\n{out}"
+        );
+    }
+
+    #[test]
+    fn record_gas_observes_usage_and_counts_exhaustion() {
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+
+        metrics.record_gas(Some(5_000_000), false);
+        metrics.record_gas(Some(200_000), true);
+        metrics.record_gas(None, false);
+
+        assert_eq!(metrics.gas_exhausted.get(), 1);
+        let mut out = String::new();
+        encode(&mut out, &registry).expect("encode registry");
+        assert!(
+            out.contains("context_runtime_gas_used_count 2"),
+            "two metered runs, one unmetered:\n{out}"
+        );
+        assert!(
+            out.contains("context_runtime_gas_exhausted_total 1"),
+            "{out}"
         );
     }
 
@@ -889,6 +969,27 @@ mod tests {
             );
             assert!(out.contains(&series), "missing {series}:\n{out}");
         }
+    }
+
+    #[test]
+    fn warrant_outcomes_route_to_their_own_label() {
+        let mut registry = Registry::default();
+        let family = Family::<WarrantOutcomeLabels, Counter>::default();
+        registry.register("warrant_outcome", "test", family.clone());
+        bump_warrant_outcome(&family, "accepted");
+        bump_warrant_outcome(&family, "nonce_already_spent");
+        bump_warrant_outcome(&family, "nonce_already_spent");
+
+        let mut out = String::new();
+        encode(&mut out, &registry).expect("encode registry");
+        assert!(
+            out.contains("warrant_outcome_total{outcome=\"accepted\"} 1"),
+            "{out}"
+        );
+        assert!(
+            out.contains("warrant_outcome_total{outcome=\"nonce_already_spent\"} 2"),
+            "{out}"
+        );
     }
 
     /// The `self_purge_failures_total` family registers against a fresh

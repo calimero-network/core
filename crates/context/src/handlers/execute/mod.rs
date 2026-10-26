@@ -589,6 +589,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
         let execution_count = self.metrics.as_ref().map(|m| m.execution_count.clone());
         let execution_duration = self.metrics.as_ref().map(|m| m.execution_duration.clone());
+        let metrics = self.metrics.clone();
 
         // Cloned for the broadcast continuation, which is a sibling link in this
         // chain rather than nested inside the execute closure — so it needs its
@@ -605,6 +606,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             let context_client = act.context_client.clone();
             let scope_projections = std::sync::Arc::clone(&act.scope_projections);
             let search = act.search.clone();
+            let outbound = act.outbound.clone();
             let ack_router = std::sync::Arc::clone(&act.ack_router);
 
             // The calling context's application id, resolved once (xcall path
@@ -775,6 +777,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         read_as,
                         tee_trigger.as_ref(),
                         search,
+                        outbound,
                         governance_position.as_ref(),
                         &ack_router,
                     )
@@ -813,6 +816,13 @@ impl Handler<ExecuteRequest> for ContextManager {
                             status: status.to_owned(),
                         })
                         .observe(duration);
+                }
+
+                if let (Some(metrics), Ok((outcome, ..))) = (&metrics, &executed) {
+                    metrics.record_gas(
+                        outcome.gas_used,
+                        matches!(outcome.returns, Err(FunctionCallError::GasExhausted { .. })),
+                    );
                 }
 
                 let (
@@ -2239,6 +2249,10 @@ async fn internal_execute(
     // Full-text search, when the node runs it. Only an app that declares a
     // search index (exports the extract method) takes part.
     search: Option<std::sync::Arc<calimero_search::SearchService>>,
+    // Outbound HTTPS requests, when the node's operator turned them on. Only
+    // an app whose manifest declares a URL takes part, and only in a run that
+    // writes on this node (see below).
+    outbound: Option<std::sync::Arc<crate::outbound::OutboundService>>,
     // The cut a peer's delta was signed at, where a state op reads writers; else the heads.
     governance_position: Option<&GovernanceParentEdge>,
     // Where the run's writer-set rotations are published.
@@ -2550,6 +2564,27 @@ async fn internal_execute(
             std::sync::Arc::new(crate::search::SearchHostAdapter(std::sync::Arc::clone(s)))
                 as std::sync::Arc<dyn calimero_runtime::logic::SearchHost>
         });
+    // Outbound requests: only a run that writes on this node gets a client —
+    // never a view (it would make a read reach the network), a peer's delta or
+    // a state op (this node did not decide them), or a search export. A
+    // migration and its check run through `update_application`, which passes
+    // none. The app is the installed one, identified by this node: its
+    // package and signer scope the secrets, its manifest the URLs.
+    let outbound_host = match outbound {
+        Some(service)
+            if !is_read_only_call
+                && !is_state_op
+                && write_source == WriteSource::Local
+                && !is_search_export =>
+        {
+            node_client
+                .get_application(&context.application_id)?
+                .as_ref()
+                .and_then(crate::outbound::app_outbound)
+                .and_then(|(app, declared)| service.for_run(app, declared, context.id.to_string()))
+        }
+        _ => None,
+    };
     // Self-authored: both halves are this node's own identity. Delegated: both
     // come from the warrant, resolved in the match above — which is what keeps a
     // `User` leaf's owner equal to its delta's author and so survives
@@ -2569,6 +2604,7 @@ async fn internal_execute(
         tee_authority,
         sealing,
         search_host,
+        outbound_host,
         write_source == WriteSource::RemoteDelta,
     )
     .await?;
@@ -3392,6 +3428,8 @@ pub(crate) async fn execute(
     sealing: calimero_runtime::logic::SealingContext,
     // Only ever `Some` for a read-only run (see `internal_execute`).
     search: Option<std::sync::Arc<dyn calimero_runtime::logic::SearchHost>>,
+    // Only ever `Some` for a run that writes on this node (see `internal_execute`).
+    outbound: Option<std::sync::Arc<dyn calimero_runtime::logic::OutboundHost>>,
     remote_delta: bool,
 ) -> eyre::Result<(Outcome, ContextStorage, Option<ContextPrivateStorage>)> {
     let context_id = **context;
@@ -3434,6 +3472,8 @@ pub(crate) async fn execute(
                     tee_trigger,
                     sealing,
                     search,
+                    // A view never reaches the network.
+                    None,
                     remote_delta,
                 )?
             } else {
@@ -3450,6 +3490,7 @@ pub(crate) async fn execute(
                     tee_trigger,
                     sealing,
                     None,
+                    outbound,
                     remote_delta,
                 )?
             };

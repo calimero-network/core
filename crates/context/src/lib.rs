@@ -47,6 +47,7 @@ pub mod member_account;
 pub mod membership_events;
 pub mod migration_events;
 pub mod migration_plan;
+pub mod outbound;
 pub mod root_guard;
 pub mod rotation_listener;
 pub mod scope_projection;
@@ -465,6 +466,9 @@ pub struct ContextManager {
 
     /// Full-text search; `None` unless [`Self::with_search`] set it.
     pub(crate) search: Option<Arc<calimero_search::SearchService>>,
+
+    /// Outbound HTTPS requests; `None` unless [`Self::with_outbound`] set it.
+    pub(crate) outbound: Option<Arc<outbound::OutboundService>>,
 }
 
 /// Creates a new `ContextManager`.
@@ -507,6 +511,7 @@ impl ContextManager {
                 scope_projection::ScopeProjections::new(),
             )),
             search: None,
+            outbound: None,
         }
     }
 
@@ -517,6 +522,14 @@ impl ContextManager {
     #[must_use]
     pub fn with_search(mut self, search: Arc<calimero_search::SearchService>) -> Self {
         self.search = Some(search);
+        self
+    }
+
+    /// Let runs make outbound HTTPS requests under `outbound`'s policy (see
+    /// [`outbound`]). Builder-style; without it `http_request` traps everywhere.
+    #[must_use]
+    pub fn with_outbound(mut self, outbound: Arc<outbound::OutboundService>) -> Self {
+        self.outbound = Some(outbound);
         self
     }
 

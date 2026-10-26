@@ -1227,14 +1227,20 @@ dependencies = [
  "ouroboros",
  "prometheus-client",
  "rand 0.10.2",
+ "rcgen",
+ "reqwest 0.12.28",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-rustls",
  "tracing",
+ "url",
  "wat",
+ "zeroize",
 ]
 
 [[package]]
@@ -1660,6 +1666,7 @@ dependencies = [
  "calimero-storage",
  "calimero-sys",
  "calimero-wasm-abi",
+ "macrotest",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -3324,6 +3331,12 @@ dependencies = [
  "syn 2.0.117",
  "unicode-xid",
 ]
+
+[[package]]
+name = "diff"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
 
 [[package]]
 name = "digest"
@@ -6163,6 +6176,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "macrotest"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd198afd908012e57564b66e43e7d4d19056cec7e6232e9e6d54a1798622f81d"
+dependencies = [
+ "diff",
+ "fastrand",
+ "glob",
+ "prettyplease 0.2.37",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "syn 2.0.117",
+ "toml",
+]
+
+[[package]]
 name = "markup5ever"
 version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7316,6 +7346,14 @@ dependencies = [
  "proc-macro2-diagnostics",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "outbound-probe"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
 ]
 
 [[package]]
