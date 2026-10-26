@@ -18099,8 +18099,14 @@ mod outbound_approval {
             .remove_member(&gid, &member)
             .unwrap();
         // The capability row may outlive the membership; the removal is what counts.
-        apply_local_signed_group_op(&store, &sign(&member_sk, &gid, 1, approval(&[API], &[API])))
-            .expect_err("a removed member approved outbound requests");
+        assert!(
+            apply_local_signed_group_op(
+                &store,
+                &sign(&member_sk, &gid, 1, approval(&[API], &[API]))
+            )
+            .is_err(),
+            "a removed member approved outbound requests"
+        );
         assert_eq!(approved(&store, &gid), None);
     }
 
