@@ -16,7 +16,7 @@
 //! `signer` is a deterministic cross-node author and whose target scope is
 //! resolvable from the op — applied at the namespace governance handler.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -3691,22 +3691,73 @@ impl calimero_governance_store::FoldedTeeAuthority for FoldedProjections<'_> {
     }
 }
 
-/// The at-cut view with the rows of every account that holds no root membership dropped:
-/// leaving the namespace ends what its members hold in private spaces. The owner is exempt.
+/// The at-cut view without the rows written before an account lost its root membership,
+/// which ends them; rows written after stand. The owner is exempt.
 fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> calimero_authz::AclView {
-    let mut view = ScopeState::acl_view_from_ancestry(walked);
-    let Some((root, _)) = base.root else {
+    let view = ScopeState::acl_view_from_ancestry(walked);
+    let Some((root, owner)) = base.root else {
         return view;
     };
-    let owner = view.root_at_cut(base.root).map(|(_, owner)| owner);
-    let members = view.groups.get(&root).cloned().unwrap_or_default();
-    let keeps =
-        |account: &AccountId| owner.as_ref() == Some(account) || members.contains_key(account);
-    for rows in view.groups.values_mut() {
-        rows.retain(|account, _| keeps(account));
+    let owner = view
+        .root_at_cut(base.root)
+        .map_or(owner, |(_, owner)| owner);
+    let has_root_row = |account: &AccountId| {
+        *account == owner
+            || view
+                .groups
+                .get(&root)
+                .is_some_and(|members| members.contains_key(account))
+    };
+    let live: Vec<&Op> = walked
+        .ops()
+        .iter()
+        .copied()
+        .filter(|op| !walked.is_void(op))
+        .collect();
+    let mut lost: BTreeMap<[u8; 32], AccountId> = BTreeMap::new();
+    for op in &live {
+        if let OpPayload::MemberRemoved { group, member }
+        | OpPayload::MemberLeft { group, member } = &op.payload
+        {
+            if *group == root && !has_root_row(member) {
+                let _ = lost.insert(op.id(), *member);
+            }
+        }
     }
-    view.member_caps.retain(|(_, account), _| keeps(account));
-    view.group_admin.retain(|_, account| keeps(account));
+    if lost.is_empty() {
+        return view;
+    }
+    let by_id: HashMap<[u8; 32], &Op> = live.iter().map(|op| (op.id(), *op)).collect();
+    let mut before: HashSet<[u8; 32]> = HashSet::new();
+    let mut queue: Vec<[u8; 32]> = lost.keys().copied().collect();
+    while let Some(id) = queue.pop() {
+        if let Some(op) = by_id.get(&id) {
+            queue.extend(op.parents.iter().copied().filter(|p| before.insert(*p)));
+        }
+    }
+    let accounts: BTreeSet<AccountId> = lost.values().copied().collect();
+    let stale: BTreeSet<[u8; 32]> = live
+        .iter()
+        .filter(|op| before.contains(&op.id()))
+        .filter(|op| match &op.payload {
+            OpPayload::MemberAdded { group, member, .. }
+            | OpPayload::MemberJoinedWithDevice { group, member, .. }
+            | OpPayload::MemberCapabilitySet { group, member, .. } => {
+                *group != root && accounts.contains(member)
+            }
+            _ => false,
+        })
+        .map(|op| op.id())
+        .collect();
+    let mut view = ScopeState::acl_view_from_ancestry(&walked.without(&stale));
+    for op in live.iter().filter(|op| before.contains(&op.id())) {
+        if let OpPayload::SubgroupCreated { child, admin, .. } = &op.payload {
+            let child = ContextGroupId::from(*child.as_bytes());
+            if accounts.contains(admin) && view.group_admin.get(&child) == Some(admin) {
+                let _ = view.group_admin.remove(&child);
+            }
+        }
+    }
     view
 }
 
@@ -5446,6 +5497,11 @@ mod tests {
                 reg.account_member_at_cut(&store, s, &c, &[cut]),
             )
         };
+        assert_eq!(
+            standing([0xE2; 32]),
+            (Some(true), Some(true), Some(true), Some(true), Some(true)),
+            "an account that never held a root row keeps the one it has in S",
+        );
         assert_eq!(
             standing([0xE3; 32]),
             (Some(true), Some(true), Some(true), Some(true), Some(true)),

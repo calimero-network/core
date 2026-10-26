@@ -2445,18 +2445,6 @@ mod concurrent {
     #[actix::test]
     async fn the_view_keeps_a_subgroup_readd_that_follows_a_root_tee_removal() {
         let (world, store, tee) = a_tee_removed_at_the_root().await;
-        let admin = world.actor(ActorState::NamespaceAdmin);
-        publish(
-            &store,
-            &world.namespace,
-            &admin.sign_sk,
-            &GroupOp::MemberAdded {
-                member: tee,
-                role: GroupMemberRole::Member,
-            },
-        )
-        .await
-        .expect("the admin re-adds the account at the root");
         let readd = signed_in(
             &store,
             world,

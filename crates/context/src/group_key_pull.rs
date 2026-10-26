@@ -895,26 +895,12 @@ pub(crate) mod tests {
         let joined_id = land_mallory_join(&store, ns, &owner_sk, &mallory_sk);
 
         let (s, created_id) = mallory_subgroup(&store, ns, &owner_sk, &mallory_sk, joined_id);
-        let yara_joined = SignedNamespaceOp::sign(
-            &yara_sk,
-            namespace_id.into(),
-            vec![joined_id],
-            1,
-            NamespaceOp::Root(RootOp::MemberJoined {
-                member: yara,
-                signed_invitation: invitation(&owner_sk, ns),
-                account: crate::test_support::credential(&yara_sk.public_key()),
-            }),
-        )
-        .unwrap();
-        land(&store, namespace_id, &yara_joined, &[joined_id]);
-        let yara_joined_id = yara_joined.content_hash().unwrap();
 
         let s_key = [0x5Fu8; 32];
         let add = SignedNamespaceOp::sign(
             &mallory_sk,
             namespace_id.into(),
-            vec![created_id, yara_joined_id],
+            vec![created_id],
             3,
             NamespaceOp::Group {
                 group_id: s.to_bytes().into(),
@@ -932,7 +918,7 @@ pub(crate) mod tests {
             },
         )
         .unwrap();
-        let _ = arrive(&store, &add, &[created_id, yara_joined_id]);
+        let _ = arrive(&store, &add, &[created_id]);
         let _ = adopt_pulled_group_key(&store, namespace_id.into(), s, &s_key)
             .expect("the pulled key stores");
 
