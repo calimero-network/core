@@ -239,6 +239,8 @@ steps:
 
   - name: Round 1 sync
     type: wait_for_sync
+    description: >-
+      lint-convergence: ok - node-3 is namespace-only and holds no replica of this context.
     context_id: '{{ctx_id}}'
     nodes:
       - private-add-node-1

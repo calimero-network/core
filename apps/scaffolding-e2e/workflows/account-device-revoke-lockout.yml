@@ -447,6 +447,8 @@ steps:
 
   - name: Settle the survivor's write across the remaining devices
     type: wait_for_sync
+    description: >-
+      lint-convergence: ok - node-3 is revoked, so waiting for it would wait for the failure under test.
     # node-3 is deliberately absent: it is revoked, so waiting for it to converge
     # would be waiting for the failure this scenario exists to prevent.
     nodes:

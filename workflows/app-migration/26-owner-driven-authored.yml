@@ -349,6 +349,9 @@ steps:
 
   - name: Read final schema_info on node 2 (both converted notes converged)
     type: call
+    description: >-
+      lint-convergence: ok - schema_info carries no per-note state, so no replicated
+      read can pin the converted notes here.
     node: app-migration-owner-2
     context_id: "{{ctx_id}}"
     method: schema_info

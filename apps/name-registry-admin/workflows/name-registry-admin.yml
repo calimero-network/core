@@ -474,6 +474,8 @@ steps:
 
   - name: Ann cannot resolve iris
     type: call
+    description: >-
+      lint-convergence: ok - a non-admin's resolve is refused whether or not the claim has arrived.
     node: admin-names-ann
     context_id: "{{context_id}}"
     method: resolve
@@ -496,6 +498,8 @@ steps:
 
   - name: Ann cannot make herself admin
     type: call
+    description: >-
+      lint-convergence: ok - a non-admin's set_admins is refused whether or not the claim has arrived.
     node: admin-names-ann
     context_id: "{{context_id}}"
     method: set_admins
