@@ -1397,3 +1397,21 @@ fn a_removal_from_a_space_voids_the_signers_concurrent_move_or_delete_of_a_folde
     assert!(voided.contains(&moves.id()));
     assert!(voided.contains(&deletes.id()));
 }
+
+#[test]
+fn a_concurrent_root_revocation_of_the_delete_capability_voids_a_delete() {
+    let mut log = yara_holding(MemberCapabilities::CAN_DELETE_SUBGROUP);
+    let head = log[log.len() - 1].clone();
+    let folder = create_under(&[&head], group(), 0x41, false, ALICE);
+    let revoke = grant(ALICE, &[&folder], YARA, MemberCapabilities::empty());
+    let delete = gov(
+        YARA,
+        &[&folder],
+        OpPayload::SubgroupDeleted {
+            scope: ScopeId::from(subgroup(0x41).to_bytes()),
+        },
+    );
+    log.extend([folder, revoke, delete.clone()]);
+
+    assert!(void(&log).contains(&delete.id()));
+}

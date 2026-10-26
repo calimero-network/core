@@ -726,6 +726,23 @@ impl<'a> Analysis<'a> {
         payload_group(op).or_else(|| self.explicit.get(&op.id()).map(|acting| acting.group))
     }
 
+    /// Where the gate checks the capability `op` needs: the group it acts in, but for a move
+    /// or delete the root of its space, or the namespace root in the open space.
+    fn capability_group(&self, op: &Op, void: &BTreeSet<[u8; 32]>) -> Option<ContextGroupId> {
+        let group = self.voidable_group(op)?;
+        if !matches!(
+            op.payload,
+            OpPayload::SubgroupReparented { .. } | OpPayload::SubgroupDeleted { .. }
+        ) {
+            return Some(group);
+        }
+        Some(
+            self.tree_at(op, void)
+                .private_space(group)
+                .unwrap_or_else(|| self.root_of(op)),
+        )
+    }
+
     /// The capability bits that admit a member who is no admin to `op`.
     fn capability_needed(&self, op: &Op) -> u32 {
         capability_by_payload(op, self.author_of(op))
@@ -1036,7 +1053,7 @@ impl<'a> Analysis<'a> {
                     continue;
                 }
                 // A capability is held in its own group: it is never inherited.
-                if self.voidable_group(op) != Some(revoke.group)
+                if self.capability_group(op, void) != Some(revoke.group)
                     || self.capability_needed(op) & removed == 0
                 {
                     continue;
