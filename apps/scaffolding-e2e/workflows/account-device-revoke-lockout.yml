@@ -220,6 +220,12 @@ steps:
     context_id: '{{context_id}}'
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: from-laptop
+      equals:
+        output: laptop-wrote-this
 
   - name: Node-1 reads the first device's write
     type: call
@@ -311,6 +317,12 @@ steps:
     context_id: '{{context_id}}'
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: from-phone
+      equals:
+        output: phone-wrote-this
 
   - name: Node-1 reads the paired device's write
     type: call
@@ -443,6 +455,12 @@ steps:
     context_id: '{{context_id}}'
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: from-laptop
+      equals:
+        output: laptop-still-works
 
   - name: Node-1 sees the survivor's write and not the revoked device's
     type: call

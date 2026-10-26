@@ -159,6 +159,12 @@ steps:
     timeout: 60
     check_interval: 2
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "hello"
+      equals:
+        output: "from-node-1"
 
   - name: Node-2 reads what node-1 wrote
     # This `call` doubles as a presence assertion — it fails with

@@ -200,6 +200,12 @@ steps:
     timeout: 120
     check_interval: 2
     trigger_sync: true
+    expect:
+      method: shared_is_writer
+      args:
+        account: '{{acct_b}}'
+      equals:
+        output: true
 
   - name: Settle after the rotation
     type: wait
@@ -231,6 +237,10 @@ steps:
     timeout: 120
     check_interval: 2
     trigger_sync: true
+    expect:
+      method: len
+      equals:
+        output: 2
 
   - name: Settle after member entries
     type: wait

@@ -94,6 +94,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "key_a"
+      equals:
+        output: "from_node1"
 
   - name: Node-2 reads key-A
     type: call
@@ -145,6 +151,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "key_b"
+      equals:
+        output: "from_node2"
 
   - name: Node-1 reads key-B
     type: call
@@ -196,6 +208,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "key_c"
+      equals:
+        output: "from_node3"
 
   - name: Node-1 reads key-C
     type: call

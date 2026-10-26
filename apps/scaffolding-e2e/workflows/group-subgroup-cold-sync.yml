@@ -196,6 +196,12 @@ steps:
       - e2e-node-2
     timeout: 30
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "warm_sync_key"
+      equals:
+        output: "primary_path_works_too"
 
   - name: Node-1 reads the warm-path value
     type: call

@@ -121,6 +121,12 @@ steps:
       - e2e-node-8
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "soak_k1"
+      equals:
+        output: "soak_v1"
 
   - name: Read k1 on node-8 (far end)
     type: call
@@ -162,6 +168,12 @@ steps:
       - e2e-node-8
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "soak_k2"
+      equals:
+        output: "soak_v2"
 
   - name: Read k2 on node-1 (opposite end)
     type: call

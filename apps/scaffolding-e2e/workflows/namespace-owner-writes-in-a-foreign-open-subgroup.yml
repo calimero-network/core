@@ -247,6 +247,12 @@ steps:
       - owner-foreign-sub-node-1
       - owner-foreign-sub-node-2
     timeout: 60
+    expect:
+      method: get
+      args:
+        key: "from_namespace_owner"
+      equals:
+        output: "node1_wrote_this"
 
   # Node-1 reads its OWN write first. This is expected to pass either way —
   # the write applies locally regardless of what peers do with the delta — and
