@@ -208,6 +208,7 @@ steps:
     method: last
     outputs:
       a_last: result
+      a_last_text: result.output
 
   - name: The trapped run's write was not committed
     type: assert
@@ -228,7 +229,7 @@ steps:
     expect:
       method: last
       equals:
-        output: "{{a_last}}"
+        output: "{{a_last_text}}"
 
   - name: What outbound-b holds
     type: call
