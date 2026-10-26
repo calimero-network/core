@@ -168,6 +168,9 @@ fn group_deleted_cannot_target_a_group_of_another_namespace() {
     }
     nest_for_test(&store, &ns_a_gid, &own);
     nest_for_test(&store, &root_b, &foreign);
+    crate::CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&own, calimero_context_config::VisibilityMode::Open)
+        .unwrap();
 
     let delete = |group: ContextGroupId, nonce: u64| {
         let op = SignedNamespaceOp::sign(

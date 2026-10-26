@@ -16,14 +16,13 @@ pub(crate) fn apply(
     child_group_id: [u8; 32],
     new_parent_id: [u8; 32],
 ) -> EyreResult<()> {
-    ctx.require_namespace_admin(&op.signer)?;
     let child = ContextGroupId::from(child_group_id);
     let new_parent = ContextGroupId::from(new_parent_id);
     // `reparent` keeps child and new parent in one namespace; this makes it the op's.
     ctx.require_in_namespace(&child)?;
     let (parents, authorizer) = ctx.apply_auth();
     let ns_gid = ContextGroupId::from(ctx.namespace_id().to_bytes());
-    Tree::at_cut(
+    let tree = Tree::at_cut(
         ctx.store(),
         authorizer,
         &ns_gid,
@@ -32,8 +31,9 @@ pub(crate) fn apply(
             chains: &[child, new_parent],
             subtrees: &[child],
         },
-    )?
-    .require_may_reparent(&child, &new_parent)?;
+    )?;
+    ctx.require_tree_authority(&op.signer, &tree, &[child, new_parent])?;
+    tree.require_may_reparent(&child, &new_parent)?;
     match NamespaceRepository::new(ctx.store()).reparent(&child, &new_parent)? {
         ReparentOutcome::Reparented { old_parent } => {
             let ns_id = ctx.namespace_id();

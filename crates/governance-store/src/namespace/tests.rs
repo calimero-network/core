@@ -6949,6 +6949,10 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
         NamespaceRepository::new(&store)
             .nest(&ns_gid, &gid)
             .unwrap();
+        // Folders of the open space, which the namespace's authority reaches.
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&gid, calimero_context_config::VisibilityMode::Open)
+            .unwrap();
         (id, gid)
     };
     let (s1, s1_gid) = mk_subgroup(0xC1);

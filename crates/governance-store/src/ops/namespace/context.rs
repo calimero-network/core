@@ -163,6 +163,35 @@ impl<'a> NamespaceApplyCtx<'a> {
         Ok(())
     }
 
+    /// Authority over the `ends` of a tree op: an admin of the space an end is in, and for an
+    /// end in the open space the namespace admin. A namespace admin outside a space has none
+    /// in it, and a space's own admin needs no namespace standing there.
+    pub(crate) fn require_tree_authority(
+        &self,
+        signer: &PublicKey,
+        tree: &crate::private_space::Tree,
+        ends: &[ContextGroupId],
+    ) -> EyreResult<()> {
+        let mut open = false;
+        for end in ends {
+            match tree.space_of(end)? {
+                Some(space) => {
+                    if !self.permissions_for(space).is_admin(signer)? {
+                        bail!(MembershipError::NotAdmin {
+                            group_id: space.to_string(),
+                            identity: format!("{signer}"),
+                        });
+                    }
+                }
+                None => open = true,
+            }
+        }
+        if open {
+            self.require_namespace_admin(signer)?;
+        }
+        Ok(())
+    }
+
     /// Refuse a target group outside this op's namespace: group ids are
     /// node-global, and a node in two namespaces holds the groups of both.
     pub(crate) fn require_in_namespace(&self, group: &ContextGroupId) -> EyreResult<()> {

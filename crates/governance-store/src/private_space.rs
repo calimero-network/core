@@ -74,6 +74,11 @@ impl Tree {
         self.private_on_chain(group)
     }
 
+    /// The private space `group` is in, or is the root of; `None` in the open space.
+    pub fn space_of(&self, group: &ContextGroupId) -> EyreResult<Option<ContextGroupId>> {
+        self.private_on_chain(group)
+    }
+
     fn is_private(&self, group: &ContextGroupId) -> bool {
         self.0.get(group).is_some_and(|(_, restricted)| *restricted)
     }

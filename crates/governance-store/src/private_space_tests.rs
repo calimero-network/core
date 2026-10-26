@@ -52,9 +52,13 @@ impl Space {
     }
 
     fn root_op(&self, op: RootOp) -> EyreResult<()> {
+        self.root_op_as(&self.sk, op)
+    }
+
+    fn root_op_as(&self, sk: &PrivateKey, op: RootOp) -> EyreResult<()> {
         let ns = ContextGroupId::from(NS);
         let signed = SignedNamespaceOp::sign(
-            &self.sk,
+            sk,
             NS.into(),
             vec![],
             self.next_nonce(),
@@ -62,7 +66,7 @@ impl Space {
         )?;
         NamespaceGovernance::new(&self.store, NS.into())
             .apply_signed_op(&signed)
-            .map(|_| ())
+            .and_then(|applied| applied.refused.map_or(Ok(()), Err))
     }
 
     fn group_op(&self, group: [u8; 32], op: GroupOp) -> EyreResult<()> {
@@ -324,4 +328,44 @@ fn a_join_naming_a_subgroup_is_refused_when_applied() {
     let invitation = signed_invitation_for(&s.sk, NS.into(), [0x33; 32]);
     apply_member_joined(&s.store, NS, &joiner, invitation, 2, &s.sk)
         .expect("a join into the namespace root");
+}
+
+/// A namespace admin outside a space has no authority in it; the space's own admin has, whether
+/// or not it administers the namespace.
+#[test]
+fn only_a_spaces_own_admins_create_move_or_delete_inside_it() {
+    let s = Space::new();
+    let space = s.private(NS);
+    let folder = s.open(space);
+    let account = |role: GroupMemberRole, in_space: Option<GroupMemberRole>| {
+        let sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+        let who = enrol_member(&s.store, &ContextGroupId::from(NS), &sk.public_key());
+        let members = crate::MembershipRepository::new(&s.store);
+        members.add_member(&NS.into(), &who, role).unwrap();
+        if let Some(role) = in_space {
+            members.add_member(&space.into(), &who, role).unwrap();
+        }
+        (sk, who)
+    };
+    let (outsider_sk, outsider) = account(GroupMemberRole::Admin, None);
+    let (admin_sk, space_admin) = account(GroupMemberRole::Member, Some(GroupMemberRole::Admin));
+    let delete = |group: [u8; 32]| RootOp::GroupDeleted {
+        root_group_id: group.into(),
+        cascade_group_ids: vec![group.into()],
+        cascade_context_ids: vec![],
+    };
+    let reparent = |child: [u8; 32], to: [u8; 32]| RootOp::GroupReparented {
+        child_group_id: child.into(),
+        new_parent_id: to.into(),
+    };
+
+    let created = s.root_op_as(&outsider_sk, group_created(outsider, space, false, 0x71));
+    assert!(created.is_err(), "{created:?}");
+    assert!(s.root_op_as(&outsider_sk, reparent(folder, NS)).is_err());
+    assert!(s.root_op_as(&outsider_sk, delete(folder)).is_err());
+
+    s.root_op_as(&admin_sk, group_created(space_admin, space, false, 0x72))
+        .expect("a space admin creates inside its space");
+    s.root_op_as(&admin_sk, delete(folder))
+        .expect("and deletes there");
 }

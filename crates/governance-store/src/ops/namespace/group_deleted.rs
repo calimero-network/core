@@ -11,7 +11,7 @@ use crate::{
 };
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
@@ -54,24 +54,34 @@ pub(crate) fn apply(
     if MetaRepository::new(store).load(&root_gid)?.is_some() {
         ctx.require_in_namespace(&root_gid)?;
         let (parents, authorizer) = ctx.apply_auth();
-        Tree::at_cut(
+        let tree = Tree::at_cut(
             store,
             authorizer,
             &ns_gid,
             parents,
             TreeReads {
-                chains: &[],
+                chains: &[root_gid],
                 subtrees: &[root_gid],
             },
-        )?
-        .require_may_delete(&root_gid)?;
+        )?;
+        tree.require_may_delete(&root_gid)?;
         // Ownership names an account, the op carries a key: resolve, then
         // compare. An unresolvable signer is not the owner and falls through to
         // the capability gate below, which refuses it for the same reason.
         let signer_account = ctx.signer_account_live(&ns_gid, &op.signer)?;
         let (parents, authorizer) = ctx.apply_auth();
         let owner = crate::group_owner::owner_at_cut(store, &root_gid, parents, authorizer)?;
-        if signer_account.is_none_or(|signer| Some(signer) != owner) {
+        if let Some(space) = tree.space_of(&root_gid)? {
+            // In a space the folder's owner or the space's admin may delete it; the namespace's
+            // admins and capabilities reach no further than the open space.
+            let owns = signer_account.is_some_and(|signer| Some(signer) == owner);
+            if !owns && !ctx.permissions_for(space).is_admin(&op.signer)? {
+                bail!(crate::MembershipError::NotAdmin {
+                    group_id: space.to_string(),
+                    identity: format!("{}", op.signer),
+                });
+            }
+        } else if signer_account.is_none_or(|signer| Some(signer) != owner) {
             if let Err(e) = PermissionChecker::new(store, ns_gid)
                 .with_principal(ctx.principal())
                 .require_can_delete_subgroup(&op.signer)

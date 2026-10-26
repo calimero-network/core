@@ -67,9 +67,25 @@ pub(crate) fn apply(
     // drops it and never advances past it.
     let ns_gid = ContextGroupId::from(namespace_id.to_bytes());
     let ns_permissions = ctx.permissions_for(ns_gid);
-    let authorized = ns_permissions.is_admin(&op.signer)?
-        || (parent_id == namespace_id.to_bytes()
-            && ns_permissions.can_create_subgroup(&op.signer)?);
+    let (parents, authorizer) = ctx.apply_auth();
+    let tree = Tree::at_cut(
+        store,
+        authorizer,
+        &ns_gid,
+        parents,
+        TreeReads {
+            chains: &[parent_gid],
+            subtrees: &[],
+        },
+    )?;
+    // Inside a space its own admins create, and the namespace's admins reach no further.
+    let authorized = if let Some(space) = tree.space_of(&parent_gid)? {
+        ctx.permissions_for(space).is_admin(&op.signer)?
+    } else {
+        ns_permissions.is_admin(&op.signer)?
+            || (parent_id == namespace_id.to_bytes()
+                && ns_permissions.can_create_subgroup(&op.signer)?)
+    };
     if !authorized {
         bail!(ApplyError::GroupCreatedRejected(
             GroupCreatedRejection::Unauthorized {
@@ -105,18 +121,7 @@ pub(crate) fn apply(
     }
 
     if restricted {
-        let (parents, authorizer) = ctx.apply_auth();
-        Tree::at_cut(
-            store,
-            authorizer,
-            &ns_gid,
-            parents,
-            TreeReads {
-                chains: &[parent_gid],
-                subtrees: &[],
-            },
-        )?
-        .require_may_create(&parent_gid, restricted)?;
+        tree.require_may_create(&parent_gid, restricted)?;
     }
 
     // The originating node's `create_group` handler pre-populates
