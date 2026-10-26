@@ -1351,15 +1351,55 @@ fn past_the_fold_budget_a_removal_is_taken_to_reach_the_op() {
 }
 
 #[test]
-fn past_the_fold_budget_a_removal_still_spares_the_owner_and_a_counter_removal() {
+fn past_the_fold_budget_a_removal_still_spares_a_counter_removal() {
     let (mut log, head) = eng_private_space();
     let removal = remove_from(subgroup(0x41), ALICE, &[&head], SAM);
     let counter = remove_from(subgroup(0x41), SAM, &[&head], ALICE);
-    let owners = add_in(group(), OWNER, &[&head], WILL, GroupMemberRole::Member);
-    let sam_removes_owner = remove_from(subgroup(0x41), SAM, &[&head], OWNER);
-    log.extend([removal, counter.clone(), owners.clone(), sam_removes_owner]);
+    log.extend([removal, counter.clone()]);
 
     let voided = ScopeState::void_ops_bounded(&log, base(), None, &[], 0);
-    assert!(!voided.contains(&owners.id()));
     assert!(!voided.contains(&counter.id()));
+}
+
+#[test]
+fn past_the_fold_budget_the_owner_is_reached_by_a_group_removal_and_its_own_revocation() {
+    let (mut log, head) = eng_private_space();
+    let second = calimero_account::DeviceId::from([0xEE; 32]);
+    let on_second_device = Op::new(
+        ScopeId::from([0u8; 32]),
+        vec![head.id()],
+        Authorship {
+            device: second,
+            ..authorship(OWNER)
+        },
+        hlc(),
+        OpPayload::MemberAdded {
+            group: group(),
+            member: acct(WILL),
+            role: GroupMemberRole::Member,
+        },
+        [0u8; 32],
+        [0u8; 64],
+    );
+    let revoke = gov(
+        OWNER,
+        &[&head],
+        OpPayload::DeviceRevoked {
+            account: acct(OWNER),
+            device: second,
+        },
+    );
+    let by_owner = add_in(
+        subgroup(0x42),
+        OWNER,
+        &[&head],
+        YARA,
+        GroupMemberRole::Member,
+    );
+    let removal = remove_from(subgroup(0x42), ALICE, &[&head], OWNER);
+    log.extend([on_second_device.clone(), revoke, by_owner.clone(), removal]);
+
+    let voided = ScopeState::void_ops_bounded(&log, base(), None, &[], 1);
+    assert!(voided.contains(&on_second_device.id()));
+    assert!(voided.contains(&by_owner.id()));
 }

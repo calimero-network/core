@@ -964,10 +964,13 @@ impl<'a> Analysis<'a> {
                 if mutual {
                     continue;
                 }
-                // Past the budget a removal is taken to reach, the owner aside: the op it
-                // might reach is the one that matters.
+                // Past the budget a removal is taken to reach, bar a root-level removal by
+                // another account, which never reaches the owner.
                 if self.over_budget() {
-                    if !self.is_owner(op) {
+                    let spared = self.is_owner(op)
+                        && removal.group.is_none()
+                        && self.author_of(removal.op) != self.author_of(op);
+                    if !spared {
                         let _ = next.insert(id);
                     }
                     continue;
