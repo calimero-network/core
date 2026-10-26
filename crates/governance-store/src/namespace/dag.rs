@@ -2,7 +2,7 @@ use calimero_governance_types::NamespaceId;
 use std::collections::HashSet;
 
 use calimero_context_client::local_governance::SignedNamespaceOp;
-use calimero_store::Store;
+use calimero_store::{Store, StoreBatch};
 use eyre::Result as EyreResult;
 
 use super::op_log::NamespaceOpLogService;
@@ -89,10 +89,22 @@ impl<'a> NamespaceDagService<'a> {
         parent_ids: &[[u8; 32]],
         sequence: u64,
     ) -> EyreResult<()> {
-        let handle = self.store.handle();
-        let ns_key = calimero_store::key::NamespaceGovHead::new(self.namespace_id.to_bytes());
-        let current = handle.get(&ns_key)?;
-        drop(handle);
+        let value = self.next_head(delta_id, parent_ids, sequence)?;
+        self.store.handle().put(&self.head_key(), &value)?;
+        Ok(())
+    }
+
+    fn head_key(&self) -> calimero_store::key::NamespaceGovHead {
+        calimero_store::key::NamespaceGovHead::new(self.namespace_id.to_bytes())
+    }
+
+    fn next_head(
+        &self,
+        delta_id: [u8; 32],
+        parent_ids: &[[u8; 32]],
+        sequence: u64,
+    ) -> EyreResult<calimero_store::key::NamespaceGovHeadValue> {
+        let current = self.store.handle().get(&self.head_key())?;
 
         let current_heads: HashSet<[u8; 32]> = current
             .as_ref()
@@ -160,15 +172,26 @@ impl<'a> NamespaceDagService<'a> {
             "advance_dag_head produced a head set with duplicate entries"
         );
 
-        let mut wh = self.store.handle();
-        wh.put(
-            &ns_key,
-            &calimero_store::key::NamespaceGovHeadValue {
-                sequence,
-                dag_heads: new_heads,
-            },
-        )?;
-        Ok(())
+        Ok(calimero_store::key::NamespaceGovHeadValue {
+            sequence,
+            dag_heads: new_heads,
+        })
+    }
+
+    /// Advance the head for `op` and log it in one batch, so a crash leaves both or neither.
+    pub fn advance_head_and_store(
+        &self,
+        delta_id: [u8; 32],
+        parent_ids: &[[u8; 32]],
+        sequence: u64,
+        op: &SignedNamespaceOp,
+    ) -> EyreResult<()> {
+        let value = self.next_head(delta_id, parent_ids, sequence)?;
+        let mut batch = StoreBatch::new(self.store);
+        let _ = batch.put(&self.head_key(), &value)?;
+        NamespaceOpLogService::new(self.store, self.namespace_id)
+            .stage_signed_operation(&mut batch, op)?;
+        batch.commit()
     }
 
     /// Persist a namespace governance op in the local DAG log.

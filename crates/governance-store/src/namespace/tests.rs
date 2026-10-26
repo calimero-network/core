@@ -36,9 +36,9 @@ use calimero_store::Store;
 
 use super::super::test_fixtures::{
     bootstrap_namespace_with_admin, bootstrap_namespace_with_admin_account, enrol_member,
-    founded_namespace_for, founder_account_for, namespace_genesis_for, namespace_genesis_naming,
-    namespace_publish_fixture, nest_for_test, sample_meta_with_admin, seal_for_test, test_group_id,
-    test_meta, test_store,
+    flaky_write_store, founded_namespace_for, founder_account_for, namespace_genesis_for,
+    namespace_genesis_naming, namespace_publish_fixture, nest_for_test, sample_meta_with_admin,
+    seal_for_test, test_group_id, test_meta, test_store,
 };
 use super::super::*;
 
@@ -204,6 +204,57 @@ fn namespace_dag_service_store_operation_rejects_namespace_mismatch() {
             .contains("namespace mismatch when storing op"),
         "unexpected error: {err}"
     );
+}
+
+fn policy_op_at(namespace_id: [u8; 32], nonce: u64) -> (SignedNamespaceOp, [u8; 32]) {
+    use calimero_context_client::local_governance::RootOp;
+
+    let signed = SignedNamespaceOp::sign(
+        &PrivateKey::random(&mut UnwrapErr(SysRng)),
+        namespace_id.into(),
+        vec![],
+        nonce,
+        NamespaceOp::Root(RootOp::PolicyUpdated {
+            policy_bytes: vec![1],
+        }),
+    )
+    .unwrap();
+    let delta_id = signed.content_hash().unwrap();
+    (signed, delta_id)
+}
+
+#[test]
+fn a_failed_head_advance_and_store_leaves_neither_head_nor_op() {
+    let store = flaky_write_store(1);
+    let namespace_id = [0x74; 32];
+    let (signed, delta_id) = policy_op_at(namespace_id, 1);
+    let dag = NamespaceDagService::new(&store, namespace_id.into());
+
+    assert!(dag
+        .advance_head_and_store(delta_id, &[], 1, &signed)
+        .is_err());
+
+    assert!(dag.read_head_record().unwrap().parent_hashes.is_empty());
+    assert!(!NamespaceOpLogService::new(&store, namespace_id.into())
+        .contains_op(delta_id)
+        .unwrap());
+}
+
+#[test]
+fn head_advance_and_store_lands_the_head_and_the_op_together() {
+    let store = test_store();
+    let namespace_id = [0x75; 32];
+    let (signed, delta_id) = policy_op_at(namespace_id, 1);
+    let dag = NamespaceDagService::new(&store, namespace_id.into());
+
+    dag.advance_head_and_store(delta_id, &[], 1, &signed)
+        .unwrap();
+
+    let head = dag.read_head_record().unwrap();
+    assert_eq!((head.parent_hashes, head.next_nonce), (vec![delta_id], 2));
+    assert!(NamespaceOpLogService::new(&store, namespace_id.into())
+        .contains_op(delta_id)
+        .unwrap());
 }
 
 fn test_signed_invitation(

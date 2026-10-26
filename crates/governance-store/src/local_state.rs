@@ -14,7 +14,7 @@ use calimero_store::key::{
     GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX, GROUP_MEMBER_CONTEXT_PREFIX, GROUP_OP_LOG_PREFIX,
     NAMESPACE_GOV_OP_PREFIX,
 };
-use calimero_store::Store;
+use calimero_store::{Store, StoreBatch};
 use eyre::Result as EyreResult;
 
 use super::collect_keys_with_prefix;
@@ -89,16 +89,23 @@ pub fn store_nonce_window(
     signer: &PublicKey,
     window: &NonceWindow,
 ) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = GroupLocalGovNonceWindow::new(group_id.to_bytes(), *signer);
-    handle.put(
-        &key,
-        &GroupLocalGovNonceWindowValue {
+    let (key, value) = nonce_window_row(group_id, signer, window);
+    store.handle().put(&key, &value)?;
+    Ok(())
+}
+
+fn nonce_window_row(
+    group_id: &ContextGroupId,
+    signer: &PublicKey,
+    window: &NonceWindow,
+) -> (GroupLocalGovNonceWindow, GroupLocalGovNonceWindowValue) {
+    (
+        GroupLocalGovNonceWindow::new(group_id.to_bytes(), *signer),
+        GroupLocalGovNonceWindowValue {
             floor: window.floor(),
             above: window.above().collect(),
         },
-    )?;
-    Ok(())
+    )
 }
 
 /// Drop every per-signer nonce window of a group being torn down. Not only its
@@ -169,38 +176,9 @@ pub(crate) fn append_op_log_entry(
 /// nonce in the same batch. Keeping these separate avoids the
 /// namespace-governance path double-writing the nonce.
 ///
-/// CRASH-SAFETY INVARIANT (this path writes two keys non-atomically):
-/// the two `Store::handle()` puts below write straight through to the
-/// backend, so a crash can land between them. An atomic alternative now
-/// exists — `Store::apply` (and `StoreBatch`) commit a multi-key
-/// `Transaction` as one `WriteBatch` — but migrating this path onto it is
-/// deferred (see the closing note); the ordered-write reasoning below still
-/// governs the current code. The write ORDER is therefore chosen to be
-/// crash-safe: the op-log ENTRY is written first, the `GroupOpHead` second.
-///
-/// - Crash after entry, before head: an ORPHAN log entry exists at
-///   `sequence` while the head still points at `sequence - 1`. This is
-///   benign — every reader scans the log directly (`read_op_log_after`,
-///   `read_tee_admission_policy`, `is_quote_hash_used`), so the entry is
-///   already visible; and the replica apply path derives `next_seq` from
-///   [`max_op_log_sequence`] (the actual max persisted sequence), NOT from
-///   this possibly-stale head, so the next op lands strictly above the orphan
-///   and never overwrites it. (The authoring side still derives `next_seq`
-///   from the head, but a crash there leaves an entry this node authored with
-///   its nonce un-advanced, so the next authored op re-derives the identical
-///   op and an overwrite is an idempotent self-replay.)
-/// - The reverse order (head first) would be UNSAFE: a crash would leave a
-///   head whose `sequence` references a log entry that was never written,
-///   so `read_op_log_after` would silently skip the gap and the op-head's
-///   `dag_heads` would advertise a frontier op nobody can read back.
-///
-/// This mirrors the entry-then-head ordering the authoring side uses
-/// (`persist_group_governance_progress` below) and the head-advance /
-/// store-operation ordering note in
-/// `namespace_governance::apply_signed_op`. Migrating this to a single
-/// atomic batch — now that `Store::apply` / `StoreBatch` provide one — would
-/// remove the orphan-entry window entirely; it is left as a follow-up so the
-/// crash-safety reasoning here can be retired rather than merely relocated.
+/// The entry and the head commit in one batch, so a crash leaves both or
+/// neither. Stores written by an older build can still hold an entry above the
+/// head, which is why replicas derive `next_seq` from [`max_op_log_sequence`].
 pub(crate) fn persist_group_op_log_entry(
     store: &Store,
     group_id: &ContextGroupId,
@@ -208,37 +186,36 @@ pub(crate) fn persist_group_op_log_entry(
     dag_heads: Vec<[u8; 32]>,
     op_bytes: &[u8],
 ) -> EyreResult<()> {
+    let mut batch = StoreBatch::new(store);
+    stage_group_op_log_entry(&mut batch, group_id, sequence, dag_heads, op_bytes)?;
+    batch.commit()
+}
+
+fn stage_group_op_log_entry(
+    batch: &mut StoreBatch<'_>,
+    group_id: &ContextGroupId,
+    sequence: u64,
+    dag_heads: Vec<[u8; 32]>,
+    op_bytes: &[u8],
+) -> EyreResult<()> {
     let gid = group_id.to_bytes();
-    let mut handle = store.handle();
-
-    // Entry first (see CRASH-SAFETY INVARIANT above): an orphan entry is
-    // benign; a head referencing a missing entry is not.
-    let op_log_key = GroupOpLog::new(gid, sequence);
-    handle.put(&op_log_key, &op_bytes.to_vec())?;
-
-    let head_key = GroupOpHead::new(gid);
-    handle.put(
-        &head_key,
+    let _ = batch.put(&GroupOpLog::new(gid, sequence), &op_bytes.to_vec())?;
+    let _ = batch.put(
+        &GroupOpHead::new(gid),
         &GroupOpHeadValue {
             sequence,
             dag_heads,
         },
     )?;
-
     Ok(())
 }
 
 /// Authoring-side variant of [`persist_group_op_log_entry`] that ALSO advances
-/// the per-(group, signer) nonce in the same call.
+/// the per-(group, signer) nonce in the same batch.
 ///
-/// The two paths share the op-log entry + head write (delegated to
-/// [`persist_group_op_log_entry`]) but differ in nonce handling: the authoring
-/// path owns the nonce here, whereas the namespace-governance apply path
-/// manages it separately via `set_local_gov_nonce` (it advances the nonce only
-/// AFTER the full op apply succeeds — see the invariant comment in
-/// `apply_group_op_inner`). The nonce `put` runs LAST so the same crash-safety
-/// ordering holds: entry → head → nonce. An un-advanced nonce after a crash
-/// just replays the (idempotent) op; it never skips one.
+/// The namespace-governance apply path manages the nonce separately via
+/// `set_local_gov_nonce` (it advances the nonce only AFTER the full op apply
+/// succeeds - see the invariant comment in `apply_group_op_inner`).
 pub(crate) fn persist_group_governance_progress(
     store: &Store,
     group_id: &ContextGroupId,
@@ -248,14 +225,11 @@ pub(crate) fn persist_group_governance_progress(
     dag_heads: Vec<[u8; 32]>,
     op_bytes: &[u8],
 ) -> EyreResult<()> {
-    persist_group_op_log_entry(store, group_id, sequence, dag_heads, op_bytes)?;
-
-    // Nonce window written LAST so the crash-safety ordering holds:
-    // entry → head → floor → above. An un-advanced window after a crash just
-    // replays the (idempotent) op; it never skips one.
-    store_nonce_window(store, group_id, signer, window)?;
-
-    Ok(())
+    let mut batch = StoreBatch::new(store);
+    stage_group_op_log_entry(&mut batch, group_id, sequence, dag_heads, op_bytes)?;
+    let (key, value) = nonce_window_row(group_id, signer, window);
+    let _ = batch.put(&key, &value)?;
+    batch.commit()
 }
 
 pub fn read_op_log_after(
@@ -290,9 +264,8 @@ pub fn read_op_log_after(
 ///
 /// Derived by scanning the persisted op-log rather than reading
 /// `GroupOpHeadValue.sequence`, so it is correct even when the head is stale
-/// relative to the log — e.g. after a crash that landed between the entry `put`
-/// and the head `put` in [`persist_group_op_log_entry`] (see the CRASH-SAFETY
-/// INVARIANT there). The replica apply path uses this to derive `next_seq` so a
+/// relative to the log — e.g. in a store written by an older build, which
+/// committed the entry and the head separately. The replica apply path uses this to derive `next_seq` so a
 /// new op never reuses a sequence already occupied by an orphan entry, which
 /// would silently overwrite it.
 ///
