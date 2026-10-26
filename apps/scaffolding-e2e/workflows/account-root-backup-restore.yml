@@ -75,6 +75,15 @@ description: >
        that restored the identity but not access passes the account assertion
        and fails this one.
 
+    7. Take part in the account namespace again. A holder that has just rejoined
+       a namespace has no account namespace on its disk, and only a start creates
+       it, so the node is restarted and then has to show it is back in the SAME
+       namespace as the device that was paired to it before the wipe: it reports
+       the same `accountNamespaceId`, lists that device and itself as bound there,
+       and a namespace it founds next binds that device and resolves a `relink`
+       of it. A holder that never recreated the namespace has neither the device's
+       certificate nor a registry to read it from.
+
   Deliberately NOT asserted: that `account show` reports the same id before and
   after enrolment. It does not (#3366) — before enrolment the read API reports the
   op-adapter's stand-in — so this scenario reads its account only from enrolment,
@@ -85,7 +94,7 @@ force_pull_image: false
 auth_mode: embedded
 
 nodes:
-  count: 2
+  count: 3
   image: merod:local
   prefix: backup-node
 
@@ -99,6 +108,12 @@ steps:
   - name: Login on backup-node-2
     type: login
     node: backup-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on backup-node-3
+    type: login
+    node: backup-node-3
     username: dev
     password: dev-password
 
@@ -166,6 +181,8 @@ steps:
     node: backup-node-2
     outputs:
       original_account: accountId
+      original_account_ns: accountNamespaceId
+      account_root: accountRootPublicKey
 
   - name: Settle after the link op
     type: wait_for_sync
@@ -271,6 +288,18 @@ steps:
     context_id: '{{context_id}}'
     timeout: 60
     trigger_sync: true
+
+  # A device paired before the disk dies. It keeps the account namespace and its
+  # own certificate, which is all the wiped holder has to get back from.
+  - name: Pair node-3 onto node-2's account
+    type: account_pair
+    node: backup-node-3
+    holder: backup-node-2
+    root_key: '{{account_root}}'
+    account_namespace: auto
+    await_self: true
+    outputs:
+      paired_device: deviceId
 
   # ── Phase 2: export, which needs the node stopped ─────────────────
 
@@ -519,5 +548,89 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{recovered_value}}, {"output": "written-before-the-disk-died"})'
+
+  # ── Phase 7: back in the account namespace ────────────────────────
+  #
+  # Only a start creates a holder's account namespace, and the node took part in
+  # nothing when it last started, so it is restarted now that it has rejoined.
+
+  - name: Stop the recovered node
+    type: stop_node
+    nodes: backup-node-2
+
+  - name: Start the recovered node again
+    type: start_node
+    nodes: backup-node-2
+
+  - name: Log in to the restarted node
+    type: login
+    node: backup-node-2
+    username: dev
+    password: dev-password
+
+  - name: The restarted node reports the account namespace it had before the wipe
+    type: assert_api_response
+    node: backup-node-2
+    path: /admin-api/identity
+    match:
+      data.accountNamespaceId: '{{original_account_ns}}'
+
+  # Polled: the device's certificate is read out of the namespace's registry, so
+  # it is there only once the node has joined that namespace and folded it. It is
+  # also the barrier the founding below needs to carry the device.
+  - name: The restarted node lists the paired device in the account namespace
+    type: assert_api_response
+    node: backup-node-2
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{paired_device}}'
+    contains:
+      namespaces:
+        - '{{original_account_ns}}'
+    retries: 45
+    interval: 2
+
+  - name: The restarted node is bound in the account namespace itself
+    type: assert_api_response
+    node: backup-node-2
+    path: /admin-api/account/devices
+    where:
+      isSelf: true
+    contains:
+      namespaces:
+        - '{{original_account_ns}}'
+    retries: 45
+    interval: 2
+
+  - name: The restored holder founds a namespace
+    type: create_namespace
+    node: backup-node-2
+    application_id: '{{app_id}}'
+    outputs:
+      founded_namespace: namespaceId
+
+  - name: The founded namespace binds the already paired device
+    type: assert_api_response
+    node: backup-node-2
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{paired_device}}'
+    contains:
+      namespaces:
+        - '{{founded_namespace}}'
+    retries: 30
+    interval: 2
+
+  - name: Relink of the paired device resolves
+    type: account_relink
+    node: backup-node-2
+    device_id: '{{paired_device}}'
+    outputs:
+      relinked_device: deviceId
+
+  - name: The relink named the paired device
+    type: json_assert
+    statements:
+      - 'json_equal({{relinked_device}}, {{paired_device}})'
 
 stop_all_nodes: false
