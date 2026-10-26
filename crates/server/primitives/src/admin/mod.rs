@@ -1390,6 +1390,12 @@ pub struct CreateNamespaceApiRequest {
         alias = "bytecodeId"
     )]
     pub bytecode_id: Option<String>,
+    /// Approve outbound requests for the app's publisher in the new namespace,
+    /// in the same call: `"manifest"` approves every URL prefix the app's
+    /// manifest declares, a list approves those prefixes. Absent approves none,
+    /// and the app's requests are refused until an admin approves them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approve_outbound: Option<calimero_primitives::outbound::OutboundSelection>,
 }
 
 impl Validate for CreateNamespaceApiRequest {
@@ -1406,6 +1412,10 @@ pub struct CreateNamespaceApiResponseData {
     /// founding account, which is every namespace this endpoint creates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub founding: Option<NamespaceFoundingApi>,
+    /// What the namespace approves for the app's publisher, when the request
+    /// asked for an approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound_approval: Option<OutboundApprovalApiData>,
 }
 
 /// The founder and salt a namespace id was derived from:
@@ -2154,6 +2164,13 @@ pub struct UpgradeGroupApiRequest {
     /// the upgrade is published; when `false` (default), a failing trial refuses it.
     #[serde(default)]
     pub skip_trial: bool,
+    /// Approve outbound requests for the target's publisher in the group's
+    /// namespace before upgrading: `"manifest"` or a list of URL prefixes, as on
+    /// namespace creation. Added to what the namespace already approves, so a
+    /// prefix approved before stays approved; a prefix the target declares and
+    /// nobody approves waits, and its requests answer `AwaitingApproval`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approve_outbound: Option<calimero_primitives::outbound::OutboundSelection>,
 }
 
 impl Validate for UpgradeGroupApiRequest {
@@ -2189,6 +2206,61 @@ pub struct UpgradeGroupApiResponseData {
     /// Contexts this node knows of but does not hold, so did not trial.
     #[serde(default)]
     pub contexts_not_held: u32,
+    /// What the namespace approves for the target's publisher, when the
+    /// request asked for an approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound_approval: Option<OutboundApprovalApiData>,
+}
+
+/// What a namespace approves for one publisher: the URL prefixes its apps may
+/// send outbound requests under, and the prefixes an approver was shown.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutboundApprovalApiData {
+    /// The publisher's signer id (`did:key`).
+    pub signer: String,
+    pub prefixes: Vec<String>,
+    pub reviewed: Vec<String>,
+}
+
+/// `GET /admin-api/namespaces/{namespace_id}/outbound-approvals`: what the
+/// namespace approves, one entry per publisher.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListOutboundApprovalsApiResponse {
+    pub data: Vec<OutboundApprovalApiData>,
+}
+
+/// `PUT /admin-api/namespaces/{namespace_id}/outbound-approvals`: set what the
+/// namespace approves for an installed app's publisher to exactly `approve`.
+/// An empty list revokes everything.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetOutboundApprovalApiRequest {
+    pub application_id: ApplicationId,
+    pub approve: calimero_primitives::outbound::OutboundSelection,
+}
+
+impl Validate for SetOutboundApprovalApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetOutboundApprovalApiResponse {
+    pub data: SetOutboundApprovalApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetOutboundApprovalApiResponseData {
+    pub namespace_id: String,
+    #[serde(flatten)]
+    pub approval: OutboundApprovalApiData,
+    /// `false` when nothing changed, so no op was published.
+    pub published: bool,
 }
 
 /// Switch this node's contexts of a namespace to its stored target release.
@@ -5283,6 +5355,7 @@ mod naming_back_compat_tests {
             application_id: ApplicationId::from([0_u8; 32]),
             name: None,
             bytecode_id: Some("aabb".to_owned()),
+            approve_outbound: None,
         };
         let json = serde_json::to_string(&req).expect("serialize");
         assert!(json.contains("\"appKey\""), "got: {json}");

@@ -13,6 +13,7 @@ pub mod invite;
 pub mod join;
 pub mod leave;
 pub mod list;
+pub mod outbound;
 
 pub const EXAMPLES: &str = r"
   # Create a namespace (root group)
@@ -28,6 +29,12 @@ pub const EXAMPLES: &str = r"
   # Invite another node and join namespace
   $ meroctl --node node1 namespace invite <namespace_id>
   $ meroctl --node node2 namespace join <namespace_id> '<invitation_json>'
+
+  # Approve outbound requests for an app while creating its namespace, then
+  # list and narrow what the namespace approves
+  $ meroctl --node node1 namespace create --application-id <app_id> --approve-outbound manifest
+  $ meroctl --node node1 namespace outbound ls <namespace_id>
+  $ meroctl --node node1 namespace outbound set <namespace_id> --application-id <app_id> --approve none
 
   # List groups inside namespace and create a subgroup
   $ meroctl --node node1 namespace groups <namespace_id>
@@ -59,6 +66,7 @@ pub enum NamespaceSubCommands {
     CreateGroup(create_group::CreateGroupCommand),
     #[command(alias = "ls")]
     List(list::ListCommand),
+    Outbound(outbound::OutboundCommand),
 }
 
 impl NamespaceCommand {
@@ -75,6 +83,7 @@ impl NamespaceCommand {
             NamespaceSubCommands::Groups,
             NamespaceSubCommands::CreateGroup,
             NamespaceSubCommands::List,
+            NamespaceSubCommands::Outbound,
         )
     }
 }

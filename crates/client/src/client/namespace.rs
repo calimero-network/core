@@ -5,10 +5,11 @@ use calimero_server_primitives::admin::{
     DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, GetNamespaceApiResponse,
     JoinNamespaceApiRequest, JoinNamespaceApiResponse, LabelDeviceApiRequest,
     LabelDeviceApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
-    NamespaceApiResponse, NodeIdentityApiResponse, PairDeviceCompleteApiResponse,
-    PairDeviceInitApiResponse, RelinkDeviceApiRequest, RelinkDeviceApiResponse,
-    RescopeDeviceApiRequest, RescopeDeviceApiResponse, RevokeDeviceApiRequest,
-    RevokeDeviceApiResponse,
+    ListOutboundApprovalsApiResponse, NamespaceApiResponse, NodeIdentityApiResponse,
+    PairDeviceCompleteApiResponse, PairDeviceInitApiResponse, RelinkDeviceApiRequest,
+    RelinkDeviceApiResponse, RescopeDeviceApiRequest, RescopeDeviceApiResponse,
+    RevokeDeviceApiRequest, RevokeDeviceApiResponse, SetOutboundApprovalApiRequest,
+    SetOutboundApprovalApiResponse,
 };
 use eyre::Result;
 use serde::Serialize;
@@ -55,6 +56,36 @@ where
         let response = self
             .connection
             .post("admin-api/namespaces", request)
+            .await?;
+        Ok(response)
+    }
+
+    /// What the namespace approves for each publisher's outbound requests.
+    pub async fn list_outbound_approvals(
+        &self,
+        namespace_id: &str,
+    ) -> Result<ListOutboundApprovalsApiResponse> {
+        let response = self
+            .connection
+            .get(&format!(
+                "admin-api/namespaces/{namespace_id}/outbound-approvals"
+            ))
+            .await?;
+        Ok(response)
+    }
+
+    /// Set what the namespace approves for an app's publisher, exactly.
+    pub async fn set_outbound_approval(
+        &self,
+        namespace_id: &str,
+        request: SetOutboundApprovalApiRequest,
+    ) -> Result<SetOutboundApprovalApiResponse> {
+        let response = self
+            .connection
+            .put_json(
+                &format!("admin-api/namespaces/{namespace_id}/outbound-approvals"),
+                request,
+            )
             .await?;
         Ok(response)
     }

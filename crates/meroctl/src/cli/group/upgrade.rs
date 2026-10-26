@@ -68,6 +68,15 @@ pub struct TriggerUpgradeCommand {
                 Default: false."
     )]
     pub skip_trial: bool,
+
+    #[clap(
+        long,
+        value_parser = crate::cli::namespace::outbound::parse_selection,
+        help = "Approve the target's outbound requests in the group's namespace before \
+                upgrading: `manifest` or a comma-separated list of URL prefixes, added to \
+                what it already approves"
+    )]
+    pub approve_outbound: Option<calimero_primitives::outbound::OutboundSelection>,
 }
 
 impl TriggerUpgradeCommand {
@@ -77,6 +86,7 @@ impl TriggerUpgradeCommand {
             cascade: self.cascade,
             force_code_only: self.force_code_only,
             skip_trial: self.skip_trial,
+            approve_outbound: self.approve_outbound,
         };
 
         let client = environment.client()?;

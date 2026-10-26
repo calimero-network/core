@@ -91,6 +91,9 @@ fn outcome(result: Result<calimero_sdk::outbound::OutboundResponse, String>) -> 
             response.status,
             String::from_utf8_lossy(&response.body)
         ),
-        Err(reason) => format!("refused: {reason}"),
+        Err(reason) => match calimero_sdk::outbound::OutboundRefusal::of(&reason) {
+            Some(refusal) => format!("refused: {reason} [{}]", refusal.word()),
+            None => format!("refused: {reason}"),
+        },
     }
 }

@@ -191,6 +191,54 @@ pub fn tee_vault(
     Ok(TeeVault { held, sealing })
 }
 
+/// The namespace TEE key a value only the TEE may read is sealed to now, as any
+/// member sees it: the lowest key delivered between TEE authorities and not
+/// retired ([`retired_tee_vault_keys`]). `None` while the namespace has no TEE
+/// authority holding one. Every TEE authority holds this key, or is handed it
+/// by one that does, and a TEE admitted later is handed it too.
+///
+/// Needs no private key: deliveries name the public half of what they carry.
+///
+/// # Errors
+/// Any governance store read error.
+pub fn tee_sealing_key(
+    store: &Store,
+    folded: &dyn crate::FoldedTeeAuthority,
+    group_id: &ContextGroupId,
+) -> EyreResult<Option<PublicKey>> {
+    let namespace = NamespaceRepository::new(store).resolve(group_id)?;
+    let deliveries = tee_vault_deliveries(store, &namespace)?;
+    if deliveries.is_empty() {
+        return Ok(None);
+    }
+    let authorities = crate::tee_authority_keys_in_namespace(store, folded, group_id)?;
+    let retired = retired_tee_vault_keys(&deliveries, &authorities);
+    Ok(deliveries
+        .iter()
+        .map(|d| d.vault_key)
+        .filter(|key| !retired.contains(key))
+        .min())
+}
+
+/// The namespace TEE keys this node may open an outbound sealed secret with:
+/// those delivered to `identity` while it is a TEE authority of the namespace,
+/// and none at all otherwise, so a TEE that was removed opens nothing new.
+///
+/// # Errors
+/// Any governance store read error.
+pub fn tee_outbound_keys(
+    store: &Store,
+    folded: &dyn crate::FoldedTeeAuthority,
+    group_id: &ContextGroupId,
+    identity: &PrivateKey,
+) -> EyreResult<Vec<PrivateKey>> {
+    let authorities = crate::tee_authority_keys_in_namespace(store, folded, group_id)?;
+    if !authorities.contains(&identity.public_key()) {
+        return Ok(Vec::new());
+    }
+    Ok(tee_vault(store, folded, group_id, identity)?.held)
+}
+
 /// The envelope for `namespace`'s `vault` sealed to `recipient`, for a
 /// [`GroupOp::TeeVaultKeyDelivered`].
 ///
@@ -243,8 +291,8 @@ mod tests {
     use calimero_store::Store;
 
     use super::{
-        held_keys, retired_tee_vault_keys, seal_tee_vault_key, tee_vault, tee_vault_deliveries,
-        tee_vault_keys, TeeVaultDelivery,
+        held_keys, retired_tee_vault_keys, seal_tee_vault_key, tee_outbound_keys, tee_sealing_key,
+        tee_vault, tee_vault_deliveries, tee_vault_keys, TeeVaultDelivery,
     };
     use crate::local_state::persist_group_op_log_entry;
     use crate::tee::tests::{admission_quote_for, MOCK_MRTD};
@@ -430,6 +478,36 @@ mod tests {
                 .map(PrivateKey::public_key)
                 .collect()
         }
+    }
+
+    /// Every member reads the key a value only the TEE may read is sealed to,
+    /// and only a TEE authority gets keys to open an outbound sealed secret.
+    #[test]
+    fn members_read_the_sealing_key_and_only_a_tee_authority_opens_with_it() {
+        let ns = Namespace::new();
+        let sealing = || tee_sealing_key(&ns.store, &crate::NotFolded, &ns.root).unwrap();
+        let opens = |who: &PrivateKey| {
+            tee_outbound_keys(&ns.store, &crate::NotFolded, &ns.root, who)
+                .unwrap()
+                .iter()
+                .map(PrivateKey::public_key)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sealing(), None, "no key until a TEE creates one");
+        assert!(opens(&ns.tee).is_empty());
+
+        let vault = PrivateKey::random(&mut rand::rng());
+        ns.share(&vault);
+        assert_eq!(sealing(), Some(vault.public_key()));
+        assert_eq!(sealing(), ns.sealing(), "members and TEEs agree on it");
+        assert_eq!(opens(&ns.tee), vec![vault.public_key()]);
+        assert!(opens(&ns.admin).is_empty(), "an admin never opens one");
+
+        let outsider = tee_without_evidence(&ns);
+        assert!(
+            opens(&outsider).is_empty(),
+            "a TEE that is no authority opens nothing"
+        );
     }
 
     /// A TEE admitted to the namespace root with no evidence logged for it.
