@@ -2369,12 +2369,25 @@ fn play(replica: &World, groups: &[ContextGroupId], arrivals: &[Arrival<'_>]) {
                 }
             }
         }
-        while let Some(at) = pending.iter().position(|op| {
-            op.parent_op_hashes
-                .iter()
-                .all(|parent| log.contains_op(*parent).expect("read the op log"))
-        }) {
-            let _verdict = replica.apply(pending.remove(at));
+        // An op the node cannot judge yet is offered again after the next arrival.
+        loop {
+            let mut moved = false;
+            let mut still = Vec::new();
+            for op in std::mem::take(&mut pending) {
+                let parents_logged = op
+                    .parent_op_hashes
+                    .iter()
+                    .all(|parent| log.contains_op(*parent).expect("read the op log"));
+                match parents_logged.then(|| replica.apply(op)) {
+                    Some(Err(err)) if crate::namespace::is_undecidable(&err) => still.push(op),
+                    Some(_) => moved = true,
+                    None => still.push(op),
+                }
+            }
+            pending = still;
+            if !moved {
+                break;
+            }
         }
     }
 }

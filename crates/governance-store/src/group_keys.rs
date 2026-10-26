@@ -18,7 +18,6 @@ use sha2::{Digest, Sha256};
 
 use super::collect_keys_with_prefix;
 use crate::authorizer::{AtCutAuthorizer, TreeReads};
-use crate::namespace::is_undecidable;
 use crate::private_space::{is_tree_op, Tree};
 
 /// One addressee of a scope-key delivery.
@@ -1265,12 +1264,7 @@ pub(crate) fn ensure_sealed_for_the_tree(
         chains: &[*group_id],
         subtrees: &[],
     };
-    // An unreadable cut parks the op in its own gates, and the replay checks it again.
-    let tree = match Tree::at_cut(store, authorizer, group_id, parents, reads) {
-        Ok(tree) => tree,
-        Err(err) if is_undecidable(&err) => return Ok(()),
-        Err(err) => return Err(err),
-    };
+    let tree = Tree::at_cut(store, authorizer, group_id, parents, reads)?;
     let namespace_id = NamespaceRepository::new(store).resolve(group_id)?;
     // A group the cut does not show yet has no applicable op; the replay judges it once read.
     if *group_id != namespace_id && !tree.contains(group_id) {
@@ -1298,8 +1292,14 @@ mod sealing_tests {
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::VisibilityMode;
 
-    use super::sealing_group;
-    use crate::test_fixtures::{test_meta, test_store};
+    use calimero_account::{
+        AccountId, GovernanceDelegation, GovernanceOpKind, GovernanceTerms, GovernanceWarrant,
+    };
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_store::Store;
+
+    use super::{ensure_sealed_for_the_tree, sealing_group, GroupKeyring};
+    use crate::test_fixtures::{real_join_account, test_meta, test_store};
     use crate::{CapabilitiesRepository, MetaRepository, NamespaceRepository};
 
     #[test]
@@ -1342,6 +1342,98 @@ mod sealing_tests {
             "ops inside a space stay under its key"
         );
         assert_eq!(seal(drafts, &GroupOp::GroupDelete), drafts);
+    }
+
+    fn board_under_a_workspace() -> (Store, ContextGroupId, ContextGroupId) {
+        let store = test_store();
+        let ns = ContextGroupId::from([0x10; 32]);
+        let board = ContextGroupId::from([0x11; 32]);
+        NamespaceRepository::new(&store).nest(&ns, &board).unwrap();
+        for group in [&ns, &board] {
+            MetaRepository::new(&store)
+                .save(group, &test_meta())
+                .unwrap();
+        }
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&board, VisibilityMode::Restricted)
+            .unwrap();
+        (store, ns, board)
+    }
+
+    fn on_behalf(inner: GroupOp) -> GroupOp {
+        let sk = PrivateKey::from([0x6A; 32]);
+        let relay = PrivateKey::from([0x6B; 32]).public_key();
+        let terms = GovernanceTerms {
+            scope: [0x6C; 32],
+            kind: GovernanceOpKind::Group,
+            author_account: AccountId::from([0x6D; 32]),
+            executor: AccountId::from([0x6E; 32]),
+            executor_key: relay,
+            op_hash: [0; 32],
+            account_heads: vec![],
+            governance_floor: vec![],
+            nonce: 1,
+            not_after: u64::MAX,
+        };
+        GroupOp::OnBehalf {
+            op: Box::new(inner),
+            delegation: Box::new(GovernanceDelegation {
+                warrant: Box::new(GovernanceWarrant::sign(&sk, terms).unwrap()),
+                author_proof: real_join_account(&sk.public_key()),
+                executor_proof: real_join_account(&relay),
+                executor_key: relay,
+            }),
+            stamped_at: 0,
+        }
+    }
+
+    #[test]
+    fn a_relayed_tree_op_is_sealed_like_the_op_it_carries() {
+        let (store, ns, board) = board_under_a_workspace();
+        let space_key = [0x32u8; 32];
+        let space_key_id = GroupKeyring::new(&store, board)
+            .store_key(&space_key)
+            .unwrap();
+        let _ = GroupKeyring::new(&store, ns)
+            .store_key(&[0x31u8; 32])
+            .unwrap();
+        let relayed = on_behalf(GroupOp::GroupDelete);
+
+        assert_eq!(sealing_group(&store, &board, &relayed).unwrap(), ns);
+        assert!(
+            ensure_sealed_for_the_tree(
+                &store,
+                &crate::LIVE_FALLBACK_AUTHORIZER,
+                &board,
+                &relayed,
+                &space_key_id,
+                &[],
+            )
+            .is_err(),
+            "a relayed deletion sealed under the space key is refused"
+        );
+    }
+
+    #[test]
+    fn a_tree_op_at_an_undecidable_cut_is_held_not_passed() {
+        let (store, ns, board) = board_under_a_workspace();
+        let ns_key_id = GroupKeyring::new(&store, ns)
+            .store_key(&[0x31u8; 32])
+            .unwrap();
+        let open = GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        };
+
+        let err = ensure_sealed_for_the_tree(
+            &store,
+            &crate::test_fixtures::UnresolvableAuthorizer,
+            &board,
+            &open,
+            &ns_key_id,
+            &crate::test_fixtures::TEST_CUT,
+        )
+        .expect_err("an unreadable cut is no verdict");
+        assert!(crate::namespace::is_undecidable(&err), "{err:#}");
     }
 }
 

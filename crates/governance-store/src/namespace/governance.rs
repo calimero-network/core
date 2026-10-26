@@ -2593,16 +2593,6 @@ impl<'a> NamespaceGovernance<'a> {
         encrypted: &EncryptedGroupOp,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
         let inner_op = GroupKeyring::decrypt_op(group_key, encrypted)?;
-        if let NamespaceOp::Group { key_id, .. } = &ns_op.op {
-            crate::group_keys::ensure_sealed_for_the_tree(
-                self.store,
-                self.authorizer,
-                group_id,
-                &inner_op,
-                key_id.as_bytes(),
-                &ns_op.parent_op_hashes,
-            )?;
-        }
         let claimed = match &ns_op.op {
             NamespaceOp::Group { registers, .. } => *registers,
             _ => None,
@@ -2618,6 +2608,16 @@ impl<'a> NamespaceGovernance<'a> {
         // Judged before anything is applied: an op whose signer's removal is
         // concurrent with it is logged and carries no authority.
         let void = self.op_is_void(group_id, ns_op, Some(&inner_op), None, delta_id)?;
+        if let NamespaceOp::Group { key_id, .. } = &ns_op.op {
+            crate::group_keys::ensure_sealed_for_the_tree(
+                self.store,
+                self.authorizer,
+                group_id,
+                &inner_op,
+                key_id.as_bytes(),
+                &ns_op.parent_op_hashes,
+            )?;
+        }
 
         let signed_group_op = SignedGroupOp {
             version: calimero_context_client::local_governance::SIGNED_GROUP_OP_SCHEMA_VERSION,

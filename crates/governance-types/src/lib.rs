@@ -1147,6 +1147,17 @@ impl GroupOp {
         }
     }
 
+    /// The op that finally acts: [`GroupOp::unguarded`] looked through every wrapper, a relay's
+    /// [`GroupOp::OnBehalf`] included. For readers that classify what an op does.
+    #[must_use]
+    pub fn innermost(&self) -> &Self {
+        let mut op = self;
+        while let Self::RootGuarded { op: inner, .. } | Self::OnBehalf { op: inner, .. } = op {
+            op = inner;
+        }
+        op
+    }
+
     /// Owned form of [`GroupOp::unguarded`].
     #[must_use]
     pub fn into_unguarded(self) -> Self {

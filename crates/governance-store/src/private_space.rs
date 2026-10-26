@@ -186,7 +186,7 @@ impl Tree {
 /// Ops that change the tree every member reads: a visibility flip and a deletion.
 pub fn is_tree_op(op: &GroupOp) -> bool {
     matches!(
-        op.unguarded(),
+        op.innermost(),
         GroupOp::SubgroupVisibilitySet { .. } | GroupOp::GroupDelete
     )
 }
