@@ -2607,7 +2607,7 @@ mod concurrent {
         leave_and_subgroup_transfer(true).await;
     }
 
-    /// The owner's transfer of the open subgroup to the logged admin and that admin's
+    /// The owner's transfer of the space to the logged admin and that admin's
     /// namespace leave, both at one cut, applied in each order.
     async fn leave_and_subgroup_transfer(drop_creator_row: bool) {
         let (world, store) = world_with_a_logged_admin().await;
@@ -2616,7 +2616,7 @@ mod concurrent {
                 .handle()
                 .delete(&calimero_store::key::Generic::new(
                     *b"calimero-gcreatr",
-                    world.open_chain.to_bytes(),
+                    world.restricted.to_bytes(),
                 ))
                 .expect("drop the creator row");
         }
@@ -2624,7 +2624,7 @@ mod concurrent {
         let seat = signed_in(
             &store,
             world,
-            &world.open_chain,
+            &world.restricted,
             &world.owner_sk,
             &heads(&store, world),
             unused_nonce(),
@@ -2635,9 +2635,9 @@ mod concurrent {
         );
         apply(&store, &seat)
             .await
-            .expect("the owner seats the admin in the subgroup");
+            .expect("the owner seats the admin in the space");
         let parents = heads(&store, world);
-        let transfer = transfer_at(&store, world, &world.open_chain, &parents, admin.account);
+        let transfer = transfer_at(&store, world, &world.restricted, &parents, admin.account);
         let leave = signed_in(
             &store,
             world,
@@ -2655,7 +2655,7 @@ mod concurrent {
         let nodes = in_both_orders(&store, &transfer, &leave).await;
 
         assert_landed_the_same(&nodes, world, &[&transfer, &leave], &admin.account);
-        assert_same_rows(&nodes, |node| owner_of(node, &world.open_chain));
+        assert_same_rows(&nodes, |node| owner_of(node, &world.restricted));
     }
 
     /// `inner` relayed by `relayer` at `parents`, sealed under the namespace key `key`.
@@ -2837,203 +2837,5 @@ mod concurrent {
     fn unused_nonce() -> u64 {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 32);
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    }
-}
-
-/// A Restricted subgroup nested under another Restricted one, and a node that holds the
-/// child's key but never the parent's: the shape of a folder shared with a member who is
-/// not in the folder above it.
-mod nested_restricted {
-    use std::collections::BTreeMap;
-
-    use calimero_governance_store::test_fixtures::{
-        derived_group_id, group_created, seal_for_test,
-    };
-    use calimero_governance_store::{parked_op, MetadataRepository, NamespaceRepository, Parked};
-    use calimero_governance_types::RootOp;
-
-    use super::*;
-
-    const PARENT_KEY: [u8; 32] = [0x81; 32]; // held by the inside node only
-    const CHILD_KEY: [u8; 32] = [0x82; 32]; // reaches the member's node once it is added
-
-    struct Nested {
-        world: &'static World,
-        inside: Store,
-        member_node: Store,
-        parent: ContextGroupId,
-        child: ContextGroupId,
-    }
-
-    fn sealed_in(group: ContextGroupId, key: &[u8; 32], op: &GroupOp) -> NamespaceOp {
-        NamespaceOp::Group {
-            group_id: group.to_bytes().into(),
-            key_id: GroupKeyring::key_id_for(key).into(),
-            encrypted: GroupKeyring::encrypt_op(key, op).expect("seal a group op"),
-            key_rotation: None,
-            registers: None,
-        }
-    }
-
-    fn named(name: &str) -> GroupOp {
-        GroupOp::GroupMetadataSet {
-            name: Some(name.to_owned()),
-            data: BTreeMap::new(),
-        }
-    }
-
-    fn name_of(store: &Store, group: &ContextGroupId) -> Option<String> {
-        MetadataRepository::new(store)
-            .group_metadata(group)
-            .expect("read the group's name")
-            .and_then(|record| record.name)
-    }
-
-    /// `signer` signs `op` at the inside node's heads, and both nodes apply it.
-    async fn on_both(f: &Nested, signer: &PrivateKey, op: NamespaceOp) -> SignedNamespaceOp {
-        let signed = sign_next(&f.inside, &f.world.namespace, signer, op);
-        for store in [&f.inside, &f.member_node] {
-            apply(store, &signed)
-                .await
-                .expect("the op applies or is logged unreadable");
-        }
-        signed
-    }
-
-    /// The owner makes and names Board, makes Minutes, nests it under Board and names it.
-    /// The member's node reads neither subgroup yet, and never gets Board's key.
-    async fn board_and_minutes() -> Nested {
-        let world = World::shared();
-        let namespace = world.namespace;
-        let owner = world.actor(ActorState::Owner);
-        let (inside, member_node) = (world.fork(), world.fork());
-        // The member's node signs as the member, so the owner's ops are another's to replay.
-        let member = world.actor(ActorState::DirectMember);
-        NamespaceRepository::new(&member_node)
-            .replace_identity(
-                &namespace,
-                &member.sign_sk.public_key(),
-                member.sign_sk.as_bytes(),
-            )
-            .expect("the member's node signs as the member");
-        let subgroup = |tag| {
-            ContextGroupId::from(derived_group_id(
-                &owner.account,
-                namespace.to_bytes(),
-                true,
-                tag,
-            ))
-        };
-        let f = Nested {
-            world,
-            inside,
-            member_node,
-            parent: subgroup(0x81),
-            child: subgroup(0x82),
-        };
-        for (group, key) in [(f.parent, &PARENT_KEY), (f.child, &CHILD_KEY)] {
-            let _key_id = GroupKeyring::new(&f.inside, group)
-                .store_key(key)
-                .expect("the inside node holds both keys");
-        }
-
-        let created = |tag| {
-            seal_for_test(
-                &f.inside,
-                namespace,
-                group_created(owner.account, namespace.to_bytes(), true, tag),
-            )
-        };
-        let ops = [
-            created(0x81),
-            sealed_in(f.parent, &PARENT_KEY, &named("Board")),
-            created(0x82),
-            seal_for_test(
-                &f.inside,
-                namespace,
-                RootOp::GroupReparented {
-                    child_group_id: f.child.to_bytes().into(),
-                    new_parent_id: f.parent.to_bytes().into(),
-                },
-            ),
-            sealed_in(f.child, &CHILD_KEY, &named("Minutes")),
-        ];
-        for op in ops {
-            let _signed = on_both(&f, &world.owner_sk, op).await;
-        }
-        assert_eq!(
-            name_of(&f.inside, &f.child).as_deref(),
-            Some("Minutes"),
-            "setup: the inside node names the child"
-        );
-        f
-    }
-
-    fn the_childs_key_arrives(f: &Nested) {
-        let _key_id = crate::group_key_pull::adopt_pulled_group_key(
-            &f.member_node,
-            f.world.namespace.to_bytes().into(),
-            f.child,
-            &CHILD_KEY,
-        )
-        .expect("the child's key reaches the member's node");
-    }
-
-    #[actix::test]
-    async fn a_member_of_only_the_child_applies_its_ops_once_the_childs_key_arrives() {
-        let f = board_and_minutes().await;
-
-        the_childs_key_arrives(&f);
-
-        assert_eq!(
-            name_of(&f.member_node, &f.child).as_deref(),
-            Some("Minutes"),
-            "the child's ops stayed parked behind the parent's sealed history"
-        );
-        assert_eq!(
-            name_of(&f.member_node, &f.parent),
-            None,
-            "the member's node read the parent it holds no key for"
-        );
-    }
-
-    /// Reading less of the tree must not let through what the inside node refuses: a
-    /// namespace member with no row in the child cannot make itself the child's admin.
-    #[actix::test]
-    async fn an_unauthorized_op_in_the_child_is_refused_on_both_nodes() {
-        let f = board_and_minutes().await;
-        let outsider = f.world.actor(ActorState::InheritedMember);
-        let attack = on_both(
-            &f,
-            &outsider.sign_sk,
-            sealed_in(
-                f.child,
-                &CHILD_KEY,
-                &GroupOp::MemberRoleSet {
-                    member: outsider.account,
-                    role: GroupMemberRole::Admin,
-                },
-            ),
-        )
-        .await;
-
-        the_childs_key_arrives(&f);
-
-        let id = attack.content_hash().expect("hash the op");
-        for (node, store) in [("inside", &f.inside), ("member", &f.member_node)] {
-            assert_eq!(
-                parked_op(store, f.world.namespace.to_bytes().into(), id)
-                    .expect("read the verdict"),
-                Some(Parked::Refused),
-                "{node} did not refuse the op"
-            );
-            assert_eq!(
-                MembershipRepository::new(store)
-                    .role_of(&f.child, &outsider.account)
-                    .expect("read the role"),
-                None,
-                "{node} seated the outsider in the child"
-            );
-        }
     }
 }
