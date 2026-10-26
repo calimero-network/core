@@ -221,6 +221,12 @@ steps:
     check_interval: 2
     trigger_sync: true
 
+  - name: Alice hands Board to Carol
+    type: transfer_ownership
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    new_owner: '{{acc_c}}'
+
   - name: Alice leaves Board
     type: leave_group
     node: private-folders-1

@@ -362,12 +362,14 @@ steps:
       groupId: '{{f_projects}}'
     expect_no_match: true
 
+  # Node-2 keeps what it read while Projects was open; it must not see the private rename.
   - name: Projects' new name is not readable on node-2
     type: assert_api_response
     node: private-folders-2
     path: /admin-api/groups/{{f_projects}}/metadata
-    absent:
-    - data.name
+    match:
+      data.name: Hidden
+    expect_no_match: true
 
   - name: Projects' member list is refused on node-2
     type: assert_api_response

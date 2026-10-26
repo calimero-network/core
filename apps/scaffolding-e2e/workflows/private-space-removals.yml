@@ -309,12 +309,40 @@ steps:
     path: /admin-api/groups/{{f_board}}/members
     expected_failure: true
 
-  - name: Board's metadata name is not readable on node-4
+  # Dave keeps what he read before his removal; a rename after it must not reach him.
+  - name: Alice renames Board after Dave's removal
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    record_name: Board
+    data:
+      topic: after-dave
+
+  - name: Alice's node reads the rename after Dave's removal
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_board}}/metadata
+    match:
+      data.data.topic: after-dave
+    retries: 30
+    interval: 2
+
+  - name: Carol's node reads the rename after Dave's removal
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_board}}/metadata
+    match:
+      data.data.topic: after-dave
+    retries: 30
+    interval: 2
+
+  - name: Board's rename after Dave's removal is not readable on node-4
     type: assert_api_response
     node: private-folders-4
     path: /admin-api/groups/{{f_board}}/metadata
-    absent:
-    - data.name
+    match:
+      data.data.topic: after-dave
+    expect_no_match: true
 
   - name: Minutes's info is refused on node-4
     type: assert_api_response
