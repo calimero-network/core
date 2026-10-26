@@ -8,9 +8,9 @@ permissions:
   # merod-binaries polls the Actions cache and runs APIs for the shared merod build.
   actions: read
 
-# Cancel superseded PR runs; never cancel a master run.
+# Cancel superseded PR runs; never cancel or displace a master run (one group per master sha).
 concurrency:
-  group: sdk-e2e-${{ github.workflow }}-${{ github.ref }}
+  group: sdk-e2e-${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/master' && github.sha || '' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 on:
