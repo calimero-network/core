@@ -1291,10 +1291,10 @@ fn a_capability_revoke_reaches_the_owner_in_a_folder_nested_in_a_private_space()
 }
 
 #[test]
-fn a_removal_cannot_reach_a_folder_the_signer_moved_out_of_the_space_beyond_its_cut() {
+fn a_removal_cannot_reach_a_folder_moved_out_of_the_space_beyond_its_cut() {
     let (mut log, head) = eng_private_space();
     let moved = gov(
-        SAM,
+        ALICE,
         &[&head],
         OpPayload::SubgroupReparented {
             child: ScopeId::from(subgroup(0x43).to_bytes()),
@@ -1312,4 +1312,28 @@ fn a_removal_cannot_reach_a_folder_the_signer_moved_out_of_the_space_beyond_its_
     log.extend([moved, removal, after_move.clone()]);
 
     assert!(!void(&log).contains(&after_move.id()));
+}
+
+#[test]
+fn a_removed_signer_cannot_move_a_folder_out_of_the_space_concurrently_with_its_removal() {
+    let (mut log, head) = eng_private_space();
+    let moved = gov(
+        SAM,
+        &[&head],
+        OpPayload::SubgroupReparented {
+            child: ScopeId::from(subgroup(0x43).to_bytes()),
+            new_parent: ScopeId::from(group().to_bytes()),
+        },
+    );
+    let removal = remove_from(subgroup(0x42), ALICE, &[&head], SAM);
+    let later = add_in(
+        subgroup(0x43),
+        SAM,
+        &[&moved],
+        WILL,
+        GroupMemberRole::Member,
+    );
+    log.extend([moved, removal, later.clone()]);
+
+    assert!(void(&log).contains(&later.id()));
 }

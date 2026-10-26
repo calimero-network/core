@@ -756,20 +756,50 @@ impl<'a> Analysis<'a> {
     /// ancestry that are not void. Concurrent or void ones never count, so no signer
     /// can move itself out of a removal's reach by reshaping the tree beside it.
     fn tree_at(&self, op: &Op, void: &BTreeSet<[u8; 32]>) -> Rc<GroupTree> {
-        self.tree_across(op, op, void)
-    }
-
-    /// The tree over what `op` and `other` each saw, so neither can hide a placement
-    /// from the other by choosing a cut that omits it.
-    fn tree_across(&self, op: &Op, other: &Op, void: &BTreeSet<[u8; 32]>) -> Rc<GroupTree> {
-        let key = (op.id(), other.id());
+        let key = (op.id(), op.id());
         if let Some(known) = self.trees.borrow().get(&key) {
             return Rc::clone(known);
         }
-        let (before, also) = (self.ancestors_of(op.id()), self.ancestors_of(other.id()));
+        self.work.set(self.work.get() + self.tree_ops.len().max(1));
+        let before = self.ancestors_of(op.id());
+        let seen = self
+            .tree_ops
+            .iter()
+            .copied()
+            .filter(|held| before.contains(&held.id()) && !void.contains(&held.id()));
+        let tree = Rc::new(GroupTree::fold(seen, &self.depth, self.root_of(op)));
+        let _ = self.trees.borrow_mut().insert(key, Rc::clone(&tree));
+        tree
+    }
+
+    /// The tree over what `op` and `removal` each saw, so neither can hide a placement
+    /// from the other. The removed signer's placements concurrent with the removal are
+    /// left out: the removal voids them, and they must not move the op out of its reach.
+    fn tree_across(
+        &self,
+        op: &Op,
+        removal: &Removal<'_>,
+        void: &BTreeSet<[u8; 32]>,
+    ) -> Rc<GroupTree> {
+        let key = (op.id(), removal.op.id());
+        if let Some(known) = self.trees.borrow().get(&key) {
+            return Rc::clone(known);
+        }
+        self.work.set(self.work.get() + self.tree_ops.len().max(1));
+        let (before, also) = (
+            self.ancestors_of(op.id()),
+            self.ancestors_of(removal.op.id()),
+        );
+        let after = self.descendants_of(removal.op.id());
+        let removed = |held: &Op| match removal.target {
+            Target::Account(account) => self.author_of(held) == account,
+            Target::Device(device) => self.device_of(held) == device,
+        };
         let seen = self.tree_ops.iter().copied().filter(|held| {
             let id = held.id();
-            (before.contains(&id) || also.contains(&id)) && !void.contains(&id)
+            (before.contains(&id) || also.contains(&id))
+                && !void.contains(&id)
+                && !(removed(held) && !also.contains(&id) && !after.contains(&id))
         });
         let tree = Rc::new(GroupTree::fold(seen, &self.depth, self.root_of(op)));
         let _ = self.trees.borrow_mut().insert(key, Rc::clone(&tree));
@@ -939,7 +969,7 @@ impl<'a> Analysis<'a> {
                     (true, None) => self.author_of(removal.op) == self.author_of(op),
                     (false, None) => true,
                     (false, Some(lost)) => {
-                        let both = self.tree_across(op, removal.op, void);
+                        let both = self.tree_across(op, &removal, void);
                         lost == self.root_of(op)
                             || self
                                 .reach_start(op, group, &both)
