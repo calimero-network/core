@@ -16,7 +16,7 @@
 //! `signer` is a deterministic cross-node author and whose target scope is
 //! resolvable from the op — applied at the namespace governance handler.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -517,6 +517,14 @@ impl ScopeProjections {
     fn void_undecidable(&self, scope: &ScopeId) -> bool {
         self.voided_for(scope, self.authority_base_of(scope))
             .undecidable
+    }
+
+    /// The subgroup tree the whole log folds to, void ops and unreadable removals aside.
+    fn whole_tree(&self, scope: &ScopeId) -> BTreeMap<ScopeId, calimero_authz::SubgroupEdge> {
+        self.states
+            .get(scope)
+            .map(ScopeState::subgroup_edges)
+            .unwrap_or_default()
     }
 
     fn authority_base_of(&self, scope: &ScopeId) -> AuthorityBase {
@@ -2273,7 +2281,12 @@ impl ScopeProjections {
             return None;
         }
         let view = at_cut_view(&walked, base)?;
-        let relevant = deciding_groups(&view, group, ContextGroupId::from(namespace_id));
+        let relevant = deciding_groups(
+            &view,
+            &self.whole_tree(&scope),
+            group,
+            ContextGroupId::from(namespace_id),
+        );
         if walked.first_opaque_in_any(&relevant).is_some() {
             return None;
         }
@@ -2701,7 +2714,12 @@ impl ScopeProjections {
         // its own group, whose every op it reads. `dm-subgroup-privacy` is that
         // exact shape and its legitimate join failed. A refusal that cannot clear
         // is not the conservative choice.
-        let relevant = deciding_groups(&view, group, ContextGroupId::from(namespace_id));
+        let relevant = deciding_groups(
+            &view,
+            &self.whole_tree(&scope),
+            group,
+            ContextGroupId::from(namespace_id),
+        );
         if walked.first_opaque_in_any(&relevant).is_some() {
             return Err(UndecidableCause::AncestryUnreadable);
         }
@@ -3290,7 +3308,12 @@ impl ScopeProjections {
         // As for the fold, standing is read at the step's own parents, so the group's
         // ancestors there must be readable too.
         let root_group = ContextGroupId::from(namespace_id);
-        let mut relevant = deciding_groups(&at_cut_view(&walked, base)?, group, root_group);
+        let mut relevant = deciding_groups(
+            &at_cut_view(&walked, base)?,
+            &self.whole_tree(&scope),
+            group,
+            root_group,
+        );
         let mut pinned = false;
         for op in walked.ops().iter().filter(|op| !walked.is_void(op)) {
             let OpPayload::SharedWritersRotated {
@@ -3310,7 +3333,12 @@ impl ScopeProjections {
                 continue;
             }
             let view = at_cut_view(&self.walk(&scope, log, &op.parents, base), base)?;
-            relevant.extend(deciding_groups(&view, group, root_group));
+            relevant.extend(deciding_groups(
+                &view,
+                &self.whole_tree(&scope),
+                group,
+                root_group,
+            ));
             pinned |= standing(&view, op.device_key()).is_some_and(|account| {
                 prior
                     .get(&account)
@@ -3412,7 +3440,7 @@ impl ScopeProjections {
         // Standing is read at each step's own parents, where the group's ancestors
         // may differ from the cut's, so every one of them must be readable.
         let head_view = at_cut_view(&walked, base).ok_or(cut)?;
-        let mut relevant = deciding_groups(&head_view, group, root_group);
+        let mut relevant = deciding_groups(&head_view, &self.whole_tree(&scope), group, root_group);
         let mut views: std::collections::HashMap<Vec<[u8; 32]>, calimero_authz::AclView> =
             std::collections::HashMap::new();
         let steps: Vec<_> = ScopeState::shared_writer_steps(
@@ -3429,7 +3457,12 @@ impl ScopeProjections {
                     let _ = views.insert(parents.clone(), folded);
                 }
                 let view = &views[&parents];
-                relevant.extend(deciding_groups(view, group, root_group));
+                relevant.extend(deciding_groups(
+                    view,
+                    &self.whole_tree(&scope),
+                    group,
+                    root_group,
+                ));
                 standing(view, op.device_key())
             },
         )
@@ -4028,21 +4061,27 @@ fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero
 }
 
 /// The groups that must be readable to decide a question about `group`: the root, `group`,
-/// and every group above it up to its space root (up to the root in the open space).
+/// and every group above it up to its space root (up to the root in the open space), at the
+/// cut and in the whole log. Placements are cleartext, so every node adds the same groups
+/// for a removal it may not be able to read.
 fn deciding_groups(
     view: &calimero_authz::AclView,
+    whole: &BTreeMap<ScopeId, calimero_authz::SubgroupEdge>,
     group: ContextGroupId,
     root: ContextGroupId,
 ) -> BTreeSet<ContextGroupId> {
     let mut groups = BTreeSet::from([root]);
-    for ancestor in view.group_and_ancestors(group) {
-        let _new = groups.insert(ancestor);
-        let walled = view
-            .subgroups
-            .get(&ScopeId::from(ancestor.to_bytes()))
-            .is_some_and(|edge| edge.restricted);
-        if walled {
-            break;
+    for edges in [&view.subgroups, whole] {
+        let mut at = group;
+        for _ in 0..=calimero_context_config::MAX_NAMESPACE_DEPTH {
+            let _new = groups.insert(at);
+            let Some(edge) = edges.get(&ScopeId::from(at.to_bytes())) else {
+                break;
+            };
+            if edge.restricted {
+                break;
+            }
+            at = ContextGroupId::from(*edge.parent.as_bytes());
         }
     }
     groups
@@ -5628,10 +5667,20 @@ mod tests {
             (open, vec![root, open]),
         ] {
             assert_eq!(
-                deciding_groups(&view, group, root),
+                deciding_groups(&view, &view.subgroups, group, root),
                 BTreeSet::from_iter(expected)
             );
         }
+        // A move into a space the cut does not hold yet still names that space, so a node
+        // that cannot read its removals and one that can decide alike.
+        let mut cut = calimero_authz::AclView::default();
+        let _ = cut
+            .subgroups
+            .insert(ScopeId::from(folder.to_bytes()), edge(root, false));
+        assert_eq!(
+            deciding_groups(&cut, &view.subgroups, folder, root),
+            BTreeSet::from([root, folder, inner, space]),
+        );
     }
 
     /// The view at the end of a linear chain of `payloads`, the owner being `[1; 32]`.

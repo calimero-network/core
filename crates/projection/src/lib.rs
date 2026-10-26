@@ -1433,14 +1433,10 @@ impl ScopeState {
     }
 
     /// The current authorization view (whole state).
+    /// The live subgroup tree: each subgroup's parent and visibility.
     #[must_use]
-    pub fn acl_view(&self) -> AclView {
-        // Resolved once and shared with `live_devices`, which needs the same
-        // answer — see its doc comment for why paying twice matters.
-        let accounts = self.resolved_accounts();
-        let devices = self.live_devices(&accounts);
-        let subgroups = self
-            .subgroups
+    pub fn subgroup_edges(&self) -> BTreeMap<ScopeId, calimero_authz::SubgroupEdge> {
+        self.subgroups
             .iter()
             .filter(|(_, slot)| slot.exists.as_ref().is_some_and(|(_, live)| *live))
             .filter_map(|(child, slot)| {
@@ -1454,7 +1450,16 @@ impl ScopeState {
                     )
                 })
             })
-            .collect();
+            .collect()
+    }
+
+    #[must_use]
+    pub fn acl_view(&self) -> AclView {
+        // Resolved once and shared with `live_devices`, which needs the same
+        // answer — see its doc comment for why paying twice matters.
+        let accounts = self.resolved_accounts();
+        let devices = self.live_devices(&accounts);
+        let subgroups = self.subgroup_edges();
         let (groups, member_caps) = self.seated();
         AclView {
             acl: self.acl.clone(),
