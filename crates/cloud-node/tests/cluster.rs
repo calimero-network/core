@@ -870,3 +870,26 @@ async fn browsers_on_allowed_origins_may_call_the_node() {
         ORIGIN
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_app_answers_to_its_context_id_too() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let created = alice
+        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+        .await
+        .unwrap();
+    let app = created["appId"].as_str().unwrap();
+    let ctx = created["contextId"].as_str().unwrap();
+    assert_eq!(ctx, hex::encode(calimero_identity::sha256(app.as_bytes())));
+    let _ = alice
+        .call(ctx, "set", json!({ "key": "a", "value": "1" }), None)
+        .await
+        .unwrap();
+    let v = alice
+        .view(app, "get", json!({ "key": "a" }), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!("1"));
+}

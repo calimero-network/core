@@ -4,6 +4,7 @@
 //! result as one entry: `{ call, outcome { result, diff, events } }`. Every
 //! replica applies the diff; none re-executes.
 
+use calimero_storage::shared_writers::CellWriters;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
@@ -303,6 +304,18 @@ pub struct Overlay<'a> {
     prefix: Vec<u8>,
 }
 
+/// Where a shared-storage cell's current writer set lives in the app's state.
+///
+/// v1 recorded a cell's writer rotations as group governance ops. A cloud app
+/// has one log already, so the rotation a run asks for is written beside the
+/// cell, in the same entry as the run's other writes, and read back from there.
+#[must_use]
+pub fn writers_key(cell: &[u8; 32]) -> Vec<u8> {
+    let mut k = b"\0calimero.writers\0".to_vec();
+    k.extend_from_slice(cell);
+    k
+}
+
 /// Where an account's private storage lives in the app's state.
 ///
 /// v1 kept "private" data on the member's own node, never synced. A cloud app
@@ -386,6 +399,18 @@ impl Storage for Overlay<'_> {
 
     fn has(&self, key: &Key) -> bool {
         self.get(key).is_some()
+    }
+
+    fn shared_writers(&self, cell: &[u8; 32]) -> Option<CellWriters> {
+        let key = writers_key(cell);
+        let raw = match self.writes.get(&key) {
+            Some(v) => v.clone(),
+            None => self.base.get(&Bytes(key)).map(|v| v.0.clone()),
+        };
+        match raw {
+            None => Some(CellWriters::Genesis),
+            Some(bytes) => borsh::from_slice(&bytes).ok().map(CellWriters::Rotated),
+        }
     }
 }
 
@@ -472,6 +497,16 @@ impl Executor {
                 .map(|p| p as &mut dyn calimero_runtime::store::Storage),
             org.map(<[u8]>::to_vec),
         );
+        // Rotations of shared cells' writers take effect with the run's writes.
+        if let Ok(out) = &result {
+            if out.returns.is_ok() {
+                for r in &out.shared_rotations {
+                    if let Ok(bytes) = borsh::to_vec(&r.new) {
+                        let _prev = overlay.set(writers_key(r.cell.as_bytes()), bytes);
+                    }
+                }
+            }
+        }
         let mut diff = overlay.into_diff();
         if let Some(p) = private {
             diff.extend(p.into_diff());
@@ -585,5 +620,28 @@ mod tests {
         assert!(!main.has(&b"note".to_vec()));
         assert!(!as_bob.has(&b"note".to_vec()));
         assert_eq!(as_alice.get(&b"note".to_vec()), Some(b"alice's".to_vec()));
+    }
+
+    #[test]
+    fn a_cells_writers_come_from_the_apps_own_state() {
+        use calimero_storage::shared_writers::CellWriters;
+
+        let cell = [7_u8; 32];
+        let base = BTreeMap::new();
+        let fresh = Overlay::new(&base);
+        assert_eq!(fresh.shared_writers(&cell), Some(CellWriters::Genesis));
+
+        // A stored set (as a run's rotation writes it) is what the next run reads.
+        let mut state = BTreeMap::new();
+        let writers = calimero_storage::shared_writers::Writers::default();
+        let _prev = state.insert(
+            Bytes(writers_key(&cell)),
+            Bytes(borsh::to_vec(&writers).unwrap()),
+        );
+        let later = Overlay::new(&state);
+        assert_eq!(
+            later.shared_writers(&cell),
+            Some(CellWriters::Rotated(writers))
+        );
     }
 }

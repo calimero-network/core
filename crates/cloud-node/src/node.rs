@@ -392,6 +392,24 @@ impl Node {
     }
 
     /// The app record, as applied here (waiting briefly for a fresh one).
+    /// An app's id from either its id or its context id: what the app itself
+    /// sees as `env::context_id()`, hex (`SHA-256(app_id)`). Apps hand context
+    /// ids to each other and to their users, so either names the app here.
+    #[must_use]
+    pub fn canonical_app_id(&self, id: &str) -> String {
+        if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return id.to_owned();
+        }
+        let wanted = id.to_ascii_lowercase();
+        self.sys(|s| {
+            s.apps
+                .keys()
+                .find(|a| hex::encode(calimero_identity::sha256(a.as_bytes())) == wanted)
+                .cloned()
+        })
+        .unwrap_or_else(|| id.to_owned())
+    }
+
     pub async fn app(&self, app_id: &str) -> Result<AppRecord, ApiError> {
         self.sys_until(|s| s.apps.get(app_id).cloned())
             .await

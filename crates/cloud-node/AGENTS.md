@@ -45,6 +45,10 @@ architecture spec.
 - **Private storage** (`env::private_storage_*`): v1 kept it on the member's node,
   unsynced. Here it is the caller's own space in the app's state (`app::private_prefix`):
   replicated and sealed, but a run is handed only its caller's space.
+- **Shared-storage writers**: a cell's rotated writer set is kept in the app's state
+  (`app::writers_key`), written with the run that rotated it; v1 published governance ops.
+- **Context ids**: an app answers to its context id (`hex(SHA-256(app_id))`, what the app
+  sees as `env::context_id()`) wherever the API takes an app id (`Node::canonical_app_id`).
 - **Browsers**: `config.origins` are the CORS origins too (`lib.rs`, outermost layer).
 - **Storage key** (`kms.rs`): K_r = HKDF(KMS key, cluster). The KMS key comes from
   merod's own client (`merod kms disk-key`: release-policy-verified KMS, key sealed

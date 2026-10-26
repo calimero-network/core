@@ -780,9 +780,12 @@ async fn app_create(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    Ok(Json(
-        json!({ "appId": app_id, "group": out["group"], "replicas": out["replicas"] }),
-    ))
+    Ok(Json(json!({
+        "appId": app_id,
+        "contextId": hex::encode(sha256(app_id.as_bytes())),
+        "group": out["group"],
+        "replicas": out["replicas"],
+    })))
 }
 
 /// Whether the app has run `init`, asking a replica if this node hosts none.
@@ -837,6 +840,7 @@ async fn app_get(
     headers: HeaderMap,
     Path(app_id): Path<String>,
 ) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
     let p = principal(&node, &headers).await?;
     let app = node.app(&app_id).await?;
     let account = p.as_ref().and_then(|p| p.caller.account());
@@ -999,6 +1003,7 @@ async fn intents(
     Path(app_id): Path<String>,
     Json(body): Json<IntentBody>,
 ) -> Result<Response, ApiError> {
+    let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, &body.method, true).await?;
     let consent_value = if app.confirm_methods.iter().any(|m| m == &body.method) {
@@ -1037,6 +1042,7 @@ async fn views(
     Path(app_id): Path<String>,
     Json(body): Json<ViewBody>,
 ) -> Result<Response, ApiError> {
+    let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, &body.method, false).await?;
     let a = node
@@ -1105,6 +1111,7 @@ async fn events(
     Path(app_id): Path<String>,
     Query(q): Query<EventsQuery>,
 ) -> Result<Response, ApiError> {
+    let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let _p = gate(&node, &headers, &app, "*", false).await?;
     if let Some(stream) = local_events(&node, &app_id, q.from) {
@@ -1152,6 +1159,7 @@ async fn app_upgrade(
     Path(app_id): Path<String>,
     Json(body): Json<UpgradeBody>,
 ) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
     let account = person(&node, &headers).await?.account()?;
     let _ok = node
         .sys_write(&SystemCmd::UpgradeApp {
@@ -1186,6 +1194,7 @@ async fn app_access(
     Path(app_id): Path<String>,
     Json(body): Json<AccessBody>,
 ) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
     let account = person(&node, &headers).await?.account()?;
     let _ok = node
         .sys_write(&SystemCmd::SetAccess {
@@ -1652,6 +1661,7 @@ async fn ops_set_replicas(
     Path(app_id): Path<String>,
     Json(b): Json<ReplicaBody>,
 ) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
     operator(&node, &headers)?;
     if b.replicas.len() < 3.min(node.sys(|s| s.nodes.len())) {
         return Err(ApiError::bad_request(
