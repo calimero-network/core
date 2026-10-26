@@ -18,7 +18,7 @@
 use crate::authorizer::ensure_cut_resolvable;
 use crate::{
     ContextRegistrationService, DivergenceReport, GroupSettingsService, MembershipPolicy,
-    MembershipRepository, PermissionChecker,
+    MembershipRepository, NamespaceRepository, PermissionChecker,
 };
 use calimero_account::AccountId;
 use calimero_app_downloader::registry::{stored_coords, RegistryCoords, PENDING_BLOB_SHARE_SOURCE};
@@ -269,6 +269,23 @@ impl<'a> GroupApplyCtx<'a> {
         }
         self.ensure_live_fallback_is_sound(self.signer)?;
         MembershipRepository::new(self.store).is_member(self.group_id, member)
+    }
+
+    /// Whether `member` holds a row in the namespace root at the op's cut, or live where
+    /// that is sound; the root's own ops are exempt.
+    pub(crate) fn is_namespace_member_at_cut(&self, member: &AccountId) -> EyreResult<bool> {
+        let root = NamespaceRepository::new(self.store).resolve(self.group_id)?;
+        if root == *self.group_id {
+            return Ok(true);
+        }
+        if let Some(role) = self
+            .authorizer
+            .effective_role_at_cut(&root, member, self.parents)
+        {
+            return Ok(role.is_some());
+        }
+        self.ensure_live_fallback_is_sound(self.signer)?;
+        MembershipRepository::new(self.store).is_member(&root, member)
     }
 
     /// The exit among `member`'s latest changes in this group at the op's cut, or live

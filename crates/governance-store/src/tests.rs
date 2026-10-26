@@ -734,6 +734,57 @@ fn a_private_space_member_reads_a_folder_in_it() {
     assert!(members.is_member(&minutes, &dave).unwrap(), "Minutes read");
 }
 
+/// A subgroup member row needs a namespace row: an account never in the namespace is
+/// refused, one that is in it is admitted.
+#[test]
+fn a_subgroup_add_needs_a_namespace_member() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_context_config::VisibilityMode;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let store = test_store();
+    let root = test_group_id();
+    let sub = ContextGroupId::from([0x7A; 32]);
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin = enrol_member(&store, &root, &admin_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&root, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store).nest(&root, &sub).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&sub, &admin, GroupMemberRole::Admin)
+        .unwrap();
+
+    let stranger = enrol_member(&store, &root, &PrivateKey::random(&mut rng).public_key());
+    let resident = enrol_member(&store, &root, &PrivateKey::random(&mut rng).public_key());
+    MembershipRepository::new(&store)
+        .add_member(&root, &resident, GroupMemberRole::Member)
+        .unwrap();
+    let add = |nonce: u64, member: AccountId| {
+        SignedGroupOp::sign(
+            &admin_sk,
+            sub.to_bytes().into(),
+            vec![],
+            nonce,
+            GroupOp::MemberAdded {
+                member,
+                role: GroupMemberRole::Member,
+            },
+        )
+        .unwrap()
+    };
+
+    assert!(apply_local_signed_group_op(&store, &add(1, stranger)).is_err());
+    let admitted = apply_local_signed_group_op(&store, &add(2, resident));
+    assert!(admitted.is_ok(), "{admitted:?}");
+}
+
 /// Regression test for #2516: two concurrent same-signer governance ops are
 /// DAG siblings with consecutive nonces, so causal delivery imposes no order
 /// between them and they can land in either order. The old `nonce <= last`
@@ -5605,6 +5656,9 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
     let member = enrol_member(&store, &ns_gid, &member_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &member, GroupMemberRole::Member)
+        .unwrap();
     let member_sk_bytes: [u8; 32] = *member_sk.as_bytes();
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &member_pk, &member_sk_bytes)
@@ -6961,6 +7015,9 @@ fn leave_then_admin_readd_restores_a_signable_context_identity() {
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
     let member = enrol_member(&store, &ns_gid, &member_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &member, GroupMemberRole::Member)
+        .unwrap();
     let member_sk_bytes: [u8; 32] = *member_sk.as_bytes();
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &member_pk, &member_sk_bytes)

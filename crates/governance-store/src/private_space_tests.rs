@@ -115,6 +115,9 @@ impl Space {
         let pk =
             PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng)).public_key();
         let member = enrol_member(&self.store, &ContextGroupId::from(NS), &pk);
+        crate::MembershipRepository::new(&self.store)
+            .add_member(&NS.into(), &member, GroupMemberRole::Member)
+            .unwrap();
         self.group_op(
             group,
             GroupOp::MemberAdded {

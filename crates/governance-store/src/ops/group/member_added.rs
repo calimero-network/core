@@ -49,6 +49,10 @@ pub(crate) fn apply(
     if let Some(current) = ctx.direct_role(member)? {
         MembershipPolicy::require_tee_row_keeps_tee_role(member, &current, role)?;
     }
+    // A subgroup's members are namespace members.
+    if !ctx.is_namespace_member_at_cut(member)? {
+        bail!("{member} is not a member of the namespace, so it cannot be added to a subgroup");
+    }
     ctx.permissions()
         .require_admin_to_remove_admin(signer, member)?;
     ctx.membership_policy()
