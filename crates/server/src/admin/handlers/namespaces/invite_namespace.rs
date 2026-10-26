@@ -39,7 +39,7 @@ pub async fn handler(
         Err(err) => return parse_api_error(err).into_response(),
     }
 
-    info!(namespace_id=%namespace_id_str, "Creating namespace invitation");
+    info!(namespace_id=%namespace_id_str, recursive=?req.recursive, "Creating namespace invitation");
 
     // Parsed before anything is signed: an admitter the caller cannot spell is
     // a restriction that would silently not apply, and an invitation restricted
@@ -59,6 +59,16 @@ pub async fn handler(
             .into_response();
         }
     };
+
+    if req.recursive.unwrap_or(false) {
+        return ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message:
+                "invitations admit to the namespace only; recursive invitations name subgroups"
+                    .into(),
+        }
+        .into_response();
+    }
 
     let result = state
         .ctx_client

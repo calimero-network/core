@@ -3260,6 +3260,9 @@ pub struct CreateGroupInvitationApiRequest {
     /// Defaults to 1 year when not provided.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expiration_timestamp: Option<u64>,
+    /// Still accepted so older clients that send `false` keep working; `true` is refused.
+    #[serde(default)]
+    pub recursive: Option<bool>,
     /// Accounts permitted to admit a claim of this invitation, 64 hex each.
     ///
     /// Empty or absent is filled in at mint from the group's admins and TEE
@@ -4278,6 +4281,14 @@ mod tests {
                 .expect("the pre-existing body must still deserialize");
         assert!(req.admitter_addrs.is_empty());
         assert!(req.validate().is_empty());
+    }
+
+    /// merobox sends `recursive: false` on every namespace invitation.
+    #[test]
+    fn an_invitation_body_with_recursive_false_still_parses() {
+        let req: CreateGroupInvitationApiRequest =
+            serde_json::from_str(r#"{"recursive":false}"#).expect("must still deserialize");
+        assert_eq!(req.recursive, Some(false));
     }
 
     /// `meroctl` built after `admitted_by` and `refusals` must still read the
