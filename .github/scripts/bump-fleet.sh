@@ -395,6 +395,47 @@ refresh_installer_checksums() {
   ' "$f"
 }
 
+COMMIT_PINNED=""
+
+# The commit the release's tag points at, peeled through an annotated tag, or
+# nothing when it cannot be had. Some pins name a commit, not a version:
+# apps' mero-chat mobile live tests build merod (with mock attestation) from
+# `CORE_REF=<sha>` in run-relay.sh, and a bundle built against the new release
+# refuses to install on the old commit's runtime. Left to a hand update, it was
+# missed on 0.11.1 and 0.12.0-rc.1, each a guaranteed red pull request.
+#
+# RELEASE_COMMIT overrides the lookup for the fixture tests; set and empty, it
+# stands for a tag that cannot be resolved.
+release_commit() {
+  if [ -n "${RELEASE_COMMIT+x}" ]; then
+    printf '%s' "$RELEASE_COMMIT"
+    return 0
+  fi
+  local cache="$TMPDIR_RUN/release-commit"
+  if [ ! -f "$cache" ]; then
+    git ls-remote https://github.com/calimero-network/core \
+        "refs/tags/$VERSION" "refs/tags/$VERSION^{}" 2>/dev/null \
+      | perl -ne '
+          $plain = $1 if m{^([0-9a-f]{40})\s+refs/tags/\S+?$} && !m{\^\{\}$};
+          $peeled = $1 if m{^([0-9a-f]{40})\s+refs/tags/\S+\^\{\}$};
+          END { print $peeled // $plain // "" }
+        ' > "$cache" || : > "$cache"
+  fi
+  cat "$cache"
+}
+
+# Rewrite a `CORE_REF=<sha>` line to the release's commit. Returns 1, editing
+# nothing, when the commit cannot be resolved.
+refresh_core_ref() {
+  local f="$1" commit
+  commit=$(release_commit)
+  case "$commit" in
+    [0-9a-f]*) [ "${#commit}" -eq 40 ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  NEW="$commit" perl -i -pe 's{^(\s*CORE_REF=)[0-9a-f]{40}(\s*)$}{$1$ENV{NEW}$2}' "$f"
+}
+
 bump_workspace_toolchain() {
   local action=".github/actions/install-cargo-mero/action.yml"
   if [ -f "$DIR/$action" ]; then
@@ -433,6 +474,14 @@ bump_workspace_toolchain() {
       if ! refresh_installer_checksums "$f"; then
         CHECKSUM_PINNED="$CHECKSUM_PINNED $rel"
         continue
+      fi
+    fi
+
+    # A core commit, not a version: see release_commit. The rest of the file
+    # still moves when the commit cannot be resolved; only this line waits.
+    if grep -qE '^[[:space:]]*CORE_REF=[0-9a-f]{40}[[:space:]]*$' "$f"; then
+      if ! refresh_core_ref "$f"; then
+        COMMIT_PINNED="$COMMIT_PINNED $rel"
       fi
     fi
 
@@ -544,6 +593,12 @@ SHA256SUMS lacks one of them (or could not be fetched), so moving the version
 alone would fail the download's own integrity check. Refresh by hand:
 $(for r in $CHECKSUM_PINNED; do printf '  %s\n' "$r"; done)
   shasum -a 256 cargo-mero_<target>.tar.gz   # for each CHECKSUM_ line
+"
+  [ -n "$COMMIT_PINNED" ] && body="$body
+NOT REWRITTEN — pins CORE_REF to a core commit, and the commit tag $VERSION
+points at could not be resolved. Set it by hand:
+$(for r in $COMMIT_PINNED; do printf '  %s\n' "$r"; done)
+  git ls-remote https://github.com/calimero-network/core 'refs/tags/$VERSION^{}' 'refs/tags/$VERSION'
 "
   [ -n "$baseline" ] && body="$body
 NOT REWRITTEN — a recorded measurement, whose document states the conditions it
