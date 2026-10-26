@@ -17,11 +17,13 @@
 use calimero_account::AccountId;
 use std::time::Duration;
 
+use calimero_governance_store::metrics::Metrics;
 use calimero_runtime::errors::FunctionCallError;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::Engine;
 use calimero_utils_actix::{global_runtime, init_global_runtime};
+use prometheus_client::registry::Registry;
 
 /// A guest whose only export loops forever with no host call — the canonical
 /// tight loop that escapes every limit except gas.
@@ -81,6 +83,15 @@ async fn runaway_guest_on_blocking_pool_is_gas_bounded_and_frees_the_thread() {
         Some(200_000),
         "an exhausted run reports the full budget as consumed"
     );
+
+    // The metrics the context execute path feeds from this outcome must show the
+    // exhaustion and the consumed budget.
+    let metrics = Metrics::new(&mut Registry::default());
+    metrics.record_gas(
+        outcome.gas_used,
+        matches!(outcome.returns, Err(FunctionCallError::GasExhausted { .. })),
+    );
+    assert_eq!(metrics.gas_exhausted.get(), 1);
 
     // The blocking thread the runaway used must have been released: a fresh
     // blocking task submitted afterwards runs to completion. Were the guest

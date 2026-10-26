@@ -589,6 +589,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
         let execution_count = self.metrics.as_ref().map(|m| m.execution_count.clone());
         let execution_duration = self.metrics.as_ref().map(|m| m.execution_duration.clone());
+        let metrics = self.metrics.clone();
 
         // Cloned for the broadcast continuation, which is a sibling link in this
         // chain rather than nested inside the execute closure — so it needs its
@@ -815,6 +816,13 @@ impl Handler<ExecuteRequest> for ContextManager {
                             status: status.to_owned(),
                         })
                         .observe(duration);
+                }
+
+                if let (Some(metrics), Ok((outcome, ..))) = (&metrics, &executed) {
+                    metrics.record_gas(
+                        outcome.gas_used,
+                        matches!(outcome.returns, Err(FunctionCallError::GasExhausted { .. })),
+                    );
                 }
 
                 let (
