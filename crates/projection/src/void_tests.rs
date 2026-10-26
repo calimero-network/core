@@ -1362,25 +1362,40 @@ fn past_the_fold_budget_a_removal_still_spares_a_counter_removal() {
 }
 
 #[test]
-fn past_the_fold_budget_the_owner_is_reached_by_a_group_removal_and_its_own_revocation() {
-    let (mut log, head) = eng_private_space();
+fn past_the_fold_budget_the_owner_is_reached_only_by_a_private_removal_or_its_own_revocation() {
     let second = calimero_account::DeviceId::from([0xEE; 32]);
-    let on_second_device = Op::new(
-        ScopeId::from([0u8; 32]),
-        vec![head.id()],
-        Authorship {
-            device: second,
-            ..authorship(OWNER)
-        },
-        hlc(),
-        OpPayload::MemberAdded {
-            group: group(),
-            member: acct(WILL),
-            role: GroupMemberRole::Member,
-        },
-        [0u8; 32],
-        [0u8; 64],
+    let on_second_device = |head: &Op| {
+        Op::new(
+            ScopeId::from([0u8; 32]),
+            vec![head.id()],
+            Authorship {
+                device: second,
+                ..authorship(OWNER)
+            },
+            hlc(),
+            OpPayload::MemberAdded {
+                group: group(),
+                member: acct(WILL),
+                role: GroupMemberRole::Member,
+            },
+            [0u8; 32],
+            [0u8; 64],
+        )
+    };
+    let voided_by = |group_of_removal: ContextGroupId, owner_group: ContextGroupId| {
+        let (mut log, head) = eng_private_space();
+        let removal = remove_from(group_of_removal, ALICE, &[&head], OWNER);
+        let by_owner = add_in(owner_group, OWNER, &[&head], YARA, GroupMemberRole::Member);
+        log.extend([removal, by_owner.clone()]);
+        ScopeState::void_ops_bounded(&log, base(), None, &[], 0).contains(&by_owner.id())
+    };
+    assert!(!voided_by(subgroup(0x41), group()), "an open removal");
+    assert!(
+        voided_by(subgroup(0x42), subgroup(0x42)),
+        "a private removal"
     );
+
+    let (mut log, head) = eng_private_space();
     let revoke = gov(
         OWNER,
         &[&head],
@@ -1389,17 +1404,8 @@ fn past_the_fold_budget_the_owner_is_reached_by_a_group_removal_and_its_own_revo
             device: second,
         },
     );
-    let by_owner = add_in(
-        subgroup(0x42),
-        OWNER,
-        &[&head],
-        YARA,
-        GroupMemberRole::Member,
-    );
-    let removal = remove_from(subgroup(0x42), ALICE, &[&head], OWNER);
-    log.extend([on_second_device.clone(), revoke, by_owner.clone(), removal]);
-
+    let own = on_second_device(&head);
+    log.extend([revoke, own.clone()]);
     let voided = ScopeState::void_ops_bounded(&log, base(), None, &[], 1);
-    assert!(voided.contains(&on_second_device.id()));
-    assert!(voided.contains(&by_owner.id()));
+    assert!(voided.contains(&own.id()), "its own revocation");
 }

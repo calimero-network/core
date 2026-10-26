@@ -496,6 +496,8 @@ struct Analysis<'a> {
     children: HashMap<[u8; 32], Vec<[u8; 32]>>,
     /// The ops that place a group or set its visibility.
     tree_ops: Vec<&'a Op>,
+    /// The groups some op created or made Restricted.
+    ever_private: BTreeSet<ContextGroupId>,
     /// The tree each judged op (and removal) pair sees, memoised for the round in progress.
     trees: RefCell<HashMap<TreeKey, Rc<GroupTree>>>,
     ancestors: RefCell<HashMap<[u8; 32], IdSet>>,
@@ -623,6 +625,7 @@ impl<'a> Analysis<'a> {
             depth: HashMap::new(),
             children: HashMap::new(),
             tree_ops: Vec::new(),
+            ever_private: BTreeSet::new(),
             trees: RefCell::default(),
             ancestors: RefCell::default(),
             descendants: RefCell::default(),
@@ -658,6 +661,22 @@ impl<'a> Analysis<'a> {
                         | OpPayload::SubgroupReparented { .. }
                         | OpPayload::SubgroupVisibilitySet { .. }
                 )
+            })
+            .collect();
+        analysis.ever_private = analysis
+            .tree_ops
+            .iter()
+            .filter_map(|op| match &op.payload {
+                OpPayload::SubgroupCreated {
+                    child,
+                    restricted: true,
+                    ..
+                } => Some(ContextGroupId::from(*child.as_bytes())),
+                OpPayload::SubgroupVisibilitySet {
+                    scope,
+                    restricted: true,
+                } => Some(ContextGroupId::from(*scope.as_bytes())),
+                _ => None,
             })
             .collect();
         // Causal order, so what a spent budget leaves unjudged does not follow the log's.
@@ -964,13 +983,14 @@ impl<'a> Analysis<'a> {
                 if mutual {
                     continue;
                 }
-                // Past the budget a removal is taken to reach, bar a root-level removal by
-                // another account, which never reaches the owner.
+                // Past the budget a removal is taken to reach. The owner is spared unless it
+                // is its own device revocation or a removal from a group once private.
                 if self.over_budget() {
-                    let spared = self.is_owner(op)
-                        && removal.group.is_none()
-                        && self.author_of(removal.op) != self.author_of(op);
-                    if !spared {
+                    let reaches_owner = match removal.group {
+                        None => self.author_of(removal.op) == self.author_of(op),
+                        Some(lost) => self.ever_private.contains(&lost),
+                    };
+                    if !self.is_owner(op) || reaches_owner {
                         let _ = next.insert(id);
                     }
                     continue;
@@ -1116,9 +1136,11 @@ impl<'a> Analysis<'a> {
             if void.contains(&op.id()) {
                 continue;
             }
-            // Past the budget a role change counts as a demotion: the one it
-            // might be is the one that matters.
-            let was_admin = self.over_budget() || {
+            // Past the budget a role change counts as a demotion, the owner's aside: the
+            // one it might be is the one that matters.
+            let was_admin = if self.over_budget() {
+                self.owner_at(op) != Some(member)
+            } else {
                 let before = self.ancestors_of(op.id());
                 let view = self.fold(
                     before
