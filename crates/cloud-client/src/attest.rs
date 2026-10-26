@@ -49,12 +49,92 @@ pub fn report_data(nonce: &[u8; 32], app_hash: &[u8; 32], transport_key: &[u8; 3
 }
 
 /// What a verifier accepts.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Policy {
     /// Accept mock quotes (development clusters only).
     pub allow_mock: bool,
     /// The app bundle hash the quote must bind, if the caller cares.
     pub app_hash: Option<[u8; 32]>,
+    /// Which TD images a real quote may come from.
+    pub measurements: Measurements,
+    /// Accepted TCB statuses of a real quote; empty means `UpToDate` only.
+    pub allowed_tcb_statuses: Vec<String>,
+}
+
+/// How a real quote's measurement registers are judged.
+#[derive(Clone, Debug, Default)]
+pub enum Measurements {
+    /// No image is trusted: every real quote is refused (mock-only clients).
+    #[default]
+    None,
+    /// These allowlists (MRTD and RTMR1-3 required; RTMR0 checked when given).
+    Pinned(calimero_tee_release::ProfileMeasurements),
+    /// The signed mero-tee release the node names in its attestation: its
+    /// Sigstore-verified `published-mrtds.json` must list the quote's registers
+    /// under one of `allowed_profiles`, and the release must be at least
+    /// `min_version` when one is given.
+    Release {
+        allowed_profiles: Vec<String>,
+        min_version: Option<String>,
+    },
+}
+
+/// The allowlists a quote is held to once its profile is known.
+#[must_use]
+pub fn verifier_policy(
+    m: &calimero_tee_release::ProfileMeasurements,
+    allowed_tcb_statuses: &[String],
+) -> calimero_tee_attestation::VerifierPolicy {
+    calimero_tee_attestation::VerifierPolicy {
+        allowed_tcb_statuses: allowed_tcb_statuses.to_vec(),
+        allowed_mrtd: m.allowed_mrtd.clone(),
+        allowed_rtmr0: m.allowed_rtmr0.clone(),
+        allowed_rtmr1: m.allowed_rtmr1.clone(),
+        allowed_rtmr2: m.allowed_rtmr2.clone(),
+        allowed_rtmr3: m.allowed_rtmr3.clone(),
+        accept_mock: false,
+        require_app_hash: true,
+    }
+}
+
+/// Fetch and Sigstore-verify a release's measurements. The verifier's future is
+/// not `Send`, and this runs inside the sealed transport's, so it gets a thread
+/// and a runtime of its own.
+async fn fetch_release(
+    version: String,
+) -> eyre::Result<std::sync::Arc<calimero_tee_release::NodeRelease>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let _thread = std::thread::Builder::new()
+        .name("tee-release-fetch".into())
+        .spawn(move || {
+            let out = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(eyre::Report::from)
+                .and_then(|rt| rt.block_on(calimero_tee_release::fetch_node_release(&version)));
+            let _sent = tx.send(out);
+        })?;
+    rx.await
+        .map_err(|_| eyre::eyre!("the release fetch thread stopped"))?
+}
+
+/// The release a node names, checked against the floor, before anything is fetched.
+fn claimed_release(doc: &AttestationDoc, min_version: Option<&str>) -> eyre::Result<String> {
+    use calimero_tee_release::{
+        compare_release_versions, normalize_release_version, NODE_RELEASE_TAG_PREFIX,
+    };
+    let version = normalize_release_version(&doc.release.version, NODE_RELEASE_TAG_PREFIX)
+        .map_err(|e| eyre::eyre!("the node names no valid mero-tee release: {e}"))?;
+    if let Some(floor) = min_version {
+        match compare_release_versions(&version, floor) {
+            Some(std::cmp::Ordering::Less) => {
+                eyre::bail!("mero-tee release {version} is older than the minimum {floor}")
+            }
+            Some(_) => {}
+            None => eyre::bail!("mero-tee release {version} cannot be compared with {floor}"),
+        }
+    }
+    Ok(version)
 }
 
 fn hex32(s: &str) -> eyre::Result<[u8; 32]> {
@@ -87,16 +167,43 @@ pub async fn verify(
         }
         return Ok(transport_key);
     }
+    // Refuse what no policy could admit before reaching for the network.
+    let release = match &policy.measurements {
+        Measurements::None => {
+            eyre::bail!("real quote refused: this client trusts no TD image (no measurement policy)")
+        }
+        Measurements::Pinned(_) => None,
+        Measurements::Release { min_version, .. } => {
+            Some(claimed_release(doc, min_version.as_deref())?)
+        }
+    };
     let mut second = [0; 32];
     second.copy_from_slice(&expected[32..]);
     let result = calimero_tee_attestation::verify_attestation(&quote, nonce, &second)
         .await
         .map_err(|e| eyre::eyre!("quote verification: {e:?}"))?;
-    if !result.is_valid() {
-        eyre::bail!("quote verification failed");
-    }
-    // TODO(release-v2): check the measurements against the Sigstore-verified
-    // published-mrtds.json via calimero-tee-release.
+    let b = &result.quote.body;
+    let profile = match (&policy.measurements, release) {
+        (Measurements::Pinned(m), _) => m.clone(),
+        (Measurements::Release { allowed_profiles, .. }, Some(version)) => {
+            let release = fetch_release(version.clone())
+                .await
+                .map_err(|e| eyre::eyre!("mero-tee release {version}: {e:#}"))?;
+            let name = release
+                .matching_profile(allowed_profiles, &b.mrtd, &b.rtmr0, &b.rtmr1, &b.rtmr2, &b.rtmr3)
+                .ok_or_else(|| {
+                    eyre::eyre!(
+                        "the quote matches none of the allowed profiles ({}) of release {version}",
+                        allowed_profiles.join(", ")
+                    )
+                })?;
+            release.profiles[name].clone()
+        }
+        _ => eyre::bail!("real quote refused: no measurement policy"),
+    };
+    result
+        .policy_valid(&verifier_policy(&profile, &policy.allowed_tcb_statuses))
+        .map_err(|r| eyre::eyre!("quote refused: {r:?}"))?;
     Ok(transport_key)
 }
 
@@ -139,4 +246,67 @@ fn rand_nonce() -> [u8; 32] {
     let mut n = [0; 32];
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut n).expect("randomness");
     n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn doc(version: &str) -> AttestationDoc {
+        AttestationDoc {
+            // Not a mock quote, so the measurement policy decides first.
+            quote: STANDARD.encode(b"not a quote"),
+            transport_key: hex::encode([1; 32]),
+            app_hash: hex::encode([0; 32]),
+            nonce: hex::encode([2; 32]),
+            release: Release {
+                version: version.into(),
+                profile: "locked-read-only".into(),
+            },
+            cluster: "c".into(),
+            node: 1,
+            mock: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_real_quote_needs_a_measurement_policy() {
+        let err = verify(&doc("2.4.0"), &[2; 32], &Policy::default())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no measurement policy"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_release_below_the_floor_is_refused_before_any_fetch() {
+        let policy = Policy {
+            measurements: Measurements::Release {
+                allowed_profiles: vec!["locked-read-only".into()],
+                min_version: Some("2.4.0".into()),
+            },
+            ..Policy::default()
+        };
+        let err = verify(&doc("2.3.9"), &[2; 32], &policy).await.unwrap_err();
+        assert!(err.to_string().contains("older than the minimum"), "{err}");
+        let err = verify(&doc("not-a-version"), &[2; 32], &policy)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no valid mero-tee release"), "{err}");
+    }
+
+    #[test]
+    fn pinned_measurements_become_a_fail_closed_verifier_policy() {
+        let m = calimero_tee_release::ProfileMeasurements {
+            allowed_mrtd: vec!["aa".into()],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec!["b1".into()],
+            allowed_rtmr2: vec!["b2".into()],
+            allowed_rtmr3: vec!["b3".into()],
+        };
+        let p = verifier_policy(&m, &[]);
+        assert_eq!(p.allowed_mrtd, vec!["aa".to_owned()]);
+        assert!(p.allowed_tcb_statuses.is_empty()); // UpToDate only
+        assert!(!p.accept_mock);
+        assert!(p.require_app_hash);
+    }
 }

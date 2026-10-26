@@ -58,6 +58,12 @@ pub struct Config {
     /// How old the session-signing key K_s gets before the leader adds a new one.
     /// The previous key keeps verifying, so it must outlive a session (15 min).
     pub session_key_rotation_secs: u64,
+    /// The mero-tee release and image profile this node runs (TDX only); its
+    /// attestation names them so clients can fetch the signed measurements.
+    pub tee_release: Option<String>,
+    pub tee_profile: Option<String>,
+    /// Which TD images a peer's real quote may come from.
+    pub peer_measurements: calimero_cloud_client::Measurements,
 }
 
 /// Request to run a method.
@@ -235,6 +241,8 @@ impl Node {
             policy: Policy {
                 allow_mock: self.config.allow_mock_peers,
                 app_hash: None,
+                measurements: self.config.peer_measurements.clone(),
+                allowed_tcb_statuses: Vec::new(),
             },
         };
         let t = Arc::new(calimero_sealed::client::SealedTransport::attested(

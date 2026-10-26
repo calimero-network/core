@@ -276,11 +276,15 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         app_hash: hex::encode(app_hash),
         nonce: hex::encode(nonce),
         release: Release {
-            version: node.config.release.clone(),
-            profile: if node.config.attestation == crate::attest::Mode::Mock {
-                "mock".into()
-            } else {
-                "tdx".into()
+            version: node
+                .config
+                .tee_release
+                .clone()
+                .unwrap_or_else(|| node.config.release.clone()),
+            profile: match (&node.config.tee_profile, node.config.attestation) {
+                (_, crate::attest::Mode::Mock) => "mock".into(),
+                (Some(p), _) => p.clone(),
+                (None, _) => "tdx".into(),
             },
         },
         cluster: node.config.cluster.clone(),

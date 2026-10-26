@@ -17,6 +17,7 @@ pub mod app;
 pub mod attest;
 pub mod backup;
 pub mod error;
+pub mod kms;
 pub mod node;
 pub mod system;
 pub mod types;

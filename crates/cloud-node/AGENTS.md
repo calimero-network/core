@@ -34,6 +34,13 @@ architecture spec.
   `AppRecord`; a failed init answers `422 INIT_FAILED` (`AppState::init_error`).
 - **Identity inside the app**: `env::account_id` and `env::executor_id` are both the
   caller's account (no devices in release-v2); the context id is `SHA-256(app_id)`.
+- **Storage key** (`kms.rs`): K_r = HKDF(KMS key, cluster). The KMS key comes from
+  merod's own client (`merod kms disk-key`: release-policy-verified KMS, key sealed
+  to the TD), run by merod-v2 (`--kms-url --kms-identity`) or by the boot script
+  (`--storage-key-file`). The cluster's nodes share the disk identity, so they share K_r.
+- **Peers' quotes** are judged like a client's (`calimero_cloud_client::Measurements`):
+  in TDX mode the signed mero-tee release the peer names, profiles from
+  `--peer-profiles` (default: this node's `MERO_TEE_PROFILE`), floor `--peer-min-release`.
 - **Session keys** rotate: the system leader adds K_s v+1 once the current key is
   `session_key_rotation_secs` old (default 6 h); the previous key keeps verifying.
 - **Quotas** (`system::Quotas`, set with `POST /ops/quotas`) live in the system state and
@@ -43,8 +50,7 @@ architecture spec.
 
 ## Not done yet (prototype)
 
-KMS fetch (dev key or `--storage-key`), real measurement policy, SDK host functions for
-orgs (`env::org_role`), rollback counter, placement across zones, snapshot restore into a
+SDK host functions for orgs (`env::org_role`), rollback counter, placement across zones, snapshot restore into a
 running cluster, event audiences, pruning of revoked session ids.
 
 ## Commands

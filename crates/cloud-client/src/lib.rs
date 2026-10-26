@@ -17,7 +17,7 @@ use url::Url;
 
 pub mod attest;
 
-pub use attest::{AttestationDoc, HttpAttestor, Policy};
+pub use attest::{AttestationDoc, HttpAttestor, Measurements, Policy};
 
 /// An error from a node, or from getting to one.
 #[derive(Debug, thiserror::Error)]

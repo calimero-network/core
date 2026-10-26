@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use calimero_cloud_node::attest::Mode;
-use calimero_cloud_node::{run, Config};
+use calimero_cloud_client::Measurements;
+use calimero_cloud_node::{kms, run, Config};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
@@ -57,6 +58,30 @@ struct Args {
     /// the previous key must outlive the 15-minute sessions it signed).
     #[arg(long, env = "MEROD_SESSION_KEY_ROTATION", default_value_t = 6 * 3600)]
     session_key_rotation_secs: u64,
+    /// A file holding the key `merod kms disk-key` fetched (written by the boot script).
+    #[arg(long, env = "MEROD_STORAGE_KEY_FILE", conflicts_with_all = ["storage_key", "kms_url"])]
+    storage_key_file: Option<PathBuf>,
+    /// Fetch the storage key from mero-kms by running `merod kms disk-key`.
+    #[arg(long, env = "MEROD_KMS_URL", requires = "kms_identity", conflicts_with = "storage_key")]
+    kms_url: Option<String>,
+    /// The cluster's disk identity (shared by its nodes, so they derive one key).
+    #[arg(long, env = "MEROD_KMS_IDENTITY")]
+    kms_identity: Option<PathBuf>,
+    /// The merod binary that runs the KMS exchange.
+    #[arg(long, env = "MEROD_BIN", default_value = "merod")]
+    merod_bin: PathBuf,
+    /// The mero-tee release this image is (names the signed measurements).
+    #[arg(long, env = "MERO_TEE_VERSION")]
+    tee_release: Option<String>,
+    /// The mero-tee image profile this node runs.
+    #[arg(long, env = "MERO_TEE_PROFILE")]
+    tee_profile: Option<String>,
+    /// Profiles a peer's quote may match (default: this node's own profile).
+    #[arg(long, env = "MEROD_PEER_PROFILES", value_delimiter = ',')]
+    peer_profiles: Vec<String>,
+    /// The oldest mero-tee release a peer may run.
+    #[arg(long, env = "MEROD_PEER_MIN_RELEASE")]
+    peer_min_release: Option<String>,
 }
 
 #[tokio::main]
@@ -75,10 +100,41 @@ async fn main() -> eyre::Result<()> {
             .ok_or_else(|| eyre::eyre!("peer must be id=url: {p}"))?;
         let _prev = peers.insert(id.parse()?, url.to_owned());
     }
-    let storage_key: [u8; 32] = match (&args.storage_key, args.dev) {
-        (Some(hex_key), _) => hex::decode(hex_key)?.try_into().map_err(|_| eyre::eyre!("storage key must be 32 bytes"))?,
-        (None, true) => calimero_identity::sha256(format!("calimero-dev-storage-key|{}", args.cluster).as_bytes()),
-        (None, false) => eyre::bail!("no storage key: production nodes fetch it from mero-kms (not wired in this build); pass --storage-key or --dev"),
+    let storage_key: [u8; 32] = if let Some(hex_key) = &args.storage_key {
+        hex::decode(hex_key)?
+            .try_into()
+            .map_err(|_| eyre::eyre!("storage key must be 32 bytes"))?
+    } else if let Some(path) = &args.storage_key_file {
+        kms::derive_storage_key(&kms::read_key_file(path)?, &args.cluster)
+    } else if let (Some(url), Some(identity)) = (&args.kms_url, &args.kms_identity) {
+        let material = kms::fetch_with_merod(&args.merod_bin, url, identity).await?;
+        kms::derive_storage_key(&material, &args.cluster)
+    } else if args.dev {
+        calimero_identity::sha256(format!("calimero-dev-storage-key|{}", args.cluster).as_bytes())
+    } else {
+        eyre::bail!(
+            "no storage key: pass --kms-url with --kms-identity, --storage-key-file, \
+             --storage-key, or --dev"
+        );
+    };
+    let peer_measurements = if args.dev {
+        Measurements::None
+    } else {
+        let profiles = if args.peer_profiles.is_empty() {
+            args.tee_profile.clone().into_iter().collect()
+        } else {
+            args.peer_profiles.clone()
+        };
+        if args.tee_release.is_none() || profiles.is_empty() {
+            eyre::bail!(
+                "a TDX node needs MERO_TEE_VERSION and MERO_TEE_PROFILE (or --peer-profiles) \
+                 to judge its peers' quotes"
+            );
+        }
+        Measurements::Release {
+            allowed_profiles: profiles,
+            min_version: args.peer_min_release.clone(),
+        }
     };
     let config = Config {
         node_id: args.node_id,
@@ -100,6 +156,9 @@ async fn main() -> eyre::Result<()> {
         backup_dir: args.backup_dir,
         raft: calimero_log::Config::default(),
         session_key_rotation_secs: args.session_key_rotation_secs.max(1800),
+        tee_release: args.tee_release,
+        tee_profile: args.tee_profile,
+        peer_measurements,
     };
     let running = run(config).await?;
     tokio::signal::ctrl_c().await?;

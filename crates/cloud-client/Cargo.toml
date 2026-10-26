@@ -18,12 +18,16 @@ ring.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["sync", "time", "rt"] }
 url.workspace = true
 
 calimero-identity.workspace = true
 calimero-sealed.workspace = true
 calimero-tee-attestation.workspace = true
+calimero-tee-release.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
 testing = ["calimero-identity/testing"]

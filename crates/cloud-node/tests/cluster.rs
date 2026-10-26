@@ -87,6 +87,9 @@ impl Cluster {
                     snapshot_every: 200,
                 },
                 session_key_rotation_secs: 6 * 3600,
+                tee_release: None,
+                tee_profile: None,
+                peer_measurements: calimero_cloud_client::Measurements::None,
             };
             configure(&mut config);
             nodes.push(Some(run(config).await.unwrap()));
@@ -117,7 +120,7 @@ impl Cluster {
             &self.urls[i],
             Policy {
                 allow_mock: true,
-                app_hash: None,
+                ..Policy::default()
             },
         )
         .unwrap()
@@ -444,7 +447,7 @@ async fn clients_refuse_unattested_nodes_and_plain_requests() {
         &c.urls[0],
         Policy {
             allow_mock: false,
-            app_hash: None,
+            ..Policy::default()
         },
     )
     .unwrap();

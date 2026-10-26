@@ -1204,6 +1204,7 @@ dependencies = [
  "calimero-identity",
  "calimero-sealed",
  "calimero-tee-attestation",
+ "calimero-tee-release",
  "eyre",
  "futures-util",
  "hex",
@@ -1247,6 +1248,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "zeroize",
 ]
 
 [[package]]
