@@ -241,8 +241,18 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
                 Err(Rejected::NotRootAdmin)
             }
         }
-        // A move or delete inside a private space takes authority in that space, at both
-        // ends of a move; a move may not leave or nest spaces.
+        // The structure rules the live gates apply: an inner folder's create, move and delete
+        // take an admin of its space, a space root's own move and delete its creator or the
+        // root admin, and the open space the root admin; a move may not leave or nest spaces.
+        OpPayload::SubgroupCreated { parent, .. } => {
+            let parent = ContextGroupId::from(*parent.as_bytes());
+            match acl_at_cut.private_space(parent) {
+                Some(space) if acl_at_cut.administers_within(&op.author(), parent, space) => Ok(()),
+                Some(_) => Err(Rejected::NotGroupAdmin),
+                None if acl_at_cut.is_root_admin(&op.author()) => Ok(()),
+                None => Err(Rejected::NotRootAdmin),
+            }
+        }
         OpPayload::SubgroupReparented { child, new_parent } => {
             let (child, new_parent) = (
                 ContextGroupId::from(*child.as_bytes()),
@@ -265,7 +275,7 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
             &op.author(),
             ContextGroupId::from(*scope.as_bytes()),
         ),
-        OpPayload::PolicyUpdated { .. } | OpPayload::SubgroupCreated { .. } => {
+        OpPayload::PolicyUpdated { .. } => {
             if acl_at_cut.is_root_admin(&op.author()) {
                 Ok(())
             } else {
@@ -539,14 +549,21 @@ fn check_device_speaks_for_author(op: &Op, acl_at_cut: &AclView) -> Result<(), R
     }
 }
 
-/// Authority over a folder to move or delete it: in its private space an admin there, in the
-/// open space the root admin.
+/// Authority over a folder to move or delete it: an inner folder's space admin, a space root's
+/// creator or the root admin, the root admin in the open space.
 fn moves_or_deletes(
     acl: &AclView,
     author: &AccountId,
     group: ContextGroupId,
 ) -> Result<(), Rejected> {
     match acl.private_space(group) {
+        Some(space) if space == group => {
+            if acl.is_group_creator(author, group) || acl.is_root_admin(author) {
+                Ok(())
+            } else {
+                Err(Rejected::NotGroupAdmin)
+            }
+        }
         Some(space) if acl.administers_within(author, group, space) => Ok(()),
         Some(_) => Err(Rejected::NotGroupAdmin),
         None if acl.is_root_admin(author) => Ok(()),
