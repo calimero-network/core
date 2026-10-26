@@ -17,6 +17,12 @@ use crate::types::{now_ms, AppId, Caller, EventRecord};
 
 /// How long an idempotency key is remembered.
 pub const IDEMPOTENCY_TTL_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// Keys the node itself gives a call that came without one, so a retried
+/// forward replays instead of running twice. They only need to outlive the
+/// retries, so they are kept briefly.
+pub const NODE_KEY_PREFIX: &str = "node:";
+const NODE_KEY_TTL_MS: u64 = 10 * 60 * 1000;
 /// Events kept for resuming subscriptions.
 pub const EVENT_RING: usize = 10_000;
 
@@ -250,7 +256,12 @@ impl Machine for AppMachine {
                         Self::idem_key(&call.caller, key),
                         IdemRecord {
                             applied: a.clone(),
-                            expires_ms: call.ts_ms + IDEMPOTENCY_TTL_MS,
+                            expires_ms: call.ts_ms
+                                + if key.starts_with(NODE_KEY_PREFIX) {
+                                    NODE_KEY_TTL_MS
+                                } else {
+                                    IDEMPOTENCY_TTL_MS
+                                },
                         },
                     );
                     // Forget expired keys, judged by the log's own clock.

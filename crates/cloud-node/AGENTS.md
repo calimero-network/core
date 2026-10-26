@@ -28,6 +28,12 @@ architecture spec.
   `calimero_log::MAX_ENTRY_BYTES` (1 MiB): openraft gives each append one heartbeat.
 - **Ops replica moves** run on the app group's leader; any other replica answers
   `421 NOT_LEADER` with `details.leaderUrl` before writing anything.
+- **Forwards are bounded**: a call or read forwarded to an app's leader waits at most
+  `FORWARD_TIMEOUT` (5 s, `peer_forward`), then retries at whoever leads now; a frozen
+  leader would otherwise hold a write for the 30 s HTTP timeout. Calls without a
+  client key get a node key (`node:…`, kept 10 min) first, so a retry replays a call
+  that did commit. System-log forwards keep the long timeout: some system commands
+  are not idempotent yet. Regression: merobox `workflow-examples/cloud-v2/frozen-leader.yml`.
 - **Leader races**: a call whose diff was built on replaced state applies as a no-op
   (`conflict`, no idempotency record); `Node::call` re-runs it instead of failing.
 - **Init**: `POST /apps` takes `initArgs` (JSON) for the app's `init`, kept on the

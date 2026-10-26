@@ -147,6 +147,9 @@ impl Transport for PeerTransport {
     }
 }
 
+/// How long a forwarded call or read waits for the leader before retrying.
+pub const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// A command the system log refused at apply.
 pub fn rejected(reason: &str) -> ApiError {
     if reason.starts_with(crate::system::QUOTA_PREFIX) {
@@ -273,6 +276,18 @@ impl Node {
             return Err(err.into());
         }
         Ok(v)
+    }
+
+    /// [`Self::peer_post`] for a request a peer should answer quickly: a call or
+    /// read forwarded to an app's leader. A leader that stopped answering (frozen,
+    /// partitioned) is replaced by an election in a few seconds, so the caller
+    /// gives up after [`FORWARD_TIMEOUT`] and retries at the new leader instead of
+    /// waiting out the HTTP timeout. Forwarded calls carry an idempotency key, so
+    /// the retry replays one that did commit.
+    pub async fn peer_forward(&self, addr: &str, path: &str, body: &Value) -> eyre::Result<Value> {
+        tokio::time::timeout(FORWARD_TIMEOUT, self.peer_post(addr, path, body))
+            .await
+            .map_err(|_| eyre::eyre!("{addr} did not answer {path} within {FORWARD_TIMEOUT:?}"))?
     }
 
     /// Open a streaming GET to a peer (for events).
@@ -734,6 +749,21 @@ impl Node {
 
     /// Run a call wherever the app's leader is.
     pub async fn call(&self, req: &CallRequest) -> Result<Applied, ApiError> {
+        // The loop below retries forwards that timed out and calls that raced a
+        // leader change; a call that did commit must replay, not run again.
+        let keyed;
+        let req = if req.idempotency_key.is_some() {
+            req
+        } else {
+            let mut r = req.clone();
+            r.idempotency_key = Some(format!(
+                "{}{}",
+                crate::app::NODE_KEY_PREFIX,
+                calimero_identity::b64url(&calimero_identity::random::<16>())
+            ));
+            keyed = r;
+            &keyed
+        };
         let app = self.app(&req.app_id).await?;
         let body = serde_json::to_value(req).map_err(|e| ApiError::internal(&e.to_string()))?;
         for _attempt in 0..30 {
@@ -755,7 +785,7 @@ impl Node {
                 self.other_replica(&app)
             };
             if let Some(addr) = target {
-                match self.peer_post(&addr, "internal/call", &body).await {
+                match self.peer_forward(&addr, "internal/call", &body).await {
                     Ok(v) => {
                         let a: Applied = serde_json::from_value(v)
                             .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -788,7 +818,7 @@ impl Node {
                 let body =
                     serde_json::to_value(req).map_err(|e| ApiError::internal(&e.to_string()))?;
                 let v = self
-                    .peer_post(&addr, "internal/call", &body)
+                    .peer_forward(&addr, "internal/call", &body)
                     .await
                     .map_err(|e| ApiError::unavailable(&e.to_string()))?;
                 serde_json::from_value(v).map_err(|e| ApiError::internal(&e.to_string()))
@@ -850,7 +880,7 @@ impl Node {
                         leader: Some((id, addr)),
                     }) if id != self.config.node_id && !addr.is_empty() => {
                         let v = self
-                            .peer_post(
+                            .peer_forward(
                                 &addr,
                                 "internal/view",
                                 &serde_json::to_value(req).unwrap_or_default(),
@@ -876,7 +906,7 @@ impl Node {
             .other_replica(&app)
             .ok_or_else(|| ApiError::unavailable("no replica known"))?;
         let v = self
-            .peer_post(
+            .peer_forward(
                 &addr,
                 "internal/view",
                 &serde_json::to_value(req).unwrap_or_default(),

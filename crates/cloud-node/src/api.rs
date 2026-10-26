@@ -798,7 +798,7 @@ pub async fn app_ready(node: &Node, app_id: &str) -> Option<Result<(), Value>> {
             .find_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
     })?;
     let v = node
-        .peer_post(&addr, "internal/app-ready", &json!({ "appId": app_id }))
+        .peer_forward(&addr, "internal/app-ready", &json!({ "appId": app_id }))
         .await
         .ok()?;
     match (v.get("ready").and_then(Value::as_bool), v.get("initError")) {
