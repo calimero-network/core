@@ -242,6 +242,8 @@ jobs:
         run: pip install --quiet pyyaml
       - name: Lint merobox scenarios for unbarriered convergence reads
         run: python3 scripts/lint-e2e-convergence.py
+      - name: Test the convergence lint
+        run: python3 scripts/tests/lint-e2e-convergence-test.py
       - name: Lint merobox scenarios for unnamed multi-service bundles
         run: python3 scripts/lint-e2e-bundle-shape.py
       - name: Lint e2e workflows for unbuilt scenario bundles
