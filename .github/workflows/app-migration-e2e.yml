@@ -223,6 +223,7 @@ jobs:
           - 44-context-reports-the-release-it-runs
           - 45-frontend-two-releases
           - 46-frontend-proxy-mode
+          - 47-missing-releases-before-activate
           - 48-member-installs-only-the-newest-release
         # Scenarios that depend on a group's registry coordinates; dht ignores them,
         # so they need an http lane to exercise them.
