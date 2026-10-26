@@ -144,9 +144,11 @@ impl SyncManager {
                 .await;
         };
 
+        let boundary_root_hash = served_state_root(self.context_client.datastore(), context_id)?;
+
         info!(
             %context_id,
-            root_hash = %context.root_hash,
+            root_hash = %boundary_root_hash,
             heads_count = context.dag_heads.len(),
             %server_identity,
             "Sending snapshot boundary response"
@@ -157,7 +159,7 @@ impl SyncManager {
             sequence_id: sqx.next(),
             payload: MessagePayload::SnapshotBoundaryResponse {
                 boundary_timestamp: time_now(),
-                boundary_root_hash: context.root_hash,
+                boundary_root_hash,
                 dag_heads: context.dag_heads.clone(),
                 server_identity,
                 server_proof,
