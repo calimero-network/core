@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 
 use super::collect_keys_with_prefix;
 use crate::authorizer::{AtCutAuthorizer, TreeReads};
-use crate::private_space::{is_tree_op, Tree};
+use crate::private_space::Tree;
 
 /// One addressee of a scope-key delivery.
 ///
@@ -1247,8 +1247,8 @@ pub(crate) fn sealing_group(
     })
 }
 
-/// Refuse a tree op sealed under any key but the one [`sealing_group`] picks for it: members
-/// read it and non-members cannot, so they would see different trees.
+/// Refuse a group op sealed under any key but the one [`sealing_group`] picks for it: a space's
+/// ops stay under its own key, and a tree op is read by everyone who sees the wall.
 pub(crate) fn ensure_sealed_for_the_tree(
     store: &Store,
     authorizer: &dyn AtCutAuthorizer,
@@ -1257,23 +1257,25 @@ pub(crate) fn ensure_sealed_for_the_tree(
     key_id: &[u8; 32],
     parents: &[[u8; 32]],
 ) -> EyreResult<()> {
-    if !is_tree_op(op) {
-        return Ok(());
-    }
-    let reads = TreeReads {
-        chains: &[*group_id],
-        subtrees: &[],
-    };
-    let tree = Tree::at_cut(store, authorizer, group_id, parents, reads)?;
     let namespace_id = NamespaceRepository::new(store).resolve(group_id)?;
-    // A group the cut does not show yet has no applicable op; the replay judges it once read.
-    if *group_id != namespace_id && !tree.contains(group_id) {
-        return Ok(());
-    }
-    let covering = if tree.sealed_for_workspace(group_id, op)? {
+    // The root's ops are sealed for the workspace, whatever the tree.
+    let covering = if *group_id == namespace_id {
         namespace_id
     } else {
-        *group_id
+        let reads = TreeReads {
+            chains: &[*group_id],
+            subtrees: &[],
+        };
+        let tree = Tree::at_cut(store, authorizer, group_id, parents, reads)?;
+        // A group the cut does not show yet has no applicable op; the replay judges it once read.
+        if !tree.contains(group_id) {
+            return Ok(());
+        }
+        if tree.sealed_for_workspace(group_id, op)? {
+            namespace_id
+        } else {
+            *group_id
+        }
     };
     if GroupKeyring::new(store, covering)
         .load_key_by_id(key_id)?
@@ -1385,6 +1387,37 @@ mod sealing_tests {
             }),
             stamped_at: 0,
         }
+    }
+
+    #[test]
+    fn an_op_in_a_space_sealed_under_the_workspace_key_is_refused() {
+        let (store, ns, board) = board_under_a_workspace();
+        let space_key_id = GroupKeyring::new(&store, board)
+            .store_key(&[0x32u8; 32])
+            .unwrap();
+        let ns_key_id = GroupKeyring::new(&store, ns)
+            .store_key(&[0x31u8; 32])
+            .unwrap();
+        let add = GroupOp::MemberAdded {
+            member: AccountId::from([0x44; 32]),
+            role: calimero_primitives::context::GroupMemberRole::Admin,
+        };
+        let check = |key_id: &[u8; 32]| {
+            ensure_sealed_for_the_tree(
+                &store,
+                &crate::LIVE_FALLBACK_AUTHORIZER,
+                &board,
+                &add,
+                key_id,
+                &[],
+            )
+        };
+
+        assert!(check(&ns_key_id).is_err(), "sealed under the workspace key");
+        assert!(
+            check(&space_key_id).is_ok(),
+            "sealed under the space's own key"
+        );
     }
 
     #[test]
