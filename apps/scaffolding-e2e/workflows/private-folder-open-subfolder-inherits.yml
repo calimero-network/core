@@ -311,6 +311,12 @@ steps:
     - private-folders-2
     timeout: 30
     check_interval: 2
+    expect:
+      method: get
+      args:
+        key: from_b
+      equals:
+        output: b_msg
 
   - name: Alice reads Bob's write
     type: call
@@ -346,6 +352,12 @@ steps:
     - private-folders-2
     timeout: 30
     check_interval: 2
+    expect:
+      method: get
+      args:
+        key: from_a_to_b
+      equals:
+        output: a_msg
 
   - name: Bob reads Alice's write
     type: call
