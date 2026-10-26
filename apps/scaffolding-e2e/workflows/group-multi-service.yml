@@ -201,6 +201,12 @@ steps:
       - e2e-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "service_key"
+      equals:
+        output: "in_store_b"
 
   - name: Node-1 reads service_key from store-b (must be set)
     type: call
@@ -251,6 +257,12 @@ steps:
       - e2e-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "handler_key"
+      equals:
+        output: "handler_value"
 
   - name: Node-2 verifies handler_key synced in store-a
     type: call

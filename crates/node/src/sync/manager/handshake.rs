@@ -3,13 +3,37 @@
 //! DAG-heads fallback) used for protocol negotiation. Extracted from the
 //! manager god-file as an `impl SyncManager` fragment.
 
+use calimero_node_primitives::sync::DEEP_TREE_DEPTH;
 use calimero_node_primitives::sync::{
     build_handshake_from_raw, estimate_entity_count, estimate_max_depth, SyncHandshake,
 };
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::ContextId;
+use calimero_storage::address::Id;
+use calimero_storage::index::Index;
+use calimero_storage::store::{MainStorage, StorageAdaptor};
 
 use super::SyncManager;
+
+const TREE_STATS_MAX_NODES: usize = 1000; // bounds the children read per handshake
+
+/// Levels under `id` (a lone node is 1), counted down to `cap`; a node too wide
+/// for the remaining `nodes_left` budget counts as one level, unexpanded.
+fn capped_depth<S: StorageAdaptor>(id: Id, cap: u32, nodes_left: &mut usize) -> u32 {
+    let width = Index::<S>::child_count(id) as usize;
+    if cap <= 1 || width == 0 {
+        return 1;
+    }
+    if width > *nodes_left {
+        return 2;
+    }
+    *nodes_left -= width;
+    let children = Index::<S>::get_children_of(id).unwrap_or_default();
+    let deepest = children
+        .iter()
+        .map(|c| capped_depth::<S>(c.id(), cap - 1, nodes_left));
+    1 + deepest.max().unwrap_or(0)
+}
 
 impl SyncManager {
     /// Build `SyncHandshake` from local context state for protocol negotiation.
@@ -50,10 +74,7 @@ impl SyncManager {
     /// Index is unavailable (e.g., fresh node or deserialization mismatch).
     fn query_tree_stats(&self, context_id: &ContextId) -> Option<(u64, u32)> {
         use calimero_node_primitives::sync::create_runtime_env;
-        use calimero_storage::address::Id;
         use calimero_storage::env::with_runtime_env;
-        use calimero_storage::index::Index;
-        use calimero_storage::store::MainStorage;
 
         let store = self.context_client.datastore_handle().into_inner();
         // SAFETY: identity is unused for read-only Index queries via RuntimeEnv
@@ -85,9 +106,11 @@ impl SyncManager {
             >::child_count(root_id)
             .max(1);
 
-            // Depth: 1 when root has data (consistent with fallback).
-            // For deeper trees, we'd need recursive traversal — tracked in #2054.
-            let max_depth = 1;
+            let max_depth = capped_depth::<MainStorage>(
+                root_id,
+                DEEP_TREE_DEPTH + 1,
+                &mut TREE_STATS_MAX_NODES.clone(),
+            );
 
             Some((entity_count, max_depth))
         })
@@ -108,5 +131,66 @@ impl SyncManager {
         let max_depth = estimate_max_depth(entity_count);
 
         build_handshake_from_raw(root_hash, entity_count, max_depth, peer_dag_heads.to_vec())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_storage::action::Action;
+    use calimero_storage::address::Id;
+    use calimero_storage::entities::{ChildInfo, Metadata};
+    use calimero_storage::index::Index;
+    use calimero_storage::interface::{ApplyContext, Interface};
+    use calimero_storage::store::MockedStorage;
+
+    use super::capped_depth;
+
+    type S = MockedStorage<9001>;
+
+    fn root() -> ChildInfo {
+        Index::<S>::add_root(ChildInfo::new(
+            Id::new([0; 32]),
+            [0; 32],
+            Metadata::default(),
+        ))
+        .unwrap();
+        let (hash, _) = Index::<S>::get_hashes_for(Id::new([0; 32]))
+            .unwrap()
+            .unwrap();
+        ChildInfo::new(Id::new([0; 32]), hash, Metadata::default())
+    }
+
+    /// Adds `id` under the chain `ancestors` (nearest parent first).
+    fn add(id: u8, ancestors: Vec<ChildInfo>) -> ChildInfo {
+        let action = Action::Update {
+            id: Id::new([id; 32]),
+            data: vec![id],
+            ancestors,
+            metadata: Metadata::default(),
+        };
+        Interface::<S>::apply_action(action, &ApplyContext::empty()).unwrap();
+        let (hash, _) = Index::<S>::get_hashes_for(Id::new([id; 32]))
+            .unwrap()
+            .unwrap();
+        ChildInfo::new(Id::new([id; 32]), hash, Metadata::default())
+    }
+
+    #[test]
+    fn a_flat_tree_is_two_levels() {
+        let root = root();
+        add(1, vec![root.clone()]);
+        add(2, vec![root]);
+        assert_eq!(capped_depth::<S>(Id::new([0; 32]), 4, &mut 1000), 2);
+    }
+
+    #[test]
+    fn a_deep_tree_stops_at_the_cap() {
+        let root = root();
+        let a = add(1, vec![root.clone()]);
+        let b = add(2, vec![a.clone(), root.clone()]);
+        let c = add(3, vec![b.clone(), a.clone(), root.clone()]);
+        add(4, vec![c, b, a, root]);
+        assert_eq!(capped_depth::<S>(Id::new([0; 32]), 4, &mut 1000), 4);
+        assert_eq!(capped_depth::<S>(Id::new([0; 32]), 3, &mut 1000), 3);
     }
 }

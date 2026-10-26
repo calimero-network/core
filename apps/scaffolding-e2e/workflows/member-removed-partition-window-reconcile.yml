@@ -175,6 +175,12 @@ steps:
       - e2e-node-3
     timeout: 30
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "during_partition"
+      equals:
+        output: "node2_write_admin_will_miss"
 
   - name: Confirm node-3 has node-2's write
     type: call

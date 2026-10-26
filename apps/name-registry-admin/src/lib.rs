@@ -74,6 +74,18 @@ pub struct NameView {
     pub mine: bool,
 }
 
+/// The claims on a name, the same on every node that holds them.
+#[derive(Debug, PartialEq, Eq, Serialize, AbiType)]
+#[serde(crate = "calimero_sdk::serde")]
+pub struct ClaimTally {
+    /// How many accounts hold a claim, stale ones included.
+    pub claims: u32,
+    /// How many of those ask for the name to be freed.
+    pub releases: u32,
+    /// The newest epoch any claim bids for.
+    pub epoch: u32,
+}
+
 /// A username is 3 to 32 of `a-z`, `0-9` and `_`.
 fn is_username(name: &str) -> bool {
     (3..=32).contains(&name.len())
@@ -235,6 +247,17 @@ impl AdminNameRegistry {
         })
     }
 
+    /// The claims on `name`, without the caller-relative fields of `status`.
+    pub fn claim_tally(&self, name: String) -> app::Result<ClaimTally> {
+        let claims = self.names.claimants(&name)?;
+        let n = |count: usize| u32::try_from(count).unwrap_or(u32::MAX);
+        Ok(ClaimTally {
+            claims: n(claims.len()),
+            releases: n(claims.iter().filter(|(_, c)| c.release).count()),
+            epoch: claims.iter().map(|(_, c)| c.epoch).max().unwrap_or(0),
+        })
+    }
+
     /// Who owns `name`, once an admin has granted it.
     pub fn owner_of(&self, name: String) -> app::Result<Option<String>> {
         Ok(self.names.owner_of(&name)?.map(|owner| owner.to_string()))
@@ -391,6 +414,39 @@ mod tests {
         );
         let former = status_of(&mut app, winner, "rose");
         assert_eq!((former.state.as_str(), former.mine), ("owned", false));
+    }
+
+    #[test]
+    fn the_tally_is_the_same_whoever_asks() {
+        let (mut app, admin) = registry();
+        let tally = |app: &mut TestHost<AdminNameRegistry>, who: [u8; 32]| {
+            app.call_as_account(who, who, |s| s.claim_tally("rose".into()))
+                .unwrap()
+        };
+        claim(&mut app, ANN, "rose");
+        claim(&mut app, BOB, "rose");
+        let expect = |claims, releases, epoch| ClaimTally {
+            claims,
+            releases,
+            epoch,
+        };
+        assert_eq!(tally(&mut app, ANN), expect(2, 0, 0));
+        assert_eq!(tally(&mut app, BOB), expect(2, 0, 0));
+
+        let first = resolve(&mut app, admin, "rose").unwrap().unwrap();
+        let (winner, loser) = if first == account(ANN) {
+            (ANN, BOB)
+        } else {
+            (BOB, ANN)
+        };
+        app.call_as_account(winner, winner, |s| s.let_go("rose".into()))
+            .unwrap();
+        assert_eq!(tally(&mut app, loser), expect(2, 1, 0));
+        assert_eq!(resolve(&mut app, admin, "rose").unwrap(), None);
+        app.call_as_account(loser, loser, |s| s.rebid("rose".into()))
+            .unwrap();
+        assert_eq!(tally(&mut app, winner), expect(2, 1, 1));
+        assert_eq!(tally(&mut app, loser), expect(2, 1, 1));
     }
 
     #[test]

@@ -303,6 +303,10 @@ steps:
       - app-migration-additive-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_notes
+      equals:
+        output: "additive-scenario-post-migration"
 
   - name: Node 2 reads notes back via v2-only get_notes
     type: call

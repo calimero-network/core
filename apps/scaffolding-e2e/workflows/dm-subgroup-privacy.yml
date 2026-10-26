@@ -224,6 +224,8 @@ steps:
 
   - name: Wait for private-context sync between node-2 and node-3
     type: wait_for_sync
+    description: >-
+      lint-convergence: ok - node-1 is walled out of the private context and cannot be in its barrier.
     context_id: '{{ctx_priv}}'
     nodes:
       - e2e-node-2

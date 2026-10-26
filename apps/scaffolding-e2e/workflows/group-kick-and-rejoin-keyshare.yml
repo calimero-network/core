@@ -227,6 +227,12 @@ steps:
       - kick-rejoin-node-3
     timeout: 30
     check_interval: 2
+    expect:
+      method: get
+      args:
+        key: "pre_kick"
+      equals:
+        output: "node2_msg_before_kick"
 
   - name: Pre-kick — node-3 reads node-2's write
     type: call
@@ -455,6 +461,12 @@ steps:
       - kick-rejoin-node-3
     timeout: 60
     check_interval: 2
+    expect:
+      method: get
+      args:
+        key: "post_rejoin"
+      equals:
+        output: "node2_msg_after_rejoin"
 
   - name: Post-rejoin — node-3 reads node-2's write
     type: call

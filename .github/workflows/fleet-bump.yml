@@ -308,6 +308,9 @@ jobs:
           - the cargo-mero pin in \`.github/actions/install-cargo-mero\` and in the
             per-app dev scripts and Makefiles. Nothing checks those, and they had
             drifted up to four releases behind by the time this was automated
+          - \`CORE_REF\` in Mero Chat's \`mobile/e2e/run-relay.sh\`, to the commit
+            \`$VERSION\` is tagged at. The mobile live tests build their relay's merod
+            from it, and that runtime refuses a bundle built against a newer release
           - \`Cargo.lock\`, resolved once for the workspace
 
           **Merging this publishes all sixteen apps.** \`release.yml\` fans out on any

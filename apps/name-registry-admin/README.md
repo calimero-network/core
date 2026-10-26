@@ -34,6 +34,8 @@ take the role back.
 - `admins()` — the accounts that may resolve
 - `status(name)` — `free`, `pending`, `owned` or `lost` as the caller sees it,
   with the owner and the epoch it holds the name at
+- `claim_tally(name)` — how many claims, releases and the newest epoch a name
+  holds, the same on every node
 - `owner_of(name)` — the owner, once an admin has granted the name
 - `display_of(name)`, `me()`
 

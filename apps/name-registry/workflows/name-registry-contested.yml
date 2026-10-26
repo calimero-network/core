@@ -361,6 +361,12 @@ steps:
       - names-enclave
     timeout: 60
     check_interval: 2
+    expect:
+      method: owner_of
+      args:
+        name: "rose"
+      equals:
+        output: "{{player_account}}"
 
   - name: The owner node reads who owns rose now
     type: call

@@ -43,6 +43,10 @@ steps:
       - fuzzy-e2e-node-4
     timeout: 60
     check_interval: 2
+    expect:
+      method: len
+      equals:
+        output: 0
 
   - name: Verify all nodes synced
     type: assert

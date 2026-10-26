@@ -47,6 +47,10 @@ steps:
       - calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_text
+      equals:
+        output: "existing text. "
 
   - name: Get Seeded Text (Node 2)
     type: call

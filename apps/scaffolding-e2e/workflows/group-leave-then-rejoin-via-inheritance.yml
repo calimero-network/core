@@ -224,6 +224,12 @@ steps:
       - leave-rejoin-node-3
     timeout: 30
     check_interval: 2
+    expect:
+      method: get
+      args:
+        key: "pre_leave"
+      equals:
+        output: "node2_msg_before_leave"
 
   - name: Pre-leave — node-3 reads node-2's write
     type: call
@@ -421,6 +427,12 @@ steps:
       - leave-rejoin-node-3
     timeout: 90
     check_interval: 2
+    expect:
+      method: get
+      args:
+        key: "post_readd"
+      equals:
+        output: "node2_msg_after_readd"
 
   - name: Post-re-add — node-3 reads node-2's write
     type: call
