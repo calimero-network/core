@@ -657,3 +657,59 @@ fn the_two_rotation_refusals_are_told_apart() {
         Err(Rejected::RotationSignatureInvalid),
     );
 }
+
+/// Moving or deleting a folder inside a private space takes authority in that space; a
+/// root admin outside it has none.
+#[test]
+fn a_root_admin_outside_a_private_space_cannot_move_or_delete_a_folder_in_it() {
+    use crate::view::SubgroupEdge;
+
+    let (owner, space_admin) = (AccountId::from([1u8; 32]), AccountId::from([2u8; 32]));
+    let root = ContextGroupId::from([9u8; 32]);
+    let (space, folder) = (
+        ContextGroupId::from([0x0A; 32]),
+        ContextGroupId::from([0x0B; 32]),
+    );
+    let mut view = AclView {
+        root_admin: Some(owner),
+        ..Default::default()
+    };
+    let _ = view.subgroups.insert(
+        ScopeId::from(space.to_bytes()),
+        SubgroupEdge {
+            parent: ScopeId::from(root.to_bytes()),
+            restricted: true,
+        },
+    );
+    let _ = view.subgroups.insert(
+        ScopeId::from(folder.to_bytes()),
+        SubgroupEdge {
+            parent: ScopeId::from(space.to_bytes()),
+            restricted: false,
+        },
+    );
+    let _ = view.group_admin.insert(space, space_admin);
+    let view = bind_account(bind_account(view, owner), space_admin);
+
+    let moves = |author| {
+        op_with(
+            author,
+            OpPayload::SubgroupReparented {
+                child: ScopeId::from(folder.to_bytes()),
+                new_parent: ScopeId::from(root.to_bytes()),
+            },
+        )
+    };
+    let deletes = |author| {
+        op_with(
+            author,
+            OpPayload::SubgroupDeleted {
+                scope: ScopeId::from(folder.to_bytes()),
+            },
+        )
+    };
+    assert!(authorize(&moves(owner), &view).is_err());
+    assert!(authorize(&deletes(owner), &view).is_err());
+    assert!(authorize(&moves(space_admin), &view).is_ok());
+    assert!(authorize(&deletes(space_admin), &view).is_ok());
+}

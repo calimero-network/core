@@ -272,9 +272,11 @@ pub(crate) fn payload_group(op: &Op) -> Option<ContextGroupId> {
             Some(ContextGroupId::from(*scope.as_bytes()))
         }
         OpPayload::SubgroupCreated { parent, .. } => Some(ContextGroupId::from(*parent.as_bytes())),
-        OpPayload::SubgroupReparented { .. }
-        | OpPayload::SubgroupDeleted { .. }
-        | OpPayload::AdminChanged { .. }
+        // A move or delete is judged in the folder it acts on, so a removal from its space
+        // reaches it.
+        OpPayload::SubgroupReparented { child: scope, .. }
+        | OpPayload::SubgroupDeleted { scope } => Some(ContextGroupId::from(*scope.as_bytes())),
+        OpPayload::AdminChanged { .. }
         | OpPayload::DeviceRevoked { .. }
         | OpPayload::PolicyUpdated { .. } => Some(root()),
         _ => None,

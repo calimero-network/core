@@ -240,10 +240,18 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
                 Err(Rejected::NotRootAdmin)
             }
         }
-        OpPayload::PolicyUpdated { .. }
-        | OpPayload::SubgroupCreated { .. }
-        | OpPayload::SubgroupReparented { .. }
-        | OpPayload::SubgroupDeleted { .. } => {
+        // A move or delete inside a private space takes authority in that space.
+        OpPayload::SubgroupReparented { child: scope, .. }
+        | OpPayload::SubgroupDeleted { scope } => {
+            let group = ContextGroupId::from(*scope.as_bytes());
+            match acl_at_cut.private_space(group) {
+                Some(space) if acl_at_cut.administers_within(&op.author(), group, space) => Ok(()),
+                Some(_) => Err(Rejected::NotGroupAdmin),
+                None if acl_at_cut.is_root_admin(&op.author()) => Ok(()),
+                None => Err(Rejected::NotRootAdmin),
+            }
+        }
+        OpPayload::PolicyUpdated { .. } | OpPayload::SubgroupCreated { .. } => {
             if acl_at_cut.is_root_admin(&op.author()) {
                 Ok(())
             } else {

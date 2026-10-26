@@ -100,6 +100,32 @@ impl AclView {
         .take(MAX_NAMESPACE_DEPTH + 1)
     }
 
+    /// The private space containing `group`: its nearest restricted ancestor-or-self.
+    #[must_use]
+    pub fn private_space(&self, group: ContextGroupId) -> Option<ContextGroupId> {
+        self.group_and_ancestors(group).find(|g| {
+            self.subgroups
+                .get(&ScopeId::from(g.to_bytes()))
+                .is_some_and(|edge| edge.restricted)
+        })
+    }
+
+    /// Whether `author` administers `group` or a group above it up to and including
+    /// `space`, its private space; the root admin has no authority there unless it is
+    /// an admin inside it.
+    #[must_use]
+    pub fn administers_within(
+        &self,
+        author: &AccountId,
+        group: ContextGroupId,
+        space: ContextGroupId,
+    ) -> bool {
+        self.group_and_ancestors(group)
+            .take_while(|g| *g != space)
+            .chain(core::iter::once(space))
+            .any(|g| self.is_group_admin(author, g))
+    }
+
     /// `group` and every ancestor above it, nearest first — the set of groups
     /// whose ops can move an authority question asked about `group`.
     ///

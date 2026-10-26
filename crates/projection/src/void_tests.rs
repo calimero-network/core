@@ -1371,3 +1371,29 @@ fn the_fold_budget_grows_with_the_log() {
     assert_eq!(crate::fold_budget_for(10), crate::MAX_FOLD_WORK);
     assert!(crate::fold_budget_for(1_000_000) > crate::MAX_FOLD_WORK);
 }
+
+#[test]
+fn a_removal_from_a_space_voids_the_signers_concurrent_move_or_delete_of_a_folder_in_it() {
+    let (mut log, head) = eng_private_space();
+    let removal = remove_from(subgroup(0x42), ALICE, &[&head], SAM);
+    let moves = gov(
+        SAM,
+        &[&head],
+        OpPayload::SubgroupReparented {
+            child: ScopeId::from(subgroup(0x43).to_bytes()),
+            new_parent: ScopeId::from(group().to_bytes()),
+        },
+    );
+    let deletes = gov(
+        SAM,
+        &[&head],
+        OpPayload::SubgroupDeleted {
+            scope: ScopeId::from(subgroup(0x43).to_bytes()),
+        },
+    );
+    log.extend([removal, moves.clone(), deletes.clone()]);
+
+    let voided = void(&log);
+    assert!(voided.contains(&moves.id()));
+    assert!(voided.contains(&deletes.id()));
+}
