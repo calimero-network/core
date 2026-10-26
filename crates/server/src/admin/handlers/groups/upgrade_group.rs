@@ -35,6 +35,31 @@ pub async fn handler(
 
     info!(group_id=%group_id_str, %req.target_application_id, "Initiating group upgrade");
 
+    // Approved before the upgrade, so a refused approval leaves nothing changed,
+    // and the upgraded app's first run finds what it was approved.
+    let outbound_approval = match req.approve_outbound.clone() {
+        None => None,
+        Some(selection) => {
+            match crate::admin::handlers::namespaces::outbound_approvals::approve(
+                &state,
+                group_id,
+                req.target_application_id,
+                selection,
+                false,
+            )
+            .await
+            {
+                Ok(approved) => Some(
+                    crate::admin::handlers::namespaces::outbound_approvals::api_data(&approved),
+                ),
+                Err(err) => {
+                    debug!(group_id=%group_id_str, error=?err, "Approving outbound requests failed; not upgrading");
+                    return err.into_response();
+                }
+            }
+        }
+    };
+
     let result = state
         .ctx_client
         .upgrade_group(UpgradeGroupRequest {
@@ -61,6 +86,7 @@ pub async fn handler(
                         local_contexts_failed: failed,
                         contexts_trialled: resp.contexts_trialled,
                         contexts_not_held: resp.contexts_not_held,
+                        outbound_approval,
                     },
                 },
             }

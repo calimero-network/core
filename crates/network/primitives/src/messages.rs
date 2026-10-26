@@ -353,6 +353,11 @@ impl actix::Message for OpenStream {
     type Result = eyre::Result<Stream>;
 }
 
+/// The error of an [`OpenStream`] whose peer could not be dialed, so it was never reached.
+#[derive(Debug, thiserror::Error)]
+#[error("Failed to open stream: dial failed: {0}")]
+pub struct DialFailed(pub std::io::Error);
+
 /// Request the last known dialable addresses for a peer.
 ///
 /// Answered from the persistent peer-address cache, not from the live swarm, so

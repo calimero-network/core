@@ -75,6 +75,7 @@ pub mod nonce_window;
 mod on_behalf;
 mod op_budget;
 mod ops;
+mod outbound_approvals;
 mod owner_guard;
 mod pending_admission;
 mod pending_namespace_purge;
@@ -125,6 +126,7 @@ pub use self::device_link::{
 };
 pub use self::forgotten::{ForgottenNamespace, ForgottenNamespaces};
 pub use self::ops::group::shared_writers_rotated::require_context_not_rotated;
+pub use self::outbound_approvals::{OutboundApproval, OutboundApprovalRepository};
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
 pub use self::void_ledger::{parked_op, Parked};
@@ -198,8 +200,8 @@ pub use self::tee::{
     TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS,
 };
 pub use self::tee_vault::{
-    retired_tee_vault_keys, seal_tee_vault_key, tee_vault, tee_vault_deliveries, tee_vault_keys,
-    TeeVault, TeeVaultDelivery,
+    retired_tee_vault_keys, seal_tee_vault_key, tee_outbound_keys, tee_sealing_key, tee_vault,
+    tee_vault_deliveries, tee_vault_keys, TeeVault, TeeVaultDelivery,
 };
 pub use self::upgrade_ladder::UpgradeLadderRepository;
 pub use self::upgrades::UpgradesRepository;

@@ -26,41 +26,42 @@ use tokio::sync::oneshot;
 use crate::group::{
     AbortMigrationRequest, AbortMigrationResponse, ActivateNamespaceUpgradeRequest,
     ActivateNamespaceUpgradeResponse, ActivateUpgradeRequest, AddGroupMembersRequest,
-    AdmitTeeNodeRequest, AttestFoundingRelayRequest, BroadcastGroupLocalStateRequest,
-    CascadeStatusEntry, CreateGroupInvitationRequest, CreateGroupInvitationResponse,
-    CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse,
-    DeleteNamespaceRequest, DeleteNamespaceResponse, DetachContextFromGroupRequest,
-    GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
-    GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
-    GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse, GetMemberMetadataRequest,
-    GetMigrationStatusRequest, GetNamespaceIdentityRequest, GovernOnBehalfRequest,
-    GovernOnBehalfResponse, GroupContextEntry, GroupInfoResponse, GroupSummary, GroupUpgradeInfo,
-    IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest, IssueOwnershipProofResponse,
-    JoinContextRequest, JoinContextResponse, JoinGroupRequest, JoinGroupResponse,
-    JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse, LabelDeviceRequest,
-    LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse,
-    LeaveNamespaceRequest, LeaveNamespaceResponse, LinkAccountDeviceRequest, ListAllGroupsRequest,
-    ListGroupContextsRequest, ListGroupMembersRequest, ListGroupMembersResponse,
-    ListNamespacesForApplicationRequest, ListNamespacesRequest, MigrationStatus,
-    NamespaceParticipation, NamespaceSummary, PairDeviceCompleteRequest, PairDeviceInitRequest,
-    RejoinNamespaceRequest, RelinkDeviceRequest, RemoveGroupMembersRequest, RescopeDeviceRequest,
-    ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest, RevokeDeviceRequest,
-    RotateGroupKeyRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
-    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
-    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
-    SetTeeAuthoringPolicyRequest, StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest,
-    StoreGroupContextRequest, StoreGroupMetaRequest, StoreGroupMetadataRequest,
-    StoreMemberCapabilityRequest, StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest,
-    SyncGroupRequest, SyncGroupResponse, TrialUpgradeRequest, UpdateMemberRoleRequest,
-    UpgradeGroupRequest, UpgradeGroupResponse,
+    AdmitTeeNodeRequest, ApproveOutboundRequest, ApproveOutboundResponse,
+    AttestFoundingRelayRequest, BroadcastGroupLocalStateRequest, CascadeStatusEntry,
+    CreateGroupInvitationRequest, CreateGroupInvitationResponse, CreateGroupRequest,
+    CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse, DeleteNamespaceRequest,
+    DeleteNamespaceResponse, DetachContextFromGroupRequest, GetCascadeStatusRequest,
+    GetContextMetadataRequest, GetGroupForContextRequest, GetGroupInfoRequest,
+    GetGroupMetadataRequest, GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest,
+    GetMemberCapabilitiesResponse, GetMemberMetadataRequest, GetMigrationStatusRequest,
+    GetNamespaceIdentityRequest, GovernOnBehalfRequest, GovernOnBehalfResponse, GroupContextEntry,
+    GroupInfoResponse, GroupSummary, GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest,
+    IssueOwnershipProofRequest, IssueOwnershipProofResponse, JoinContextRequest,
+    JoinContextResponse, JoinGroupRequest, JoinGroupResponse, JoinSubgroupInheritanceRequest,
+    JoinSubgroupInheritanceResponse, LabelDeviceRequest, LeaveContextRequest, LeaveContextResponse,
+    LeaveGroupRequest, LeaveGroupResponse, LeaveNamespaceRequest, LeaveNamespaceResponse,
+    LinkAccountDeviceRequest, ListAllGroupsRequest, ListGroupContextsRequest,
+    ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
+    ListNamespacesRequest, MigrationStatus, NamespaceParticipation, NamespaceSummary,
+    PairDeviceCompleteRequest, PairDeviceInitRequest, RejoinNamespaceRequest, RelinkDeviceRequest,
+    RemoveGroupMembersRequest, RescopeDeviceRequest, ResyncContextRequest, ResyncContextResponse,
+    RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
+    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
+    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
+    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, SetTeeAuthoringPolicyRequest,
+    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
+    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
+    SyncGroupResponse, TrialUpgradeRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
     AcquireContextLockRequest, ApplySignedGroupOpRequest, ApplySignedNamespaceOpRequest,
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
-    DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse, InternalErrorKind,
-    MethodNotExported, MigrationParams, NamespaceApplyOutcome, PrecompileApplicationRequest,
-    ReadAs, UpdateApplicationRequest, WriteSource,
+    DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse, ForwardedOutboundRequest,
+    InternalErrorKind, MethodNotExported, MigrationParams, NamespaceApplyOutcome,
+    PrecompileApplicationRequest, ReadAs, UpdateApplicationRequest, WriteSource,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -1940,6 +1941,12 @@ impl ContextClient {
         eyre::Result<DeleteNamespaceResponse>
     );
     forward_to_actor!(
+        forwarded_outbound,
+        ForwardedOutbound,
+        ForwardedOutboundRequest,
+        eyre::Result<Vec<u8>>
+    );
+    forward_to_actor!(
         rejoin_namespace,
         RejoinNamespace,
         RejoinNamespaceRequest,
@@ -2208,6 +2215,12 @@ impl ContextClient {
         SetTeeAdmissionPolicy,
         SetTeeAdmissionPolicyRequest,
         eyre::Result<()>
+    );
+    forward_to_actor!(
+        approve_outbound,
+        ApproveOutbound,
+        ApproveOutboundRequest,
+        eyre::Result<ApproveOutboundResponse>
     );
     forward_to_actor!(
         set_tee_authoring_policy,

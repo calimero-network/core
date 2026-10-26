@@ -9813,6 +9813,38 @@ fn an_open_join_by_a_device_its_account_never_linked_is_refused() {
     );
 }
 
+#[test]
+fn an_open_join_naming_another_namespaces_subgroup_is_refused() {
+    let store = test_store();
+    let ns_a = [0xC1u8; 32];
+    let foreign = [0xD2u8; 32];
+    let joiner_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+    let joiner = joiner_sk.public_key();
+    let account = crate::test_fixtures::account_for(&joiner);
+    namespace_with_open_subgroup(&store, ns_a, [0xD1u8; 32], &account);
+    // A group under no namespace of this node's is its own root.
+    MetaRepository::new(&store)
+        .save(
+            &ContextGroupId::from(foreign),
+            &sample_meta_with_admin(account),
+        )
+        .expect("seed the foreign group");
+
+    let account = crate::test_fixtures::real_join_account(&joiner);
+    link_device(&store, ns_a, &account);
+    let err = apply_open_join_with(&store, ns_a, foreign, &joiner_sk, account)
+        .expect_err("a join into this namespace cannot name another namespace's subgroup");
+    assert!(
+        err.chain().any(|c| matches!(
+            c.downcast_ref::<crate::ApplyError>(),
+            Some(crate::ApplyError::MemberJoinedOpenRejected(
+                crate::MemberJoinedOpenRejection::WrongNamespace { .. }
+            ))
+        )),
+        "{err:?}"
+    );
+}
+
 /// Bind `account`'s device in the namespace, as the link that carried it in would.
 fn link_device(
     store: &Store,

@@ -293,6 +293,7 @@ impl VMLogic<'_> {
             fn tee_origin() -> u32;
             fn tee_random_bytes(ptr: u64);
             fn tee_authority_keys(register_id: u64);
+            fn tee_sealing_key(register_id: u64) -> u32;
             fn account_device_keys(account_ptr: u64, register_id: u64) -> u32;
             fn shared_writers(cell_ptr: u64, register_id: u64) -> u32;
             fn shared_writers_rotate(rotation_ptr: u64);
