@@ -196,6 +196,12 @@ steps:
       - kick-readd-node-3
     timeout: 30
     check_interval: 2
+    expect:
+      method: get
+      args:
+        key: "pre_kick"
+      equals:
+        output: "node2_first_msg"
 
   - name: Pre-kick — node-3 reads node-2's write
     type: call
@@ -345,6 +351,12 @@ steps:
       - kick-readd-node-3
     timeout: 60
     check_interval: 2
+    expect:
+      method: get
+      args:
+        key: "post_readd"
+      equals:
+        output: "node2_back_msg"
 
   - name: Post-readd — node-3 reads node-2's write
     type: call

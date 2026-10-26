@@ -113,6 +113,12 @@ steps:
       - sync-autoresync-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: baseline
+      equals:
+        output: pre_restart
 
   - name: Read baseline on node-2 (sanity)
     type: call
@@ -177,6 +183,12 @@ steps:
       - sync-autoresync-node-2
     timeout: 90
     trigger_sync: false
+    expect:
+      method: get
+      args:
+        key: post_restart_new
+      equals:
+        output: auto_discovery_test
 
   - name: Read post-restart key on node-2
     type: call

@@ -220,6 +220,12 @@ steps:
     context_id: '{{context_id}}'
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: from-laptop
+      equals:
+        output: laptop-wrote-this
 
   - name: Node-1 reads the first device's write
     type: call
@@ -311,6 +317,12 @@ steps:
     context_id: '{{context_id}}'
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: from-phone
+      equals:
+        output: phone-wrote-this
 
   - name: Node-1 reads the paired device's write
     type: call
@@ -435,6 +447,8 @@ steps:
 
   - name: Settle the survivor's write across the remaining devices
     type: wait_for_sync
+    description: >-
+      lint-convergence: ok - node-3 is revoked, so waiting for it would wait for the failure under test.
     # node-3 is deliberately absent: it is revoked, so waiting for it to converge
     # would be waiting for the failure this scenario exists to prevent.
     nodes:
@@ -443,6 +457,12 @@ steps:
     context_id: '{{context_id}}'
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: from-laptop
+      equals:
+        output: laptop-still-works
 
   - name: Node-1 sees the survivor's write and not the revoked device's
     type: call

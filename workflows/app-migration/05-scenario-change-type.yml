@@ -255,6 +255,10 @@ steps:
       - app-migration-typechange-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_counter
+      equals:
+        output: "not-a-number-anymore"
 
   - name: Node 2 reads counter back via v5 get_counter
     type: call

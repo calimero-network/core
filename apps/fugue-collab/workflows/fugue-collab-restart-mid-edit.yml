@@ -73,6 +73,10 @@ steps:
     nodes: [fugue-node-1, fugue-node-2, fugue-node-3]
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_text
+      equals:
+        output: "SEED.-THREE"
 
 
   - name: Restart Node 3's container
@@ -119,6 +123,10 @@ steps:
     nodes: [fugue-node-1, fugue-node-2]
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_text
+      equals:
+        output: "ONE-SEED.-THREE"
 
   - name: Node 2 appends behind Node 3's passage
     type: call

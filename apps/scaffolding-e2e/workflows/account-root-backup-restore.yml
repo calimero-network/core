@@ -203,6 +203,12 @@ steps:
     context_id: '{{context_id}}'
     timeout: 60
     trigger_sync: true
+    expect:
+      method: shared_is_writer
+      args:
+        account: '{{original_account}}'
+      equals:
+        output: true
 
   - name: The writer set before the disk dies
     type: call
@@ -461,6 +467,10 @@ steps:
     context_id: '{{context_id}}'
     timeout: 90
     trigger_sync: true
+    expect:
+      method: shared_get
+      equals:
+        output: written-by-the-recovered-device
 
   - name: What node-1 holds after the recovered device wrote
     type: call

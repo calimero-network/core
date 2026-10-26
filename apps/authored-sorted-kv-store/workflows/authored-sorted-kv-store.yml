@@ -103,6 +103,12 @@ steps:
       - authored-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "{{node1_key_path}}"
+      equals:
+        output: "from node one"
 
   - name: Node 2 reads the topic
     type: call
@@ -225,6 +231,12 @@ steps:
       - authored-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "{{node2_key_path}}"
+      equals:
+        output: "from node two"
 
   - name: Node 1 reads the topic
     type: call
@@ -269,6 +281,10 @@ steps:
       - authored-node-2
     timeout: 120
     trigger_sync: true
+    expect:
+      method: count_all
+      equals:
+        output: 152
 
   - name: Node 1 counts the whole collection
     type: call

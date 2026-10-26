@@ -81,6 +81,10 @@ steps:
       - new-calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_shared
+      equals:
+        output: "initial-from-node1"
 
   - name: Node 2 reads the synced value
     type: call
@@ -118,6 +122,12 @@ steps:
       - new-calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: map_get
+      args:
+        key: "greeting"
+      equals:
+        output: "hello"
 
   - name: Node 2 reads the writer's map entry
     type: call
@@ -225,6 +235,10 @@ steps:
       - new-calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_shared
+      equals:
+        output: "post-rotation-from-node2"
 
   - name: Node 1 reads the post-rotation value
     type: call

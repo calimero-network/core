@@ -193,6 +193,12 @@ steps:
     context_id: '{{context_id}}'
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: from-the-laptop
+      equals:
+        output: before-the-loss
 
   - name: The tablet saw the laptop's write
     type: call

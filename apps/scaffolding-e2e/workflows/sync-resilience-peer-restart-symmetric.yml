@@ -110,6 +110,12 @@ steps:
       - sync-resil-node-2
     timeout: 90
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: baseline
+      equals:
+        output: pre_restart
 
   - name: Read baseline on node-2 (sanity)
     type: call
@@ -161,6 +167,12 @@ steps:
       - sync-resil-node-2
     timeout: 150
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: post_restart
+      equals:
+        output: recovered_via_relay
 
   - name: Read post-restart key on node-2
     type: call

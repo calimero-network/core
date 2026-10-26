@@ -65,6 +65,12 @@ steps:
       - team-custom-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_wins
+      args:
+        team_id: team-alpha
+      equals:
+        output: 2
 
   - name: Get wins from Node 1
     type: call
@@ -166,6 +172,12 @@ steps:
       - team-custom-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_losses
+      args:
+        team_id: team-alpha
+      equals:
+        output: 1
 
   - name: Get losses from Node 2
     type: call
@@ -205,6 +217,12 @@ steps:
       - team-custom-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_draws
+      args:
+        team_id: team-alpha
+      equals:
+        output: 1
 
   - name: Get draws from Node 1
     type: call
@@ -244,6 +262,12 @@ steps:
       - team-custom-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_wins
+      args:
+        team_id: team-beta
+      equals:
+        output: 1
 
   - name: Get team-beta wins from Node 1
     type: call

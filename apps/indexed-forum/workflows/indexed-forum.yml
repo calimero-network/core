@@ -140,6 +140,14 @@ steps:
       - forum-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: board_stats
+      args:
+        board: "ops"
+      equals:
+        output:
+          posts: 1
+          pinned: 0
 
   - name: Node 2 reads dev's rust feed
     type: call

@@ -95,6 +95,12 @@ steps:
       - e2e-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "group_key1"
+      equals:
+        output: "from_node1"
 
   - name: Node-2 reads from context 1
     type: call
@@ -128,6 +134,12 @@ steps:
       - e2e-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "group_key2"
+      equals:
+        output: "from_node2"
 
   - name: Node-1 reads node-2 value
     type: call
@@ -189,6 +201,12 @@ steps:
       - e2e-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "ctx3_test"
+      equals:
+        output: "invite_join_works"
 
   - name: Node-1 reads from context 3
     type: call

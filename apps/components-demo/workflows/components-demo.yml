@@ -71,6 +71,10 @@ steps:
       - new-calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_config
+      equals:
+        output: "owner-config"
 
   - name: Node 2 reads the owner's config
     type: call

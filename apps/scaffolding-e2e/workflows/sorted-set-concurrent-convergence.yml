@@ -89,6 +89,10 @@ steps:
       - sortedset-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: len
+      equals:
+        output: 0
 
   # --- Concurrent SortedSet adds: node-1 adds "a", node-2 adds "b" ---
   # Issued back-to-back with NO sync in between, so each node applies its own

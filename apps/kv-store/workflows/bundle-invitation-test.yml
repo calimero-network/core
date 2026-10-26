@@ -57,6 +57,10 @@ steps:
       - calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: len
+      equals:
+        output: 0
 
   # ============================================
   # Verification Phase: Verify User 2 has bundle installed and can use it
@@ -91,6 +95,12 @@ steps:
       - calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "test_key"
+      equals:
+        output: "test_value"
 
   # Step 10: Verify User 2 can read the value
   - name: Call Get Method on Node 2

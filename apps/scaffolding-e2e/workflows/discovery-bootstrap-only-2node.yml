@@ -119,6 +119,10 @@ steps:
     timeout: 60
     check_interval: 2
     trigger_sync: true
+    expect:
+      method: len
+      equals:
+        output: 0
 
   # Writes in both directions: a one-way check passes on a half-open mesh where
   # only the dialer's side of the gossipsub graph formed.

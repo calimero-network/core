@@ -113,6 +113,12 @@ steps:
 
   - name: Wait for Node 3's passage to reach every node
     <<: *sync
+    expect:
+      method: get_state_digest
+      args:
+        doc: catchup-restart
+      equals:
+        output: 'paragraph/0{:SEED}{bold=true:-THREE};'
 
   - name: Stop Node 3 mid-edit
     type: stop_node

@@ -187,6 +187,12 @@ steps:
       - e2e-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "test_key2"
+      equals:
+        output: "second_value"
 
   - name: Node-1 reads second handler-written value
     type: call
