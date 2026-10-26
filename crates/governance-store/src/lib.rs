@@ -102,7 +102,7 @@ pub use self::absorb::AbsorbRepository;
 pub use self::absorb_record::{AbsorbRecord, AbsorbedEntity, AbsorbedLeaf};
 pub use self::authorizer::{
     AtCutAuthorizer, AtCutMembershipPath, GroupRows, LiveFallbackAuthorizer, ReentryAtCut,
-    LIVE_FALLBACK_AUTHORIZER,
+    SubgroupEdges, LIVE_FALLBACK_AUTHORIZER,
 };
 pub use self::capabilities::CapabilitiesRepository;
 

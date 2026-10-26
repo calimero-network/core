@@ -29,7 +29,7 @@ use calimero_governance_store::metrics::{
 use calimero_governance_store::{
     namespace_founder, CapabilitiesRepository, DenyListRepository, MembershipRepository,
     NamespaceDagService, NamespaceOpLogService, NamespaceRepository, OpenedNamespaceOp,
-    ReentryAtCut,
+    ReentryAtCut, SubgroupEdges,
 };
 use calimero_governance_types::{NamespaceOp, RootOp};
 use calimero_op::{Op, OpPayload, ScopeId};
@@ -2938,6 +2938,27 @@ impl ScopeProjections {
             return Some(None);
         };
         Some(Some(role))
+    }
+
+    /// The subgroup edges of `group`'s namespace at the cut, `child -> (parent, restricted)`;
+    /// `None` a cut not fully folded.
+    #[must_use]
+    pub fn subgroup_edges_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> Option<SubgroupEdges> {
+        let (view, _, _) = self.auth_cut_context(store, group, heads)?;
+        Some(
+            view.subgroups
+                .iter()
+                .map(|(child, edge)| {
+                    let id = |scope: &ScopeId| ContextGroupId::from(*scope.as_bytes());
+                    (id(child), (id(&edge.parent), edge.restricted))
+                })
+                .collect(),
+        )
     }
 
     /// The account whose `GroupCreated` made `group`, at the cut: `Some(None)` is no creation

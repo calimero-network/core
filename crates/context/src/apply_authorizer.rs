@@ -22,7 +22,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::metrics::{record_at_cut_undecidable, UndecidableCause};
 use calimero_governance_store::{
     AtCutAuthorizer, AtCutMembershipPath, GroupRows, NamespaceDagService, ReentryAtCut,
-    StandingReads,
+    StandingReads, SubgroupEdges,
 };
 use calimero_op::{Op, ScopeId};
 use calimero_primitives::application::ApplicationId;
@@ -453,6 +453,20 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         self.folded(group)?
             .0
             .direct_role_at_cut(self.store, *group, member, parents)
+    }
+
+    fn subgroup_edges_at_cut(
+        &self,
+        group: &ContextGroupId,
+        parents: &[[u8; 32]],
+    ) -> Option<SubgroupEdges> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
+        self.folded(group)?
+            .0
+            .subgroup_edges_at_cut(self.store, *group, parents)
     }
 
     fn group_creator_at_cut(
@@ -994,5 +1008,51 @@ mod tests {
             None,
             "a gate is live's to answer"
         );
+    }
+
+    #[test]
+    fn the_subgroup_edges_are_those_of_the_cut_not_of_the_log() {
+        let (store, _sam, alice, _removal) = namespace();
+        let authorizer = EphemeralProjectionAuthorizer::new(&store);
+        let root = ContextGroupId::from(NS);
+        let (a, b) = (
+            ContextGroupId::from([0xA1; 32]),
+            ContextGroupId::from([0xA2; 32]),
+        );
+        let created = |child: ContextGroupId, restricted: bool, parents: &[&Op]| {
+            gov(
+                OWNER,
+                parents,
+                OpPayload::SubgroupCreated {
+                    child: ScopeId::from(child.to_bytes()),
+                    parent: ScopeId::from(NS),
+                    restricted,
+                    admin: acct(OWNER),
+                },
+            )
+        };
+        let make_a = created(a, false, &[&alice]);
+        let make_b = created(b, true, &[&make_a]);
+        let reparent = gov(
+            OWNER,
+            &[&make_b],
+            OpPayload::SubgroupReparented {
+                child: ScopeId::from(a.to_bytes()),
+                new_parent: ScopeId::from(b.to_bytes()),
+            },
+        );
+        for op in [&make_a, &make_b, &reparent] {
+            crate::unified_op_store::persist_op(&store, op).expect("persist");
+        }
+
+        let edges = |cut: &Op| authorizer.subgroup_edges_at_cut(&root, &[cut.id()]);
+        assert_eq!(edges(&alice), Some(Default::default()));
+        assert_eq!(edges(&make_a), Some([(a, (root, false))].into()));
+        assert_eq!(
+            edges(&reparent),
+            Some([(a, (b, false)), (b, (root, true))].into()),
+            "the move is seen only at a cut that holds it"
+        );
+        assert_eq!(authorizer.subgroup_edges_at_cut(&root, &[]), None);
     }
 }
