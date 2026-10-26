@@ -56,12 +56,17 @@ pub fn record_activation(store: &Store, context_id: &ContextId, blob: [u8; 32]) 
     }
 }
 
-/// Pin the release a freshly created or joined context starts on, unless it
-/// already has a marker. The application row is shared by every release of a
-/// package and overwritten by each install, so without this a never-activated
-/// context drifts to whatever was installed last.
+/// Pin the release a newly joined context starts on, unless it has a marker: the
+/// application row is shared by every release, so each install would move it.
 pub fn record_start_release(store: &Store, context_id: &ContextId) {
-    let _ = (store, context_id);
+    if activated_bytecode(store, context_id).is_some()
+        || !matches!(get_group_for_context(store, context_id), Ok(Some(_)))
+    {
+        return;
+    }
+    if let Ok(Some(blob)) = crate::hlc_fence::loaded_reader_bytecode_id(store, context_id) {
+        record_activation(store, context_id, blob);
+    }
 }
 
 /// The ABI state version the context's activated bytecode declares, if it was
