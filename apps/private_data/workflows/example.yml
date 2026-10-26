@@ -51,6 +51,14 @@ steps:
     statements:
       - "is_set({{add_secret_result}})"
 
+  - name: Capture the games map on calimero-node-1
+    type: call
+    node: calimero-node-1
+    context_id: "{{context_id}}"
+    method: games
+    outputs:
+      games_after_add: result.output
+
   # Step 8: Wait for the operation to complete and propagate
   - name: Wait for Add Secret Operation
     type: wait_for_sync
@@ -60,6 +68,10 @@ steps:
       - calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: games
+      equals:
+        output: "{{games_after_add}}"
 
   - name: Execute View Call - My Secrets (node 1)
     type: call
