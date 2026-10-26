@@ -433,8 +433,9 @@ impl ScopeProjections {
         parents: &[[u8; 32]],
     ) -> Option<calimero_authz::AclView> {
         let log = self.logs.get(scope)?;
-        let walked = self.walk(scope, log, parents, self.authority_base_of(scope));
-        Some(ScopeState::acl_view_from_ancestry(&walked))
+        let base = self.authority_base_of(scope);
+        let walked = self.walk(scope, log, parents, base);
+        Some(at_cut_view(&walked, base))
     }
 
     /// The at-cut ACL view, but **only** when the cut's whole causal ancestry is
@@ -461,11 +462,12 @@ impl ScopeProjections {
         parents: &[[u8; 32]],
     ) -> Option<calimero_authz::AclView> {
         let log = self.logs.get(scope)?;
-        let walked = self.walk(scope, log, parents, self.authority_base_of(scope));
+        let base = self.authority_base_of(scope);
+        let walked = self.walk(scope, log, parents, base);
         if !walked.is_complete() {
             return None;
         }
-        Some(ScopeState::acl_view_from_ancestry(&walked))
+        Some(at_cut_view(&walked, base))
     }
 
     fn authority_base_of(&self, scope: &ScopeId) -> AuthorityBase {
@@ -567,7 +569,7 @@ impl ScopeProjections {
         if !ancestry.is_complete() {
             return None;
         }
-        let view = ScopeState::acl_view_from_ancestry(&ancestry);
+        let view = at_cut_view(&ancestry, base);
         Some(calimero_governance_store::GroupRows {
             members: view.groups.get(group).cloned().unwrap_or_default(),
             member_caps: view
@@ -2178,7 +2180,7 @@ impl ScopeProjections {
         if !walked.is_complete() {
             return None;
         }
-        let view = ScopeState::acl_view_from_ancestry(&walked);
+        let view = at_cut_view(&walked, base);
         let relevant = deciding_groups(&walked, &view, group, ContextGroupId::from(namespace_id));
         if walked.first_opaque_in_any(&relevant).is_some() {
             return None;
@@ -2580,7 +2582,7 @@ impl ScopeProjections {
         if !walked.is_complete() {
             return Err(self.classify_unresolvable_cut(&scope, heads));
         }
-        let mut view = ScopeState::acl_view_from_ancestry(&walked);
+        let mut view = at_cut_view(&walked, base);
 
         // Complete is not enough to ANSWER with. An `Opaque` op folds to nothing,
         // so a verdict taken over one describes a history this node cannot see —
@@ -3193,12 +3195,7 @@ impl ScopeProjections {
         // As for the fold, standing is read at the step's own parents, so the group's
         // ancestors there must be readable too.
         let root_group = ContextGroupId::from(namespace_id);
-        let mut relevant = deciding_groups(
-            &walked,
-            &ScopeState::acl_view_from_ancestry(&walked),
-            group,
-            root_group,
-        );
+        let mut relevant = deciding_groups(&walked, &at_cut_view(&walked, base), group, root_group);
         let mut pinned = false;
         for op in walked.ops().iter().filter(|op| !walked.is_void(op)) {
             let OpPayload::SharedWritersRotated {
@@ -3217,8 +3214,7 @@ impl ScopeProjections {
             {
                 continue;
             }
-            let view =
-                ScopeState::acl_view_from_ancestry(&self.walk(&scope, log, &op.parents, base));
+            let view = at_cut_view(&self.walk(&scope, log, &op.parents, base), base);
             relevant.extend(deciding_groups(&walked, &view, group, root_group));
             pinned |= standing(&view, op.device_key()).is_some_and(|account| {
                 prior
@@ -3320,7 +3316,7 @@ impl ScopeProjections {
         let standing = Self::standing_reader(store, group, namespace_id);
         // Standing is read at each step's own parents, where the group's ancestors
         // may differ from the cut's, so every one of them must be readable.
-        let head_view = ScopeState::acl_view_from_ancestry(&walked);
+        let head_view = at_cut_view(&walked, base);
         let mut relevant = deciding_groups(&walked, &head_view, group, root_group);
         let mut views: std::collections::HashMap<Vec<[u8; 32]>, calimero_authz::AclView> =
             std::collections::HashMap::new();
@@ -3334,7 +3330,7 @@ impl ScopeProjections {
                 let mut parents = op.parents.clone();
                 parents.sort_unstable();
                 let view = views.entry(parents).or_insert_with(|| {
-                    ScopeState::acl_view_from_ancestry(&self.walk(&scope, log, &op.parents, base))
+                    at_cut_view(&self.walk(&scope, log, &op.parents, base), base)
                 });
                 relevant.extend(deciding_groups(&walked, view, group, root_group));
                 standing(view, op.device_key())
@@ -3697,6 +3693,25 @@ impl calimero_governance_store::FoldedTeeAuthority for FoldedProjections<'_> {
             .read()
             .is_ok_and(|folded| folded.relay_was_seated(store, *group, relay))
     }
+}
+
+/// The at-cut view with the rows of every account that holds no root membership dropped:
+/// leaving the namespace ends what its members hold in private spaces. The owner is exempt.
+fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> calimero_authz::AclView {
+    let mut view = ScopeState::acl_view_from_ancestry(walked);
+    let Some((root, _)) = base.root else {
+        return view;
+    };
+    let owner = view.root_at_cut(base.root).map(|(_, owner)| owner);
+    let members = view.groups.get(&root).cloned().unwrap_or_default();
+    let keeps =
+        |account: &AccountId| owner.as_ref() == Some(account) || members.contains_key(account);
+    for rows in view.groups.values_mut() {
+        rows.retain(|account, _| keeps(account));
+    }
+    view.member_caps.retain(|(_, account), _| keeps(account));
+    view.group_admin.retain(|_, account| keeps(account));
+    view
 }
 
 /// The groups whose ops can move an authority question about `group` at a cut: the
@@ -5279,6 +5294,150 @@ mod tests {
             may_create([0xF4; 32]),
             Some(false),
             "an explicit revoke-to-nothing must not fall back to the default"
+        );
+    }
+
+    /// An admin of a Restricted group who leaves the workspace holds no authority in it.
+    #[test]
+    fn a_member_removed_from_the_root_holds_no_authority_in_a_restricted_group() {
+        use calimero_context_config::MemberCapabilities;
+        use calimero_governance_types::GroupOp;
+
+        let ns = [0x91; 32];
+        let ns_gid = ContextGroupId::from(ns);
+        let s = ContextGroupId::from([0x92; 32]);
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        calimero_governance_store::NamespaceRepository::new(&store)
+            .nest(&ns_gid, &s)
+            .expect("nest S under the namespace");
+
+        let alice = PublicKey::from([8u8; 32]);
+        let carol = PublicKey::from([9u8; 32]);
+        let owner = test_account(&alice);
+        MetaRepository::new(&store)
+            .save(
+                &ns_gid,
+                &calimero_store::key::GroupMetaValue {
+                    target: calimero_store::key::GroupTarget {
+                        application_id: calimero_primitives::application::ApplicationId::from(
+                            [0xBB; 32],
+                        ),
+                        bytecode_id: [0xAA; 32],
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
+                    created_at: 1_700_000_000,
+                    admin_identity: owner,
+                    owner_identity: owner,
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("save the namespace meta");
+        let credential = test_join_account_for(carol);
+        let c = credential.statement.account;
+        let create_s = op_from_namespace_op(
+            &signed_root(
+                ns,
+                carol,
+                RootOp::GroupCreated {
+                    admin: c,
+                    group_id: s.to_bytes().into(),
+                    parent_id: ns.into(),
+                    restricted: true,
+                    salt: [0; 32],
+                },
+            ),
+            None,
+            [0xE1; 32],
+            hlc(10),
+            &[],
+        );
+        let mut device = op_from_namespace_op(
+            &signed_root(
+                ns,
+                carol,
+                RootOp::PolicyUpdated {
+                    policy_bytes: vec![],
+                },
+            ),
+            None,
+            [0xE2; 32],
+            hlc(20),
+            &[[0xE1; 32]],
+        );
+        device.payload = OpPayload::DeviceLinked {
+            genesis: credential.genesis,
+            chain: credential.chain.clone(),
+            cert: credential.statement,
+            scope_epoch: 0,
+            applications: vec![],
+        };
+        let root_op = |op: GroupOp, id: [u8; 32], t: u64, parent: [u8; 32]| {
+            op_from_namespace_op(
+                &signed_group(ns, alice, ns_gid),
+                Some(&op),
+                id,
+                hlc(t),
+                &[parent],
+            )
+        };
+        let join = root_op(
+            GroupOp::MemberAdded {
+                member: c,
+                role: GroupMemberRole::Member,
+            },
+            [0xE3; 32],
+            30,
+            [0xE2; 32],
+        );
+        let removal = root_op(
+            GroupOp::MemberRemoved {
+                member: c,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+            [0xE4; 32],
+            40,
+            [0xE3; 32],
+        );
+
+        let mut reg = ScopeProjections::new();
+        let _ = reg.authority_bases.insert(
+            ScopeId::from(ns),
+            AuthorityBase {
+                root: Some((ns_gid, owner)),
+                default_cap_base: 0,
+            },
+        );
+        for op in [&create_s, &device, &join, &removal] {
+            reg.ingest_op(op);
+        }
+        let bit = MemberCapabilities::MANAGE_MEMBERS.bits();
+        let standing = |cut: [u8; 32]| {
+            (
+                reg.is_admin_at_cut(&store, s, &carol, &[cut]),
+                reg.is_admin_or_capability_at_cut(&store, s, &carol, bit, &[cut]),
+                reg.is_admin_or_capability_account_at_cut(&store, s, &c, bit, &[cut]),
+                reg.member_at_cut(&store, s, &carol, &[cut]),
+                reg.account_member_at_cut(&store, s, &c, &[cut]),
+            )
+        };
+        assert_eq!(
+            standing([0xE3; 32]),
+            (Some(true), Some(true), Some(true), Some(true), Some(true)),
+            "control: a workspace member who created S administers it",
+        );
+        assert_eq!(
+            standing([0xE4; 32]),
+            (
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false)
+            ),
+            "removed from the workspace, the admin of S holds nothing in it",
         );
     }
 
