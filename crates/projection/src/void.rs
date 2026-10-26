@@ -53,6 +53,99 @@ impl From<ContextGroupId> for Acting {
 
 type IdSet = Rc<HashSet<[u8; 32]>>;
 
+/// Each subgroup's parent and the Restricted subgroups, the latest creation, reparent or
+/// visibility change winning as the fold does. The namespace root is always open.
+struct GroupTree {
+    parent: BTreeMap<ContextGroupId, ContextGroupId>,
+    restricted: BTreeSet<ContextGroupId>,
+}
+
+impl GroupTree {
+    fn fold<'o>(
+        ops: impl Iterator<Item = &'o Op>,
+        depth: &HashMap<[u8; 32], u32>,
+        root: ContextGroupId,
+    ) -> Self {
+        type Stamped<T> = ((u32, [u8; 32]), T);
+        let group = |scope: &ScopeId| ContextGroupId::from(*scope.as_bytes());
+        let mut latest: BTreeMap<ContextGroupId, Stamped<ContextGroupId>> = BTreeMap::new();
+        let mut visibility: BTreeMap<ContextGroupId, Stamped<bool>> = BTreeMap::new();
+        for op in ops {
+            let stamp = (depth.get(&op.id()).copied().unwrap_or(0), op.id());
+            let (parented, shown) = match &op.payload {
+                OpPayload::SubgroupCreated {
+                    child,
+                    parent,
+                    restricted,
+                    ..
+                } => (Some((child, parent)), Some((child, *restricted))),
+                OpPayload::SubgroupReparented { child, new_parent } => {
+                    (Some((child, new_parent)), None)
+                }
+                OpPayload::SubgroupVisibilitySet { scope, restricted } => {
+                    (None, Some((scope, *restricted)))
+                }
+                _ => continue,
+            };
+            if let Some((child, parent)) = parented {
+                let child = group(child);
+                if latest.get(&child).is_none_or(|(held, _)| stamp > *held) {
+                    let _ = latest.insert(child, (stamp, group(parent)));
+                }
+            }
+            if let Some((scope, restricted)) = shown {
+                let scope = group(scope);
+                if visibility.get(&scope).is_none_or(|(held, _)| stamp > *held) {
+                    let _ = visibility.insert(scope, (stamp, restricted));
+                }
+            }
+        }
+        Self {
+            parent: latest
+                .into_iter()
+                .map(|(child, (_, parent))| (child, parent))
+                .collect(),
+            restricted: visibility
+                .into_iter()
+                .filter_map(|(scope, (_, restricted))| {
+                    (restricted && scope != root).then_some(scope)
+                })
+                .collect(),
+        }
+    }
+
+    /// `group` and the groups above it.
+    fn chain(&self, group: ContextGroupId) -> Vec<ContextGroupId> {
+        let mut chain = vec![group];
+        let mut at = group;
+        while let Some(parent) = self.parent.get(&at) {
+            if chain.contains(parent) || chain.len() > 64 {
+                break;
+            }
+            chain.push(*parent);
+            at = *parent;
+        }
+        chain
+    }
+
+    /// The chain from `group` up to and including its private space; the whole chain in
+    /// the open space.
+    fn within_space(&self, group: ContextGroupId) -> Vec<ContextGroupId> {
+        let mut chain = self.chain(group);
+        if let Some(space) = chain.iter().position(|g| self.restricted.contains(g)) {
+            chain.truncate(space + 1);
+        }
+        chain
+    }
+
+    /// The nearest Restricted ancestor-or-self of `group`, if any.
+    fn private_space(&self, group: ContextGroupId) -> Option<ContextGroupId> {
+        self.chain(group)
+            .into_iter()
+            .find(|g| self.restricted.contains(g))
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Target {
     Account(AccountId),
@@ -398,8 +491,10 @@ struct Analysis<'a> {
     by_device: HashMap<DeviceId, Vec<&'a Op>>,
     depth: HashMap<[u8; 32], u32>,
     children: HashMap<[u8; 32], Vec<[u8; 32]>>,
-    parent_group: BTreeMap<ContextGroupId, ContextGroupId>,
-    restricted_groups: BTreeSet<ContextGroupId>,
+    /// The ops that place a group or set its visibility.
+    tree_ops: Vec<&'a Op>,
+    /// The tree each judged op sees, memoised for the round in progress.
+    trees: RefCell<HashMap<[u8; 32], Rc<GroupTree>>>,
     ancestors: RefCell<HashMap<[u8; 32], IdSet>>,
     descendants: RefCell<HashMap<[u8; 32], IdSet>>,
     work: Cell<usize>,
@@ -524,8 +619,8 @@ impl<'a> Analysis<'a> {
             by_device: HashMap::new(),
             depth: HashMap::new(),
             children: HashMap::new(),
-            parent_group: BTreeMap::new(),
-            restricted_groups: BTreeSet::new(),
+            tree_ops: Vec::new(),
+            trees: RefCell::default(),
             ancestors: RefCell::default(),
             descendants: RefCell::default(),
             work: Cell::new(0),
@@ -550,7 +645,18 @@ impl<'a> Analysis<'a> {
             }
         }
         analysis.depth = analysis.depths(ops);
-        (analysis.parent_group, analysis.restricted_groups) = analysis.group_tree(ops);
+        analysis.tree_ops = ops
+            .iter()
+            .copied()
+            .filter(|op| {
+                matches!(
+                    op.payload,
+                    OpPayload::SubgroupCreated { .. }
+                        | OpPayload::SubgroupReparented { .. }
+                        | OpPayload::SubgroupVisibilitySet { .. }
+                )
+            })
+            .collect();
         // Causal order, so what a spent budget leaves unjudged does not follow the log's.
         let mut removals = std::mem::take(&mut analysis.removals);
         removals.sort_unstable_by_key(|removal| {
@@ -643,85 +749,38 @@ impl<'a> Analysis<'a> {
         depth
     }
 
-    /// Each subgroup's parent and the set of Restricted subgroups, the latest
-    /// creation, reparent or visibility change winning as the fold does.
-    fn group_tree(
-        &self,
-        ops: &[&Op],
-    ) -> (
-        BTreeMap<ContextGroupId, ContextGroupId>,
-        BTreeSet<ContextGroupId>,
-    ) {
-        type Stamped<T> = ((u32, [u8; 32]), T);
-        let mut latest: BTreeMap<ContextGroupId, Stamped<ContextGroupId>> = BTreeMap::new();
-        let mut visibility: BTreeMap<ContextGroupId, Stamped<bool>> = BTreeMap::new();
-        for &op in ops {
-            let stamp = (self.depth.get(&op.id()).copied().unwrap_or(0), op.id());
-            let group = |scope: &ScopeId| ContextGroupId::from(*scope.as_bytes());
-            let (parented, shown) = match &op.payload {
-                OpPayload::SubgroupCreated {
-                    child,
-                    parent,
-                    restricted,
-                    ..
-                } => (Some((child, parent)), Some((child, *restricted))),
-                OpPayload::SubgroupReparented { child, new_parent } => {
-                    (Some((child, new_parent)), None)
-                }
-                OpPayload::SubgroupVisibilitySet { scope, restricted } => {
-                    (None, Some((scope, *restricted)))
-                }
-                _ => continue,
-            };
-            if let Some((child, parent)) = parented {
-                let child = group(child);
-                if latest.get(&child).is_none_or(|(held, _)| stamp > *held) {
-                    let _ = latest.insert(child, (stamp, group(parent)));
-                }
-            }
-            if let Some((scope, restricted)) = shown {
-                let scope = group(scope);
-                if visibility.get(&scope).is_none_or(|(held, _)| stamp > *held) {
-                    let _ = visibility.insert(scope, (stamp, restricted));
-                }
-            }
+    /// The group tree `op` saw at its cut: the placements and visibility changes in its
+    /// ancestry that are not void. Concurrent or void ones never count, so no signer
+    /// can move itself out of a removal's reach by reshaping the tree beside it.
+    fn tree_at(&self, op: &Op, void: &BTreeSet<[u8; 32]>) -> Rc<GroupTree> {
+        if let Some(known) = self.trees.borrow().get(&op.id()) {
+            return Rc::clone(known);
         }
-        let parents = latest
-            .into_iter()
-            .map(|(child, (_, parent))| (child, parent))
-            .collect();
-        let restricted = visibility
-            .into_iter()
-            .filter_map(|(scope, (_, restricted))| restricted.then_some(scope))
-            .collect();
-        (parents, restricted)
-    }
-
-    /// `group` and the groups above it.
-    fn group_and_ancestors(&self, group: ContextGroupId) -> Vec<ContextGroupId> {
-        let mut chain = vec![group];
-        let mut at = group;
-        while let Some(parent) = self.parent_group.get(&at) {
-            if chain.contains(parent) || chain.len() > 64 {
-                break;
-            }
-            chain.push(*parent);
-            at = *parent;
-        }
-        chain
-    }
-
-    /// `group` and the groups above it, up to and including its private space (its
-    /// nearest Restricted ancestor-or-self); the whole chain in the open space.
-    fn within_space(&self, group: ContextGroupId) -> Vec<ContextGroupId> {
-        let mut chain = self.group_and_ancestors(group);
-        if let Some(space) = chain
+        let before = self.ancestors_of(op.id());
+        let seen = self
+            .tree_ops
             .iter()
-            .position(|g| self.restricted_groups.contains(g))
-        {
-            chain.truncate(space + 1);
+            .copied()
+            .filter(|held| before.contains(&held.id()) && !void.contains(&held.id()));
+        let tree = Rc::new(GroupTree::fold(seen, &self.depth, self.root_of(op)));
+        let _ = self.trees.borrow_mut().insert(op.id(), Rc::clone(&tree));
+        tree
+    }
+
+    /// The group whose members `op` acts among when a removal is weighed against it:
+    /// its own, or for a make-private the group it is carved out of.
+    fn reach_start(
+        &self,
+        op: &Op,
+        group: ContextGroupId,
+        tree: &GroupTree,
+    ) -> Option<ContextGroupId> {
+        match op.payload {
+            OpPayload::SubgroupVisibilitySet {
+                restricted: true, ..
+            } => tree.parent.get(&group).copied(),
+            _ => Some(group),
         }
-        chain
     }
 
     /// The namespace root: the genesis fact when the store gave one, else the scope.
@@ -732,16 +791,8 @@ impl<'a> Analysis<'a> {
         )
     }
 
-    /// Whether `op` is the namespace owner's, outside any private space: the one place
-    /// an owner's op carries authority no removal can take.
-    fn is_owner_in_open_space(&self, op: &Op) -> bool {
+    fn is_owner(&self, op: &Op) -> bool {
         self.owner_at(op) == Some(self.author_of(op))
-            && self.voidable_group(op).is_some_and(|group| {
-                !self
-                    .group_and_ancestors(group)
-                    .iter()
-                    .any(|g| self.restricted_groups.contains(g))
-            })
     }
 
     /// The namespace's owner at `op`'s cut: the heir of the latest transfer behind it, as the
@@ -840,6 +891,7 @@ impl<'a> Analysis<'a> {
 
     /// One application of the rule to the void set `void`.
     fn round(&self, void: &BTreeSet<[u8; 32]>) -> BTreeSet<[u8; 32]> {
+        self.trees.borrow_mut().clear();
         let mut next = BTreeSet::new();
 
         for removal in self.effective_removals(void) {
@@ -855,15 +907,27 @@ impl<'a> Analysis<'a> {
                 if id == removal.op.id() || before.contains(&id) || after.contains(&id) {
                     continue;
                 }
-                if self.is_owner_in_open_space(op) {
-                    continue;
-                }
                 let Some(group) = self.voidable_group(op) else {
                     continue;
                 };
-                let reaches = removal.group.is_none_or(|lost| {
-                    lost == self.root_of(op) || self.within_space(group).contains(&lost)
-                });
+                let tree = self.tree_at(op, void);
+                let start = self.reach_start(op, group, &tree);
+                let space = start.and_then(|start| tree.private_space(start));
+                let owner = self.is_owner(op);
+                if owner && space.is_none() {
+                    continue;
+                }
+                // The owner is judged in a private space by removals from that space and
+                // by its own device revocations, not by anyone's root-level action.
+                let reaches = match (owner, removal.group) {
+                    (true, Some(lost)) => Some(lost) == space,
+                    (true, None) => self.author_of(removal.op) == self.author_of(op),
+                    (false, None) => true,
+                    (false, Some(lost)) => {
+                        lost == self.root_of(op)
+                            || start.is_some_and(|start| tree.within_space(start).contains(&lost))
+                    }
+                };
                 if !reaches {
                     continue;
                 }
@@ -895,12 +959,17 @@ impl<'a> Analysis<'a> {
             let after = self.descendants_of(revoke.op.id());
             for &op in victims {
                 let id = op.id();
-                if before.contains(&id) || after.contains(&id) || self.is_owner_in_open_space(op) {
+                if before.contains(&id) || after.contains(&id) {
                     continue;
                 }
                 // A capability is held in its own group: it is never inherited.
                 if self.voidable_group(op) != Some(revoke.group)
                     || self.capability_needed(op) & removed == 0
+                {
+                    continue;
+                }
+                if self.is_owner(op)
+                    && self.tree_at(op, void).private_space(revoke.group) != Some(revoke.group)
                 {
                     continue;
                 }
@@ -1100,7 +1169,7 @@ impl<'a> Analysis<'a> {
             // An op already void is judged again, so a round never forgets what the
             // round before established.
             if granted.contains(&self.author_of(op))
-                && !self.is_owner_in_open_space(op)
+                && !self.is_owner(op)
                 && self.voidable_group(op).is_some()
             {
                 candidates.push(op);

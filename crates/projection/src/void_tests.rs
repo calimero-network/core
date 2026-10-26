@@ -733,6 +733,96 @@ fn the_owner_is_voidable_inside_a_private_space_only() {
 }
 
 #[test]
+fn a_removed_signer_cannot_escape_by_making_a_folder_private_beside_its_removal() {
+    let ad = admins();
+    let eng = create_under(&[&ad[2]], group(), 0x41, false, ALICE);
+    let p = create_under(&[&eng], subgroup(0x41), 0x42, false, ALICE);
+    let removal = remove_from(subgroup(0x41), ALICE, &[&p], SAM);
+    let carve = gov(
+        SAM,
+        &[&p],
+        OpPayload::SubgroupVisibilitySet {
+            scope: ScopeId::from(subgroup(0x42).to_bytes()),
+            restricted: true,
+        },
+    );
+    let write = add_in(
+        subgroup(0x42),
+        SAM,
+        &[&carve],
+        WILL,
+        GroupMemberRole::Member,
+    );
+    let mut log = ad;
+    log.extend([eng, p, removal, carve.clone(), write.clone()]);
+
+    let forward = void(&log);
+    assert!(forward.contains(&carve.id()));
+    assert!(forward.contains(&write.id()));
+    let mut reversed = log.clone();
+    reversed.reverse();
+    let mut rotated = log.clone();
+    rotated.rotate_left(3);
+    for shuffled in [reversed, rotated] {
+        assert_eq!(void(&shuffled), forward);
+    }
+}
+
+#[test]
+fn an_owner_op_in_a_private_space_is_reached_only_by_its_own_device_revocation() {
+    let (mut log, head) = eng_private_space();
+    let second = calimero_account::DeviceId::from([0xEE; 32]);
+    let revoke = |by: u8, device: calimero_account::DeviceId, account: u8| {
+        gov(
+            by,
+            &[&head],
+            OpPayload::DeviceRevoked {
+                account: acct(account),
+                device,
+            },
+        )
+    };
+    let on_second_device = Op::new(
+        ScopeId::from([0u8; 32]),
+        vec![head.id()],
+        Authorship {
+            device: second,
+            ..authorship(OWNER)
+        },
+        hlc(),
+        OpPayload::MemberAdded {
+            group: subgroup(0x42),
+            member: acct(WILL),
+            role: GroupMemberRole::Member,
+        },
+        [0u8; 32],
+        [0u8; 64],
+    );
+    let by_sam = add_in(subgroup(0x42), SAM, &[&head], YARA, GroupMemberRole::Member);
+    let by_owner = add_in(
+        subgroup(0x42),
+        OWNER,
+        &[&head],
+        BOB,
+        GroupMemberRole::Member,
+    );
+    log.extend([on_second_device.clone(), by_sam.clone(), by_owner.clone()]);
+
+    let mut by_admin = log.clone();
+    by_admin.push(revoke(ALICE, second, OWNER));
+    assert!(!void(&by_admin).contains(&on_second_device.id()));
+
+    log.extend([
+        revoke(OWNER, second, OWNER),
+        revoke(OWNER, calimero_account::DeviceId::from([SAM; 32]), SAM),
+    ]);
+    let voided = void(&log);
+    assert!(voided.contains(&on_second_device.id()));
+    assert!(voided.contains(&by_sam.id()));
+    assert!(!voided.contains(&by_owner.id()));
+}
+
+#[test]
 fn a_role_change_for_an_account_that_was_no_admin_at_its_cut_demotes_nobody() {
     let ad = admins();
     let head = &ad[2];
