@@ -591,6 +591,20 @@ jobs:
         if: matrix.image != 'merod:local-mock-tee'
         run: zstd -d /tmp/merod-local.tar.zst --stdout | docker load
 
+      # tc netem needs iproute2; the file capability lets merod's non-root user run it.
+      - name: Build fault-injection image
+        if: matrix.image == 'merod:local-fault'
+        run: |
+          docker build -q -t merod:local-fault - <<'EOF'
+          FROM merod:local
+          USER root
+          RUN apt-get update && apt-get install -y --no-install-recommends iproute2 libcap2-bin \
+              && setcap cap_net_admin+ep "$(command -v tc)" \
+              && rm -rf /var/lib/apt/lists/*
+          USER user
+          EOF
+          docker run --rm --cap-add NET_ADMIN --entrypoint tc merod:local-fault -V
+
       # Only the mock-TEE groups need it, and it is a second full image —
       # not worth pulling into every group.
       - name: Download mock-attestation Docker image
