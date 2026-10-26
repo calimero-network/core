@@ -405,10 +405,13 @@ impl Executor {
         };
         let context = calimero_identity::sha256(app_id.as_bytes());
         let account = calimero_account::AccountId::from(caller.account_bytes());
+        // release-v2 has no devices: a person is their account, so the executor
+        // (v1's per-device key, `env::executor_id`) is the account too. Apps that
+        // key players or authors by executor then tell people apart as before.
         let result = module.run(
             context.into(),
             account,
-            [0; 32].into(),
+            caller.account_bytes().into(),
             method,
             &input,
             &mut overlay,

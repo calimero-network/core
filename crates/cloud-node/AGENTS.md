@@ -32,6 +32,8 @@ architecture spec.
   (`conflict`, no idempotency record); `Node::call` re-runs it instead of failing.
 - **Init**: `POST /apps` takes `initArgs` (JSON) for the app's `init`, kept on the
   `AppRecord`; a failed init answers `422 INIT_FAILED` (`AppState::init_error`).
+- **Identity inside the app**: `env::account_id` and `env::executor_id` are both the
+  caller's account (no devices in release-v2); the context id is `SHA-256(app_id)`.
 - **Read-your-writes across nodes**: lookups of system objects (`Node::sys_until`) wait
   up to 2 s for the local replica to apply a write committed elsewhere.
 
