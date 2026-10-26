@@ -172,6 +172,7 @@ fn admin_or_capability_in_view(
     capability: u32,
     root: Option<(ContextGroupId, AccountId)>,
     default_cap_base: u32,
+    inherits: bool,
 ) -> bool {
     if view.is_authorized_admin(group, account, root) {
         return true;
@@ -189,7 +190,7 @@ fn admin_or_capability_in_view(
             calimero_authz::MemberPathAtCut::Inherited {
                 anchor,
                 via_admin: false,
-            } => anchor,
+            } if inherits => anchor,
             _ => return false,
         }
     };
@@ -2429,6 +2430,9 @@ impl ScopeProjections {
         let Some(account) = account_for_author(&view, author) else {
             return Some(false);
         };
+        let inherits = self
+            .inheritance_wall_at_cut(store, group, &account, heads)?
+            .is_none();
         Some(admin_or_capability_in_view(
             &view,
             group,
@@ -2436,6 +2440,7 @@ impl ScopeProjections {
             capability,
             root,
             default_cap_base,
+            inherits,
         ))
     }
 
@@ -2453,6 +2458,9 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<bool> {
         let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
+        let inherits = self
+            .inheritance_wall_at_cut(store, group, member, heads)?
+            .is_none();
         Some(admin_or_capability_in_view(
             &view,
             group,
@@ -2460,6 +2468,7 @@ impl ScopeProjections {
             capability,
             root,
             default_cap_base,
+            inherits,
         ))
     }
 
@@ -5850,6 +5859,76 @@ mod tests {
         assert!(sound
             .member_now_checked_with(&store, &root, &key, &heads)
             .expect("no store fault"));
+    }
+
+    #[test]
+    fn a_member_removed_from_a_folder_reads_no_capability_there_through_its_space() {
+        let root = ContextGroupId::from([0x41; 32]);
+        let (space, inner) = (
+            ContextGroupId::from([0x42; 32]),
+            ContextGroupId::from([0x43; 32]),
+        );
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        let namespaces = calimero_governance_store::NamespaceRepository::new(&store);
+        namespaces.nest(&root, &space).expect("nest the space");
+        namespaces.nest(&space, &inner).expect("nest the folder");
+        let rename = calimero_context_config::MemberCapabilities::CAN_MANAGE_METADATA;
+        let created = |child: ContextGroupId, parent: ContextGroupId, restricted: bool| {
+            OpPayload::SubgroupCreated {
+                child: ScopeId::from(child.to_bytes()),
+                parent: ScopeId::from(parent.to_bytes()),
+                restricted,
+                admin: AccountId::from([1; 32]),
+            }
+        };
+        let payloads = [
+            created(space, root, true),
+            created(inner, space, false),
+            member_op(space, 9, GroupMemberRole::Member),
+            OpPayload::MemberCapabilitySet {
+                group: space,
+                member: AccountId::from([9; 32]),
+                capabilities: rename,
+            },
+            removed_op(inner, 9),
+        ];
+        let mut projections = ScopeProjections::new();
+        let mut log: Vec<Op> = Vec::new();
+        for payload in payloads {
+            let parents = log.last().map(Op::id).into_iter().collect();
+            let op = Op::new(
+                ScopeId::from(root.to_bytes()),
+                parents,
+                calimero_op::Authorship::unattributed(PublicKey::from([1u8; 32])),
+                hlc(log.len() as u64),
+                payload,
+                [0u8; 32],
+                [0u8; 64],
+            );
+            projections.ingest_op(&op);
+            log.push(op);
+        }
+        let dave = AccountId::from([9; 32]);
+        let reads = |at: usize| {
+            projections.is_admin_or_capability_account_at_cut(
+                &store,
+                inner,
+                &dave,
+                rename.bits(),
+                &[log[at].id()],
+            )
+        };
+
+        assert_eq!(
+            reads(3),
+            Some(true),
+            "control: the space's grant reaches its folder"
+        );
+        assert_eq!(
+            reads(4),
+            Some(false),
+            "removed from the folder, no capability there"
+        );
     }
 
     #[test]

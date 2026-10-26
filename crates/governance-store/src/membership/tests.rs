@@ -842,6 +842,42 @@ fn a_folder_reads_a_members_capabilities_at_its_space_root() {
 }
 
 #[test]
+fn a_deny_listed_member_reads_no_capability_in_a_folder_of_its_space() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let root = ContextGroupId::from([0xD4; 32]);
+    let space = ContextGroupId::from([0xD5; 32]);
+    let inner = ContextGroupId::from([0xD6; 32]);
+    nest_for_test(&store, &root, &space);
+    nest_for_test(&store, &space, &inner);
+    let capabilities = CapabilitiesRepository::new(&store);
+    capabilities
+        .set_subgroup_visibility(&space, VisibilityMode::Restricted)
+        .unwrap();
+    capabilities
+        .set_subgroup_visibility(&inner, VisibilityMode::Open)
+        .unwrap();
+    let dave = AccountId::from([0x0C; 32]);
+    let rename = MemberCapabilities::CAN_MANAGE_METADATA.bits();
+    let members = MembershipRepository::new(&store);
+    members
+        .add_member(&space, &dave, GroupMemberRole::Member)
+        .unwrap();
+    capabilities
+        .set_member_capability(&space, &dave, rename)
+        .unwrap();
+    assert!(members
+        .is_admin_or_has_capability(&inner, &dave, rename)
+        .unwrap());
+
+    DenyListRepository::new(&store).mark(&inner, &dave).unwrap();
+    assert!(!members
+        .is_admin_or_has_capability(&inner, &dave, rename)
+        .unwrap());
+}
+
+#[test]
 fn check_membership_restricted_subgroup_does_not_inherit() {
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
 

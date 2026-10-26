@@ -1025,6 +1025,21 @@ pub(crate) mod tests {
         let joined_id = land_mallory_join(&store, ns, &owner_sk, &mallory_sk);
         let (s, created_id) = mallory_subgroup(&store, ns, &owner_sk, &mallory_sk, joined_id);
 
+        let yara_joined = SignedNamespaceOp::sign(
+            &yara_sk,
+            namespace_id.into(),
+            vec![joined_id],
+            1,
+            NamespaceOp::Root(RootOp::MemberJoined {
+                member: yara,
+                signed_invitation: invitation(&owner_sk, ns),
+                account: crate::test_support::credential(&yara_sk.public_key()),
+            }),
+        )
+        .unwrap();
+        land(&store, namespace_id, &yara_joined, &[joined_id]);
+        let yara_joined_id = yara_joined.content_hash().unwrap();
+
         let s_key = [0x5Fu8; 32];
         let rotated_key = [0x5Eu8; 32];
         let rotation = GroupKeyring::new(&store, s)
@@ -1037,7 +1052,7 @@ pub(crate) mod tests {
         let add = SignedNamespaceOp::sign(
             &mallory_sk,
             namespace_id.into(),
-            vec![created_id],
+            vec![created_id, yara_joined_id],
             3,
             NamespaceOp::Group {
                 group_id: s.to_bytes().into(),
@@ -1055,7 +1070,7 @@ pub(crate) mod tests {
             },
         )
         .unwrap();
-        let _ = arrive(&store, &add, &[created_id]);
+        let _ = arrive(&store, &add, &[created_id, yara_joined_id]);
         let _ = adopt_pulled_group_key(&store, namespace_id.into(), s, &s_key)
             .expect("the pulled key stores");
 
@@ -1344,6 +1359,7 @@ pub(crate) mod tests {
         .unwrap();
         land(&store, namespace_id, &created, &[owner_joined]);
         let created_id = created.content_hash().unwrap();
+        let bob_joined = land_mallory_join(&store, ns, &owner_sk, &bob_sk);
 
         // Sealed under the subgroup's own key, which this node does not hold
         // yet: it lands unreadable in the op-store.
@@ -1366,13 +1382,13 @@ pub(crate) mod tests {
         };
         let named = sealed(
             3,
-            vec![created_id],
+            vec![created_id, bob_joined],
             GroupOp::GroupMetadataSet {
                 name: Some("K".to_owned()),
                 data: std::collections::BTreeMap::new(),
             },
         );
-        let named_id = arrive(&store, &named, &[created_id]);
+        let named_id = arrive(&store, &named, &[created_id, bob_joined]);
 
         // The key is stored, and its replay has collected what it will re-drive
         // but not yet judged the parked op: until it does, the fold reads that op

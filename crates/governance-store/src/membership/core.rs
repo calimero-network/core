@@ -715,12 +715,16 @@ impl<'a> MembershipRepository<'a> {
         {
             return Ok(true);
         }
-        // A folder reads a member's capabilities at its space root.
+        // A folder reads a member's capabilities at its space root, unless the member is
+        // deny-listed there (the exit wall is already in the path).
         if let MembershipPath::Inherited {
             anchor,
             via_admin: false,
         } = self.check_path(group_id, identity)?
         {
+            if DenyListRepository::new(self.store).is_denied(group_id, identity)? {
+                return Ok(false);
+            }
             return Ok(capabilities
                 .member_capability(&anchor, identity)?
                 .unwrap_or(0)
