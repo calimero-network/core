@@ -46,6 +46,7 @@ impl InviteCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let request = CreateGroupInvitationApiRequest {
             expiration_timestamp: self.expiration_timestamp,
+            recursive: None,
             admitters: self.admitters,
             admitter_addrs: self.admitter_addrs,
         };
