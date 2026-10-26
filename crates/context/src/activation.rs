@@ -56,6 +56,14 @@ pub fn record_activation(store: &Store, context_id: &ContextId, blob: [u8; 32]) 
     }
 }
 
+/// Pin the release a freshly created or joined context starts on, unless it
+/// already has a marker. The application row is shared by every release of a
+/// package and overwritten by each install, so without this a never-activated
+/// context drifts to whatever was installed last.
+pub fn record_start_release(store: &Store, context_id: &ContextId) {
+    let _ = (store, context_id);
+}
+
 /// The ABI state version the context's activated bytecode declares, if it was
 /// resolvable when the activation was recorded.
 pub fn activated_state_version(store: &Store, context_id: &ContextId) -> Option<u32> {
@@ -552,6 +560,48 @@ mod tests {
             let store = store();
             context_on_row(&store, V1);
             assert_eq!(executing_blob_off_row(&store, &ctx()), None);
+        }
+
+        fn ladder_group(store: &Store) {
+            let gid = ContextGroupId::from([0x42; 32]);
+            group_on(store, gid, [0x03; 32], &[0x01, 0x02, 0x03]);
+            store
+                .handle()
+                .put(&ContextGroupRef::new((*ctx()).into()), &gid.to_bytes())
+                .unwrap();
+        }
+
+        /// A newer install of the same package overwrites the shared row.
+        #[test]
+        fn a_started_context_keeps_its_release_when_a_newer_one_is_installed() {
+            let store = store();
+            ladder_group(&store);
+            context_on_row(&store, V1);
+            record_start_release(&store, &ctx());
+
+            context_on_row(&store, [0x03; 32]);
+            assert_eq!(
+                crate::hlc_fence::loaded_reader_bytecode_id(&store, &ctx()).unwrap(),
+                Some(V1)
+            );
+        }
+
+        #[test]
+        fn starting_never_overrides_an_existing_marker() {
+            let store = store();
+            ladder_group(&store);
+            context_on_row(&store, [0x03; 32]);
+            record_activation(&store, &ctx(), V2);
+            record_start_release(&store, &ctx());
+            assert_eq!(activated_bytecode(&store, &ctx()), Some(V2));
+        }
+
+        #[test]
+        fn starting_without_a_group_records_nothing() {
+            let store = store();
+            context_on_row(&store, V1);
+            record_start_release(&store, &ctx());
+            assert_eq!(activated_bytecode(&store, &ctx()), None);
         }
     }
 }
