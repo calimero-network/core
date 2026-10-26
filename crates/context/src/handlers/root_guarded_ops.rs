@@ -498,7 +498,7 @@ mod tests {
     #[actix::test]
     async fn an_owner_delete_this_node_cannot_seal_is_refused_unapplied() {
         let (store, mut harness, namespace, subgroup) = owned_namespace().await;
-        drop_keys(&store, subgroup);
+        drop_keys(&store, namespace);
 
         let err = owner_delete(&harness, subgroup).await.unwrap_err();
 

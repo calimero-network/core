@@ -402,69 +402,7 @@ impl<'a> GroupGovernancePublisher<'a> {
             .into()));
         };
 
-        // Issue #2256: an `Open` subgroup whose entire ancestor chain up
-        // to the namespace is also `Open` is by definition readable by
-        // every member of its parent namespace, so we encrypt its ops
-        // with the *namespace* key rather than the subgroup's own key.
-        // That makes the crypto boundary match the access boundary,
-        // eliminates the need for a separate key-delivery path to
-        // inheritance-eligible parent members, and makes "Open" mean
-        // what it says cryptographically.
-        //
-        // **Chain check is required, not just immediate visibility:** if
-        // any ancestor between this subgroup and the namespace is
-        // `Restricted`, the membership walk in
-        // `check_group_membership_path` correctly refuses inheritance
-        // through that wall — so encrypting with the namespace key
-        // would expose this subgroup's content to namespace members
-        // who cannot actually join it. `is_open_chain_to_namespace`
-        // verifies the whole chain is Open before we widen the crypto
-        // boundary.
-        //
-        // Restricted subgroups (or any subgroup behind a Restricted
-        // ancestor) keep their per-subgroup key, unchanged.
-        //
-        // **Visibility-flip ops are special-cased:** a flip changes the visibility this
-        // check reads, so its boundary comes from the parent chain, as below.
-        //
-        // Resolution: for `SubgroupVisibilitySet`, decide the encryption
-        // boundary from the **parent chain** (excluding `self.group_id`),
-        // which is independent of the op being applied. The set of
-        // members who *could observe* the flip is precisely the access
-        // boundary that existed *before* the flip — i.e. the boundary
-        // implied by the parent chain. This works symmetrically:
-        // - `Open → Restricted` flip with fully-Open parent chain:
-        //   namespace key. Every namespace member observes the wall
-        //   going up.
-        // - `Restricted → Open` flip with fully-Open parent chain:
-        //   namespace key. Direct subgroup members try the subgroup
-        //   keyring first (their subgroup is "still" Restricted from
-        //   their PoV); the receiver-side namespace-keyring fallback
-        //   handles the miss.
-        // - Either flip behind a `Restricted` ancestor: per-subgroup
-        //   key. The access boundary was never namespace-wide, so
-        //   nobody outside the wall is owed visibility into the flip.
-        // - Subgroup directly under the namespace (parent IS namespace):
-        //   namespace key. The parent chain is trivially Open.
-        let parent_chain_open = match op {
-            GroupOp::SubgroupVisibilitySet { .. } => {
-                match NamespaceRepository::new(self.store).parent(&self.group_id)? {
-                    Some(parent) => {
-                        parent == namespace_id
-                            || CapabilitiesRepository::new(self.store)
-                                .is_open_chain_to_namespace(&parent, &namespace_id)?
-                    }
-                    None => false,
-                }
-            }
-            _ => CapabilitiesRepository::new(self.store)
-                .is_open_chain_to_namespace(&self.group_id, &namespace_id)?,
-        };
-        let encrypting_group_id = if parent_chain_open {
-            namespace_id
-        } else {
-            self.group_id
-        };
+        let encrypting_group_id = sealing_group(self.store, &self.group_id, op)?;
 
         let Some(stored_key) =
             GroupKeyring::new(self.store, encrypting_group_id).load_current_key_record()?
@@ -744,4 +682,133 @@ pub(crate) fn flip_rotation_is_owed(
         );
     }
     Ok(true)
+}
+
+/// The group whose key seals `op` in `group_id`: the namespace's for a group readable by every
+/// member, else its own. The comments below are the reasoning for that choice.
+fn sealing_group(
+    store: &Store,
+    group_id: &ContextGroupId,
+    op: &GroupOp,
+) -> EyreResult<ContextGroupId> {
+    let namespace_id = NamespaceRepository::new(store).resolve(group_id)?;
+    // Issue #2256: an `Open` subgroup whose entire ancestor chain up
+    // to the namespace is also `Open` is by definition readable by
+    // every member of its parent namespace, so we encrypt its ops
+    // with the *namespace* key rather than the subgroup's own key.
+    // That makes the crypto boundary match the access boundary,
+    // eliminates the need for a separate key-delivery path to
+    // inheritance-eligible parent members, and makes "Open" mean
+    // what it says cryptographically.
+    //
+    // **Chain check is required, not just immediate visibility:** if
+    // any ancestor between this subgroup and the namespace is
+    // `Restricted`, the membership walk in
+    // `check_group_membership_path` correctly refuses inheritance
+    // through that wall — so encrypting with the namespace key
+    // would expose this subgroup's content to namespace members
+    // who cannot actually join it. `is_open_chain_to_namespace`
+    // verifies the whole chain is Open before we widen the crypto
+    // boundary.
+    //
+    // Restricted subgroups (or any subgroup behind a Restricted
+    // ancestor) keep their per-subgroup key, unchanged.
+    //
+    // **Visibility-flip ops are special-cased:** a flip changes the visibility this
+    // check reads, so its boundary comes from the parent chain, as below.
+    //
+    // Resolution: for `SubgroupVisibilitySet`, decide the encryption
+    // boundary from the **parent chain** (excluding `group_id`),
+    // which is independent of the op being applied. The set of
+    // members who *could observe* the flip is precisely the access
+    // boundary that existed *before* the flip — i.e. the boundary
+    // implied by the parent chain. This works symmetrically:
+    // - `Open → Restricted` flip with fully-Open parent chain:
+    //   namespace key. Every namespace member observes the wall
+    //   going up.
+    // - `Restricted → Open` flip with fully-Open parent chain:
+    //   namespace key. Direct subgroup members try the subgroup
+    //   keyring first (their subgroup is "still" Restricted from
+    //   their PoV); the receiver-side namespace-keyring fallback
+    //   handles the miss.
+    // - Either flip behind a `Restricted` ancestor: per-subgroup
+    //   key. The access boundary was never namespace-wide, so
+    //   nobody outside the wall is owed visibility into the flip.
+    // - Subgroup directly under the namespace (parent IS namespace):
+    //   namespace key. The parent chain is trivially Open.
+    //
+    // A deletion is judged like a flip: both change the tree every member reads.
+    let parent_chain_open = match op.unguarded() {
+        GroupOp::SubgroupVisibilitySet { .. } | GroupOp::GroupDelete => {
+            match NamespaceRepository::new(store).parent(group_id)? {
+                Some(parent) => {
+                    parent == namespace_id
+                        || CapabilitiesRepository::new(store)
+                            .is_open_chain_to_namespace(&parent, &namespace_id)?
+                }
+                None => false,
+            }
+        }
+        _ => CapabilitiesRepository::new(store)
+            .is_open_chain_to_namespace(group_id, &namespace_id)?,
+    };
+    let encrypting_group_id = if parent_chain_open {
+        namespace_id
+    } else {
+        *group_id
+    };
+    Ok(encrypting_group_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_context_client::local_governance::GroupOp;
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::VisibilityMode;
+
+    use super::sealing_group;
+    use crate::test_fixtures::{test_meta, test_store};
+    use crate::{CapabilitiesRepository, MetaRepository, NamespaceRepository};
+
+    #[test]
+    fn a_space_roots_visibility_and_deletion_are_sealed_for_the_workspace() {
+        let store = test_store();
+        let ns = ContextGroupId::from([0x10; 32]);
+        let board = ContextGroupId::from([0x11; 32]);
+        let drafts = ContextGroupId::from([0x12; 32]);
+        NamespaceRepository::new(&store).nest(&ns, &board).unwrap();
+        NamespaceRepository::new(&store)
+            .nest(&board, &drafts)
+            .unwrap();
+        for group in [&ns, &board, &drafts] {
+            MetaRepository::new(&store)
+                .save(group, &test_meta())
+                .unwrap();
+        }
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&board, VisibilityMode::Restricted)
+            .unwrap();
+        let rename = GroupOp::GroupMetadataSet {
+            name: None,
+            data: Default::default(),
+        };
+
+        let seal = |group, op: &GroupOp| sealing_group(&store, &group, op).unwrap();
+        assert_eq!(seal(board, &GroupOp::GroupDelete), ns);
+        assert_eq!(
+            seal(
+                board,
+                &GroupOp::SubgroupVisibilitySet {
+                    mode: VisibilityMode::Open
+                }
+            ),
+            ns
+        );
+        assert_eq!(
+            seal(board, &rename),
+            board,
+            "ops inside a space stay under its key"
+        );
+        assert_eq!(seal(drafts, &GroupOp::GroupDelete), drafts);
+    }
 }
