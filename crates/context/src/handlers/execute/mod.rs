@@ -2182,19 +2182,17 @@ fn runs_behind_group_target(
 
 impl ContextManager {
     /// The bytecode blob this context executes (per-context binding):
-    /// activation marker → group target blob (when locally present) →
+    /// activation marker, else group target blob, when locally present →
     /// `None` (callers fall back to the application row).
     pub(crate) fn executing_bytecode_for_context(
         &self,
         context_id: &ContextId,
     ) -> Option<calimero_primitives::blobs::BlobId> {
-        let (blob, source) = bound_bytecode_for_context(&self.datastore, context_id)?;
+        let (blob, _source) = bound_bytecode_for_context(&self.datastore, context_id)?;
         let blob_id = calimero_primitives::blobs::BlobId::from(blob);
-        if source == BoundBytecodeSource::GroupKey
-            && !self.node_client.has_blob(&blob_id).unwrap_or(false)
-        {
-            // Legacy randomly-seeded bytecode_id (or not-yet-fetched target):
-            // nothing to execute under that key — use the row.
+        if !self.node_client.has_blob(&blob_id).unwrap_or(false) {
+            // A legacy random group key, or a release not fetched yet (a joiner's
+            // start marker): the row path acquires it.
             return None;
         }
         Some(blob_id)
