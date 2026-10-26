@@ -5,6 +5,7 @@
 //! never leaves one. The rules read a [`Tree`]: at apply time the tree at the op's
 //! causal cut, so every replica reaches the same verdict; in a handler the live tree.
 
+use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::VisibilityMode;
 use calimero_store::Store;
@@ -57,6 +58,10 @@ impl Tree {
             }
         }
         Ok(Self(edges))
+    }
+
+    pub fn contains(&self, group: &ContextGroupId) -> bool {
+        self.0.contains_key(group)
     }
 
     fn is_private(&self, group: &ContextGroupId) -> bool {
@@ -148,6 +153,16 @@ impl Tree {
         Ok(())
     }
 
+    /// Whether `op` in `group` is sealed under the workspace key: the group is readable by every
+    /// member. A tree op is judged by the parent chain, so a flip is seen by those who see the wall.
+    pub fn sealed_for_workspace(&self, group: &ContextGroupId, op: &GroupOp) -> EyreResult<bool> {
+        let Some((parent, _)) = self.0.get(group) else {
+            return Ok(false);
+        };
+        let start = if is_tree_op(op) { parent } else { group };
+        Ok(self.private_on_chain(start)?.is_none())
+    }
+
     /// A folder is deleted after the spaces beneath it, never with them. The namespace root
     /// is the whole workspace and goes with everything in it.
     pub fn require_may_delete(&self, group: &ContextGroupId) -> EyreResult<()> {
@@ -166,6 +181,14 @@ impl Tree {
         }
         Ok(())
     }
+}
+
+/// Ops that change the tree every member reads: a visibility flip and a deletion.
+pub fn is_tree_op(op: &GroupOp) -> bool {
+    matches!(
+        op.unguarded(),
+        GroupOp::SubgroupVisibilitySet { .. } | GroupOp::GroupDelete
+    )
 }
 
 /// An invitation admits to the workspace, so its target is the namespace root.

@@ -8983,6 +8983,82 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
     );
 }
 
+/// A tree op of a space root is sealed for the workspace. One sealed under the space's own key
+/// would be read by members and skipped by non-members, so members refuse it.
+#[test]
+fn a_space_root_flip_sealed_under_the_space_key_is_refused() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_context_config::VisibilityMode;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+    let ns_gid = ContextGroupId::from([0xA8u8; 32]);
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_account = enrol_member(&store, &ns_gid, &owner_sk.public_key());
+    let sub_gid = ContextGroupId::from([0xA9u8; 32]);
+    nest_for_test(&store, &ns_gid, &sub_gid);
+    for group in [&ns_gid, &sub_gid] {
+        MetaRepository::new(&store)
+            .save(group, &sample_meta_with_admin(owner_account))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(group, &owner_account, GroupMemberRole::Admin)
+            .unwrap();
+    }
+    crate::group_creator::GroupCreatorRepository::new(&store)
+        .record(&sub_gid, &owner_account)
+        .unwrap();
+    let (ns_key, space_key) = ([0x31u8; 32], [0x32u8; 32]);
+    let _ns_key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&ns_key)
+        .unwrap();
+    let _space_key_id = GroupKeyring::new(&store, sub_gid)
+        .store_key(&space_key)
+        .unwrap();
+
+    let flip = |key: &[u8; 32], nonce| {
+        SignedNamespaceOp::sign(
+            &owner_sk,
+            ns_gid.to_bytes().into(),
+            vec![],
+            nonce,
+            NamespaceOp::Group {
+                group_id: sub_gid.to_bytes().into(),
+                key_id: GroupKeyring::key_id_for(key).into(),
+                encrypted: GroupKeyring::encrypt_op(
+                    key,
+                    &GroupOp::SubgroupVisibilitySet {
+                        mode: VisibilityMode::Open,
+                    },
+                )
+                .unwrap(),
+                key_rotation: None,
+                registers: None,
+            },
+        )
+        .unwrap()
+    };
+    let visibility = || {
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&sub_gid)
+            .unwrap()
+    };
+
+    assert!(
+        apply_signed_namespace_op(&store, &flip(&space_key, 1))
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
+            .is_err(),
+        "a flip sealed under the space key must be refused"
+    );
+    assert_eq!(visibility(), VisibilityMode::Restricted);
+
+    apply_signed_namespace_op(&store, &flip(&ns_key, 2))
+        .expect("the workspace-sealed flip applies");
+    assert_eq!(visibility(), VisibilityMode::Open);
+}
+
 // -----------------------------------------------------------------------
 // `GroupCreated` must authorize at the op's causal cut.
 //
@@ -9154,7 +9230,7 @@ fn held_flip_setup() -> HeldFlipSetup {
 
     // The flip, readable here: this node holds the key it is sealed under.
     let flip_key = [0x47; 32];
-    let flip_key_id = GroupKeyring::new(&store, subgroup)
+    let flip_key_id = GroupKeyring::new(&store, ContextGroupId::from(namespace_id))
         .store_key(&flip_key)
         .expect("store the key the flip is sealed under");
     let head = gov.read_head_record().expect("read head");
@@ -9307,6 +9383,9 @@ fn a_held_group_op_applies_once_its_groups_key_arrives() {
     );
 
     // The key arrives: the history now reads, so the cut is decidable.
+    let _key_id = GroupKeyring::new(&store, subgroup)
+        .store_key(&[0x48; 32])
+        .expect("the subgroup's key arrives");
     NamespaceGovernance::new(&store, namespace_id.into())
         .retry_encrypted_ops_for_group(subgroup.to_bytes())
         .expect("the key-arrival replay runs");

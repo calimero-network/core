@@ -824,6 +824,11 @@ pub enum ApplyError {
     )]
     AuthorityUndecidable { group_id: String, signer: String },
 
+    /// A visibility flip or deletion of a group was sealed under a key other than the one
+    /// that covers it, so only some nodes could read it.
+    #[error("tree op for group {group_id} is sealed under the wrong key")]
+    TreeOpSealedUnderWrongKey { group_id: String },
+
     /// Governance nonce counter overflowed `u64`. Practically
     /// unreachable; documented for completeness.
     #[error("group governance nonce overflow")]

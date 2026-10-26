@@ -17,6 +17,9 @@ use eyre::{bail, Result as EyreResult};
 use sha2::{Digest, Sha256};
 
 use super::collect_keys_with_prefix;
+use crate::authorizer::{AtCutAuthorizer, TreeReads};
+use crate::namespace::is_undecidable;
+use crate::private_space::{is_tree_op, Tree};
 
 /// One addressee of a scope-key delivery.
 ///
@@ -1180,6 +1183,165 @@ pub fn key_covering_group(store: &Store, group_id: &ContextGroupId) -> EyreResul
         Ok(namespace_id)
     } else {
         Ok(*group_id)
+    }
+}
+
+/// The group whose key seals `op` in `group_id`: the namespace's for a group readable by every
+/// member, else its own. The comments below are the reasoning for that choice.
+pub(crate) fn sealing_group(
+    store: &Store,
+    group_id: &ContextGroupId,
+    op: &GroupOp,
+) -> EyreResult<ContextGroupId> {
+    let namespace_id = NamespaceRepository::new(store).resolve(group_id)?;
+    // Issue #2256: an `Open` subgroup whose entire ancestor chain up
+    // to the namespace is also `Open` is by definition readable by
+    // every member of its parent namespace, so we encrypt its ops
+    // with the *namespace* key rather than the subgroup's own key.
+    // That makes the crypto boundary match the access boundary,
+    // eliminates the need for a separate key-delivery path to
+    // inheritance-eligible parent members, and makes "Open" mean
+    // what it says cryptographically.
+    //
+    // **Chain check is required, not just immediate visibility:** if
+    // any ancestor between this subgroup and the namespace is
+    // `Restricted`, the membership walk in
+    // `check_group_membership_path` correctly refuses inheritance
+    // through that wall — so encrypting with the namespace key
+    // would expose this subgroup's content to namespace members
+    // who cannot actually join it. `is_open_chain_to_namespace`
+    // verifies the whole chain is Open before we widen the crypto
+    // boundary.
+    //
+    // Restricted subgroups (or any subgroup behind a Restricted
+    // ancestor) keep their per-subgroup key, unchanged.
+    //
+    // **Visibility-flip ops are special-cased:** a flip changes the visibility this
+    // check reads, so its boundary comes from the parent chain, as below.
+    //
+    // Resolution: for `SubgroupVisibilitySet`, decide the encryption
+    // boundary from the **parent chain** (excluding `group_id`),
+    // which is independent of the op being applied. The set of
+    // members who *could observe* the flip is precisely the access
+    // boundary that existed *before* the flip — i.e. the boundary
+    // implied by the parent chain. This works symmetrically:
+    // - `Open → Restricted` flip with fully-Open parent chain:
+    //   namespace key. Every namespace member observes the wall
+    //   going up.
+    // - `Restricted → Open` flip with fully-Open parent chain:
+    //   namespace key. Direct subgroup members try the subgroup
+    //   keyring first (their subgroup is "still" Restricted from
+    //   their PoV); the receiver-side namespace-keyring fallback
+    //   handles the miss.
+    // - Either flip behind a `Restricted` ancestor: per-subgroup
+    //   key. The access boundary was never namespace-wide, so
+    //   nobody outside the wall is owed visibility into the flip.
+    // - Subgroup directly under the namespace (parent IS namespace):
+    //   namespace key. The parent chain is trivially Open.
+    //
+    // A deletion is judged like a flip: both change the tree every member reads.
+    let sealed_for_workspace = Tree::live(store, group_id)?.sealed_for_workspace(group_id, op)?;
+    Ok(if sealed_for_workspace {
+        namespace_id
+    } else {
+        *group_id
+    })
+}
+
+/// Refuse a tree op sealed under any key but the one [`sealing_group`] picks for it: members
+/// read it and non-members cannot, so they would see different trees.
+pub(crate) fn ensure_sealed_for_the_tree(
+    store: &Store,
+    authorizer: &dyn AtCutAuthorizer,
+    group_id: &ContextGroupId,
+    op: &GroupOp,
+    key_id: &[u8; 32],
+    parents: &[[u8; 32]],
+) -> EyreResult<()> {
+    if !is_tree_op(op) {
+        return Ok(());
+    }
+    let reads = TreeReads {
+        chains: &[*group_id],
+        subtrees: &[],
+    };
+    // An unreadable cut parks the op in its own gates, and the replay checks it again.
+    let tree = match Tree::at_cut(store, authorizer, group_id, parents, reads) {
+        Ok(tree) => tree,
+        Err(err) if is_undecidable(&err) => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    let namespace_id = NamespaceRepository::new(store).resolve(group_id)?;
+    // A group the cut does not show yet has no applicable op; the replay judges it once read.
+    if *group_id != namespace_id && !tree.contains(group_id) {
+        return Ok(());
+    }
+    let covering = if tree.sealed_for_workspace(group_id, op)? {
+        namespace_id
+    } else {
+        *group_id
+    };
+    if GroupKeyring::new(store, covering)
+        .load_key_by_id(key_id)?
+        .is_none()
+    {
+        bail!(crate::ApplyError::TreeOpSealedUnderWrongKey {
+            group_id: group_id.to_string()
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod sealing_tests {
+    use calimero_context_client::local_governance::GroupOp;
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::VisibilityMode;
+
+    use super::sealing_group;
+    use crate::test_fixtures::{test_meta, test_store};
+    use crate::{CapabilitiesRepository, MetaRepository, NamespaceRepository};
+
+    #[test]
+    fn a_space_roots_visibility_and_deletion_are_sealed_for_the_workspace() {
+        let store = test_store();
+        let ns = ContextGroupId::from([0x10; 32]);
+        let board = ContextGroupId::from([0x11; 32]);
+        let drafts = ContextGroupId::from([0x12; 32]);
+        NamespaceRepository::new(&store).nest(&ns, &board).unwrap();
+        NamespaceRepository::new(&store)
+            .nest(&board, &drafts)
+            .unwrap();
+        for group in [&ns, &board, &drafts] {
+            MetaRepository::new(&store)
+                .save(group, &test_meta())
+                .unwrap();
+        }
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&board, VisibilityMode::Restricted)
+            .unwrap();
+        let rename = GroupOp::GroupMetadataSet {
+            name: None,
+            data: Default::default(),
+        };
+
+        let seal = |group, op: &GroupOp| sealing_group(&store, &group, op).unwrap();
+        assert_eq!(seal(board, &GroupOp::GroupDelete), ns);
+        assert_eq!(
+            seal(
+                board,
+                &GroupOp::SubgroupVisibilitySet {
+                    mode: VisibilityMode::Open
+                }
+            ),
+            ns
+        );
+        assert_eq!(
+            seal(board, &rename),
+            board,
+            "ops inside a space stay under its key"
+        );
+        assert_eq!(seal(drafts, &GroupOp::GroupDelete), drafts);
     }
 }
 

@@ -1251,7 +1251,8 @@ fn apply_refusal_status(err: &ApplyError) -> Option<StatusCode> {
             | MemberJoinedOpenRejection::WrongNamespace { .. },
         )
         | ApplyError::NamespaceCreatedRejected(_)
-        | ApplyError::RegisteredContextMismatch { .. } => return None,
+        | ApplyError::RegisteredContextMismatch { .. }
+        | ApplyError::TreeOpSealedUnderWrongKey { .. } => return None,
     })
 }
 

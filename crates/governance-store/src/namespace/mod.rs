@@ -28,6 +28,7 @@ pub use self::core::{
     ResolvedNamespaceIdentity,
 };
 pub use self::dag::{NamespaceDagService, NamespaceHead};
+pub(crate) use self::governance::is_undecidable;
 pub use self::governance::{
     apply_received_group_key, apply_received_group_key_with, apply_signed_namespace_op,
     apply_signed_namespace_op_at_cut, build_group_key_delivery,

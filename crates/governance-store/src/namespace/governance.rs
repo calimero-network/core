@@ -2593,6 +2593,16 @@ impl<'a> NamespaceGovernance<'a> {
         encrypted: &EncryptedGroupOp,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
         let inner_op = GroupKeyring::decrypt_op(group_key, encrypted)?;
+        if let NamespaceOp::Group { key_id, .. } = &ns_op.op {
+            crate::group_keys::ensure_sealed_for_the_tree(
+                self.store,
+                self.authorizer,
+                group_id,
+                &inner_op,
+                key_id.as_bytes(),
+                &ns_op.parent_op_hashes,
+            )?;
+        }
         let claimed = match &ns_op.op {
             NamespaceOp::Group { registers, .. } => *registers,
             _ => None,
@@ -3486,7 +3496,7 @@ fn is_respent(err: &eyre::Report) -> bool {
 }
 
 /// Whether `err` is a gate declining to decide an unresolvable cut, not a verdict.
-pub(super) fn is_undecidable(err: &eyre::Report) -> bool {
+pub(crate) fn is_undecidable(err: &eyre::Report) -> bool {
     err.chain().any(|cause| {
         matches!(
             cause.downcast_ref::<crate::ApplyError>(),
