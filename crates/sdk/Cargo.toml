@@ -35,6 +35,7 @@ calimero-wasm-abi.workspace = true
 tracing = ["dep:tracing", "dep:tracing-subscriber"]
 
 [dev-dependencies]
+macrotest.workspace = true
 trybuild.workspace = true
 # The macro-test fixtures exercise full `#[app::state]` expansion, which emits
 # `::calimero_storage` paths (CRDT merge registry). This is a dev-dependency

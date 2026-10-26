@@ -1,0 +1,154 @@
+name: E2E Scaffolding - Delegated Invitation Routes To An Admitter
+description: >
+  A non-admin with CAN_INVITE_MEMBERS mints an invitation it cannot itself
+  admit, and the joiner has to reach an admitter named in the invitation's
+  `admitter_addrs` instead of the node that minted it.
+
+  Every other invitation in the suite is minted by an admin, who is also an
+  admitter, so "reached the node that invited me" and "reached an admitter" are
+  the same event. Here they differ.
+
+  Two assertions: the admin lists the joiner as a member afterwards, and the
+  joiner logs the dial of an invitation-named admitter. The log line is what
+  proves the dial path is called; a green join alone would also pass when gossip
+  happened to reach the admin and the addresses were never used.
+
+  Not asserted: that the addresses were the only way to find the admitter. That
+  needs a topology where the joiner cannot discover the admin otherwise.
+
+force_pull_image: false
+
+# The dial line is `tracing::debug!` in the node's namespace join module.
+log_level: "info,calimero_node::sync::manager::namespace_join=debug"
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: admroute-node
+
+steps:
+  - name: Login on admroute-node-1
+    type: login
+    node: admroute-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on admroute-node-2
+    type: login
+    node: admroute-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on admroute-node-3
+    type: login
+    node: admroute-node-3
+    username: dev
+    password: dev-password
+
+  - name: Install application on admroute-node-1
+    type: install_application
+    node: admroute-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Admin creates the namespace
+    type: create_namespace
+    node: admroute-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Admin invites node-2
+    type: create_namespace_invitation
+    node: admroute-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      admin_invitation: invitation
+
+  - name: Node-2 joins
+    type: join_namespace
+    node: admroute-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{admin_invitation}}'
+
+  - name: Read node-2's account
+    type: node_identity
+    node: admroute-node-2
+    outputs:
+      inviter_account: accountId
+
+  - name: Read node-3's account
+    type: node_identity
+    node: admroute-node-3
+    outputs:
+      joiner_account: accountId
+
+  # Bit 1 = 2: the right to invite and nothing else. More could make node-2 an
+  # admin, and an admin is also an admitter.
+  - name: Grant node-2 CAN_INVITE_MEMBERS and nothing more
+    type: set_member_capabilities
+    node: admroute-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{inviter_account}}'
+    capabilities: 2
+
+  - name: Settle the grant
+    type: wait_for_sync
+    nodes:
+      - admroute-node-1
+      - admroute-node-2
+    group_id: '{{namespace_id}}'
+
+  - name: Node-2 mints a delegated invitation it cannot itself admit
+    type: create_namespace_invitation
+    node: admroute-node-2
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      delegated_invitation: invitation
+
+  - name: Node-3 joins on the delegated invitation
+    type: join_namespace
+    node: admroute-node-3
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{delegated_invitation}}'
+
+  - name: Settle after the delegated join
+    type: wait_for_sync
+    nodes:
+      - admroute-node-1
+      - admroute-node-3
+    group_id: '{{namespace_id}}'
+
+  # The admin's view, not the joiner's: the admitter folding the join proves more.
+  - name: The admin lists node-3 as a member
+    type: assert_api_response
+    node: admroute-node-1
+    path: '/admin-api/groups/{{namespace_id}}/members'
+    where:
+      identity: '{{joiner_account}}'
+    match:
+      identity: '{{joiner_account}}'
+
+  - name: Node-3 dialed an admitter named by the invitation
+    type: assert_log_present
+    nodes:
+      - admroute-node-3
+    patterns:
+      - "dialed an admitter named by the invitation"
+
+  - name: No panics on any node
+    type: assert_log_absent
+    nodes:
+      - admroute-node-1
+      - admroute-node-2
+      - admroute-node-3
+    patterns:
+      - "panicked at"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 60

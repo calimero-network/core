@@ -2312,7 +2312,9 @@ impl SyncManager {
                 // rejection); `heads_admitted` includes the
                 // successful `add_delta` path only.
                 let mut heads_attempted: u32 = 0;
-                let mut heads_admitted: u32 = 0;
+                let mut heads_admitted: usize = 0;
+                let mut head_batch: Vec<crate::delta_store::BatchDeltaInput> = Vec::new();
+                let mut head_tee_markers = Vec::new();
                 // Hoist the datastore handle outside the loop —
                 // `datastore_handle().into_inner()` clones an `Arc`
                 // and can take a brief lock; per-iteration creation
@@ -2680,15 +2682,6 @@ impl SyncManager {
                             // to other peers that ask for the same delta.
                             let persisted_gov_blob =
                                 governance_position_blob.as_ref().map(|c| c.to_vec());
-                            // The resolver answers at the cut this delta was signed at.
-                            crate::handlers::state_delta::arm_signer_resolver_for_cut(
-                                &delta_store_ref,
-                                &self.node_state,
-                                &datastore_for_heads,
-                                &context_id,
-                                pos.as_ref(),
-                                calimero_storage::logical_clock::physical_time_secs(&dag_delta.hlc),
-                            );
                             // Before the delta can become a head this node serves.
                             crate::handlers::state_delta::record_accepted_events_hash(
                                 &datastore_for_heads,
@@ -2696,40 +2689,38 @@ impl SyncManager {
                                 head_id,
                                 events_hash.as_ref(),
                             );
-                            if let Err(e) = delta_store_ref
-                                .add_delta(
-                                    dag_delta,
-                                    Some(author),
-                                    persisted_gov_blob,
-                                    response_delta_signature,
-                                    // Bound from the DeltaResponse above, so a
-                                    // delegated delta fetched by catchup is
-                                    // stored with the bundle it was signed with
-                                    // and can be re-served to the next peer.
-                                    delegation,
-                                )
-                                .await
-                            {
-                                warn!(
-                                    ?e,
-                                    %context_id,
-                                    head_id = ?head_id,
-                                    "Failed to add DAG head delta"
-                                );
-                            } else {
-                                heads_admitted = heads_admitted.saturating_add(1);
-                                crate::handlers::state_delta::record_accepted_tee_delta(
-                                    &datastore_for_heads,
-                                    &context_id,
-                                    head_id,
-                                    &envelope,
-                                );
-                                info!(
-                                    %context_id,
-                                    head_id = ?head_id,
-                                    "Successfully added DAG head delta"
+                            head_tee_markers.push((*head_id, envelope));
+                            head_batch.push(crate::delta_store::BatchDeltaInput {
+                                delta: dag_delta,
+                                events: None,
+                                author_id: Some(author),
+                                governance_position_blob: persisted_gov_blob,
+                                delta_signature: response_delta_signature,
+                                // Bound from the DeltaResponse above, so a
+                                // delegated delta fetched by catchup is
+                                // stored with the bundle it was signed with
+                                // and can be re-served to the next peer.
+                                delegation,
+                            });
+                            if head_batch.len() >= crate::delta_store::DELTA_BATCH_MAX {
+                                heads_admitted = heads_admitted.saturating_add(
+                                    crate::sync::delta_request::flush_delta_batch(
+                                        &delta_store_ref,
+                                        &self.node_state,
+                                        &datastore_for_heads,
+                                        &context_id,
+                                        std::mem::take(&mut head_batch),
+                                        std::mem::take(&mut head_tee_markers),
+                                    )
+                                    .await
+                                    .admitted(),
                                 );
                             }
+                            info!(
+                                %context_id,
+                                head_id = ?head_id,
+                                "Buffered DAG head delta for batch registration"
+                            );
                         }
                         Some(StreamMessage::Message {
                             payload:
@@ -2745,6 +2736,15 @@ impl SyncManager {
                                 "Peer's delta history is pruned, falling back to snapshot sync"
                             );
                             // Fall back to snapshot sync
+                            let _admitted = crate::sync::delta_request::flush_delta_batch(
+                                &delta_store_ref,
+                                &self.node_state,
+                                &datastore_for_heads,
+                                &context_id,
+                                std::mem::take(&mut head_batch),
+                                std::mem::take(&mut head_tee_markers),
+                            )
+                            .await;
                             return self
                                 .fallback_to_snapshot_sync(context_id, our_identity, peer_id)
                                 .await;
@@ -2765,6 +2765,19 @@ impl SyncManager {
                         }
                     }
                 }
+
+                heads_admitted = heads_admitted.saturating_add(
+                    crate::sync::delta_request::flush_delta_batch(
+                        &delta_store_ref,
+                        &self.node_state,
+                        &datastore_for_heads,
+                        &context_id,
+                        std::mem::take(&mut head_batch),
+                        std::mem::take(&mut head_tee_markers),
+                    )
+                    .await
+                    .admitted(),
+                );
 
                 // Detect "all-rejected" silent no-op: the peer advertised
                 // heads, every single one was rejected by the verify chain

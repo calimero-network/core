@@ -5,6 +5,7 @@
 use calimero_crypto::Nonce;
 use calimero_governance_store::NamespaceRepository;
 use calimero_network_primitives::stream::Stream;
+use calimero_node_primitives::sync::delta_auth::VerifiedEnvelope;
 use calimero_node_primitives::sync::{InitPayload, MessagePayload, ResponderProof, StreamMessage};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -98,7 +99,7 @@ enum VerifiedParent {
     Apply {
         position: Option<calimero_context_config::types::GovernanceParentEdge>,
         /// `None` for genesis, which carries no envelope.
-        envelope: Option<calimero_node_primitives::sync::delta_auth::VerifiedEnvelope>,
+        envelope: Option<VerifiedEnvelope>,
     },
     /// Rejected — drop this delta and continue with the next one.
     Skip,
@@ -403,15 +404,19 @@ fn head_author_is_revoked(
 ///
 /// The key-to-account resolver is armed for each delta at its own cut just before it is
 /// added, so a chunk that spans a device revocation resolves every delta where it was signed.
-async fn flush_delta_batch(
+///
+/// `tee_markers` are recorded only for the deltas the DAG took in: a verified TEE
+/// trigger has fired once its delta is served, not before.
+pub(crate) async fn flush_delta_batch(
     delta_store: &crate::delta_store::DeltaStore,
     node_state: &crate::NodeState,
     datastore: &calimero_store::Store,
     context_id: &ContextId,
     batch: Vec<crate::delta_store::BatchDeltaInput>,
-) {
+    tee_markers: Vec<([u8; 32], VerifiedEnvelope)>,
+) -> crate::delta_store::BatchAddResult {
     if batch.is_empty() {
-        return;
+        return Default::default();
     }
     let batch_count = batch.len();
     let arm = |input: &crate::delta_store::BatchDeltaInput| {
@@ -429,14 +434,26 @@ async fn flush_delta_batch(
             calimero_storage::logical_clock::physical_time_secs(&input.delta.hlc),
         );
     };
-    if let Err(e) = delta_store.add_deltas_batch(batch, arm).await {
-        warn!(
-            ?e,
-            %context_id,
-            batch_count,
-            "Failed to persist fetched delta batch to DAG"
-        );
+    let result = delta_store
+        .add_deltas_batch(batch, arm)
+        .await
+        .unwrap_or_else(|e| {
+            warn!(
+                ?e,
+                %context_id,
+                batch_count,
+                "Failed to persist fetched delta batch to DAG"
+            );
+            Default::default()
+        });
+    for (delta_id, envelope) in &tee_markers {
+        if result.was_admitted(delta_id) {
+            crate::handlers::state_delta::record_accepted_tee_delta(
+                datastore, context_id, delta_id, envelope,
+            );
+        }
     }
+    result
 }
 
 impl SyncManager {
@@ -501,6 +518,7 @@ impl SyncManager {
         // Bounding the buffer also keeps memory in check (we never hold more
         // than one chunk's payloads beyond what's already in flight).
         let mut delta_batch: Vec<crate::delta_store::BatchDeltaInput> = Vec::new();
+        let mut tee_markers: Vec<([u8; 32], VerifiedEnvelope)> = Vec::new();
         let datastore = self.context_client.datastore_handle().into_inner();
 
         // Phase 1: Fetch ALL missing deltas recursively
@@ -528,6 +546,7 @@ impl SyncManager {
                         &datastore,
                         &context_id,
                         std::mem::take(&mut delta_batch),
+                        std::mem::take(&mut tee_markers),
                     )
                     .await;
 
@@ -622,15 +641,8 @@ impl SyncManager {
                             delta_signature: fetched.delta_signature,
                             delegation: fetched.delegation.clone(),
                         });
-                        // Verified above, so its trigger is one an attested TEE
-                        // signed: it has fired, and this node now serves it.
-                        if let Some(envelope) = &envelope {
-                            crate::handlers::state_delta::record_accepted_tee_delta(
-                                &datastore,
-                                &context_id,
-                                &missing_id,
-                                envelope,
-                            );
+                        if let Some(envelope) = envelope {
+                            tee_markers.push((missing_id, envelope));
                         }
                         crate::handlers::state_delta::record_accepted_events_hash(
                             &datastore,
@@ -645,6 +657,7 @@ impl SyncManager {
                                 &datastore,
                                 &context_id,
                                 std::mem::take(&mut delta_batch),
+                                std::mem::take(&mut tee_markers),
                             )
                             .await;
                         }
@@ -684,6 +697,7 @@ impl SyncManager {
             &datastore,
             &context_id,
             std::mem::take(&mut delta_batch),
+            std::mem::take(&mut tee_markers),
         )
         .await;
 
@@ -1040,6 +1054,7 @@ mod tests {
         genesis_author_sentinel, head_author_is_revoked, verify_fetched_parent, FetchedAs,
         FetchedDelta, VerifiedParent,
     };
+    use calimero_node_primitives::sync::delta_auth::{TeeTriggerCause, VerifiedEnvelope};
 
     fn genesis_claim() -> FetchedDelta {
         claim_naming(vec![[0u8; 32]])
@@ -1189,6 +1204,7 @@ mod tests {
             &world.store,
             &crate::test_support::context(),
             vec![input_at(1, &[world.joined()[0]])],
+            Vec::new(),
         )
         .await;
 
@@ -1215,7 +1231,14 @@ mod tests {
         node_state.scope_projections = Arc::clone(&world.projections);
         let context = crate::test_support::context();
         let flush = |chunk: Vec<crate::delta_store::BatchDeltaInput>| {
-            super::flush_delta_batch(&delta_store, &node_state, &world.store, &context, chunk)
+            super::flush_delta_batch(
+                &delta_store,
+                &node_state,
+                &world.store,
+                &context,
+                chunk,
+                Vec::new(),
+            )
         };
 
         // At the joined cut the key is bound; at a cut this node does not hold it is not.
@@ -1234,5 +1257,54 @@ mod tests {
             None,
             "the last delta cites a cut that does not bind the key, whatever the first cited"
         );
+    }
+
+    /// A TEE trigger counts as fired once its delta is in the DAG; a delta the
+    /// batch refused leaves no marker.
+    #[tokio::test]
+    async fn flushing_records_tee_markers_only_for_admitted_deltas() {
+        use calimero_context::test_support::RotationWorld;
+        use calimero_context_client::messages::ContextMessage;
+        use calimero_utils_actix::LazyRecipient;
+
+        let world =
+            RotationWorld::for_context(crate::test_support::context(), &[PublicKey::from([1; 32])]);
+        let (delta_store, _tmp, _keep) = crate::test_support::delta_store_over_governance(
+            world.store.clone(),
+            LazyRecipient::<ContextMessage>::new(),
+            Arc::clone(&world.projections),
+        )
+        .await;
+        let context = crate::test_support::context();
+        let admitted = input_at(1, &[world.joined()[0]]);
+        let mut refused = input_at(2, &[world.joined()[0]]);
+        refused.delta.parents = (0..=calimero_dag::MAX_DELTA_PARENTS)
+            .map(|i| [i as u8; 32])
+            .collect();
+        let trigger = TeeTriggerCause::Event {
+            cause: [0x77; 32],
+            method: "on_event".to_owned(),
+        };
+        let markers = vec![
+            ([1; 32], VerifiedEnvelope::Tee(trigger.clone())),
+            ([2; 32], VerifiedEnvelope::Tee(trigger.clone())),
+        ];
+
+        super::flush_delta_batch(
+            &delta_store,
+            &crate::state::NodeState::new(),
+            &world.store,
+            &context,
+            vec![admitted, refused],
+            markers,
+        )
+        .await;
+
+        let recorded = |id: u8| {
+            calimero_context_client::tee_trigger::delta_trigger(&world.store, &context, &[id; 32])
+                .unwrap()
+        };
+        assert_eq!(recorded(1), Some(trigger));
+        assert_eq!(recorded(2), None);
     }
 }

@@ -1,0 +1,124 @@
+name: Sync Resilience - Lossy Link
+description: >
+  A burst of 20 writes on node-1, then 90% packet loss on node-2 for 20s;
+  everything must reach node-2 once the loss clears.
+
+  The loss is injected with `tc netem` inside node-2's container, so the scenario
+  runs on `merod:local-fault`, the default image plus iproute2. Convergence after
+  the fault is the assertion: a failed `wait_for_sync` means recovery does not work,
+  not merely that the window had no effect. Node-2's state mid-fault is deliberately
+  not asserted, because at 90% loss the outcome is too close to call.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local-fault
+  prefix: lossy-node
+
+steps:
+  - name: Login on lossy-node-1
+    type: login
+    node: lossy-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on lossy-node-2
+    type: login
+    node: lossy-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install application on node-1
+    type: install_application
+    node: lossy-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create the mesh - namespace, context and every joiner
+    type: create_mesh
+    context_node: lossy-node-1
+    application_id: '{{app_id}}'
+    nodes:
+      - lossy-node-2
+    outputs:
+      namespace_id: namespaceId
+      ctx_id: contextId
+
+  - name: Settle the mesh
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - lossy-node-1
+      - lossy-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Burst-write 20 keys on node-1
+    type: repeat
+    count: 20
+    steps:
+      - name: Write one burst key
+        type: call
+        node: lossy-node-1
+        context_id: '{{ctx_id}}'
+        method: set
+        args:
+          key: 'burst_{{iteration}}_k'
+          value: 'v{{iteration}}_v'
+
+  - name: Drop 90% of node-2's packets for 20s
+    type: inject_network_fault
+    container: lossy-node-2
+    fault: loss
+    percent: 90
+    duration: 20
+
+  - name: Wait for node-2 to catch up after the loss clears
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - lossy-node-1
+      - lossy-node-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Read every key on node-2
+    type: call
+    node: lossy-node-2
+    context_id: '{{ctx_id}}'
+    method: entries
+    outputs:
+      entries_n2: result
+
+  - name: Assert node-2 holds all 20 values
+    type: assert
+    statements:
+      - "contains({{entries_n2}}, 'v1_v')"
+      - "contains({{entries_n2}}, 'v2_v')"
+      - "contains({{entries_n2}}, 'v3_v')"
+      - "contains({{entries_n2}}, 'v4_v')"
+      - "contains({{entries_n2}}, 'v5_v')"
+      - "contains({{entries_n2}}, 'v6_v')"
+      - "contains({{entries_n2}}, 'v7_v')"
+      - "contains({{entries_n2}}, 'v8_v')"
+      - "contains({{entries_n2}}, 'v9_v')"
+      - "contains({{entries_n2}}, 'v10_v')"
+      - "contains({{entries_n2}}, 'v11_v')"
+      - "contains({{entries_n2}}, 'v12_v')"
+      - "contains({{entries_n2}}, 'v13_v')"
+      - "contains({{entries_n2}}, 'v14_v')"
+      - "contains({{entries_n2}}, 'v15_v')"
+      - "contains({{entries_n2}}, 'v16_v')"
+      - "contains({{entries_n2}}, 'v17_v')"
+      - "contains({{entries_n2}}, 'v18_v')"
+      - "contains({{entries_n2}}, 'v19_v')"
+      - "contains({{entries_n2}}, 'v20_v')"
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 60
