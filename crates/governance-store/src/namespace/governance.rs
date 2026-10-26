@@ -1602,10 +1602,9 @@ impl<'a> NamespaceGovernance<'a> {
         let gid = ContextGroupId::from(group_id);
 
         // Repairable / idempotent seed. The seed writes two independent rows —
-        // group meta and the admin member row — and `calimero-store` has no
-        // atomic multi-key write (see the CRASH-SAFETY INVARIANT in
-        // `local_state::persist_group_op_log_entry`), so a crash (or a transient
-        // error) between the two `put`s can leave meta present but the admin
+        // group meta and the admin member row — not committed as one batch, so
+        // a crash (or a transient error) between the two `put`s can leave meta
+        // present but the admin
         // member row missing. Gating the WHOLE seed on `load_group_meta(..)
         // .is_some()` would then return early forever, never adding the member
         // row, and encrypted replay would keep failing the verifier-membership
@@ -2870,8 +2869,8 @@ impl<'a> NamespaceGovernance<'a> {
             if !already_logged {
                 // Derive `next_seq` from the ACTUAL max op-log sequence, not
                 // from `GroupOpHeadValue.sequence`. The head can lag the log
-                // after a crash that landed between the entry `put` and the
-                // head `put` in `persist_group_op_log_entry`: a stale head
+                // in a store written by an older build, which committed the
+                // entry and the head separately: a stale head
                 // would make a different op reuse the orphan's sequence and
                 // silently overwrite it (e.g. losing a `TeeAdmissionPolicySet`
                 // that a later membership op depends on). Scanning the log is
