@@ -1731,7 +1731,7 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(())
     }
 
-    /// A seat in a private space stands only with a seat in the workspace. The group's owner,
+    /// A seat in a private space stands only with a seat in the workspace. The workspace owner,
     /// and a TEE that never held a workspace row, are exempt.
     fn holds_workspace_row_for_space(
         &self,
@@ -1751,15 +1751,18 @@ impl<'a> NamespaceGovernance<'a> {
         let left_workspace = crate::ReentryRepository::new(self.store)
             .block_of(namespace, account)?
             .is_some();
+        let owns_workspace = MetaRepository::new(self.store)
+            .load(namespace)?
+            .is_some_and(|meta| meta.owner_identity == *account);
+        if owns_workspace {
+            return Ok(true);
+        }
         for held in [group, &space] {
-            let owner = MetaRepository::new(self.store)
-                .load(held)?
-                .is_some_and(|meta| meta.owner_identity == *account);
             let tee = !left_workspace
                 && membership
                     .role_of(held, account)?
                     .is_some_and(|role| role.is_tee());
-            if owner || tee {
+            if tee {
                 return Ok(true);
             }
         }

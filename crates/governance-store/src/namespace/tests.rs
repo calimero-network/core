@@ -7943,6 +7943,73 @@ fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
     );
 }
 
+/// Owning a space is no standing in it without a workspace row.
+#[test]
+fn a_space_owner_without_a_workspace_row_is_served_no_space_key() {
+    use crate::group_keys::GroupKeyring;
+    use crate::{build_group_key_delivery, KeyRequester};
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let namespace_id = [0xF8u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let space_id = [0xF9u8; 32];
+    let space = ContextGroupId::from(space_id);
+    let responder_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let responder_sk = PrivateKey::from(responder_sk_bytes);
+    let responder_account = crate::test_fixtures::account_for(&responder_sk.public_key());
+    let joiner_pk = PrivateKey::from([0x5Au8; 32]).public_key();
+
+    let store = test_store();
+    let (joiner_account, joiner_device, credential) =
+        crate::test_fixtures::enrol_local_device(&store, &ns_gid, &joiner_pk);
+    crate::test_fixtures::record_credential(&store, &ns_gid, &credential);
+    let _ = enrol_member(&store, &ns_gid, &responder_sk.public_key());
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &responder_sk.public_key(), &responder_sk_bytes)
+        .unwrap();
+    for group in [&ns_gid, &space] {
+        MetaRepository::new(&store)
+            .save(group, &sample_meta_with_admin(responder_account))
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &space)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&space, calimero_context_config::VisibilityMode::Restricted)
+        .unwrap();
+    GroupKeyring::new(&store, space)
+        .store_key(&[0x6Cu8; 32])
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&space, &joiner_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    let serve = || {
+        build_group_key_delivery(
+            &store,
+            namespace_id.into(),
+            space_id,
+            KeyRequester {
+                identity: joiner_pk,
+                device: Some(joiner_device),
+            },
+            None,
+        )
+        .unwrap()
+        .0
+    };
+    let mut meta = sample_meta_with_admin(responder_account);
+    meta.owner_identity = joiner_account;
+    MetaRepository::new(&store).save(&space, &meta).unwrap();
+    assert!(
+        serve().is_empty(),
+        "the space's owner, no longer in the workspace, is served no key"
+    );
+}
+
 /// A TEE exempt from the workspace row only until it holds and loses one: after a workspace
 /// removal it is served no space key.
 #[test]

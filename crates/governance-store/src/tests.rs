@@ -11090,6 +11090,55 @@ mod tee_member_removed_event_tests {
         );
     }
 
+    /// A workspace removal ends the removed account's seat in a space it owns too.
+    #[test]
+    #[serial_test::serial]
+    fn member_removed_at_the_root_ends_the_seat_in_a_space_the_account_owns() {
+        use calimero_context_config::VisibilityMode;
+
+        let store = test_store();
+        let ns_gid = ContextGroupId::from([0xDC; 32]);
+        let space = ContextGroupId::from([0xDD; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ns_gid, &space)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&space, VisibilityMode::Restricted)
+            .unwrap();
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+        let admin = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+        let (_pk, owner) = enrolled(&store, &ns_gid, 0xEA);
+        MetaRepository::new(&store)
+            .save(&ns_gid, &sample_meta_with_admin(admin))
+            .unwrap();
+        let mut space_meta = sample_meta_with_admin(admin);
+        space_meta.owner_identity = owner;
+        MetaRepository::new(&store)
+            .save(&space, &space_meta)
+            .unwrap();
+        let rows = MembershipRepository::new(&store);
+        rows.add_member(&ns_gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        rows.add_member(&ns_gid, &owner, GroupMemberRole::Member)
+            .unwrap();
+        rows.add_member(&space, &owner, GroupMemberRole::Admin)
+            .unwrap();
+        rows.add_member(&space, &admin, GroupMemberRole::Admin)
+            .unwrap();
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            ns_gid.to_bytes().into(),
+            vec![],
+            1,
+            dummy_member_removed_op(owner),
+        )
+        .expect("sign MemberRemoved");
+        apply_local_signed_group_op(&store, &op).expect("apply MemberRemoved");
+
+        assert_eq!(rows.role_of(&space, &owner).unwrap(), None);
+    }
+
     /// An account that leaves the namespace holds no live row in a private space either.
     #[test]
     #[serial_test::serial]

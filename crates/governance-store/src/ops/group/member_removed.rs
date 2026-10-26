@@ -69,7 +69,7 @@ pub(crate) fn apply(
         );
     }
     // A namespace-root removal ends every row the account holds below the root: a seat in a
-    // private space does not outlive the seat in the workspace. A subgroup it owns is kept.
+    // private space does not outlive the seat in the workspace. An open subgroup it owns is kept; a space it owns is not.
     // For a TEE member (`ReadOnlyTee` or `RelayTee`) this also evicts it namespace-wide:
     // the TEE's presence in any subgroup came from namespace-level
     // attestation policy (`tee_subgroup_admit`), not the subgroup admin's
@@ -105,6 +105,7 @@ pub(crate) fn apply(
             // just direct children) and excludes the root itself, so one pass
             // covers each descendant group's own directly-registered contexts.
             let descendants = namespaces.collect_descendants(group_id)?;
+            let tree = crate::private_space::Tree::live(store, group_id)?;
             for sub in &descendants {
                 // Defensive: `collect_descendants` excludes the root, but were
                 // it ever to return `group_id` itself, the membership teardown
@@ -124,8 +125,9 @@ pub(crate) fn apply(
                 // `cascade_remove_member` ever started touching `GroupMember`
                 // rows, this gate would stay correct.
                 let direct_role = membership.role_of(sub, member)?;
-                if crate::group_owner::owner_at_cut(store, sub, ctx.cut(), ctx.authorizer())?
-                    == Some(*member)
+                if !tree.in_space(sub)?
+                    && crate::group_owner::owner_at_cut(store, sub, ctx.cut(), ctx.authorizer())?
+                        == Some(*member)
                 {
                     continue;
                 }
