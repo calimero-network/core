@@ -96,7 +96,7 @@ src/
 │       ├── blobs.rs          # blob_create/write/close/open/read
 │       ├── utility.rs        # random_bytes, time_now, ed25519_verify, tee_origin, tee_random_bytes
 │       ├── outbound.rs       # http_request (one HTTPS request per run, through VMContext.outbound; never gas)
-│       ├── sealing.rs        # seal_to, open_sealed (bound to the run's own context), tee_authority_keys, account_device_keys (keys from VMContext.sealing)
+│       ├── sealing.rs        # seal_to, open_sealed (bound to the run's own context), tee_authority_keys, account_device_keys, tee_sealing_key (every run; resolved lazily) (keys from VMContext.sealing)
 │       ├── shared_writers.rs # shared_writers (a cell's writers from Storage::shared_writers), shared_writers_rotate (records a SharedRotation on the Outcome)
 │       ├── system.rs         # panic, registers, input/output, emit, commit
 │       ├── js_collections.rs # js_crdt_* functions for JS SDK

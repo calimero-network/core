@@ -59,9 +59,9 @@ use crate::local_governance::AckRouter;
 use crate::messages::{
     AcquireContextLockRequest, ApplySignedGroupOpRequest, ApplySignedNamespaceOpRequest,
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
-    DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse, InternalErrorKind,
-    MethodNotExported, MigrationParams, NamespaceApplyOutcome, PrecompileApplicationRequest,
-    ReadAs, UpdateApplicationRequest, WriteSource,
+    DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse, ForwardedOutboundRequest,
+    InternalErrorKind, MethodNotExported, MigrationParams, NamespaceApplyOutcome,
+    PrecompileApplicationRequest, ReadAs, UpdateApplicationRequest, WriteSource,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -1939,6 +1939,12 @@ impl ContextClient {
         DeleteNamespace,
         DeleteNamespaceRequest,
         eyre::Result<DeleteNamespaceResponse>
+    );
+    forward_to_actor!(
+        forwarded_outbound,
+        ForwardedOutbound,
+        ForwardedOutboundRequest,
+        eyre::Result<Vec<u8>>
     );
     forward_to_actor!(
         rejoin_namespace,

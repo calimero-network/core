@@ -98,6 +98,25 @@ impl Message for PrecompileApplicationRequest {
     type Result = eyre::Result<usize>;
 }
 
+/// An outbound request a member's node forwarded to this node because it names
+/// a `{{sealed:…}}` secret only a TEE of the namespace can open.
+///
+/// `requester` has already proven its key on the stream and been checked as a
+/// member of `context`; `responder` is this node's identity there.
+#[derive(Clone, Debug)]
+pub struct ForwardedOutboundRequest {
+    pub context: ContextId,
+    pub requester: PublicKey,
+    pub responder: PublicKey,
+    /// A borsh `calimero_primitives::outbound::OutboundRequest`.
+    pub request: Vec<u8>,
+}
+
+impl Message for ForwardedOutboundRequest {
+    /// A borsh `calimero_context::outbound::ForwardedAnswer`, sent back as is.
+    type Result = eyre::Result<Vec<u8>>;
+}
+
 /// Whom a delegated **read** runs as: the authenticated session's account, and
 /// the device that opened the session when the auth layer knows which.
 ///
@@ -710,6 +729,10 @@ pub enum ContextMessage {
     RejoinNamespace {
         request: RejoinNamespaceRequest,
         outcome: oneshot::Sender<<RejoinNamespaceRequest as Message>::Result>,
+    },
+    ForwardedOutbound {
+        request: ForwardedOutboundRequest,
+        outcome: oneshot::Sender<<ForwardedOutboundRequest as Message>::Result>,
     },
     AddGroupMembers {
         request: AddGroupMembersRequest,

@@ -1225,6 +1225,7 @@ dependencies = [
  "eyre",
  "futures-util",
  "hex",
+ "libp2p",
  "ouroboros",
  "prometheus-client",
  "rand 0.10.2",

@@ -16,6 +16,7 @@ either.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true
+libp2p = { workspace = true, features = ["gossipsub"] }
 ouroboros.workspace = true
 prometheus-client.workspace = true
 rand.workspace = true
