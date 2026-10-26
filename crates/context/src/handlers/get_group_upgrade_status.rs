@@ -1,8 +1,11 @@
 use actix::{ActorResponse, Handler, Message};
-use calimero_context_client::group::GetGroupUpgradeStatusRequest;
-use calimero_governance_store::UpgradesRepository;
+use calimero_context_client::group::{
+    GetGroupUpgradeStatusRequest, GroupUpgradeStatusResponse, MissingRelease,
+};
+use calimero_governance_store::{NamespaceRepository, UpgradesRepository};
 use eyre::bail;
 
+use crate::handlers::activate_namespace_upgrade::missing_releases;
 use crate::ContextManager;
 
 impl Handler<GetGroupUpgradeStatusRequest> for ContextManager {
@@ -24,9 +27,25 @@ impl Handler<GetGroupUpgradeStatusRequest> for ContextManager {
                     group_id: group_id.to_string(),
                 });
             }
-            UpgradesRepository::new(&self.datastore)
-                .load(&group_id)
-                .map(|opt| opt.map(Into::into))
+            let namespace_id = NamespaceRepository::new(&self.datastore).resolve(&group_id)?;
+            let missing_releases = missing_releases(
+                &self.datastore,
+                |blob| self.node_client.has_blob(blob),
+                &namespace_id,
+            )?
+            .into_iter()
+            .map(|rung| MissingRelease {
+                package: rung.package,
+                version: rung.version,
+                application_id: rung.application_id,
+            })
+            .collect();
+            Ok(GroupUpgradeStatusResponse {
+                upgrade: UpgradesRepository::new(&self.datastore)
+                    .load(&group_id)?
+                    .map(Into::into),
+                missing_releases,
+            })
         })();
         ActorResponse::reply(result)
     }
