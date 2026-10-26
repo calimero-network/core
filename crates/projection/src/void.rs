@@ -955,6 +955,12 @@ impl<'a> Analysis<'a> {
                 let Some(group) = self.voidable_group(op) else {
                     continue;
                 };
+                // Past the budget a removal is taken to reach: the op it might reach is the one
+                // that matters.
+                if self.over_budget() {
+                    let _ = next.insert(id);
+                    continue;
+                }
                 let tree = self.tree_at(op, void);
                 let start = self.reach_start(op, group, &tree);
                 let space = start.and_then(|start| tree.private_space(start));

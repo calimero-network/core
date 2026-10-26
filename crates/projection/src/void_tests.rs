@@ -1337,3 +1337,15 @@ fn a_removed_signer_cannot_move_a_folder_out_of_the_space_concurrently_with_its_
 
     assert!(void(&log).contains(&later.id()));
 }
+
+#[test]
+fn past_the_fold_budget_a_removal_is_taken_to_reach_the_op() {
+    let (mut log, head) = eng_private_space();
+    let removal = remove_from(subgroup(0x41), ALICE, &[&head], SAM);
+    let in_space = add_in(subgroup(0x42), SAM, &[&head], WILL, GroupMemberRole::Member);
+    log.extend([removal, in_space.clone()]);
+
+    let judged = |budget| ScopeState::void_ops_bounded(&log, base(), None, &[], budget);
+    assert!(!judged(usize::MAX).contains(&in_space.id()));
+    assert!(judged(0).contains(&in_space.id()));
+}
