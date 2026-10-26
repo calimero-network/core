@@ -216,6 +216,24 @@ impl AtCutAuthorizer for VoidJudge<'_> {
             .scope_reaches_at_cut(group, account, applications, parents)
     }
 
+    // The tree and the cut's readability are structure every replay must judge at the cut.
+    fn reads_tree_at_cut(&self) -> bool {
+        self.0.reads_tree_at_cut()
+    }
+
+    fn subgroup_edges_at_cut(
+        &self,
+        group: &ContextGroupId,
+        parents: &[[u8; 32]],
+        reads: TreeReads<'_>,
+    ) -> Option<SubgroupEdges> {
+        self.0.subgroup_edges_at_cut(group, parents, reads)
+    }
+
+    fn can_resolve_cut(&self, group: &ContextGroupId, parents: &[[u8; 32]]) -> bool {
+        self.0.can_resolve_cut(group, parents)
+    }
+
     fn forget(&self) {
         self.0.forget();
     }
@@ -1074,6 +1092,36 @@ mod tests {
             authorizer.subgroup_edges_at_cut(&root, &[], reads(&[], &[])),
             None
         );
+    }
+
+    #[test]
+    fn the_void_judge_reads_the_tree_at_the_cut_and_never_defaults_to_live() {
+        let (store, _sam, alice, _removal) = namespace();
+        let judge = VoidJudge::new(&store);
+        let root = ContextGroupId::from(NS);
+        let a = ContextGroupId::from([0xA1; 32]);
+        let make_a = gov(
+            OWNER,
+            &[&alice],
+            OpPayload::SubgroupCreated {
+                child: ScopeId::from(a.to_bytes()),
+                parent: ScopeId::from(NS),
+                restricted: true,
+                admin: acct(OWNER),
+            },
+        );
+        crate::unified_op_store::persist_op(&store, &make_a).expect("persist");
+        let reads = TreeReads {
+            chains: &[],
+            subtrees: &[],
+        };
+
+        assert!(judge.reads_tree_at_cut());
+        assert_eq!(
+            judge.subgroup_edges_at_cut(&root, &[make_a.id()], reads),
+            Some([(a, (root, true))].into()),
+        );
+        assert!(!judge.can_resolve_cut(&root, &[[0xEE; 32]]));
     }
 
     #[test]

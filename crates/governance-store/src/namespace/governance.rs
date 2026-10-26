@@ -2550,7 +2550,7 @@ impl<'a> NamespaceGovernance<'a> {
     }
 
     /// Apply a parked root op at its own cut and record the verdict, once that cut reads whole.
-    /// An undecidable gate falls back to live, unless the op is refused or waits on its group's key.
+    /// An undecidable gate leaves it parked.
     fn replay_parked_root_op(
         &self,
         parked: &SignedNamespaceOp,
@@ -2572,10 +2572,8 @@ impl<'a> NamespaceGovernance<'a> {
                 self.settle_parked(parked, at_cut.is_ok());
                 return at_cut;
             }
-            let own_group = ContextGroupId::from(self.namespace_id.to_bytes());
-            if judge.history_sealed_in_group(&own_group, &parked.parent_op_hashes) {
-                return at_cut;
-            }
+            // Undecidable at its own cut: the op stays parked, never judged against live.
+            return at_cut;
         }
         let outcome = self.apply_root_op(gate_op, root);
         if outcome.is_ok() {
@@ -2608,9 +2606,7 @@ impl<'a> NamespaceGovernance<'a> {
                 self.settle_parked(ns_op, at_cut.is_ok());
                 return at_cut;
             }
-            if judge.history_sealed_in_group(group_id, &ns_op.parent_op_hashes) {
-                return at_cut;
-            }
+            return at_cut;
         }
         let outcome = self.decrypt_and_apply_group_op(ns_op, group_id, group_key, encrypted);
         if parked.is_some() && (outcome.is_ok() || outcome.as_ref().is_err_and(is_respent)) {
