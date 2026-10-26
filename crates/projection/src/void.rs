@@ -9,10 +9,11 @@ use std::rc::Rc;
 use calimero_account::{AccountId, DeviceId};
 use calimero_authz::AclView;
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_config::MemberCapabilities;
+use calimero_context_config::{MemberCapabilities, MAX_NAMESPACE_DEPTH};
 use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
 
+use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_storage::shared_writers::OverBudget;
 
 use crate::ScopeState;
@@ -62,7 +63,7 @@ type IdSet = Rc<HashSet<[u8; 32]>>;
 type TreeKey = ([u8; 32], [u8; 32]);
 
 /// Each subgroup's parent and the Restricted subgroups, the latest creation, reparent or
-/// visibility change winning as the fold does. The namespace root is always open.
+/// visibility change winning by (hlc, depth, id) as the projection's fold does.
 struct GroupTree {
     parent: BTreeMap<ContextGroupId, ContextGroupId>,
     restricted: BTreeSet<ContextGroupId>,
@@ -74,12 +75,12 @@ impl GroupTree {
         depth: &HashMap<[u8; 32], u32>,
         root: ContextGroupId,
     ) -> Self {
-        type Stamped<T> = ((u32, [u8; 32]), T);
+        type Stamped<T> = ((HybridTimestamp, u32, [u8; 32]), T);
         let group = |scope: &ScopeId| ContextGroupId::from(*scope.as_bytes());
         let mut latest: BTreeMap<ContextGroupId, Stamped<ContextGroupId>> = BTreeMap::new();
         let mut visibility: BTreeMap<ContextGroupId, Stamped<bool>> = BTreeMap::new();
         for op in ops {
-            let stamp = (depth.get(&op.id()).copied().unwrap_or(0), op.id());
+            let stamp = (op.hlc, depth.get(&op.id()).copied().unwrap_or(0), op.id());
             let (parented, shown) = match &op.payload {
                 OpPayload::SubgroupCreated {
                     child,
@@ -127,7 +128,7 @@ impl GroupTree {
         let mut chain = vec![group];
         let mut at = group;
         while let Some(parent) = self.parent.get(&at) {
-            if chain.contains(parent) || chain.len() > 64 {
+            if chain.contains(parent) || chain.len() > MAX_NAMESPACE_DEPTH {
                 break;
             }
             chain.push(*parent);
@@ -766,9 +767,7 @@ impl<'a> Analysis<'a> {
         depth
     }
 
-    /// The group tree `op` saw at its cut: the placements and visibility changes in its
-    /// ancestry that are not void. Concurrent or void ones never count, so no signer
-    /// can move itself out of a removal's reach by reshaping the tree beside it.
+    /// The group tree `op` saw at its cut: the placements in its ancestry that are not void.
     fn tree_at(&self, op: &Op, void: &BTreeSet<[u8; 32]>) -> Rc<GroupTree> {
         let key = (op.id(), op.id());
         if let Some(known) = self.trees.borrow().get(&key) {
@@ -786,9 +785,8 @@ impl<'a> Analysis<'a> {
         tree
     }
 
-    /// The tree over what `op` and `removal` each saw, so neither can hide a placement
-    /// from the other. The removed signer's placements concurrent with the removal are
-    /// left out: the removal voids them, and they must not move the op out of its reach.
+    /// The tree over what `op` and `removal` saw, less the removed signer's placements
+    /// concurrent with the removal, which the removal voids.
     fn tree_across(
         &self,
         op: &Op,
@@ -805,10 +803,7 @@ impl<'a> Analysis<'a> {
             self.ancestors_of(removal.op.id()),
         );
         let after = self.descendants_of(removal.op.id());
-        let removed = |held: &Op| match removal.target {
-            Target::Account(account) => self.author_of(held) == account,
-            Target::Device(device) => self.device_of(held) == device,
-        };
+        let removed = |held: &Op| matches!(removal.target, Target::Account(account) if self.author_of(held) == account);
         let seen = self.tree_ops.iter().copied().filter(|held| {
             let id = held.id();
             (before.contains(&id) || also.contains(&id))
@@ -851,7 +846,12 @@ impl<'a> Analysis<'a> {
     /// Whether `op` is the owner's in a group outside any private space: no removal or
     /// revocation but its own takes that authority.
     fn owner_exempt(&self, op: &Op, group: ContextGroupId, void: &BTreeSet<[u8; 32]>) -> bool {
-        self.is_owner(op) && self.tree_at(op, void).private_space(group).is_none()
+        self.is_owner(op) && {
+            let tree = self.tree_at(op, void);
+            self.reach_start(op, group, &tree)
+                .and_then(|start| tree.private_space(start))
+                .is_none()
+        }
     }
 
     /// The namespace's owner at `op`'s cut: the heir of the latest transfer behind it, as the
@@ -984,25 +984,28 @@ impl<'a> Analysis<'a> {
                 if mutual {
                     continue;
                 }
-                let tree = self.tree_at(op, void);
-                let start = self.reach_start(op, group, &tree);
-                let space = start.and_then(|start| tree.private_space(start));
-                let owner = self.is_owner(op);
-                if owner && space.is_none() {
-                    continue;
-                }
-                // The owner is judged in a private space by removals from that space and
-                // by its own device revocations, not by anyone's root-level action.
-                let reaches = match (owner, removal.group) {
-                    (true, Some(lost)) => Some(lost) == space,
-                    (true, None) => self.author_of(removal.op) == self.author_of(op),
-                    (false, None) => true,
-                    (false, Some(lost)) => {
-                        let both = self.tree_across(op, &removal, void);
-                        lost == self.root_of(op)
-                            || self
-                                .reach_start(op, group, &both)
-                                .is_some_and(|start| both.within_space(start).contains(&lost))
+                let reaches = if self.is_owner(op) {
+                    // The owner is judged in a private space by removals from that space and
+                    // by its own device revocations, not by anyone's root-level action.
+                    let tree = self.tree_at(op, void);
+                    let space = self
+                        .reach_start(op, group, &tree)
+                        .and_then(|start| tree.private_space(start));
+                    match (space, removal.group) {
+                        (None, _) => false,
+                        (Some(space), Some(lost)) => space == lost,
+                        (Some(_), None) => self.author_of(removal.op) == self.author_of(op),
+                    }
+                } else {
+                    match removal.group {
+                        None => true,
+                        Some(lost) => {
+                            lost == self.root_of(op) || {
+                                let both = self.tree_across(op, &removal, void);
+                                self.reach_start(op, group, &both)
+                                    .is_some_and(|start| both.within_space(start).contains(&lost))
+                            }
+                        }
                     }
                 };
                 if !reaches {
