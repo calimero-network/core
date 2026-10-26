@@ -75,7 +75,13 @@ fn reference_is_member_at_cut(
                 .get(&parent)
                 .is_some_and(|m| m.contains_key(author))
         {
-            anchor_is_member = Some(effective_cap(&parent) & CAN_JOIN_OPEN_SUBGROUPS != 0);
+            // A private space's members are the members of every folder in it.
+            let space_root = view
+                .subgroups
+                .get(&ScopeId::from(parent.to_bytes()))
+                .is_some_and(|edge| edge.restricted);
+            anchor_is_member =
+                Some(space_root || effective_cap(&parent) & CAN_JOIN_OPEN_SUBGROUPS != 0);
         }
         current = parent;
     }
