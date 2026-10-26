@@ -6,6 +6,7 @@ use tracing::{debug, error, warn};
 
 use super::{EventHandler, NetworkManager};
 use crate::discovery::state::{PeerDiscoveryMechanism, RendezvousRegistrationStatus};
+use crate::discovery::MAX_RENDEZVOUS_DIALS_PER_EVENT;
 
 /// May `cookie` occupy the per-peer cookie slot that the next *global*
 /// discover sends for incremental results?
@@ -43,7 +44,10 @@ impl EventHandler<Event> for NetworkManager {
                         .update_rendezvous_cookie(&rendezvous_node, &cookie);
                 }
 
-                for registration in registrations {
+                for registration in registrations
+                    .into_iter()
+                    .take(MAX_RENDEZVOUS_DIALS_PER_EVENT)
+                {
                     let peer_id = registration.record.peer_id();
 
                     if peer_id == *self.swarm.local_peer_id() {
