@@ -61,3 +61,18 @@ print(client.view(app_id, "get", {"key": "a"})["result"])
 The apps repo's `apps/kv-store/app-cloud` is a complete browser frontend (passkey
 sign-in, a store per user, live events) with a Playwright test that drives a real
 passkey ceremony through Chromium's virtual authenticator.
+
+## 4. Scenario tests with merobox
+
+merobox's `cloud-v2` backend (branch `release-v2`) starts a cluster with one
+`merod-v2` process per node and runs YAML scenarios against it: deploy, call and
+read as several accounts, then crash, freeze, restart or upgrade nodes and check
+the app keeps its data and answers within a time budget.
+
+```bash
+MEROD_V2_BINARY=target/debug/merod-v2 \
+KV_STORE_WASM=target/wasm32-unknown-unknown/app-release/kv_store.wasm \
+merobox cloud run workflow-examples/cloud-v2/frozen-leader.yml
+```
+
+See merobox's `workflow-examples/cloud-v2/README.md` for the step reference.
