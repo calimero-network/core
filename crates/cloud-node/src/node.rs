@@ -674,8 +674,11 @@ impl Node {
         let app = self.app(&req.app_id).await?;
         let body = serde_json::to_value(req).map_err(|e| ApiError::internal(&e.to_string()))?;
         for _attempt in 0..30 {
+            // A conflict (the diff was built on state a leader change replaced)
+            // applied nothing and recorded no idempotency key: run it again.
             let target = if let Some(g) = self.app_group(app.group) {
                 match self.call_local(&g, req).await {
+                    Ok(a) if a.conflict => None,
                     Ok(a) => return Ok(a),
                     Err(WriteError::NotLeader {
                         leader: Some((id, addr)),
@@ -695,8 +698,11 @@ impl Node {
             if let Some(addr) = target {
                 match self.peer_post(&addr, "internal/call", &body).await {
                     Ok(v) => {
-                        return serde_json::from_value(v)
-                            .map_err(|e| ApiError::internal(&e.to_string()))
+                        let a: Applied = serde_json::from_value(v)
+                            .map_err(|e| ApiError::internal(&e.to_string()))?;
+                        if !a.conflict {
+                            return Ok(a);
+                        }
                     }
                     Err(e) => match e.downcast::<ApiError>() {
                         Ok(api) if api.code != "UNAVAILABLE" => return Err(api),

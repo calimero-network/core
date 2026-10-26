@@ -26,6 +26,10 @@ architecture spec.
   records only `{hash, size}`. A node missing a blob fetches it from a peer
   (`internal/blob/get`) on first use. Log entries are capped at
   `calimero_log::MAX_ENTRY_BYTES` (1 MiB): openraft gives each append one heartbeat.
+- **Ops replica moves** run on the app group's leader; any other replica answers
+  `421 NOT_LEADER` with `details.leaderUrl` before writing anything.
+- **Leader races**: a call whose diff was built on replaced state applies as a no-op
+  (`conflict`, no idempotency record); `Node::call` re-runs it instead of failing.
 - **Read-your-writes across nodes**: lookups of system objects (`Node::sys_until`) wait
   up to 2 s for the local replica to apply a write committed elsewhere.
 

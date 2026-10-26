@@ -1609,7 +1609,19 @@ struct ReplicaBody {
     replicas: Vec<u64>,
 }
 
+/// A membership change failed; a follower names the leader to retry at.
+fn membership_err(e: &calimero_log::WriteError) -> ApiError {
+    match e {
+        calimero_log::WriteError::NotLeader {
+            leader: Some((id, addr)),
+        } => ApiError::new(421, "NOT_LEADER", "send this to the app group's leader")
+            .with_details(json!({ "leader": id, "leaderUrl": addr })),
+        _ => ApiError::unavailable(&e.to_string()),
+    }
+}
+
 /// Move an app to a new replica set: add learners, wait, then switch voters.
+/// Runs on the app group's leader; any other replica answers `421 NOT_LEADER`.
 async fn ops_set_replicas(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -1624,6 +1636,15 @@ async fn ops_set_replicas(
         ));
     }
     let app = node.app(&app_id).await?;
+    // Only the leader changes membership; others redirect before writing anything.
+    if let Some(st) = node.hosted(&app_id).map(|g| g.status()) {
+        if let (false, Some(id)) = (st.is_leader, st.leader) {
+            let addr = node.sys(|s| s.nodes.get(&id).map(|n| n.addr.clone()));
+            return Err(membership_err(&calimero_log::WriteError::NotLeader {
+                leader: addr.map(|a| (id, a)),
+            }));
+        }
+    }
     let union: Vec<u64> = app
         .replicas
         .iter()
@@ -1653,12 +1674,12 @@ async fn ops_set_replicas(
         if !g.status().voters.contains(&id) {
             g.add_learner(id, addr)
                 .await
-                .map_err(|e| ApiError::unavailable(&e.to_string()))?;
+                .map_err(|e| membership_err(&e))?;
         }
     }
     g.change_voters(b.replicas.iter().copied().collect())
         .await
-        .map_err(|e| ApiError::unavailable(&e.to_string()))?;
+        .map_err(|e| membership_err(&e))?;
     let _ok = node
         .sys_write(&SystemCmd::SetReplicas {
             app_id,

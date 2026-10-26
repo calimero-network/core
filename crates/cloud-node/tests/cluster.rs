@@ -567,3 +567,71 @@ async fn large_entries_reach_every_replica() {
         .await
         .unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn ops_moves_an_app_and_points_followers_at_the_leader() {
+    let c = Cluster::start(4).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let created = alice
+        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+        .await
+        .unwrap();
+    let app = created["appId"].as_str().unwrap().to_owned();
+    let replicas: Vec<u64> = serde_json::from_value(created["replicas"].clone()).unwrap();
+    let _ = alice
+        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .await
+        .unwrap();
+    let spare = (1..=4).find(|n| !replicas.contains(n)).unwrap();
+    let leader = c.app_leader(&app).unwrap() as u64 + 1;
+    let follower = *replicas.iter().find(|r| **r != leader).unwrap();
+    let new: Vec<u64> = replicas
+        .iter()
+        .copied()
+        .filter(|r| *r != follower)
+        .chain([spare])
+        .collect();
+
+    let ops = |i: u64| {
+        let client = c.client(i as usize - 1);
+        async move {
+            client.use_api_key("ops-secret").await;
+            client
+        }
+    };
+    // A follower names the leader instead of failing opaquely.
+    let err = ops(follower)
+        .await
+        .post(
+            &format!("ops/apps/{app}/replicas"),
+            json!({ "replicas": new }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("NOT_LEADER"), "{err}");
+    let url = err.details().unwrap()["leaderUrl"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(url, c.urls[leader as usize - 1]);
+
+    let moved = ops(leader)
+        .await
+        .post(
+            &format!("ops/apps/{app}/replicas"),
+            json!({ "replicas": new }),
+        )
+        .await
+        .unwrap();
+    let mut voters: Vec<u64> = serde_json::from_value(moved["status"]["voters"].clone()).unwrap();
+    voters.sort_unstable();
+    let mut want = new.clone();
+    want.sort_unstable();
+    assert_eq!(voters, want);
+    let v = alice
+        .view(&app, "get", json!({ "key": "a" }), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!("1"));
+}
