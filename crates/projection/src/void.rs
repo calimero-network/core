@@ -795,6 +795,12 @@ impl<'a> Analysis<'a> {
         self.owner_at(op) == Some(self.author_of(op))
     }
 
+    /// Whether `op` is the owner's in a group outside any private space: no removal or
+    /// revocation but its own takes that authority.
+    fn owner_exempt(&self, op: &Op, group: ContextGroupId, void: &BTreeSet<[u8; 32]>) -> bool {
+        self.is_owner(op) && self.tree_at(op, void).private_space(group).is_none()
+    }
+
     /// The namespace's owner at `op`'s cut: the heir of the latest transfer behind it, as the
     /// fold picks it, else the founder. Never void: an owner's ops are exempt.
     fn owner_at(&self, op: &Op) -> Option<AccountId> {
@@ -911,6 +917,7 @@ impl<'a> Analysis<'a> {
                     continue;
                 };
                 let tree = self.tree_at(op, void);
+                let removal_tree = self.tree_at(removal.op, void);
                 let start = self.reach_start(op, group, &tree);
                 let space = start.and_then(|start| tree.private_space(start));
                 let owner = self.is_owner(op);
@@ -923,9 +930,14 @@ impl<'a> Analysis<'a> {
                     (true, Some(lost)) => Some(lost) == space,
                     (true, None) => self.author_of(removal.op) == self.author_of(op),
                     (false, None) => true,
+                    // Either cut's tree may put the op in the lost space, so a signer cannot
+                    // hide its placement by choosing parents that omit it.
                     (false, Some(lost)) => {
-                        lost == self.root_of(op)
-                            || start.is_some_and(|start| tree.within_space(start).contains(&lost))
+                        let within = |tree: &GroupTree| {
+                            self.reach_start(op, group, tree)
+                                .is_some_and(|start| tree.within_space(start).contains(&lost))
+                        };
+                        lost == self.root_of(op) || within(&tree) || within(&removal_tree)
                     }
                 };
                 if !reaches {
@@ -968,9 +980,7 @@ impl<'a> Analysis<'a> {
                 {
                     continue;
                 }
-                if self.is_owner(op)
-                    && self.tree_at(op, void).private_space(revoke.group) != Some(revoke.group)
-                {
+                if self.owner_exempt(op, revoke.group, void) {
                     continue;
                 }
                 // An admin at the op's cut needed no capability for it.
@@ -1169,8 +1179,9 @@ impl<'a> Analysis<'a> {
             // An op already void is judged again, so a round never forgets what the
             // round before established.
             if granted.contains(&self.author_of(op))
-                && !self.is_owner(op)
-                && self.voidable_group(op).is_some()
+                && self
+                    .voidable_group(op)
+                    .is_some_and(|group| !self.owner_exempt(op, group, void))
             {
                 candidates.push(op);
             }

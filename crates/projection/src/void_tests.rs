@@ -1231,3 +1231,61 @@ fn a_forged_genesis_grants_no_admin() {
         base(),
     ));
 }
+
+fn grant_in(
+    group: ContextGroupId,
+    author: u8,
+    parents: &[&Op],
+    member: u8,
+    bits: MemberCapabilities,
+) -> Op {
+    gov(
+        author,
+        parents,
+        OpPayload::MemberCapabilitySet {
+            group,
+            member: acct(member),
+            capabilities: bits,
+        },
+    )
+}
+
+#[test]
+fn a_signer_cannot_hide_its_placement_by_choosing_a_cut_that_omits_it() {
+    let (mut log, head) = eng_private_space();
+    let removal = remove_from(subgroup(0x42), ALICE, &[&head], SAM);
+    let hidden = add_in(
+        subgroup(0x43),
+        SAM,
+        &[&log[2]],
+        WILL,
+        GroupMemberRole::Member,
+    );
+    log.extend([removal, hidden.clone()]);
+
+    assert!(void(&log).contains(&hidden.id()));
+}
+
+#[test]
+fn a_capability_revoke_reaches_the_owner_in_a_folder_nested_in_a_private_space() {
+    let (mut log, head) = eng_private_space();
+    let held = MemberCapabilities::MANAGE_MEMBERS;
+    let granted = grant_in(subgroup(0x43), ALICE, &[&head], OWNER, held);
+    let revoke = grant_in(
+        subgroup(0x43),
+        ALICE,
+        &[&granted],
+        OWNER,
+        MemberCapabilities::empty(),
+    );
+    let by_owner = add_in(
+        subgroup(0x43),
+        OWNER,
+        &[&granted],
+        WILL,
+        GroupMemberRole::Member,
+    );
+    log.extend([granted, revoke, by_owner.clone()]);
+
+    assert!(void(&log).contains(&by_owner.id()));
+}
