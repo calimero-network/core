@@ -16,7 +16,7 @@
 //! `signer` is a deterministic cross-node author and whose target scope is
 //! resolvable from the op — applied at the namespace governance handler.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -475,11 +475,6 @@ impl ScopeProjections {
 
     fn authority_base_of(&self, scope: &ScopeId) -> AuthorityBase {
         self.authority_bases.get(scope).copied().unwrap_or_default()
-    }
-
-    /// The ops of `scope`'s log that carry no authority, for `base`.
-    fn void_set(&self, scope: &ScopeId, base: AuthorityBase) -> Arc<BTreeSet<[u8; 32]>> {
-        Arc::clone(&self.voided_for(scope, base).ops)
     }
 
     /// The memoized [`Voided`] of `scope`, recomputed when its log changed or the
@@ -3708,73 +3703,38 @@ impl calimero_governance_store::FoldedTeeAuthority for FoldedProjections<'_> {
     }
 }
 
-/// The at-cut view without the rows written before an account lost its root membership,
-/// which ends them; rows written after stand. The owner is exempt.
+/// The at-cut view without the rows of an account that holds no root row: only the owner
+/// and the TEE roles, which are admitted into a subgroup alone, hold any.
 fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> calimero_authz::AclView {
-    let view = ScopeState::acl_view_from_ancestry(walked);
+    let mut view = ScopeState::acl_view_from_ancestry(walked);
     let Some((root, owner)) = base.root else {
         return view;
     };
     let owner = view
         .root_at_cut(base.root)
         .map_or(owner, |(_, owner)| owner);
-    let has_root_row = |account: &AccountId| {
-        *account == owner
-            || view
-                .groups
-                .get(&root)
-                .is_some_and(|members| members.contains_key(account))
+    let in_root: BTreeSet<AccountId> = view
+        .groups
+        .get(&root)
+        .map(|members| members.keys().copied().collect())
+        .unwrap_or_default();
+    let exempt = |account: &AccountId, role: Option<&GroupMemberRole>| {
+        *account == owner || in_root.contains(account) || role.is_some_and(GroupMemberRole::is_tee)
     };
-    let live: Vec<&Op> = walked
-        .ops()
-        .iter()
-        .copied()
-        .filter(|op| !walked.is_void(op))
-        .collect();
-    let mut lost: BTreeMap<[u8; 32], AccountId> = BTreeMap::new();
-    for op in &live {
-        if let OpPayload::MemberRemoved { group, member }
-        | OpPayload::MemberLeft { group, member } = &op.payload
-        {
-            if *group == root && !has_root_row(member) {
-                let _ = lost.insert(op.id(), *member);
-            }
-        }
+    for rows in view.groups.values_mut() {
+        rows.retain(|account, role| exempt(account, Some(role)));
     }
-    if lost.is_empty() {
-        return view;
-    }
-    let by_id: HashMap<[u8; 32], &Op> = live.iter().map(|op| (op.id(), *op)).collect();
-    let mut before: HashSet<[u8; 32]> = HashSet::new();
-    let mut queue: Vec<[u8; 32]> = lost.keys().copied().collect();
-    while let Some(id) = queue.pop() {
-        if let Some(op) = by_id.get(&id) {
-            queue.extend(op.parents.iter().copied().filter(|p| before.insert(*p)));
-        }
-    }
-    let accounts: BTreeSet<AccountId> = lost.values().copied().collect();
-    let stale: BTreeSet<[u8; 32]> = live
-        .iter()
-        .filter(|op| before.contains(&op.id()))
-        .filter(|op| match &op.payload {
-            OpPayload::MemberAdded { group, member, .. }
-            | OpPayload::MemberJoinedWithDevice { group, member, .. }
-            | OpPayload::MemberCapabilitySet { group, member, .. } => {
-                *group != root && accounts.contains(member)
-            }
-            _ => false,
-        })
-        .map(|op| op.id())
-        .collect();
-    let mut view = ScopeState::acl_view_from_ancestry(&walked.without(&stale));
-    for op in live.iter().filter(|op| before.contains(&op.id())) {
-        if let OpPayload::SubgroupCreated { child, admin, .. } = &op.payload {
-            let child = ContextGroupId::from(*child.as_bytes());
-            if accounts.contains(admin) && view.group_admin.get(&child) == Some(admin) {
-                let _ = view.group_admin.remove(&child);
-            }
-        }
-    }
+    let groups = view.groups.clone();
+    let held = |group: &ContextGroupId, account: &AccountId| {
+        exempt(
+            account,
+            groups.get(group).and_then(|rows| rows.get(account)),
+        )
+    };
+    view.member_caps
+        .retain(|(group, account), _| held(group, account));
+    view.group_admin
+        .retain(|group, account| held(group, account));
     view
 }
 
@@ -5516,8 +5476,14 @@ mod tests {
         };
         assert_eq!(
             standing([0xE2; 32]),
-            (Some(true), Some(true), Some(true), Some(true), Some(true)),
-            "an account that never held a root row keeps the one it has in S",
+            (
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false)
+            ),
+            "an account that never held a root row holds nothing in S",
         );
         assert_eq!(
             standing([0xE3; 32]),

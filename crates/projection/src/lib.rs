@@ -366,19 +366,6 @@ impl<'a> CutAncestry<'a> {
         self
     }
 
-    /// This ancestry with the ops in `ids` also taken to carry no authority.
-    #[must_use]
-    pub fn without(&self, ids: &BTreeSet<[u8; 32]>) -> Self {
-        Self {
-            ops: self.ops.clone(),
-            reached: self.reached.clone(),
-            missing: self.missing,
-            opaque: self.opaque,
-            void: self.void.union(ids).copied().collect(),
-            undecidable: self.undecidable,
-        }
-    }
-
     /// Is every referenced ancestor present in the log?
     ///
     /// `false` names a genuine gap: sync has to fetch the op before any answer

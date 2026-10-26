@@ -1779,6 +1779,21 @@ fn the_grant_path_defers_when_an_ancestor_is_unreadable() {
         [0xDF; 32],
     );
 
+    // The joiner is a namespace member, so its subgroup rows stand at the cut.
+    let root_add = |parent: [u8; 32]| {
+        op_from_namespace_op(
+            &ns_group_envelope(ns.to_bytes(), admin, ns),
+            Some(&GroupOp::MemberAdded {
+                member: calimero_context::test_support::account_for(&joiner),
+                role: GroupMemberRole::Member,
+            }),
+            [0xD4; 32],
+            hlc(1),
+            &[parent],
+        )
+    };
+    proj.ingest_op(&root_add(s2));
+
     // The joiner is a member at this cut, by an op the projection HAS folded.
     let mut join_ns = SignedNamespaceOp::sign(
         &joiner_sk,
@@ -1818,7 +1833,14 @@ fn the_grant_path_defers_when_an_ancestor_is_unreadable() {
     // subgroup, and the projection folds the OPENED root. Feeding the envelope
     // would fold a `Noop` and the membership this test asserts on would never
     // appear.
-    proj.ingest_op(&opened_op(&store, &ns, &join_ns, joined, hlc(1), &[s2]));
+    proj.ingest_op(&opened_op(
+        &store,
+        &ns,
+        &join_ns,
+        joined,
+        hlc(1),
+        &[[0xD4; 32]],
+    ));
 
     // Complete and readable: the grant path answers.
     assert_eq!(
@@ -1873,7 +1895,15 @@ fn the_grant_path_defers_when_an_ancestor_is_unreadable() {
     );
     // Opened, for the same reason the first projection needs it: the join is
     // sealed to the subgroup, and an envelope fed alone folds a `Noop`.
-    proj_sibling.ingest_op(&opened_op(&store, &ns, &join_ns, joined, hlc(1), &[s2b]));
+    proj_sibling.ingest_op(&root_add(s2b));
+    proj_sibling.ingest_op(&opened_op(
+        &store,
+        &ns,
+        &join_ns,
+        joined,
+        hlc(1),
+        &[[0xD4; 32]],
+    ));
     proj_sibling.ingest_op(&sibling_hole);
     assert_eq!(
         proj_sibling.member_at_cut_authoritative(&store, subgroup, &joiner, &[sibling_hole.id()]),
