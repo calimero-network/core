@@ -1289,3 +1289,27 @@ fn a_capability_revoke_reaches_the_owner_in_a_folder_nested_in_a_private_space()
 
     assert!(void(&log).contains(&by_owner.id()));
 }
+
+#[test]
+fn a_removal_cannot_reach_a_folder_the_signer_moved_out_of_the_space_beyond_its_cut() {
+    let (mut log, head) = eng_private_space();
+    let moved = gov(
+        SAM,
+        &[&head],
+        OpPayload::SubgroupReparented {
+            child: ScopeId::from(subgroup(0x43).to_bytes()),
+            new_parent: ScopeId::from(group().to_bytes()),
+        },
+    );
+    let removal = remove_from(subgroup(0x42), ALICE, &[&head], SAM);
+    let after_move = add_in(
+        subgroup(0x43),
+        SAM,
+        &[&moved],
+        WILL,
+        GroupMemberRole::Member,
+    );
+    log.extend([moved, removal, after_move.clone()]);
+
+    assert!(!void(&log).contains(&after_move.id()));
+}

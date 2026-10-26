@@ -53,6 +53,9 @@ impl From<ContextGroupId> for Acting {
 
 type IdSet = Rc<HashSet<[u8; 32]>>;
 
+/// The ids of the two ops a group tree is folded for.
+type TreeKey = ([u8; 32], [u8; 32]);
+
 /// Each subgroup's parent and the Restricted subgroups, the latest creation, reparent or
 /// visibility change winning as the fold does. The namespace root is always open.
 struct GroupTree {
@@ -493,8 +496,8 @@ struct Analysis<'a> {
     children: HashMap<[u8; 32], Vec<[u8; 32]>>,
     /// The ops that place a group or set its visibility.
     tree_ops: Vec<&'a Op>,
-    /// The tree each judged op sees, memoised for the round in progress.
-    trees: RefCell<HashMap<[u8; 32], Rc<GroupTree>>>,
+    /// The tree each judged op (and removal) pair sees, memoised for the round in progress.
+    trees: RefCell<HashMap<TreeKey, Rc<GroupTree>>>,
     ancestors: RefCell<HashMap<[u8; 32], IdSet>>,
     descendants: RefCell<HashMap<[u8; 32], IdSet>>,
     work: Cell<usize>,
@@ -753,17 +756,23 @@ impl<'a> Analysis<'a> {
     /// ancestry that are not void. Concurrent or void ones never count, so no signer
     /// can move itself out of a removal's reach by reshaping the tree beside it.
     fn tree_at(&self, op: &Op, void: &BTreeSet<[u8; 32]>) -> Rc<GroupTree> {
-        if let Some(known) = self.trees.borrow().get(&op.id()) {
+        self.tree_across(op, op, void)
+    }
+
+    /// The tree over what `op` and `other` each saw, so neither can hide a placement
+    /// from the other by choosing a cut that omits it.
+    fn tree_across(&self, op: &Op, other: &Op, void: &BTreeSet<[u8; 32]>) -> Rc<GroupTree> {
+        let key = (op.id(), other.id());
+        if let Some(known) = self.trees.borrow().get(&key) {
             return Rc::clone(known);
         }
-        let before = self.ancestors_of(op.id());
-        let seen = self
-            .tree_ops
-            .iter()
-            .copied()
-            .filter(|held| before.contains(&held.id()) && !void.contains(&held.id()));
+        let (before, also) = (self.ancestors_of(op.id()), self.ancestors_of(other.id()));
+        let seen = self.tree_ops.iter().copied().filter(|held| {
+            let id = held.id();
+            (before.contains(&id) || also.contains(&id)) && !void.contains(&id)
+        });
         let tree = Rc::new(GroupTree::fold(seen, &self.depth, self.root_of(op)));
-        let _ = self.trees.borrow_mut().insert(op.id(), Rc::clone(&tree));
+        let _ = self.trees.borrow_mut().insert(key, Rc::clone(&tree));
         tree
     }
 
@@ -917,7 +926,6 @@ impl<'a> Analysis<'a> {
                     continue;
                 };
                 let tree = self.tree_at(op, void);
-                let removal_tree = self.tree_at(removal.op, void);
                 let start = self.reach_start(op, group, &tree);
                 let space = start.and_then(|start| tree.private_space(start));
                 let owner = self.is_owner(op);
@@ -930,14 +938,12 @@ impl<'a> Analysis<'a> {
                     (true, Some(lost)) => Some(lost) == space,
                     (true, None) => self.author_of(removal.op) == self.author_of(op),
                     (false, None) => true,
-                    // Either cut's tree may put the op in the lost space, so a signer cannot
-                    // hide its placement by choosing parents that omit it.
                     (false, Some(lost)) => {
-                        let within = |tree: &GroupTree| {
-                            self.reach_start(op, group, tree)
-                                .is_some_and(|start| tree.within_space(start).contains(&lost))
-                        };
-                        lost == self.root_of(op) || within(&tree) || within(&removal_tree)
+                        let both = self.tree_across(op, removal.op, void);
+                        lost == self.root_of(op)
+                            || self
+                                .reach_start(op, group, &both)
+                                .is_some_and(|start| both.within_space(start).contains(&lost))
                     }
                 };
                 if !reaches {
