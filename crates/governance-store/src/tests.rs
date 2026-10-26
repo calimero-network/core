@@ -18086,6 +18086,25 @@ mod outbound_approval {
     }
 
     #[test]
+    fn a_removed_manager_can_no_longer_approve() {
+        let (store, gid, _, member_sk, member) = root();
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &gid,
+                &member,
+                calimero_context_config::MemberCapabilities::MANAGE_APPLICATION.bits(),
+            )
+            .unwrap();
+        MembershipRepository::new(&store)
+            .remove_member(&gid, &member)
+            .unwrap();
+        // The capability row may outlive the membership; the removal is what counts.
+        apply_local_signed_group_op(&store, &sign(&member_sk, &gid, 1, approval(&[API], &[API])))
+            .expect_err("a removed member approved outbound requests");
+        assert_eq!(approved(&store, &gid), None);
+    }
+
+    #[test]
     fn an_approval_on_a_subgroup_is_refused() {
         let (store, root_gid, admin_sk, _, _) = root();
         let child = ContextGroupId::from([0xA7; 32]);

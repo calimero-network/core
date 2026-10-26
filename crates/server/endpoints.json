@@ -47,6 +47,7 @@
   "GET /admin-api/namespaces/for-application/{application_id}",
   "GET /admin-api/namespaces/{namespace_id}",
   "GET /admin-api/namespaces/{namespace_id}/groups",
+  "GET /admin-api/namespaces/{namespace_id}/outbound-approvals",
   "GET /admin-api/namespaces/{namespace_id}/revoked-devices",
   "GET /admin-api/network/status",
   "GET /admin-api/packages",
@@ -117,5 +118,6 @@
   "PUT /admin-api/groups/{group_id}/settings/default-capabilities",
   "PUT /admin-api/groups/{group_id}/settings/subgroup-visibility",
   "PUT /admin-api/groups/{group_id}/settings/tee-admission-policy",
-  "PUT /admin-api/groups/{group_id}/settings/tee-authoring-policy"
+  "PUT /admin-api/groups/{group_id}/settings/tee-authoring-policy",
+  "PUT /admin-api/namespaces/{namespace_id}/outbound-approvals"
 ]

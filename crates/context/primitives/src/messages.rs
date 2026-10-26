@@ -10,16 +10,16 @@ use tokio::sync::oneshot;
 
 use crate::group::{
     AbortMigrationRequest, ActivateNamespaceUpgradeRequest, ActivateUpgradeRequest,
-    AddGroupMembersRequest, AdmitTeeNodeRequest, AttestFoundingRelayRequest,
-    BroadcastGroupLocalStateRequest, ChangeNamespaceAdminRequest, CreateGroupInvitationRequest,
-    CreateGroupRequest, DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
-    GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
-    GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
-    GetMemberCapabilitiesRequest, GetMemberMetadataRequest, GetMigrationStatusRequest,
-    GetNamespaceIdentityRequest, GovernOnBehalfRequest, IssueNamespaceOwnershipProofRequest,
-    IssueOwnershipProofRequest, JoinContextRequest, JoinGroupRequest,
-    JoinSubgroupInheritanceRequest, LabelDeviceRequest, LeaveContextRequest, LeaveGroupRequest,
-    LeaveNamespaceRequest, LinkAccountDeviceRequest, ListAllGroupsRequest,
+    AddGroupMembersRequest, AdmitTeeNodeRequest, ApproveOutboundRequest,
+    AttestFoundingRelayRequest, BroadcastGroupLocalStateRequest, ChangeNamespaceAdminRequest,
+    CreateGroupInvitationRequest, CreateGroupRequest, DeleteGroupRequest, DeleteNamespaceRequest,
+    DetachContextFromGroupRequest, GetCascadeStatusRequest, GetContextMetadataRequest,
+    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
+    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberMetadataRequest,
+    GetMigrationStatusRequest, GetNamespaceIdentityRequest, GovernOnBehalfRequest,
+    IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest, JoinContextRequest,
+    JoinGroupRequest, JoinSubgroupInheritanceRequest, LabelDeviceRequest, LeaveContextRequest,
+    LeaveGroupRequest, LeaveNamespaceRequest, LinkAccountDeviceRequest, ListAllGroupsRequest,
     ListGroupContextsRequest, ListGroupMembersRequest, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, OwnerDeleteGroupRequest, PairDeviceCompleteRequest,
     PairDeviceInitRequest, RejoinNamespaceRequest, RelinkDeviceRequest, RemoveGroupMembersRequest,
@@ -834,6 +834,10 @@ pub enum ContextMessage {
     SetTeeAdmissionPolicy {
         request: SetTeeAdmissionPolicyRequest,
         outcome: oneshot::Sender<<SetTeeAdmissionPolicyRequest as Message>::Result>,
+    },
+    ApproveOutbound {
+        request: ApproveOutboundRequest,
+        outcome: oneshot::Sender<<ApproveOutboundRequest as Message>::Result>,
     },
     SetTeeAuthoringPolicy {
         request: SetTeeAuthoringPolicyRequest,

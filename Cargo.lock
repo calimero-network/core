@@ -1198,6 +1198,7 @@ dependencies = [
  "calimero-account",
  "calimero-app-downloader",
  "calimero-authz",
+ "calimero-bundle",
  "calimero-context-client",
  "calimero-context-config",
  "calimero-crypto",

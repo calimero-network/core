@@ -84,6 +84,25 @@ pub struct AppIdentity {
     pub signer: String,
 }
 
+/// What a run's namespace approved for the app's publisher, from the last
+/// `GroupOp::OutboundApprovalSet` for that signer at the namespace root.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Approval {
+    /// The approved URL prefixes.
+    pub prefixes: Vec<String>,
+    /// The prefixes the approver was shown, approved or not.
+    pub reviewed: Vec<String>,
+}
+
+/// The start of every refusal for a prefix the namespace has not approved.
+/// Stable: an app matches on it to tell a member to ask an admin.
+pub const NOT_APPROVED: &str = "NotApproved";
+
+/// The start of every refusal for a prefix the namespace has never been asked
+/// about, because a later version of the app declared it. Stable: an app
+/// matches on it to show an admin what to approve.
+pub const AWAITING_APPROVAL: &str = "AwaitingApproval";
+
 /// A secret, and the hosts it may be sent to.
 pub struct Secret {
     pub value: Zeroizing<String>,
@@ -394,12 +413,17 @@ impl OutboundService {
     }
 
     /// The client for one run of `app`, which declared the URL prefixes
-    /// `declared`; `None` when it declared none this node can use.
+    /// `declared`, in a namespace that approved `approval` for its publisher
+    /// (`None`: nothing yet); `None` when it declared none this node can use.
+    ///
+    /// A run gets a client even with no approval, so a request is refused with
+    /// a reason the app can show rather than trapping.
     #[must_use]
     pub fn for_run(
         self: &Arc<Self>,
         app: AppIdentity,
         declared: Vec<String>,
+        approval: Option<Approval>,
         context: String,
     ) -> Option<Arc<dyn OutboundHost>> {
         let declared: BTreeSet<String> = declared
@@ -413,6 +437,7 @@ impl OutboundService {
             service: Arc::clone(self),
             app,
             declared,
+            approval,
             context,
         }))
     }
@@ -425,6 +450,7 @@ impl OutboundService {
         &self,
         app: &AppIdentity,
         declared: &BTreeSet<String>,
+        approval: Option<&Approval>,
         request: OutboundRequest,
     ) -> EyreResult<Prepared> {
         if request.url.len() > MAX_URL {
@@ -450,15 +476,32 @@ impl OutboundService {
         if !self.any_host && !self.hosts.contains(&host) {
             bail!("{host} is not a host this node's operator allows");
         }
-        if !declared
+        let Some(under) = declared
             .iter()
-            .filter_map(|p| prefix(p))
-            .any(|p| covers(&p, &url))
-        {
+            .find(|d| prefix(d).is_some_and(|p| covers(&p, &url)))
+        else {
             bail!(
                 "{} is under no URL prefix this app's manifest declares under `outbound`",
                 request.url
             );
+        };
+        let approved = approval.is_some_and(|a| {
+            a.prefixes
+                .iter()
+                .filter_map(|p| prefix(p))
+                .any(|p| covers(&p, &url))
+        });
+        if !approved {
+            // Reviewed means the approver saw this prefix: left out of the set,
+            // it was declined or revoked. Never reviewed, under an approval the
+            // namespace did make, it is new in a later version of the app.
+            if approval.is_some_and(|a| !a.reviewed.iter().any(|r| r == under)) {
+                bail!(
+                    "{AWAITING_APPROVAL}: {under} is a URL prefix this app declares that \
+                     the namespace has not been asked to approve yet"
+                );
+            }
+            bail!("{NOT_APPROVED}: the namespace has not approved {under} for this app");
         }
         if request.headers.len() > MAX_HEADERS {
             bail!("at most {MAX_HEADERS} headers");
@@ -547,6 +590,7 @@ struct RunOutbound {
     service: Arc<OutboundService>,
     app: AppIdentity,
     declared: BTreeSet<String>,
+    approval: Option<Approval>,
     context: String,
 }
 
@@ -555,7 +599,12 @@ impl OutboundHost for RunOutbound {
         let started = Instant::now();
         let request = OutboundRequest::try_from_slice(request)
             .map_err(|e| format!("a malformed outbound request: {e}"))?;
-        let prepared = match self.service.prepare(&self.app, &self.declared, request) {
+        let prepared = match self.service.prepare(
+            &self.app,
+            &self.declared,
+            self.approval.as_ref(),
+            request,
+        ) {
             Ok(prepared) => prepared,
             Err(reason) => {
                 warn!(context = %self.context, package = %self.app.package, %reason, "outbound request refused");
@@ -860,6 +909,92 @@ pub fn app_outbound(
             declared,
         )
     })
+}
+
+/// The prefixes and the reviewed list a namespace approval holds after an admin
+/// approves `selection` of an app declaring `declared`.
+///
+/// Adding (`replace = false`, an install or upgrade) keeps every prefix already
+/// approved; replacing sets exactly `selection` (how a prefix is revoked). What
+/// was reviewed only grows: the app's whole declared list was on the screen the
+/// admin answered, so a prefix of it they left out reads as not approved, never
+/// as awaiting approval.
+///
+/// # Errors
+/// A selected prefix is not an `https` URL prefix, or the result is longer than
+/// `MAX_OUTBOUND_APPROVALS`.
+pub fn merge_approval(
+    existing: Option<&Approval>,
+    declared: &[String],
+    selection: &calimero_primitives::outbound::OutboundSelection,
+    replace: bool,
+) -> EyreResult<Approval> {
+    use calimero_governance_types::bounds::MAX_OUTBOUND_APPROVALS;
+    use calimero_primitives::outbound::OutboundSelection;
+
+    let selected: &[String] = match selection {
+        OutboundSelection::Manifest => declared,
+        OutboundSelection::Prefixes(prefixes) => prefixes,
+    };
+    if let Some(bad) = selected
+        .iter()
+        .find(|p| !calimero_bundle::is_outbound_url(p))
+    {
+        bail!("{bad:?} is not an https URL prefix");
+    }
+    fn union<'a>(lists: impl IntoIterator<Item = &'a [String]>) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for item in lists.into_iter().flatten() {
+            if !out.contains(item) {
+                out.push(item.clone());
+            }
+        }
+        out
+    }
+    let none: &[String] = &[];
+    let prefixes = if replace {
+        union([selected])
+    } else {
+        union([existing.map_or(none, |a| &a.prefixes[..]), selected])
+    };
+    let reviewed = union([
+        existing.map_or(none, |a| &a.reviewed[..]),
+        declared,
+        selected,
+    ]);
+    for (what, list) in [("approved", &prefixes), ("reviewed", &reviewed)] {
+        if list.len() > MAX_OUTBOUND_APPROVALS {
+            bail!(
+                "{} {what} prefixes is more than the {MAX_OUTBOUND_APPROVALS} one approval holds",
+                list.len()
+            );
+        }
+    }
+    Ok(Approval { prefixes, reviewed })
+}
+
+/// What the namespace of `context` approved for apps signed by `signer`:
+/// `None` when it approved nothing for them, or the context is in no namespace.
+///
+/// # Errors
+/// The store could not be read.
+pub fn namespace_approval(
+    store: &calimero_store::Store,
+    context: &calimero_primitives::context::ContextId,
+    signer: &str,
+) -> EyreResult<Option<Approval>> {
+    let Some(group) = calimero_governance_store::get_group_for_context(store, context)? else {
+        return Ok(None);
+    };
+    let root = calimero_governance_store::NamespaceRepository::new(store).resolve(&group)?;
+    Ok(
+        calimero_governance_store::OutboundApprovalRepository::new(store)
+            .get(&root, signer)?
+            .map(|a| Approval {
+                prefixes: a.prefixes,
+                reviewed: a.reviewed,
+            }),
+    )
 }
 
 #[cfg(feature = "outbound-testing")]
