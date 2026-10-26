@@ -3789,6 +3789,14 @@ fn ensure_subgroup_sealed_carries_a_join(
     namespace_id: NamespaceId,
     op: &RootOp,
 ) -> EyreResult<()> {
+    // An inner folder's tree op rides the space's key; the handler checks it is the space it
+    // belongs to, which only the tree at the op's cut can say.
+    if matches!(
+        op,
+        RootOp::GroupCreated { .. } | RootOp::GroupReparented { .. } | RootOp::GroupDeleted { .. }
+    ) {
+        return Ok(());
+    }
     let signed_invitation = match op {
         RootOp::MemberJoined {
             signed_invitation, ..
@@ -3993,6 +4001,20 @@ pub fn seal_root_op_for_publish(
     }
 
     let ns_typed = ContextGroupId::from(namespace_id.to_bytes());
+    // An inner folder's tree op is sealed under its space's key, so a node outside the space
+    // never has to judge what it cannot read.
+    if matches!(
+        op,
+        RootOp::GroupCreated { .. } | RootOp::GroupReparented { .. } | RootOp::GroupDeleted { .. }
+    ) {
+        let tree = crate::private_space::Tree::live(store, &ns_typed)?;
+        let space = tree.root_op_seal_group(&ns_typed, &op)?;
+        if space != ns_typed {
+            return seal_root_op_for_group_if_keyed(store, space, &op)?.ok_or_else(|| {
+                eyre::eyre!("refusing to publish a space's folder op without the space's key")
+            });
+        }
+    }
     // `(key_id, key)` — `into_tuple` yields the id first. Both halves are
     // `[u8; 32]`, so binding them the other way round compiles and encrypts
     // under the id, producing ciphertext no holder of the key can open.

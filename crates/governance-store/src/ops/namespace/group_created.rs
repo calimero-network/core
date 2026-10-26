@@ -9,7 +9,7 @@ use crate::{
     ApplyError, CapabilitiesRepository, GroupCreatedRejection, MembershipRepository,
     MetaRepository, NamespaceError, NamespaceFoundingRepository, NamespaceRepository,
 };
-use calimero_context_client::local_governance::SignedNamespaceOp;
+use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
 use eyre::{bail, Result as EyreResult};
@@ -78,6 +78,17 @@ pub(crate) fn apply(
             subtrees: &[],
         },
     )?;
+    let sealed_for = tree.root_op_seal_group(
+        &ns_gid,
+        &RootOp::GroupCreated {
+            group_id: gid,
+            parent_id: parent_gid,
+            restricted,
+            admin: declared_admin,
+            salt: *salt,
+        },
+    )?;
+    ctx.require_sealed_for(op, &sealed_for)?;
     // Inside a space its own admins create, and the namespace's admins reach no further.
     let authorized = if let Some(space) = tree.space_of(&parent_gid)? {
         ctx.permissions_for(space).is_admin(&op.signer)?

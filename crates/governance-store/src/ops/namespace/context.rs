@@ -11,6 +11,7 @@ use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer};
 use crate::permission_checker::PermissionChecker;
 use crate::{MembershipError, MembershipRepository, NamespaceError, NamespaceRepository};
 use calimero_account::AccountId;
+use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::NamespaceId;
 use calimero_primitives::identity::PublicKey;
@@ -163,30 +164,70 @@ impl<'a> NamespaceApplyCtx<'a> {
         Ok(())
     }
 
-    /// Authority over the `ends` of a tree op: an admin of the space an end is in, and for an
-    /// end in the open space the namespace admin. A namespace admin outside a space has none
-    /// in it, and a space's own admin needs no namespace standing there.
+    /// Refuse a tree op sealed under any key but the one its folder's space picks: an inner
+    /// folder's op is read only by the space, so an outsider never has to judge it.
+    pub(crate) fn require_sealed_for(
+        &self,
+        op: &SignedNamespaceOp,
+        expected: &ContextGroupId,
+    ) -> EyreResult<()> {
+        let actual = match &op.op {
+            NamespaceOp::RootSealedForGroup { group_id, .. } => *group_id,
+            _ => ContextGroupId::from(self.namespace_id.to_bytes()),
+        };
+        if actual != *expected {
+            bail!(crate::ApplyError::TreeOpSealedUnderWrongKey {
+                group_id: expected.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Authority over a tree op on `moved`, landing under `destination` when it is a move:
+    /// an admin of the space an inner folder is in; for a space root's own move or delete,
+    /// its owner or the namespace admin, both readable by every member; in the open space
+    /// the namespace admin. A namespace admin has no authority inside a space.
     pub(crate) fn require_tree_authority(
         &self,
         signer: &PublicKey,
         tree: &crate::private_space::Tree,
-        ends: &[ContextGroupId],
+        moved: &ContextGroupId,
+        destination: Option<&ContextGroupId>,
     ) -> EyreResult<()> {
-        let mut open = false;
-        for end in ends {
-            match tree.space_of(end)? {
-                Some(space) => {
-                    if !self.permissions_for(space).is_admin(signer)? {
-                        bail!(MembershipError::NotAdmin {
-                            group_id: space.to_string(),
-                            identity: format!("{signer}"),
-                        });
-                    }
-                }
-                None => open = true,
+        let mut namespace_admin = false;
+        let mut spaces = Vec::new();
+        match tree.space_of(moved)? {
+            Some(space) if space == *moved => {
+                let ns_gid = ContextGroupId::from(self.namespace_id.to_bytes());
+                let owner = crate::group_owner::owner_at_cut(
+                    self.store,
+                    moved,
+                    self.parents,
+                    self.authorizer,
+                )?;
+                let owns = self
+                    .signer_account_live(&ns_gid, signer)?
+                    .is_some_and(|account| Some(account) == owner);
+                namespace_admin |= !owns;
+            }
+            Some(space) => spaces.push(space),
+            None => namespace_admin = true,
+        }
+        if let Some(destination) = destination {
+            match tree.space_of(destination)? {
+                Some(space) => spaces.push(space),
+                None => namespace_admin = true,
             }
         }
-        if open {
+        for space in spaces {
+            if !self.permissions_for(space).is_admin(signer)? {
+                bail!(MembershipError::NotAdmin {
+                    group_id: space.to_string(),
+                    identity: format!("{signer}"),
+                });
+            }
+        }
+        if namespace_admin {
             self.require_namespace_admin(signer)?;
         }
         Ok(())

@@ -4,7 +4,7 @@ use std::cell::Cell;
 
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::{
-    GroupOp, RootOp, SignedGroupOp, SignedNamespaceOp,
+    GroupOp, NamespaceOp, RootOp, SignedGroupOp, SignedNamespaceOp,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::VisibilityMode;
@@ -77,8 +77,22 @@ impl Space {
     fn create(&self, parent: [u8; 32], restricted: bool) -> EyreResult<[u8; 32]> {
         self.tag.set(self.tag.get() + 1);
         let tag = self.tag.get();
+        let space_parent = self.in_space(parent);
         self.root_op(group_created(self.admin, parent, restricted, tag))?;
-        Ok(derived_group_id(&self.admin, parent, restricted, tag))
+        let created = derived_group_id(&self.admin, parent, restricted, tag);
+        // A private space's members hold its key, which seals the ops of the folders inside it.
+        if restricted && !space_parent {
+            let _ = crate::GroupKeyring::new(&self.store, created.into())
+                .store_key(&[tag; 32])
+                .expect("mint the space's key");
+        }
+        Ok(created)
+    }
+
+    fn in_space(&self, group: [u8; 32]) -> bool {
+        crate::private_space::Tree::live(&self.store, &NS.into())
+            .and_then(|tree| tree.in_space(&group.into()))
+            .unwrap_or(false)
     }
 
     fn open(&self, parent: [u8; 32]) -> [u8; 32] {
@@ -368,4 +382,53 @@ fn only_a_spaces_own_admins_create_move_or_delete_inside_it() {
         .expect("a space admin creates inside its space");
     s.root_op_as(&admin_sk, delete(folder))
         .expect("and deletes there");
+}
+
+/// A node that lacks a space's key holds the ops of the space's folders as unread, and its
+/// namespace head keeps advancing through them.
+#[test]
+fn a_node_outside_a_space_keeps_advancing_through_its_inner_folder_ops() {
+    let s = Space::new();
+    let space = s.private(NS);
+    let kept = s.open(space);
+    let moved = s.open(space);
+    let ns = ContextGroupId::from(NS);
+    let create = group_created(s.admin, space, false, 0x71);
+    let reparent = RootOp::GroupReparented {
+        child_group_id: kept.into(),
+        new_parent_id: moved.into(),
+    };
+    let delete = RootOp::GroupDeleted {
+        root_group_id: moved.into(),
+        cascade_group_ids: vec![moved.into()],
+        cascade_context_ids: vec![],
+    };
+    let sealed: Vec<_> = [create, reparent, delete]
+        .into_iter()
+        .map(|op| seal_for_test(&s.store, ns, op))
+        .collect();
+    assert!(sealed
+        .iter()
+        .all(|op| matches!(op, NamespaceOp::RootSealedForGroup { group_id, .. } if *group_id == space.into())));
+
+    let keyring = crate::GroupKeyring::new(&s.store, space.into());
+    while let Some((key_id, _)) = keyring.load_current_key().unwrap() {
+        keyring.delete_key_by_id(&key_id).unwrap();
+    }
+    for op in sealed {
+        let head = crate::NamespaceDagService::new(&s.store, NS.into())
+            .read_head_record()
+            .unwrap();
+        let signed =
+            SignedNamespaceOp::sign(&s.sk, NS.into(), head.parent_hashes, s.next_nonce(), op)
+                .unwrap();
+        let applied = NamespaceGovernance::new(&s.store, NS.into())
+            .apply_signed_op(&signed)
+            .expect("an op the node cannot read does not stall it");
+        assert!(applied.refused.is_none());
+        let after = crate::NamespaceDagService::new(&s.store, NS.into())
+            .read_head_record()
+            .unwrap();
+        assert_eq!(after.parent_hashes, vec![signed.content_hash().unwrap()]);
+    }
 }

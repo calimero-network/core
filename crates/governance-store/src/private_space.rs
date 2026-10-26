@@ -79,6 +79,33 @@ impl Tree {
         self.private_on_chain(group)
     }
 
+    /// The key that seals a root tree op: the space an inner folder's create, move within
+    /// the space or delete is in, so a node outside the space never reads what it cannot
+    /// judge; the workspace key for everything else, a space root's own ops included.
+    pub fn root_op_seal_group(
+        &self,
+        namespace: &ContextGroupId,
+        op: &calimero_context_client::local_governance::RootOp,
+    ) -> EyreResult<ContextGroupId> {
+        use calimero_context_client::local_governance::RootOp;
+        let space = match op {
+            RootOp::GroupCreated { parent_id, .. } => self.private_on_chain(parent_id)?,
+            RootOp::GroupReparented {
+                child_group_id,
+                new_parent_id,
+            } => {
+                let source = self.private_on_chain(child_group_id)?;
+                let destination = self.private_on_chain(new_parent_id)?;
+                source.filter(|space| space != child_group_id && Some(*space) == destination)
+            }
+            RootOp::GroupDeleted { root_group_id, .. } => self
+                .private_on_chain(root_group_id)?
+                .filter(|space| space != root_group_id),
+            _ => None,
+        };
+        Ok(space.unwrap_or(*namespace))
+    }
+
     fn is_private(&self, group: &ContextGroupId) -> bool {
         self.0.get(group).is_some_and(|(_, restricted)| *restricted)
     }

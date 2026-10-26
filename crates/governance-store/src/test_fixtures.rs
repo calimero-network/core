@@ -1521,6 +1521,20 @@ pub fn seal_for_test(
             .store_key(&[0x5Au8; 32])
             .expect("mint the namespace key the fixture omitted");
     }
+    // A space's folder op rides the space's key, which the fixture omitted like the namespace's.
+    let space = crate::private_space::Tree::live(store, &ns_gid)
+        .and_then(|tree| tree.root_op_seal_group(&ns_gid, &op))
+        .expect("read the tree");
+    if space != ns_gid
+        && crate::GroupKeyring::new(store, space)
+            .load_current_key()
+            .expect("read the space's keyring")
+            .is_none()
+    {
+        let _ = crate::GroupKeyring::new(store, space)
+            .store_key(&[0x5Bu8; 32])
+            .expect("mint the space key the fixture omitted");
+    }
     crate::seal_root_op_for_publish(store, ns_gid.to_bytes().into(), op)
         .expect("seal a root op for a test")
 }

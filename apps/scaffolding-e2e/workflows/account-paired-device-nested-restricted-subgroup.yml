@@ -127,13 +127,14 @@ steps:
     group_id: '{{team_group}}'
     visibility: restricted
 
-  - name: Node-1 adds node-2 to the private space
+  # Moving an open folder into a space takes the namespace admin and an admin of that space.
+  - name: Node-1 adds node-2 to the private space as its admin
     type: add_group_members
     node: paired-nested-1
     group_id: '{{team_group}}'
     members:
       - identity: '{{account_node2}}'
-        role: Member
+        role: Admin
 
   - name: Node-1 creates the inner folder
     type: create_group_in_namespace
@@ -143,7 +144,7 @@ steps:
     outputs:
       dm_group: groupId
 
-  # Reparenting is a namespace-admin right, so the founder nests it.
+  # The founder is the namespace admin and now the space's admin, so it may nest it.
   - name: Node-2 nests the inner folder inside the private space
     type: reparent_group
     node: paired-nested-2

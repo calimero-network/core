@@ -6,7 +6,7 @@ use crate::op_events::OpEvent;
 use crate::private_space::Tree;
 use crate::TreeReads;
 use crate::{NamespaceRepository, ReparentOutcome};
-use calimero_context_client::local_governance::SignedNamespaceOp;
+use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use eyre::Result as EyreResult;
 
@@ -32,7 +32,15 @@ pub(crate) fn apply(
             subtrees: &[child],
         },
     )?;
-    ctx.require_tree_authority(&op.signer, &tree, &[child, new_parent])?;
+    let sealed_for = tree.root_op_seal_group(
+        &ns_gid,
+        &RootOp::GroupReparented {
+            child_group_id: child,
+            new_parent_id: new_parent,
+        },
+    )?;
+    ctx.require_sealed_for(op, &sealed_for)?;
+    ctx.require_tree_authority(&op.signer, &tree, &child, Some(&new_parent))?;
     tree.require_may_reparent(&child, &new_parent)?;
     match NamespaceRepository::new(ctx.store()).reparent(&child, &new_parent)? {
         ReparentOutcome::Reparented { old_parent } => {

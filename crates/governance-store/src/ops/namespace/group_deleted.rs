@@ -9,7 +9,7 @@ use crate::{
     ApplyError, CapabilitiesError, GroupDeletedRejection, MetaRepository, NamespaceError,
     NamespaceRepository, PermissionChecker,
 };
-use calimero_context_client::local_governance::SignedNamespaceOp;
+use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use eyre::{bail, Result as EyreResult};
 
@@ -65,13 +65,22 @@ pub(crate) fn apply(
             },
         )?;
         tree.require_may_delete(&root_gid)?;
+        let sealed_for = tree.root_op_seal_group(
+            &ns_gid,
+            &RootOp::GroupDeleted {
+                root_group_id: root_gid,
+                cascade_group_ids: Vec::new(),
+                cascade_context_ids: Vec::new(),
+            },
+        )?;
+        ctx.require_sealed_for(op, &sealed_for)?;
         // Ownership names an account, the op carries a key: resolve, then
         // compare. An unresolvable signer is not the owner and falls through to
         // the capability gate below, which refuses it for the same reason.
         let signer_account = ctx.signer_account_live(&ns_gid, &op.signer)?;
         let (parents, authorizer) = ctx.apply_auth();
         let owner = crate::group_owner::owner_at_cut(store, &root_gid, parents, authorizer)?;
-        if let Some(space) = tree.space_of(&root_gid)? {
+        if let Some(space) = tree.space_of(&root_gid)?.filter(|space| *space != root_gid) {
             // In a space the folder's owner or the space's admin may delete it; the namespace's
             // admins and capabilities reach no further than the open space.
             let owns = signer_account.is_some_and(|signer| Some(signer) == owner);
