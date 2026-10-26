@@ -42,6 +42,9 @@ architecture spec.
   caller's account (no devices in release-v2); the context id is `SHA-256(app_id)`.
   `env::caller_org` is the caller's role and teams in the app's organization
   (`app::caller_org`, passed through `Module::run_with_caller_org`).
+- **Private storage** (`env::private_storage_*`): v1 kept it on the member's node,
+  unsynced. Here it is the caller's own space in the app's state (`app::private_prefix`):
+  replicated and sealed, but a run is handed only its caller's space.
 - **Browsers**: `config.origins` are the CORS origins too (`lib.rs`, outermost layer).
 - **Storage key** (`kms.rs`): K_r = HKDF(KMS key, cluster). The KMS key comes from
   merod's own client (`merod kms disk-key`: release-policy-verified KMS, key sealed

@@ -517,7 +517,8 @@ impl Module {
     }
 
     /// [`Self::run`] for the release-v2 cloud node, which also tells the app
-    /// the caller's organization standing (`env::caller_org`).
+    /// the caller's organization standing (`env::caller_org`) and gives it the
+    /// caller's private storage.
     #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
     pub fn run_with_caller_org<'a>(
         &'a self,
@@ -527,6 +528,7 @@ impl Module {
         method: &str,
         input: &'a [u8],
         storage: &'a mut dyn Storage,
+        private_storage: Option<&'a mut dyn Storage>,
         caller_org: Option<Vec<u8>>,
     ) -> RuntimeResult<Outcome> {
         self.run_inner(
@@ -536,7 +538,7 @@ impl Module {
             method,
             input,
             storage,
-            None,
+            private_storage,
             None,
             None,
             false,

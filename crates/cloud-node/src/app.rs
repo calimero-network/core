@@ -298,16 +298,46 @@ pub struct Overlay<'a> {
     base: &'a BTreeMap<Bytes, Bytes>,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     order: Vec<Vec<u8>>,
+    /// Prepended to every key: empty for the app's state, an account's space
+    /// for its private storage ([`private_prefix`]).
+    prefix: Vec<u8>,
+}
+
+/// Where an account's private storage lives in the app's state.
+///
+/// v1 kept "private" data on the member's own node, never synced. A cloud app
+/// has no member nodes, so private data is the caller's own space instead:
+/// replicated and sealed like the rest of the state, but the host hands a run
+/// only its caller's space, so app code can never read another account's.
+#[must_use]
+pub fn private_prefix(account: &[u8; 32]) -> Vec<u8> {
+    let mut p = b"\0calimero.private\0".to_vec();
+    p.extend_from_slice(account);
+    p.push(0);
+    p
 }
 
 impl<'a> Overlay<'a> {
     #[must_use]
     pub fn new(base: &'a BTreeMap<Bytes, Bytes>) -> Self {
+        Self::with_prefix(base, Vec::new())
+    }
+
+    /// An overlay that reads and writes only keys under `prefix`.
+    #[must_use]
+    pub fn with_prefix(base: &'a BTreeMap<Bytes, Bytes>, prefix: Vec<u8>) -> Self {
         Self {
             base,
             writes: BTreeMap::new(),
             order: Vec::new(),
+            prefix,
         }
+    }
+
+    fn full(&self, key: &[u8]) -> Vec<u8> {
+        let mut k = self.prefix.clone();
+        k.extend_from_slice(key);
+        k
     }
 
     /// The writes, in the order they last happened.
@@ -331,14 +361,16 @@ impl<'a> Overlay<'a> {
 
 impl Storage for Overlay<'_> {
     fn get(&self, key: &Key) -> Option<StoreValue> {
-        match self.writes.get(key) {
+        let key = self.full(key);
+        match self.writes.get(&key) {
             Some(v) => v.clone(),
-            None => self.base.get(&Bytes(key.clone())).map(|v| v.0.clone()),
+            None => self.base.get(&Bytes(key)).map(|v| v.0.clone()),
         }
     }
 
     fn set(&mut self, key: Key, value: StoreValue) -> Option<StoreValue> {
         let prev = self.get(&key);
+        let key = self.full(&key);
         self.order.push(key.clone());
         let _prev = self.writes.insert(key, Some(value));
         prev
@@ -346,8 +378,9 @@ impl Storage for Overlay<'_> {
 
     fn remove(&mut self, key: &Key) -> Option<Vec<u8>> {
         let prev = self.get(key);
+        let key = self.full(key);
         self.order.push(key.clone());
-        let _prev = self.writes.insert(key.clone(), None);
+        let _prev = self.writes.insert(key, None);
         prev
     }
 
@@ -422,6 +455,11 @@ impl Executor {
         // release-v2 has no devices: a person is their account, so the executor
         // (v1's per-device key, `env::executor_id`) is the account too. Apps that
         // key players or authors by executor then tell people apart as before.
+        // The caller's private storage (`env::private_storage_*`), when there
+        // is a caller to own it.
+        let mut private = caller
+            .account()
+            .map(|_| Overlay::with_prefix(base, private_prefix(&caller.account_bytes())));
         let result = module.run_with_caller_org(
             context.into(),
             account,
@@ -429,8 +467,15 @@ impl Executor {
             method,
             &input,
             &mut overlay,
+            private
+                .as_mut()
+                .map(|p| p as &mut dyn calimero_runtime::store::Storage),
             org.map(<[u8]>::to_vec),
         );
+        let mut diff = overlay.into_diff();
+        if let Some(p) = private {
+            diff.extend(p.into_diff());
+        }
         match result {
             Ok(out) => {
                 let events: Vec<(String, Value)> = out
@@ -443,7 +488,7 @@ impl Executor {
                         status: Status::Ok,
                         result: ret.map_or(Value::Null, |r| json_or_string(&r)),
                         error: Value::Null,
-                        diff: overlay.into_diff(),
+                        diff,
                         events,
                         logs: out.logs,
                     },
@@ -510,4 +555,35 @@ pub fn caller_org(
         out.push_str(team);
     }
     Some(out.into_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_runtime::store::Storage;
+
+    use super::*;
+
+    #[test]
+    fn private_storage_is_the_callers_own_space() {
+        let alice = [1_u8; 32];
+        let bob = [2_u8; 32];
+        let base = BTreeMap::new();
+        let mut a = Overlay::with_prefix(&base, private_prefix(&alice));
+        let _prev = a.set(b"note".to_vec(), b"alice's".to_vec());
+        let diff = a.into_diff();
+        // The write lands under Alice's prefix, never under the bare key.
+        assert_eq!(diff.len(), 1);
+        assert!(diff[0].key.0.starts_with(&private_prefix(&alice)));
+
+        let mut state = BTreeMap::new();
+        for w in diff {
+            let _prev = state.insert(w.key, w.value.unwrap());
+        }
+        let main = Overlay::new(&state);
+        let as_bob = Overlay::with_prefix(&state, private_prefix(&bob));
+        let as_alice = Overlay::with_prefix(&state, private_prefix(&alice));
+        assert!(!main.has(&b"note".to_vec()));
+        assert!(!as_bob.has(&b"note".to_vec()));
+        assert_eq!(as_alice.get(&b"note".to_vec()), Some(b"alice's".to_vec()));
+    }
 }
