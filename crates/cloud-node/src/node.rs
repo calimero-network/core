@@ -590,13 +590,21 @@ impl Node {
         let bundle = app.bundle.clone();
         let app_id = app.app_id.clone();
         let init_args = app.init_args.clone();
+        let org = self.sys(|s| crate::app::caller_org(s, &app.app_id, &owner));
         let p = g
             .propose(|m, applied| {
                 if m.state.initialized || m.state.bundle.is_some() {
                     return Proposal::Reply(Vec::new());
                 }
-                let outcome =
-                    Executor::run(&module, &app_id, &owner, "init", &init_args, &m.state.kv);
+                let outcome = Executor::run(
+                    &module,
+                    &app_id,
+                    &owner,
+                    "init",
+                    &init_args,
+                    &m.state.kv,
+                    org.as_deref(),
+                );
                 let cmd = AppCmd::Init {
                     bundle: bundle.clone(),
                     base_index: applied,
@@ -627,6 +635,7 @@ impl Node {
         if req.method == "__upgrade" {
             return self.upgrade_local(g, req).await;
         }
+        let org = self.sys(|s| crate::app::caller_org(s, &req.app_id, &req.caller));
         let p = g
             .propose(|m, applied| {
                 if let Some(key) = &req.idempotency_key {
@@ -642,6 +651,7 @@ impl Node {
                         &req.method,
                         &req.args,
                         &m.state.kv,
+                        org.as_deref(),
                     ),
                     None => crate::app::Outcome {
                         status: Status::Trap,
@@ -689,6 +699,7 @@ impl Node {
             .module_for(&bundle)
             .await
             .map_err(|e| WriteError::Unavailable(e.message))?;
+        let org = self.sys(|s| crate::app::caller_org(s, &req.app_id, &req.caller));
         let p = g
             .propose(|m, applied| {
                 let outcome = match &migrate {
@@ -699,6 +710,7 @@ impl Node {
                         method,
                         &Value::Null,
                         &m.state.kv,
+                        org.as_deref(),
                     ),
                     None => crate::app::Outcome {
                         status: Status::Ok,
@@ -794,6 +806,7 @@ impl Node {
             .read_local(|m, _| m.state.bundle.clone())
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
         let module = self.module_for(&bundle).await?;
+        let org = self.sys(|s| crate::app::caller_org(s, &req.app_id, &req.caller));
         Ok(g.read_local(|m, applied| {
             let out = Executor::run(
                 &module,
@@ -802,6 +815,7 @@ impl Node {
                 &req.method,
                 &req.args,
                 &m.state.kv,
+                org.as_deref(),
             );
             ViewAnswer {
                 index: applied,

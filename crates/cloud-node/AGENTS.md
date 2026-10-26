@@ -34,6 +34,9 @@ architecture spec.
   `AppRecord`; a failed init answers `422 INIT_FAILED` (`AppState::init_error`).
 - **Identity inside the app**: `env::account_id` and `env::executor_id` are both the
   caller's account (no devices in release-v2); the context id is `SHA-256(app_id)`.
+  `env::caller_org` is the caller's role and teams in the app's organization
+  (`app::caller_org`, passed through `Module::run_with_caller_org`).
+- **Browsers**: `config.origins` are the CORS origins too (`lib.rs`, outermost layer).
 - **Storage key** (`kms.rs`): K_r = HKDF(KMS key, cluster). The KMS key comes from
   merod's own client (`merod kms disk-key`: release-policy-verified KMS, key sealed
   to the TD), run by merod-v2 (`--kms-url --kms-identity`) or by the boot script
@@ -50,7 +53,7 @@ architecture spec.
 
 ## Not done yet (prototype)
 
-SDK host functions for orgs (`env::org_role`), rollback counter, placement across zones, snapshot restore into a
+rollback counter, placement across zones, snapshot restore into a
 running cluster, event audiences, pruning of revoked session ids.
 
 ## Commands

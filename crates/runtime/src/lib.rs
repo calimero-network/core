@@ -497,12 +497,83 @@ impl Module {
         outbound: Option<Arc<dyn logic::OutboundHost>>,
         remote_delta: bool,
     ) -> RuntimeResult<Outcome> {
+        self.run_inner(
+            context,
+            account,
+            executor,
+            method,
+            input,
+            storage,
+            private_storage,
+            node_client,
+            xcall_origin,
+            tee_trigger,
+            sealing,
+            search,
+            outbound,
+            remote_delta,
+            None,
+        )
+    }
+
+    /// [`Self::run`] for the release-v2 cloud node, which also tells the app
+    /// the caller's organization standing (`env::caller_org`).
+    #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
+    pub fn run_with_caller_org<'a>(
+        &'a self,
+        context: ContextId,
+        account: AccountId,
+        executor: PublicKey,
+        method: &str,
+        input: &'a [u8],
+        storage: &'a mut dyn Storage,
+        caller_org: Option<Vec<u8>>,
+    ) -> RuntimeResult<Outcome> {
+        self.run_inner(
+            context,
+            account,
+            executor,
+            method,
+            input,
+            storage,
+            None,
+            None,
+            None,
+            false,
+            logic::SealingContext::default(),
+            None,
+            None,
+            false,
+            caller_org,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
+    fn run_inner<'a>(
+        &'a self,
+        context: ContextId,
+        account: AccountId,
+        executor: PublicKey,
+        method: &str,
+        input: &'a [u8],
+        storage: &'a mut dyn Storage,
+        private_storage: Option<&'a mut dyn Storage>,
+        node_client: Option<NodeClient>,
+        xcall_origin: Option<ContextId>,
+        tee_trigger: bool,
+        sealing: logic::SealingContext,
+        search: Option<Arc<dyn logic::SearchHost>>,
+        outbound: Option<Arc<dyn logic::OutboundHost>>,
+        remote_delta: bool,
+        caller_org: Option<Vec<u8>>,
+    ) -> RuntimeResult<Outcome> {
         let context_id = context;
         debug!(%context_id, method, "Running WASM method");
         debug!(%context_id, method, input_len = input.len(), "WASM execution input");
 
         let mut context = VMContext::new(input.into(), *context_id, *executor, account);
         context.xcall_origin = xcall_origin.map(|origin| *origin);
+        context.caller_org = caller_org;
         context.tee_trigger = tee_trigger;
         context.sealing = sealing;
         context.search = search;

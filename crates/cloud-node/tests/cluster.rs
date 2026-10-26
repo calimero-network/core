@@ -28,6 +28,15 @@ fn kv_wasm() -> Vec<u8> {
         .unwrap_or_else(|e| panic!("{}: {e}; build kv-store for wasm32 first", path.display()))
 }
 
+fn wasm(name: &str) -> Vec<u8> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wasm32-unknown-unknown/app-release")
+        .join(format!("{name}.wasm"));
+    std::fs::read(&path).unwrap_or_else(|e| {
+        panic!("{}: {e}; build it with cargo build --target wasm32-unknown-unknown --profile app-release", path.display())
+    })
+}
+
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -730,4 +739,134 @@ async fn session_keys_rotate_and_old_sessions_stay_valid() {
     let s = fresh.sign_in(&mut pk).await.unwrap();
     let claims = calimero_identity::peek_session(&s.session_token).unwrap();
     assert_eq!(claims.key_version, after);
+}
+
+async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value {
+    cl.view(app, method, args, Consistency::Strong)
+        .await
+        .unwrap()
+        .result
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn apps_see_the_callers_organization_role_and_teams() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let str_of = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let org = str_of(
+        alice.post("orgs", json!({ "name": "Acme" })).await.unwrap(),
+        "orgId",
+    );
+    let team = str_of(
+        alice
+            .post(
+                &format!("orgs/{org}/teams"),
+                json!({ "name": "eng", "join": "invite" }),
+            )
+            .await
+            .unwrap(),
+        "teamId",
+    );
+    let invite = str_of(
+        alice
+            .post(
+                &format!("orgs/{org}/invites"),
+                json!({ "role": "member", "teams": [team] }),
+            )
+            .await
+            .unwrap(),
+        "token",
+    );
+    let _r = bob
+        .post(&format!("invites/{invite}/redeem"), json!({}))
+        .await
+        .unwrap();
+
+    let bundle = alice.upload_bundle(wasm("org_gated")).await.unwrap();
+    let app = alice
+        .create_app("notes", &bundle, json!({ "org": org }))
+        .await
+        .unwrap();
+
+    // The app reads each caller's standing from the node.
+    let me = strong_view(&alice, &app, "whoami", json!({})).await;
+    assert_eq!(me["role"], "owner");
+    assert_eq!(me["org"], json!(org));
+    let me = strong_view(&bob, &app, "whoami", json!({})).await;
+    assert_eq!(me["role"], "member");
+    assert_eq!(me["teams"], json!([team]));
+
+    // Admins write the pinned note; members read it but cannot write it.
+    let _ok = alice
+        .call(&app, "set_pinned", json!({ "text": "hello" }), None)
+        .await
+        .unwrap();
+    assert_eq!(strong_view(&bob, &app, "pinned", json!({})).await, "hello");
+    let err = bob
+        .call(&app, "set_pinned", json!({ "text": "mine" }), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("APP_ERROR"), "{err}");
+
+    // Team members write their team's note; alice (owner, not in the team) cannot.
+    let _ok = bob
+        .call(
+            &app,
+            "set_team_note",
+            json!({ "team": team, "text": "ship it" }),
+            None,
+        )
+        .await
+        .unwrap();
+    let err = alice
+        .call(
+            &app,
+            "set_team_note",
+            json!({ "team": team, "text": "x" }),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("APP_ERROR"), "{err}");
+
+    // Outside an organization the app sees no standing.
+    let solo = alice.create_app("solo", &bundle, json!({})).await.unwrap();
+    let me = alice
+        .view(&solo, "whoami", json!({}), Consistency::Strong)
+        .await
+        .unwrap()
+        .result;
+    assert_eq!(me, Value::Null);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn browsers_on_allowed_origins_may_call_the_node() {
+    let c = Cluster::start(3).await;
+    let http = reqwest::Client::new();
+    let preflight = |origin: &'static str| {
+        http.request(reqwest::Method::OPTIONS, format!("{}sealed/v2", c.urls[0]))
+            .header("origin", origin)
+            .header("access-control-request-method", "POST")
+            .header("access-control-request-headers", "content-type")
+            .send()
+    };
+    let ok = preflight(ORIGIN).await.unwrap();
+    assert_eq!(
+        ok.headers().get("access-control-allow-origin").unwrap(),
+        ORIGIN
+    );
+    let other = preflight("https://evil.example").await.unwrap();
+    assert!(other.headers().get("access-control-allow-origin").is_none());
+    // A simple GET carries the header too.
+    let health = http
+        .get(format!("{}health", c.urls[0]))
+        .header("origin", ORIGIN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        health.headers().get("access-control-allow-origin").unwrap(),
+        ORIGIN
+    );
 }

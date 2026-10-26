@@ -27,6 +27,7 @@ cargo mero build --manifest-path apps/kv-store/Cargo.toml
 | ------------------------ | ---------------------- | ---------------------- |
 | `kv-store`               | Simple key-value store | Basic CRDT usage       |
 | `kv-store-init`          | KV with custom init    | `#[app::init]` pattern |
+| `org-gated`              | Org notes (release-v2) | `env::caller_org()`: gate methods on the caller's organization role and teams |
 | `kv-store-with-handlers` | KV with event handlers | Event handling         |
 | `sorted-kv-store`        | Ordered KV store       | `SortedMap`: range / prefix / page |
 | `authored-sorted-kv-store` | Shared noticeboard   | `AuthoredSortedMap`: per-entry ownership + prefix slices, and why the two go together |

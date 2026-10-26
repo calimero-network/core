@@ -49,6 +49,20 @@ impl Running {
     }
 }
 
+fn cors(origins: &[String]) -> tower_http::cors::CorsLayer {
+    use axum::http::{header, HeaderValue, Method};
+    let origins: Vec<HeaderValue> = origins
+        .iter()
+        .filter_map(|o| HeaderValue::from_str(o.trim_end_matches('/')).ok())
+        .collect();
+    tower_http::cors::CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([Method::GET, Method::POST, Method::DELETE])
+        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+        .expose_headers([header::RETRY_AFTER])
+        .max_age(Duration::from_secs(600))
+}
+
 /// Start a node and serve its API until stopped.
 pub async fn run(config: Config) -> eyre::Result<Running> {
     let listener = TcpListener::bind(config.listen).await?;
@@ -65,6 +79,10 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         ),
         api::router(Arc::clone(&node)),
     );
+    // Browser apps on the configured origins (the same ones passkeys are bound
+    // to) may reach the node. Outermost, so a preflight is answered before the
+    // sealed envelope sees it; what travels sealed needs no header of its own.
+    let app = tower::Layer::layer(&cors(&node.config.origins), app);
     let stop = shutdown.clone();
     let server = tokio::spawn(async move {
         let svc = axum::ServiceExt::<axum::extract::Request>::into_make_service(app);

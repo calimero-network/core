@@ -1248,6 +1248,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tower",
+ "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -7516,6 +7517,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c7c9e0d9b23589f26070720bac724174bfec1083e82f7854cdd0267518343c0"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "org-gated"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
 ]
 
 [[package]]

@@ -355,6 +355,72 @@ pub fn xcall_origin() -> Option<[u8; 32]> {
     host::xcall_origin()
 }
 
+/// A caller's role in an organization, lowest to highest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OrgRole {
+    Guest,
+    Member,
+    Admin,
+    Owner,
+}
+
+/// The caller's standing in the organization the app belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallerOrg {
+    /// The organization's id.
+    pub org: String,
+    pub role: OrgRole,
+    /// Ids of the organization's teams the caller is in.
+    pub teams: Vec<String>,
+}
+
+impl CallerOrg {
+    /// Decode the node's `org\nrole\nteam\n...` form.
+    #[must_use]
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        let text = core::str::from_utf8(bytes).ok()?;
+        let mut lines = text.split('\n');
+        let org = lines.next().filter(|o| !o.is_empty())?.to_owned();
+        let role = match lines.next()? {
+            "guest" => OrgRole::Guest,
+            "member" => OrgRole::Member,
+            "admin" => OrgRole::Admin,
+            "owner" => OrgRole::Owner,
+            _ => return None,
+        };
+        let teams = lines.filter(|t| !t.is_empty()).map(str::to_owned).collect();
+        Some(Self { org, role, teams })
+    }
+
+    /// Whether the caller is in `team`.
+    #[must_use]
+    pub fn in_team(&self, team: &str) -> bool {
+        self.teams.iter().any(|t| t == team)
+    }
+}
+
+/// The caller's standing in the app's organization: `None` when the app
+/// belongs to no organization, the caller is not a member, or the node does
+/// not run organizations (v1 nodes). Gate a method on it the way the node
+/// gates the app: `env::caller_org().is_some_and(|o| o.role >= OrgRole::Admin)`.
+#[must_use]
+pub fn caller_org() -> Option<CallerOrg> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let present: bool = unsafe {
+            sys::caller_org(DATA_REGISTER)
+                .try_into()
+                .unwrap_or_else(expected_boolean)
+        };
+        if !present {
+            return None;
+        }
+        CallerOrg::decode(&read_register(DATA_REGISTER)?)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::caller_org()
+}
+
 #[inline]
 #[must_use]
 pub fn input() -> Option<Vec<u8>> {

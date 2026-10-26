@@ -389,6 +389,8 @@ impl Executor {
     /// Run `method` against `base` as `caller`. Never fails: errors become the
     /// outcome's status.
     #[must_use]
+    /// `org` is the caller's organization standing as `env::caller_org` reads it
+    /// ([`caller_org`]), or `None`.
     pub fn run(
         module: &calimero_runtime::Module,
         app_id: &str,
@@ -396,6 +398,7 @@ impl Executor {
         method: &str,
         args: &Value,
         base: &BTreeMap<Bytes, Bytes>,
+        org: Option<&[u8]>,
     ) -> Outcome {
         let mut overlay = Overlay::new(base);
         let input = if args.is_null() {
@@ -408,15 +411,14 @@ impl Executor {
         // release-v2 has no devices: a person is their account, so the executor
         // (v1's per-device key, `env::executor_id`) is the account too. Apps that
         // key players or authors by executor then tell people apart as before.
-        let result = module.run(
+        let result = module.run_with_caller_org(
             context.into(),
             account,
             caller.account_bytes().into(),
             method,
             &input,
             &mut overlay,
-            None,
-            None,
+            org.map(<[u8]>::to_vec),
         );
         match result {
             Ok(out) => {
@@ -470,4 +472,31 @@ impl Executor {
 #[must_use]
 pub fn stamp() -> u64 {
     now_ms()
+}
+
+/// The caller's standing in the app's organization, encoded for
+/// `env::caller_org` as `org\nrole\nteam\n...`; `None` when the app has no
+/// organization or the caller is not in it.
+#[must_use]
+pub fn caller_org(
+    state: &crate::system::SystemState,
+    app_id: &str,
+    caller: &Caller,
+) -> Option<Vec<u8>> {
+    let app = state.apps.get(app_id)?;
+    let org_id = app.org.as_ref()?;
+    let org = state.orgs.get(org_id)?;
+    let account = caller.account()?;
+    let role = match org.role(account)? {
+        crate::types::OrgRole::Guest => "guest",
+        crate::types::OrgRole::Member => "member",
+        crate::types::OrgRole::Admin => "admin",
+        crate::types::OrgRole::Owner => "owner",
+    };
+    let mut out = format!("{org_id}\n{role}");
+    for team in org.teams.keys().filter(|t| org.in_team(account, t)) {
+        out.push('\n');
+        out.push_str(team);
+    }
+    Some(out.into_bytes())
 }
