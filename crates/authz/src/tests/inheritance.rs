@@ -1,5 +1,5 @@
-//! The subgroup-inheritance walk: an open chain plus the capability, or an
-//! admin anywhere on that chain — and nothing through a restricted wall.
+//! The subgroup-inheritance walk: an open chain to the space root's rows, or an
+//! admin anywhere on that chain - and nothing through a restricted wall.
 
 use std::collections::BTreeMap;
 
@@ -12,7 +12,7 @@ use crate::inheritance::CAN_JOIN_OPEN_SUBGROUPS;
 use crate::view::{AclView, SubgroupEdge};
 
 #[test]
-fn inherited_membership_requires_open_chain_and_cap() {
+fn inherited_membership_requires_open_chain_and_a_root_row() {
     let parent = ContextGroupId::from([1u8; 32]);
     let child = ContextGroupId::from([2u8; 32]);
     let member = AccountId::from([0x55; 32]);
@@ -21,9 +21,9 @@ fn inherited_membership_requires_open_chain_and_cap() {
     let v = inheritance_view(parent, child, member, CAN_JOIN_OPEN_SUBGROUPS, false, true);
     assert!(v.is_member_at_cut(child, &member, None, 0));
 
-    // Open child but member lacks the cap → no inheritance.
+    // The members of a folder are its space root's, whatever capability they hold.
     let v = inheritance_view(parent, child, member, 0, false, true);
-    assert!(!v.is_member_at_cut(child, &member, None, 0));
+    assert!(v.is_member_at_cut(child, &member, None, 0));
 
     // Restricted child → wall, no inheritance even with the cap.
     let v = inheritance_view(parent, child, member, CAN_JOIN_OPEN_SUBGROUPS, true, true);
@@ -84,28 +84,14 @@ fn the_root_carve_out_follows_a_folded_transfer() {
     assert!(v.is_member_at_cut(root, &heir, Some((root, founder)), 0));
 }
 
-/// An explicit grant is authoritative, including a grant of nothing.
-///
-/// `MemberCapabilitySet { capabilities: empty }` is how an admin revokes every
-/// bit a member holds. The live row then reads 0 and the member cannot
-/// inherit. The fold used to treat a folded 0 as "nothing folded" and fall back
-/// to the namespace default, so at the cut the revoked member inherited into
-/// every Open subgroup the default opens — the revocation did not take.
+/// A member's capabilities never gate its membership of a folder: a grant of nothing
+/// still leaves the member a member of every folder in its space.
 #[test]
-fn an_explicit_revoke_to_nothing_is_not_read_as_the_default() {
+fn an_explicit_revoke_to_nothing_does_not_end_membership_of_a_folder() {
     let parent = ContextGroupId::from([1u8; 32]);
     let child = ContextGroupId::from([2u8; 32]);
     let member = AccountId::from([0x55; 32]);
 
-    // The parent row was explicitly set to nothing; the default would grant.
     let revoked = inheritance_view(parent, child, member, 0, false, true);
-    assert!(
-        !revoked.is_member_at_cut(child, &member, None, CAN_JOIN_OPEN_SUBGROUPS),
-        "a revoke-to-nothing must not fall back to the default"
-    );
-
-    // With no explicit grant at all, the default is what the member holds.
-    let mut defaulted = inheritance_view(parent, child, member, 0, false, true);
-    defaulted.member_caps.clear();
-    assert!(defaulted.is_member_at_cut(child, &member, None, CAN_JOIN_OPEN_SUBGROUPS));
+    assert!(revoked.is_member_at_cut(child, &member, None, 0));
 }

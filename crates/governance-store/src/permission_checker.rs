@@ -606,29 +606,8 @@ impl<'a> PermissionChecker<'a> {
         })
     }
 
-    /// Resolves "admin or holds `capability_bit`" with Open-subgroup
-    /// inheritance applied (issue #2256).
-    ///
-    /// Direct authority in `self.group_id` short-circuits. Otherwise:
-    ///
-    /// - **Admins** at any ancestor in the Open chain inherit governance
-    ///   authority unconditionally (mirrors the structural-inheritance
-    ///   model for parent admins).
-    /// - **Non-admin** inherited members do **not** inherit governance
-    ///   capabilities (`MANAGE_MEMBERS`, `MANAGE_APPLICATION`,
-    ///   `CAN_CREATE_CONTEXT`, `CAN_INVITE_MEMBERS`, etc.). Their
-    ///   cross-boundary authority is scoped to *context join/read* via
-    ///   `CAN_JOIN_OPEN_SUBGROUPS` — the bit that already gated their
-    ///   passing the membership walk in
-    ///   [`super::membership::check_group_membership_path`]. Inheriting
-    ///   arbitrary parent-level capabilities into the subgroup would be
-    ///   a privilege-escalation path: a parent member with
-    ///   `MANAGE_MEMBERS` at the namespace could otherwise add/remove
-    ///   members in every Open subgroup, even though the subgroup admin
-    ///   may not have intended to delegate that authority.
-    ///
-    /// Subgroup admins must grant governance capabilities explicitly at
-    /// the subgroup level for non-admin parent members.
+    /// Resolves "admin or holds `capability_bit`": an admin of the group or an Open ancestor,
+    /// or a member holding the bit in the group's own row or, for a folder, its space root's.
     fn is_authorized_with_capability(
         &self,
         identity: &PublicKey,
@@ -660,14 +639,8 @@ impl<'a> PermissionChecker<'a> {
             &account,
             capability_bit,
         )?;
-        // Only admin-inherited authority crosses the parent boundary;
-        // non-admin caps must be explicit at the subgroup level.
-        // Uses `is_inherited_admin` (a dedicated walk) rather than
-        // `check_group_membership_path`'s `Inherited{via_admin:true}`
-        // branch — the path walker short-circuits to `Direct` as soon
-        // as any direct membership row exists in the target subgroup,
-        // which would mask inherited admin authority for a parent
-        // admin who is also an explicit non-admin subgroup member.
+        // `is_inherited_admin` is its own walk: the path walker answers `Direct` as soon
+        // as the group holds a row, which would mask a parent admin's authority.
         Ok(direct
             || MembershipRepository::new(self.store)
                 .is_inherited_admin(&self.group_id, &account)?)

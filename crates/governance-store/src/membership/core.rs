@@ -316,56 +316,8 @@ impl<'a> MembershipRepository<'a> {
         if has_direct_member(self.store, group_id, identity)? {
             return Ok(MembershipPath::Direct);
         }
-
-        let mut anchor_decision: Option<MembershipPath> = None;
-        let mut walled = false;
-        let mut current = *group_id;
-        for _ in 0..=MAX_NAMESPACE_DEPTH {
-            if CapabilitiesRepository::new(self.store).subgroup_visibility(&current)?
-                != VisibilityMode::Open
-            {
-                return Ok(anchor_decision.unwrap_or(MembershipPath::None));
-            }
-            let Some(parent) = NamespaceRepository::new(self.store).parent(&current)? else {
-                return Ok(anchor_decision.unwrap_or(MembershipPath::None));
-            };
-            if self.is_admin(&parent, identity)? {
-                return Ok(MembershipPath::Inherited {
-                    anchor: parent,
-                    via_admin: true,
-                });
-            }
-            if !walled
-                && anchor_decision.is_none()
-                && has_direct_member(self.store, &parent, identity)?
-            {
-                let caps = CapabilitiesRepository::new(self.store)
-                    .member_capability(&parent, identity)?
-                    .unwrap_or(0);
-                // A private space's members are the members of every folder in it.
-                let space_root = NamespaceRepository::new(self.store)
-                    .parent(&parent)?
-                    .is_some()
-                    && CapabilitiesRepository::new(self.store).subgroup_visibility(&parent)?
-                        != VisibilityMode::Open;
-                anchor_decision = Some(
-                    if space_root || caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits() != 0
-                    {
-                        MembershipPath::Inherited {
-                            anchor: parent,
-                            via_admin: false,
-                        }
-                    } else {
-                        MembershipPath::None
-                    },
-                );
-            }
-            if !walled && anchor_decision.is_none() && self.exited(&parent, identity)? {
-                walled = true;
-            }
-            current = parent;
-        }
-        bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH))
+        let chain = self.open_ancestors(group_id)?;
+        self.check_path_in_chain(group_id, &chain, identity)
     }
 
     /// Returns `true` if `identity` is a member of `group_id` either
@@ -541,13 +493,11 @@ impl<'a> MembershipRepository<'a> {
         Ok(result)
     }
 
-    /// [`Self::check_path`] evaluated against a precomputed Open-reachable
-    /// ancestor `chain` (parent-of the queried group first). Identical logic —
-    /// direct membership, then per-ancestor admin / open-subgroup-capability —
-    /// but it does not re-read each level's visibility + parent from the store,
-    /// so callers that resolve many identities against the same chain (see
-    /// [`Self::enumerate_inherited`]) pay the O(depth) structure walk once
-    /// rather than once per identity. Walls an exit as [`Self::exited_ancestor_in`] does.
+    /// The members of a folder are the members of its space root, the last group of its
+    /// Open-reachable ancestor `chain` (the namespace root, or a private space's root);
+    /// an admin above the folder is a member too. An exit from an ancestor below the space
+    /// root ends the inheritance. The one place membership is decided, so
+    /// [`Self::enumerate_inherited`] and [`Self::check_path`] cannot drift.
     fn check_path_in_chain(
         &self,
         group_id: &ContextGroupId,
@@ -557,8 +507,6 @@ impl<'a> MembershipRepository<'a> {
         if has_direct_member(self.store, group_id, identity)? {
             return Ok(MembershipPath::Direct);
         }
-
-        let mut anchor_decision: Option<MembershipPath> = None;
         let mut walled = false;
         for parent in chain {
             if self.is_admin(parent, identity)? {
@@ -567,29 +515,18 @@ impl<'a> MembershipRepository<'a> {
                     via_admin: true,
                 });
             }
-            if !walled
-                && anchor_decision.is_none()
-                && has_direct_member(self.store, parent, identity)?
-            {
-                let caps = CapabilitiesRepository::new(self.store)
-                    .member_capability(parent, identity)?
-                    .unwrap_or(0);
-                anchor_decision = Some(
-                    if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits() != 0 {
-                        MembershipPath::Inherited {
-                            anchor: *parent,
-                            via_admin: false,
-                        }
-                    } else {
-                        MembershipPath::None
-                    },
-                );
+            let is_space_root = chain.last() == Some(parent);
+            if !walled && is_space_root && has_direct_member(self.store, parent, identity)? {
+                return Ok(MembershipPath::Inherited {
+                    anchor: *parent,
+                    via_admin: false,
+                });
             }
-            if !walled && anchor_decision.is_none() && self.exited(parent, identity)? {
+            if !walled && self.exited(parent, identity)? {
                 walled = true;
             }
         }
-        Ok(anchor_decision.unwrap_or(MembershipPath::None))
+        Ok(MembershipPath::None)
     }
 
     /// The Open ancestor `identity` left or was removed from, below any row it holds and
@@ -769,10 +706,28 @@ impl<'a> MembershipRepository<'a> {
         if self.is_admin(group_id, identity)? {
             return Ok(true);
         }
-        let caps = CapabilitiesRepository::new(self.store)
+        let capabilities = CapabilitiesRepository::new(self.store);
+        if capabilities
             .member_capability(group_id, identity)?
-            .unwrap_or(0);
-        Ok(caps & capability_bit != 0)
+            .unwrap_or(0)
+            & capability_bit
+            != 0
+        {
+            return Ok(true);
+        }
+        // A folder reads a member's capabilities at its space root.
+        if let MembershipPath::Inherited {
+            anchor,
+            via_admin: false,
+        } = self.check_path(group_id, identity)?
+        {
+            return Ok(capabilities
+                .member_capability(&anchor, identity)?
+                .unwrap_or(0)
+                & capability_bit
+                != 0);
+        }
+        Ok(false)
     }
 
     pub fn require_admin_or_capability(

@@ -686,7 +686,7 @@ fn check_membership_path_inherited_when_member_added_after_default_caps() {
 }
 
 #[test]
-fn check_membership_path_none_when_member_added_before_default_caps() {
+fn a_member_added_before_default_caps_inherits_all_the_same() {
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
 
     let store = test_store();
@@ -710,19 +710,135 @@ fn check_membership_path_none_when_member_added_before_default_caps() {
         .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
         .unwrap();
 
-    // The later `set_default_capabilities` does NOT retroactively
-    // materialize bob's per-member cap, so the inheritance check still
-    // returns `None`. This is exactly the state that produced
-    // `MemberJoinedOpen rejected: no membership path` on the
-    // later-joining peer; the `join_group` handler fix prevents it by
-    // ordering `set_default_capabilities` before the catch-up apply.
+    // Membership of the folder reads the namespace row, not a capability, so the
+    // ordering no longer matters.
     let path = MembershipRepository::new(&store)
         .check_path(&child, &bob)
         .unwrap();
-    assert!(
-        matches!(path, MembershipPath::None),
-        "member added before default caps has no per-member cap row → no inherited path, got {path:?}"
+    assert_eq!(
+        path,
+        MembershipPath::Inherited {
+            anchor: ns,
+            via_admin: false
+        }
     );
+}
+
+#[test]
+fn enumerate_inherited_is_exactly_what_is_member_accepts_in_every_folder() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let root = ContextGroupId::from([0xC0; 32]);
+    let [open1, open2, space, inner1, inner2] =
+        [0xC1, 0xC2, 0xC3, 0xC4, 0xC5].map(|n| ContextGroupId::from([n; 32]));
+    nest_for_test(&store, &root, &open1);
+    nest_for_test(&store, &open1, &open2);
+    nest_for_test(&store, &open1, &space);
+    nest_for_test(&store, &space, &inner1);
+    nest_for_test(&store, &inner1, &inner2);
+    let capabilities = CapabilitiesRepository::new(&store);
+    for folder in [open1, open2, inner1, inner2] {
+        capabilities
+            .set_subgroup_visibility(&folder, VisibilityMode::Open)
+            .unwrap();
+    }
+    capabilities
+        .set_subgroup_visibility(&space, VisibilityMode::Restricted)
+        .unwrap();
+
+    let [alice, bob, tee, space_tee, stranger] =
+        [1u8, 2, 3, 4, 5].map(|n| AccountId::from([n; 32]));
+    let members = MembershipRepository::new(&store);
+    for (group, who, role) in [
+        (root, alice, GroupMemberRole::Member),
+        (root, tee, GroupMemberRole::ReadOnlyTee),
+        (space, bob, GroupMemberRole::Member),
+        (space, space_tee, GroupMemberRole::ReadOnlyTee),
+    ] {
+        members.add_member(&group, &who, role).unwrap();
+    }
+
+    for folder in [root, open1, open2, space, inner1, inner2] {
+        let accepted: std::collections::BTreeSet<AccountId> =
+            [alice, bob, tee, space_tee, stranger]
+                .into_iter()
+                .filter(|who| members.is_member(&folder, who).unwrap())
+                .collect();
+        let listed: std::collections::BTreeSet<AccountId> = members
+            .list(&folder, 0, usize::MAX)
+            .unwrap()
+            .into_iter()
+            .map(|(who, _)| who)
+            .chain(
+                members
+                    .enumerate_inherited(&folder)
+                    .unwrap()
+                    .into_iter()
+                    .map(|(who, _)| who),
+            )
+            .collect();
+        assert_eq!(accepted, listed, "folder {folder:?}");
+    }
+    // The space's rows cover its folders and the open space's cover the open ones.
+    assert!(members.is_member(&inner2, &bob).unwrap());
+    assert!(!members.is_member(&inner2, &alice).unwrap());
+    assert!(members.is_member(&open2, &alice).unwrap());
+    assert!(!members.is_member(&open2, &bob).unwrap());
+    // A read-only TEE row in a space root stays read-only in every folder of it.
+    assert_eq!(
+        members.effective_role(&inner2, &space_tee).unwrap(),
+        Some((GroupMemberRole::ReadOnlyTee, space)),
+    );
+}
+
+#[test]
+fn a_folder_reads_a_members_capabilities_at_its_space_root() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let root = ContextGroupId::from([0xD0; 32]);
+    let open = ContextGroupId::from([0xD1; 32]);
+    let space = ContextGroupId::from([0xD2; 32]);
+    let inner = ContextGroupId::from([0xD3; 32]);
+    nest_for_test(&store, &root, &open);
+    nest_for_test(&store, &root, &space);
+    nest_for_test(&store, &space, &inner);
+    let capabilities = CapabilitiesRepository::new(&store);
+    for folder in [open, inner] {
+        capabilities
+            .set_subgroup_visibility(&folder, VisibilityMode::Open)
+            .unwrap();
+    }
+    capabilities
+        .set_subgroup_visibility(&space, VisibilityMode::Restricted)
+        .unwrap();
+    let (node, dave) = (AccountId::from([0x0A; 32]), AccountId::from([0x0B; 32]));
+    let members = MembershipRepository::new(&store);
+    members
+        .add_member(&root, &node, GroupMemberRole::Member)
+        .unwrap();
+    members
+        .add_member(&space, &dave, GroupMemberRole::Member)
+        .unwrap();
+    let rename = MemberCapabilities::CAN_MANAGE_METADATA.bits();
+    capabilities
+        .set_member_capability(&root, &node, rename)
+        .unwrap();
+    capabilities
+        .set_member_capability(&space, &dave, rename)
+        .unwrap();
+
+    assert!(members
+        .is_admin_or_has_capability(&open, &node, rename)
+        .unwrap());
+    assert!(members
+        .is_admin_or_has_capability(&inner, &dave, rename)
+        .unwrap());
+    // Capabilities at the namespace root do not reach into a private space.
+    assert!(!members
+        .is_admin_or_has_capability(&inner, &node, rename)
+        .unwrap());
 }
 
 #[test]
@@ -857,7 +973,7 @@ fn check_membership_unset_visibility_treated_as_restricted() {
 }
 
 #[test]
-fn check_membership_open_subgroup_blocked_when_cap_revoked() {
+fn check_membership_open_subgroup_is_not_gated_by_a_cleared_cap() {
     use calimero_context_config::VisibilityMode;
 
     let store = test_store();
@@ -869,7 +985,7 @@ fn check_membership_open_subgroup_blocked_when_cap_revoked() {
     MembershipRepository::new(&store)
         .add_member(&parent, &alice, GroupMemberRole::Member)
         .unwrap();
-    // Cap explicitly cleared (admin used the deny-list).
+    // A folder's members are its space root's, whatever capability they hold.
     CapabilitiesRepository::new(&store)
         .set_member_capability(&parent, &alice, 0)
         .unwrap();
@@ -877,7 +993,7 @@ fn check_membership_open_subgroup_blocked_when_cap_revoked() {
     CapabilitiesRepository::new(&store)
         .set_subgroup_visibility(&child, VisibilityMode::Open)
         .unwrap();
-    assert!(!MembershipRepository::new(&store)
+    assert!(MembershipRepository::new(&store)
         .is_member(&child, &alice)
         .unwrap());
 }
@@ -909,13 +1025,13 @@ fn check_membership_open_subgroup_admin_inherits_without_cap() {
 }
 
 #[test]
-fn check_membership_anchor_cap_check_uses_deepest_direct_membership() {
+fn check_membership_open_folder_reads_the_space_root_and_no_row_between() {
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
 
     // namespace -> mid -> open_leaf
     // Alice is a direct member of BOTH `namespace` (cap set) and `mid`
-    // (cap cleared). For `open_leaf`, the walk anchors at `mid` (the
-    // deepest direct membership), where cap is cleared → false.
+    // (cap cleared). `open_leaf` is in the open space, so its members are the
+    // namespace's, whatever `mid` holds.
     let store = test_store();
     let namespace = ContextGroupId::from([0x20; 32]);
     let mid = ContextGroupId::from([0x21; 32]);
@@ -950,7 +1066,7 @@ fn check_membership_anchor_cap_check_uses_deepest_direct_membership() {
         .set_subgroup_visibility(&leaf, VisibilityMode::Open)
         .unwrap();
 
-    assert!(!MembershipRepository::new(&store)
+    assert!(MembershipRepository::new(&store)
         .is_member(&leaf, &alice)
         .unwrap());
 }
@@ -1438,11 +1554,11 @@ fn membership_path_inherited_admin_overrides_anchor_cap_denial() {
         .set_member_capability(&mid, &bob, 0)
         .unwrap();
     assert!(
-        !MembershipRepository::new(&store)
+        MembershipRepository::new(&store)
             .is_member(&leaf, &bob)
             .unwrap(),
-        "non-admin with cleared cap at intermediate anchor must still be denied; \
-         the fix only cascades *admin* authority, not arbitrary parent membership"
+        "a non-admin is a member of the open folder through the namespace row, whatever \
+         capability an intermediate row holds"
     );
 }
 
@@ -2423,7 +2539,7 @@ fn an_admin_above_the_removal_still_reaches_below_it() {
 }
 
 #[test]
-fn a_row_below_the_removal_keeps_its_own_inheritance() {
+fn a_row_below_the_space_root_gives_no_inheritance() {
     use calimero_context_config::MemberCapabilities;
 
     let store = test_store();
@@ -2443,11 +2559,8 @@ fn a_row_below_the_removal_keeps_its_own_inheritance() {
         MembershipRepository::new(&store)
             .check_path(&f.grandchild, &f.kicked.1)
             .unwrap(),
-        MembershipPath::Inherited {
-            anchor: f.child,
-            via_admin: false
-        },
-        "a member added back below the removal inherits from that row"
+        MembershipPath::None,
+        "the members of a folder are its space root's: a row below it anchors nothing"
     );
 }
 

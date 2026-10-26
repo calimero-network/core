@@ -30,7 +30,7 @@ fn reference_is_member_at_cut(
     group: ContextGroupId,
     author: &AccountId,
     root: Option<(ContextGroupId, AccountId)>,
-    default_cap_base: u32,
+    _default_cap_base: u32,
 ) -> bool {
     let is_admin = |g: ContextGroupId| -> bool {
         view.is_group_admin(author, g)
@@ -46,46 +46,28 @@ fn reference_is_member_at_cut(
         return true;
     }
 
-    // Absent, not zero, is what falls back: an explicit grant of nothing is a
-    // revocation (see `AclView::capability`).
-    let effective_cap = |g: &ContextGroupId| -> u32 {
-        view.member_caps
-            .get(&(*g, *author))
-            .or_else(|| view.default_caps.get(g))
-            .copied()
-            .unwrap_or(default_cap_base)
-    };
-
-    let mut anchor_is_member: Option<bool> = None;
+    // The members of a folder are the members of its space root: the last Open ancestor.
+    let mut space_root = None;
     let mut current = group;
     for _ in 0..=MAX_NAMESPACE_DEPTH {
         let Some(edge) = view.subgroups.get(&ScopeId::from(current.to_bytes())) else {
-            return anchor_is_member.unwrap_or(false);
+            break;
         };
         if edge.restricted {
-            return anchor_is_member.unwrap_or(false);
+            break;
         }
         let parent = ContextGroupId::from(*edge.parent.as_bytes());
         if is_admin(parent) {
             return true;
         }
-        if anchor_is_member.is_none()
-            && view
-                .groups
-                .get(&parent)
-                .is_some_and(|m| m.contains_key(author))
-        {
-            // A private space's members are the members of every folder in it.
-            let space_root = view
-                .subgroups
-                .get(&ScopeId::from(parent.to_bytes()))
-                .is_some_and(|edge| edge.restricted);
-            anchor_is_member =
-                Some(space_root || effective_cap(&parent) & CAN_JOIN_OPEN_SUBGROUPS != 0);
-        }
+        space_root = Some(parent);
         current = parent;
     }
-    anchor_is_member.unwrap_or(false)
+    space_root.is_some_and(|space_root| {
+        view.groups
+            .get(&space_root)
+            .is_some_and(|m| m.contains_key(author))
+    })
 }
 
 /// The pre-refactor `is_authorized_admin`, transcribed, for the same reason.

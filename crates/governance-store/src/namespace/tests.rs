@@ -14141,11 +14141,19 @@ fn a_member_is_served_no_subgroup_key_while_the_namespace_key_covers_it() {
     use calimero_context_config::VisibilityMode;
 
     let f = inherited_subgroup_fixture();
-    let (_, requester) = f.kept;
+    let (account, requester) = f.kept;
     assert!(
         subgroup_key_served(&f, requester),
         "precondition: behind a Restricted parent the subgroup key covers it and is served"
     );
+    // In the open space the members of every folder are the namespace's.
+    MembershipRepository::new(&f.store)
+        .add_member(
+            &ContextGroupId::from(f.namespace_id),
+            &account,
+            GroupMemberRole::Member,
+        )
+        .unwrap();
 
     let parent = NamespaceRepository::new(&f.store)
         .parent(&f.subgroup)

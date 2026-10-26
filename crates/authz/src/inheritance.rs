@@ -39,6 +39,7 @@
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
+#[cfg(test)]
 use calimero_context_config::MemberCapabilities;
 use calimero_op::ScopeId;
 use calimero_primitives::context::GroupMemberRole;
@@ -47,6 +48,7 @@ use crate::view::AclView;
 
 /// `CAN_JOIN_OPEN_SUBGROUPS` capability bit — gates inherited membership into an
 /// open subgroup (mirrors the live `MemberCapabilities` constant).
+#[cfg(test)]
 pub(crate) const CAN_JOIN_OPEN_SUBGROUPS: u32 = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits();
 /// Max subgroup-tree depth the inheritance walk traverses. Sourced from the
 /// single definition in `calimero-context-config` (shared with governance-store
@@ -182,24 +184,6 @@ impl AclView {
                 .is_some_and(|(root_g, owner)| group == root_g && *author == owner)
     }
 
-    /// `author`'s effective capability at `group`, falling back to
-    /// `default_cap_base` only when nothing is folded — see
-    /// [`AclView::capability`], which is also why an explicit revoke-to-nothing
-    /// stays revoked here.
-    ///
-    /// The projection folds explicit `DefaultCapabilitiesSet` / `MemberCapabilitySet`
-    /// ops, but a group's CREATION default cap is a store write rather than an op —
-    /// so when nothing is folded we fall back to the materialized default the
-    /// caller passes. Mirrors live's `member_capability` = override.or(default).
-    fn effective_cap(
-        &self,
-        group: ContextGroupId,
-        author: &AccountId,
-        default_cap_base: u32,
-    ) -> u32 {
-        self.capability(&group, author, default_cap_base)
-    }
-
     /// Is `author` a member of `group` **at this cut** — direct, group admin, or
     /// inherited through an open-subgroup chain?
     ///
@@ -266,7 +250,7 @@ impl AclView {
         group: ContextGroupId,
         author: &AccountId,
         root: Option<(ContextGroupId, AccountId)>,
-        default_cap_base: u32,
+        _default_cap_base: u32,
     ) -> MemberPathAtCut {
         if let Some(role) = self.groups.get(&group).and_then(|m| m.get(author)) {
             return MemberPathAtCut::Direct { role: role.clone() };
@@ -277,36 +261,25 @@ impl AclView {
             };
         }
 
-        let mut anchor_decision: Option<MemberPathAtCut> = None;
-        for parent in self.open_ancestors(group) {
-            if self.is_membership_admin(parent, author, root) {
+        // The members of a folder are the members of its space root, the last Open
+        // ancestor: the namespace root, or a private space's root.
+        let chain: Vec<ContextGroupId> = self.open_ancestors(group).collect();
+        for parent in &chain {
+            if self.is_membership_admin(*parent, author, root) {
                 return MemberPathAtCut::Inherited {
-                    anchor: parent,
+                    anchor: *parent,
                     via_admin: true,
                 };
             }
-            if anchor_decision.is_none() && self.has_direct_row(parent, author) {
-                // A private space's members are the members of every folder in it.
-                let space_root = self
-                    .subgroups
-                    .get(&ScopeId::from(parent.to_bytes()))
-                    .is_some_and(|edge| edge.restricted);
-                anchor_decision = Some(
-                    if space_root
-                        || self.effective_cap(parent, author, default_cap_base)
-                            & CAN_JOIN_OPEN_SUBGROUPS
-                            != 0
-                    {
-                        MemberPathAtCut::Inherited {
-                            anchor: parent,
-                            via_admin: false,
-                        }
-                    } else {
-                        MemberPathAtCut::None
-                    },
-                );
-            }
         }
-        anchor_decision.unwrap_or(MemberPathAtCut::None)
+        match chain.last() {
+            Some(space_root) if self.has_direct_row(*space_root, author) => {
+                MemberPathAtCut::Inherited {
+                    anchor: *space_root,
+                    via_admin: false,
+                }
+            }
+            _ => MemberPathAtCut::None,
+        }
     }
 }

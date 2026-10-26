@@ -176,18 +176,26 @@ fn admin_or_capability_in_view(
     if view.is_authorized_admin(group, account, root) {
         return true;
     }
-    // As on the live path, a capability is held through a direct member row;
-    // a non-member (never joined, or removed) holds none, whatever the defaults.
-    if !view
+    // A capability is held through a member row: the group's own, or, for a folder, the
+    // row of its space root. A non-member holds none, whatever the defaults.
+    let held_at = if view
         .groups
         .get(&group)
         .is_some_and(|members| members.contains_key(account))
     {
-        return false;
-    }
+        group
+    } else {
+        match view.member_path_at_cut(group, account, root, default_cap_base) {
+            calimero_authz::MemberPathAtCut::Inherited {
+                anchor,
+                via_admin: false,
+            } => anchor,
+            _ => return false,
+        }
+    };
     // An explicit grant of nothing is a revocation, not an absence: only a
     // member with nothing folded falls back to the genesis default.
-    view.capability(&group, account, default_cap_base) & capability != 0
+    view.capability(&held_at, account, default_cap_base) & capability != 0
 }
 
 // `op_from_namespace_op` now lives in `calimero-governance-store` (so the
