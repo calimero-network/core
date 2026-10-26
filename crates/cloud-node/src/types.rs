@@ -88,6 +88,9 @@ pub struct AppRecord {
     pub confirm_methods: Vec<String>,
     pub replicas: Vec<u64>,
     pub created_at: u64,
+    /// The arguments `init` ran with (JSON; `null` for none).
+    #[serde(default)]
+    pub init_args: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

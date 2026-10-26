@@ -716,6 +716,9 @@ struct CreateAppBody {
     access: Option<Access>,
     #[serde(default)]
     confirm_methods: Vec<String>,
+    /// Arguments for the app's `init`, as JSON.
+    #[serde(default)]
+    init_args: Value,
 }
 
 async fn app_create(
@@ -751,6 +754,7 @@ async fn app_create(
                 confirm_methods: body.confirm_methods,
                 replicas,
                 created_at: now_secs(),
+                init_args: body.init_args,
             },
         })
         .await?;

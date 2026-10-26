@@ -559,13 +559,14 @@ impl Node {
         };
         let bundle = app.bundle.clone();
         let app_id = app.app_id.clone();
+        let init_args = app.init_args.clone();
         let p = g
             .propose(|m, applied| {
                 if m.state.initialized || m.state.bundle.is_some() {
                     return Proposal::Reply(Vec::new());
                 }
                 let outcome =
-                    Executor::run(&module, &app_id, &owner, "init", &Value::Null, &m.state.kv);
+                    Executor::run(&module, &app_id, &owner, "init", &init_args, &m.state.kv);
                 let cmd = AppCmd::Init {
                     bundle: bundle.clone(),
                     base_index: applied,

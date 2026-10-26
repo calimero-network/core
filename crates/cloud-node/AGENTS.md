@@ -30,6 +30,8 @@ architecture spec.
   `421 NOT_LEADER` with `details.leaderUrl` before writing anything.
 - **Leader races**: a call whose diff was built on replaced state applies as a no-op
   (`conflict`, no idempotency record); `Node::call` re-runs it instead of failing.
+- **Init**: `POST /apps` takes `initArgs` (JSON) for the app's `init`, kept on the
+  `AppRecord`; a failed init answers `422 INIT_FAILED` (`AppState::init_error`).
 - **Read-your-writes across nodes**: lookups of system objects (`Node::sys_until`) wait
   up to 2 s for the local replica to apply a write committed elsewhere.
 
