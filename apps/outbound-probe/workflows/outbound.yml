@@ -143,7 +143,7 @@ steps:
       - "http://localhost:2562"
       - "{{context_id}}"
       - "{{app_id}}"
-      - '"manifest"'
+      - "manifest"
 
   # ---------- A declared request, with a secret ----------
 
@@ -305,7 +305,7 @@ steps:
       - "http://localhost:2562"
       - "{{context_id}}"
       - "{{app_id}}"
-      - "[]"
+      - "none"
 
   - name: The same declared URL, after the revocation
     type: call
