@@ -19,6 +19,7 @@ pub(crate) fn apply(
     let new_parent = ContextGroupId::from(new_parent_id);
     // `reparent` keeps child and new parent in one namespace; this makes it the op's.
     ctx.require_in_namespace(&child)?;
+    crate::private_space::require_may_reparent(ctx.store(), &child, &new_parent)?;
     match NamespaceRepository::new(ctx.store()).reparent(&child, &new_parent)? {
         ReparentOutcome::Reparented { old_parent } => {
             let ns_id = ctx.namespace_id();

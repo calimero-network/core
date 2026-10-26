@@ -55,6 +55,27 @@
 use calimero_primitives::context::GroupMemberRole;
 use thiserror::Error;
 
+/// Refusals of the private-space structure rules (`private_space`).
+#[derive(Debug, Error)]
+pub enum PrivateSpaceError {
+    #[error("group {0} would put a private space inside a private space")]
+    Nested(String),
+
+    #[error("group {0} would leave its private space")]
+    LeavesSpace(String),
+
+    #[error("group {0} holds a private space; delete the space first")]
+    HoldsSpace(String),
+
+    #[error("group {0} is not the namespace root; invitations admit to the namespace")]
+    InvitationTargetNotRoot(String),
+
+    #[error(
+        "group {0} is neither the namespace root nor a private space root; members are added there"
+    )]
+    MemberRowOutsideSpaceRoot(String),
+}
+
 /// Errors raised by `MembershipRepository` and the membership-policy
 /// layer. Covers admin/member predicates, last-admin protection, and
 /// the inheritance-walk depth bound.

@@ -102,6 +102,8 @@ pub(crate) fn apply(
         ));
     }
 
+    crate::private_space::require_may_create(store, &parent_gid, restricted)?;
+
     // The originating node's `create_group` handler pre-populates
     // `GroupMeta` (and related state) BEFORE publishing this op, so a
     // naive "if meta exists, return early" idempotency check would

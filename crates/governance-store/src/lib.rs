@@ -82,6 +82,7 @@ mod pending_namespace_purge;
 mod pending_rotation;
 mod pending_self_purge;
 mod permission_checker;
+pub mod private_space;
 mod reentry;
 mod tee;
 mod tee_vault;
@@ -263,7 +264,8 @@ pub fn placeholder_admin_identity() -> AccountId {
 pub use self::errors::{
     ApplyError, CapabilitiesError, ContextRegistrationError, GroupCreatedRejection,
     GroupDeletedRejection, KeyringError, MemberJoinedOpenRejection, MembershipError, MetaError,
-    NamespaceCreatedRejection, NamespaceError, NodeDeviceError, SharedWritersRotatedRejection,
+    NamespaceCreatedRejection, NamespaceError, NodeDeviceError, PrivateSpaceError,
+    SharedWritersRotatedRejection,
 };
 
 // ---------------------------------------------------------------------------
@@ -1743,6 +1745,8 @@ mod void_tests;
 mod governance_boundary_tests;
 #[cfg(test)]
 mod owner_guard_tests;
+#[cfg(test)]
+mod private_space_tests;
 #[cfg(test)]
 mod sealing_domain_tests;
 #[cfg(test)]

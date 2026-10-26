@@ -1953,6 +1953,9 @@ fn owned_tree(
             .save(child, &sample_meta_with_admin(owner))
             .unwrap();
         nest_for_test(store, parent, child);
+        CapabilitiesRepository::new(store)
+            .set_subgroup_visibility(child, calimero_context_config::VisibilityMode::Open)
+            .unwrap();
     }
     owner_sk
 }
@@ -6912,7 +6915,7 @@ fn leave_then_admin_readd_restores_a_signable_context_identity() {
         .nest(&ns_gid, &subgroup)
         .unwrap();
     CapabilitiesRepository::new(&store)
-        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
         .unwrap();
     register_context_in_group(&store, &subgroup, &ctx).unwrap();
 

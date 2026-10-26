@@ -1668,6 +1668,9 @@ mod tests {
             (foreign_root, foreign_parent),
         ] {
             crate::test_fixtures::nest_for_test(&w.store, &parent, &child);
+            crate::CapabilitiesRepository::new(&w.store)
+                .set_subgroup_visibility(&child, calimero_context_config::VisibilityMode::Open)
+                .expect("open folder");
         }
         let outside = |result: eyre::Result<()>| {
             let err = result.expect_err("must be refused");

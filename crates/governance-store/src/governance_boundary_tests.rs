@@ -222,6 +222,11 @@ fn group_reparented_cannot_restructure_another_namespace() {
     nest_for_test(&store, &ns_a_gid, &own_parent);
     nest_for_test(&store, &root_b, &child);
     nest_for_test(&store, &root_b, &new_parent);
+    for group in [own_child, own_parent, child, new_parent] {
+        crate::CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&group, calimero_context_config::VisibilityMode::Open)
+            .unwrap();
+    }
 
     let reparent = |child: ContextGroupId, new_parent: ContextGroupId, nonce: u64| {
         let op = SignedNamespaceOp::sign(

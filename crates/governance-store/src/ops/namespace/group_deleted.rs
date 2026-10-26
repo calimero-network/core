@@ -51,6 +51,7 @@ pub(crate) fn apply(
     let ns_gid = ContextGroupId::from(namespace_id.to_bytes());
     if MetaRepository::new(store).load(&root_gid)?.is_some() {
         ctx.require_in_namespace(&root_gid)?;
+        crate::private_space::require_may_delete(store, &root_gid)?;
         // Ownership names an account, the op carries a key: resolve, then
         // compare. An unresolvable signer is not the owner and falls through to
         // the capability gate below, which refuses it for the same reason.

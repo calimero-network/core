@@ -8,6 +8,9 @@ use eyre::Result as EyreResult;
 pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, mode: &VisibilityMode) -> EyreResult<()> {
     let signer = ctx.signer();
     let group_id = ctx.group_id();
+    if matches!(mode, VisibilityMode::Restricted) {
+        crate::private_space::require_may_make_private(ctx.store(), group_id)?;
+    }
     ctx.settings().set_subgroup_visibility(signer, *mode)?;
     // Re-trigger inherited auto-follow for this subgroup's contexts. A
     // root-admitted member (e.g. a TEE) inherits membership only into

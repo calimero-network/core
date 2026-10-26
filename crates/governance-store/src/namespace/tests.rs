@@ -4440,11 +4440,11 @@ fn governance_group_reparented_via_signed_op() {
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
-    let mid_id = crate::test_fixtures::derived_group_id(&admin_account, ns_id, true, 0xA1);
+    let mid_id = crate::test_fixtures::derived_group_id(&admin_account, ns_id, false, 0xA1);
     let mid_gid = ContextGroupId::from(mid_id);
-    let new_parent_id = crate::test_fixtures::derived_group_id(&admin_account, ns_id, true, 0xA2);
+    let new_parent_id = crate::test_fixtures::derived_group_id(&admin_account, ns_id, false, 0xA2);
     let new_parent_gid = ContextGroupId::from(new_parent_id);
-    let leaf_id = crate::test_fixtures::derived_group_id(&admin_account, mid_id, true, 0xA3);
+    let leaf_id = crate::test_fixtures::derived_group_id(&admin_account, mid_id, false, 0xA3);
     let leaf_gid = ContextGroupId::from(leaf_id);
 
     // Bootstrap namespace: meta + admin + namespace identity
@@ -4474,7 +4474,7 @@ fn governance_group_reparented_via_signed_op() {
             seal_for_test(
                 &store,
                 ns_gid,
-                crate::test_fixtures::group_created(admin_account, *parent, true, *tag),
+                crate::test_fixtures::group_created(admin_account, *parent, false, *tag),
             ),
         )
         .expect("sign create op");
@@ -6296,6 +6296,9 @@ fn execute_group_deleted_ignores_payload_groups_outside_local_subtree() {
         MetaRepository::new(&store)
             .save(gid, &sample_meta_with_admin(admin_account))
             .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(gid, calimero_context_config::VisibilityMode::Open)
+            .unwrap();
     }
     NamespaceRepository::new(&store)
         .nest(&ns_gid, &a_gid)
@@ -6972,7 +6975,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
                 crate::test_fixtures::group_created(
                     crate::test_fixtures::account_for(&sk.public_key()),
                     parent_id,
-                    true,
+                    false,
                     tag,
                 ),
             ),
@@ -6980,7 +6983,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
         .unwrap()
     };
 
-    let chan = crate::test_fixtures::derived_group_id(&member_account, ns_id, true, 0xB1);
+    let chan = crate::test_fixtures::derived_group_id(&member_account, ns_id, false, 0xB1);
 
     // A total stranger (not a namespace member, no capability row) cannot
     // create a subgroup — rejected by the apply-side authorization check.
@@ -7048,7 +7051,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
 
     // But the capability is scoped to root-level subgroups: the member cannot
     // create a nested subgroup under another subgroup.
-    let nested_parent = crate::test_fixtures::derived_group_id(&admin_account, ns_id, true, 0xB2);
+    let nested_parent = crate::test_fixtures::derived_group_id(&admin_account, ns_id, false, 0xB2);
     gov.apply_signed_op(&create(&admin_sk, 0xB2, ns_id, 4))
         .expect("admin creates an intermediate subgroup");
     assert!(

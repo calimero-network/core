@@ -22,6 +22,7 @@ pub(crate) fn apply(
     if role.is_tee() {
         bail!(MembershipError::TeeRoleViaAttestationOnly);
     }
+    crate::private_space::require_member_row_target(store, group_id)?;
     ctx.permissions()
         .require_manage_members(signer, "add member")?;
     ctx.permissions().require_admin_to_add_admin(signer, role)?;

@@ -31,6 +31,7 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>) -> EyreResult<()> {
             group_id.to_bytes()
         )));
     }
+    crate::private_space::require_may_delete(store, group_id)?;
     // A context anywhere below would be left in a group nobody can reach, so the
     // whole subtree must be empty; its groups then go with it, children first.
     let subtree = NamespaceRepository::new(store).collect_subtree_for_cascade(group_id)?;
