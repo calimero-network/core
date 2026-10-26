@@ -101,6 +101,15 @@ steps:
     outputs:
       app_v2: applicationId
 
+  - name: Cascade the namespace v1 to v2
+    type: upgrade_group
+    node: app-migration-missing-1
+    group_id: "{{namespace_id}}"
+    target_application_id: "{{app_v2}}"
+    cascade: true
+
+  # Releases share one application id, so v3 must not be installed before the
+  # v2 upgrade or that upgrade resolves to v3.
   - name: Install migration-suite-v3 on node 1
     type: install_application
     node: app-migration-missing-1
@@ -108,13 +117,6 @@ steps:
     dev: true
     outputs:
       app_v3: applicationId
-
-  - name: Cascade the namespace v1 to v2
-    type: upgrade_group
-    node: app-migration-missing-1
-    group_id: "{{namespace_id}}"
-    target_application_id: "{{app_v2}}"
-    cascade: true
 
   - name: Cascade the namespace v2 to v3
     type: upgrade_group
