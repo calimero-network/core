@@ -295,7 +295,7 @@ fn arrival_orders(ops: &[Op]) -> Vec<Vec<Op>> {
 
 /// Authorize `op` at its own causal cut over `log` — the real decision path.
 fn decide(log: &[Op], op: &Op) -> Result<(), Rejected> {
-    let view = ScopeState::acl_view_at(log, &op.parents);
+    let view = ScopeState::acl_view_at(log, &op.parents).expect("within the fold budget");
     authorize(op, &view)
 }
 
@@ -2218,7 +2218,10 @@ fn joined_as_member() -> (Fixture, Account, Device) {
 /// The role the whole of `fx`'s log resolves `account` to, at its head and in
 /// the streaming fold alike; they agree here only because `fx`'s ops carry clocks.
 fn resolved_role(fx: &Fixture, account: &AccountId) -> Option<GroupMemberRole> {
-    let at_head = role_in(&ScopeState::acl_view_at(&fx.log, &fx.head), account);
+    let at_head = role_in(
+        &ScopeState::acl_view_at(&fx.log, &fx.head).expect("within the fold budget"),
+        account,
+    );
     let streamed = role_in(&ScopeState::from_ops(&fx.log).acl_view(), account);
     assert_eq!(
         at_head, streamed,
@@ -2286,7 +2289,7 @@ fn a_repeat_join_keeps_the_role_at_its_cut_without_a_clock() {
     );
     let log = [join, promote, again.clone()];
 
-    let view = ScopeState::acl_view_at(&log, &[again.id()]);
+    let view = ScopeState::acl_view_at(&log, &[again.id()]).expect("within the fold budget");
     assert_eq!(role_in(&view, &joiner.id), Some(GroupMemberRole::Admin));
 }
 
@@ -2314,7 +2317,8 @@ fn without_a_clock_the_cut_keeps_the_first_join_and_the_stream_the_lower_id() {
             GroupMemberRole::Admin
         };
 
-        let at_cut = ScopeState::acl_view_at(&[first.clone(), second.clone()], &[second.id()]);
+        let at_cut = ScopeState::acl_view_at(&[first.clone(), second.clone()], &[second.id()])
+            .expect("within the fold budget");
         assert_eq!(role_in(&at_cut, &joiner.id), Some(GroupMemberRole::Member));
         for order in arrival_orders(&[first, second]) {
             let streamed = ScopeState::from_ops(&order).acl_view();
@@ -2613,7 +2617,10 @@ fn role_after_chain(
         log.push(device.sign_op(0, parents, payload));
     }
     let head: Vec<[u8; 32]> = log.last().map(Op::id).into_iter().collect();
-    role_in(&ScopeState::acl_view_at(&log, &head), account)
+    role_in(
+        &ScopeState::acl_view_at(&log, &head).expect("within the fold budget"),
+        account,
+    )
 }
 
 /// The payload of `joiner`'s join of `group` on an invitation carrying `role`.

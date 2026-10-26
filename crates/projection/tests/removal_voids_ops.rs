@@ -190,7 +190,8 @@ fn a_revoked_device_cannot_act_from_a_cut_before_its_revocation() {
         by_phone.clone(),
     ];
 
-    let void = ScopeState::void_ops(&log, AuthorityBase::default());
+    let void =
+        ScopeState::void_ops(&log, AuthorityBase::default()).expect("within the fold budget");
     assert!(
         void.contains(&by_laptop.id()),
         "the revoked device's concurrent op carries no authority"
@@ -202,7 +203,7 @@ fn a_revoked_device_cannot_act_from_a_cut_before_its_revocation() {
     assert!(!void.contains(&revocation.id()));
 
     let heads = [revocation.id(), by_laptop.id(), by_phone.id()];
-    let view = ScopeState::acl_view_at(&log, &heads);
+    let view = ScopeState::acl_view_at(&log, &heads).expect("within the fold budget");
     assert_eq!(
         view.groups
             .get(&group())
@@ -278,7 +279,9 @@ fn an_op_of_a_revoked_device_built_without_an_author_is_still_void() {
         by_laptop.clone(),
     ];
     assert!(
-        ScopeState::void_ops(&log, AuthorityBase::default()).contains(&by_laptop.id()),
+        ScopeState::void_ops(&log, AuthorityBase::default())
+            .expect("within the fold budget")
+            .contains(&by_laptop.id()),
         "the revoked device's op is void however a node built it"
     );
 }
@@ -383,7 +386,9 @@ fn a_revocation_nobody_was_entitled_to_make_voids_nothing() {
     w.log.extend([by_phone.clone(), names_bob, names_herself]);
 
     assert!(
-        !ScopeState::void_ops(&w.log, AuthorityBase::default()).contains(&by_phone.id()),
+        !ScopeState::void_ops(&w.log, AuthorityBase::default())
+            .expect("within the fold budget")
+            .contains(&by_phone.id()),
         "an op nobody was entitled to make takes away nobody's authority"
     );
 }
@@ -410,7 +415,9 @@ fn an_admin_ejecting_a_device_voids_its_concurrent_ops_whichever_account_it_name
     );
     w.log.extend([revocation, by_laptop.clone()]);
 
-    assert!(ScopeState::void_ops(&w.log, AuthorityBase::default()).contains(&by_laptop.id()));
+    assert!(ScopeState::void_ops(&w.log, AuthorityBase::default())
+        .expect("within the fold budget")
+        .contains(&by_laptop.id()));
 }
 
 #[test]
@@ -444,7 +451,9 @@ fn a_member_revoking_another_device_of_her_account_voids_nothing() {
     );
     w.log.extend([link_tablet, revocation, by_tablet.clone()]);
 
-    assert!(!ScopeState::void_ops(&w.log, AuthorityBase::default()).contains(&by_tablet.id()));
+    assert!(!ScopeState::void_ops(&w.log, AuthorityBase::default())
+        .expect("within the fold budget")
+        .contains(&by_tablet.id()));
 }
 
 #[test]
@@ -488,7 +497,9 @@ fn a_refused_link_cannot_make_a_revocation_entitled() {
     );
     w.log.extend([link, revocation, by_phone.clone()]);
 
-    assert!(!ScopeState::void_ops(&w.log, AuthorityBase::default()).contains(&by_phone.id()));
+    assert!(!ScopeState::void_ops(&w.log, AuthorityBase::default())
+        .expect("within the fold budget")
+        .contains(&by_phone.id()));
 }
 
 #[test]
@@ -528,7 +539,8 @@ fn an_admin_removed_while_revoking_its_removers_device_is_still_removed() {
     );
     w.log.extend([removal.clone(), revocation.clone()]);
 
-    let void = ScopeState::void_ops(&w.log, AuthorityBase::default());
+    let void =
+        ScopeState::void_ops(&w.log, AuthorityBase::default()).expect("within the fold budget");
     assert!(!void.contains(&removal.id()), "Dana is removed");
     assert!(
         !void.contains(&revocation.id()),
@@ -564,7 +576,9 @@ fn a_removal_built_without_an_author_is_seen_from_the_log_s_device_links() {
     w.log.extend([removal, by_bob.clone()]);
 
     assert!(
-        ScopeState::void_ops(&w.log, AuthorityBase::default()).contains(&by_bob.id()),
+        ScopeState::void_ops(&w.log, AuthorityBase::default())
+            .expect("within the fold budget")
+            .contains(&by_bob.id()),
         "the removal is Alice's however her node built it"
     );
 }
@@ -591,7 +605,9 @@ fn a_revocation_cited_from_a_cut_before_the_link_is_entitled_to_an_admin_only() 
             GroupMemberRole::Member,
         );
         w.log.extend([early, by_laptop.clone()]);
-        ScopeState::void_ops(&w.log, AuthorityBase::default()).contains(&by_laptop.id())
+        ScopeState::void_ops(&w.log, AuthorityBase::default())
+            .expect("within the fold budget")
+            .contains(&by_laptop.id())
     };
     assert!(
         by_admin,
@@ -618,7 +634,9 @@ fn a_revocation_cited_from_a_cut_before_the_link_is_entitled_to_an_admin_only() 
             GroupMemberRole::Member,
         );
         w.log.extend([early, by_laptop.clone()]);
-        ScopeState::void_ops(&w.log, AuthorityBase::default()).contains(&by_laptop.id())
+        ScopeState::void_ops(&w.log, AuthorityBase::default())
+            .expect("within the fold budget")
+            .contains(&by_laptop.id())
     };
     assert!(
         !by_member,
@@ -716,7 +734,8 @@ fn founder_demoted_after_a_transfer(published: impl Fn(OpPayload, ContextGroupId
             root: Some((root, bob.id)),
             default_cap_base: 0,
         },
-    );
+    )
+    .expect("within the fold budget");
     assert!(void.contains(&by_alice.id()));
     assert!(!void.contains(&demotion.id()));
 }
@@ -788,5 +807,7 @@ fn a_removal_built_without_an_author_is_seen_from_the_genesis_link() {
         root: Some((root, alice.id)),
         default_cap_base: 0,
     };
-    assert!(ScopeState::void_ops(&log, base).contains(&by_bob.id()));
+    assert!(ScopeState::void_ops(&log, base)
+        .expect("within the fold budget")
+        .contains(&by_bob.id()));
 }

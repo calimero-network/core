@@ -162,6 +162,7 @@ impl<'s> LogAuthorizer<'s> {
 
     fn view(&self, parents: &[[u8; 32]]) -> calimero_authz::AclView {
         ScopeState::acl_view_at_with_base(&self.log(), parents, self.base())
+            .expect("within the fold budget")
     }
 
     fn holds(
@@ -365,10 +366,8 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
             group: *group,
             capability,
         };
-        Some(
-            ScopeState::void_ops_with(&log, self.base(), Some((op, Some(acting))))
-                .contains(&op.id()),
-        )
+        let void = ScopeState::void_ops_with(&log, self.base(), Some((op, Some(acting)))).ok()?;
+        Some(void.contains(&op.id()))
     }
 
     fn voided_ops(
@@ -378,12 +377,7 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
         held: &[([u8; 32], ContextGroupId)],
     ) -> Option<BTreeSet<[u8; 32]>> {
         let log = self.log();
-        Some(ScopeState::void_ops_judging(
-            &log,
-            self.base(),
-            applied.map(|op| (op, None)),
-            held,
-        ))
+        ScopeState::void_ops_judging(&log, self.base(), applied.map(|op| (op, None)), held).ok()
     }
 
     fn group_rows(&self, group: &ContextGroupId, applied: Option<&Op>) -> Option<GroupRows> {
@@ -400,7 +394,7 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
             .read_head_record()
             .ok()?
             .parent_hashes;
-        let view = ScopeState::acl_view_at_with_base(&log, &heads, self.base());
+        let view = ScopeState::acl_view_at_with_base(&log, &heads, self.base()).ok()?;
         Some(GroupRows {
             members: view.groups.get(group).cloned().unwrap_or_default(),
             member_caps: view

@@ -13,6 +13,8 @@ use calimero_context_config::MemberCapabilities;
 use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
 
+use calimero_storage::shared_writers::OverBudget;
+
 use crate::ScopeState;
 
 /// Rounds of the search before its tail is treated as a cycle.
@@ -175,9 +177,10 @@ struct Removal<'a> {
 }
 
 impl ScopeState {
-    /// The ops of `log` that carry no authority.
+    /// The ops of `log` that carry no authority; `Err` past the fold budget, which no
+    /// node may answer by guessing.
     #[must_use]
-    pub fn void_ops(log: &[Op], base: AuthorityBase) -> BTreeSet<[u8; 32]> {
+    pub fn void_ops(log: &[Op], base: AuthorityBase) -> Result<BTreeSet<[u8; 32]>, OverBudget> {
         Self::void_ops_with(log, base, None)
     }
 
@@ -189,7 +192,7 @@ impl ScopeState {
         log: &[Op],
         base: AuthorityBase,
         candidate: Option<(&Op, Option<Acting>)>,
-    ) -> BTreeSet<[u8; 32]> {
+    ) -> Result<BTreeSet<[u8; 32]>, OverBudget> {
         Self::void_ops_judging(log, base, candidate, &[])
     }
 
@@ -201,7 +204,7 @@ impl ScopeState {
         base: AuthorityBase,
         candidate: Option<(&Op, Option<Acting>)>,
         held: &[([u8; 32], ContextGroupId)],
-    ) -> BTreeSet<[u8; 32]> {
+    ) -> Result<BTreeSet<[u8; 32]>, OverBudget> {
         Self::void_ops_bounded(log, base, candidate, held, MAX_FOLD_WORK)
     }
 
@@ -212,7 +215,7 @@ impl ScopeState {
         candidate: Option<(&Op, Option<Acting>)>,
         held: &[([u8; 32], ContextGroupId)],
         budget: usize,
-    ) -> BTreeSet<[u8; 32]> {
+    ) -> Result<BTreeSet<[u8; 32]>, OverBudget> {
         let mut ops: Vec<&Op> = log.iter().collect();
         let mut explicit: HashMap<[u8; 32], Acting> = held
             .iter()
@@ -229,7 +232,7 @@ impl ScopeState {
         // Most logs hold no removal that could matter; say so before building anything.
         let resolved = resolve_unattributed(&ops);
         if !holds_removal(&ops, &resolved, base) {
-            return BTreeSet::new();
+            return Ok(BTreeSet::new());
         }
         Analysis::new(&ops, base, explicit, resolved, budget).run()
     }
@@ -496,8 +499,6 @@ struct Analysis<'a> {
     children: HashMap<[u8; 32], Vec<[u8; 32]>>,
     /// The ops that place a group or set its visibility.
     tree_ops: Vec<&'a Op>,
-    /// The groups some op created or made Restricted.
-    ever_private: BTreeSet<ContextGroupId>,
     /// The tree each judged op (and removal) pair sees, memoised for the round in progress.
     trees: RefCell<HashMap<TreeKey, Rc<GroupTree>>>,
     ancestors: RefCell<HashMap<[u8; 32], IdSet>>,
@@ -625,7 +626,6 @@ impl<'a> Analysis<'a> {
             depth: HashMap::new(),
             children: HashMap::new(),
             tree_ops: Vec::new(),
-            ever_private: BTreeSet::new(),
             trees: RefCell::default(),
             ancestors: RefCell::default(),
             descendants: RefCell::default(),
@@ -663,22 +663,7 @@ impl<'a> Analysis<'a> {
                 )
             })
             .collect();
-        analysis.ever_private = analysis
-            .tree_ops
-            .iter()
-            .filter_map(|op| match &op.payload {
-                OpPayload::SubgroupCreated {
-                    child,
-                    restricted: true,
-                    ..
-                } => Some(ContextGroupId::from(*child.as_bytes())),
-                OpPayload::SubgroupVisibilitySet {
-                    scope,
-                    restricted: true,
-                } => Some(ContextGroupId::from(*scope.as_bytes())),
-                _ => None,
-            })
-            .collect();
+
         // Causal order, so what a spent budget leaves unjudged does not follow the log's.
         let mut removals = std::mem::take(&mut analysis.removals);
         removals.sort_unstable_by_key(|removal| {
@@ -698,9 +683,13 @@ impl<'a> Analysis<'a> {
             (analysis.depth.get(&id).copied().unwrap_or(0), id)
         });
         analysis.capability_revokes = revokes;
-        // Causal order too, so a spent budget leaves the same victims unjudged.
+        // Causal order too, so every node judges the victims alike.
         let depth = &analysis.depth;
-        for victims in analysis.by_account.values_mut() {
+        for victims in analysis
+            .by_account
+            .values_mut()
+            .chain(analysis.by_device.values_mut())
+        {
             victims.sort_unstable_by_key(|op| {
                 let id = op.id();
                 (depth.get(&id).copied().unwrap_or(0), id)
@@ -930,13 +919,16 @@ impl<'a> Analysis<'a> {
         self.work.get() >= self.budget
     }
 
-    fn run(&self) -> BTreeSet<[u8; 32]> {
+    fn run(&self) -> Result<BTreeSet<[u8; 32]>, OverBudget> {
         let mut history: Vec<BTreeSet<[u8; 32]>> = vec![BTreeSet::new()];
         loop {
             let current = &history[history.len() - 1];
             let next = self.round(current);
+            if self.over_budget() {
+                return Err(OverBudget);
+            }
             if next == *current {
-                return next;
+                return Ok(next);
             }
             let cycle_from = history
                 .iter()
@@ -947,7 +939,7 @@ impl<'a> Analysis<'a> {
                 for seen in &history[from..] {
                     union.extend(seen.iter().copied());
                 }
-                return union;
+                return Ok(union);
             }
             history.push(next);
         }
@@ -967,6 +959,9 @@ impl<'a> Analysis<'a> {
             }
             .map_or(&[], Vec::as_slice);
             for &op in victims {
+                if self.over_budget() {
+                    return next;
+                }
                 let id = op.id();
                 if id == removal.op.id() || before.contains(&id) || after.contains(&id) {
                     continue;
@@ -981,18 +976,6 @@ impl<'a> Analysis<'a> {
                         Target::Device(device) => device == self.device_of(op),
                     };
                 if mutual {
-                    continue;
-                }
-                // Past the budget a removal is taken to reach. The owner is spared unless it
-                // is its own device revocation or a removal from a group once private.
-                if self.over_budget() {
-                    let reaches_owner = match removal.group {
-                        None => self.author_of(removal.op) == self.author_of(op),
-                        Some(lost) => self.ever_private.contains(&lost),
-                    };
-                    if !self.is_owner(op) || reaches_owner {
-                        let _ = next.insert(id);
-                    }
                     continue;
                 }
                 let tree = self.tree_at(op, void);
@@ -1073,9 +1056,6 @@ impl<'a> Analysis<'a> {
                 return *known;
             }
         }
-        if self.over_budget() {
-            return !revoke.kept;
-        }
         let view = self.fold(
             before
                 .iter()
@@ -1106,9 +1086,6 @@ impl<'a> Analysis<'a> {
                 return *known;
             }
         }
-        if self.over_budget() {
-            return false;
-        }
         let view = self.fold(
             before
                 .iter()
@@ -1136,11 +1113,7 @@ impl<'a> Analysis<'a> {
             if void.contains(&op.id()) {
                 continue;
             }
-            // Past the budget a role change counts as a demotion, the owner's in a group
-            // never private aside: the one it might be is the one that matters.
-            let was_admin = if self.over_budget() {
-                self.owner_at(op) != Some(member) || self.ever_private.contains(&group)
-            } else {
+            let was_admin = {
                 let before = self.ancestors_of(op.id());
                 let view = self.fold(
                     before
@@ -1180,9 +1153,6 @@ impl<'a> Analysis<'a> {
             if let Some(known) = self.entitled.borrow().get(&id) {
                 return *known;
             }
-        }
-        if self.over_budget() {
-            return false;
         }
         let view = self.fold(
             before
@@ -1257,10 +1227,6 @@ impl<'a> Analysis<'a> {
         }
 
         for op in candidates {
-            if self.over_budget() {
-                let _ = out.insert(op.id());
-                continue;
-            }
             let Some(group) = self.voidable_group(op) else {
                 continue;
             };

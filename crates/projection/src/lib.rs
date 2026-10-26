@@ -342,6 +342,8 @@ pub struct CutAncestry<'a> {
     /// Ops of the walk with no authority (see [`ScopeState::void_ops`]): kept in `ops`
     /// so causal depth runs through them, but the view folds none.
     void: BTreeSet<[u8; 32]>,
+    /// The void set could not be decided within budget, so no answer from this cut stands.
+    undecidable: bool,
 }
 
 impl<'a> CutAncestry<'a> {
@@ -357,6 +359,13 @@ impl<'a> CutAncestry<'a> {
         self.void.contains(&op.id())
     }
 
+    /// This ancestry marked undecidable: it reads as incomplete.
+    #[must_use]
+    pub fn undecidable(mut self) -> Self {
+        self.undecidable = true;
+        self
+    }
+
     /// This ancestry with the ops in `ids` also taken to carry no authority.
     #[must_use]
     pub fn without(&self, ids: &BTreeSet<[u8; 32]>) -> Self {
@@ -366,6 +375,7 @@ impl<'a> CutAncestry<'a> {
             missing: self.missing,
             opaque: self.opaque,
             void: self.void.union(ids).copied().collect(),
+            undecidable: self.undecidable,
         }
     }
 
@@ -376,14 +386,14 @@ impl<'a> CutAncestry<'a> {
     /// this false — it is present, just unreadable.
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        self.missing.is_none()
+        self.missing.is_none() && !self.undecidable
     }
 
     /// Is the ancestry both present **and** fully readable — no `Noop` placeholder
     /// standing in for an op this node cannot yet decrypt?
     #[must_use]
     pub fn is_decoded(&self) -> bool {
-        self.missing.is_none() && self.opaque.is_none()
+        self.is_complete() && self.opaque.is_none()
     }
 
     /// Is any ancestor unreadable AND capable of writing `group`'s direct member
@@ -1541,6 +1551,7 @@ impl ScopeState {
             missing,
             opaque,
             void: void.clone(),
+            undecidable: false,
         }
     }
 
@@ -1561,15 +1572,21 @@ impl ScopeState {
     /// all its parents are present, so `authorize` only ever runs on a
     /// fully-materialized ancestry.
     #[must_use]
-    pub fn acl_view_at(log: &[Op], parents: &[[u8; 32]]) -> AclView {
+    pub fn acl_view_at(log: &[Op], parents: &[[u8; 32]]) -> Result<AclView, OverBudget> {
         Self::acl_view_at_with_base(log, parents, AuthorityBase::default())
     }
 
     /// [`Self::acl_view_at`] with the facts no op carries.
     #[must_use]
-    pub fn acl_view_at_with_base(log: &[Op], parents: &[[u8; 32]], base: AuthorityBase) -> AclView {
-        let void = Self::void_ops(log, base);
-        Self::acl_view_from_ancestry(&Self::cut_ancestry_with_void(log, parents, &void))
+    pub fn acl_view_at_with_base(
+        log: &[Op],
+        parents: &[[u8; 32]],
+        base: AuthorityBase,
+    ) -> Result<AclView, OverBudget> {
+        let void = Self::void_ops(log, base)?;
+        Ok(Self::acl_view_from_ancestry(&Self::cut_ancestry_with_void(
+            log, parents, &void,
+        )))
     }
 
     /// Fold an already-walked ancestry into an [`AclView`].
@@ -2607,14 +2624,14 @@ mod tests {
         let log = vec![genesis.clone(), revoke.clone()];
 
         // View at the cut [genesis] (pre-revoke) still sees the owner.
-        let pre = ScopeState::acl_view_at(&log, &[genesis.id()]);
+        let pre = ScopeState::acl_view_at(&log, &[genesis.id()]).expect("within the fold budget");
         assert!(
             pre.is_owner(&owner, object),
             "pre-revoke cut keeps the owner"
         );
 
         // View at the cut [revoke] (post) does not.
-        let post = ScopeState::acl_view_at(&log, &[revoke.id()]);
+        let post = ScopeState::acl_view_at(&log, &[revoke.id()]).expect("within the fold budget");
         assert!(
             !post.is_owner(&owner, object),
             "post-revoke cut drops the owner"
@@ -2663,7 +2680,8 @@ mod tests {
         let log = vec![add.clone(), remove.clone(), readd.clone()];
 
         // At the re-add cut: present as Admin (generation readd > remove > add).
-        let at_readd = ScopeState::acl_view_at(&log, &[readd.id()]);
+        let at_readd =
+            ScopeState::acl_view_at(&log, &[readd.id()]).expect("within the fold budget");
         assert_eq!(
             at_readd.groups.get(&group).and_then(|m| m.get(&member)),
             Some(&GroupMemberRole::Admin),
@@ -2671,7 +2689,8 @@ mod tests {
         );
 
         // At the remove cut: absent.
-        let at_remove = ScopeState::acl_view_at(&log, &[remove.id()]);
+        let at_remove =
+            ScopeState::acl_view_at(&log, &[remove.id()]).expect("within the fold budget");
         assert_eq!(
             at_remove.groups.get(&group).and_then(|m| m.get(&member)),
             None,

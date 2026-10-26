@@ -140,11 +140,11 @@ fn ids(ops: &[&Op]) -> Vec<[u8; 32]> {
 }
 
 fn view(log: &[Op], heads: &[&Op]) -> AclView {
-    ScopeState::acl_view_at_with_base(log, &ids(heads), base())
+    ScopeState::acl_view_at_with_base(log, &ids(heads), base()).expect("within the fold budget")
 }
 
 fn void(log: &[Op]) -> BTreeSet<[u8; 32]> {
-    ScopeState::void_ops(log, base())
+    ScopeState::void_ops(log, base()).expect("within the fold budget")
 }
 
 fn is_member(view: &AclView, who: u8) -> bool {
@@ -525,7 +525,8 @@ fn an_op_arriving_before_or_after_its_removal_is_judged_alike() {
     );
 
     // The same op judged before it is stored, as the apply path does.
-    let candidate = ScopeState::void_ops_with(&removal_first[..4], base(), Some((&by_sam, None)));
+    let candidate = ScopeState::void_ops_with(&removal_first[..4], base(), Some((&by_sam, None)))
+        .expect("within the fold budget");
     assert!(candidate.contains(&by_sam.id()));
 }
 
@@ -839,34 +840,6 @@ fn a_role_change_for_an_account_that_was_no_admin_at_its_cut_demotes_nobody() {
 }
 
 #[test]
-fn past_the_fold_budget_the_candidates_whose_standing_rests_on_a_void_op_are_void() {
-    let ad = admins();
-    let head = &ad[2];
-    let mut log = ad.clone();
-
-    // Xavier is an admin twice over: Alice promotes him, and Sam, concurrently
-    // with his own removal, does too. What Xavier does stands on Alice's grant.
-    let removal = remove(ALICE, &[head], SAM);
-    let by_alice = add(ALICE, &[head], XAVIER, GroupMemberRole::Admin);
-    let by_sam = add(SAM, &[head], XAVIER, GroupMemberRole::Admin);
-    let by_xavier = add(XAVIER, &[&by_alice, &by_sam], YARA, GroupMemberRole::Member);
-    log.extend([removal, by_alice, by_sam.clone(), by_xavier.clone()]);
-
-    let judged = ScopeState::void_ops_bounded(&log, base(), None, &[], usize::MAX);
-    assert!(judged.contains(&by_sam.id()));
-    assert!(
-        !judged.contains(&by_xavier.id()),
-        "judged, Xavier's op stands on Alice's grant"
-    );
-
-    let unjudged = ScopeState::void_ops_bounded(&log, base(), None, &[], 0);
-    assert!(
-        unjudged.contains(&by_xavier.id()),
-        "with no budget to judge it, an op of an account a void op promoted is void"
-    );
-}
-
-#[test]
 fn an_op_the_projection_models_nothing_about_is_judged_by_the_group_it_acted_in() {
     let ad = admins();
     let head = &ad[2];
@@ -878,12 +851,15 @@ fn an_op_the_projection_models_nothing_about_is_judged_by_the_group_it_acted_in(
     log.extend([removal, rotation.clone(), by_bob.clone()]);
 
     let held = [(rotation.id(), group()), (by_bob.id(), group())];
-    let judged = ScopeState::void_ops_judging(&log, base(), None, &held);
+    let judged =
+        ScopeState::void_ops_judging(&log, base(), None, &held).expect("within the fold budget");
     assert!(judged.contains(&rotation.id()));
     assert!(!judged.contains(&by_bob.id()), "Bob was not removed");
 
     assert!(
-        !ScopeState::void_ops(&log, base()).contains(&rotation.id()),
+        !ScopeState::void_ops(&log, base())
+            .expect("within the fold budget")
+            .contains(&rotation.id()),
         "with no group named, the log alone cannot say where it acted"
     );
 }
@@ -928,7 +904,9 @@ fn a_shared_writers_rotation_concurrent_with_its_signers_removal_is_void() {
     let by_yara = rotation(YARA, &[&head]);
     log.push(by_yara.clone());
     assert!(
-        !ScopeState::void_ops(&log, base()).contains(&by_yara.id()),
+        !ScopeState::void_ops(&log, base())
+            .expect("within the fold budget")
+            .contains(&by_yara.id()),
         "a rotation needs no member capability"
     );
 }
@@ -950,7 +928,9 @@ fn a_tee_policy_a_removed_admin_set_concurrently_is_void() {
     );
     log.extend([removal, policy.clone()]);
 
-    assert!(ScopeState::void_ops(&log, base()).contains(&policy.id()));
+    assert!(ScopeState::void_ops(&log, base())
+        .expect("within the fold budget")
+        .contains(&policy.id()));
 }
 
 #[test]
@@ -973,7 +953,9 @@ fn verified_tee_evidence_a_removed_admin_submitted_concurrently_is_void() {
     );
     log.extend([removal, evidence.clone()]);
 
-    assert!(ScopeState::void_ops(&log, base()).contains(&evidence.id()));
+    assert!(ScopeState::void_ops(&log, base())
+        .expect("within the fold budget")
+        .contains(&evidence.id()));
 }
 
 #[test]
@@ -989,7 +971,9 @@ fn a_role_change_by_a_non_admin_is_no_demotion() {
     let by_bob = add(BOB, &[head], ZED, GroupMemberRole::Member);
     log.extend([member, no_effect, by_bob.clone()]);
 
-    assert!(!ScopeState::void_ops(&log, base()).contains(&by_bob.id()));
+    assert!(!ScopeState::void_ops(&log, base())
+        .expect("within the fold budget")
+        .contains(&by_bob.id()));
 }
 
 #[test]
@@ -1015,7 +999,9 @@ fn a_demotion_by_an_admin_who_reaches_the_group_through_an_open_chain_counts() {
     let by_yara = add_in(subgroup(2), YARA, &[&second], ZED, GroupMemberRole::Member);
     log.extend([first, second, demotion, by_yara.clone()]);
 
-    assert!(ScopeState::void_ops(&log, base()).contains(&by_yara.id()));
+    assert!(ScopeState::void_ops(&log, base())
+        .expect("within the fold budget")
+        .contains(&by_yara.id()));
 }
 
 #[test]
@@ -1115,7 +1101,9 @@ fn a_void_policy_with_its_bytes_dropped_is_still_void() {
     );
     log.extend([removal, policy.clone()]);
 
-    assert!(ScopeState::void_ops(&log, base()).contains(&policy.id()));
+    assert!(ScopeState::void_ops(&log, base())
+        .expect("within the fold budget")
+        .contains(&policy.id()));
 }
 
 /// Admins as in [`admins`], then Yara a member holding `held`.
@@ -1204,6 +1192,7 @@ fn an_op_the_projection_models_nothing_about_is_judged_by_the_capability_it_name
     };
     let judged = |capability| {
         ScopeState::void_ops_with(&log, base(), Some((&metadata, Some(acting(capability)))))
+            .expect("within the fold budget")
             .contains(&metadata.id())
     };
     assert!(judged(MemberCapabilities::CAN_MANAGE_METADATA));
@@ -1339,84 +1328,19 @@ fn a_removed_signer_cannot_move_a_folder_out_of_the_space_concurrently_with_its_
 }
 
 #[test]
-fn past_the_fold_budget_a_removal_is_taken_to_reach_the_op() {
+fn past_the_fold_budget_the_log_is_undecidable() {
     let (mut log, head) = eng_private_space();
     let removal = remove_from(subgroup(0x41), ALICE, &[&head], SAM);
     let in_space = add_in(subgroup(0x42), SAM, &[&head], WILL, GroupMemberRole::Member);
-    log.extend([removal, in_space.clone()]);
+    log.extend([removal, in_space]);
 
-    let judged = |budget| ScopeState::void_ops_bounded(&log, base(), None, &[], budget);
-    assert!(!judged(usize::MAX).contains(&in_space.id()));
-    assert!(judged(0).contains(&in_space.id()));
+    assert!(ScopeState::void_ops_bounded(&log, base(), None, &[], usize::MAX).is_ok());
+    assert!(ScopeState::void_ops_bounded(&log, base(), None, &[], 0).is_err());
 }
 
 #[test]
-fn past_the_fold_budget_a_removal_still_spares_a_counter_removal() {
-    let (mut log, head) = eng_private_space();
-    let removal = remove_from(subgroup(0x41), ALICE, &[&head], SAM);
-    let counter = remove_from(subgroup(0x41), SAM, &[&head], ALICE);
-    log.extend([removal, counter.clone()]);
-
-    let voided = ScopeState::void_ops_bounded(&log, base(), None, &[], 0);
-    assert!(!voided.contains(&counter.id()));
-}
-
-#[test]
-fn past_the_fold_budget_the_owner_is_reached_only_by_a_private_removal_or_its_own_revocation() {
-    let second = calimero_account::DeviceId::from([0xEE; 32]);
-    let on_second_device = |head: &Op| {
-        Op::new(
-            ScopeId::from([0u8; 32]),
-            vec![head.id()],
-            Authorship {
-                device: second,
-                ..authorship(OWNER)
-            },
-            hlc(),
-            OpPayload::MemberAdded {
-                group: group(),
-                member: acct(WILL),
-                role: GroupMemberRole::Member,
-            },
-            [0u8; 32],
-            [0u8; 64],
-        )
-    };
-    let voided_by = |group_of_removal: ContextGroupId, owner_group: ContextGroupId| {
-        let (mut log, head) = eng_private_space();
-        let removal = remove_from(group_of_removal, ALICE, &[&head], OWNER);
-        let by_owner = add_in(owner_group, OWNER, &[&head], YARA, GroupMemberRole::Member);
-        log.extend([removal, by_owner.clone()]);
-        ScopeState::void_ops_bounded(&log, base(), None, &[], 0).contains(&by_owner.id())
-    };
-    assert!(!voided_by(subgroup(0x41), group()), "an open removal");
-    assert!(
-        voided_by(subgroup(0x42), subgroup(0x42)),
-        "a private removal"
-    );
-
-    let demoted = |folder: ContextGroupId| {
-        let (mut log, head) = eng_private_space();
-        let granted = add_in(folder, ALICE, &[&head], OWNER, GroupMemberRole::Admin);
-        let role = add_in(folder, ALICE, &[&granted], OWNER, GroupMemberRole::Member);
-        let by_owner = add_in(folder, OWNER, &[&granted], YARA, GroupMemberRole::Member);
-        log.extend([granted, role, by_owner.clone()]);
-        ScopeState::void_ops_bounded(&log, base(), None, &[], 0).contains(&by_owner.id())
-    };
-    assert!(!demoted(subgroup(0x41)), "an open role change");
-    assert!(demoted(subgroup(0x42)), "a private role change");
-
-    let (mut log, head) = eng_private_space();
-    let revoke = gov(
-        OWNER,
-        &[&head],
-        OpPayload::DeviceRevoked {
-            account: acct(OWNER),
-            device: second,
-        },
-    );
-    let own = on_second_device(&head);
-    log.extend([revoke, own.clone()]);
-    let voided = ScopeState::void_ops_bounded(&log, base(), None, &[], 1);
-    assert!(voided.contains(&own.id()), "its own revocation");
+fn an_undecidable_ancestry_reads_as_incomplete() {
+    let walked = ScopeState::cut_ancestry(&[], &[]);
+    assert!(walked.is_complete());
+    assert!(!walked.undecidable().is_complete());
 }

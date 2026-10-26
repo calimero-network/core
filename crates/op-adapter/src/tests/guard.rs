@@ -232,7 +232,7 @@ fn the_fold_and_the_decision_agree_with_the_live_guard() {
         3,
     );
     let log = vec![seed.clone(), bare.clone(), guarded.clone()];
-    let mut before = ScopeState::acl_view_at(&log, &[bare.id()]);
+    let mut before = ScopeState::acl_view_at(&log, &[bare.id()]).expect("within the fold budget");
     bind(&mut before, owner, owner_key);
     assert_eq!(
         authorize(&guarded, &before),
@@ -240,7 +240,7 @@ fn the_fold_and_the_decision_agree_with_the_live_guard() {
         "authorized at its own cut"
     );
 
-    let mut after = ScopeState::acl_view_at(&log, &[guarded.id()]);
+    let mut after = ScopeState::acl_view_at(&log, &[guarded.id()]).expect("within the fold budget");
     assert_eq!(after.root_admin, Some(heir));
     assert_eq!(after.owner_op_count(&group()), 1);
     bind(&mut after, heir, heir_key);

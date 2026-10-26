@@ -277,12 +277,15 @@ struct Voided {
     ops: Arc<BTreeSet<[u8; 32]>>,
     /// The streaming state without the void ops; only built when there are some.
     state: Option<Arc<ScopeState>>,
+    /// The void set could not be decided within budget.
+    undecidable: bool,
 }
 
 /// A snapshot of a [`Voided`], held past the lock.
 struct VoidedRef {
     ops: Arc<BTreeSet<[u8; 32]>>,
     state: Option<Arc<ScopeState>>,
+    undecidable: bool,
 }
 
 /// A scope's streaming state: the one maintained on ingest, or the one rebuilt
@@ -487,10 +490,13 @@ impl ScopeProjections {
             return VoidedRef {
                 ops: Arc::clone(&held.ops),
                 state: held.state.clone(),
+                undecidable: held.undecidable,
             };
         }
         let log = self.logs.get(scope).map_or(&[][..], Vec::as_slice);
-        let ops = ScopeState::void_ops(log, base);
+        let decided = ScopeState::void_ops(log, base);
+        let undecidable = decided.is_err();
+        let ops = decided.unwrap_or_default();
         let state = (!ops.is_empty()).then(|| {
             Arc::new(ScopeState::from_ops(
                 log.iter().filter(|op| !ops.contains(&op.id())),
@@ -503,9 +509,14 @@ impl ScopeProjections {
                 base,
                 ops: Arc::clone(&ops),
                 state: state.clone(),
+                undecidable,
             },
         );
-        VoidedRef { ops, state }
+        VoidedRef {
+            ops,
+            state,
+            undecidable,
+        }
     }
 
     /// Walk the ancestry of `parents` in `log`, carrying the ops that hold no
@@ -517,13 +528,23 @@ impl ScopeProjections {
         parents: &[[u8; 32]],
         base: AuthorityBase,
     ) -> CutAncestry<'a> {
-        ScopeState::cut_ancestry_with_void(log, parents, &self.void_set(scope, base))
+        let voided = self.voided_for(scope, base);
+        let walked = ScopeState::cut_ancestry_with_void(log, parents, &voided.ops);
+        if voided.undecidable {
+            walked.undecidable()
+        } else {
+            walked
+        }
     }
 
     /// `scope`'s streaming state, without the ops a removal voids.
     fn state_of(&self, scope: &ScopeId) -> Option<StateRef<'_>> {
         let maintained = self.states.get(scope)?;
-        match self.voided_for(scope, self.authority_base_of(scope)).state {
+        let voided = self.voided_for(scope, self.authority_base_of(scope));
+        if voided.undecidable {
+            return None;
+        }
+        match voided.state {
             Some(rebuilt) => Some(StateRef::Rebuilt(rebuilt)),
             None => Some(StateRef::Maintained(maintained)),
         }
@@ -540,12 +561,7 @@ impl ScopeProjections {
         held: &[([u8; 32], ContextGroupId)],
     ) -> Option<BTreeSet<[u8; 32]>> {
         let log = self.logs.get(scope)?;
-        Some(ScopeState::void_ops_judging(
-            log,
-            base,
-            extra.map(|op| (op, None)),
-            held,
-        ))
+        ScopeState::void_ops_judging(log, base, extra.map(|op| (op, None)), held).ok()
     }
 
     /// `group`'s direct rows at `heads` with the ops that carry no authority taken
@@ -563,7 +579,7 @@ impl ScopeProjections {
         if let Some(op) = extra.filter(|op| !log.iter().any(|held| held.id() == op.id())) {
             log.push(op.clone());
         }
-        let void = ScopeState::void_ops(&log, base);
+        let void = ScopeState::void_ops(&log, base).ok()?;
         let ancestry = ScopeState::cut_ancestry_with_void(&log, heads, &void);
         // Rows taken back on a partial log could be rows the whole log keeps.
         if !ancestry.is_complete() {
@@ -618,7 +634,8 @@ impl ScopeProjections {
         if !ScopeState::cut_ancestry(log, &op.parents).is_complete() {
             return None;
         }
-        Some(ScopeState::void_ops_with(log, base, Some((op, acting))).contains(&op.id()))
+        let void = ScopeState::void_ops_with(log, base, Some((op, acting))).ok()?;
+        Some(void.contains(&op.id()))
     }
 
     /// The convergence `scope_root` for `scope`, folding this scope's ACL +
