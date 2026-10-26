@@ -570,15 +570,18 @@ impl<T: Clone> DagStore<T> {
     /// This should be called after restoring checkpoints or other deltas that
     /// might unblock pending deltas. Unlike `apply_pending` which is called
     /// internally during `add_delta`, this method is for explicit triggering.
+    ///
+    /// Returns the ids of the deltas it drained, so a caller keeping a view
+    /// beside the applier can fold them too.
     pub async fn try_process_pending<A: DeltaApplier<T> + Sync>(
         &mut self,
         applier: &A,
-    ) -> Result<usize, DagError>
+    ) -> Result<Vec<[u8; 32]>, DagError>
     where
         T: Send + Sync,
     {
         let seed: Vec<[u8; 32]> = self.pending.keys().copied().collect();
-        Ok(self.cascade_ready(seed, applier).await?.len())
+        self.cascade_ready(seed, applier).await
     }
 
     /// Add a delta to the DAG.
@@ -1553,7 +1556,7 @@ mod basic_tests {
         // `DeltaStore::add_local_applied_delta` and in
         // `get_missing_parents`.
         let cascaded = dag.try_process_pending(&applier).await.unwrap();
-        assert_eq!(cascaded, 1, "child should cascade exactly once");
+        assert_eq!(cascaded, vec![[2; 32]], "child should cascade exactly once");
 
         let applied = applier.applied.lock().await;
         assert_eq!(applied.len(), 1, "child applied via applier");
