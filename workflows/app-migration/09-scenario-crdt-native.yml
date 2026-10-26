@@ -373,6 +373,10 @@ steps:
       - app-migration-crdt-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: tag_count
+      equals:
+        output: 5
 
   - name: Read tag_count after pushes on node 1
     type: call

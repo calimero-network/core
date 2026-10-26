@@ -199,6 +199,10 @@ steps:
       - tee-cards-enclave-b
     timeout: 60
     check_interval: 2
+    expect:
+      method: cards_left
+      equals:
+        output: 52
 
   - name: The deck the timer shuffled, as the player sees it
     type: call
@@ -303,6 +307,10 @@ steps:
       - tee-cards-enclave-b
     timeout: 90
     check_interval: 2
+    expect:
+      method: cards_left
+      equals:
+        output: 43
 
   - name: The deck after every draw, on the player
     type: call

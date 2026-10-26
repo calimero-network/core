@@ -92,6 +92,10 @@ steps:
       - rust-private-data-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: games
+      equals:
+        output: "{{node_1_games}}"
 
   - name: Node 2 Get Games
     type: call

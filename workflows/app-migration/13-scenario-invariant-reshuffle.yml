@@ -339,6 +339,12 @@ steps:
       - app-migration-reshuffle-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_item_count
+      args:
+        item: "apple"
+      equals:
+        output: 4
 
   - name: Read apple count on node 2 after v2 record
     type: call
