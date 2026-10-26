@@ -503,6 +503,13 @@ impl ScopeProjections {
         at_cut_view(&walked, base)
     }
 
+    /// Whether the void set of `scope` could not be decided within budget, so no gate may
+    /// answer from what the live store holds.
+    fn void_undecidable(&self, scope: &ScopeId) -> bool {
+        self.voided_for(scope, self.authority_base_of(scope))
+            .undecidable
+    }
+
     fn authority_base_of(&self, scope: &ScopeId) -> AuthorityBase {
         self.authority_bases.get(scope).copied().unwrap_or_default()
     }
@@ -1226,6 +1233,10 @@ impl ScopeProjections {
             // divergence-free across the e2e `membership-query` plane); act on it.
             return Ok(p);
         }
+        // An undecidable void set is no cold fold: nothing may be granted from live.
+        if Self::ephemeral_void_undecidable(store, group) {
+            return Ok(false);
+        }
         // Projection couldn't decide (cold/partial fold or store fault) — fall back
         // to live, whose error legitimately propagates. (Live retires in #29b.)
         //
@@ -1238,6 +1249,15 @@ impl ScopeProjections {
             return Ok(false);
         };
         MembershipRepository::new(store).is_member(group, &member)
+    }
+
+    fn ephemeral_void_undecidable(store: &Store, group: &ContextGroupId) -> bool {
+        let Ok(namespace) = NamespaceRepository::new(store).resolve(group) else {
+            return false;
+        };
+        let namespace_id = namespace.to_bytes();
+        Self::ephemeral_fold(store, namespace_id)
+            .is_some_and(|(proj, _)| proj.void_undecidable(&ScopeId::from(namespace_id)))
     }
 
     /// The effective member-identity union across `groups`, folding the namespace
@@ -1483,6 +1503,11 @@ impl ScopeProjections {
     ) -> eyre::Result<bool> {
         if let Some(p) = self.member_at_cut(store, *group, member, heads) {
             return Ok(p);
+        }
+        if let Ok(namespace) = NamespaceRepository::new(store).resolve(group) {
+            if self.void_undecidable(&ScopeId::from(namespace.to_bytes())) {
+                return Ok(false);
+            }
         }
         // Same key→account resolution as `member_now_checked`'s live fallback.
         let Some(member) =
@@ -5774,6 +5799,49 @@ mod tests {
             view.group_admin.get(&space),
             Some(&AccountId::from([9; 32]))
         );
+    }
+
+    #[test]
+    fn an_undecidable_void_set_denies_a_member_the_live_store_names() {
+        let root = ContextGroupId::from([0x32; 32]);
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        let key = PublicKey::from([0x55; 32]);
+        let account = crate::test_support::enrol(&store, &root, &key);
+        MembershipRepository::new(&store)
+            .add_member(&root, &account, GroupMemberRole::Member)
+            .expect("a stored row");
+        let op = |parents: Vec<[u8; 32]>, payload| {
+            Op::new(
+                ScopeId::from(root.to_bytes()),
+                parents,
+                calimero_op::Authorship {
+                    account: AccountId::from([1u8; 32]),
+                    device: calimero_account::DeviceId::from([1u8; 32]),
+                    device_key: PublicKey::from([1u8; 32]),
+                },
+                hlc(0),
+                payload,
+                [0u8; 32],
+                [0u8; 64],
+            )
+        };
+        let add = op(vec![], member_op(root, 8, GroupMemberRole::Member));
+        let removal = op(vec![add.id()], removed_op(root, 8));
+        let heads = [removal.id()];
+        let ingest = |mut projections: ScopeProjections| {
+            projections.ingest_op(&add);
+            projections.ingest_op(&removal);
+            projections
+        };
+
+        let stuck = ingest(ScopeProjections::new().with_fold_budget(0));
+        assert!(!stuck
+            .member_now_checked_with(&store, &root, &key, &heads)
+            .expect("no store fault"));
+        let sound = ingest(ScopeProjections::new());
+        assert!(sound
+            .member_now_checked_with(&store, &root, &key, &heads)
+            .expect("no store fault"));
     }
 
     #[test]

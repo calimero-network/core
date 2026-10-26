@@ -238,7 +238,8 @@ impl ScopeState {
     }
 }
 
-/// The fold work a void judgement over `ops` ops may spend: the floor, or more as the log grows.
+/// The fold work a void judgement over `ops` ops may spend: linear in the log, so honest
+/// growth never wedges it and only a superlinear pattern trips it.
 pub fn fold_budget_for(ops: usize) -> usize {
     MAX_FOLD_WORK.max(ops.saturating_mul(FOLD_WORK_PER_OP))
 }
