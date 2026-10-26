@@ -19,7 +19,7 @@ use zeroize::ZeroizeOnDrop;
 
 // Group-key prefix allocation ledger. Every byte in `0x20..=0x59` is taken
 // except `0x25`, `0x2B` and `0x2C` (retired, below); **the next free byte is
-// `0x5B`**.
+// `0x5C`**.
 //
 // This pointer was stale when `GroupMemberByAccount` first claimed a byte: it
 // still read `0x4C`, which `NODE_ACCOUNT_DEVICE_CERT_PREFIX` had already taken
@@ -1843,6 +1843,67 @@ impl FromKeyParts for GroupTargetUnverified {
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
         Ok(Self(parts))
     }
+}
+
+/// Prefix for a namespace's outbound approval for one publisher.
+pub const GROUP_OUTBOUND_APPROVAL_PREFIX: u8 = 0x5B;
+
+/// The URL prefixes a namespace lets one publisher's apps send requests under,
+/// as the last applied `GroupOp::OutboundApprovalSet` for that publisher set them.
+///
+/// Key layout: `GROUP_OUTBOUND_APPROVAL_PREFIX (1 byte) + namespace root id (32) +
+/// sha256(signer) (32)`; the value is [`GroupOutboundApprovalValue`], which
+/// carries the signer itself. Written only for a namespace root.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupOutboundApproval(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupOutboundApproval {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], signer_hash: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_OUTBOUND_APPROVAL_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(signer_hash))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupOutboundApproval {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupOutboundApproval {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+/// Value of [`GroupOutboundApproval`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupOutboundApprovalValue {
+    /// The publisher's signer id (`did:key`).
+    pub signer: String,
+    /// The approved URL prefixes.
+    pub prefixes: Vec<String>,
+    /// The prefixes the approver was shown, approved or not.
+    pub reviewed: Vec<String>,
 }
 
 impl AsKeyParts for NamespaceParticipation {
@@ -4610,6 +4671,7 @@ mod tests {
             ("GROUP_MEMBER_METADATA", GROUP_MEMBER_METADATA_PREFIX),
             ("GROUP_METADATA", GROUP_METADATA_PREFIX),
             ("GROUP_CONTEXT_METADATA", GROUP_CONTEXT_METADATA_PREFIX),
+            ("GROUP_OUTBOUND_APPROVAL", GROUP_OUTBOUND_APPROVAL_PREFIX),
             ("GROUP_OP_LOG", GROUP_OP_LOG_PREFIX),
             ("GROUP_OP_HEAD", GROUP_OP_HEAD_PREFIX),
             ("GROUP_MEMBER_CONTEXT", GROUP_MEMBER_CONTEXT_PREFIX),

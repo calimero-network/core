@@ -855,6 +855,37 @@ impl Message for SetTeeAdmissionPolicyRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Approve URL prefixes for the publisher of `application_id` in the namespace
+/// `group_id` belongs to, with a `GroupOp::OutboundApprovalSet` at its root.
+#[derive(Clone, Debug)]
+pub struct ApproveOutboundRequest {
+    /// Any group of the namespace; the approval is published at its root.
+    pub group_id: ContextGroupId,
+    /// The installed application whose publisher and manifest it is for.
+    pub application_id: ApplicationId,
+    pub selection: calimero_primitives::outbound::OutboundSelection,
+    /// `true` replaces the publisher's approved set with `selection` (how a
+    /// prefix is revoked); `false` adds `selection` to it, as an install or an
+    /// upgrade does.
+    pub replace: bool,
+}
+
+/// What the namespace approves for the publisher after the request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApproveOutboundResponse {
+    pub namespace_id: ContextGroupId,
+    pub signer: String,
+    pub prefixes: Vec<String>,
+    pub reviewed: Vec<String>,
+    /// `false` when nothing needed publishing: the app declares no outbound
+    /// prefix, or the namespace already approved exactly this.
+    pub published: bool,
+}
+
+impl Message for ApproveOutboundRequest {
+    type Result = eyre::Result<ApproveOutboundResponse>;
+}
+
 #[derive(Debug)]
 pub struct SetTeeAuthoringPolicyRequest {
     pub group_id: ContextGroupId,

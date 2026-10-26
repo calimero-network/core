@@ -435,6 +435,7 @@ async fn create_namespace() {
             application_id: ApplicationId::from([0u8; 32]),
             name: None,
             bytecode_id: None,
+            approve_outbound: None,
         })
         .await
         .unwrap();
@@ -682,6 +683,7 @@ async fn upgrade_group() {
                 cascade: false,
                 force_code_only: false,
                 skip_trial: false,
+                approve_outbound: None,
             },
         )
         .await
@@ -1122,6 +1124,7 @@ async fn create_namespace_returns_err_on_server_error() {
             application_id: ApplicationId::from([0u8; 32]),
             name: None,
             bytecode_id: None,
+            approve_outbound: None,
         })
         .await;
 

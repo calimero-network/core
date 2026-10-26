@@ -47,6 +47,7 @@ pub async fn handler(
                         local_contexts_failed: failed,
                         contexts_trialled: 0,
                         contexts_not_held: 0,
+                        outbound_approval: None,
                     },
                 },
             }

@@ -138,6 +138,36 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
+    /// Puts the namespace TEE key a value only the TEE may read is sealed to
+    /// now in register `dest_register_id`, 32 bytes.
+    ///
+    /// Available in every run: the key is public, and every member's node
+    /// derives it from the replicated governance log. An app seals a secret
+    /// for an outbound request to it, which only a TEE authority opens.
+    ///
+    /// # Returns
+    ///
+    /// * `1` if the key is in the register.
+    /// * `0`, leaving the register alone, while the namespace has no TEE key.
+    pub fn tee_sealing_key(&mut self, dest_register_id: u64) -> VMLogicResult<u32> {
+        let Some(key) = self
+            .borrow_logic()
+            .context
+            .sealing
+            .namespace_sealing_key
+            .as_ref()
+            .and_then(|resolve| (resolve.0)())
+        else {
+            return Ok(0);
+        };
+        self.with_logic_mut(|logic| {
+            logic
+                .registers
+                .set(logic.limits, dest_register_id, key.to_vec())
+        })?;
+        Ok(1)
+    }
+
     /// Puts the signing key of every live device of the account at
     /// `src_account_ptr` in register `dest_register_id`, 32 bytes each: the
     /// keys a value only that member may read is sealed to. Returns `0`, and
@@ -287,6 +317,7 @@ mod tests {
             tee_authority_keys: vec![],
             vault_keys: vault_keys.iter().map(|key| copy(key)).collect(),
             account_devices: std::collections::BTreeMap::new(),
+            namespace_sealing_key: None,
         };
         with_host(context(tee_trigger, sealing), |host| {
             put(host, TEXT_DESC, TEXT_AT, sealed);
@@ -362,6 +393,37 @@ mod tests {
         assert_eq!(open(Some(&tee), true, &sealed).unwrap(), None);
     }
 
+    /// Every run reads the namespace TEE key, TEE-triggered or not, and a
+    /// namespace with none answers 0.
+    #[test]
+    fn every_run_reads_the_namespace_tee_key() {
+        for key in [Some([7u8; 32]), None] {
+            for tee_trigger in [false, true] {
+                let sealing = SealingContext {
+                    opener: None,
+                    tee_authority_keys: vec![],
+                    vault_keys: vec![],
+                    account_devices: std::collections::BTreeMap::new(),
+                    namespace_sealing_key: Some(crate::logic::SealingKeyResolver(Arc::new(
+                        move || key,
+                    ))),
+                };
+                with_host(context(tee_trigger, sealing), |host| {
+                    let found = host.tee_sealing_key(REGISTER)?;
+                    match key {
+                        Some(key) => {
+                            assert_eq!(found, 1);
+                            assert_eq!(register(host), key.to_vec());
+                        }
+                        None => assert_eq!(found, 0),
+                    }
+                    Ok::<(), VMLogicError>(())
+                })
+                .unwrap();
+            }
+        }
+    }
+
     /// The TEE authority keys are only handed to a TEE-triggered run.
     #[test]
     fn tee_authority_keys_are_only_available_to_a_tee_run() {
@@ -372,6 +434,7 @@ mod tests {
                 tee_authority_keys: keys.clone(),
                 vault_keys: vec![],
                 account_devices: std::collections::BTreeMap::new(),
+                namespace_sealing_key: None,
             };
             with_host(context(tee_trigger, sealing), |host| {
                 let result = host.tee_authority_keys(REGISTER);

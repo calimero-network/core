@@ -1,7 +1,7 @@
 use actix::{Context, Handler, Message, ResponseFuture};
-use calimero_network_primitives::messages::OpenStream;
+use calimero_network_primitives::messages::{DialFailed, OpenStream};
 use calimero_network_primitives::stream::{Stream, CALIMERO_STREAM_PROTOCOL};
-use eyre::bail;
+use libp2p_stream::OpenStreamError;
 
 use crate::NetworkManager;
 
@@ -21,12 +21,21 @@ impl Handler<OpenStream> for NetworkManager {
                 .await
             {
                 Ok(stream) => stream,
-                Err(err) => {
-                    bail!("Failed to open stream: {:?}", err);
-                }
+                Err(err) => return Err(open_stream_error(err)),
             };
 
             Ok(Stream::new(stream))
         })
+    }
+}
+
+/// `NotConnected` is the only error libp2p-stream raises for a failed dial, and the
+/// only form it leaves of the swarm's `DialError`.
+pub(crate) fn open_stream_error(err: OpenStreamError) -> eyre::Report {
+    match err {
+        OpenStreamError::Io(err) if err.kind() == std::io::ErrorKind::NotConnected => {
+            DialFailed(err).into()
+        }
+        err => eyre::eyre!("Failed to open stream: {err:?}"),
     }
 }

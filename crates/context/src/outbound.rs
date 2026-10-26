@@ -42,8 +42,9 @@ use std::time::{Duration, Instant};
 
 use borsh::BorshDeserialize;
 use calimero_primitives::outbound::{
-    OutboundMethod, OutboundRequest, OutboundResponse, MAX_HEADERS, MAX_HEADER_BYTES,
-    MAX_REQUEST_BODY, MAX_RESPONSE_BODY, MAX_URL, SECRET_PREFIX, SECRET_SUFFIX, TIMEOUT_MS,
+    OutboundMethod, OutboundRefusal, OutboundRequest, OutboundResponse, SealedSecretPayload,
+    MAX_HEADERS, MAX_HEADER_BYTES, MAX_REQUEST_BODY, MAX_RESPONSE_BODY, MAX_SEALED_ENVELOPE,
+    MAX_URL, SEALED_PREFIX, SECRET_PREFIX, SECRET_SUFFIX, TIMEOUT_MS,
 };
 use calimero_runtime::logic::OutboundHost;
 use eyre::{bail, eyre, Result as EyreResult};
@@ -83,6 +84,26 @@ pub struct AppIdentity {
     /// The bundle signer's `did:key`.
     pub signer: String,
 }
+
+/// What a run's namespace approved for the app's publisher, from the last
+/// `GroupOp::OutboundApprovalSet` for that signer at the namespace root.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Approval {
+    /// The approved URL prefixes.
+    pub prefixes: Vec<String>,
+    /// The prefixes the approver was shown, approved or not.
+    pub reviewed: Vec<String>,
+}
+
+/// The start of every refusal for a prefix the namespace has not approved.
+/// Stable: an app matches on it to tell a member to ask an admin.
+pub const NOT_APPROVED: &str = calimero_primitives::outbound::OutboundRefusal::NotApproved.word();
+
+/// The start of every refusal for a prefix the namespace has never been asked
+/// about, because a later version of the app declared it. Stable: an app
+/// matches on it to show an admin what to approve.
+pub const AWAITING_APPROVAL: &str =
+    calimero_primitives::outbound::OutboundRefusal::AwaitingApproval.word();
 
 /// A secret, and the hosts it may be sent to.
 pub struct Secret {
@@ -283,6 +304,110 @@ impl SecretProvider for SidecarSecrets {
     }
 }
 
+/// What lets a run open the `{{sealed:…}}` secrets a request names: the
+/// context the envelopes were sealed in, and the namespace TEE keys this node
+/// holds while it is a TEE authority of the namespace, looked up only when a
+/// request names one. Every run that gets a client carries it.
+///
+/// On a node that is not a TEE authority the lookup answers no keys. Then a
+/// request naming a sealed secret goes to a TEE of the namespace through
+/// `forward`, after this node's own checks pass; with no `forward`, or when no
+/// TEE takes it, the request is refused `SealedUnavailable`.
+#[derive(Clone)]
+pub struct SealedKeys {
+    pub context_id: [u8; 32],
+    #[allow(clippy::type_complexity)]
+    pub keys:
+        Arc<dyn Fn() -> EyreResult<Vec<calimero_primitives::identity::PrivateKey>> + Send + Sync>,
+    pub forward: Option<Forwarder>,
+}
+
+/// Hands a request (a borsh [`OutboundRequest`]) to a TEE of the namespace and
+/// answers its borsh [`OutboundResponse`], or why it was not sent. Called on
+/// the run's blocking thread.
+pub type Forwarder = Arc<dyn Fn(&[u8]) -> Result<Vec<u8>, String> + Send + Sync>;
+
+/// A TEE's answer to a forwarded request, as it travels back to the member.
+#[derive(Clone, Debug, borsh::BorshSerialize, borsh::BorshDeserialize)]
+pub enum ForwardedAnswer {
+    /// Sent. `signature` is `tee`'s, over [`forwarded_answer_message`], so the
+    /// member takes the response only from a TEE authority of the namespace.
+    Sent {
+        response: Vec<u8>,
+        tee: [u8; 32],
+        signature: Vec<u8>,
+    },
+    /// The TEE checked the request and would not send it.
+    Refused { reason: String },
+    /// The peer is not a TEE authority of the namespace; ask another.
+    NotTee,
+}
+
+/// What a TEE signs to vouch for a forwarded request's response: the context,
+/// and digests of the request it was asked and the response it answers.
+#[must_use]
+pub fn forwarded_answer_message(context_id: &[u8; 32], request: &[u8], response: &[u8]) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    const DOMAIN: &[u8] = b"calimero:outbound:forwarded-answer:v1";
+    let mut message = Vec::with_capacity(DOMAIN.len() + 96);
+    message.extend_from_slice(DOMAIN);
+    message.extend_from_slice(context_id);
+    message.extend_from_slice(&Sha256::digest(request));
+    message.extend_from_slice(&Sha256::digest(response));
+    message
+}
+
+/// The response in a forwarded request's `answer`, if a TEE in `tee_keys`
+/// sent it; `Ok(None)` when the peer is no TEE and another should be asked.
+///
+/// # Errors
+/// The TEE refused the request, or the answer is not one a TEE signed.
+pub fn read_forwarded_answer(
+    context_id: &[u8; 32],
+    request: &[u8],
+    answer: &[u8],
+    tee_keys: &[calimero_primitives::identity::PublicKey],
+) -> Result<Option<Vec<u8>>, String> {
+    match ForwardedAnswer::try_from_slice(answer)
+        .map_err(|e| format!("a malformed answer from a namespace TEE: {e}"))?
+    {
+        ForwardedAnswer::NotTee => Ok(None),
+        ForwardedAnswer::Refused { reason } => {
+            Err(format!("the namespace's TEE refused the request: {reason}"))
+        }
+        ForwardedAnswer::Sent {
+            response,
+            tee,
+            signature,
+        } => {
+            let tee = calimero_primitives::identity::PublicKey::from(tee);
+            let signature = <[u8; 64]>::try_from(signature.as_slice())
+                .map_err(|_| "a malformed signature from a namespace TEE".to_owned())?;
+            let message = forwarded_answer_message(context_id, request, &response);
+            if !tee_keys.contains(&tee) || tee.verify_raw_signature(&message, &signature).is_err() {
+                return Err("an answer no TEE authority of the namespace signed".to_owned());
+            }
+            Ok(Some(response))
+        }
+    }
+}
+
+/// Whether `request` names a `{{sealed:…}}` secret anywhere.
+fn names_sealed(request: &OutboundRequest) -> bool {
+    let prefix = SEALED_PREFIX.as_bytes();
+    find(&request.body, prefix).is_some()
+        || request
+            .headers
+            .iter()
+            .any(|(_, value)| find(value.as_bytes(), prefix).is_some())
+}
+
+impl fmt::Debug for SealedKeys {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SealedKeys")
+    }
+}
+
 /// A request that passed every check, with its secrets filled in.
 pub struct Prepared {
     pub method: OutboundMethod,
@@ -394,12 +519,18 @@ impl OutboundService {
     }
 
     /// The client for one run of `app`, which declared the URL prefixes
-    /// `declared`; `None` when it declared none this node can use.
+    /// `declared`, in a namespace that approved `approval` for its publisher
+    /// (`None`: nothing yet); `None` when it declared none this node can use.
+    ///
+    /// A run gets a client even with no approval, so a request is refused with
+    /// a reason the app can show rather than trapping.
     #[must_use]
     pub fn for_run(
         self: &Arc<Self>,
         app: AppIdentity,
         declared: Vec<String>,
+        approval: Option<Approval>,
+        sealed: Option<SealedKeys>,
         context: String,
     ) -> Option<Arc<dyn OutboundHost>> {
         let declared: BTreeSet<String> = declared
@@ -413,6 +544,8 @@ impl OutboundService {
             service: Arc::clone(self),
             app,
             declared,
+            approval,
+            sealed,
             context,
         }))
     }
@@ -425,6 +558,53 @@ impl OutboundService {
         &self,
         app: &AppIdentity,
         declared: &BTreeSet<String>,
+        approval: Option<&Approval>,
+        request: OutboundRequest,
+    ) -> EyreResult<Prepared> {
+        self.prepare_sealed(app, declared, approval, None, request)
+    }
+
+    /// [`prepare`](Self::prepare), opening the `{{sealed:…}}` secrets the
+    /// request names with `sealed`.
+    ///
+    /// # Errors
+    /// The reason it is refused, worded for the app's developer.
+    pub fn prepare_sealed(
+        &self,
+        app: &AppIdentity,
+        declared: &BTreeSet<String>,
+        approval: Option<&Approval>,
+        sealed: Option<&SealedKeys>,
+        request: OutboundRequest,
+    ) -> EyreResult<Prepared> {
+        self.prepare_inner(app, declared, approval, Some(sealed), request)
+    }
+
+    /// Every check [`prepare_sealed`](Self::prepare_sealed) makes, with the
+    /// secrets left as written: what a node that is not a TEE asks before it
+    /// forwards a request naming a sealed secret to one.
+    ///
+    /// # Errors
+    /// The reason it is refused, worded for the app's developer.
+    pub fn check(
+        &self,
+        app: &AppIdentity,
+        declared: &BTreeSet<String>,
+        approval: Option<&Approval>,
+        request: OutboundRequest,
+    ) -> EyreResult<()> {
+        self.prepare_inner(app, declared, approval, None, request)
+            .map(drop)
+    }
+
+    /// `fill`: the sealed keys to fill the secrets in with, or `None` to leave
+    /// them as written.
+    fn prepare_inner(
+        &self,
+        app: &AppIdentity,
+        declared: &BTreeSet<String>,
+        approval: Option<&Approval>,
+        fill: Option<Option<&SealedKeys>>,
         request: OutboundRequest,
     ) -> EyreResult<Prepared> {
         if request.url.len() > MAX_URL {
@@ -450,15 +630,32 @@ impl OutboundService {
         if !self.any_host && !self.hosts.contains(&host) {
             bail!("{host} is not a host this node's operator allows");
         }
-        if !declared
+        let Some(under) = declared
             .iter()
-            .filter_map(|p| prefix(p))
-            .any(|p| covers(&p, &url))
-        {
+            .find(|d| prefix(d).is_some_and(|p| covers(&p, &url)))
+        else {
             bail!(
                 "{} is under no URL prefix this app's manifest declares under `outbound`",
                 request.url
             );
+        };
+        let approved = approval.is_some_and(|a| {
+            a.prefixes
+                .iter()
+                .filter_map(|p| prefix(p))
+                .any(|p| covers(&p, &url))
+        });
+        if !approved {
+            // Reviewed means the approver saw this prefix: left out of the set,
+            // it was declined or revoked. Never reviewed, under an approval the
+            // namespace did make, it is new in a later version of the app.
+            if approval.is_some_and(|a| !a.reviewed.iter().any(|r| r == under)) {
+                bail!(
+                    "{AWAITING_APPROVAL}: {under} is a URL prefix this app declares that \
+                     the namespace has not been asked to approve yet"
+                );
+            }
+            bail!("{NOT_APPROVED}: the namespace has not approved {under} for this app");
         }
         if request.headers.len() > MAX_HEADERS {
             bail!("at most {MAX_HEADERS} headers");
@@ -484,12 +681,21 @@ impl OutboundService {
             if FORBIDDEN_HEADERS.contains(&lower.as_str()) || lower.starts_with("proxy-") {
                 bail!("header {name} may not be set");
             }
-            let value = self.substitute(app, &host, value.into_bytes(), &mut used)?;
-            let value = String::from_utf8(value.to_vec())
-                .map_err(|_| eyre!("header {name} is not UTF-8"))?;
+            let value = match fill {
+                Some(sealed) => {
+                    let value =
+                        self.substitute(app, &host, sealed, value.into_bytes(), &mut used)?;
+                    String::from_utf8(value.to_vec())
+                        .map_err(|_| eyre!("header {name} is not UTF-8"))?
+                }
+                None => value,
+            };
             headers.push((name, Zeroizing::new(value)));
         }
-        let body = self.substitute(app, &host, request.body, &mut used)?;
+        let body = match fill {
+            Some(sealed) => self.substitute(app, &host, sealed, request.body, &mut used)?,
+            None => Zeroizing::new(request.body),
+        };
         Ok(Prepared {
             method: request.method,
             url,
@@ -500,21 +706,39 @@ impl OutboundService {
         })
     }
 
-    /// Replaces every `{{secret:NAME}}` in `bytes`.
+    /// Replaces every `{{secret:NAME}}` and `{{sealed:…}}` in `bytes`.
     fn substitute(
         &self,
         app: &AppIdentity,
         host: &str,
+        sealed: Option<&SealedKeys>,
         bytes: Vec<u8>,
         used: &mut Vec<Zeroizing<String>>,
     ) -> EyreResult<Zeroizing<Vec<u8>>> {
-        let prefix = SECRET_PREFIX.as_bytes();
         let suffix = SECRET_SUFFIX.as_bytes();
         let mut out = Zeroizing::new(Vec::with_capacity(bytes.len()));
         let mut rest = &bytes[..];
-        while let Some(start) = find(rest, prefix) {
+        loop {
+            let named = find(rest, SECRET_PREFIX.as_bytes());
+            let sealed_at = find(rest, SEALED_PREFIX.as_bytes());
+            let (start, is_sealed) = match (named, sealed_at) {
+                (None, None) => break,
+                (Some(n), Some(s)) if s < n => (s, true),
+                (Some(n), _) => (n, false),
+                (None, Some(s)) => (s, true),
+            };
             out.extend_from_slice(&rest[..start]);
-            let after = &rest[start + prefix.len()..];
+            if is_sealed {
+                let after = &rest[start + SEALED_PREFIX.len()..];
+                let end =
+                    find(after, suffix).ok_or_else(|| eyre!("an unterminated {SEALED_PREFIX}"))?;
+                let value = open_sealed_secret(sealed, host, &after[..end])?;
+                out.extend_from_slice(value.as_bytes());
+                used.push(value);
+                rest = &after[end + suffix.len()..];
+                continue;
+            }
+            let after = &rest[start + SECRET_PREFIX.len()..];
             let end =
                 find(after, suffix).ok_or_else(|| eyre!("an unterminated {SECRET_PREFIX}"))?;
             let name = core::str::from_utf8(&after[..end])
@@ -541,21 +765,136 @@ impl OutboundService {
     }
 }
 
+/// The value of a `{{sealed:<hex>}}` for a request to `host`, opened with the
+/// namespace TEE keys this node holds.
+fn open_sealed_secret(
+    sealed: Option<&SealedKeys>,
+    host: &str,
+    hex_envelope: &[u8],
+) -> EyreResult<Zeroizing<String>> {
+    let unavailable = || {
+        eyre!(
+            "{}: this node is not a TEE of the namespace, so it cannot open a sealed secret; \
+             the request has to run on one of the namespace's TEE nodes",
+            OutboundRefusal::SealedUnavailable.word()
+        )
+    };
+    if hex_envelope.len() > 2 * MAX_SEALED_ENVELOPE {
+        bail!("a sealed secret is longer than {MAX_SEALED_ENVELOPE} bytes");
+    }
+    let envelope = hex::decode(hex_envelope).map_err(|_| eyre!("a malformed sealed secret"))?;
+    let envelope = calimero_crypto::SealedEnvelope::from_bytes(&envelope)
+        .ok_or_else(|| eyre!("a malformed sealed secret"))?;
+    let sealed = sealed.ok_or_else(unavailable)?;
+    let keys = (sealed.keys)()?;
+    if keys.is_empty() {
+        return Err(unavailable());
+    }
+    let plaintext = keys
+        .iter()
+        .find_map(|key| {
+            let purpose = calimero_crypto::Purpose::App {
+                context_id: sealed.context_id,
+                recipient: key.public_key(),
+            };
+            calimero_crypto::open_sealed(key, &envelope, purpose).ok()
+        })
+        .map(Zeroizing::new)
+        .ok_or_else(|| {
+            eyre!(
+                "the sealed secret does not open on this node: it was sealed in another \
+                 context, or to a namespace TEE key this node was never given"
+            )
+        })?;
+    let payload = SealedSecretPayload::try_from_slice(&plaintext)
+        .map_err(|_| eyre!("a malformed sealed secret"))?;
+    let SealedSecretPayload { value, hosts } = payload;
+    let value = Zeroizing::new(value);
+    if !hosts.iter().any(|h| h == host) {
+        bail!("the sealed secret may not be sent to {host}");
+    }
+    Ok(value)
+}
+
 /// One run's client: the service, bound to the run's app and its declared URLs.
 #[derive(Debug)]
 struct RunOutbound {
     service: Arc<OutboundService>,
     app: AppIdentity,
     declared: BTreeSet<String>,
+    approval: Option<Approval>,
+    sealed: Option<SealedKeys>,
     context: String,
 }
 
+impl RunOutbound {
+    /// Where a request naming a sealed secret goes when this node cannot open
+    /// it: `None` on a TEE authority of the namespace, which opens it itself.
+    fn forwarder(&self, request: &OutboundRequest) -> Result<Option<&Forwarder>, String> {
+        let Some(sealed) = &self.sealed else {
+            return Ok(None);
+        };
+        let Some(forward) = &sealed.forward else {
+            return Ok(None);
+        };
+        if !names_sealed(request) {
+            return Ok(None);
+        }
+        let keys = (sealed.keys)().map_err(|e| e.to_string())?;
+        Ok(keys.is_empty().then_some(forward))
+    }
+
+    /// Checks `request` here, then hands it to a TEE of the namespace.
+    fn forward(
+        &self,
+        forward: &Forwarder,
+        bytes: &[u8],
+        request: OutboundRequest,
+        started: Instant,
+    ) -> Result<Vec<u8>, String> {
+        let host = request.url.clone();
+        if let Err(reason) =
+            self.service
+                .check(&self.app, &self.declared, self.approval.as_ref(), request)
+        {
+            warn!(context = %self.context, package = %self.app.package, %reason, "outbound request refused");
+            return Err(reason.to_string());
+        }
+        match forward(bytes) {
+            Ok(response) => {
+                info!(
+                    context = %self.context,
+                    package = %self.app.package,
+                    url = %host,
+                    response_bytes = response.len(),
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "outbound request sent by a namespace TEE"
+                );
+                Ok(response)
+            }
+            Err(reason) => {
+                warn!(context = %self.context, package = %self.app.package, %reason, "forwarded outbound request failed");
+                Err(reason)
+            }
+        }
+    }
+}
+
 impl OutboundHost for RunOutbound {
-    fn send(&self, request: &[u8]) -> Result<Vec<u8>, String> {
+    fn send(&self, bytes: &[u8]) -> Result<Vec<u8>, String> {
         let started = Instant::now();
-        let request = OutboundRequest::try_from_slice(request)
+        let request = OutboundRequest::try_from_slice(bytes)
             .map_err(|e| format!("a malformed outbound request: {e}"))?;
-        let prepared = match self.service.prepare(&self.app, &self.declared, request) {
+        if let Some(forward) = self.forwarder(&request)? {
+            return self.forward(forward, bytes, request, started);
+        }
+        let prepared = match self.service.prepare_sealed(
+            &self.app,
+            &self.declared,
+            self.approval.as_ref(),
+            self.sealed.as_ref(),
+            request,
+        ) {
             Ok(prepared) => prepared,
             Err(reason) => {
                 warn!(context = %self.context, package = %self.app.package, %reason, "outbound request refused");
@@ -860,6 +1199,92 @@ pub fn app_outbound(
             declared,
         )
     })
+}
+
+/// The prefixes and the reviewed list a namespace approval holds after an admin
+/// approves `selection` of an app declaring `declared`.
+///
+/// Adding (`replace = false`, an install or upgrade) keeps every prefix already
+/// approved; replacing sets exactly `selection` (how a prefix is revoked). What
+/// was reviewed only grows: the app's whole declared list was on the screen the
+/// admin answered, so a prefix of it they left out reads as not approved, never
+/// as awaiting approval.
+///
+/// # Errors
+/// A selected prefix is not an `https` URL prefix, or the result is longer than
+/// `MAX_OUTBOUND_APPROVALS`.
+pub fn merge_approval(
+    existing: Option<&Approval>,
+    declared: &[String],
+    selection: &calimero_primitives::outbound::OutboundSelection,
+    replace: bool,
+) -> EyreResult<Approval> {
+    use calimero_governance_types::bounds::MAX_OUTBOUND_APPROVALS;
+    use calimero_primitives::outbound::OutboundSelection;
+
+    let selected: &[String] = match selection {
+        OutboundSelection::Manifest => declared,
+        OutboundSelection::Prefixes(prefixes) => prefixes,
+    };
+    if let Some(bad) = selected
+        .iter()
+        .find(|p| !calimero_bundle::is_outbound_url(p))
+    {
+        bail!("{bad:?} is not an https URL prefix");
+    }
+    fn union<'a>(lists: impl IntoIterator<Item = &'a [String]>) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for item in lists.into_iter().flatten() {
+            if !out.contains(item) {
+                out.push(item.clone());
+            }
+        }
+        out
+    }
+    let none: &[String] = &[];
+    let prefixes = if replace {
+        union([selected])
+    } else {
+        union([existing.map_or(none, |a| &a.prefixes[..]), selected])
+    };
+    let reviewed = union([
+        existing.map_or(none, |a| &a.reviewed[..]),
+        declared,
+        selected,
+    ]);
+    for (what, list) in [("approved", &prefixes), ("reviewed", &reviewed)] {
+        if list.len() > MAX_OUTBOUND_APPROVALS {
+            bail!(
+                "{} {what} prefixes is more than the {MAX_OUTBOUND_APPROVALS} one approval holds",
+                list.len()
+            );
+        }
+    }
+    Ok(Approval { prefixes, reviewed })
+}
+
+/// What the namespace of `context` approved for apps signed by `signer`:
+/// `None` when it approved nothing for them, or the context is in no namespace.
+///
+/// # Errors
+/// The store could not be read.
+pub fn namespace_approval(
+    store: &calimero_store::Store,
+    context: &calimero_primitives::context::ContextId,
+    signer: &str,
+) -> EyreResult<Option<Approval>> {
+    let Some(group) = calimero_governance_store::get_group_for_context(store, context)? else {
+        return Ok(None);
+    };
+    let root = calimero_governance_store::NamespaceRepository::new(store).resolve(&group)?;
+    Ok(
+        calimero_governance_store::OutboundApprovalRepository::new(store)
+            .get(&root, signer)?
+            .map(|a| Approval {
+                prefixes: a.prefixes,
+                reviewed: a.reviewed,
+            }),
+    )
 }
 
 #[cfg(feature = "outbound-testing")]

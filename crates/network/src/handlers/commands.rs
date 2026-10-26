@@ -14,7 +14,7 @@ mod mesh_peer_count;
 mod mesh_peers;
 mod mesh_stats;
 mod network_status;
-mod open_stream;
+pub(crate) mod open_stream;
 mod peer_addrs;
 mod peer_count;
 mod probe_blob;
