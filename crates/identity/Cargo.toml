@@ -1,0 +1,22 @@
+[package]
+name = "calimero-identity"
+description = "Passkeys (WebAuthn), sessions, API keys and step-up consent for Calimero cloud"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+base64.workspace = true
+ciborium = "0.2.2"
+eyre.workspace = true
+ring.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[features]
+# A software authenticator for tests in this and other crates.
+testing = []

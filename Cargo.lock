@@ -1419,6 +1419,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-identity"
+version = "0.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "ciborium",
+ "eyre",
+ "ring",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "calimero-log"
 version = "0.0.0"
 dependencies = [

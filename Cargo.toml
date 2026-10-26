@@ -138,6 +138,7 @@ members = [
     "./crates/tee-release",
     "./crates/log",
     "./crates/sealed",
+    "./crates/identity",
 
     "./crates/store",
     "./crates/store/blobs",
