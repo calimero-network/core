@@ -450,13 +450,25 @@ impl ScopeProjections {
         scope: &ScopeId,
         parents: &[[u8; 32]],
     ) -> Option<calimero_authz::AclView> {
-        let log = self.logs.get(scope)?;
+        self.acl_view_at_checked(scope, parents).ok().flatten()
+    }
+
+    /// [`acl_view_at`](Self::acl_view_at), telling an unfed scope (`Ok(None)`) from a cut
+    /// too large to decide (`Err`), which no fallback may answer.
+    pub fn acl_view_at_checked(
+        &self,
+        scope: &ScopeId,
+        parents: &[[u8; 32]],
+    ) -> Result<Option<calimero_authz::AclView>, OverBudget> {
+        let Some(log) = self.logs.get(scope) else {
+            return Ok(None);
+        };
         let base = self.authority_base_of(scope);
         let walked = self.walk(scope, log, parents, base);
         if walked.is_undecidable() {
-            return None;
+            return Err(OverBudget);
         }
-        at_cut_view(&walked, base)
+        at_cut_view(&walked, base).map(Some).ok_or(OverBudget)
     }
 
     /// The at-cut ACL view, but **only** when the cut's whole causal ancestry is
@@ -489,13 +501,6 @@ impl ScopeProjections {
             return None;
         }
         at_cut_view(&walked, base)
-    }
-
-    /// Whether the void set of `scope` could not be decided within budget, so no read
-    /// of it may fall back to what the store holds.
-    fn void_undecidable(&self, scope: &ScopeId) -> bool {
-        self.voided_for(scope, self.authority_base_of(scope))
-            .undecidable
     }
 
     fn authority_base_of(&self, scope: &ScopeId) -> AuthorityBase {
@@ -2038,9 +2043,6 @@ impl ScopeProjections {
             .ok()?
             .to_bytes();
         let scope = ScopeId::from(namespace_id);
-        if self.void_undecidable(&scope) {
-            return None;
-        }
 
         // Resolve membership entirely from the AT-CUT folded view: direct, group
         // admin (subgroup creator / `Admin` role), or inherited through an open-
@@ -2050,7 +2052,7 @@ impl ScopeProjections {
         // is the immutable namespace founder, whom a transfer in the cut replaces;
         // every mutable input — memberships, caps, visibility, the subgroup tree,
         // subgroup-creator admin — comes from the fold.
-        let view = self.acl_view_at(&scope, heads);
+        let view = self.acl_view_at_checked(&scope, heads).ok()?;
         let (root, default_cap_base) = membership_bases(store, namespace_id);
         if view.as_ref().is_some_and(|v| {
             account_for_author(v, author)
@@ -2164,10 +2166,7 @@ impl ScopeProjections {
             .ok()?
             .to_bytes();
         let scope = ScopeId::from(namespace_id);
-        if self.void_undecidable(&scope) {
-            return None;
-        }
-        let view = self.acl_view_at(&scope, heads);
+        let view = self.acl_view_at_checked(&scope, heads).ok()?;
         let (root, default_cap_base) = membership_bases(store, namespace_id);
         if view
             .as_ref()
@@ -3763,6 +3762,7 @@ struct RowWrite {
     group: ContextGroupId,
     account: AccountId,
     whole: bool,
+    seat: bool,
 }
 
 /// Every row `op` writes, through relay seats and root guards, the seat itself included.
@@ -3782,6 +3782,7 @@ fn row_writes(op: &Op) -> Vec<RowWrite> {
                     group: *group,
                     account: *relay,
                     whole: false,
+                    seat: false,
                 });
                 wrapped = true;
                 payload = carried;
@@ -3794,6 +3795,7 @@ fn row_writes(op: &Op) -> Vec<RowWrite> {
                     group: *group,
                     account: *member,
                     whole: !wrapped,
+                    seat: false,
                 });
                 return writes;
             }
@@ -3802,6 +3804,7 @@ fn row_writes(op: &Op) -> Vec<RowWrite> {
                     group: ContextGroupId::from(*child.as_bytes()),
                     account: *admin,
                     whole: false,
+                    seat: true,
                 });
                 return writes;
             }
@@ -3828,41 +3831,45 @@ fn root_loss(op: &Op, root: ContextGroupId) -> Option<AccountId> {
     }
 }
 
-/// The ops, per account, that lie causally before one of its root losses, found in one
-/// pass from the heads down over every op (void ones included); `None` past the fold
+/// Where each op stands to the root losses of the accounts: `before` holds, per op, the
+/// accounts with a loss it precedes, `after` those with a loss that precedes it.
+struct LossOrder {
+    before: HashMap<[u8; 32], BTreeSet<AccountId>>,
+    after: HashMap<[u8; 32], BTreeSet<AccountId>>,
+}
+
+/// Both orders in two passes over every op (void ones included); `None` past the fold
 /// budget.
-fn ops_before_root_losses(
-    walked: &CutAncestry<'_>,
-    root: ContextGroupId,
-) -> Option<HashMap<[u8; 32], BTreeSet<AccountId>>> {
+fn loss_order(walked: &CutAncestry<'_>, root: ContextGroupId) -> Option<LossOrder> {
     let ops = walked.ops();
     let known: HashSet<[u8; 32]> = ops.iter().map(|op| op.id()).collect();
+    let by_id: HashMap<[u8; 32], &Op> = ops.iter().map(|op| (op.id(), *op)).collect();
+    let loss_of = |op: &Op| (!walked.is_void(op)).then(|| root_loss(op, root)).flatten();
     let mut waiting: HashMap<[u8; 32], usize> = HashMap::new();
     for op in ops {
         for parent in op.parents.iter().filter(|p| known.contains(*p)) {
             *waiting.entry(*parent).or_default() += 1;
         }
     }
-    let by_id: HashMap<[u8; 32], &Op> = ops.iter().map(|op| (op.id(), *op)).collect();
-    let mut behind: HashMap<[u8; 32], BTreeSet<AccountId>> = HashMap::new();
+    let mut before: HashMap<[u8; 32], BTreeSet<AccountId>> = HashMap::new();
     let mut ready: Vec<[u8; 32]> = ops
         .iter()
         .map(|op| op.id())
         .filter(|id| !waiting.contains_key(id))
         .collect();
+    let mut order: Vec<[u8; 32]> = Vec::with_capacity(ops.len());
     let mut work = 0usize;
     while let Some(id) = ready.pop() {
+        order.push(id);
         let op = by_id[&id];
-        let mut passed = behind.get(&id).cloned().unwrap_or_default();
-        if !walked.is_void(op) {
-            passed.extend(root_loss(op, root));
-        }
+        let mut passed = before.get(&id).cloned().unwrap_or_default();
+        passed.extend(loss_of(op));
         work += passed.len() + 1;
         if work > calimero_projection::MAX_FOLD_WORK {
             return None;
         }
         for parent in op.parents.iter().filter(|p| known.contains(*p)) {
-            behind
+            before
                 .entry(*parent)
                 .or_default()
                 .extend(passed.iter().copied());
@@ -3874,7 +3881,21 @@ fn ops_before_root_losses(
             }
         }
     }
-    Some(behind)
+    let mut after: HashMap<[u8; 32], BTreeSet<AccountId>> = HashMap::new();
+    for id in order.iter().rev() {
+        let op = by_id[id];
+        let mut seen = BTreeSet::new();
+        for parent in op.parents.iter().filter(|p| known.contains(*p)) {
+            seen.extend(after.get(parent).into_iter().flatten().copied());
+            seen.extend(loss_of(by_id[parent]));
+        }
+        work += seen.len() + 1;
+        if work > calimero_projection::MAX_FOLD_WORK {
+            return None;
+        }
+        let _ = after.insert(*id, seen);
+    }
+    Some(LossOrder { before, after })
 }
 
 /// The at-cut view with the space rows that ended with a root membership dropped:
@@ -3895,28 +3916,31 @@ fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero
         .copied()
         .filter(|op| !walked.is_void(op))
         .collect();
-    let behind = ops_before_root_losses(walked, root)?;
+    let order = loss_order(walked, root)?;
+    let lost: BTreeSet<AccountId> = live.iter().filter_map(|op| root_loss(op, root)).collect();
     let mut held_root: BTreeSet<AccountId> = BTreeSet::new();
     let mut stale: BTreeSet<[u8; 32]> = BTreeSet::new();
-    let mut ended: Vec<(ContextGroupId, AccountId)> = Vec::new();
-    let mut fresh: HashSet<(ContextGroupId, AccountId)> = HashSet::new();
+    let mut ended: Vec<RowWrite> = Vec::new();
+    let mut fresh: HashSet<(ContextGroupId, AccountId, bool)> = HashSet::new();
+    let none = BTreeSet::new();
     for op in &live {
-        let before = behind.get(&op.id());
+        let before = order.before.get(&op.id()).unwrap_or(&none);
+        let after = order.after.get(&op.id()).unwrap_or(&none);
         for write in row_writes(op) {
             if write.group == root {
                 let _ = held_root.insert(write.account);
                 continue;
             }
-            if before.is_some_and(|accounts| accounts.contains(&write.account))
-                && write.account != owner
-            {
-                if write.whole {
-                    let _ = stale.insert(op.id());
-                } else {
-                    ended.push((write.group, write.account));
-                }
+            // Only a write causally after the account's loss, and before none, stands.
+            let stands = !lost.contains(&write.account)
+                || write.account == owner
+                || (after.contains(&write.account) && !before.contains(&write.account));
+            if stands {
+                let _ = fresh.insert((write.group, write.account, write.seat));
+            } else if write.whole {
+                let _ = stale.insert(op.id());
             } else {
-                let _ = fresh.insert((write.group, write.account));
+                ended.push(write);
             }
         }
     }
@@ -3925,13 +3949,19 @@ fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero
     } else {
         ScopeState::acl_view_from_ancestry(&walked.without(&stale))
     };
-    for (group, account) in ended.iter().filter(|key| !fresh.contains(*key)) {
-        if let Some(rows) = view.groups.get_mut(group) {
-            let _ = rows.remove(account);
-        }
-        let _ = view.member_caps.remove(&(*group, *account));
-        if view.group_admin.get(group) == Some(account) {
-            let _ = view.group_admin.remove(group);
+    for write in &ended {
+        let (group, account) = (write.group, write.account);
+        if write.seat {
+            if !fresh.contains(&(group, account, true))
+                && view.group_admin.get(&group) == Some(&account)
+            {
+                let _ = view.group_admin.remove(&group);
+            }
+        } else if !fresh.contains(&(group, account, false)) {
+            if let Some(rows) = view.groups.get_mut(&group) {
+                let _ = rows.remove(&account);
+            }
+            let _ = view.member_caps.remove(&(group, account));
         }
     }
     let in_root: BTreeSet<AccountId> = view
@@ -5718,6 +5748,31 @@ mod tests {
         assert_eq!(
             projections.account_member_at_cut(&store, root, &member, &[removal.id()]),
             None
+        );
+    }
+
+    #[test]
+    fn a_readded_member_does_not_regain_its_admin_seat_in_a_space() {
+        let (root, space) = (ContextGroupId::from([3; 32]), ContextGroupId::from([4; 32]));
+        let view = chain_view(
+            root,
+            vec![
+                member_op(root, 9, GroupMemberRole::Member),
+                OpPayload::SubgroupCreated {
+                    child: ScopeId::from(space.to_bytes()),
+                    parent: ScopeId::from(root.to_bytes()),
+                    restricted: true,
+                    admin: AccountId::from([9; 32]),
+                },
+                removed_op(root, 9),
+                member_op(root, 9, GroupMemberRole::Member),
+                member_op(space, 9, GroupMemberRole::Member),
+            ],
+        );
+        assert!(holds_row(&view, space, 9));
+        assert_ne!(
+            view.group_admin.get(&space),
+            Some(&AccountId::from([9; 32]))
         );
     }
 
