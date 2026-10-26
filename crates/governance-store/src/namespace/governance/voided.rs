@@ -44,7 +44,8 @@ fn capability_beyond_payload(op: &GroupOp, author: &AccountId) -> u32 {
     let bits = match op {
         GroupOp::TargetApplicationSet { .. }
         | GroupOp::GroupMigrationSet { .. }
-        | GroupOp::CascadeUpgrade { .. } => MemberCapabilities::MANAGE_APPLICATION,
+        | GroupOp::CascadeUpgrade { .. }
+        | GroupOp::OutboundApprovalSet { .. } => MemberCapabilities::MANAGE_APPLICATION,
         GroupOp::GroupMetadataSet { .. } | GroupOp::ContextMetadataSet { .. } => {
             MemberCapabilities::CAN_MANAGE_METADATA
         }

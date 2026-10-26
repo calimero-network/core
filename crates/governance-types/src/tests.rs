@@ -365,6 +365,15 @@ const GOLDEN_GROUP_OP_ACCOUNT_NAMESPACE_PURGED: &[u8] = &[
     0, // namespace
 ];
 
+/// GroupOp ordinal 45 - OutboundApprovalSet (signer "s", one prefix, nothing reviewed)
+const GOLDEN_GROUP_OP_OUTBOUND_APPROVAL_SET: &[u8] = &[
+    45, // discriminant
+    1, 0, 0, 0, b's', // signer
+    1, 0, 0, 0, // prefixes: one
+    10, 0, 0, 0, b'h', b't', b't', b'p', b's', b':', b'/', b'/', b'a', b'/', // "https://a/"
+    0, 0, 0, 0, // reviewed: empty
+];
+
 #[test]
 fn group_op_discriminants_are_golden() {
     // Ties the ordinals frozen below to the schema version they describe, so a
@@ -668,6 +677,12 @@ fn group_op_discriminants_are_golden() {
         GOLDEN_GROUP_OP_ACCOUNT_NAMESPACE_PURGED,
         GroupOp::AccountNamespacePurged { namespace } if namespace == ContextGroupId::from([0u8; 32]),
         44
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_OUTBOUND_APPROVAL_SET,
+        GroupOp::OutboundApprovalSet { ref signer, ref prefixes, ref reviewed }
+            if signer == "s" && prefixes == &["https://a/".to_owned()] && reviewed.is_empty(),
+        45
     );
 
     assert!(
@@ -3943,6 +3958,85 @@ fn a_shared_writers_rotation_is_neither_delegable_nor_owner_level() {
     assert_eq!(op.owner_op_kind(), None, "it needs no owner proof");
     let bytes = borsh::to_vec(&op).expect("encode");
     assert_eq!(bytes[0], 43, "it follows RootGuarded (42)");
+}
+
+fn outbound_approval(signer: &str, prefixes: &[&str], reviewed: &[&str]) -> GroupOp {
+    GroupOp::OutboundApprovalSet {
+        signer: signer.to_owned(),
+        prefixes: prefixes.iter().map(|p| (*p).to_owned()).collect(),
+        reviewed: reviewed.iter().map(|p| (*p).to_owned()).collect(),
+    }
+}
+
+#[test]
+fn an_outbound_approval_is_neither_delegable_nor_owner_level() {
+    let op = outbound_approval("did:key:z6Mk", &["https://api.example/"], &[]);
+    assert!(op.delegable_form().is_none(), "a relay cannot publish it");
+    assert_eq!(op.owner_op_kind(), None, "it needs no owner proof");
+    assert_eq!(op.op_kind_label(), "outbound_approval_set");
+    let bytes = borsh::to_vec(&op).expect("encode");
+    assert_eq!(bytes[0], 45, "it follows AccountNamespacePurged (44)");
+}
+
+#[test]
+fn an_outbound_approval_takes_only_https_prefixes_within_bounds() {
+    let ok = "https://api.example/v1/";
+    assert!(outbound_approval("did:key:z6Mk", &[ok], &[ok])
+        .validate()
+        .is_ok());
+    assert!(
+        outbound_approval("did:key:z6Mk", &[], &[])
+            .validate()
+            .is_ok(),
+        "an empty set revokes everything"
+    );
+
+    for (what, op) in [
+        ("an empty signer", outbound_approval("", &[ok], &[])),
+        (
+            "an oversized signer",
+            outbound_approval(
+                &"d".repeat(bounds::MAX_OUTBOUND_SIGNER_BYTES + 1),
+                &[ok],
+                &[],
+            ),
+        ),
+        (
+            "plain http",
+            outbound_approval("did:key:z", &["http://api.example/"], &[]),
+        ),
+        (
+            "a query",
+            outbound_approval("did:key:z", &["https://api.example/?a=1"], &[]),
+        ),
+        (
+            "credentials",
+            outbound_approval("did:key:z", &["https://u@api.example/"], &[]),
+        ),
+        (
+            "a bad reviewed entry",
+            outbound_approval("did:key:z", &[], &["ftp://x/"]),
+        ),
+    ] {
+        assert!(
+            matches!(op.validate(), Err(GovernanceError::Bounds(_))),
+            "{what} was accepted"
+        );
+    }
+
+    let many: Vec<String> = (0..=bounds::MAX_OUTBOUND_APPROVALS)
+        .map(|i| format!("https://h{i}.example/"))
+        .collect();
+    let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+    for op in [
+        outbound_approval("did:key:z", &refs, &[]),
+        outbound_approval("did:key:z", &[], &refs),
+    ] {
+        assert!(
+            matches!(op.validate(), Err(GovernanceError::Bounds(_))),
+            "more than MAX_OUTBOUND_APPROVALS entries were accepted"
+        );
+    }
 }
 
 /// Wrapper tags stacked by the nesting tests: about what one 64 KiB gossip

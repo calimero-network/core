@@ -1373,6 +1373,7 @@ dependencies = [
  "blake3",
  "borsh",
  "calimero-account",
+ "calimero-bundle",
  "calimero-context-config",
  "calimero-primitives",
  "calimero-storage",

@@ -119,6 +119,9 @@ fn classify_group_op(op: &GroupOp) -> Authz {
             uncovered!("applies an owner-level op on the account root's proof")
         }
         GroupOp::SharedWritersRotated { .. } => uncovered!("replaces a shared cell's writer set"),
+        GroupOp::OutboundApprovalSet { .. } => {
+            uncovered!("approves the hosts a publisher's apps may reach, behind manage-application")
+        }
     }
 }
 

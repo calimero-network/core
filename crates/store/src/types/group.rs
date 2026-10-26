@@ -214,6 +214,11 @@ impl PredefinedEntry for key::GroupLocalGovNonceWindow {
     type DataType<'a> = key::GroupLocalGovNonceWindowValue;
 }
 
+impl PredefinedEntry for key::GroupOutboundApproval {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupOutboundApprovalValue;
+}
+
 impl PredefinedEntry for key::GroupContextMetadata {
     type Codec = Borsh;
     type DataType<'a> = calimero_primitives::metadata::MetadataRecord;
