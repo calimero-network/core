@@ -51,6 +51,7 @@ use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
 
 use crate::error::Rejected;
+use crate::space_rules::reparent_refusal;
 use crate::view::AclView;
 
 /// The capability a **data** op requires of its author, or `None` for a
@@ -240,17 +241,30 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
                 Err(Rejected::NotRootAdmin)
             }
         }
-        // A move or delete inside a private space takes authority in that space.
-        OpPayload::SubgroupReparented { child: scope, .. }
-        | OpPayload::SubgroupDeleted { scope } => {
-            let group = ContextGroupId::from(*scope.as_bytes());
-            match acl_at_cut.private_space(group) {
-                Some(space) if acl_at_cut.administers_within(&op.author(), group, space) => Ok(()),
+        // A move or delete inside a private space takes authority in that space, at both
+        // ends of a move; a move may not leave or nest spaces.
+        OpPayload::SubgroupReparented { child, new_parent } => {
+            let (child, new_parent) = (
+                ContextGroupId::from(*child.as_bytes()),
+                ContextGroupId::from(*new_parent.as_bytes()),
+            );
+            reparent_refusal(&acl_at_cut.space_edges(), &child, &new_parent)
+                .map_err(|_| Rejected::MoveRefused)?;
+            moves_or_deletes(acl_at_cut, &op.author(), child)?;
+            match acl_at_cut.private_space(new_parent) {
+                Some(space) if acl_at_cut.administers_within(&op.author(), new_parent, space) => {
+                    Ok(())
+                }
                 Some(_) => Err(Rejected::NotGroupAdmin),
-                None if acl_at_cut.is_root_admin(&op.author()) => Ok(()),
-                None => Err(Rejected::NotRootAdmin),
+                None if acl_at_cut.is_authorized_admin(new_parent, &op.author(), None) => Ok(()),
+                None => Err(Rejected::NotGroupAdmin),
             }
         }
+        OpPayload::SubgroupDeleted { scope } => moves_or_deletes(
+            acl_at_cut,
+            &op.author(),
+            ContextGroupId::from(*scope.as_bytes()),
+        ),
         OpPayload::PolicyUpdated { .. } | OpPayload::SubgroupCreated { .. } => {
             if acl_at_cut.is_root_admin(&op.author()) {
                 Ok(())
@@ -522,5 +536,20 @@ fn check_device_speaks_for_author(op: &Op, acl_at_cut: &AclView) -> Result<(), R
         // device was never linked rather than withdrawn — worth keeping distinct
         // so whoever reads a rejection knows which happened.
         None => Err(Rejected::DeviceNotLinked { device }),
+    }
+}
+
+/// Authority over a folder to move or delete it: in its private space an admin there, in the
+/// open space the root admin.
+fn moves_or_deletes(
+    acl: &AclView,
+    author: &AccountId,
+    group: ContextGroupId,
+) -> Result<(), Rejected> {
+    match acl.private_space(group) {
+        Some(space) if acl.administers_within(author, group, space) => Ok(()),
+        Some(_) => Err(Rejected::NotGroupAdmin),
+        None if acl.is_root_admin(author) => Ok(()),
+        None => Err(Rejected::NotRootAdmin),
     }
 }

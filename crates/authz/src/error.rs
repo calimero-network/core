@@ -36,6 +36,9 @@ pub enum Rejected {
     /// Author did not create the subgroup it is opening: only its creator may.
     #[error("author is not the creator of the subgroup it is opening")]
     NotGroupCreator,
+    /// The move would take a folder out of its private space, into another, or nest spaces.
+    #[error("the move leaves its private space or nests spaces")]
+    MoveRefused,
     /// Author is not the scope's root admin.
     #[error("author is not the scope root admin at the cut")]
     NotRootAdmin,

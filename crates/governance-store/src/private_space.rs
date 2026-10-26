@@ -111,10 +111,6 @@ impl Tree {
         Ok(false)
     }
 
-    fn holds_a_space(&self, group: &ContextGroupId) -> EyreResult<bool> {
-        Ok(self.is_private(group) || self.private_below(group)?)
-    }
-
     /// A new group under `parent` may be born private only outside every space.
     pub fn require_may_create(&self, parent: &ContextGroupId, restricted: bool) -> EyreResult<()> {
         if restricted && self.private_on_chain(parent)?.is_some() {
@@ -135,27 +131,25 @@ impl Tree {
         Ok(())
     }
 
-    /// A move may not nest spaces and may not take a folder out of its space.
+    /// A move may not nest spaces and may not take a folder out of its space: the rule the
+    /// fold applies too.
     pub fn require_may_reparent(
         &self,
         child: &ContextGroupId,
         new_parent: &ContextGroupId,
     ) -> EyreResult<()> {
-        let Some((old_parent, _)) = self.0.get(child) else {
-            return Ok(());
-        };
-        if old_parent == new_parent {
-            return Ok(());
+        match calimero_authz::reparent_refusal(&self.0, child, new_parent) {
+            Ok(()) => Ok(()),
+            Err(calimero_authz::ReparentRefusal::LeavesSpace) => {
+                bail!(PrivateSpaceError::LeavesSpace(child.to_string()))
+            }
+            Err(calimero_authz::ReparentRefusal::Nested) => {
+                bail!(PrivateSpaceError::Nested(child.to_string()))
+            }
+            Err(calimero_authz::ReparentRefusal::DepthExceeded) => {
+                bail!(NamespaceError::DepthExceeded)
+            }
         }
-        let source = self.private_on_chain(old_parent)?;
-        let destination = self.private_on_chain(new_parent)?;
-        if source.is_some() && source != destination {
-            bail!(PrivateSpaceError::LeavesSpace(child.to_string()));
-        }
-        if destination.is_some() && self.holds_a_space(child)? {
-            bail!(PrivateSpaceError::Nested(child.to_string()));
-        }
-        Ok(())
     }
 
     /// Whether `op` in `group` is sealed under the workspace key: the group is readable by every

@@ -100,6 +100,23 @@ impl AclView {
         .take(MAX_NAMESPACE_DEPTH + 1)
     }
 
+    /// The folders of the view as the shared structure rules read them.
+    #[must_use]
+    pub fn space_edges(&self) -> crate::SpaceEdges {
+        self.subgroups
+            .iter()
+            .map(|(child, edge)| {
+                (
+                    ContextGroupId::from(*child.as_bytes()),
+                    (
+                        ContextGroupId::from(*edge.parent.as_bytes()),
+                        edge.restricted,
+                    ),
+                )
+            })
+            .collect()
+    }
+
     /// The private space containing `group`: its nearest restricted ancestor-or-self.
     #[must_use]
     pub fn private_space(&self, group: ContextGroupId) -> Option<ContextGroupId> {

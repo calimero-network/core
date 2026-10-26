@@ -710,6 +710,58 @@ fn a_root_admin_outside_a_private_space_cannot_move_or_delete_a_folder_in_it() {
     };
     assert!(authorize(&moves(owner), &view).is_err());
     assert!(authorize(&deletes(owner), &view).is_err());
-    assert!(authorize(&moves(space_admin), &view).is_ok());
+    // The move would take the folder to the root, out of its space, even for its admin.
+    assert!(authorize(&moves(space_admin), &view).is_err());
     assert!(authorize(&deletes(space_admin), &view).is_ok());
+}
+
+/// A move may not take a folder out of its space or into another, whoever asks; within the
+/// space a space admin may move it.
+#[test]
+fn a_space_admin_cannot_move_a_folder_out_of_its_space_or_into_another() {
+    use crate::view::SubgroupEdge;
+
+    let admin = AccountId::from([1u8; 32]);
+    let root = ContextGroupId::from([9u8; 32]);
+    let ids = [0x0A, 0x0B, 0x0C, 0x0D, 0x0E].map(|n| ContextGroupId::from([n; 32]));
+    let [space, folder, other_folder, other_space, other_inner] = ids;
+    let mut view = AclView::default();
+    for (child, parent, restricted) in [
+        (space, root, true),
+        (folder, space, false),
+        (other_folder, space, false),
+        (other_space, root, true),
+        (other_inner, other_space, false),
+    ] {
+        let _ = view.subgroups.insert(
+            ScopeId::from(child.to_bytes()),
+            SubgroupEdge {
+                parent: ScopeId::from(parent.to_bytes()),
+                restricted,
+            },
+        );
+    }
+    for group in [space, other_space] {
+        let _ = view.group_admin.insert(group, admin);
+    }
+    let view = bind_account(view, admin);
+    let moves = |new_parent: ContextGroupId| {
+        op_with(
+            admin,
+            OpPayload::SubgroupReparented {
+                child: ScopeId::from(folder.to_bytes()),
+                new_parent: ScopeId::from(new_parent.to_bytes()),
+            },
+        )
+    };
+
+    assert!(authorize(&moves(root), &view).is_err(), "out to the root");
+    assert!(
+        authorize(&moves(other_inner), &view).is_err(),
+        "into another space"
+    );
+    assert!(
+        authorize(&moves(other_folder), &view).is_ok(),
+        "within its space"
+    );
 }
