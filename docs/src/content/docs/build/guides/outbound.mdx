@@ -37,6 +37,21 @@ namespace starts with a stable word an app can match on:
   admin has been asked about it yet. The prefixes approved before keep working.
   Show an admin what to approve.
 
+`OutboundRefusal::of` reads the word for you:
+
+```rust
+use calimero_sdk::outbound::OutboundRefusal;
+
+match env::http_request(&request) {
+    Ok(response) => { /* decide, and store the decision */ }
+    Err(reason) => match OutboundRefusal::of(&reason) {
+        Some(OutboundRefusal::NotApproved) => { /* ask an admin of the namespace */ }
+        Some(OutboundRefusal::AwaitingApproval) => { /* an admin approves the upgrade's new prefix */ }
+        None => { /* anything else is a bug in the app or its deployment */ }
+    },
+}
+```
+
 A run with no
 outbound client at all (the node's feature is off, the manifest declares
 nothing, or the run is a view) and a second request in one run trap the run.

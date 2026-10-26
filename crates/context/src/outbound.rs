@@ -96,12 +96,13 @@ pub struct Approval {
 
 /// The start of every refusal for a prefix the namespace has not approved.
 /// Stable: an app matches on it to tell a member to ask an admin.
-pub const NOT_APPROVED: &str = "NotApproved";
+pub const NOT_APPROVED: &str = calimero_primitives::outbound::OutboundRefusal::NotApproved.word();
 
 /// The start of every refusal for a prefix the namespace has never been asked
 /// about, because a later version of the app declared it. Stable: an app
 /// matches on it to show an admin what to approve.
-pub const AWAITING_APPROVAL: &str = "AwaitingApproval";
+pub const AWAITING_APPROVAL: &str =
+    calimero_primitives::outbound::OutboundRefusal::AwaitingApproval.word();
 
 /// A secret, and the hosts it may be sent to.
 pub struct Secret {

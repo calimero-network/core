@@ -104,6 +104,44 @@ pub struct OutboundResponse {
     pub body: Vec<u8>,
 }
 
+/// A refusal an app can act on, read from the reason `env::http_request`
+/// returns. Every other refusal (a host the operator does not allow, a URL
+/// outside the manifest, a bound) is a bug in the app or its deployment, and
+/// reads as `None`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutboundRefusal {
+    /// The namespace has not approved the URL's prefix for the app's
+    /// publisher, or revoked it: a member should ask an admin.
+    NotApproved,
+    /// A newer version of the app declares the prefix and nobody has been
+    /// asked about it yet: an admin should approve it from the upgrade.
+    AwaitingApproval,
+}
+
+impl OutboundRefusal {
+    /// The word a refusal's reason starts with. Stable: the node writes it and
+    /// apps match on it.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::NotApproved => "NotApproved",
+            Self::AwaitingApproval => "AwaitingApproval",
+        }
+    }
+
+    /// The refusal a reason names, if it is one an app can act on.
+    #[must_use]
+    pub fn of(reason: &str) -> Option<Self> {
+        [Self::NotApproved, Self::AwaitingApproval]
+            .into_iter()
+            .find(|refusal| {
+                reason
+                    .strip_prefix(refusal.word())
+                    .is_some_and(|rest| rest.starts_with(':'))
+            })
+    }
+}
+
 /// Which URL prefixes an admin approves for an app's publisher: exactly the
 /// ones its manifest declares, or a list of their own (what an install screen
 /// showed, a subset of it, or a narrower prefix).
@@ -146,7 +184,26 @@ impl<'de> Deserialize<'de> for OutboundSelection {
 
 #[cfg(test)]
 mod selection_tests {
-    use super::OutboundSelection;
+    use super::{OutboundRefusal, OutboundSelection};
+
+    #[test]
+    fn a_reason_names_the_refusal_an_app_can_act_on() {
+        assert_eq!(
+            OutboundRefusal::of(
+                "NotApproved: the namespace has not approved https://a/ for this app"
+            ),
+            Some(OutboundRefusal::NotApproved)
+        );
+        assert_eq!(
+            OutboundRefusal::of("AwaitingApproval: https://a/ is a URL prefix this app declares"),
+            Some(OutboundRefusal::AwaitingApproval)
+        );
+        assert_eq!(
+            OutboundRefusal::of("no URL prefix the app declares covers it"),
+            None
+        );
+        assert_eq!(OutboundRefusal::of("NotApprovedYet: something else"), None);
+    }
 
     #[test]
     fn a_selection_is_the_manifest_keyword_or_a_list() {

@@ -40,6 +40,8 @@
   `0.12.0-rc.1` makes no requests until an admin approves. The op is appended
   at the `GroupOp` tail without a schema bump, so SDKs keep signing at 27, and
   a node that predates it stalls only on that op. (#4673)
+- `calimero_sdk::outbound::OutboundRefusal::of` tells an app's method which of
+  the two namespace refusals a failed `env::http_request` was. (#4673)
 
 ## [0.11.1] - 2026-10-25
 
