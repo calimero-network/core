@@ -64,6 +64,11 @@ impl Tree {
         self.0.contains_key(group)
     }
 
+    /// Whether `group` is a private space root or a folder inside one.
+    pub fn in_space(&self, group: &ContextGroupId) -> EyreResult<bool> {
+        Ok(self.private_on_chain(group)?.is_some())
+    }
+
     fn is_private(&self, group: &ContextGroupId) -> bool {
         self.0.get(group).is_some_and(|(_, restricted)| *restricted)
     }

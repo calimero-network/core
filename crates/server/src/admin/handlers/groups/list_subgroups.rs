@@ -1,3 +1,4 @@
+use calimero_governance_store::private_space::Tree;
 use calimero_governance_store::{MembershipRepository, MetadataRepository, NamespaceRepository};
 use std::sync::Arc;
 
@@ -113,6 +114,19 @@ pub(crate) fn visible_children(
     });
     let caller_account = account.map(|account| account.0).or(node_account);
 
+    // Outsiders see that a private space exists, never what is inside it.
+    if Tree::live(&state.store, group_id)?.in_space(group_id)? {
+        let is_member = match caller_account.as_ref() {
+            Some(account) => {
+                MembershipRepository::new(&state.store).is_member(group_id, account)?
+            }
+            None => false,
+        };
+        if !is_member {
+            return Ok(Vec::new());
+        }
+    }
+
     let mut subgroups = Vec::with_capacity(children.len());
     for child in children {
         // `Open` subgroups are always listed; `Restricted` subgroups are
@@ -147,4 +161,89 @@ pub(crate) fn visible_children(
     }
 
     Ok(subgroups)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_context_client::client::ContextClient;
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::VisibilityMode;
+    use calimero_governance_store::{CapabilitiesRepository, MembershipRepository};
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
+
+    use super::*;
+    use crate::auth::AuthenticatedAccount;
+    use crate::NodeReadiness;
+
+    /// Whether `caller`, a workspace member, is shown `drafts` among the children of the private
+    /// space `board`, which holds it; `in_board` seats the caller in the space.
+    async fn lists_the_folder_in_the_space(in_board: bool) -> bool {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = ContextGroupId::from([0xD0u8; 32]);
+        let (board, drafts) = (
+            ContextGroupId::from([0xD1u8; 32]),
+            ContextGroupId::from([0xD2u8; 32]),
+        );
+        let account =
+            calimero_context::test_support::enrol(&store, &ns, &PublicKey::from([0x5D; 32]));
+        let nest = |parent, child| {
+            NamespaceRepository::new(&store)
+                .nest(parent, child)
+                .unwrap();
+        };
+        nest(&ns, &board);
+        nest(&board, &drafts);
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&board, VisibilityMode::Restricted)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&drafts, VisibilityMode::Open)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&ns, &account, GroupMemberRole::Member)
+            .unwrap();
+        if in_board {
+            MembershipRepository::new(&store)
+                .add_member(&board, &account, GroupMemberRole::Member)
+                .unwrap();
+        }
+        let (event_sender, _rx) = tokio::sync::broadcast::channel(16);
+        let (node_client, _blob_dir) = crate::test_support::test_node_client(
+            &store,
+            crate::test_support::stub_node_manager(vec![]),
+            event_sender,
+        )
+        .await;
+        let ctx_client =
+            ContextClient::new(store.clone(), node_client.clone(), LazyRecipient::new());
+        let state = AdminState::new(
+            store,
+            ctx_client,
+            node_client,
+            Arc::new(NodeReadiness::new()),
+            [0; 32],
+            #[cfg(feature = "mock-attestation")]
+            false,
+        );
+
+        visible_children(&state, &board, Some(AuthenticatedAccount(account)))
+            .expect("the listing answers")
+            .iter()
+            .any(|(child, _)| *child == drafts)
+    }
+
+    #[actix::test]
+    async fn a_folder_in_a_private_space_is_listed_only_to_its_members() {
+        assert!(
+            lists_the_folder_in_the_space(true).await,
+            "precondition: a member of the space sees it"
+        );
+        assert!(!lists_the_folder_in_the_space(false).await);
+    }
 }
