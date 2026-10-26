@@ -77,9 +77,22 @@ fn reference_is_authorized_admin(
     author: &AccountId,
     root: Option<(ContextGroupId, AccountId)>,
 ) -> bool {
+    // The root admin's authority reaches the open space, never a private space.
+    let mut in_space = false;
+    let mut at = group;
+    for _ in 0..=MAX_NAMESPACE_DEPTH {
+        let Some(edge) = view.subgroups.get(&ScopeId::from(at.to_bytes())) else {
+            break;
+        };
+        if edge.restricted {
+            in_space = true;
+            break;
+        }
+        at = ContextGroupId::from(*edge.parent.as_bytes());
+    }
     let is_admin = |g: ContextGroupId| -> bool {
         view.is_group_admin(author, g)
-            || view.is_root_admin(author)
+            || (!in_space && view.is_root_admin(author))
             || root.is_some_and(|(root_g, root_admin)| g == root_g && *author == root_admin)
     };
     if is_admin(group) {

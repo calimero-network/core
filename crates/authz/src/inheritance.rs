@@ -266,10 +266,11 @@ impl AclView {
         author: &AccountId,
         root: Option<(ContextGroupId, AccountId)>,
     ) -> bool {
-        // The one place the GLOBAL root admin counts: admin authority reaches
-        // every group, where membership does not.
+        // The root admin's authority reaches the open space, never a private space.
+        let outside_space = self.private_space(group).is_none();
         let is_admin = |g: ContextGroupId| {
-            self.is_membership_admin(g, author, root) || self.is_root_admin(author)
+            self.is_membership_admin(g, author, root)
+                || (outside_space && self.is_root_admin(author))
         };
         is_admin(group) || self.open_ancestors(group).any(is_admin)
     }

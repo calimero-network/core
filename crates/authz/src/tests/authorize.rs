@@ -765,3 +765,39 @@ fn a_space_admin_cannot_move_a_folder_out_of_its_space_or_into_another() {
         "within its space"
     );
 }
+
+/// The root admin is no admin of a private space it is not in; it still administers the open one.
+#[test]
+fn the_root_admin_administers_the_open_space_and_no_private_space() {
+    use crate::view::SubgroupEdge;
+
+    let owner = AccountId::from([1u8; 32]);
+    let root = ContextGroupId::from([9u8; 32]);
+    let (open, space, folder) = (
+        ContextGroupId::from([0x0A; 32]),
+        ContextGroupId::from([0x0B; 32]),
+        ContextGroupId::from([0x0C; 32]),
+    );
+    let mut view = AclView {
+        root_admin: Some(owner),
+        ..Default::default()
+    };
+    for (child, parent, restricted) in [
+        (open, root, false),
+        (space, root, true),
+        (folder, space, false),
+    ] {
+        let _ = view.subgroups.insert(
+            ScopeId::from(child.to_bytes()),
+            SubgroupEdge {
+                parent: ScopeId::from(parent.to_bytes()),
+                restricted,
+            },
+        );
+    }
+
+    assert!(view.is_authorized_admin(root, &owner, None));
+    assert!(view.is_authorized_admin(open, &owner, None));
+    assert!(!view.is_authorized_admin(space, &owner, None));
+    assert!(!view.is_authorized_admin(folder, &owner, None));
+}
