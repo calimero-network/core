@@ -11090,6 +11090,56 @@ mod tee_member_removed_event_tests {
         );
     }
 
+    /// An account that leaves the namespace holds no live row in a private space either.
+    #[test]
+    #[serial_test::serial]
+    fn a_namespace_leave_ends_the_accounts_private_space_rows() {
+        use calimero_context_config::VisibilityMode;
+
+        let store = test_store();
+        let ns_gid = ContextGroupId::from([0xDA; 32]);
+        let space = ContextGroupId::from([0xDB; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ns_gid, &space)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&space, VisibilityMode::Restricted)
+            .unwrap();
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+        let admin = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+        let member_sk = PrivateKey::from([0xE9; 32]);
+        let member = enrol_member(&store, &ns_gid, &member_sk.public_key());
+        for group in [&ns_gid, &space] {
+            MetaRepository::new(&store)
+                .save(group, &sample_meta_with_admin(admin))
+                .unwrap();
+        }
+        let rows = MembershipRepository::new(&store);
+        rows.add_member(&ns_gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        for group in [&ns_gid, &space] {
+            rows.add_member(group, &member, GroupMemberRole::Member)
+                .unwrap();
+        }
+
+        let op = SignedGroupOp::sign(
+            &member_sk,
+            ns_gid.to_bytes().into(),
+            vec![],
+            1,
+            GroupOp::MemberLeft {
+                member,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        )
+        .expect("sign MemberLeft");
+        apply_local_signed_group_op(&store, &op).expect("apply MemberLeft");
+
+        assert_eq!(rows.role_of(&space, &member).unwrap(), None);
+        assert!(!rows.is_live_member(&space, &member).unwrap());
+    }
+
     /// A root TEE removal must also purge the TEE's `ContextIdentity` rows in
     /// an Open subgroup it only INHERITED into — i.e. where it auto-followed
     /// contexts (Fix B) without ever holding a direct `GroupMember` row.
