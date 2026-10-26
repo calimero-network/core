@@ -142,6 +142,7 @@ async fn put(c: &Cluster, key: &str, value: &str) -> u64 {
             Err(WriteError::NotLeader { .. } | WriteError::Unavailable(_)) => {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
+            Err(e @ WriteError::TooLarge { .. }) => panic!("{e}"),
         }
     }
     panic!("write never succeeded");
@@ -294,4 +295,38 @@ async fn disk_holds_no_plaintext() {
         assert!(!hay.contains("plaintext-secret-value"));
         assert!(!hay.contains("needle"));
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oversized_entries_are_refused_and_blobs_stay_sealed() {
+    let c = cluster(3).await;
+    let id = leader(&c).await;
+    let big = vec![b'x'; calimero_log::MAX_ENTRY_BYTES + 1];
+    assert!(matches!(
+        c.groups[&id].write(big).await,
+        Err(WriteError::TooLarge { .. })
+    ));
+    // Replication is unaffected.
+    let index = put(&c, "after", "1").await;
+    for g in c.groups.values() {
+        assert!(g.wait_applied(index, Duration::from_secs(5)).await);
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::open(
+        9,
+        &dir.path().join("log.redb"),
+        &KEY,
+        Arc::new(Wire(Arc::clone(&c.net), 9)),
+        config(),
+    )
+    .unwrap();
+    engine.put_blob("b1", b"blob-plaintext-marker").unwrap();
+    assert_eq!(
+        engine.get_blob("b1").unwrap().as_deref(),
+        Some(&b"blob-plaintext-marker"[..])
+    );
+    assert!(engine.get_blob("b2").unwrap().is_none());
+    let bytes = std::fs::read(dir.path().join("log.redb")).unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("blob-plaintext-marker"));
 }

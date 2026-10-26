@@ -514,3 +514,56 @@ async fn backups_are_encrypted_and_restorable() {
     let state: Value = serde_json::from_slice(&data).unwrap();
     assert!(state["kv"].as_object().is_some_and(|m| !m.is_empty()));
 }
+
+/// Regression: Raft entries carrying WASM bundles exceeded the HTTP body
+/// limit (2 MiB), so followers were refused (413) forever and fell behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn large_entries_reach_every_replica() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let mut wasm = kv_wasm();
+    // A 2.5 MiB custom section: valid WASM, one entry well over 2 MiB.
+    let payload = vec![0_u8; 2_500_000];
+    let mut section = vec![3, b'p', b'a', b'd'];
+    section.extend_from_slice(&payload);
+    let mut size = section.len();
+    let mut leb = Vec::new();
+    loop {
+        let byte = (size & 0x7f) as u8;
+        size >>= 7;
+        if size == 0 {
+            leb.push(byte);
+            break;
+        }
+        leb.push(byte | 0x80);
+    }
+    wasm.push(0);
+    wasm.extend_from_slice(&leb);
+    wasm.extend_from_slice(&section);
+    let hash = alice.upload_bundle(wasm).await.unwrap();
+    let leader_applied = c
+        .nodes
+        .iter()
+        .flatten()
+        .filter_map(|r| r.node.system.status().last_log)
+        .max()
+        .unwrap_or(0);
+    for r in c.nodes.iter().flatten() {
+        assert!(
+            r.node
+                .system
+                .wait_applied(leader_applied, Duration::from_secs(10))
+                .await,
+            "node {} fell behind",
+            r.node.config.node_id
+        );
+        assert_eq!(r.node.sys(|s| s.bundles.len()), 1);
+        assert!(r.node.engine.get_blob(&hash).unwrap().is_some());
+    }
+    // The log keeps moving after the large bundle.
+    let app = alice.create_app("big", &hash, json!({})).await.unwrap();
+    let _out = alice
+        .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap();
+}

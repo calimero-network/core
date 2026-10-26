@@ -21,6 +21,11 @@ architecture spec.
   `/orgs/*`, `/invites/{token}/redeem`, `/internal/*` (peers), `/ops/*` (mdma: counts only, no read path).
 - **Confirm methods**: `intents` answers `412 CONFIRM_REQUIRED` with a challenge over
   the exact call; the retry carries a passkey assertion, which is logged as consent.
+- **Bundles are blobs, not log entries**: `POST /bundles` stores the WASM in every
+  node's sealed blob store (`internal/blob`, majority required), then the system log
+  records only `{hash, size}`. A node missing a blob fetches it from a peer
+  (`internal/blob/get`) on first use. Log entries are capped at
+  `calimero_log::MAX_ENTRY_BYTES` (1 MiB): openraft gives each append one heartbeat.
 - **Read-your-writes across nodes**: lookups of system objects (`Node::sys_until`) wait
   up to 2 s for the local replica to apply a write committed elsewhere.
 

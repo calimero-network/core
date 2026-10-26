@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use calimero_identity::Credential;
-use calimero_log::{Bytes, Machine};
+use calimero_log::Machine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -27,7 +27,8 @@ pub struct SessionKey {
 #[serde(rename_all = "camelCase")]
 pub struct BundleRecord {
     pub hash: String,
-    pub wasm: Bytes,
+    /// The WASM itself lives in each node's blob store, under `hash`.
+    pub size: u64,
     pub uploaded_by: AccountId,
 }
 
@@ -115,7 +116,7 @@ pub enum SystemCmd {
     },
     PutBundle {
         hash: String,
-        wasm: Bytes,
+        size: u64,
         actor: AccountId,
     },
     CreateApp {
@@ -270,13 +271,13 @@ impl SystemMachine {
                 let _prev = s.nodes.insert(node.id, node);
                 Ok(Value::Null)
             }
-            SystemCmd::PutBundle { hash, wasm, actor } => {
+            SystemCmd::PutBundle { hash, size, actor } => {
                 if !s.accounts.contains_key(&actor) {
                     return Err("unknown account");
                 }
                 let _prev = s.bundles.entry(hash.clone()).or_insert(BundleRecord {
                     hash: hash.clone(),
-                    wasm,
+                    size,
                     uploaded_by: actor,
                 });
                 Ok(json!({ "hash": hash }))

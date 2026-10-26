@@ -25,6 +25,7 @@ use crate::types::{Entry, GroupId, LogId, StorageError, TypeConfig, Vote};
 
 const LOG: TableDefinition<'_, (u64, u64), &[u8]> = TableDefinition::new("log");
 const META: TableDefinition<'_, (u64, &str), &[u8]> = TableDefinition::new("meta");
+const BLOBS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("blobs");
 
 /// Seals and opens values with the node's storage key.
 pub struct Sealer {
@@ -89,6 +90,7 @@ impl Db {
         {
             let _log = tx.open_table(LOG)?;
             let _meta = tx.open_table(META)?;
+            let _blobs = tx.open_table(BLOBS)?;
         }
         tx.commit()?;
         Ok(Arc::new(Self {
@@ -132,6 +134,31 @@ impl Db {
         };
         let plain = self.sealer.open(&Self::aad(group, name), v.value())?;
         Ok(Some(serde_json::from_slice(&plain)?))
+    }
+
+    /// Store a blob (content kept outside every log, e.g. a WASM bundle).
+    pub fn put_blob(&self, name: &str, bytes: &[u8]) -> eyre::Result<()> {
+        let sealed = self.sealer.seal(format!("blob|{name}").as_bytes(), bytes)?;
+        let tx = self.db.begin_write()?;
+        {
+            let mut t = tx.open_table(BLOBS)?;
+            let _prev = t.insert(name, sealed.as_slice())?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Read a blob stored with [`Db::put_blob`].
+    pub fn get_blob(&self, name: &str) -> eyre::Result<Option<Vec<u8>>> {
+        let tx = self.db.begin_read()?;
+        let t = tx.open_table(BLOBS)?;
+        let Some(v) = t.get(name)? else {
+            return Ok(None);
+        };
+        Ok(Some(
+            self.sealer
+                .open(format!("blob|{name}").as_bytes(), v.value())?,
+        ))
     }
 
     fn put_entries(&self, group: GroupId, entries: &[Entry]) -> eyre::Result<()> {

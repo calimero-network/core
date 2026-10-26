@@ -44,9 +44,9 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            heartbeat_ms: 150,
-            election_min_ms: 1000,
-            election_max_ms: 2000,
+            heartbeat_ms: 200,
+            election_min_ms: 1200,
+            election_max_ms: 2400,
             snapshot_every: 1000,
         }
     }
@@ -62,7 +62,16 @@ pub enum WriteError {
     /// may or may not have been committed.
     #[error("unavailable: {0}")]
     Unavailable(String),
+    /// The command is larger than [`MAX_ENTRY_BYTES`]; nothing was appended.
+    #[error("entry of {size} bytes exceeds the {max} byte limit")]
+    TooLarge { size: usize, max: usize },
 }
+
+/// The largest command a log entry carries. openraft gives each append RPC one
+/// heartbeat interval to finish, so a bigger entry could never reach a follower
+/// and would stall replication of everything behind it. Large content (bundles)
+/// goes to the blob store and the entry carries its hash.
+pub const MAX_ENTRY_BYTES: usize = 1024 * 1024;
 
 /// What a proposal builder decided.
 pub enum Proposal {
@@ -186,6 +195,12 @@ impl<M: Machine> Group<M> {
 
     /// Append a command without reading state first.
     pub async fn write(&self, cmd: Vec<u8>) -> Result<(u64, Vec<u8>), WriteError> {
+        if cmd.len() > MAX_ENTRY_BYTES {
+            return Err(WriteError::TooLarge {
+                size: cmd.len(),
+                max: MAX_ENTRY_BYTES,
+            });
+        }
         match self.raft.client_write(Bytes(cmd)).await {
             Ok(r) => Ok((r.log_id.index, r.data.0)),
             Err(RaftError::APIError(ClientWriteError::ForwardToLeader(f))) => {
@@ -383,6 +398,16 @@ impl Engine {
             groups: RwLock::new(HashMap::new()),
             factory: RwLock::new(None),
         }))
+    }
+
+    /// Store a sealed blob on this node (outside every log).
+    pub fn put_blob(&self, name: &str, bytes: &[u8]) -> eyre::Result<()> {
+        self.db.put_blob(name, bytes)
+    }
+
+    /// Read a blob stored on this node.
+    pub fn get_blob(&self, name: &str) -> eyre::Result<Option<Vec<u8>>> {
+        self.db.get_blob(name)
     }
 
     #[must_use]

@@ -417,7 +417,13 @@ async fn check_assertion(
                 count,
             })
             .await
-            .map_err(|_| ApiError::unauthenticated("signature counter did not advance"))?;
+            .map_err(|e| {
+                if e.code == "REJECTED" {
+                    ApiError::unauthenticated("signature counter did not advance")
+                } else {
+                    e
+                }
+            })?;
     }
     Ok(owner)
 }
@@ -687,10 +693,11 @@ async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Bod
         .executor
         .module(&hash, &body)
         .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))?;
+    node.replicate_bundle(&hash, &body).await?;
     let _ok = node
         .sys_write(&SystemCmd::PutBundle {
             hash: hash.clone(),
-            wasm: calimero_log::Bytes(body.to_vec()),
+            size: body.len() as u64,
             actor: account,
         })
         .await?;
@@ -1423,6 +1430,45 @@ async fn internal_system(
     }
 }
 
+#[derive(Deserialize)]
+struct BlobBody {
+    hash: String,
+    #[serde(default)]
+    wasm: Option<calimero_log::Bytes>,
+}
+
+async fn internal_blob_put(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<BlobBody>,
+) -> ApiResult {
+    peer_only(&node, &headers)?;
+    let wasm = body
+        .wasm
+        .ok_or_else(|| ApiError::bad_request("BAD_REQUEST", "wasm missing"))?;
+    if hex::encode(sha256(&wasm.0)) != body.hash {
+        return Err(ApiError::bad_request("BAD_REQUEST", "hash does not match"));
+    }
+    node.engine
+        .put_blob(&body.hash, &wasm.0)
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    Ok(Json(json!({})))
+}
+
+async fn internal_blob_get(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<BlobBody>,
+) -> ApiResult {
+    peer_only(&node, &headers)?;
+    let wasm = node
+        .engine
+        .get_blob(&body.hash)
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+        .ok_or_else(|| ApiError::not_found("no such blob here"))?;
+    Ok(Json(json!({ "wasm": calimero_log::Bytes(wasm) })))
+}
+
 async fn internal_call(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -1671,6 +1717,8 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/raft", post(internal_raft))
         .route("/internal/system", post(internal_system))
         .route("/internal/call", post(internal_call))
+        .route("/internal/blob", post(internal_blob_put))
+        .route("/internal/blob/get", post(internal_blob_get))
         .route("/internal/view", post(internal_view))
         .route("/internal/app-ready", post(internal_app_ready))
         .route("/internal/events", get(internal_events))
@@ -1678,5 +1726,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/nodes", post(ops_register_node))
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))
         .route("/ops/backup", post(ops_backup))
+        // Bundles (peer blob pushes, uploads) exceed axum's 2 MiB default; the sealed envelope caps requests at 64 MiB.
+        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(node)
 }

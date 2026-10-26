@@ -142,6 +142,7 @@ fn status_of(e: &WriteError) -> ApiError {
     match e {
         WriteError::NotLeader { .. } => ApiError::unavailable("no leader yet; retry"),
         WriteError::Unavailable(m) => ApiError::unavailable(m),
+        WriteError::TooLarge { .. } => ApiError::new(413, "TOO_LARGE", &e.to_string()),
     }
 }
 
@@ -279,7 +280,8 @@ impl Node {
     /// Commit a system command through the system group's leader.
     pub async fn sys_write(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         let bytes = serde_json::to_vec(cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
-        for attempt in 0..20 {
+        // Up to ~8 s: long enough to ride out a system leader election.
+        for attempt in 0..50 {
             match self.system.write(bytes.clone()).await {
                 Ok((index, out)) => {
                     let _ = index;
@@ -303,6 +305,7 @@ impl Node {
                         },
                     }
                 }
+                Err(e @ WriteError::TooLarge { .. }) => return Err(status_of(&e)),
                 Err(e) => debug!(attempt, error = %e, "system write not yet possible"),
             }
             tokio::time::sleep(Duration::from_millis(150)).await;
@@ -448,17 +451,89 @@ impl Node {
         }
     }
 
-    fn module_for(&self, bundle: &str) -> Result<Arc<calimero_runtime::Module>, ApiError> {
-        let wasm = self
-            .sys(|s| s.bundles.get(bundle).map(|b| b.wasm.0.clone()))
-            .ok_or_else(|| ApiError::not_found("bundle not replicated here yet"))?;
+    /// Store a bundle here and on every other node of the fleet, before the
+    /// system log records it. Succeeds once a majority holds it; a node that
+    /// missed it fetches it from a peer on first use.
+    pub async fn replicate_bundle(&self, hash: &str, wasm: &[u8]) -> Result<(), ApiError> {
+        self.engine
+            .put_blob(hash, wasm)
+            .map_err(|e| ApiError::internal(&e.to_string()))?;
+        let peers: Vec<String> = self.sys(|s| {
+            s.nodes
+                .values()
+                .filter(|n| n.id != self.config.node_id)
+                .map(|n| n.addr.clone())
+                .collect()
+        });
+        let body = json!({ "hash": hash, "wasm": calimero_log::Bytes(wasm.to_vec()) });
+        let results = futures_util::future::join_all(
+            peers
+                .iter()
+                .map(|addr| self.peer_post(addr, "internal/blob", &body)),
+        )
+        .await;
+        let held = 1 + results.iter().filter(|r| r.is_ok()).count();
+        for (addr, r) in peers.iter().zip(&results) {
+            if let Err(e) = r {
+                warn!(%addr, error = %e, "bundle not stored on peer");
+            }
+        }
+        if held * 2 <= peers.len() + 1 {
+            return Err(ApiError::unavailable(
+                "the bundle could not reach a majority of nodes",
+            ));
+        }
+        Ok(())
+    }
+
+    /// A bundle's WASM: from this node's blob store, else from a peer.
+    async fn bundle_wasm(&self, hash: &str) -> Result<Vec<u8>, ApiError> {
+        if let Some(w) = self
+            .engine
+            .get_blob(hash)
+            .map_err(|e| ApiError::internal(&e.to_string()))?
+        {
+            return Ok(w);
+        }
+        if !self.sys(|s| s.bundles.contains_key(hash)) {
+            return Err(ApiError::not_found("bundle not replicated here yet"));
+        }
+        let peers: Vec<String> = self.sys(|s| {
+            s.nodes
+                .values()
+                .filter(|n| n.id != self.config.node_id)
+                .map(|n| n.addr.clone())
+                .collect()
+        });
+        for addr in peers {
+            let Ok(v) = self
+                .peer_post(&addr, "internal/blob/get", &json!({ "hash": hash }))
+                .await
+            else {
+                continue;
+            };
+            let Ok(wasm) = serde_json::from_value::<calimero_log::Bytes>(v["wasm"].clone()) else {
+                continue;
+            };
+            if hex::encode(calimero_identity::sha256(&wasm.0)) == hash {
+                self.engine
+                    .put_blob(hash, &wasm.0)
+                    .map_err(|e| ApiError::internal(&e.to_string()))?;
+                return Ok(wasm.0);
+            }
+        }
+        Err(ApiError::unavailable("no peer holds the bundle"))
+    }
+
+    async fn module_for(&self, bundle: &str) -> Result<Arc<calimero_runtime::Module>, ApiError> {
+        let wasm = self.bundle_wasm(bundle).await?;
         self.executor
             .module(bundle, &wasm)
             .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))
     }
 
     async fn init_app(&self, g: &Group<AppMachine>, app: &AppRecord) -> Result<Applied, ApiError> {
-        let module = self.module_for(&app.bundle)?;
+        let module = self.module_for(&app.bundle).await?;
         let owner = Caller::Account {
             account: app.owner.clone(),
         };
@@ -493,9 +568,9 @@ impl Node {
         req: &CallRequest,
     ) -> Result<Applied, WriteError> {
         let bundle = g.read_local(|m, _| m.state.bundle.clone());
-        let module = match bundle.as_deref().map(|b| self.module_for(b)) {
-            Some(Ok(m)) => Some(m),
-            _ => None,
+        let module = match bundle.as_deref() {
+            Some(b) => self.module_for(b).await.ok(),
+            None => None,
         };
         let now = now_ms();
         if req.method == "__upgrade" {
@@ -561,6 +636,7 @@ impl Node {
             .map(str::to_owned);
         let module = self
             .module_for(&bundle)
+            .await
             .map_err(|e| WriteError::Unavailable(e.message))?;
         let p = g
             .propose(|m, applied| {
@@ -656,11 +732,15 @@ impl Node {
         }
     }
 
-    fn view_local(&self, g: &Group<AppMachine>, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
+    async fn view_local(
+        &self,
+        g: &Group<AppMachine>,
+        req: &ViewRequest,
+    ) -> Result<ViewAnswer, ApiError> {
         let bundle = g
             .read_local(|m, _| m.state.bundle.clone())
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
-        let module = self.module_for(&bundle)?;
+        let module = self.module_for(&bundle).await?;
         Ok(g.read_local(|m, applied| {
             let out = Executor::run(
                 &module,
@@ -685,7 +765,7 @@ impl Node {
         if let Some(g) = self.app_group(app.group) {
             if req.strong {
                 match g.read_strong(|_, applied| applied).await {
-                    Ok(_) => return self.view_local(&g, req),
+                    Ok(_) => return self.view_local(&g, req).await,
                     Err(WriteError::NotLeader {
                         leader: Some((id, addr)),
                     }) if id != self.config.node_id && !addr.is_empty() => {
@@ -708,7 +788,7 @@ impl Node {
                     "this replica has not caught up to minIndex",
                 ));
             }
-            return self.view_local(&g, req);
+            return self.view_local(&g, req).await;
         }
         let addr = self
             .sys(|s| {
