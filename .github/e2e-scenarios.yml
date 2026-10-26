@@ -540,6 +540,11 @@ scenarios:
   - workflow: sync-resilience-peer-pause-symmetric
     file: workflows/sync-resilience-peer-pause-symmetric.yml
     app: scaffolding-e2e
+  # Restarts the NAT topology's boot-node (the relay server) and checks both clients re-reserve
+  # and sync resumes; needs a merobox whose restart_container waits on a boot-node's listener.
+  - workflow: relay-recovery-boot-node-restart
+    file: workflows/relay-recovery-boot-node-restart.yml
+    app: scaffolding-e2e
   # Runs on merod:local-fault: the default image plus iproute2, which `tc netem` needs.
   - workflow: sync-resilience-lossy-link
     file: workflows/sync-resilience-lossy-link.yml
