@@ -4,6 +4,7 @@
 use calimero_account::AccountId;
 use calimero_context::scope_projection::ScopeProjections;
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::Undecidable;
 use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_projection::AuthorityBase;
@@ -152,12 +153,12 @@ fn an_op_is_judged_void_before_it_is_stored() {
 
     assert_eq!(
         proj.op_is_void(&scope(), base(), &l.by_sam, Some(group().into())),
-        Some(true),
+        Some(Ok(true)),
         "Sam's op cites a cut from before his removal"
     );
     assert_eq!(
         proj.op_is_void(&scope(), base(), &l.by_alice, Some(group().into())),
-        Some(false)
+        Some(Ok(false))
     );
 }
 
@@ -202,13 +203,36 @@ fn an_op_that_carries_no_payload_is_judged_where_it_acted() {
     let held = [(rotation.id(), group())];
     let voided = proj
         .voided_with(&scope(), base(), None, &held)
-        .expect("fed");
+        .expect("fed")
+        .expect("decided");
     assert!(voided.contains(&rotation.id()));
     assert!(
         !proj
             .voided_with(&scope(), base(), None, &[])
             .expect("fed")
+            .expect("decided")
             .contains(&rotation.id()),
         "with no group named the log cannot say where it acted"
     );
+}
+
+#[test]
+fn over_the_fold_budget_nothing_is_judged_and_no_view_is_answered() {
+    let l = log();
+    let mut proj = ScopeProjections::new().with_fold_budget(0);
+    for op in [&l.genesis[0], &l.genesis[1], &l.removal] {
+        proj.ingest_op(op);
+    }
+    let heads = [l.removal.id()];
+
+    assert_eq!(
+        proj.op_is_void(&scope(), base(), &l.by_sam, Some(group().into())),
+        Some(Err(Undecidable)),
+    );
+    assert_eq!(
+        proj.voided_with(&scope(), base(), None, &[]),
+        Some(Err(Undecidable)),
+    );
+    assert!(proj.acl_view_at(&scope(), &heads).is_none());
+    assert!(proj.acl_view_at_complete_cut(&scope(), &heads).is_none());
 }

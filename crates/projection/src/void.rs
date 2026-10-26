@@ -22,7 +22,8 @@ const MAX_ROUNDS: usize = 32;
 
 /// Ops folded judging cascades; past it the remaining candidates are void.
 /// Their signers' standing rests on a void op, and every node must agree.
-const MAX_FOLD_WORK: usize = 50_000_000;
+/// The fold work a void judgement may spend before it is undecidable.
+pub const MAX_FOLD_WORK: usize = 50_000_000;
 
 /// Facts the authority check reads that no op carries, written by the store at genesis.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -206,7 +207,7 @@ impl ScopeState {
     }
 
     /// [`Self::void_ops_judging`] with an explicit bound on the ops folded.
-    pub(crate) fn void_ops_bounded(
+    pub fn void_ops_bounded(
         log: &[Op],
         base: AuthorityBase,
         candidate: Option<(&Op, Option<Acting>)>,

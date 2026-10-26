@@ -201,12 +201,12 @@ impl AtCutAuthorizer for Probe<'_> {
         _: &ContextGroupId,
         applied: Option<&Op>,
         _: &[([u8; 32], ContextGroupId)],
-    ) -> Option<BTreeSet<[u8; 32]>> {
+    ) -> Option<Result<BTreeSet<[u8; 32]>, crate::Undecidable>> {
         if applied.is_some() {
             return None;
         }
         let _ = self.reconciles.fetch_add(1, Ordering::SeqCst);
-        Some(self.voided.clone())
+        Some(Ok(self.voided.clone()))
     }
 }
 

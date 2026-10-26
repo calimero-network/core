@@ -16,7 +16,7 @@ use calimero_store::Store;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 
-use crate::authorizer::{AtCutAuthorizer, AtCutMembershipPath, GroupRows};
+use crate::authorizer::{AtCutAuthorizer, AtCutMembershipPath, GroupRows, Undecidable};
 use crate::test_fixtures::{enrol_local_device, enrol_member, sample_meta_with_admin, test_store};
 use crate::{
     CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
@@ -357,17 +357,25 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
         *self.folded.lock().unwrap() = None;
     }
 
-    fn op_is_void(&self, group: &ContextGroupId, capability: u32, op: &Op) -> Option<bool> {
+    fn op_is_void(
+        &self,
+        group: &ContextGroupId,
+        capability: u32,
+        op: &Op,
+    ) -> Option<Result<bool, Undecidable>> {
         if op.parents.is_empty() {
-            return Some(false);
+            return Some(Ok(false));
         }
         let log = self.log();
         let acting = Acting {
             group: *group,
             capability,
         };
-        let void = ScopeState::void_ops_with(&log, self.base(), Some((op, Some(acting)))).ok()?;
-        Some(void.contains(&op.id()))
+        Some(
+            ScopeState::void_ops_with(&log, self.base(), Some((op, Some(acting))))
+                .map(|void| void.contains(&op.id()))
+                .map_err(|_| Undecidable),
+        )
     }
 
     fn voided_ops(
@@ -375,9 +383,12 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
         _group: &ContextGroupId,
         applied: Option<&Op>,
         held: &[([u8; 32], ContextGroupId)],
-    ) -> Option<BTreeSet<[u8; 32]>> {
+    ) -> Option<Result<BTreeSet<[u8; 32]>, Undecidable>> {
         let log = self.log();
-        ScopeState::void_ops_judging(&log, self.base(), applied.map(|op| (op, None)), held).ok()
+        Some(
+            ScopeState::void_ops_judging(&log, self.base(), applied.map(|op| (op, None)), held)
+                .map_err(|_| Undecidable),
+        )
     }
 
     fn group_rows(&self, group: &ContextGroupId, applied: Option<&Op>) -> Option<GroupRows> {

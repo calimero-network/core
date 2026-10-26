@@ -29,7 +29,7 @@ use calimero_governance_store::metrics::{
 use calimero_governance_store::{
     namespace_founder, CapabilitiesRepository, DenyListRepository, MembershipRepository,
     NamespaceDagService, NamespaceOpLogService, NamespaceRepository, OpenedNamespaceOp,
-    ReentryAtCut, SubgroupEdges, TreeReads,
+    ReentryAtCut, SubgroupEdges, TreeReads, Undecidable,
 };
 use calimero_governance_types::{NamespaceOp, RootOp};
 use calimero_op::{Op, OpPayload, ScopeId};
@@ -262,6 +262,9 @@ pub struct ScopeProjections {
     /// The cut that last showed an account seated as a relay for a group. Only a
     /// hint of where to look first: the cut is asked again on every read.
     relay_seats: Mutex<HashMap<(ContextGroupId, AccountId), [u8; 32]>>,
+    /// The fold work a void judgement may spend before it is undecidable; the projection's
+    /// own bound when unset.
+    fold_budget: Option<usize>,
 }
 
 /// A cut [`ScopeProjections::evicted`] is keyed by: its scope, authority base and sorted heads.
@@ -325,6 +328,18 @@ impl ScopeProjections {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// This projection with a tighter bound on the fold work a void judgement may spend.
+    #[must_use]
+    pub fn with_fold_budget(mut self, budget: usize) -> Self {
+        self.fold_budget = Some(budget);
+        self
+    }
+
+    fn fold_budget(&self) -> usize {
+        self.fold_budget
+            .unwrap_or(calimero_projection::MAX_FOLD_WORK)
     }
 
     /// Fold a single op into its own scope's projection and op-log.
@@ -438,6 +453,9 @@ impl ScopeProjections {
         let log = self.logs.get(scope)?;
         let base = self.authority_base_of(scope);
         let walked = self.walk(scope, log, parents, base);
+        if walked.is_undecidable() {
+            return None;
+        }
         Some(at_cut_view(&walked, base))
     }
 
@@ -489,7 +507,7 @@ impl ScopeProjections {
             };
         }
         let log = self.logs.get(scope).map_or(&[][..], Vec::as_slice);
-        let decided = ScopeState::void_ops(log, base);
+        let decided = ScopeState::void_ops_bounded(log, base, None, &[], self.fold_budget());
         let undecidable = decided.is_err();
         let ops = decided.unwrap_or_default();
         let state = (!ops.is_empty()).then(|| {
@@ -554,9 +572,18 @@ impl ScopeProjections {
         base: AuthorityBase,
         extra: Option<&Op>,
         held: &[([u8; 32], ContextGroupId)],
-    ) -> Option<BTreeSet<[u8; 32]>> {
+    ) -> Option<Result<BTreeSet<[u8; 32]>, Undecidable>> {
         let log = self.logs.get(scope)?;
-        ScopeState::void_ops_judging(log, base, extra.map(|op| (op, None)), held).ok()
+        Some(
+            ScopeState::void_ops_bounded(
+                log,
+                base,
+                extra.map(|op| (op, None)),
+                held,
+                self.fold_budget(),
+            )
+            .map_err(|_| Undecidable),
+        )
     }
 
     /// `group`'s direct rows at `heads` with the ops that carry no authority taken
@@ -574,7 +601,7 @@ impl ScopeProjections {
         if let Some(op) = extra.filter(|op| !log.iter().any(|held| held.id() == op.id())) {
             log.push(op.clone());
         }
-        let void = ScopeState::void_ops(&log, base).ok()?;
+        let void = ScopeState::void_ops_bounded(&log, base, None, &[], self.fold_budget()).ok()?;
         let ancestry = ScopeState::cut_ancestry_with_void(&log, heads, &void);
         // Rows taken back on a partial log could be rows the whole log keeps.
         if !ancestry.is_complete() {
@@ -621,16 +648,19 @@ impl ScopeProjections {
         base: AuthorityBase,
         op: &Op,
         acting: Option<Acting>,
-    ) -> Option<bool> {
+    ) -> Option<Result<bool, Undecidable>> {
         let log = self.logs.get(scope)?;
         if op.parents.is_empty() {
-            return Some(false);
+            return Some(Ok(false));
         }
         if !ScopeState::cut_ancestry(log, &op.parents).is_complete() {
             return None;
         }
-        let void = ScopeState::void_ops_with(log, base, Some((op, acting))).ok()?;
-        Some(void.contains(&op.id()))
+        Some(
+            ScopeState::void_ops_bounded(log, base, Some((op, acting)), &[], self.fold_budget())
+                .map(|void| void.contains(&op.id()))
+                .map_err(|_| Undecidable),
+        )
     }
 
     /// The convergence `scope_root` for `scope`, folding this scope's ACL +

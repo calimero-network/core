@@ -56,6 +56,10 @@ use eyre::{bail, Result as EyreResult};
 /// on this uniformly; an implementation that returns `Some` for empty `parents`
 /// would (e.g.) falsely reject a genesis op a live admin signed. The default
 /// `LiveFallbackAuthorizer` satisfies it trivially (always `None`).
+/// The void set could not be decided within the fold budget, so no verdict may be guessed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Undecidable;
+
 pub trait AtCutAuthorizer: Send + Sync {
     /// Is `signer` an admin of `group` at the cut named by `parents`?
     fn is_admin_at_cut(
@@ -304,7 +308,12 @@ pub trait AtCutAuthorizer: Send + Sync {
     /// the bits that admit a member who is no admin to the op, for a kind its payload
     /// does not show. `None` without a log or a whole cut; the op is then applied as
     /// before.
-    fn op_is_void(&self, _group: &ContextGroupId, _capability: u32, _op: &Op) -> Option<bool> {
+    fn op_is_void(
+        &self,
+        _group: &ContextGroupId,
+        _capability: u32,
+        _op: &Op,
+    ) -> Option<Result<bool, Undecidable>> {
         None
     }
 
@@ -315,7 +324,7 @@ pub trait AtCutAuthorizer: Send + Sync {
         _group: &ContextGroupId,
         _applied: Option<&Op>,
         _held: &[([u8; 32], ContextGroupId)],
-    ) -> Option<BTreeSet<[u8; 32]>> {
+    ) -> Option<Result<BTreeSet<[u8; 32]>, Undecidable>> {
         None
     }
 

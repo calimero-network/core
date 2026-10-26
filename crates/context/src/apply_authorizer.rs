@@ -22,7 +22,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::metrics::{record_at_cut_undecidable, UndecidableCause};
 use calimero_governance_store::{
     AtCutAuthorizer, AtCutMembershipPath, GroupRows, NamespaceDagService, ReentryAtCut,
-    StandingReads, SubgroupEdges, TreeReads,
+    StandingReads, SubgroupEdges, TreeReads, Undecidable,
 };
 use calimero_op::{Op, ScopeId};
 use calimero_primitives::application::ApplicationId;
@@ -224,7 +224,12 @@ impl AtCutAuthorizer for VoidJudge<'_> {
         self.0.history_sealed_in_group(group, parents)
     }
 
-    fn op_is_void(&self, group: &ContextGroupId, capability: u32, op: &Op) -> Option<bool> {
+    fn op_is_void(
+        &self,
+        group: &ContextGroupId,
+        capability: u32,
+        op: &Op,
+    ) -> Option<Result<bool, Undecidable>> {
         self.0.op_is_void(group, capability, op)
     }
 
@@ -233,7 +238,7 @@ impl AtCutAuthorizer for VoidJudge<'_> {
         group: &ContextGroupId,
         applied: Option<&Op>,
         held: &[([u8; 32], ContextGroupId)],
-    ) -> Option<BTreeSet<[u8; 32]>> {
+    ) -> Option<Result<BTreeSet<[u8; 32]>, Undecidable>> {
         self.0.voided_ops(group, applied, held)
     }
 
@@ -549,7 +554,12 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
             .context_rotation_group_at_cut(self.store, *group, context, parents)
     }
 
-    fn op_is_void(&self, group: &ContextGroupId, capability: u32, op: &Op) -> Option<bool> {
+    fn op_is_void(
+        &self,
+        group: &ContextGroupId,
+        capability: u32,
+        op: &Op,
+    ) -> Option<Result<bool, Undecidable>> {
         let folded = self.folded(group)?;
         let (projection, namespace_id, _) = &*folded;
         projection.op_is_void(
@@ -572,7 +582,7 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         group: &ContextGroupId,
         applied: Option<&Op>,
         held: &[([u8; 32], ContextGroupId)],
-    ) -> Option<BTreeSet<[u8; 32]>> {
+    ) -> Option<Result<BTreeSet<[u8; 32]>, Undecidable>> {
         let folded = self.folded(group)?;
         let (projection, namespace_id, _) = &*folded;
         projection.voided_with(
@@ -912,10 +922,10 @@ mod tests {
         let from_the_old_cut = add(SAM, &[&sam], XAVIER, GroupMemberRole::Admin);
         assert_eq!(
             authorizer.op_is_void(&root, 0, &from_the_old_cut),
-            Some(true)
+            Some(Ok(true))
         );
         let by_alice = add(ALICE, &[&sam], ZED, GroupMemberRole::Member);
-        assert_eq!(authorizer.op_is_void(&root, 0, &by_alice), Some(false));
+        assert_eq!(authorizer.op_is_void(&root, 0, &by_alice), Some(Ok(false)));
     }
 
     #[test]
@@ -927,7 +937,8 @@ mod tests {
         let from_the_old_cut = add(SAM, &[&sam], XAVIER, GroupMemberRole::Admin);
         let voided = authorizer
             .voided_ops(&root, Some(&from_the_old_cut), &[])
-            .expect("the log folds");
+            .expect("the log folds")
+            .expect("decided");
         assert_eq!(voided, BTreeSet::from([from_the_old_cut.id()]));
 
         // The rows at the heads the apply left: the removal and Sam's op.
@@ -1001,7 +1012,7 @@ mod tests {
         let from_the_old_cut = add(SAM, &[&sam], XAVIER, GroupMemberRole::Admin);
         assert_eq!(
             judge.op_is_void(&root, 0, &from_the_old_cut),
-            Some(true),
+            Some(Ok(true)),
             "judged against the projection"
         );
         assert!(judge

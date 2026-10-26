@@ -32,7 +32,7 @@ mod void;
 #[cfg(test)]
 mod void_tests;
 
-pub use void::{Acting, AuthorityBase};
+pub use void::{Acting, AuthorityBase, MAX_FOLD_WORK};
 
 #[cfg(test)]
 mod shared_writers_tests;
@@ -379,11 +379,17 @@ impl<'a> CutAncestry<'a> {
         }
     }
 
+    /// Did the void set exceed its fold budget?
+    #[must_use]
+    pub fn is_undecidable(&self) -> bool {
+        self.undecidable
+    }
+
     /// Is every referenced ancestor present in the log?
     ///
     /// `false` names a genuine gap: sync has to fetch the op before any answer
     /// folded over this cut can be trusted. An undecoded ancestor does **not** make
-    /// this false — it is present, just unreadable.
+    /// this false - it is present, just unreadable. An undecidable void set does.
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.missing.is_none() && !self.undecidable

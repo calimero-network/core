@@ -11,11 +11,11 @@ use calimero_op::{Op, OpPayload};
 use calimero_op_adapter::payload_from_group_op;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_storage::logical_clock::HybridTimestamp;
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 
 use super::super::op_log::Hole;
 use super::NamespaceGovernance;
-use crate::authorizer::GroupRows;
+use crate::authorizer::{GroupRows, Undecidable};
 use crate::op_budget::OpBudget;
 use crate::op_events::OpEvent;
 use crate::void_ledger::{Parked, VoidLedger, STORED_BEFORE};
@@ -204,10 +204,13 @@ impl NamespaceGovernance<'_> {
         let op = self.unified_op(signed, decrypted, opened_root, delta_id);
         let capability =
             decrypted.map_or(0, |inner| capability_beyond_payload(inner, &op.author()));
-        let void = self
-            .authorizer
-            .op_is_void(group, capability, &op)
-            .unwrap_or(false);
+        let void = match self.authorizer.op_is_void(group, capability, &op) {
+            None => false,
+            Some(Ok(void)) => void,
+            Some(Err(Undecidable)) => {
+                bail!("the void set is undecidable within the fold budget; the op is not judged")
+            }
+        };
         if void {
             VoidLedger::new(self.store, self.namespace_id).note_voided(delta_id)?;
         }
@@ -252,8 +255,17 @@ impl NamespaceGovernance<'_> {
             .filter(|intro| intro.op != STORED_BEFORE)
             .map(|intro| (intro.op, ContextGroupId::from(intro.group)))
             .collect();
-        let Some(voided) = self.authorizer.voided_ops(&root, extra, &held) else {
-            return Ok(Vec::new());
+        let voided = match self.authorizer.voided_ops(&root, extra, &held) {
+            None => return Ok(Vec::new()),
+            Some(Ok(voided)) => voided,
+            Some(Err(Undecidable)) => {
+                // Keys the unjudged ops introduced stay unusable until the set is decided.
+                for intro in intros.iter().filter(|intro| intro.op != STORED_BEFORE) {
+                    GroupKeyring::new(self.store, ContextGroupId::from(intro.group))
+                        .set_key_voided(&intro.key, true)?;
+                }
+                return Ok(Vec::new());
+            }
         };
         let earlier = ledger.voided()?;
         // A key is void when every op that stored it is.
