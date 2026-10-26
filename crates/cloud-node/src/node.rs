@@ -317,6 +317,26 @@ impl Node {
         self.apps.read().ok()?.get(&group).cloned()
     }
 
+    /// The app's group, if this node is one of its replicas. A node the app
+    /// moved off may still hold the group until reconcile drops it; it must
+    /// forward instead of answering from a group it no longer belongs to.
+    fn replica_group(&self, app: &AppRecord) -> Option<Arc<Group<AppMachine>>> {
+        if !app.replicas.contains(&self.config.node_id) {
+            return None;
+        }
+        self.app_group(app.group)
+    }
+
+    /// The address of a replica of `app` other than this node.
+    fn other_replica(&self, app: &AppRecord) -> Option<String> {
+        self.sys(|s| {
+            app.replicas
+                .iter()
+                .filter(|r| **r != self.config.node_id)
+                .find_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
+        })
+    }
+
     /// Read the system state, waiting up to two seconds for `f` to find
     /// something: a write committed through another node may not have been
     /// applied here yet (read-your-writes across nodes).
@@ -676,7 +696,7 @@ impl Node {
         for _attempt in 0..30 {
             // A conflict (the diff was built on state a leader change replaced)
             // applied nothing and recorded no idempotency key: run it again.
-            let target = if let Some(g) = self.app_group(app.group) {
+            let target = if let Some(g) = self.replica_group(&app) {
                 match self.call_local(&g, req).await {
                     Ok(a) if a.conflict => None,
                     Ok(a) => return Ok(a),
@@ -689,11 +709,7 @@ impl Node {
                     }
                 }
             } else {
-                self.sys(|s| {
-                    app.replicas
-                        .iter()
-                        .find_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
-                })
+                self.other_replica(&app)
             };
             if let Some(addr) = target {
                 match self.peer_post(&addr, "internal/call", &body).await {
@@ -767,8 +783,21 @@ impl Node {
 
     /// Run a read-only method. Its writes, if any, are discarded.
     pub async fn view(&self, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
+        // Like calls, ride out an election (e.g. right after the leader moved off).
+        let mut last = None;
+        for _attempt in 0..30 {
+            match self.view_once(req).await {
+                Err(e) if e.code == "UNAVAILABLE" => last = Some(e),
+                other => return other,
+            }
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+        Err(last.unwrap_or_else(|| ApiError::unavailable("the app has no leader")))
+    }
+
+    async fn view_once(&self, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
         let app = self.app(&req.app_id).await?;
-        if let Some(g) = self.app_group(app.group) {
+        if let Some(g) = self.replica_group(&app) {
             if req.strong {
                 match g.read_strong(|_, applied| applied).await {
                     Ok(_) => return self.view_local(&g, req).await,
@@ -790,18 +819,16 @@ impl Node {
                 }
             }
             if req.min_index > 0 && !g.wait_applied(req.min_index, Duration::from_secs(2)).await {
-                return Err(ApiError::unavailable(
+                return Err(ApiError::new(
+                    503,
+                    "NOT_CAUGHT_UP",
                     "this replica has not caught up to minIndex",
                 ));
             }
             return self.view_local(&g, req).await;
         }
         let addr = self
-            .sys(|s| {
-                app.replicas
-                    .iter()
-                    .find_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
-            })
+            .other_replica(&app)
             .ok_or_else(|| ApiError::unavailable("no replica known"))?;
         let v = self
             .peer_post(

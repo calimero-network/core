@@ -586,10 +586,11 @@ async fn ops_moves_an_app_and_points_followers_at_the_leader() {
     let spare = (1..=4).find(|n| !replicas.contains(n)).unwrap();
     let leader = c.app_leader(&app).unwrap() as u64 + 1;
     let follower = *replicas.iter().find(|r| **r != leader).unwrap();
+    // Move the app off its current leader, the hardest case.
     let new: Vec<u64> = replicas
         .iter()
         .copied()
-        .filter(|r| *r != follower)
+        .filter(|r| *r != leader)
         .chain([spare])
         .collect();
 
@@ -634,4 +635,17 @@ async fn ops_moves_an_app_and_points_followers_at_the_leader() {
         .await
         .unwrap();
     assert_eq!(v.result, json!("1"));
+
+    // The node the app moved off still serves it, by forwarding.
+    let off = c.client(leader as usize - 1);
+    off.use_session(alice.session().await.unwrap()).await;
+    let v = off
+        .view(&app, "get", json!({ "key": "a" }), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!("1"));
+    let _ = off
+        .call(&app, "set", json!({ "key": "b", "value": "2" }), None)
+        .await
+        .unwrap();
 }
