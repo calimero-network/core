@@ -274,6 +274,10 @@ steps:
       - app-migration-split-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_postcode
+      equals:
+        output: "NW1 6XF"
 
   - name: Read updated v2 schema_info on node 1
     type: call

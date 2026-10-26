@@ -85,6 +85,12 @@ steps:
       - e2e-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "greeting"
+      equals:
+        output: "Hello, World!"
 
   - name: Verify value on node-2
     type: call
@@ -118,6 +124,12 @@ steps:
       - e2e-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "from_node2"
+      equals:
+        output: "Cross-node value"
 
   - name: Verify node-2 value on node-1
     type: call
@@ -205,6 +217,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "from_node3"
+      equals:
+        output: "Hello from node3"
 
   - name: Verify node-3 value on node-1
     type: call
@@ -290,6 +308,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "count"
+      equals:
+        output: null
 
   - name: Verify key removed on node-2
     type: call
@@ -510,6 +534,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_user_simple_for
+      args:
+        user_key: "{{node1_account}}"
+      equals:
+        output: "Node1 Profile"
 
   # Node 2 can read node-1's user storage
   - name: Get node-1 user value from node-2
@@ -587,6 +617,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_user_simple_for
+      args:
+        user_key: "{{node2_account}}"
+      equals:
+        output: "Node2 Profile"
 
   # Node 1 can read node-2's user storage
   - name: Get node-2 user value from node-1
@@ -677,6 +713,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_frozen
+      args:
+        hash_hex: "{{frozen_hash}}"
+      equals:
+        output: "Immutable data"
 
   - name: Get frozen value on node-2
     type: call
@@ -728,6 +770,11 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: games
+      equals:
+        output:
+          game1: "b77f68a3acbc9173be96f05789c679ec229b852b7f07d435eb04030ff72f06f5"
 
   - name: Get my secrets on node-1
     type: call
@@ -893,6 +940,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_g_counter
+      args:
+        key: "visits"
+      equals:
+        output: 3
 
   - name: Get G-Counter on node-1
     type: call
@@ -969,6 +1022,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_pn_counter
+      args:
+        key: "balance"
+      equals:
+        output: 2
 
   - name: Get PN-Counter on node-2 after sync (should be 2)
     type: call
@@ -1018,6 +1077,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_pn_counter
+      args:
+        key: "balance"
+      equals:
+        output: 1
 
   - name: Get PN-Counter on node-1 (should be 1 after all ops)
     type: call
@@ -1069,6 +1134,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_register
+      args:
+        key: "status"
+      equals:
+        output: "online"
 
   - name: Set register on node-2 (later timestamp wins)
     type: call
@@ -1088,6 +1159,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_register
+      args:
+        key: "status"
+      equals:
+        output: "busy"
 
   - name: Get register on node-1
     type: call
@@ -1143,6 +1220,13 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_metadata
+      args:
+        outer_key: "book1"
+        inner_key: "title"
+      equals:
+        output: "CRDT Guide"
 
   # Node-2 sets second field (after receiving node-1's changes)
   - name: Set another metadata field on node-2
@@ -1165,6 +1249,13 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_metadata
+      args:
+        outer_key: "book1"
+        inner_key: "author"
+      equals:
+        output: "Calimero Team"
 
   - name: Get title on node-2
     type: call
@@ -1246,6 +1337,10 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: metrics_len
+      equals:
+        output: 1
 
   - name: Push metric on node-2
     type: call
@@ -1264,6 +1359,10 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: metrics_len
+      equals:
+        output: 2
 
   - name: Get metrics length
     type: call
@@ -1337,6 +1436,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_tag_count
+      args:
+        key: "languages"
+      equals:
+        output: 2
 
   - name: Add tag on node-2
     type: call
@@ -1356,6 +1461,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_tag_count
+      args:
+        key: "languages"
+      equals:
+        output: 3
 
   - name: Get tag count
     type: call
@@ -1460,6 +1571,10 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: rga_get_text
+      equals:
+        output: "Hello World"
 
   - name: Get text on node-2
     type: call
@@ -1741,6 +1856,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: search_files
+      args:
+        query: png
+      equals:
+        output: []
 
   - name: List files after delete on node-2
     type: call
@@ -1806,6 +1927,10 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: len
+      equals:
+        output: 0
 
   - name: Verify KV store is empty on node-2
     type: call
@@ -1848,6 +1973,10 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: rga_is_empty
+      equals:
+        output: true
 
   - name: Verify RGA document is empty on node-2
     type: call

@@ -239,12 +239,20 @@ steps:
 
   - name: Round 1 sync
     type: wait_for_sync
+    description: >-
+      lint-convergence: ok - node-3 is namespace-only and holds no replica of this context.
     context_id: '{{ctx_id}}'
     nodes:
       - private-add-node-1
       - private-add-node-2
     timeout: 30
     check_interval: 2
+    expect:
+      method: get
+      args:
+        key: "from_admin"
+      equals:
+        output: "admin_msg"
 
   - name: Round 1 — node-2 reads admin's write
     type: call
@@ -289,6 +297,12 @@ steps:
       - private-add-node-2
     timeout: 30
     check_interval: 2
+    expect:
+      method: get
+      args:
+        key: "from_member"
+      equals:
+        output: "node2_msg"
 
   - name: Round 2 — admin reads node-2's write
     type: call

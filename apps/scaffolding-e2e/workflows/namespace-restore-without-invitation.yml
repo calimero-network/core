@@ -212,6 +212,12 @@ steps:
       - restore-node-1
     timeout: 120
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "while_removed"
+      equals:
+        output: "written_while_node_1_was_away"
 
   - name: Node-1 reads the state it had before
     type: call

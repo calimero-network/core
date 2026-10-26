@@ -245,6 +245,14 @@ steps:
       - app-migration-struct2enum-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: schema_info
+      equals:
+        output:
+          schema_version: "2.0.0"
+          name: "entity-1"
+          status_kind: "active"
+          status_reason: null
 
   - name: Read schema_info after flip on node 1
     type: call

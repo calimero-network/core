@@ -183,6 +183,12 @@ steps:
       - e2e-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "subgroup_key"
+      equals:
+        output: "from_subgroup"
 
   - name: Node-2 reads subgroup context value
     type: call

@@ -228,6 +228,12 @@ steps:
     context_id: '{{context_id}}'
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: written-before-the-loss
+      equals:
+        output: from-the-lost-laptop
 
   - name: Node-1 saw the lost laptop's write
     type: call

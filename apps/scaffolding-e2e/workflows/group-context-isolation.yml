@@ -182,6 +182,12 @@ steps:
       - e2e-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "shared_key"
+      equals:
+        output: "context_b_value"
 
   - name: Node-1 reads shared_key from context-B
     type: call

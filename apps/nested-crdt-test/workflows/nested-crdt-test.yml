@@ -139,6 +139,13 @@ steps:
       - nested-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_metadata
+      args:
+        outer_key: doc-1
+        inner_key: title
+      equals:
+        output: My Document
 
   - name: Node 2 sets doc-1 author
     type: call
@@ -158,6 +165,13 @@ steps:
       - nested-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_metadata
+      args:
+        outer_key: doc-1
+        inner_key: author
+      equals:
+        output: Alice
 
   - name: Verify both fields present on Node 1
     type: call
@@ -211,6 +225,10 @@ steps:
       - nested-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: metrics_len
+      equals:
+        output: 2
 
   - name: Get metrics length from Node 2
     type: call

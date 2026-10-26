@@ -331,6 +331,12 @@ steps:
       - app-migration-chained-2
     timeout: 90
     trigger_sync: true
+    expect:
+      method: get_item
+      args:
+        key: "k2"
+      equals:
+        output: "post-catchup"
 
   - name: Read post-catchup item on node 2
     type: call

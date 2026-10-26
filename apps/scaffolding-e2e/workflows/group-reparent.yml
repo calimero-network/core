@@ -188,6 +188,12 @@ steps:
     timeout: 60
     check_interval: 2
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "after_reparent"
+      equals:
+        output: "still_works"
 
   - name: Node-2 reads after reparent
     type: call

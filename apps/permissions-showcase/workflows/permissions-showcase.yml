@@ -361,6 +361,10 @@ steps:
       - perm-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: announcements
+      equals:
+        output: []
 
   - name: Node 1 reads the announcements
     type: call
@@ -395,6 +399,18 @@ steps:
       - perm-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: page
+      args:
+        author: '{{acct_node1}}'
+        id: "home"
+      equals:
+        output:
+          id: "home"
+          author: '{{acct_node1}}'
+          title: "Home"
+          revisions:
+            - ["r1", "welcome"]
 
   - name: Node 2 tries to rename node 1's page
     type: call
@@ -487,6 +503,15 @@ steps:
       - perm-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: evidence
+      args:
+        hash: "{{n2_hash}}"
+      equals:
+        output:
+          hash: "{{n2_hash}}"
+          kind: "log"
+          body: "boot ok"
 
   - name: Node 1 reads the evidence by hash
     type: call

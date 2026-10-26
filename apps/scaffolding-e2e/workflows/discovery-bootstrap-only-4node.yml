@@ -104,6 +104,10 @@ steps:
     timeout: 60
     check_interval: 2
     trigger_sync: true
+    expect:
+      method: len
+      equals:
+        output: 0
 
   # The point of the scenario: a joiner-to-joiner write. Node-1 created the
   # namespace and invited everyone, so every peer has a reason to talk to it.
@@ -129,6 +133,12 @@ steps:
     timeout: 60
     check_interval: 2
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "from_node_3"
+      equals:
+        output: "joiner_to_joiner"
 
   - name: Node-4 reads node-3's key
     type: call

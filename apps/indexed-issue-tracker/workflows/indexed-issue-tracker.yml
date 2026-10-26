@@ -105,6 +105,16 @@ steps:
       - indexed-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: status_counts
+      equals:
+        output:
+          - status: "open"
+            count: 3
+          - status: "in_progress"
+            count: 0
+          - status: "closed"
+            count: 0
 
   - name: Node 2 lists the open column, newest first
     type: call
@@ -181,6 +191,18 @@ steps:
       - indexed-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        id: "t1"
+      equals:
+        output:
+          id: "t1"
+          title: "login button misaligned"
+          status: "open"
+          assignee: "alice"
+          labels: ["bug", "ui"]
+          created_at: 10
 
   # Node 1's index was current a moment ago; sync then changed two issues
   # without telling it. If node 1 trusted its index, t2 would still count as
