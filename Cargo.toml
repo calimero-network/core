@@ -137,6 +137,7 @@ members = [
     "./crates/tee-attestation",
     "./crates/tee-release",
     "./crates/log",
+    "./crates/sealed",
 
     "./crates/store",
     "./crates/store/blobs",

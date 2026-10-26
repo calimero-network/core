@@ -1739,6 +1739,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-sealed"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "curve25519-dalek 5.0.0",
+ "eyre",
+ "futures-util",
+ "hex",
+ "http",
+ "rand 0.10.2",
+ "reqwest 0.12.28",
+ "ring",
+ "serde",
+ "serde_json",
+ "snow",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "url",
+ "zeroize",
+]
+
+[[package]]
 name = "calimero-search"
 version = "0.0.0"
 dependencies = [
