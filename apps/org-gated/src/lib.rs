@@ -2,6 +2,7 @@
 //! (`env::caller_org`, release-v2 cloud apps): members read, admins write,
 //! and a team's members write that team's note.
 
+use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::env::{self, OrgRole};
 use calimero_sdk::serde::Serialize;
@@ -16,7 +17,7 @@ pub struct OrgNotes {
 }
 
 /// What the node told the app about the caller.
-#[derive(Serialize)]
+#[derive(Serialize, AbiType)]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct Standing {
     pub org: String,
