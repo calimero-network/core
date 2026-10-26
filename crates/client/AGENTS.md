@@ -34,7 +34,7 @@ cargo test -p calimero-client get_retries_on_401_and_reauthenticates -- --nocapt
 | ~90 endpoint methods across `client/{contexts,applications,blobs,group,namespace,packages,system}.rs` | fn | One method per Admin API operation (contexts, apps, blobs, groups/subgroups, namespaces, packages, system/network/TEE) - see submodules below |
 | `ConnectionInfo<A, S>` | struct | Owns the `reqwest::Client`, `api_url`, optional `node_name`, the `authenticator`, `client_storage`, and an `auth_lock` for single-flight refresh |
 | `ConnectionInfo::{get, post, post_no_body, delete, delete_with_body, patch, put_json, put_binary, get_binary, head}` | fn | Low-level verb helpers; every endpoint method in `client/*.rs` is built on these |
-| `ConnectionInfo::detect_auth_mode()` | fn | Probes `admin-api/contexts`; `401`→`Required`, `2xx`→`None`, other status→`Required`, network error→`None` |
+| `ConnectionInfo::detect_auth_mode()` | fn | Probes `admin-api/contexts`; `401`→`Required`, `2xx`→`None`, other status→`Required`, network error→`Err` |
 | `AuthMode` | enum | `Required` / `None` |
 | `ClientAuthenticator` | trait (`traits.rs`) | `authenticate`, `refresh_tokens`, `handle_auth_failure`, `check_auth_required`, `get_auth_method`, `supports_refresh` |
 | `ClientStorage` | trait (`traits.rs`) | `load_tokens`, `save_tokens`, `update_tokens` (default load-merge-save), `remove_tokens`, `list_nodes` |

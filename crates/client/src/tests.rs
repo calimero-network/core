@@ -1318,6 +1318,23 @@ async fn detect_auth_mode_preserves_base_path() {
 }
 
 #[tokio::test]
+async fn detect_auth_mode_errors_when_node_unreachable() {
+    // Bind then drop, so the port is known-closed and the probe gets a transport error.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let client = make_client(&Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap());
+
+    let mode = client.connection().detect_auth_mode().await;
+    assert!(
+        mode.is_err(),
+        "unreachable node must not downgrade to {mode:?}"
+    );
+}
+
+#[tokio::test]
 async fn token_refresh_preserves_base_path() {
     let server = MockServer::start().await;
 
