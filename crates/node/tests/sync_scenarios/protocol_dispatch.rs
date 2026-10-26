@@ -299,7 +299,6 @@ fn test_dispatch_diverged_initialized_avoids_snapshot() {
     );
 }
 
-/// Verify unimplemented protocols are identified for fallback.
 /// A deep tree reported with its sampled depth routes to subtree prefetch; the
 /// hardcoded depth of 1 the manager used to report sent the same tree to a bloom filter.
 #[test]
@@ -318,6 +317,7 @@ fn test_dispatch_selects_subtree_prefetch_for_a_deep_tree() {
     ));
 }
 
+/// Verify unimplemented protocols are identified for fallback.
 #[test]
 fn test_dispatch_identifies_unimplemented_protocols() {
     // Force deep tree scenario (would select SubtreePrefetch)

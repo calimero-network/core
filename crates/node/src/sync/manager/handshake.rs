@@ -3,50 +3,36 @@
 //! DAG-heads fallback) used for protocol negotiation. Extracted from the
 //! manager god-file as an `impl SyncManager` fragment.
 
+use calimero_node_primitives::sync::DEEP_TREE_DEPTH;
 use calimero_node_primitives::sync::{
     build_handshake_from_raw, estimate_entity_count, estimate_max_depth, SyncHandshake,
 };
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::ContextId;
+use calimero_storage::address::Id;
+use calimero_storage::index::Index;
+use calimero_storage::store::{MainStorage, StorageAdaptor};
 
 use super::SyncManager;
 
-const TREE_STATS_MAX_NODES: usize = 1000; // bounds the depth sample taken per handshake
+const TREE_STATS_MAX_NODES: usize = 1000; // bounds the children read per handshake
 
-/// Levels in the tree under `root` (a lone root is 1), sampled over at most
-/// `max_nodes` nodes. `children(id, budget)` lists a node's children, or
-/// `None` when it has more than `budget`: such a node still counts one more
-/// level but is not expanded, so the result is a lower bound.
-fn sampled_depth(
-    root: calimero_storage::address::Id,
-    max_nodes: usize,
-    children: impl Fn(
-        calimero_storage::address::Id,
-        usize,
-    ) -> Option<Vec<calimero_storage::address::Id>>,
-) -> u32 {
-    let mut level = vec![root];
-    let mut seen = 1;
-    let mut depth = 1;
-    loop {
-        let mut next = Vec::new();
-        let mut truncated = false;
-        for id in &level {
-            match children(*id, max_nodes.saturating_sub(seen + next.len())) {
-                Some(ids) => next.extend(ids),
-                None => truncated = true,
-            }
-        }
-        if next.is_empty() && !truncated {
-            return depth;
-        }
-        depth += 1;
-        seen += next.len();
-        if depth as usize >= calimero_node_primitives::sync::MAX_LEVELWISE_DEPTH {
-            return depth;
-        }
-        level = next;
+/// Levels under `id` (a lone node is 1), counted down to `cap`; a node too wide
+/// for the remaining `nodes_left` budget counts as one level, unexpanded.
+fn capped_depth<S: StorageAdaptor>(id: Id, cap: u32, nodes_left: &mut usize) -> u32 {
+    let width = Index::<S>::child_count(id) as usize;
+    if cap <= 1 || width == 0 {
+        return 1;
     }
+    if width > *nodes_left {
+        return 2;
+    }
+    *nodes_left -= width;
+    let children = Index::<S>::get_children_of(id).unwrap_or_default();
+    let deepest = children
+        .iter()
+        .map(|c| capped_depth::<S>(c.id(), cap - 1, nodes_left));
+    1 + deepest.max().unwrap_or(0)
 }
 
 impl SyncManager {
@@ -88,10 +74,7 @@ impl SyncManager {
     /// Index is unavailable (e.g., fresh node or deserialization mismatch).
     fn query_tree_stats(&self, context_id: &ContextId) -> Option<(u64, u32)> {
         use calimero_node_primitives::sync::create_runtime_env;
-        use calimero_storage::address::Id;
         use calimero_storage::env::with_runtime_env;
-        use calimero_storage::index::Index;
-        use calimero_storage::store::MainStorage;
 
         let store = self.context_client.datastore_handle().into_inner();
         // SAFETY: identity is unused for read-only Index queries via RuntimeEnv
@@ -123,13 +106,11 @@ impl SyncManager {
             >::child_count(root_id)
             .max(1);
 
-            let max_depth = sampled_depth(root_id, TREE_STATS_MAX_NODES, |id, budget| {
-                if Index::<MainStorage>::child_count(id) as usize > budget {
-                    return None;
-                }
-                let children = Index::<MainStorage>::get_children_of(id).unwrap_or_default();
-                Some(children.iter().map(|child| child.id()).collect())
-            });
+            let max_depth = capped_depth::<MainStorage>(
+                root_id,
+                DEEP_TREE_DEPTH + 1,
+                &mut TREE_STATS_MAX_NODES.clone(),
+            );
 
             Some((entity_count, max_depth))
         })
@@ -155,59 +136,61 @@ impl SyncManager {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
+    use calimero_storage::action::Action;
     use calimero_storage::address::Id;
+    use calimero_storage::entities::{ChildInfo, Metadata};
+    use calimero_storage::index::Index;
+    use calimero_storage::interface::{ApplyContext, Interface};
+    use calimero_storage::store::MockedStorage;
 
-    use super::sampled_depth;
+    use super::capped_depth;
 
-    fn id(n: u8) -> Id {
-        Id::new([n; 32])
+    type S = MockedStorage<9001>;
+
+    fn root() -> ChildInfo {
+        Index::<S>::add_root(ChildInfo::new(
+            Id::new([0; 32]),
+            [0; 32],
+            Metadata::default(),
+        ))
+        .unwrap();
+        let (hash, _) = Index::<S>::get_hashes_for(Id::new([0; 32]))
+            .unwrap()
+            .unwrap();
+        ChildInfo::new(Id::new([0; 32]), hash, Metadata::default())
     }
 
-    /// Children lookup over a fixed tree, refusing to list a node with more
-    /// children than the budget, as the Index-backed lookup does.
-    fn lookup(tree: &HashMap<Id, Vec<Id>>) -> impl Fn(Id, usize) -> Option<Vec<Id>> + '_ {
-        move |at, budget| {
-            let children = tree.get(&at).cloned().unwrap_or_default();
-            (children.len() <= budget).then_some(children)
-        }
-    }
-
-    #[test]
-    fn a_root_alone_is_one_level() {
-        let tree = HashMap::new();
-        assert_eq!(sampled_depth(id(0), 1000, lookup(&tree)), 1);
+    /// Adds `id` under the chain `ancestors` (nearest parent first).
+    fn add(id: u8, ancestors: Vec<ChildInfo>) -> ChildInfo {
+        let action = Action::Update {
+            id: Id::new([id; 32]),
+            data: vec![id],
+            ancestors,
+            metadata: Metadata::default(),
+        };
+        Interface::<S>::apply_action(action, &ApplyContext::empty()).unwrap();
+        let (hash, _) = Index::<S>::get_hashes_for(Id::new([id; 32]))
+            .unwrap()
+            .unwrap();
+        ChildInfo::new(Id::new([id; 32]), hash, Metadata::default())
     }
 
     #[test]
     fn a_flat_tree_is_two_levels() {
-        let tree = HashMap::from([(id(0), vec![id(1), id(2), id(3)])]);
-        assert_eq!(sampled_depth(id(0), 1000, lookup(&tree)), 2);
+        let root = root();
+        add(1, vec![root.clone()]);
+        add(2, vec![root]);
+        assert_eq!(capped_depth::<S>(Id::new([0; 32]), 4, &mut 1000), 2);
     }
 
     #[test]
-    fn a_three_level_tree_is_deeper_than_one() {
-        let tree = HashMap::from([
-            (id(0), vec![id(1), id(2)]),
-            (id(1), vec![id(3)]),
-            (id(3), vec![id(4)]),
-        ]);
-        assert_eq!(sampled_depth(id(0), 1000, lookup(&tree)), 4);
-    }
-
-    #[test]
-    fn a_node_too_wide_for_the_budget_still_counts_a_level() {
-        let tree = HashMap::from([(id(0), (1..=5).map(id).collect())]);
-        assert_eq!(sampled_depth(id(0), 3, lookup(&tree)), 2);
-    }
-
-    #[test]
-    fn the_walk_stops_at_the_level_cap() {
-        let tree: HashMap<Id, Vec<Id>> = (0..200).map(|n| (id(n), vec![id(n + 1)])).collect();
-        assert_eq!(
-            sampled_depth(id(0), 1000, lookup(&tree)) as usize,
-            calimero_node_primitives::sync::MAX_LEVELWISE_DEPTH
-        );
+    fn a_deep_tree_stops_at_the_cap() {
+        let root = root();
+        let a = add(1, vec![root.clone()]);
+        let b = add(2, vec![a.clone(), root.clone()]);
+        let c = add(3, vec![b.clone(), a.clone(), root.clone()]);
+        add(4, vec![c, b, a, root]);
+        assert_eq!(capped_depth::<S>(Id::new([0; 32]), 4, &mut 1000), 4);
+        assert_eq!(capped_depth::<S>(Id::new([0; 32]), 3, &mut 1000), 3);
     }
 }
