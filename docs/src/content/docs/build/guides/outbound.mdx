@@ -118,6 +118,63 @@ Store the decision, not the response, and do not make a write depend on a
 second node agreeing with the first.
 </Aside>
 
+## Secrets the namespace keeps, for its TEEs
+
+An operator's secret serves one node and is set in its config. When a team
+should manage the secret itself, and every TEE of the namespace should be able
+to use it with nobody configuring anything, the app seals it to the
+**namespace TEE key** and keeps it in its own state:
+
+```rust
+use calimero_sdk::env;
+use calimero_sdk::outbound::SealedSecret;
+
+/// Admins only. The value is in this call and never in state.
+pub fn set_captcha_secret(&mut self, secret: String) -> app::Result<()> {
+    let Some(sealed): Option<SealedSecret> =
+        env::seal_outbound_secret(&secret, &["challenges.cloudflare.com"])
+    else {
+        app::bail!("this namespace has no TEE: add one before storing the secret");
+    };
+    self.captcha_secret.set(Some(sealed));
+    Ok(())
+}
+
+// Later, in a write on any member's node:
+let body = format!("secret={}&response={token}", sealed.placeholder());
+```
+
+- **Who can read it.** Every member replicates the `SealedSecret`; only a
+  node that is a TEE authority of the namespace opens it, and only while it is
+  one. It fills the value into the request, to one of the hosts sealed with
+  it, and removes it from the response, exactly as for `{{secret:…}}`. The
+  app's code holds only `{{sealed:<hex>}}`.
+- **Where the request runs.** The run stays on the member's node that took
+  the call, and stores what it learned there: a TEE node's own runs are
+  read-only. When that node is not a TEE, it checks the request against its
+  own gates and hands just that request to a TEE of the namespace over the
+  sync stream, proving its context identity. The TEE serves a member of the
+  context that may write there, checks every gate again under its own
+  operator's policy, opens the secret, sends the request and signs the
+  redacted response; the member's node takes it only under the signature of
+  a TEE authority of the namespace. The method gets the answer in the same
+  call, as if the request had gone out from its own node.
+- **No TEE, no secret.** `env::seal_outbound_secret` answers `None` while the
+  namespace has no TEE key (`env::tee_sealing_key`), so the app can tell the
+  admin to add a TEE first. A request naming a sealed secret is refused with
+  `SealedUnavailable:` (`OutboundRefusal::SealedUnavailable`) when no TEE of
+  the namespace can be reached.
+- **New TEEs.** A TEE admitted later is handed the namespace key by one that
+  holds it, and opens what was sealed before it joined.
+- **Rotation.** When a TEE stops being an authority, the namespace key
+  rotates, and `env::tee_sealing_key` names the new one. Have an admin set the
+  secret again; compare `SealedSecret::key` with `env::tee_sealing_key` to tell
+  them. Until then the TEEs that remain still open the old envelope, and so
+  does the TEE that left.
+- **The operator's part** stays: outbound requests on, and the host allowed,
+  on the TEE nodes, and on the member's node that takes the call, whose gates
+  are checked first. No secret to configure.
+
 ## The namespace's side
 
 The namespace's data is what a run can send, so the namespace agrees to the

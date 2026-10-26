@@ -615,6 +615,18 @@ pub enum InitPayload {
         namespace_id: [u8; 32],
         challenge: [u8; 32],
     },
+
+    /// A member's outbound request that names a `{{sealed:…}}` secret, for a
+    /// TEE of the namespace to open and send. The requester proves its key on
+    /// the stream and must be a member of `context_id` that may write there.
+    /// Answered with [`MessagePayload::SealedOutboundAnswer`].
+    ///
+    /// **Borsh ordering**: appended at the tail of `InitPayload`.
+    SealedOutboundRequest {
+        context_id: ContextId,
+        /// A borsh `calimero_primitives::outbound::OutboundRequest`.
+        request: Vec<u8>,
+    },
 }
 
 /// What a TEE node sends back to a member that offered it a challenge: the same
@@ -983,6 +995,13 @@ pub enum MessagePayload<'a> {
     TeeAdmissionOfferReply {
         offered: Option<Box<TeeAdmissionOffered>>,
     },
+
+    /// The answer to [`InitPayload::SealedOutboundRequest`]: a borsh
+    /// `calimero_context::outbound::ForwardedAnswer`, which the requester
+    /// verifies itself.
+    ///
+    /// **Borsh ordering**: appended at the tail of `MessagePayload`.
+    SealedOutboundAnswer { answer: Vec<u8> },
 }
 
 // =============================================================================

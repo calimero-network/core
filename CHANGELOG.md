@@ -42,6 +42,22 @@
   a node that predates it stalls only on that op. (#4673)
 - `calimero_sdk::outbound::OutboundRefusal::of` tells an app's method which of
   the two namespace refusals a failed `env::http_request` was. (#4673)
+- An app can keep an outbound secret in its own state, sealed to the namespace
+  TEE key: `env::seal_outbound_secret(value, hosts)` returns a `SealedSecret`,
+  and a request names it with `SealedSecret::placeholder()` (`{{sealed:<hex>}}`).
+  Only a node that is a TEE authority of the namespace fills it in, for a host
+  sealed with it, and removes it from the response; any other node forwards
+  the request to one (below), and it is refused `SealedUnavailable:` when no
+  TEE can be reached. `env::tee_sealing_key()` reads the namespace TEE key in
+  every run, and is `None` with no TEE, so an app can refuse to store a secret
+  no node could open. New host function `tee_sealing_key`.
+- A member's node that is not a TEE hands an outbound request naming a sealed
+  secret to a TEE of the namespace (new sync-stream payload
+  `SealedOutboundRequest`, answered `SealedOutboundAnswer`), and takes the
+  response only under a TEE authority's signature, so the method gets the
+  answer in the same call and its writes stay on the member's node. A peer
+  that predates it closes the stream, and the request is refused
+  `SealedUnavailable:` when no TEE answers.
 
 ## [0.11.1] - 2026-10-25
 

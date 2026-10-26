@@ -84,6 +84,9 @@ struct MockHost {
     /// Every device each account has called as, which the mock reports as
     /// that account's bound devices (`env::account_device_keys`).
     account_devices: BTreeMap<[u8; 32], Vec<[u8; 32]>>,
+    /// The namespace TEE key `env::tee_sealing_key` reports; `None` (no TEE)
+    /// until a test sets one.
+    tee_sealing_key: Option<[u8; 32]>,
 }
 
 impl Default for MockHost {
@@ -105,6 +108,7 @@ impl Default for MockHost {
             blob_announce_should_fail: false,
             tee_trigger: false,
             account_devices: BTreeMap::new(),
+            tee_sealing_key: None,
         }
     }
 }
@@ -201,6 +205,14 @@ pub(crate) fn tee_authority_keys() -> Vec<u8> {
         "tee_authority_keys is only available in a TEE-triggered execution"
     );
     crate::testing::TEE_DEVICE_KEY.to_vec()
+}
+
+pub(crate) fn tee_sealing_key() -> Option<[u8; 32]> {
+    with(|h| h.tee_sealing_key)
+}
+
+pub(crate) fn set_tee_sealing_key(key: Option<[u8; 32]>) {
+    with(|h| h.tee_sealing_key = key);
 }
 
 /// Record that `device` called as `account`, so it counts as one of that

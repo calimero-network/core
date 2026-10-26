@@ -23,6 +23,7 @@ pub mod detach_context_from_group;
 pub mod ensure_account_namespace;
 pub mod execute;
 pub mod follow_namespace;
+pub mod forwarded_outbound;
 pub mod get_cascade_status;
 pub mod get_context_metadata;
 pub mod get_group_for_context;
@@ -123,6 +124,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RejoinNamespace { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::ForwardedOutbound { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::AddGroupMembers { request, outcome } => {
