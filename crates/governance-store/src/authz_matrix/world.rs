@@ -415,9 +415,30 @@ impl World {
 
         // Direct admin and direct member of the subject.
         let (seat, sibling) = seat_for(0x21);
+        add_member(
+            &store,
+            &restricted,
+            &owner_sk,
+            &seat,
+            GroupMemberRole::Member,
+        );
+        add_member(
+            &store,
+            &restricted,
+            &owner_sk,
+            &seat,
+            GroupMemberRole::Admin,
+        );
         add_member(&store, &subject, &owner_sk, &seat, GroupMemberRole::Admin);
         actors.push(primary_actor(ActorState::DirectAdmin, &seat, sibling.1));
         let (seat, sibling) = seat_for(0x22);
+        add_member(
+            &store,
+            &restricted,
+            &owner_sk,
+            &seat,
+            GroupMemberRole::Member,
+        );
         add_member(&store, &subject, &owner_sk, &seat, GroupMemberRole::Member);
         actors.push(primary_actor(ActorState::DirectMember, &seat, sibling.1));
 
@@ -521,6 +542,13 @@ impl World {
         // second device in a different condition, so admin and anchor gates see it.
         let (seat, sibling) = seat_for(0x29);
         add_member(&store, &namespace, &owner_sk, &seat, GroupMemberRole::Admin);
+        add_member(
+            &store,
+            &restricted,
+            &owner_sk,
+            &seat,
+            GroupMemberRole::Admin,
+        );
         add_member(&store, &subject, &owner_sk, &seat, GroupMemberRole::Admin);
         group_op(
             &store,
@@ -540,6 +568,13 @@ impl World {
 
         let (seat, sibling) = seat_for(0x2A);
         add_member(&store, &namespace, &owner_sk, &seat, GroupMemberRole::Admin);
+        add_member(
+            &store,
+            &restricted,
+            &owner_sk,
+            &seat,
+            GroupMemberRole::Admin,
+        );
         add_member(&store, &subject, &owner_sk, &seat, GroupMemberRole::Admin);
         let narrowed = DeviceScope::sign(
             &seat.root,
@@ -573,6 +608,13 @@ impl World {
 
         let (seat, sibling) = seat_for(0x2B);
         add_member(&store, &namespace, &owner_sk, &seat, GroupMemberRole::Admin);
+        add_member(
+            &store,
+            &restricted,
+            &owner_sk,
+            &seat,
+            GroupMemberRole::Admin,
+        );
         add_member(&store, &subject, &owner_sk, &seat, GroupMemberRole::Admin);
         actors.push(sibling_actor(
             ActorState::SecondDevice,

@@ -4541,6 +4541,66 @@ fn governance_group_created_is_idempotent() {
         .expect("duplicate GroupCreated should be idempotent");
 }
 
+/// A folder made inside a private space has no direct row for its creator: its seat is the
+/// creator's seat in the space, so ending that ends this.
+#[test]
+fn a_folder_created_inside_a_space_gives_its_creator_no_row() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+    let ns_id = [0xA3u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let admin = enrol_member(&store, &ns_gid, &admin_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
+        .unwrap();
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
+    let create = |nonce: u64, parent: [u8; 32], restricted: bool, tag: u8| {
+        let op = SignedNamespaceOp::sign(
+            &admin_sk,
+            ns_id.into(),
+            vec![],
+            nonce,
+            seal_for_test(
+                &store,
+                ns_gid,
+                crate::test_fixtures::group_created(admin, parent, restricted, tag),
+            ),
+        )
+        .expect("sign GroupCreated");
+        gov.apply_signed_op(&op)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
+            .expect("apply GroupCreated");
+        ContextGroupId::from(crate::test_fixtures::derived_group_id(
+            &admin, parent, restricted, tag,
+        ))
+    };
+
+    let space = create(1, ns_id, true, 0x01);
+    let folder = create(2, space.to_bytes(), false, 0x02);
+
+    let rows = MembershipRepository::new(&store);
+    assert!(
+        rows.role_of(&space, &admin).unwrap().is_some(),
+        "the space root seats its creator"
+    );
+    assert_eq!(rows.role_of(&folder, &admin).unwrap(), None);
+}
+
 #[test]
 fn governance_group_created_rejects_cross_namespace_parent() {
     use calimero_context_client::local_governance::SignedNamespaceOp;
@@ -7940,6 +8000,88 @@ fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
         namespace_groups_awaiting_key(&store, namespace_id.into()).unwrap(),
         vec![subgroup_id],
         "holding the namespace key must not mask a Restricted subgroup awaiting its own key"
+    );
+}
+
+/// A row of its own in a folder of a space is no standing without a seat in the space.
+#[test]
+fn a_folder_key_needs_a_row_at_the_space_root() {
+    use crate::group_keys::GroupKeyring;
+    use crate::{build_group_key_delivery, KeyRequester};
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let namespace_id = [0xF8u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let space_id = [0xF9u8; 32];
+    let space = ContextGroupId::from(space_id);
+    let folder_id = [0xFAu8; 32];
+    let folder = ContextGroupId::from(folder_id);
+    let responder_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let responder_sk = PrivateKey::from(responder_sk_bytes);
+    let responder_account = crate::test_fixtures::account_for(&responder_sk.public_key());
+    let joiner_pk = PrivateKey::from([0x5Au8; 32]).public_key();
+
+    let store = test_store();
+    let (joiner_account, joiner_device, credential) =
+        crate::test_fixtures::enrol_local_device(&store, &ns_gid, &joiner_pk);
+    crate::test_fixtures::record_credential(&store, &ns_gid, &credential);
+    let _ = enrol_member(&store, &ns_gid, &responder_sk.public_key());
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &responder_sk.public_key(), &responder_sk_bytes)
+        .unwrap();
+    for group in [&ns_gid, &space, &folder] {
+        MetaRepository::new(&store)
+            .save(group, &sample_meta_with_admin(responder_account))
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &space)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&space, &folder)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&space, calimero_context_config::VisibilityMode::Restricted)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&folder, calimero_context_config::VisibilityMode::Open)
+        .unwrap();
+    GroupKeyring::new(&store, folder)
+        .store_key(&[0x6Cu8; 32])
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &joiner_account, GroupMemberRole::Member)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&folder, &joiner_account, GroupMemberRole::Member)
+        .unwrap();
+
+    let serve = || {
+        build_group_key_delivery(
+            &store,
+            namespace_id.into(),
+            folder_id,
+            KeyRequester {
+                identity: joiner_pk,
+                device: Some(joiner_device),
+            },
+            None,
+        )
+        .unwrap()
+        .0
+    };
+    assert!(
+        serve().is_empty(),
+        "a folder row alone is no seat in the space"
+    );
+    MembershipRepository::new(&store)
+        .add_member(&space, &joiner_account, GroupMemberRole::Member)
+        .unwrap();
+    assert!(
+        !serve().is_empty(),
+        "control: with a seat in the space it is served"
     );
 }
 

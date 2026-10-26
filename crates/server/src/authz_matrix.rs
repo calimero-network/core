@@ -53,6 +53,8 @@ const TABLES: &[OpTable] = &[
         allow: &[
             Owner,
             NamespaceAdmin,
+            DirectAdmin,
+            DirectMember,
             InheritedAdmin,
             InheritedMember,
             Kicked,

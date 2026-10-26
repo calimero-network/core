@@ -243,7 +243,10 @@ pub(crate) fn apply(
         handle.put(&GroupParentRef::new(group_id), &parent_id)?;
         handle.put(&GroupChildIndex::new(parent_id, group_id), &())?;
     }
-    MembershipRepository::new(store).add_member(&gid, &creator, GroupMemberRole::Admin)?;
+    // Inside a space the creator's seat is its seat in the space, with no row of its own.
+    if tree.space_of(&parent_gid)?.is_none() {
+        MembershipRepository::new(store).add_member(&gid, &creator, GroupMemberRole::Admin)?;
+    }
 
     // Born-Open atomic create (#2771): write the subgroup's visibility key
     // from `restricted` using the SAME mechanism `SubgroupVisibilitySet`

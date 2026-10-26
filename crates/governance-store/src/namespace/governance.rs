@@ -1744,6 +1744,10 @@ impl<'a> NamespaceGovernance<'a> {
         else {
             return Ok(true);
         };
+        // A folder's seat is the seat in its space, whatever row the folder itself holds.
+        if *group != space && !membership.is_live_member(&space, account)? {
+            return Ok(false);
+        }
         if membership.is_live_member(namespace, account)? {
             return Ok(true);
         }

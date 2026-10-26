@@ -1305,9 +1305,10 @@ mod tests {
             let actor = world.actor(state);
             let skips = member_by_inheritance(&world.store, &world.subject, &actor.account)
                 .expect("read membership");
+            // The owner made the subject inside a space, so it holds no row of its own there.
             let inherited = matches!(
                 state,
-                ActorState::InheritedAdmin | ActorState::InheritedMember
+                ActorState::Owner | ActorState::InheritedAdmin | ActorState::InheritedMember
             );
             assert_eq!(skips, inherited, "{}", state.label());
         }
