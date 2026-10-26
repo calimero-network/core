@@ -119,15 +119,21 @@ steps:
       identity_node3: memberIdentity
       account_node3: memberAccount
 
-  # Default subgroup visibility is Restricted; no `set_subgroup_visibility`
-  # call is needed. Inheritance via CAN_JOIN_OPEN_SUBGROUPS does not apply.
-  - name: Node-1 creates Restricted subgroup
+  # Subgroups are born Open; a private space is Restricted and holds its own
+  # member rows, so the visibility is set before members are added.
+  - name: Node-1 creates subgroup
     type: create_group_in_namespace
     node: kick-readd-node-1
     namespace_id: '{{namespace_id}}'
     group_name: private-channel
     outputs:
       subgroup_id: groupId
+
+  - name: Node-1 makes the subgroup a private space
+    type: set_subgroup_visibility
+    node: kick-readd-node-1
+    group_id: '{{subgroup_id}}'
+    visibility: restricted
 
   - name: Admin adds node-2 and node-3 to subgroup
     type: add_group_members

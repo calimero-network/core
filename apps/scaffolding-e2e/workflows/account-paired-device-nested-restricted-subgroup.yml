@@ -2,8 +2,8 @@ name: E2E Account - A Paired Device Reads A Nested Restricted Subgroup After A K
 description: >
   Node 2 founds a namespace, lets members create subgroups, and rotates the
   namespace key by removing node 4. Node 1 joins after that rotation and builds
-  a Restricted subgroup nested inside another Restricted subgroup, both holding
-  itself and node 2, then writes into a context in the inner one. Node 3 is then
+  a folder nested inside a private space (a Restricted subgroup holding itself
+  and node 2), then writes into a context in the inner one. Node 3 is then
   paired into node 1's account. It must converge on the inner subgroup, join its
   context and read the write.
 
@@ -113,7 +113,7 @@ steps:
     path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
     dev: true
 
-  - name: Node-1 creates the outer Restricted subgroup
+  - name: Node-1 creates the private space subgroup
     type: create_group_in_namespace
     node: paired-nested-1
     namespace_id: '{{namespace_id}}'
@@ -121,13 +121,13 @@ steps:
     outputs:
       team_group: groupId
 
-  - name: Node-1 marks the outer subgroup Restricted
+  - name: Node-1 marks the subgroup Restricted
     type: set_subgroup_visibility
     node: paired-nested-1
     group_id: '{{team_group}}'
     visibility: restricted
 
-  - name: Node-1 adds node-2 to the outer subgroup
+  - name: Node-1 adds node-2 to the private space
     type: add_group_members
     node: paired-nested-1
     group_id: '{{team_group}}'
@@ -135,7 +135,7 @@ steps:
       - identity: '{{account_node2}}'
         role: Member
 
-  - name: Node-1 creates the inner subgroup
+  - name: Node-1 creates the inner folder
     type: create_group_in_namespace
     node: paired-nested-1
     namespace_id: '{{namespace_id}}'
@@ -144,25 +144,11 @@ steps:
       dm_group: groupId
 
   # Reparenting is a namespace-admin right, so the founder nests it.
-  - name: Node-2 nests the inner subgroup inside the outer one
+  - name: Node-2 nests the inner folder inside the private space
     type: reparent_group
     node: paired-nested-2
     child_group_id: '{{dm_group}}'
     new_parent_id: '{{team_group}}'
-
-  - name: Node-1 marks the inner subgroup Restricted
-    type: set_subgroup_visibility
-    node: paired-nested-1
-    group_id: '{{dm_group}}'
-    visibility: restricted
-
-  - name: Node-1 adds node-2 to the inner subgroup
-    type: add_group_members
-    node: paired-nested-1
-    group_id: '{{dm_group}}'
-    members:
-      - identity: '{{account_node2}}'
-        role: Member
 
   - name: Node-1 creates a context in the inner subgroup
     type: create_context

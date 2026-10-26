@@ -1,6 +1,6 @@
 name: E2E KV Store - Leave Group (MemberLeft)
 description: >
-  Tests voluntary self-leave from a subgroup via `leave_group`.
+  Tests voluntary self-leave from a private space via `leave_group`.
   Publishes `MemberLeft` so peers observe the leave. Exercises the
   apply-side checks: direct-row required, last-admin protection.
 
@@ -87,13 +87,19 @@ steps:
     outputs:
       account_node1: accountId
 
-  - name: Create subgroup with all three nodes
+  - name: Create subgroup
     type: create_group_in_namespace
     node: e2e-node-1
     namespace_id: '{{namespace_id}}'
     group_name: leave-group-subgroup
     outputs:
       subgroup_id: groupId
+
+  - name: Make the subgroup a private space
+    type: set_subgroup_visibility
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    visibility: restricted
 
   - name: Add node-2 and node-3 to subgroup
     type: add_group_members

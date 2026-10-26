@@ -5,7 +5,8 @@ description: >
 
   Reproduces the mero-drive e2e failure shape:
 
-    1. Node-1 (Alice) creates a subgroup and adds node-2 (Bob) to it.
+    1. Node-1 (Alice) creates an open subgroup; node-2 (Bob) is a member
+       of it through the namespace.
     2. Node-1 creates a subgroup-owned context.
     3. Node-1 generates many writes on that context. Each write broadcasts
        a delta over the context's gossipsub topic.
@@ -107,7 +108,8 @@ steps:
 
   # ── Subgroup: node-2 is a member BEFORE the context exists ────────
   #
-  # Membership must precede context creation so that gossip deltas on
+  # Open subgroups hold no member rows; node-2 is a member through the
+  # namespace. Membership must precede context creation so that gossip deltas on
   # the subgroup-owned context reach node-2 via auto-follow (#2169)
   # and populate its delta_store.
 
@@ -118,14 +120,6 @@ steps:
     group_name: queued-deltas-subgroup
     outputs:
       subgroup_id: groupId
-
-  - name: Add node-2 to subgroup
-    type: add_group_members
-    node: e2e-node-1
-    group_id: '{{subgroup_id}}'
-    members:
-      - identity: '{{member_identity_node2}}'
-        role: Member
 
   # Wait + probe: we must verify node-2 has APPLIED the subgroup-membership
   # governance op before we start burst-generating deltas on the subgroup
@@ -138,11 +132,8 @@ steps:
   # by asserting node-2's local view of subgroup membership BEFORE the
   # delta burst begins, so the two bugs can't conflate in this workflow.
 
-  # No fixed wait needed: `add_group_members` above returns once the
-  # publish is accepted by gossipsub. Acks may still be in flight when
-  # the call returns (cold-state backfill window — receivers ack only
-  # after apply). The list_group_members probe below is the real gate
-  # for "node-2 has applied the membership row".
+  # The list_group_members probe below is the real gate for node-2
+  # having applied the subgroup.
 
 
   - name: Node-2 lists subgroup members (local view)

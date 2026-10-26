@@ -91,6 +91,12 @@ steps:
     outputs:
       group_id: groupId
 
+  - name: Node-1 makes the subgroup a private space
+    type: set_subgroup_visibility
+    node: af-late-flip-node-1
+    group_id: "{{group_id}}"
+    visibility: restricted
+
   - name: Enable contexts auto-follow for node-1 (admin self-flip)
     type: set_member_auto_follow
     node: af-late-flip-node-1

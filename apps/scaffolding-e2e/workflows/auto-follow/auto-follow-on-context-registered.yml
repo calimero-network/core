@@ -93,6 +93,12 @@ steps:
     outputs:
       group_id: groupId
 
+  - name: Node-1 makes the subgroup a private space
+    type: set_subgroup_visibility
+    node: af-baseline-node-1
+    group_id: "{{group_id}}"
+    visibility: restricted
+
   - name: Node-1 adds node-2 to the subgroup
     type: add_group_members
     node: af-baseline-node-1

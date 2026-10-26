@@ -74,6 +74,12 @@ steps:
     outputs:
       subgroup_a_id: groupId
 
+  - name: Make subgroup A a private space
+    type: set_subgroup_visibility
+    node: e2e-node-1
+    group_id: '{{subgroup_a_id}}'
+    visibility: restricted
+
   - name: Create subgroup B
     type: create_group_in_namespace
     node: e2e-node-1
@@ -81,6 +87,12 @@ steps:
     group_name: leave-namespace-subgroup-b
     outputs:
       subgroup_b_id: groupId
+
+  - name: Make subgroup B a private space
+    type: set_subgroup_visibility
+    node: e2e-node-1
+    group_id: '{{subgroup_b_id}}'
+    visibility: restricted
 
   - name: Add node-2 to subgroup A
     type: add_group_members

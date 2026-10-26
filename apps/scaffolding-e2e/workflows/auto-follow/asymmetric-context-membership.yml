@@ -130,6 +130,12 @@ steps:
     outputs:
       group_a: groupId
 
+  - name: Node-1 makes subgroup_a a private space
+    type: set_subgroup_visibility
+    node: af-asym-node-1
+    group_id: "{{group_a}}"
+    visibility: restricted
+
   - name: Node-1 creates subgroup_b
     type: create_group_in_namespace
     node: af-asym-node-1
@@ -138,6 +144,12 @@ steps:
     outputs:
       group_b: groupId
 
+  - name: Node-1 makes subgroup_b a private space
+    type: set_subgroup_visibility
+    node: af-asym-node-1
+    group_id: "{{group_b}}"
+    visibility: restricted
+
   - name: Node-1 creates subgroup_c
     type: create_group_in_namespace
     node: af-asym-node-1
@@ -145,6 +157,12 @@ steps:
     group_name: "asym-subgroup-c"
     outputs:
       group_c: groupId
+
+  - name: Node-1 makes subgroup_c a private space
+    type: set_subgroup_visibility
+    node: af-asym-node-1
+    group_id: "{{group_c}}"
+    visibility: restricted
 
   - name: Add node-2 to subgroup_a
     type: add_group_members

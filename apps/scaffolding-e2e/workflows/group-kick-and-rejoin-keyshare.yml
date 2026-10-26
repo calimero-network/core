@@ -1,52 +1,27 @@
-name: E2E KV Store - Kick Sticks, Admin Re-Add Is The Way Back (Open Subgroup)
+name: E2E KV Store - Kick Sticks, Admin Re-Add Is The Way Back (Private Space)
 description: >
-  A kick must stick. An Open subgroup admits any parent member holding
-  `CAN_JOIN_OPEN_SUBGROUPS` automatically, so inheritance is the back
-  door that would otherwise make a subgroup kick meaningless: the
-  kicked member simply re-inherits and walks straight back in. This
-  flow pins that door shut, and pins the one door that stays open —
-  an admin re-adding them.
+  A kick must stick, and an admin re-add is the way back. Removing a
+  member writes a re-entry block alongside the deny-list entry: the
+  deny-list *silences* them (their state deltas are dropped at the
+  receive filter) and is retracted the moment any member row is written;
+  the re-entry block deliberately survives a member-row write and is
+  lifted only by an admin `MemberAdded`.
 
-  Removing a member now writes a re-entry block alongside the
-  deny-list entry. The two are different things and the distinction is
-  the point of this test: the deny-list *silences* them (their state
-  deltas are dropped at the receive filter) and is retracted the moment
-  any member row is written; the re-entry block *authorizes* and
-  deliberately survives a member-row write, so a re-join attempt fails
-  instead of silently succeeding. Only an admin `MemberAdded` lifts it.
+  Scenario (3 nodes, single private space):
 
-  Scenario (3 nodes, single Open subgroup):
-
-    1. node-2 inherits Open-subgroup membership and self-joins via
-       `join_subgroup_inheritance` so the subgroup key lands locally.
-    2. node-2 writes; node-3 reads — proves the joiner-as-author
-       direction works pre-kick.
-    3. Admin (node-1) removes node-2 from the subgroup.
-    4. node-2's next write is rejected by the local apply path or the
-       peers' deny-list filter. `expected_failure: true` asserts the
-       write does not reach node-3.
-    5. node-2 calls `join_subgroup_inheritance` again — and is now
-       REJECTED. Its `CAN_JOIN_OPEN_SUBGROUPS` cap at the namespace is
-       still intact and its inheritance path is fully resolvable, so
-       the ONLY thing standing in its way is the re-entry block. That
-       makes this step a tight test of the block itself rather than of
-       some incidental loss of authority.
-    6. node-2 stays out: absent from the member list, still unable to
+    1. Admin adds node-2 and node-3 to the private space.
+    2. node-2 writes; node-3 reads - the pre-kick direction works.
+    3. Admin (node-1) removes node-2 from the space.
+    4. node-2's next write must not reach node-3.
+    5. node-2 stays out: absent from the member list, still unable to
        write.
-    7. Admin (node-1) re-adds node-2 with `add_group_members`. This is
-       the sole way back for a removed member. The block lifts, a fresh
-       `KeyDelivery` lands, and node-2 writes again; node-3 reads it.
-       Bidirectional convergence is the success signal.
+    6. Admin re-adds node-2 with `add_group_members`. The block lifts, a
+       fresh `KeyDelivery` lands, and node-2 writes again; node-3 reads it.
 
-  What this test does NOT cover (intentionally — different test):
-    * The admin re-add cycle on a *Restricted* subgroup (no
-      inheritance path in play) is covered by
-      `group-kick-and-readd-deny-list.yml`.
-    * Voluntary `leave_group` and what it takes to come back from it
-      is covered by `group-leave-then-rejoin-via-inheritance.yml`.
-
-  Mero-chat user-visible failure mode this guards against: "I kicked
-  someone from a public channel and they just walked straight back in."
+  Inheritance into an open subgroup no longer exists, so there is no
+  self-rejoin to reject; the deny-list cycle without the block assertions
+  is also covered by `group-kick-and-readd-deny-list.yml`, and leaving by
+  `group-leave-then-rejoin-via-inheritance.yml`.
 
 force_pull_image: false
 
@@ -78,7 +53,7 @@ steps:
     username: dev
     password: dev-password
 
-  # ── Phase 1: Bootstrap namespace + Open subgroup + context ────────
+  # ── Phase 1: Bootstrap namespace + private space + context ────────
 
   - name: Install application on node-1
     type: install_application
@@ -115,9 +90,6 @@ steps:
       invite_node3: invitation
 
   - name: Node-2 joins namespace
-    # Default member capabilities include CAN_JOIN_OPEN_SUBGROUPS, so
-    # node-2 inherits eligibility for any Open subgroup beneath this
-    # namespace without an explicit add_group_members at the subgroup.
     type: join_namespace
     node: kick-rejoin-node-2
     namespace_id: '{{namespace_id}}'
@@ -132,23 +104,34 @@ steps:
     namespace_id: '{{namespace_id}}'
     invitation: '{{invite_node3}}'
     outputs:
+      identity_node3: memberIdentity
       account_node3: memberAccount
 
-  - name: Node-1 creates Open subgroup inside namespace
+  - name: Node-1 creates subgroup inside namespace
     type: create_group_in_namespace
     node: kick-rejoin-node-1
     namespace_id: '{{namespace_id}}'
-    group_name: open-channel
+    group_name: private-channel
     outputs:
       subgroup_id: groupId
 
-  - name: Mark subgroup as Open
+  - name: Mark subgroup as a private space
     type: set_subgroup_visibility
     node: kick-rejoin-node-1
     group_id: '{{subgroup_id}}'
-    visibility: open
+    visibility: restricted
 
-  - name: Node-1 creates context inside Open subgroup
+  - name: Admin adds node-2 and node-3 to the private space
+    type: add_group_members
+    node: kick-rejoin-node-1
+    group_id: '{{subgroup_id}}'
+    members:
+      - identity: '{{identity_node2}}'
+        role: Member
+      - identity: '{{identity_node3}}'
+        role: Member
+
+  - name: Node-1 creates context inside the private space
     type: create_context
     node: kick-rejoin-node-1
     application_id: '{{app_id}}'
@@ -156,37 +139,22 @@ steps:
     outputs:
       ctx_id: contextId
 
-  - name: Wait for subgroup visibility + context-registered ops to propagate
-    # node-2 and node-3 need the Open-visibility row + the context
-    # registration before their inheritance check / join_context can
-    # see the Open subgroup as joinable.
+  - name: Wait for member + context-registered ops to propagate
+    # node-2 and node-3 need the member rows + the context registration
+    # before join_context can see the context.
     type: wait
     seconds: 10
 
-  # ── Phase 2: node-2 inherits + self-joins, node-3 also joins ──────
+  # ── Phase 2: node-2 and node-3 join the context ──────
 
-  - name: Node-2 self-joins Open subgroup via inheritance endpoint (#2360)
-    # No `outputs` capture — `memberPublicKey` from this step is the
-    # same as the one captured by the subsequent `join_context` into
-    # `node2_key`. Holding only one binding avoids dead-output noise.
-    type: join_subgroup_inheritance
-    node: kick-rejoin-node-2
-    group_id: '{{subgroup_id}}'
-
-  - name: Node-2 joins context (key already local from inheritance)
+  - name: Node-2 joins context
     type: join_context
     node: kick-rejoin-node-2
     context_id: '{{ctx_id}}'
     outputs:
       node2_key: memberPublicKey
 
-  - name: Node-3 self-joins Open subgroup via inheritance endpoint (#2360)
-    # Same dead-output rationale as node-2's inheritance step above.
-    type: join_subgroup_inheritance
-    node: kick-rejoin-node-3
-    group_id: '{{subgroup_id}}'
-
-  - name: Node-3 joins context (key already local from inheritance)
+  - name: Node-3 joins context
     type: join_context
     node: kick-rejoin-node-3
     context_id: '{{ctx_id}}'
@@ -206,7 +174,7 @@ steps:
   # ── Phase 3: Pre-kick — node-2 writes, node-3 reads ───────────────
   # Establishes the joiner-as-author direction works before the kick,
   # so a Phase 6 failure is unambiguously caused by the rejoin path
-  # rather than a stale bug from #2351 / #2360.
+  # rather than a stale bug.
 
   - name: Pre-kick — node-2 writes
     type: call
@@ -257,7 +225,7 @@ steps:
   # deny-list (`mark_denied`). State-delta traffic from node-2 on this
   # subgroup is dropped at the receive entry point until cleared.
 
-  - name: Admin (node-1) removes node-2 from Open subgroup
+  - name: Admin (node-1) removes node-2 from the private space
     type: remove_group_members
     node: kick-rejoin-node-1
     group_id: '{{subgroup_id}}'
@@ -352,43 +320,22 @@ steps:
     statements:
       - 'json_equal({{post_kick_drop_check}}, {"output": null})'
 
-  # ── Phase 6: the inheritance back door must be shut ───────────────
-  # The step this whole flow exists for. node-2's
-  # CAN_JOIN_OPEN_SUBGROUPS cap at the namespace is untouched and the
-  # subgroup is still Open, so its inheritance path resolves perfectly
-  # well — `MemberJoinedOpen` would have admitted it before. The ONLY
-  # thing that can reject it now is the re-entry block written by the
-  # `MemberRemoved` apply. That makes this a tight test of the block
-  # itself: a pass here cannot be explained away by node-2 having
-  # incidentally lost some other authority.
+  # ── Phase 6: the kicked member is still out ─────────────────────
 
-  - name: Node-2 attempts to re-inherit into the subgroup (must be rejected)
-    type: join_subgroup_inheritance
-    node: kick-rejoin-node-2
-    group_id: '{{subgroup_id}}'
-    expected_failure: true
-
-  - name: Confirm subgroup membership after the rejected re-inheritance
+  - name: Confirm subgroup membership before the re-add
     type: list_group_members
     node: kick-rejoin-node-1
     group_id: '{{subgroup_id}}'
     outputs:
       members_after_failed_rejoin: members
 
-  # A rejected `MemberJoinedOpen` must leave no trace: no direct row,
-  # and no reappearance in the inherited half of the union either
-  # (`enumerate_inherited` still filters them out on the deny-list).
   - name: Assert the kicked member is still out
     type: assert
     statements:
       - "not_contains({{members_after_failed_rejoin}}, {{account_node2}})"
       - "contains({{members_after_failed_rejoin}}, {{account_node3}})"
 
-  # Negative control: a rejected re-join must not have quietly restored
-  # write access either. If the block were enforced only in the admin
-  # endpoint and not at op apply, the join would fail here while the
-  # deny-list got cleared underneath — and this write would land.
-  - name: Node-2 still cannot write after the rejected re-inheritance
+  - name: Node-2 still cannot write before the re-add
     type: call
     node: kick-rejoin-node-2
     context_id: '{{ctx_id}}'
@@ -505,11 +452,8 @@ steps:
     statements:
       - 'json_equal({{dropped_lookup}}, {"output": null})'
 
-  # The write attempted during the REJECTED re-inheritance. If the
-  # re-entry block were enforced only at the admin endpoint and not at
-  # op apply, the rejected join could still have cleared the deny-list
-  # underneath — and this value would now be visible on node-3.
-  - name: Confirm the write attempted during the rejected re-join was NOT delivered
+  # The write attempted before the re-add must never have been delivered.
+  - name: Confirm the write attempted before the re-add was NOT delivered
     type: call
     node: kick-rejoin-node-3
     context_id: '{{ctx_id}}'
@@ -520,7 +464,7 @@ steps:
     outputs:
       failed_rejoin_drop_lookup: result
 
-  - name: Assert the rejected re-join leaked no write access
+  - name: Assert no write access leaked before the re-add
     type: json_assert
     statements:
       - 'json_equal({{failed_rejoin_drop_lookup}}, {"output": null})'

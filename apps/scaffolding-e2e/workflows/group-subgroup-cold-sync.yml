@@ -99,6 +99,12 @@ steps:
     outputs:
       subgroup_id: groupId
 
+  - name: Make the subgroup a private space
+    type: set_subgroup_visibility
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    visibility: restricted
+
   - name: Add node-2 to subgroup
     type: add_group_members
     node: e2e-node-1

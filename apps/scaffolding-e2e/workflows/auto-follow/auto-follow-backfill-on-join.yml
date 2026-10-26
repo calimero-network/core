@@ -92,6 +92,12 @@ steps:
     outputs:
       group_id: groupId
 
+  - name: Node-1 makes the subgroup a private space
+    type: set_subgroup_visibility
+    node: af-backfill-node-1
+    group_id: "{{group_id}}"
+    visibility: restricted
+
   # Admin enables auto-follow on itself so it actually materialises the
   # contexts it's about to create (and so the post-create writes go
   # through node-1's local store, not just the governance DAG).

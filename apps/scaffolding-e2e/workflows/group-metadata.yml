@@ -9,7 +9,8 @@ description: >
        on node-1.
     2. Write MetadataRecord values on the namespace, subgroup, and
        context (name + opaque `data` map).
-    3. Invite node-2 into the namespace, add it to the subgroup, sync.
+    3. Invite node-2 into the namespace (a member of the open subgroup
+       through it), sync.
     4. Read each record back from node-2 and json_assert the contents.
     5. Confirm node-2 cannot set group metadata without
        CAN_MANAGE_METADATA (expected_failure), then grant the
@@ -134,7 +135,7 @@ steps:
     data:
       kind: primary
 
-  # --- Phase 3: Invite node-2 into the namespace + add to subgroup ---
+  # --- Phase 3: Invite node-2 into the namespace ---
 
   - name: Create namespace invitation
     type: create_namespace_invitation
@@ -157,15 +158,7 @@ steps:
     statements:
       - "is_set({{node2_id}})"
 
-  - name: Add node-2 to subgroup
-    type: add_group_members
-    node: e2e-node-1
-    group_id: '{{sub}}'
-    members:
-      - identity: '{{node2_id}}'
-        role: Member
-
-  # Push the membership op immediately rather than waiting for the
+  # Push governance state immediately rather than waiting for the
   # next gossip heartbeat (same pattern as group-member-channel-lifecycle).
   - name: Force governance push on node-1
     type: sync_group
