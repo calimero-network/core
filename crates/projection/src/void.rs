@@ -955,10 +955,21 @@ impl<'a> Analysis<'a> {
                 let Some(group) = self.voidable_group(op) else {
                     continue;
                 };
-                // Past the budget a removal is taken to reach: the op it might reach is the one
-                // that matters.
+                // Two admins removing each other both stay removed.
+                let mutual = removes_account(op) == Some(self.author_of(removal.op))
+                    && match removal.target {
+                        Target::Account(account) => account == self.author_of(op),
+                        Target::Device(device) => device == self.device_of(op),
+                    };
+                if mutual {
+                    continue;
+                }
+                // Past the budget a removal is taken to reach, the owner aside: the op it
+                // might reach is the one that matters.
                 if self.over_budget() {
-                    let _ = next.insert(id);
+                    if !self.is_owner(op) {
+                        let _ = next.insert(id);
+                    }
                     continue;
                 }
                 let tree = self.tree_at(op, void);
@@ -983,15 +994,6 @@ impl<'a> Analysis<'a> {
                     }
                 };
                 if !reaches {
-                    continue;
-                }
-                // Two admins removing each other both stay removed.
-                let mutual = removes_account(op) == Some(self.author_of(removal.op))
-                    && match removal.target {
-                        Target::Account(account) => account == self.author_of(op),
-                        Target::Device(device) => device == self.device_of(op),
-                    };
-                if mutual {
                     continue;
                 }
                 let _ = next.insert(id);

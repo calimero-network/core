@@ -1349,3 +1349,17 @@ fn past_the_fold_budget_a_removal_is_taken_to_reach_the_op() {
     assert!(!judged(usize::MAX).contains(&in_space.id()));
     assert!(judged(0).contains(&in_space.id()));
 }
+
+#[test]
+fn past_the_fold_budget_a_removal_still_spares_the_owner_and_a_counter_removal() {
+    let (mut log, head) = eng_private_space();
+    let removal = remove_from(subgroup(0x41), ALICE, &[&head], SAM);
+    let counter = remove_from(subgroup(0x41), SAM, &[&head], ALICE);
+    let owners = add_in(group(), OWNER, &[&head], WILL, GroupMemberRole::Member);
+    let sam_removes_owner = remove_from(subgroup(0x41), SAM, &[&head], OWNER);
+    log.extend([removal, counter.clone(), owners.clone(), sam_removes_owner]);
+
+    let voided = ScopeState::void_ops_bounded(&log, base(), None, &[], 0);
+    assert!(!voided.contains(&owners.id()));
+    assert!(!voided.contains(&counter.id()));
+}
