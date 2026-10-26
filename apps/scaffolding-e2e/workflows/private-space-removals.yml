@@ -1,0 +1,568 @@
+name: E2E Private Spaces - Removing A Member From The Workspace Removes Them From Every Private Space
+description: >
+  Board is a private space with Minutes inside it.
+  Alice (owner, Admin of Board), Carol (Admin), Bob and Dave are its members.
+  Removing Dave only from Board leaves his workspace membership intact.
+  Alice then removes Carol from the workspace: no node may list her in Board or Minutes,
+  and her later rename of Board must not land on Alice's or Bob's node.
+  Consistency and target steps are kept apart.
+
+  Tree: workspace -> Board (private space) -> Minutes.
+  Nodes: 1 Alice (workspace owner, Admin of Board), 2 Bob (member of Board), 3 Carol (Admin of Board), 4 Dave (member of Board).
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 4
+  image: merod:local
+  prefix: private-folders
+
+steps:
+
+  - name: Login on node-1
+    type: login
+    node: private-folders-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: private-folders-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: private-folders-3
+    username: dev
+    password: dev-password
+
+  - name: Login on node-4
+    type: login
+    node: private-folders-4
+    username: dev
+    password: dev-password
+
+  # Workspace: node-1 (Alice) owns it, the other nodes join as plain members.
+  # Alice is node-1, Bob node-2, Carol node-3, Dave node-4.
+
+  - name: Install the application on Alice's node
+    type: install_application
+    node: private-folders-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Alice creates the workspace
+    type: create_namespace
+    node: private-folders-1
+    application_id: '{{app}}'
+    outputs:
+      ns: namespaceId
+
+  - name: Read Alice's account and key
+    type: node_identity
+    node: private-folders-1
+    outputs:
+      acc_a: accountId
+      key_a: publicKey
+
+  - name: Invite node-2 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_b: invitation
+
+  - name: Node-2 joins the workspace
+    type: join_namespace
+    node: private-folders-2
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_b}}'
+    outputs:
+      id_b: memberIdentity
+      acc_b: memberAccount
+
+  - name: Invite node-3 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_c: invitation
+
+  - name: Node-3 joins the workspace
+    type: join_namespace
+    node: private-folders-3
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_c}}'
+    outputs:
+      id_c: memberIdentity
+      acc_c: memberAccount
+
+  - name: Invite node-4 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_d: invitation
+
+  - name: Node-4 joins the workspace
+    type: join_namespace
+    node: private-folders-4
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_d}}'
+    outputs:
+      id_d: memberIdentity
+      acc_d: memberAccount
+
+  # The space: Board is private, Minutes carries no member rows of its own.
+
+  - name: Alice creates the Board folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: board
+    outputs:
+      f_board: groupId
+
+  - name: Alice marks Board private
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    visibility: restricted
+
+  - name: Alice creates the Minutes folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: minutes
+    outputs:
+      f_minutes: groupId
+
+  - name: Alice nests Minutes under board
+    type: reparent_group
+    node: private-folders-1
+    child_group_id: '{{f_minutes}}'
+    new_parent_id: '{{f_board}}'
+
+  - name: Alice adds Carol to Board as Admin
+    type: add_group_members
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    members:
+    - identity: '{{id_c}}'
+      role: Admin
+
+  - name: Alice adds Bob to Board as Member
+    type: add_group_members
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    members:
+    - identity: '{{id_b}}'
+      role: Member
+
+  - name: Alice adds Dave to Board as Member
+    type: add_group_members
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    members:
+    - identity: '{{id_d}}'
+      role: Member
+
+  - name: Alice names Board
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    record_name: Board
+    data:
+      topic: board
+
+  - name: Alice names Minutes
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    record_name: Minutes
+    data:
+      topic: weekly
+
+  - name: Settle the workspace governance onto every node
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    - private-folders-4
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Bob's node lists Carol as Board Admin before any removal
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    match:
+      role: Admin
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists Dave in Board before any removal
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_d}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  # Removing Dave from Board alone leaves his workspace membership.
+
+  - name: Dave is removed from Board
+    type: remove_group_members
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    members:
+    - '{{acc_d}}'
+
+  - name: Settle the workspace governance after Dave leaves Board
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    - private-folders-4
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Alice's node lists no Board seat for Dave
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_d}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists no Board seat for Dave
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_d}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists no Board seat for Dave
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_d}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Alice's node still lists Dave as a workspace member
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{ns}}/members
+    where:
+      identity: '{{acc_d}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Dave's node still lists the workspace members
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{ns}}/members
+    where:
+      identity: '{{acc_d}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Board's info is refused on node-4
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_board}}
+    expected_failure: true
+
+  - name: Board's member list is refused on node-4
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_board}}/members
+    expected_failure: true
+
+  - name: Board's metadata name is not readable on node-4
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_board}}/metadata
+    absent:
+    - data.name
+
+  - name: Minutes's info is refused on node-4
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_minutes}}
+    expected_failure: true
+
+  - name: Minutes's member list is refused on node-4
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_minutes}}/members
+    expected_failure: true
+
+  - name: Minutes's metadata name is not readable on node-4
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    absent:
+    - data.name
+
+  # Carol is removed from the workspace.
+
+  - name: Carol is removed from the workspace
+    type: remove_group_members
+    node: private-folders-1
+    group_id: '{{ns}}'
+    members:
+    - '{{acc_c}}'
+
+  - name: Settle the removal onto the nodes still in the workspace
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-4
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Let late operations land
+    type: wait
+    seconds: 15
+
+  # Consistency: the nodes still in the workspace hold the same Board member list.
+
+  - name: Node-1 lists the Board members
+    type: list_group_members
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    outputs:
+      m1: members
+
+  - name: Node-2 lists the Board members
+    type: list_group_members
+    node: private-folders-2
+    group_id: '{{f_board}}'
+    outputs:
+      m2: members
+
+  - name: Board member list is identical on node-1 and node-2
+    type: json_assert
+    statements:
+    - json_subset({{m1}}, {{m2}})
+    - json_subset({{m2}}, {{m1}})
+
+  # Target value: Carol is in no private space, and her later ops do not land.
+
+  - name: Alice's node lists no Board seat for Carol
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_c}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Alice's node lists no Minutes seat for Carol
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Alice's node still lists Bob in Board
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_b}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists no Board seat for Carol
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_c}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists no Minutes seat for Carol
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Bob's node still lists Bob in Board
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_b}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Alice's node still lists Alice as Board Admin
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_a}}'
+    present:
+    - identity
+    match:
+      role: Admin
+    retries: 30
+    interval: 2
+
+  - name: Alice's node no longer lists Carol as a workspace member
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{ns}}/members
+    where:
+      identity: '{{acc_c}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Carol tries to rename Board
+    type: script
+    script: scripts/group-attempt.sh
+    target: local
+    args:
+    - private-folders-3
+    - PUT
+    - /admin-api/groups/{{f_board}}/metadata
+    - '{"name":"Board","data":{"topic":"carol-after-removal"}}'
+
+  - name: Carol tries to rename Minutes
+    type: script
+    script: scripts/group-attempt.sh
+    target: local
+    args:
+    - private-folders-3
+    - PUT
+    - /admin-api/groups/{{f_minutes}}/metadata
+    - '{"name":"Minutes","data":{"topic":"carol-after-removal"}}'
+
+  - name: Let the refused ops reach every peer
+    type: wait
+    seconds: 20
+
+  - name: Settle the workspace governance without Carol
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-4
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Alice's node still reads Board as Alice set it
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_board}}/metadata
+    match:
+      data.name: Board
+      data.data.topic: board
+    retries: 30
+    interval: 2
+
+  - name: Alice's node still reads Minutes as Alice set it
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    match:
+      data.name: Minutes
+      data.data.topic: weekly
+    retries: 30
+    interval: 2
+
+  - name: Alice's node still lists no Board seat for Carol after her rename
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_c}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Bob's node still reads Board as Alice set it
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_board}}/metadata
+    match:
+      data.name: Board
+      data.data.topic: board
+    retries: 30
+    interval: 2
+
+  - name: Bob's node still reads Minutes as Alice set it
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    match:
+      data.name: Minutes
+      data.data.topic: weekly
+    retries: 30
+    interval: 2
+
+  - name: Bob's node still lists no Board seat for Carol after her rename
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_c}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120

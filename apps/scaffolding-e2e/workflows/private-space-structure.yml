@@ -1,0 +1,349 @@
+name: E2E Private Spaces - Folders Inside A Private Space Stay Inside It, And Structure Rules Hold
+description: >
+  Board is a private space; Carol is its Admin and Alice owns the workspace.
+  A folder created inside Board is not listed and not readable by Bob, an outsider.
+  An invitation can be minted for the workspace, but one targeting a folder inside Board must be refused.
+  Deleting an open folder that contains a private space must be refused.
+  The invitation and the attempt steps go through scripts that report the status instead of failing, so the judgement is made on the status in the log or on state.
+
+  Tree: workspace -> Board (private space) -> Drafts; workspace -> Operations (open) -> Vault (private space).
+  Nodes: 1 Alice (workspace owner, Admin of Board and Vault), 2 Bob (workspace member), 3 Carol (Admin of Board).
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: private-folders
+
+steps:
+
+  - name: Login on node-1
+    type: login
+    node: private-folders-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: private-folders-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: private-folders-3
+    username: dev
+    password: dev-password
+
+  # Workspace: node-1 (Alice) owns it, the other nodes join as plain members.
+  # Alice is node-1, Bob node-2, Carol node-3, Dave node-4.
+
+  - name: Install the application on Alice's node
+    type: install_application
+    node: private-folders-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Alice creates the workspace
+    type: create_namespace
+    node: private-folders-1
+    application_id: '{{app}}'
+    outputs:
+      ns: namespaceId
+
+  - name: Read Alice's account and key
+    type: node_identity
+    node: private-folders-1
+    outputs:
+      acc_a: accountId
+      key_a: publicKey
+
+  - name: Invite node-2 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_b: invitation
+
+  - name: Node-2 joins the workspace
+    type: join_namespace
+    node: private-folders-2
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_b}}'
+    outputs:
+      id_b: memberIdentity
+      acc_b: memberAccount
+
+  - name: Invite node-3 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_c: invitation
+
+  - name: Node-3 joins the workspace
+    type: join_namespace
+    node: private-folders-3
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_c}}'
+    outputs:
+      id_c: memberIdentity
+      acc_c: memberAccount
+
+  - name: Alice creates the Board folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: board
+    outputs:
+      f_board: groupId
+
+  - name: Alice marks Board private
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    visibility: restricted
+
+  - name: Alice adds Carol to Board as Admin
+    type: add_group_members
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    members:
+    - identity: '{{id_c}}'
+      role: Admin
+
+  - name: Alice names Board
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    record_name: Board
+    data:
+      topic: board
+
+  - name: Alice creates the Drafts folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: drafts
+    outputs:
+      f_drafts: groupId
+
+  - name: Alice nests Drafts under board
+    type: reparent_group
+    node: private-folders-1
+    child_group_id: '{{f_drafts}}'
+    new_parent_id: '{{f_board}}'
+
+  - name: Alice names Drafts
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_drafts}}'
+    record_name: Drafts
+    data:
+      topic: wip
+
+  - name: Alice creates the Operations folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: operations
+    outputs:
+      f_operations: groupId
+
+  - name: Alice marks Operations open
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_operations}}'
+    visibility: open
+
+  - name: Alice creates the Vault folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: vault
+    outputs:
+      f_vault: groupId
+
+  - name: Alice nests Vault under operations
+    type: reparent_group
+    node: private-folders-1
+    child_group_id: '{{f_vault}}'
+    new_parent_id: '{{f_operations}}'
+
+  - name: Alice marks Vault private
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_vault}}'
+    visibility: restricted
+
+  - name: Alice names Operations
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_operations}}'
+    record_name: Operations
+    data:
+      topic: ops
+
+  - name: Alice names Vault
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_vault}}'
+    record_name: Vault
+    data:
+      topic: sealed
+
+  - name: Settle the workspace governance onto every node
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Invitations: the workspace works, a folder inside a private space does not.
+
+  - name: An invitation targeting the workspace is accepted
+    type: script
+    script: scripts/group-invite.sh
+    target: local
+    args:
+    - private-folders-1
+    - '{{ns}}'
+    - accepted
+
+  - name: An invitation targeting Drafts, a folder inside Board, is refused
+    type: script
+    script: scripts/group-invite.sh
+    target: local
+    args:
+    - private-folders-1
+    - '{{f_drafts}}'
+    - refused
+
+  # A folder created inside Board is held by Board's members only.
+
+  - name: Carol's node reads Drafts
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_drafts}}/metadata
+    match:
+      data.name: Drafts
+      data.data.topic: wip
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists Drafts under Board
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_board}}/subgroups
+    where:
+      groupId: '{{f_drafts}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Bob's node does not list Drafts under Board
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_board}}/subgroups
+    where:
+      groupId: '{{f_drafts}}'
+    expect_no_match: true
+
+  - name: Drafts's info is refused on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_drafts}}
+    expected_failure: true
+
+  - name: Drafts's member list is refused on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_drafts}}/members
+    expected_failure: true
+
+  - name: Drafts's metadata name is not readable on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_drafts}}/metadata
+    absent:
+    - data.name
+
+  - name: Drafts' contexts are refused on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_drafts}}/contexts
+    expected_failure: true
+
+  # An open folder that contains a private space cannot be deleted.
+
+  - name: Deleting Operations is refused while it contains the private space Vault
+    type: delete_group
+    node: private-folders-1
+    group_id: '{{f_operations}}'
+    expected_failure: true
+
+  - name: Settle the workspace governance after the refused delete
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Operations is still readable on Alice's node
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_operations}}/metadata
+    match:
+      data.name: Operations
+    retries: 30
+    interval: 2
+
+  - name: Vault is still readable on Alice's node
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_vault}}/metadata
+    match:
+      data.name: Vault
+      data.data.topic: sealed
+    retries: 30
+    interval: 2
+
+  - name: Alice's node still lists Vault under Operations
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_operations}}/subgroups
+    where:
+      groupId: '{{f_vault}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Bob's node still lists Operations
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/namespaces/{{ns}}/groups
+    where:
+      groupId: '{{f_operations}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120

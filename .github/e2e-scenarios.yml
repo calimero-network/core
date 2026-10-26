@@ -245,26 +245,23 @@ scenarios:
   - workflow: group-leave-then-rejoin-via-inheritance
     file: workflows/group-leave-then-rejoin-via-inheritance.yml
     app: scaffolding-e2e
-  # Nested private folders across three or four nodes. Governance-only ones fetch no bytecode.
-  - workflow: private-folder-nested-member
-    file: workflows/private-folder-nested-member.yml
+  # Private spaces across three or four nodes. Governance-only ones fetch no bytecode.
+  - workflow: private-space-members
+    file: workflows/private-space-members.yml
     app: scaffolding-e2e
-  - workflow: private-folder-removals
-    file: workflows/private-folder-removals.yml
+  - workflow: private-space-visibility
+    file: workflows/private-space-visibility.yml
     app: scaffolding-e2e
-    registry_fetch: "false"
-  - workflow: private-folder-visibility
-    file: workflows/private-folder-visibility.yml
-    app: scaffolding-e2e
-  - workflow: private-folder-access-rules
-    file: workflows/private-folder-access-rules.yml
-    app: scaffolding-e2e
-  - workflow: private-folder-concurrent-removal-board
-    file: workflows/private-folder-concurrent-removal-board.yml
+  - workflow: private-space-removals
+    file: workflows/private-space-removals.yml
     app: scaffolding-e2e
     registry_fetch: "false"
-  - workflow: private-folder-concurrent-removal-workspace
-    file: workflows/private-folder-concurrent-removal-workspace.yml
+  - workflow: private-space-concurrent-removal
+    file: workflows/private-space-concurrent-removal.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: private-space-structure
+    file: workflows/private-space-structure.yml
     app: scaffolding-e2e
     registry_fetch: "false"
   - workflow: group-private-add-then-write

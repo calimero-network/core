@@ -1,0 +1,889 @@
+name: E2E Private Spaces - Only A Private Space's Members Read Its Folders, Not The Workspace Owner
+description: >
+  Board is a private space with two folders inside it, Minutes and Budget.
+  Carol (Admin) and Dave are Board's members; Alice owns the workspace and leaves Board; Bob is a workspace member outside it.
+  Carol and Dave must read the name, metadata, members and contexts of every folder in Board, and use a context in Minutes.
+  Bob and Alice must see nothing inside Board: its folders are not listed and are refused or unreadable.
+  Carol then adds Bob at the space root, which must give him every folder in Board, while Alice stays locked out.
+
+  Tree: workspace -> Board (private space) -> Minutes, Budget.
+  Nodes: 1 Alice (workspace owner, leaves Board), 2 Bob (workspace member), 3 Carol (Admin of Board), 4 Dave (member of Board).
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 4
+  image: merod:local
+  prefix: private-folders
+
+steps:
+
+  - name: Login on node-1
+    type: login
+    node: private-folders-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: private-folders-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: private-folders-3
+    username: dev
+    password: dev-password
+
+  - name: Login on node-4
+    type: login
+    node: private-folders-4
+    username: dev
+    password: dev-password
+
+  # Workspace: node-1 (Alice) owns it, the other nodes join as plain members.
+  # Alice is node-1, Bob node-2, Carol node-3, Dave node-4.
+
+  - name: Install the application on Alice's node
+    type: install_application
+    node: private-folders-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Alice creates the workspace
+    type: create_namespace
+    node: private-folders-1
+    application_id: '{{app}}'
+    outputs:
+      ns: namespaceId
+
+  - name: Read Alice's account and key
+    type: node_identity
+    node: private-folders-1
+    outputs:
+      acc_a: accountId
+      key_a: publicKey
+
+  - name: Invite node-2 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_b: invitation
+
+  - name: Node-2 joins the workspace
+    type: join_namespace
+    node: private-folders-2
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_b}}'
+    outputs:
+      id_b: memberIdentity
+      acc_b: memberAccount
+
+  - name: Invite node-3 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_c: invitation
+
+  - name: Node-3 joins the workspace
+    type: join_namespace
+    node: private-folders-3
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_c}}'
+    outputs:
+      id_c: memberIdentity
+      acc_c: memberAccount
+
+  - name: Invite node-4 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_d: invitation
+
+  - name: Node-4 joins the workspace
+    type: join_namespace
+    node: private-folders-4
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_d}}'
+    outputs:
+      id_d: memberIdentity
+      acc_d: memberAccount
+
+  # The space: Board is private, its two folders carry no member rows of their own.
+
+  - name: Alice creates the Board folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: board
+    outputs:
+      f_board: groupId
+
+  - name: Alice marks Board private
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    visibility: restricted
+
+  - name: Alice creates the Minutes folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: minutes
+    outputs:
+      f_minutes: groupId
+
+  - name: Alice nests Minutes under board
+    type: reparent_group
+    node: private-folders-1
+    child_group_id: '{{f_minutes}}'
+    new_parent_id: '{{f_board}}'
+
+  - name: Alice creates the Budget folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: budget
+    outputs:
+      f_budget: groupId
+
+  - name: Alice nests Budget under board
+    type: reparent_group
+    node: private-folders-1
+    child_group_id: '{{f_budget}}'
+    new_parent_id: '{{f_board}}'
+
+  - name: Alice adds Carol to Board as Admin
+    type: add_group_members
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    members:
+    - identity: '{{id_c}}'
+      role: Admin
+
+  - name: Alice adds Dave to Board as Member
+    type: add_group_members
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    members:
+    - identity: '{{id_d}}'
+      role: Member
+
+  - name: Alice names Board
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    record_name: Board
+    data:
+      topic: board
+
+  - name: Alice names Minutes
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    record_name: Minutes
+    data:
+      topic: weekly
+
+  - name: Alice names Budget
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_budget}}'
+    record_name: Budget
+    data:
+      topic: yearly
+
+  - name: Alice creates a context in Minutes
+    type: create_context
+    node: private-folders-1
+    application_id: '{{app}}'
+    group_id: '{{f_minutes}}'
+    outputs:
+      ctx: contextId
+
+  - name: Settle the workspace governance onto every node
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    - private-folders-4
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Alice leaves Board
+    type: leave_group
+    node: private-folders-1
+    group_id: '{{f_board}}'
+
+  - name: Settle the workspace governance after Alice leaves
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    - private-folders-4
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Board's members read the space root.
+
+  - name: Carol's node reads Board
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_board}}/metadata
+    match:
+      data.name: Board
+      data.data.topic: board
+    retries: 30
+    interval: 2
+
+  - name: Dave's node reads Board
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_board}}/metadata
+    match:
+      data.name: Board
+      data.data.topic: board
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists Carol as Board Admin
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    match:
+      role: Admin
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists Dave as a Board member
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_d}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists no Board seat for Alice
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_a}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  # Board's members read every folder inside it, names and metadata included.
+
+  - name: Carol's node lists Minutes under Board
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_board}}/subgroups
+    where:
+      groupId: '{{f_minutes}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Carol's node reads Minutes
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    match:
+      data.name: Minutes
+      data.data.topic: weekly
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists Budget under Board
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_board}}/subgroups
+    where:
+      groupId: '{{f_budget}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Carol's node reads Budget
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_budget}}/metadata
+    match:
+      data.name: Budget
+      data.data.topic: yearly
+    retries: 30
+    interval: 2
+
+  - name: Dave's node lists Minutes under Board
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_board}}/subgroups
+    where:
+      groupId: '{{f_minutes}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Dave's node reads Minutes
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    match:
+      data.name: Minutes
+      data.data.topic: weekly
+    retries: 30
+    interval: 2
+
+  - name: Dave's node lists Budget under Board
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_board}}/subgroups
+    where:
+      groupId: '{{f_budget}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Dave's node reads Budget
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_budget}}/metadata
+    match:
+      data.name: Budget
+      data.data.topic: yearly
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists Carol in Minutes
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists Dave in Minutes
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_d}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists no Minutes seat for Bob
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_b}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists Carol in Budget
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_budget}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists Dave in Budget
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_budget}}/members
+    where:
+      identity: '{{acc_d}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists no Budget seat for Bob
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_budget}}/members
+    where:
+      identity: '{{acc_b}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Dave's node lists Carol in Minutes
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Dave's node lists Dave in Minutes
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_d}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Dave's node lists no Minutes seat for Bob
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_b}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Dave's node lists Carol in Budget
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_budget}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Dave's node lists Dave in Budget
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_budget}}/members
+    where:
+      identity: '{{acc_d}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Dave's node lists no Budget seat for Bob
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_budget}}/members
+    where:
+      identity: '{{acc_b}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists the Minutes context
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/contexts
+    where:
+      contextId: '{{ctx}}'
+    present:
+    - contextId
+    retries: 30
+    interval: 2
+
+  - name: Dave's node lists the Minutes context
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_minutes}}/contexts
+    where:
+      contextId: '{{ctx}}'
+    present:
+    - contextId
+    retries: 30
+    interval: 2
+
+  # Carol and Dave use a context in a folder inside the space.
+
+  - name: Carol joins the Minutes context
+    type: join_context
+    node: private-folders-3
+    context_id: '{{ctx}}'
+    outputs:
+      ckey_c: memberPublicKey
+
+  - name: Dave joins the Minutes context
+    type: join_context
+    node: private-folders-4
+    context_id: '{{ctx}}'
+    outputs:
+      ckey_d: memberPublicKey
+
+  - name: Settle the context on Alice, Carol and Dave
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+    - private-folders-1
+    - private-folders-3
+    - private-folders-4
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Carol writes
+    type: call
+    node: private-folders-3
+    context_id: '{{ctx}}'
+    method: set
+    args:
+      key: from_c
+      value: c_msg
+    executor_public_key: '{{ckey_c}}'
+
+  - name: Settle the context after Carol's write
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+    - private-folders-3
+    - private-folders-4
+    timeout: 30
+    check_interval: 2
+    trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: from_c
+      equals:
+        output: c_msg
+
+  - name: Dave reads Carol's write
+    type: call
+    node: private-folders-4
+    context_id: '{{ctx}}'
+    method: get
+    args:
+      key: from_c
+    executor_public_key: '{{ckey_d}}'
+    outputs:
+      dave_read: result
+
+  - name: Dave sees Carol's write
+    type: json_assert
+    statements:
+    - 'json_equal({{dave_read}}, {"output": "c_msg"})'
+
+  # Outsiders: the workspace owner (after leaving) and a plain workspace member.
+
+  - name: Alice's node does not list Minutes under Board
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_board}}/subgroups
+    where:
+      groupId: '{{f_minutes}}'
+    expect_no_match: true
+
+  - name: Alice's node does not list Budget under Board
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_board}}/subgroups
+    where:
+      groupId: '{{f_budget}}'
+    expect_no_match: true
+
+  - name: Minutes's info is refused on node-1
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}
+    expected_failure: true
+
+  - name: Minutes's member list is refused on node-1
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/members
+    expected_failure: true
+
+  - name: Minutes's metadata name is not readable on node-1
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    absent:
+    - data.name
+
+  - name: Budget's info is refused on node-1
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_budget}}
+    expected_failure: true
+
+  - name: Budget's member list is refused on node-1
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_budget}}/members
+    expected_failure: true
+
+  - name: Budget's metadata name is not readable on node-1
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_budget}}/metadata
+    absent:
+    - data.name
+
+  - name: Minutes' contexts are refused on node-1
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/contexts
+    expected_failure: true
+
+  - name: Bob's node does not list Minutes under Board
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_board}}/subgroups
+    where:
+      groupId: '{{f_minutes}}'
+    expect_no_match: true
+
+  - name: Bob's node does not list Budget under Board
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_board}}/subgroups
+    where:
+      groupId: '{{f_budget}}'
+    expect_no_match: true
+
+  - name: Minutes's info is refused on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}
+    expected_failure: true
+
+  - name: Minutes's member list is refused on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/members
+    expected_failure: true
+
+  - name: Minutes's metadata name is not readable on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    absent:
+    - data.name
+
+  - name: Budget's info is refused on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_budget}}
+    expected_failure: true
+
+  - name: Budget's member list is refused on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_budget}}/members
+    expected_failure: true
+
+  - name: Budget's metadata name is not readable on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_budget}}/metadata
+    absent:
+    - data.name
+
+  - name: Minutes' contexts are refused on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/contexts
+    expected_failure: true
+
+  # Adding a member at the space root gives access to every folder inside it.
+
+  - name: Carol adds Bob to Board as Member
+    type: add_group_members
+    node: private-folders-3
+    group_id: '{{f_board}}'
+    members:
+    - identity: '{{id_b}}'
+      role: Member
+
+  - name: Settle the workspace governance after Bob is added
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    - private-folders-4
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Bob's node reads Minutes
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    match:
+      data.name: Minutes
+      data.data.topic: weekly
+    retries: 30
+    interval: 2
+
+  - name: Bob's node reads Budget
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_budget}}/metadata
+    match:
+      data.name: Budget
+      data.data.topic: yearly
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists Minutes under Board
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_board}}/subgroups
+    where:
+      groupId: '{{f_minutes}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists the Minutes context
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/contexts
+    where:
+      contextId: '{{ctx}}'
+    present:
+    - contextId
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists Bob in Minutes
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_b}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists Bob in Budget
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_budget}}/members
+    where:
+      identity: '{{acc_b}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Bob joins the Minutes context
+    type: join_context
+    node: private-folders-2
+    context_id: '{{ctx}}'
+    outputs:
+      ckey_b: memberPublicKey
+
+  - name: Settle the context on Bob and Carol
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+    - private-folders-2
+    - private-folders-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: from_c
+      equals:
+        output: c_msg
+
+  - name: Bob reads Carol's write
+    type: call
+    node: private-folders-2
+    context_id: '{{ctx}}'
+    method: get
+    args:
+      key: from_c
+    executor_public_key: '{{ckey_b}}'
+    outputs:
+      bob_read: result
+
+  - name: Bob sees Carol's write
+    type: json_assert
+    statements:
+    - 'json_equal({{bob_read}}, {"output": "c_msg"})'
+
+  - name: Minutes's info is refused on node-1
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}
+    expected_failure: true
+
+  - name: Minutes's member list is refused on node-1
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/members
+    expected_failure: true
+
+  - name: Minutes's metadata name is not readable on node-1
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    absent:
+    - data.name
+
+  - name: Budget's info is refused on node-1
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_budget}}
+    expected_failure: true
+
+  - name: Budget's member list is refused on node-1
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_budget}}/members
+    expected_failure: true
+
+  - name: Budget's metadata name is not readable on node-1
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_budget}}/metadata
+    absent:
+    - data.name
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120

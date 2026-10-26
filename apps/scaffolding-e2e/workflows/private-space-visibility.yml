@@ -1,0 +1,641 @@
+name: E2E Private Spaces - Making A Folder Private Hides It From Outsiders, Reopening It Returns Its History
+description: >
+  Projects is an open folder with an open folder, Roadmap, and a context inside it.
+  Alice makes Projects private and renames it while it is private: Bob and Carol, workspace members outside the new space,
+  must stop listing it and must not read its new name or Roadmap on any node.
+  Alice then reopens it: every workspace member must read its full history, including the name set while it was private.
+  Last, making private an open folder that already contains a private space must be refused.
+
+  Tree: workspace -> Projects (open, then private, then open) -> Roadmap; workspace -> Archive (open) -> Vault (private space).
+  Nodes: 1 Alice (workspace owner), 2 Bob, 3 Carol.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: private-folders
+
+steps:
+
+  - name: Login on node-1
+    type: login
+    node: private-folders-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: private-folders-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: private-folders-3
+    username: dev
+    password: dev-password
+
+  # Workspace: node-1 (Alice) owns it, the other nodes join as plain members.
+  # Alice is node-1, Bob node-2, Carol node-3, Dave node-4.
+
+  - name: Install the application on Alice's node
+    type: install_application
+    node: private-folders-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Alice creates the workspace
+    type: create_namespace
+    node: private-folders-1
+    application_id: '{{app}}'
+    outputs:
+      ns: namespaceId
+
+  - name: Read Alice's account and key
+    type: node_identity
+    node: private-folders-1
+    outputs:
+      acc_a: accountId
+      key_a: publicKey
+
+  - name: Invite node-2 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_b: invitation
+
+  - name: Node-2 joins the workspace
+    type: join_namespace
+    node: private-folders-2
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_b}}'
+    outputs:
+      id_b: memberIdentity
+      acc_b: memberAccount
+
+  - name: Invite node-3 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_c: invitation
+
+  - name: Node-3 joins the workspace
+    type: join_namespace
+    node: private-folders-3
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_c}}'
+    outputs:
+      id_c: memberIdentity
+      acc_c: memberAccount
+
+  # Projects and Archive start open, Vault is a private space inside Archive.
+
+  - name: Alice creates the Projects folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: projects
+    outputs:
+      f_projects: groupId
+
+  - name: Alice marks Projects open
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_projects}}'
+    visibility: open
+
+  - name: Alice creates the Roadmap folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: roadmap
+    outputs:
+      f_roadmap: groupId
+
+  - name: Alice nests Roadmap under projects
+    type: reparent_group
+    node: private-folders-1
+    child_group_id: '{{f_roadmap}}'
+    new_parent_id: '{{f_projects}}'
+
+  - name: Alice marks Roadmap open
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_roadmap}}'
+    visibility: open
+
+  - name: Alice creates the Archive folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: archive
+    outputs:
+      f_archive: groupId
+
+  - name: Alice marks Archive open
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_archive}}'
+    visibility: open
+
+  - name: Alice creates the Vault folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: vault
+    outputs:
+      f_vault: groupId
+
+  - name: Alice nests Vault under archive
+    type: reparent_group
+    node: private-folders-1
+    child_group_id: '{{f_vault}}'
+    new_parent_id: '{{f_archive}}'
+
+  - name: Alice marks Vault private
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_vault}}'
+    visibility: restricted
+
+  - name: Alice names Projects
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_projects}}'
+    record_name: Projects
+    data:
+      topic: open-topic
+
+  - name: Alice names Roadmap
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_roadmap}}'
+    record_name: Roadmap
+    data:
+      topic: plan
+
+  - name: Alice names Archive
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_archive}}'
+    record_name: Archive
+    data:
+      topic: old
+
+  - name: Alice names Vault
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_vault}}'
+    record_name: Vault
+    data:
+      topic: sealed
+
+  - name: Alice creates a context in Projects
+    type: create_context
+    node: private-folders-1
+    application_id: '{{app}}'
+    group_id: '{{f_projects}}'
+    outputs:
+      ctx: contextId
+
+  - name: Settle the workspace governance onto every node
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # While open, every workspace member reads Projects.
+
+  - name: Bob's node lists Projects
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/namespaces/{{ns}}/groups
+    where:
+      groupId: '{{f_projects}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Bob's node reads the open Projects
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_projects}}/metadata
+    match:
+      data.name: Projects
+      data.data.topic: open-topic
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists Roadmap under Projects
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_projects}}/subgroups
+    where:
+      groupId: '{{f_roadmap}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists the Projects context
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_projects}}/contexts
+    where:
+      contextId: '{{ctx}}'
+    present:
+    - contextId
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists Projects
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/namespaces/{{ns}}/groups
+    where:
+      groupId: '{{f_projects}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Carol's node reads the open Projects
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_projects}}/metadata
+    match:
+      data.name: Projects
+      data.data.topic: open-topic
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists Roadmap under Projects
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_projects}}/subgroups
+    where:
+      groupId: '{{f_roadmap}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists the Projects context
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_projects}}/contexts
+    where:
+      contextId: '{{ctx}}'
+    present:
+    - contextId
+    retries: 30
+    interval: 2
+
+  # Alice makes Projects private and renames it while it is private.
+
+  - name: Alice makes Projects private
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_projects}}'
+    visibility: restricted
+
+  - name: Alice names Projects while it is private
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_projects}}'
+    record_name: Hidden
+    data:
+      topic: private-topic
+
+  - name: Settle the workspace governance after Projects turns private
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Alice's node reads Projects' new name
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_projects}}/metadata
+    match:
+      data.name: Hidden
+      data.data.topic: private-topic
+    retries: 30
+    interval: 2
+
+  - name: Alice's node lists Alice as Projects Admin
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_projects}}/members
+    where:
+      identity: '{{acc_a}}'
+    present:
+    - identity
+    match:
+      role: Admin
+    retries: 30
+    interval: 2
+
+  - name: Bob's node no longer lists Projects
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/namespaces/{{ns}}/groups
+    where:
+      groupId: '{{f_projects}}'
+    expect_no_match: true
+
+  - name: Projects' new name is not readable on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_projects}}/metadata
+    absent:
+    - data.name
+
+  - name: Projects' member list is refused on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_projects}}/members
+    expected_failure: true
+
+  - name: Projects' contexts are refused on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_projects}}/contexts
+    expected_failure: true
+
+  - name: Bob's node does not list Roadmap under Projects
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_projects}}/subgroups
+    where:
+      groupId: '{{f_roadmap}}'
+    expect_no_match: true
+
+  - name: Roadmap's info is refused on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_roadmap}}
+    expected_failure: true
+
+  - name: Roadmap's member list is refused on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_roadmap}}/members
+    expected_failure: true
+
+  - name: Roadmap's metadata name is not readable on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_roadmap}}/metadata
+    absent:
+    - data.name
+
+  - name: Carol's node no longer lists Projects
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/namespaces/{{ns}}/groups
+    where:
+      groupId: '{{f_projects}}'
+    expect_no_match: true
+
+  - name: Projects' new name is not readable on node-3
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_projects}}/metadata
+    absent:
+    - data.name
+
+  - name: Projects' member list is refused on node-3
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_projects}}/members
+    expected_failure: true
+
+  - name: Projects' contexts are refused on node-3
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_projects}}/contexts
+    expected_failure: true
+
+  - name: Carol's node does not list Roadmap under Projects
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_projects}}/subgroups
+    where:
+      groupId: '{{f_roadmap}}'
+    expect_no_match: true
+
+  - name: Roadmap's info is refused on node-3
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_roadmap}}
+    expected_failure: true
+
+  - name: Roadmap's member list is refused on node-3
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_roadmap}}/members
+    expected_failure: true
+
+  - name: Roadmap's metadata name is not readable on node-3
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_roadmap}}/metadata
+    absent:
+    - data.name
+
+  # Reopening merges Projects back: its history, the private name included, is readable.
+
+  - name: Alice reopens Projects
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_projects}}'
+    visibility: open
+
+  - name: Settle the workspace governance after Projects reopens
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Bob's node lists the reopened Projects
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/namespaces/{{ns}}/groups
+    where:
+      groupId: '{{f_projects}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Bob's node reads the name set while Projects was private
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_projects}}/metadata
+    match:
+      data.name: Hidden
+      data.data.topic: private-topic
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists Roadmap under Projects again
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_projects}}/subgroups
+    where:
+      groupId: '{{f_roadmap}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Bob's node reads Roadmap again
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_roadmap}}/metadata
+    match:
+      data.name: Roadmap
+      data.data.topic: plan
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists the Projects context again
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_projects}}/contexts
+    where:
+      contextId: '{{ctx}}'
+    present:
+    - contextId
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists the reopened Projects
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/namespaces/{{ns}}/groups
+    where:
+      groupId: '{{f_projects}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Carol's node reads the name set while Projects was private
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_projects}}/metadata
+    match:
+      data.name: Hidden
+      data.data.topic: private-topic
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists Roadmap under Projects again
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_projects}}/subgroups
+    where:
+      groupId: '{{f_roadmap}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Carol's node reads Roadmap again
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_roadmap}}/metadata
+    match:
+      data.name: Roadmap
+      data.data.topic: plan
+    retries: 30
+    interval: 2
+
+  - name: Carol's node lists the Projects context again
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_projects}}/contexts
+    where:
+      contextId: '{{ctx}}'
+    present:
+    - contextId
+    retries: 30
+    interval: 2
+
+  # A subtree that already holds a private space cannot be made private.
+
+  - name: Making Archive private is refused while Vault is a private space inside it
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_archive}}'
+    visibility: restricted
+    expected_failure: true
+
+  - name: Archive is still open on Alice's node
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_archive}}
+    match:
+      data.subgroupVisibility: open
+    retries: 30
+    interval: 2
+
+  - name: Vault is still private on Alice's node
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_vault}}
+    match:
+      data.subgroupVisibility: restricted
+    retries: 30
+    interval: 2
+
+  - name: Archive is still listed on node-2
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/namespaces/{{ns}}/groups
+    where:
+      groupId: '{{f_archive}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Archive is still listed on node-3
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/namespaces/{{ns}}/groups
+    where:
+      groupId: '{{f_archive}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120
