@@ -13,10 +13,15 @@ use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PrivateKey;
+use calimero_storage::address::Id;
+use calimero_storage::index::EntityIndex;
+use calimero_storage::store::Key as StorageKey;
 use calimero_store::key::{
     ApplicationMeta as ApplicationMetaKey, ContextIdentity, ContextMeta as ContextMetaKey,
+    ContextState as ContextStateKey,
 };
-use calimero_store::types::ContextMeta;
+use calimero_store::slice::Slice;
+use calimero_store::types::{ContextMeta, ContextState as ContextStateValue};
 use calimero_store::Store;
 use libp2p::PeerId;
 use rand::rand_core::UnwrapErr;
@@ -279,6 +284,50 @@ async fn a_snapshot_boundary_names_the_writing_identity() {
         };
         assert_eq!(server_identity, hosted.writer.public_key());
     }
+}
+
+/// A write whose state has committed but whose `ContextMeta` root hash has not
+/// yet landed must be announced by the state root, which the serve-path guards
+/// compare against.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_snapshot_boundary_announces_the_state_root_when_context_meta_lags() {
+    let node = boot_test_node().await;
+    let hosted = host_contexts(&node.store);
+    let state_root = [0x02; 32];
+    let root = Id::new(CONTEXT);
+    let index = EntityIndex::minimal_for_test_with_full_hash(root, state_root);
+    let row = calimero_storage::row::encode(
+        root,
+        &calimero_storage::row::Row {
+            index: Some(borsh::to_vec(&index).expect("serialise index")),
+            data: None,
+        },
+    );
+    node.store
+        .handle()
+        .put(
+            &ContextStateKey::new(CONTEXT.into(), StorageKey::Index(root).to_bytes()),
+            &ContextStateValue::from(Slice::from(row)),
+        )
+        .expect("state root");
+
+    let payload = InitPayload::SnapshotBoundaryRequest {
+        context_id: CONTEXT.into(),
+        requested_cutoff_timestamp: None,
+    };
+    let reply = exchange(&node.sync_manager, &hosted.writer, payload, None).await;
+    let Some(StreamMessage::Message {
+        payload:
+            MessagePayload::SnapshotBoundaryResponse {
+                boundary_root_hash, ..
+            },
+        ..
+    }) = reply
+    else {
+        panic!("unexpected reply: {reply:?}");
+    };
+    assert_eq!(*boundary_root_hash, state_root);
 }
 
 /// Whether a `BlobShare` for `blob_id` in `CONTEXT` is answered with the blob.
