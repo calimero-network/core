@@ -10,7 +10,7 @@ use calimero_account::{AccountId, DeviceId};
 use calimero_authz::AclView;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
-use calimero_op::{Authorship, Op, OpPayload};
+use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
 
 use crate::ScopeState;
@@ -399,6 +399,7 @@ struct Analysis<'a> {
     depth: HashMap<[u8; 32], u32>,
     children: HashMap<[u8; 32], Vec<[u8; 32]>>,
     parent_group: BTreeMap<ContextGroupId, ContextGroupId>,
+    restricted_groups: BTreeSet<ContextGroupId>,
     ancestors: RefCell<HashMap<[u8; 32], IdSet>>,
     descendants: RefCell<HashMap<[u8; 32], IdSet>>,
     work: Cell<usize>,
@@ -524,6 +525,7 @@ impl<'a> Analysis<'a> {
             depth: HashMap::new(),
             children: HashMap::new(),
             parent_group: BTreeMap::new(),
+            restricted_groups: BTreeSet::new(),
             ancestors: RefCell::default(),
             descendants: RefCell::default(),
             work: Cell::new(0),
@@ -548,7 +550,7 @@ impl<'a> Analysis<'a> {
             }
         }
         analysis.depth = analysis.depths(ops);
-        analysis.parent_group = analysis.group_tree(ops);
+        (analysis.parent_group, analysis.restricted_groups) = analysis.group_tree(ops);
         // Causal order, so what a spent budget leaves unjudged does not follow the log's.
         let mut removals = std::mem::take(&mut analysis.removals);
         removals.sort_unstable_by_key(|removal| {
@@ -641,27 +643,58 @@ impl<'a> Analysis<'a> {
         depth
     }
 
-    /// Each subgroup's parent, the latest creation or reparent winning as the
-    /// fold does.
-    fn group_tree(&self, ops: &[&Op]) -> BTreeMap<ContextGroupId, ContextGroupId> {
-        let mut latest: BTreeMap<ContextGroupId, ((u32, [u8; 32]), ContextGroupId)> =
-            BTreeMap::new();
+    /// Each subgroup's parent and the set of Restricted subgroups, the latest
+    /// creation, reparent or visibility change winning as the fold does.
+    fn group_tree(
+        &self,
+        ops: &[&Op],
+    ) -> (
+        BTreeMap<ContextGroupId, ContextGroupId>,
+        BTreeSet<ContextGroupId>,
+    ) {
+        type Stamped<T> = ((u32, [u8; 32]), T);
+        let mut latest: BTreeMap<ContextGroupId, Stamped<ContextGroupId>> = BTreeMap::new();
+        let mut visibility: BTreeMap<ContextGroupId, Stamped<bool>> = BTreeMap::new();
         for &op in ops {
-            let (child, parent) = match &op.payload {
-                OpPayload::SubgroupCreated { child, parent, .. } => (child, parent),
-                OpPayload::SubgroupReparented { child, new_parent } => (child, new_parent),
+            let stamp = (self.depth.get(&op.id()).copied().unwrap_or(0), op.id());
+            let group = |scope: &ScopeId| ContextGroupId::from(*scope.as_bytes());
+            let (parented, shown) = match &op.payload {
+                OpPayload::SubgroupCreated {
+                    child,
+                    parent,
+                    restricted,
+                    ..
+                } => (Some((child, parent)), Some((child, *restricted))),
+                OpPayload::SubgroupReparented { child, new_parent } => {
+                    (Some((child, new_parent)), None)
+                }
+                OpPayload::SubgroupVisibilitySet { scope, restricted } => {
+                    (None, Some((scope, *restricted)))
+                }
                 _ => continue,
             };
-            let stamp = (self.depth.get(&op.id()).copied().unwrap_or(0), op.id());
-            let child = ContextGroupId::from(*child.as_bytes());
-            if latest.get(&child).is_none_or(|(held, _)| stamp > *held) {
-                let _ = latest.insert(child, (stamp, ContextGroupId::from(*parent.as_bytes())));
+            if let Some((child, parent)) = parented {
+                let child = group(child);
+                if latest.get(&child).is_none_or(|(held, _)| stamp > *held) {
+                    let _ = latest.insert(child, (stamp, group(parent)));
+                }
+            }
+            if let Some((scope, restricted)) = shown {
+                let scope = group(scope);
+                if visibility.get(&scope).is_none_or(|(held, _)| stamp > *held) {
+                    let _ = visibility.insert(scope, (stamp, restricted));
+                }
             }
         }
-        latest
+        let parents = latest
             .into_iter()
             .map(|(child, (_, parent))| (child, parent))
-            .collect()
+            .collect();
+        let restricted = visibility
+            .into_iter()
+            .filter_map(|(scope, (_, restricted))| restricted.then_some(scope))
+            .collect();
+        (parents, restricted)
     }
 
     /// `group` and the groups above it.
@@ -676,6 +709,32 @@ impl<'a> Analysis<'a> {
             at = *parent;
         }
         chain
+    }
+
+    /// `group` and the groups above it, up to and including its private space (its
+    /// nearest Restricted ancestor-or-self); the whole chain in the open space.
+    fn within_space(&self, group: ContextGroupId) -> Vec<ContextGroupId> {
+        let mut chain = self.group_and_ancestors(group);
+        if let Some(space) = chain
+            .iter()
+            .position(|g| self.restricted_groups.contains(g))
+        {
+            chain.truncate(space + 1);
+        }
+        chain
+    }
+
+    /// The namespace root: the genesis fact when the store gave one, else the scope.
+    fn root_of(&self, op: &Op) -> ContextGroupId {
+        self.base.root.map_or_else(
+            || ContextGroupId::from(*op.scope.as_bytes()),
+            |(group, _)| group,
+        )
+    }
+
+    /// Whether `op` is the namespace owner's: its authority no removal can take.
+    fn is_owner_op(&self, op: &Op) -> bool {
+        self.owner_at(op) == Some(self.author_of(op))
     }
 
     /// The namespace's owner at `op`'s cut: the heir of the latest transfer behind it, as the
@@ -789,15 +848,15 @@ impl<'a> Analysis<'a> {
                 if id == removal.op.id() || before.contains(&id) || after.contains(&id) {
                     continue;
                 }
-                if self.owner_at(op) == Some(self.author_of(op)) {
+                if self.is_owner_op(op) {
                     continue;
                 }
                 let Some(group) = self.voidable_group(op) else {
                     continue;
                 };
-                let reaches = removal
-                    .group
-                    .is_none_or(|lost| self.group_and_ancestors(group).contains(&lost));
+                let reaches = removal.group.is_none_or(|lost| {
+                    lost == self.root_of(op) || self.within_space(group).contains(&lost)
+                });
                 if !reaches {
                     continue;
                 }
@@ -829,10 +888,7 @@ impl<'a> Analysis<'a> {
             let after = self.descendants_of(revoke.op.id());
             for &op in victims {
                 let id = op.id();
-                if before.contains(&id)
-                    || after.contains(&id)
-                    || self.owner_at(op) == Some(revoke.member)
-                {
+                if before.contains(&id) || after.contains(&id) || self.is_owner_op(op) {
                     continue;
                 }
                 // A capability is held in its own group: it is never inherited.
@@ -1037,7 +1093,7 @@ impl<'a> Analysis<'a> {
             // An op already void is judged again, so a round never forgets what the
             // round before established.
             if granted.contains(&self.author_of(op))
-                && self.owner_at(op) != Some(self.author_of(op))
+                && !self.is_owner_op(op)
                 && self.voidable_group(op).is_some()
             {
                 candidates.push(op);

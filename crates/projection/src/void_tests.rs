@@ -621,6 +621,92 @@ fn a_removal_from_a_group_voids_the_signers_concurrent_ops_in_its_subgroups() {
     assert!(void(&log).contains(&below.id()));
 }
 
+/// `admin` creates subgroup `n` under `parent`.
+fn create_under(parents: &[&Op], parent: ContextGroupId, n: u8, restricted: bool, admin: u8) -> Op {
+    gov(
+        OWNER,
+        parents,
+        OpPayload::SubgroupCreated {
+            child: ScopeId::from([n; 32]),
+            parent: ScopeId::from(parent.to_bytes()),
+            restricted,
+            admin: acct(admin),
+        },
+    )
+}
+
+fn remove_from(group: ContextGroupId, author: u8, parents: &[&Op], member: u8) -> Op {
+    gov(
+        author,
+        parents,
+        OpPayload::MemberRemoved {
+            group,
+            member: acct(member),
+        },
+    )
+}
+
+/// root -> Eng (open, 0x41) -> P (restricted, 0x42) -> F (open, 0x43), with Alice admin of
+/// each folder; returns the log and its last op.
+fn eng_private_space() -> (Vec<Op>, Op) {
+    let ad = admins();
+    let eng = create_under(&[&ad[2]], group(), 0x41, false, ALICE);
+    let p = create_under(&[&eng], subgroup(0x41), 0x42, true, ALICE);
+    let f = create_under(&[&p], subgroup(0x42), 0x43, false, ALICE);
+    let mut log = ad;
+    log.extend([eng, p, f.clone()]);
+    (log, f)
+}
+
+#[test]
+fn a_removal_from_an_open_folder_outside_the_space_does_not_reach_the_space() {
+    let (mut log, head) = eng_private_space();
+    let removal = remove_from(subgroup(0x41), ALICE, &[&head], SAM);
+    let in_space = add_in(subgroup(0x42), SAM, &[&head], WILL, GroupMemberRole::Member);
+    log.extend([removal, in_space.clone()]);
+
+    assert!(!void(&log).contains(&in_space.id()));
+}
+
+#[test]
+fn a_workspace_removal_reaches_the_space() {
+    let (mut log, head) = eng_private_space();
+    let removal = remove(ALICE, &[&head], SAM);
+    let in_space = add_in(subgroup(0x42), SAM, &[&head], WILL, GroupMemberRole::Member);
+    log.extend([removal, in_space.clone()]);
+
+    assert!(void(&log).contains(&in_space.id()));
+}
+
+#[test]
+fn a_removal_from_the_space_reaches_the_space_and_the_open_folders_inside_it() {
+    let (mut log, head) = eng_private_space();
+    let removal = remove_from(subgroup(0x42), ALICE, &[&head], SAM);
+    let in_space = add_in(subgroup(0x42), SAM, &[&head], WILL, GroupMemberRole::Member);
+    let in_folder = add_in(subgroup(0x43), SAM, &[&head], YARA, GroupMemberRole::Member);
+    log.extend([removal, in_space.clone(), in_folder.clone()]);
+
+    let voided = void(&log);
+    assert!(voided.contains(&in_space.id()));
+    assert!(voided.contains(&in_folder.id()));
+}
+
+#[test]
+fn a_removal_from_an_open_folder_still_reaches_it_and_the_folders_below() {
+    let ad = admins();
+    let eng = create_under(&[&ad[2]], group(), 0x41, false, ALICE);
+    let sub = create_under(&[&eng], subgroup(0x41), 0x44, false, ALICE);
+    let removal = remove_from(subgroup(0x41), ALICE, &[&sub], SAM);
+    let in_eng = add_in(subgroup(0x41), SAM, &[&sub], WILL, GroupMemberRole::Member);
+    let in_sub = add_in(subgroup(0x44), SAM, &[&sub], YARA, GroupMemberRole::Member);
+    let mut log = ad;
+    log.extend([eng, sub, removal, in_eng.clone(), in_sub.clone()]);
+
+    let voided = void(&log);
+    assert!(voided.contains(&in_eng.id()));
+    assert!(voided.contains(&in_sub.id()));
+}
+
 #[test]
 fn a_role_change_for_an_account_that_was_no_admin_at_its_cut_demotes_nobody() {
     let ad = admins();
