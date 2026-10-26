@@ -1,0 +1,52 @@
+---
+title: Writing apps for release-v2
+description: What carries over from v1 apps, and what changes — init arguments, identity, organizations, confirmations, limits.
+sidebar:
+  order: 3
+---
+
+The contract is the same WASM on the same runtime: every app in the apps
+repository builds against the `release-v2` SDK and deploys unchanged
+(`scripts/cloud-v2-smoke.py` there checks all 28).
+
+## What changes
+
+- **Instances, not contexts.** An app instance is created with
+  `POST /apps { name, bundle, initArgs, org?, access?, confirmMethods? }`.
+  `initArgs` (JSON) is what `#[app::init]` receives; a failed init answers
+  `422 INIT_FAILED` instead of leaving a dead instance.
+- **Identity.** There are no devices: `env::account_id()` and `env::executor_id()`
+  are both the caller's account, so apps that key people by either tell them
+  apart. The context id is `SHA-256(app_id)`.
+- **Organizations.** `env::caller_org()` returns the caller's standing in the
+  app's organization — `org`, `role` (`Guest < Member < Admin < Owner`) and the
+  team ids they are in — or `None`. The node already keeps non-members out of an
+  organization's apps; this is for rules inside the app:
+
+  ```rust
+  use calimero_sdk::env::{self, OrgRole};
+
+  pub fn set_pinned(&mut self, text: String) -> app::Result<()> {
+      if !env::caller_org().is_some_and(|o| o.role >= OrgRole::Admin) {
+          app::bail!("admins only");
+      }
+      self.pinned.set(text);
+      Ok(())
+  }
+  ```
+
+  `apps/org-gated` in core is a complete example; `TestHost::set_caller_org`
+  drives it in unit tests.
+- **Confirmations.** Methods listed in `confirmMethods` need a fresh passkey
+  assertion over the exact call (`callConfirmed` in the clients).
+- **Ordering.** Calls on one instance are applied in one order, so a write never
+  merges with a concurrent one: CRDT collections still work, and plain values do
+  too.
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| Bundle size | 16 MiB |
+| One call's log entry (args + state diff + events) | 1 MiB |
+| Apps, bundle bytes, API keys, organizations per account | quotas, set by the operator (`429 QUOTA_EXCEEDED`) |

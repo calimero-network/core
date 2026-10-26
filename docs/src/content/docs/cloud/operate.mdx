@@ -1,0 +1,47 @@
+---
+title: Operating a cluster (release-v2)
+description: Production flags for merod-v2 — storage key from mero-kms, measurement policy for peers, the Ops API.
+sidebar:
+  order: 4
+---
+
+## Starting a TDX node
+
+```bash
+MERO_TEE_VERSION=<mero-tee release> MERO_TEE_PROFILE=<profile> \
+merod-v2 --node-id 1 --listen 0.0.0.0:2501 --public-url https://n1.eu1.example/ \
+  --data-dir /data/merod-v2 --cluster eu1 \
+  --peers 1=https://n1.eu1.example/,2=https://n2.eu1.example/,3=https://n3.eu1.example/ \
+  --kms-url https://kms.internal/ --kms-identity /data/disk-identity \
+  --rp-id example.com --origins https://app.example.com \
+  --ops-token "$OPS_TOKEN" --backup-dir /backups
+```
+
+- **Storage key.** merod-v2 runs `merod kms disk-key` (merod's KMS client: the KMS
+  is verified against the signed release policy and the key is sealed to the TD)
+  and derives its storage key as `HKDF(KMS key, cluster)`. The cluster's nodes
+  share the disk identity, so they share the key. A boot script that already
+  fetched the key passes `--storage-key-file` instead.
+- **Peers.** A peer's quote must match a profile of the signed mero-tee release it
+  names: `--peer-profiles` (default: this node's `MERO_TEE_PROFILE`) and an
+  optional floor `--peer-min-release`. A TDX node refuses to start without them.
+- **Sessions.** The session-signing key rotates every
+  `--session-key-rotation-secs` (default 6 h, at least 30 min); the previous key
+  keeps verifying.
+- **Browsers.** `--origins` are both the passkey origins and the CORS origins.
+
+## The Ops API
+
+Bearer `--ops-token`, inside the sealed channel. mdma's `OpsClient` and
+`calimero-cloud ops` use it.
+
+| Route | What |
+| --- | --- |
+| `GET /ops/status` | This node, the system group's and hosted groups' Raft status, fleet, counts |
+| `POST /ops/nodes` | Register a node |
+| `POST /ops/apps/{app}/replicas` | Move an app to a replica set (on a follower: `421 NOT_LEADER` with `leaderUrl`) |
+| `GET/POST /ops/quotas` | Per-account limits |
+| `POST /ops/backup` | Encrypted snapshots of the apps this node leads |
+
+Placement (zone-spread, least-loaded, deterministic) and drain plans are in mdma's
+`mdma_common.cloud_v2`.

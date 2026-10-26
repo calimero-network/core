@@ -61,6 +61,11 @@ export default defineConfig({
           items: ['using-the-docs', 'journeys', 'topics'],
         },
         {
+          // The cloud-only release candidate (release-v2 branches).
+          label: 'Cloud (release-v2)',
+          items: ['cloud/overview', 'cloud/quickstart', 'cloud/apps', 'cloud/operate'],
+        },
+        {
           label: 'Build',
           items: [
             { label: 'Overview', slug: 'build' },

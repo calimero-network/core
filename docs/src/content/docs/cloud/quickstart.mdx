@@ -1,0 +1,63 @@
+---
+title: Quickstart (release-v2)
+description: Run a local cluster, deploy an app, call it from the CLI, JavaScript and Python.
+sidebar:
+  order: 2
+---
+
+## 1. A local cluster
+
+```bash
+# in core, branch release-v2
+cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
+cargo run -p calimero-cloud-node --bin merod-v2 -- local
+```
+
+`merod-v2 local` starts three nodes on `http://127.0.0.1:2501-2503/` in one
+process, with mock attestation and a development storage key, keeping state in
+`.merod-v2-local/` (`--fresh` starts over). It prints an Ops token. Browser apps
+on `http://localhost:3000` and `http://localhost:5173` may call it (`--origins`).
+
+## 2. Deploy and call from the terminal
+
+```bash
+cargo install --path crates/cloud-client --features cli   # calimero-cloud
+export CALIMERO_URL=http://127.0.0.1:2501/ CALIMERO_ALLOW_MOCK=true
+
+calimero-cloud login --dev-passkey ./dev-passkey.json --name ada
+calimero-cloud deploy target/wasm32-unknown-unknown/app-release/kv_store.wasm --name kv
+calimero-cloud call <appId> set '{"key":"a","value":"1"}'
+calimero-cloud view <appId> get '{"key":"a"}'
+calimero-cloud events <appId>
+calimero-cloud apikey create --app <appId> --read-only
+```
+
+`--dev-passkey` keeps a passkey in a file, which only a development cluster
+accepts (`--allow-mock`). Against a real cluster, use an API key made in the
+console (`CALIMERO_API_KEY`) and name the images you trust:
+`--tee-profiles <profile> [--min-release <version>]`.
+
+## 3. From code
+
+```ts
+import { CalimeroClient, browserPasskey } from '@calimero-network/mero-js';
+
+const client = new CalimeroClient({ baseUrl: 'http://127.0.0.1:2501', policy: { allowMock: true } });
+await client.signUp(browserPasskey(), 'ada');
+const bundle = await client.uploadBundle(wasm);
+const app = await client.createApp('kv', bundle, { initArgs: {} });
+await client.call(app, 'set', { key: 'a', value: '1' });
+for await (const ev of client.events(app)) console.log(ev.kind, ev.data);
+```
+
+```python
+from calimero_client_py import CloudClient
+
+client = CloudClient("http://127.0.0.1:2501", allow_mock=True)
+client.use_api_key("cal_...")
+print(client.view(app_id, "get", {"key": "a"})["result"])
+```
+
+The apps repo's `apps/kv-store/app-cloud` is a complete browser frontend (passkey
+sign-in, a store per user, live events) with a Playwright test that drives a real
+passkey ceremony through Chromium's virtual authenticator.

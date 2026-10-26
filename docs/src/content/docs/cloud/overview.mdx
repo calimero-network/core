@@ -1,0 +1,71 @@
+---
+title: Calimero Cloud (release-v2)
+description: The cloud-only release candidate — apps replicated by Raft across attested TDX nodes, reached through a sealed channel, signed in with passkeys.
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution">
+  release-v2 is a release candidate on the `release-v2` branches of core, mero-js,
+  calimero-client-py, mdma, apps and landing. The v1 pages elsewhere in these docs
+  describe the peer-to-peer node (`merod`), which release-v2 does not use.
+</Aside>
+
+release-v2 turns Calimero from a peer-to-peer, local-first platform into a
+**confidential cloud**: every app runs inside attested Intel TDX nodes that
+Calimero (or a customer, for a dedicated cluster) operates, and nobody operating
+them — Calimero included — can read the app's data.
+
+## What runs where
+
+- **A cluster** is a set of `merod-v2` nodes. Each one runs in a TDX VM, takes its
+  storage key from mero-kms only after proving its image, and keeps everything on
+  disk sealed under that key.
+- **The system group** is one Raft log the whole cluster shares. It holds the
+  fleet, the app directory, bundles' hashes, accounts, passkeys, API keys,
+  organizations, teams, invites, quotas and the session-signing keys.
+  Commands carry their actor and are authorized when they apply, so every node
+  reaches the same verdict.
+- **Each app instance is its own Raft group** on 3 or more nodes. The leader runs
+  a call against the app's WASM (the same runtime as v1) and appends the call with
+  its resulting state diff; followers apply the diff. Calls are linearized, strong
+  reads go through the leader, stale reads any replica, and the app keeps serving
+  when a node is lost.
+- **Bundles** (the WASM) are stored in each node's sealed blob store, not in the
+  log; the log records their hash. Log entries are capped at 1 MiB.
+
+## Trust
+
+- **Clients verify before they send.** A client (mero-js, Python, Rust, the CLI)
+  fetches the node's attestation, checks the TDX quote binds the node's transport
+  key, and checks the quote's measurements against the signed mero-tee release
+  the node names (`published-mrtds.json`, Sigstore-verified) and the profiles the
+  client allows. Only then does it open the sealed channel (Noise NK,
+  `calimero/sealed-http/v2`) that every request travels in.
+- **Nodes verify each other the same way** before any Raft traffic, and add a
+  cluster secret on internal routes.
+- **People sign in with WebAuthn passkeys**; services use scoped API keys
+  (`cal_…`). Sessions are short tokens any node verifies; the signing key
+  rotates. A method marked `#[app::confirm]` needs a fresh passkey assertion over
+  the exact call, which is logged as consent.
+- **Operators see counts.** The Ops API (mdma's) reports Raft status and counts,
+  sets quotas, moves replicas and triggers encrypted backups. It has no read path
+  into app state.
+
+## The pieces
+
+| Crate / package | What it is |
+| --- | --- |
+| `calimero-log` | Multi-group Raft engine (openraft) over a sealed redb store |
+| `calimero-sealed` | The sealed HTTP transport, server and client |
+| `calimero-identity` | Passkeys (WebAuthn), sessions, API keys, confirm challenges |
+| `calimero-cloud-node` (`merod-v2`) | The node: system group, app groups, API, Ops API, `merod-v2 local` |
+| `calimero-cloud-client` (`calimero-cloud`) | Rust client and the command line |
+| mero-js `CalimeroClient` | Browser / Node client |
+| calimero-client-py `CloudClient` | Python client (binds the Rust client) |
+| mdma `cloud_v2` | Placement and the Ops API client |
+
+Next: [Quickstart](/cloud/quickstart/), [Writing apps](/cloud/apps/),
+[Operating a cluster](/cloud/operate/).
