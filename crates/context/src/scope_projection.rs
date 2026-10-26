@@ -2168,8 +2168,8 @@ impl ScopeProjections {
         // for the same reason it abstains on a gap. The walk is shared, so both
         // answers come from one pass.
         //
-        // Scoped to the groups that can move THIS membership — the target and the
-        // ancestors inheritance climbs to ([`deciding_groups`]) — and not to the
+        // Scoped to the groups that can move THIS membership - the root and the
+        // target's private space ([`deciding_groups`]) - and not to the
         // namespace. A hole in
         // a sibling subgroup is one this node may never be able to fill, so
         // abstaining on it would park the question permanently rather than
@@ -2181,7 +2181,7 @@ impl ScopeProjections {
             return None;
         }
         let view = at_cut_view(&walked, base);
-        let relevant = deciding_groups(&walked, &view, group, ContextGroupId::from(namespace_id));
+        let relevant = deciding_groups(&view, group, ContextGroupId::from(namespace_id));
         if walked.first_opaque_in_any(&relevant).is_some() {
             return None;
         }
@@ -2590,14 +2590,10 @@ impl ScopeProjections {
         // `Some(false)` straight back as a refusal. Two nodes with different keys
         // would decide the same op differently.
         //
-        // Scoped to the groups whose ops can MOVE this question — the target, its
-        // ancestors up to a Restricted edge this node reads, and the root
-        // ([`deciding_groups`]) — not to the namespace. Every input to an
-        // admin-or-capability answer at `group` is an op naming `group` or an
-        // ancestor of it the climb reaches: roles and caps name their group, a
-        // visibility wall names its subgroup, and the root admin arrives on
-        // readable root ops. A sibling subgroup's hole cannot change any of them,
-        // and neither can the history above a known wall.
+        // Scoped to the groups whose ops can MOVE this question - the root and the
+        // target's private space ([`deciding_groups`]) - not to the namespace. Every
+        // group in a space has the space's members, so a sibling subgroup's hole
+        // cannot change the answer, and neither can the history above the space.
         //
         // The namespace-wide version of this check is what an earlier attempt
         // shipped, and e2e refused it within the hour: a node legitimately not a
@@ -2606,7 +2602,7 @@ impl ScopeProjections {
         // its own group, whose every op it reads. `dm-subgroup-privacy` is that
         // exact shape and its legitimate join failed. A refusal that cannot clear
         // is not the conservative choice.
-        let relevant = deciding_groups(&walked, &view, group, ContextGroupId::from(namespace_id));
+        let relevant = deciding_groups(&view, group, ContextGroupId::from(namespace_id));
         if walked.first_opaque_in_any(&relevant).is_some() {
             return Err(UndecidableCause::AncestryUnreadable);
         }
@@ -3195,7 +3191,7 @@ impl ScopeProjections {
         // As for the fold, standing is read at the step's own parents, so the group's
         // ancestors there must be readable too.
         let root_group = ContextGroupId::from(namespace_id);
-        let mut relevant = deciding_groups(&walked, &at_cut_view(&walked, base), group, root_group);
+        let mut relevant = deciding_groups(&at_cut_view(&walked, base), group, root_group);
         let mut pinned = false;
         for op in walked.ops().iter().filter(|op| !walked.is_void(op)) {
             let OpPayload::SharedWritersRotated {
@@ -3215,7 +3211,7 @@ impl ScopeProjections {
                 continue;
             }
             let view = at_cut_view(&self.walk(&scope, log, &op.parents, base), base);
-            relevant.extend(deciding_groups(&walked, &view, group, root_group));
+            relevant.extend(deciding_groups(&view, group, root_group));
             pinned |= standing(&view, op.device_key()).is_some_and(|account| {
                 prior
                     .get(&account)
@@ -3317,7 +3313,7 @@ impl ScopeProjections {
         // Standing is read at each step's own parents, where the group's ancestors
         // may differ from the cut's, so every one of them must be readable.
         let head_view = at_cut_view(&walked, base);
-        let mut relevant = deciding_groups(&walked, &head_view, group, root_group);
+        let mut relevant = deciding_groups(&head_view, group, root_group);
         let mut views: std::collections::HashMap<Vec<[u8; 32]>, calimero_authz::AclView> =
             std::collections::HashMap::new();
         let steps: Vec<_> = ScopeState::shared_writer_steps(
@@ -3332,7 +3328,7 @@ impl ScopeProjections {
                 let view = views.entry(parents).or_insert_with(|| {
                     at_cut_view(&self.walk(&scope, log, &op.parents, base), base)
                 });
-                relevant.extend(deciding_groups(&walked, view, group, root_group));
+                relevant.extend(deciding_groups(view, group, root_group));
                 standing(view, op.device_key())
             },
         )
@@ -3714,26 +3710,18 @@ fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> calimero_authz:
     view
 }
 
-/// The groups whose ops can move an authority question about `group` at a cut: the
-/// namespace root, `group`, and its ancestors up to the first Restricted edge whose state
-/// this node reads.
+/// The groups whose ops can move an authority question about `group` at a cut, and so
+/// must be readable: the namespace root, `group`, and every group above it up to and
+/// including its private-space root, or up to the root in the open space.
 ///
-/// No inheritance or admin climb passes a Restricted edge, so nothing above one moves
-/// the answer. The edge's state comes from the root's `GroupCreated` and
-/// `GroupReparented` and the subgroup's own `SubgroupVisibilitySet`, so it is known
-/// where neither the root nor that subgroup has an op this node cannot open in the cut.
-/// Where one does, the climb goes on through the edge, as
-/// [`calimero_authz::AclView::group_and_ancestors`] does: an edge in an unknown state
-/// must not shorten the set. So a member of a Restricted subgroup nested under one it is
-/// not in, which reads its own group and the root but is never given the parent's key,
-/// is not parked behind the parent's history.
+/// Each is sealed under the workspace key or the space's own, so the walk never needs
+/// the key of a space above `group`'s. An edge whose visibility is unknown sits in an
+/// unreadable group already in the set, so the climb never stops at one.
 fn deciding_groups(
-    walked: &CutAncestry<'_>,
     view: &calimero_authz::AclView,
     group: ContextGroupId,
     root: ContextGroupId,
 ) -> BTreeSet<ContextGroupId> {
-    let root_reads = walked.first_opaque_in(root).is_none();
     let mut groups = BTreeSet::from([root]);
     for ancestor in view.group_and_ancestors(group) {
         let _new = groups.insert(ancestor);
@@ -3741,7 +3729,7 @@ fn deciding_groups(
             .subgroups
             .get(&ScopeId::from(ancestor.to_bytes()))
             .is_some_and(|edge| edge.restricted);
-        if walled && root_reads && walked.first_opaque_in(ancestor).is_none() {
+        if walled {
             break;
         }
     }
@@ -5297,6 +5285,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_group_in_a_private_space_is_decided_up_to_the_space_and_not_above_it() {
+        let root = ContextGroupId::from([0xA0; 32]);
+        let open = ContextGroupId::from([0xA1; 32]);
+        let space = ContextGroupId::from([0xA2; 32]);
+        let inner = ContextGroupId::from([0xA3; 32]);
+        let folder = ContextGroupId::from([0xA4; 32]);
+        let edge = |parent: ContextGroupId, restricted| calimero_authz::SubgroupEdge {
+            parent: ScopeId::from(parent.to_bytes()),
+            restricted,
+        };
+        let mut view = calimero_authz::AclView::default();
+        for (child, parent, restricted) in [
+            (open, root, false),
+            (space, open, true),
+            (inner, space, false),
+            (folder, inner, false),
+        ] {
+            let _ = view
+                .subgroups
+                .insert(ScopeId::from(child.to_bytes()), edge(parent, restricted));
+        }
+        for (group, expected) in [
+            (folder, vec![root, folder, inner, space]),
+            (inner, vec![root, inner, space]),
+            (space, vec![root, space]),
+            (open, vec![root, open]),
+        ] {
+            assert_eq!(
+                deciding_groups(&view, group, root),
+                BTreeSet::from_iter(expected)
+            );
+        }
+    }
+
     /// An admin of a Restricted group who leaves the workspace holds no authority in it.
     #[test]
     fn a_member_removed_from_the_root_holds_no_authority_in_a_restricted_group() {
@@ -6045,29 +6068,32 @@ mod tests {
             .expect("move the context");
         calimero_governance_store::register_context_in_group(&w.store, &sub, &w.context)
             .expect("into the subgroup");
-        let created =
-            |group: ContextGroupId, parent_id: ContextGroupId, id, parents: &[[u8; 32]]| {
-                op_from_namespace_op(
-                    &signed_root(
-                        w.ns,
-                        admin,
-                        RootOp::GroupCreated {
-                            admin: w.accounts[&admin],
-                            group_id: group.to_bytes().into(),
-                            parent_id: parent_id.to_bytes().into(),
-                            restricted: false,
-                            // The fold reads the id as given; apply derives it.
-                            salt: [0; 32],
-                        },
-                    ),
-                    None,
-                    id,
-                    hlc(0),
-                    parents,
-                )
-            };
-        let make_parent = created(parent, ns_group, [0xF1; 32], &joins);
-        let make_sub = created(sub, parent, [0xF2; 32], &[[0xF1; 32]]);
+        let created = |group: ContextGroupId,
+                       parent_id: ContextGroupId,
+                       restricted: bool,
+                       id,
+                       parents: &[[u8; 32]]| {
+            op_from_namespace_op(
+                &signed_root(
+                    w.ns,
+                    admin,
+                    RootOp::GroupCreated {
+                        admin: w.accounts[&admin],
+                        group_id: group.to_bytes().into(),
+                        parent_id: parent_id.to_bytes().into(),
+                        restricted,
+                        // The fold reads the id as given; apply derives it.
+                        salt: [0; 32],
+                    },
+                ),
+                None,
+                id,
+                hlc(0),
+                parents,
+            )
+        };
+        let make_parent = created(parent, ns_group, true, [0xF1; 32], &joins);
+        let make_sub = created(sub, parent, false, [0xF2; 32], &[[0xF1; 32]]);
         // Something this node cannot read, published in the parent.
         let hole = op_from_namespace_op(
             &signed_group(w.ns, admin, parent),
@@ -6102,6 +6128,71 @@ mod tests {
             None,
             "the pin reads the same standing"
         );
+    }
+
+    /// An unreadable op on the group, or on a folder between it and its private space,
+    /// leaves what it decided unknown.
+    #[test]
+    fn an_unreadable_op_inside_a_private_space_defers_the_answer() {
+        let (space, folder, inner) = (
+            ContextGroupId::from([0x91; 32]),
+            ContextGroupId::from([0x92; 32]),
+            ContextGroupId::from([0x93; 32]),
+        );
+        for hole_in in [inner, folder] {
+            let (mut w, ..) = rotations();
+            let (joins, admin, ns_group) = (w.joins.clone(), w.admin_pk, w.group);
+            let repo = calimero_governance_store::NamespaceRepository::new(&w.store);
+            repo.nest(&ns_group, &space).expect("nest the space");
+            repo.nest(&space, &folder).expect("nest the folder");
+            repo.nest(&folder, &inner).expect("nest the group");
+            calimero_governance_store::unregister_context_from_group(
+                &w.store, &ns_group, &w.context,
+            )
+            .expect("move the context");
+            calimero_governance_store::register_context_in_group(&w.store, &inner, &w.context)
+                .expect("into the group");
+            let created = |group: ContextGroupId,
+                           parent: ContextGroupId,
+                           restricted: bool,
+                           id: [u8; 32],
+                           parents: &[[u8; 32]]| {
+                op_from_namespace_op(
+                    &signed_root(
+                        w.ns,
+                        admin,
+                        RootOp::GroupCreated {
+                            admin: w.accounts[&admin],
+                            group_id: group.to_bytes().into(),
+                            parent_id: parent.to_bytes().into(),
+                            restricted,
+                            salt: [0; 32],
+                        },
+                    ),
+                    None,
+                    id,
+                    hlc(0),
+                    parents,
+                )
+            };
+            let hole = op_from_namespace_op(
+                &signed_group(w.ns, admin, hole_in),
+                None,
+                [0xF4; 32],
+                hlc(0),
+                &[[0xF3; 32]],
+            );
+            for op in [
+                created(space, ns_group, true, [0xF1; 32], &joins),
+                created(folder, space, false, [0xF2; 32], &[[0xF1; 32]]),
+                created(inner, folder, false, [0xF3; 32], &[[0xF2; 32]]),
+                hole,
+            ] {
+                w.reg.ingest_op(&op);
+            }
+            w.rotate(admin, inner, [0xF5; 32], &[[0xF4; 32]]);
+            assert_eq!(w.at(&[[0xF5; 32]]), None, "{hole_in:?}");
+        }
     }
 
     /// Only a member in standing, publishing in the group being decided, pins its context.
