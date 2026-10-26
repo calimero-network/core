@@ -11,6 +11,7 @@ pub mod add_group_members;
 pub mod admit_tee_node;
 pub mod apply_signed_group_op;
 pub mod apply_signed_namespace_op;
+pub mod approve_outbound;
 pub mod broadcast_group_local_state;
 pub mod create_context;
 pub mod create_group;
@@ -22,6 +23,7 @@ pub mod detach_context_from_group;
 pub mod ensure_account_namespace;
 pub mod execute;
 pub mod follow_namespace;
+pub mod forwarded_outbound;
 pub mod get_cascade_status;
 pub mod get_context_metadata;
 pub mod get_group_for_context;
@@ -124,6 +126,9 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::RejoinNamespace { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
+            ContextMessage::ForwardedOutbound { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
             ContextMessage::AddGroupMembers { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
@@ -215,6 +220,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SetTeeAdmissionPolicy { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::ApproveOutbound { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SetTeeAuthoringPolicy { request, outcome } => {

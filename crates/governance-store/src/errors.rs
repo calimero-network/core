@@ -396,6 +396,14 @@ pub enum NamespaceError {
          set it on the namespace root"
     )]
     TeeAuthoringPolicyNotOnSubgroup(String),
+
+    /// `OutboundApprovalSet` rejected because it was emitted on a subgroup: the
+    /// approval is namespace-scoped and every subgroup reads the root's.
+    #[error(
+        "OutboundApprovalSet rejected on subgroup {0}: approvals are namespace-scoped, \
+         set them on the namespace root"
+    )]
+    OutboundApprovalNotOnSubgroup(String),
 }
 
 /// Errors raised by `CapabilitiesRepository` and the higher-level

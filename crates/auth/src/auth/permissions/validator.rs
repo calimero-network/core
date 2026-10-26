@@ -59,6 +59,12 @@ static NAMESPACE_REGEX: LazyLock<Regex> =
 static NAMESPACE_READ_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/([^/]+)/(identity|groups)$").unwrap());
 
+/// A namespace's outbound approvals: what each publisher's apps may reach.
+/// Not caller-scoped, so reading takes the wide `namespace:list`; setting is
+/// managing the namespace.
+static NAMESPACE_OUTBOUND_APPROVALS_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/([^/]+)/outbound-approvals$").unwrap());
+
 /// Membership operations on a namespace.
 ///
 /// `admit` is deliberately absent. Its caller holds only a device key, nothing
@@ -386,6 +392,17 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
                         ResourceScope::Global,
                     ))]
                 }
+                _ => vec![],
+            };
+        }
+    }
+
+    if let Some(captures) = NAMESPACE_OUTBOUND_APPROVALS_REGEX.captures(path) {
+        if let Some(ns_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![ns_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::GET => vec![Permission::Namespace(NamespacePermission::List(scope))],
+                HttpMethod::PUT => vec![Permission::Namespace(NamespacePermission::Manage(scope))],
                 _ => vec![],
             };
         }
@@ -2752,5 +2769,36 @@ mod tests {
         assert!(!validator.validate_permissions(&["context:list[ctx-1]".to_owned()], &required));
         assert!(!validator.validate_permissions(&["context:list-own[ctx-1]".to_owned()], &required));
         assert!(validator.validate_permissions(&["context:list-own[ctx-2]".to_owned()], &required));
+    }
+
+    /// Reading a namespace's outbound approvals is a namespace read; changing
+    /// them is managing the namespace. Neither falls to the admin default-deny,
+    /// and the narrow `list-own` (a delegated session's) reads neither, since
+    /// the handler does not narrow to the caller.
+    #[test]
+    fn outbound_approvals_are_read_with_list_and_set_with_manage() {
+        let validator = PermissionValidator::new();
+        let path = "/admin-api/namespaces/ns-1/outbound-approvals";
+        let required = |method: Method| {
+            validator.determine_required_permissions(
+                &Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+
+        let read = required(Method::GET);
+        assert!(validator.validate_permissions(&["namespace:list[ns-1]".to_owned()], &read));
+        assert!(!validator.validate_permissions(&["namespace:list[ns-2]".to_owned()], &read));
+        assert!(!validator.validate_permissions(&["namespace:list-own[ns-1]".to_owned()], &read));
+
+        let set = required(Method::PUT);
+        assert!(validator.validate_permissions(&["namespace:manage[ns-1]".to_owned()], &set));
+        assert!(!validator.validate_permissions(&["namespace:list[ns-1]".to_owned()], &set));
+        for required in [read, set] {
+            assert!(!required.contains(&Permission::Admin(AdminPermission)));
+        }
     }
 }

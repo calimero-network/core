@@ -19,6 +19,15 @@ fn forms() -> AppIdentity {
     }
 }
 
+/// A namespace approval of exactly what `declared` declares, so a test of
+/// another gate is not refused by this one.
+fn approving(declared: &BTreeSet<String>) -> Approval {
+    Approval {
+        prefixes: declared.iter().cloned().collect(),
+        reviewed: declared.iter().cloned().collect(),
+    }
+}
+
 /// One secret, `TURNSTILE_SECRET`, for mero-forms only, bound to Cloudflare.
 #[derive(Debug)]
 struct OneSecret;
@@ -84,7 +93,12 @@ fn post(url: &str, body: &str) -> OutboundRequest {
 
 fn refusal(service: &OutboundService, request: OutboundRequest) -> String {
     service
-        .prepare(&forms(), &declared(), request)
+        .prepare(
+            &forms(),
+            &declared(),
+            Some(&approving(&declared())),
+            request,
+        )
         .expect_err("expected a refusal")
         .to_string()
 }
@@ -93,7 +107,13 @@ fn refusal(service: &OutboundService, request: OutboundRequest) -> String {
 fn a_declared_request_reaches_the_host_with_its_secret_and_comes_back_redacted() {
     let fake = Arc::new(Fake::default());
     let run = service(&fake)
-        .for_run(forms(), vec![VERIFY.to_owned()], "ctx".to_owned())
+        .for_run(
+            forms(),
+            vec![VERIFY.to_owned()],
+            Some(approving(&declared())),
+            None,
+            "ctx".to_owned(),
+        )
         .expect("the app declares a URL");
     let request = post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}&response=tok");
     let answer = run.send(&borsh::to_vec(&request).unwrap()).expect("sent");
@@ -120,12 +140,29 @@ fn only_urls_under_a_declared_prefix() {
     let fake = Arc::new(Fake::default());
     let s = service(&fake);
     // The prefix itself, with a query string, and a path below it.
-    assert!(s.prepare(&forms(), &declared(), post(VERIFY, "")).is_ok());
     assert!(s
-        .prepare(&forms(), &declared(), post(&format!("{VERIFY}?x=1"), ""))
+        .prepare(
+            &forms(),
+            &declared(),
+            Some(&approving(&declared())),
+            post(VERIFY, "")
+        )
         .is_ok());
     assert!(s
-        .prepare(&forms(), &declared(), post(&format!("{VERIFY}/v2"), ""))
+        .prepare(
+            &forms(),
+            &declared(),
+            Some(&approving(&declared())),
+            post(&format!("{VERIFY}?x=1"), "")
+        )
+        .is_ok());
+    assert!(s
+        .prepare(
+            &forms(),
+            &declared(),
+            Some(&approving(&declared())),
+            post(&format!("{VERIFY}/v2"), "")
+        )
         .is_ok());
     // Not at a `/`, beside it, above it, or out of it through `..`.
     let outside = [
@@ -143,14 +180,22 @@ fn only_urls_under_a_declared_prefix() {
     }
     assert!(refusal(&s, post(&format!("{VERIFY}#x"), "")).contains("fragment"));
     // An app that declares nothing usable gets no client at all.
-    assert!(s.for_run(forms(), vec![], "ctx".to_owned()).is_none());
+    assert!(s
+        .for_run(forms(), vec![], None, None, "ctx".to_owned())
+        .is_none());
     for unusable in [
         "http://challenges.cloudflare.com/x",
         "https://challenges.cloudflare.com/x?key=1",
         "https://10.0.0.1/x",
     ] {
         assert!(s
-            .for_run(forms(), vec![unusable.to_owned()], "ctx".to_owned())
+            .for_run(
+                forms(),
+                vec![unusable.to_owned()],
+                None,
+                None,
+                "ctx".to_owned()
+            )
             .is_none());
     }
 }
@@ -169,7 +214,12 @@ fn any_method_and_a_star_allows_every_host_an_app_declares() {
     ] {
         r.method = method;
         assert!(s
-            .prepare(&forms(), &BTreeSet::from([api.to_owned()]), r.clone())
+            .prepare(
+                &forms(),
+                &BTreeSet::from([api.to_owned()]),
+                Some(&approving(&BTreeSet::from([api.to_owned()]))),
+                r.clone()
+            )
             .is_ok());
     }
     // The secret is still bound to its own host.
@@ -177,6 +227,7 @@ fn any_method_and_a_star_allows_every_host_an_app_declares() {
         .prepare(
             &forms(),
             &BTreeSet::from([api.to_owned()]),
+            Some(&approving(&BTreeSet::from([api.to_owned()]))),
             post(
                 "https://api.example.com/v1/x",
                 "{{secret:TURNSTILE_SECRET}}",
@@ -192,9 +243,14 @@ fn only_hosts_the_operator_lists_by_name_over_https_on_443() {
     let fake = Arc::new(Fake::default());
     let s = service(&fake);
     let refuse = |url: &str| {
-        s.prepare(&forms(), &BTreeSet::from([url.to_owned()]), post(url, ""))
-            .unwrap_err()
-            .to_string()
+        s.prepare(
+            &forms(),
+            &BTreeSet::from([url.to_owned()]),
+            Some(&approving(&BTreeSet::from([url.to_owned()]))),
+            post(url, ""),
+        )
+        .unwrap_err()
+        .to_string()
     };
     assert!(
         refuse("https://evil.example/collect").contains("not a host this node's operator allows")
@@ -216,6 +272,7 @@ fn a_secret_goes_only_to_its_own_hosts_and_only_for_its_own_app() {
         .prepare(
             &forms(),
             &BTreeSet::from([url.to_owned()]),
+            Some(&approving(&BTreeSet::from([url.to_owned()]))),
             post(url, "{{secret:TURNSTILE_SECRET}}"),
         )
         .unwrap_err()
@@ -233,6 +290,7 @@ fn a_secret_goes_only_to_its_own_hosts_and_only_for_its_own_app() {
         .prepare(
             &other,
             &declared(),
+            Some(&approving(&declared())),
             post(VERIFY, "{{secret:TURNSTILE_SECRET}}"),
         )
         .unwrap_err()
@@ -273,7 +331,14 @@ fn without_a_secret_provider_a_request_naming_one_is_refused() {
     let s = OutboundService::with_parts(&[HOST], None, fake);
     assert!(refusal(&s, post(VERIFY, "{{secret:TURNSTILE_SECRET}}")).contains("no secrets"));
     // A request with no secret still goes.
-    assert!(s.prepare(&forms(), &declared(), post(VERIFY, "ok")).is_ok());
+    assert!(s
+        .prepare(
+            &forms(),
+            &declared(),
+            Some(&approving(&declared())),
+            post(VERIFY, "ok")
+        )
+        .is_ok());
 }
 
 #[test]
@@ -454,6 +519,7 @@ fn no_debug_output_carries_a_secret() {
         .prepare(
             &forms(),
             &declared(),
+            Some(&approving(&declared())),
             post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}"),
         )
         .unwrap();
@@ -462,4 +528,543 @@ fn no_debug_output_carries_a_secret() {
         format!("secret={SECRET}").as_bytes()
     );
     assert!(!format!("{prepared:?}").contains(SECRET));
+}
+
+/// The namespace is the third party: an operator who allows every host and a
+/// manifest that declares the URL are not enough without its approval.
+#[test]
+fn a_namespace_that_approved_nothing_refuses_with_not_approved() {
+    let s = service(&Arc::new(Fake::default()));
+    let err = s
+        .prepare(&forms(), &declared(), None, post(VERIFY, ""))
+        .unwrap_err()
+        .to_string();
+    assert!(err.starts_with(NOT_APPROVED), "{err}");
+    assert!(err.contains(VERIFY), "names the prefix: {err}");
+}
+
+#[test]
+fn a_reviewed_prefix_left_out_is_not_approved_and_a_new_one_awaits_approval() {
+    let s = service(&Arc::new(Fake::default()));
+    let other = "https://challenges.cloudflare.com/v2/";
+    let both = BTreeSet::from([VERIFY.to_owned(), other.to_owned()]);
+    // The admin saw VERIFY and left it out (declined, or revoked later), and
+    // never saw `other`, which a later version of the app added.
+    let approval = Approval {
+        prefixes: vec![],
+        reviewed: vec![VERIFY.to_owned()],
+    };
+    let declined = s
+        .prepare(&forms(), &both, Some(&approval), post(VERIFY, ""))
+        .unwrap_err()
+        .to_string();
+    assert!(declined.starts_with(NOT_APPROVED), "{declined}");
+    let new = s
+        .prepare(
+            &forms(),
+            &both,
+            Some(&approval),
+            post(&format!("{other}x"), ""),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(new.starts_with(AWAITING_APPROVAL), "{new}");
+    assert!(new.contains(other), "names the new prefix: {new}");
+}
+
+#[test]
+fn an_approved_prefix_lets_its_urls_through_and_no_others() {
+    let s = service(&Arc::new(Fake::default()));
+    let other = "https://challenges.cloudflare.com/v2/";
+    let both = BTreeSet::from([VERIFY.to_owned(), other.to_owned()]);
+    // An upgrade added `other`: the approved prefix keeps working.
+    let approval = Approval {
+        prefixes: vec![VERIFY.to_owned()],
+        reviewed: vec![VERIFY.to_owned()],
+    };
+    assert!(s
+        .prepare(
+            &forms(),
+            &both,
+            Some(&approval),
+            post(&format!("{VERIFY}/v2"), "")
+        )
+        .is_ok());
+    assert!(s
+        .prepare(
+            &forms(),
+            &both,
+            Some(&approval),
+            post(&format!("{other}x"), "")
+        )
+        .unwrap_err()
+        .to_string()
+        .starts_with(AWAITING_APPROVAL));
+}
+
+/// An approval wider than the manifest does not widen what the app may reach:
+/// all three of operator, manifest and namespace must agree.
+#[test]
+fn an_approval_cannot_reach_past_the_manifest() {
+    let s = service(&Arc::new(Fake::default()));
+    let approval = Approval {
+        prefixes: vec!["https://challenges.cloudflare.com/".to_owned()],
+        reviewed: vec!["https://challenges.cloudflare.com/".to_owned()],
+    };
+    let err = s
+        .prepare(
+            &forms(),
+            &declared(),
+            Some(&approval),
+            post("https://challenges.cloudflare.com/other", ""),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("under no URL prefix this app's manifest declares"),
+        "{err}"
+    );
+}
+
+/// A refusal reaches the app as an error it can read, not a trap.
+#[test]
+fn a_run_with_no_approval_still_gets_a_client_that_refuses() {
+    let fake = Arc::new(Fake::default());
+    let run = service(&fake)
+        .for_run(
+            forms(),
+            vec![VERIFY.to_owned()],
+            None,
+            None,
+            "ctx".to_owned(),
+        )
+        .expect("a client, so the refusal has somewhere to go");
+    let err = run
+        .send(&borsh::to_vec(&post(VERIFY, "")).unwrap())
+        .unwrap_err();
+    assert!(err.starts_with(NOT_APPROVED), "{err}");
+    assert!(fake.0.lock().unwrap().is_empty(), "nothing was sent");
+}
+
+mod merge {
+    use calimero_primitives::outbound::OutboundSelection;
+
+    use super::*;
+
+    const A: &str = "https://a.example/v1/";
+    const B: &str = "https://b.example/";
+
+    fn owned(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn an_install_approving_the_manifest_approves_and_reviews_all_it_declares() {
+        let merged =
+            merge_approval(None, &owned(&[A, B]), &OutboundSelection::Manifest, false).unwrap();
+        assert_eq!(merged.prefixes, owned(&[A, B]));
+        assert_eq!(merged.reviewed, owned(&[A, B]));
+    }
+
+    #[test]
+    fn approving_part_of_the_manifest_reviews_the_rest() {
+        let merged = merge_approval(
+            None,
+            &owned(&[A, B]),
+            &OutboundSelection::Prefixes(owned(&[A])),
+            false,
+        )
+        .unwrap();
+        assert_eq!(merged.prefixes, owned(&[A]));
+        assert_eq!(merged.reviewed, owned(&[A, B]), "B was shown and left out");
+    }
+
+    #[test]
+    fn an_upgrade_adds_and_never_drops_what_was_approved() {
+        let existing = Approval {
+            prefixes: owned(&[A]),
+            reviewed: owned(&[A]),
+        };
+        let merged = merge_approval(
+            Some(&existing),
+            &owned(&[A, B]),
+            &OutboundSelection::Prefixes(owned(&[B])),
+            false,
+        )
+        .unwrap();
+        assert_eq!(merged.prefixes, owned(&[A, B]));
+    }
+
+    #[test]
+    fn replacing_revokes_and_keeps_the_revoked_prefix_reviewed() {
+        let existing = Approval {
+            prefixes: owned(&[A, B]),
+            reviewed: owned(&[A, B]),
+        };
+        let merged = merge_approval(
+            Some(&existing),
+            &owned(&[A, B]),
+            &OutboundSelection::Prefixes(owned(&[A])),
+            true,
+        )
+        .unwrap();
+        assert_eq!(merged.prefixes, owned(&[A]));
+        assert_eq!(merged.reviewed, owned(&[A, B]));
+    }
+
+    #[test]
+    fn a_selected_prefix_that_is_not_https_is_refused() {
+        for bad in ["http://a.example/", "https://a.example/?q=1", "a.example"] {
+            assert!(
+                merge_approval(None, &[], &OutboundSelection::Prefixes(owned(&[bad])), true)
+                    .is_err(),
+                "{bad} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn more_prefixes_than_one_approval_holds_is_refused() {
+        let many: Vec<String> = (0..=calimero_governance_types::bounds::MAX_OUTBOUND_APPROVALS)
+            .map(|i| format!("https://h{i}.example/"))
+            .collect();
+        assert!(merge_approval(None, &many, &OutboundSelection::Manifest, false).is_err());
+    }
+}
+
+mod sealed {
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_primitives::outbound::{OutboundRefusal, SealedSecret, SealedSecretPayload};
+
+    use super::*;
+
+    const CONTEXT: [u8; 32] = [0xC0; 32];
+
+    /// `value`, for `hosts`, sealed as `env::seal_outbound_secret` seals it: to
+    /// `vault`'s public key, in `context`.
+    fn seal(vault: &PrivateKey, context: [u8; 32], value: &str, hosts: &[&str]) -> SealedSecret {
+        let payload = SealedSecretPayload {
+            value: value.to_owned(),
+            hosts: hosts.iter().map(|h| (*h).to_owned()).collect(),
+        };
+        let purpose = calimero_crypto::Purpose::App {
+            context_id: context,
+            recipient: vault.public_key(),
+        };
+        let envelope = calimero_crypto::seal_to_root(
+            &mut rand::rng(),
+            &vault.public_key(),
+            borsh::to_vec(&payload).unwrap(),
+            purpose,
+        )
+        .unwrap();
+        SealedSecret {
+            key: *vault.public_key(),
+            envelope: envelope.to_bytes(),
+        }
+    }
+
+    /// What a node that holds `keys` opens with: a TEE authority's held
+    /// namespace keys, or none on any other node.
+    fn holding(keys: Vec<PrivateKey>) -> SealedKeys {
+        let keys = Arc::new(keys.iter().map(|k| *k.as_bytes()).collect::<Vec<_>>());
+        SealedKeys {
+            context_id: CONTEXT,
+            keys: Arc::new(move || Ok(keys.iter().map(|k| PrivateKey::from(*k)).collect())),
+            forward: None,
+        }
+    }
+
+    /// A member's node: it holds no namespace key, and hands what it cannot
+    /// open to `forward`.
+    fn forwarding(forward: Forwarder) -> SealedKeys {
+        SealedKeys {
+            forward: Some(forward),
+            ..holding(vec![])
+        }
+    }
+
+    /// A forwarder standing in for a namespace TEE: it keeps what it was
+    /// handed and answers `answer`.
+    fn tee_answering(
+        answer: Result<Vec<u8>, String>,
+    ) -> (Forwarder, Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = Arc::clone(&seen);
+        let forward: Forwarder = Arc::new(move |request: &[u8]| {
+            kept.lock().unwrap().push(request.to_vec());
+            answer.clone()
+        });
+        (forward, seen)
+    }
+
+    #[test]
+    fn a_member_hands_a_request_naming_a_sealed_secret_to_a_namespace_tee() {
+        let vault = PrivateKey::random(&mut rand::rng());
+        let secret = seal(&vault, CONTEXT, SECRET, &[HOST]);
+        let response = borsh::to_vec(&OutboundResponse {
+            status: 200,
+            body: br#"{"success":true}"#.to_vec(),
+        })
+        .unwrap();
+        let (forward, seen) = tee_answering(Ok(response.clone()));
+        let fake = Arc::new(Fake::default());
+        let request = borsh::to_vec(&body_naming(&secret)).unwrap();
+
+        let answer = run(&fake, Some(forwarding(forward)))
+            .send(&request)
+            .expect("the TEE sent it");
+
+        assert_eq!(answer, response, "the TEE's answer, as it gave it");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![request],
+            "the request as written"
+        );
+        assert!(
+            fake.0.lock().unwrap().is_empty(),
+            "this node sent nothing itself"
+        );
+    }
+
+    #[test]
+    fn a_member_forwards_only_what_passes_its_own_checks() {
+        let vault = PrivateKey::random(&mut rand::rng());
+        let secret = seal(&vault, CONTEXT, SECRET, &[HOST]);
+        let (forward, seen) = tee_answering(Ok(Vec::new()));
+        let undeclared = post(
+            "https://challenges.cloudflare.com/elsewhere",
+            &format!("secret={}", secret.placeholder()),
+        );
+        let err = run(&Arc::new(Fake::default()), Some(forwarding(forward)))
+            .send(&borsh::to_vec(&undeclared).unwrap())
+            .unwrap_err();
+
+        assert!(err.contains("under no URL prefix"), "{err}");
+        assert!(seen.lock().unwrap().is_empty(), "nothing was forwarded");
+    }
+
+    #[test]
+    fn a_request_with_no_sealed_secret_and_a_tee_stay_on_this_node() {
+        let (forward, seen) = tee_answering(Ok(Vec::new()));
+        let fake = Arc::new(Fake::default());
+        let _answer = run(&fake, Some(forwarding(Arc::clone(&forward))))
+            .send(&borsh::to_vec(&post(VERIFY, "response=tok")).unwrap())
+            .expect("sent here");
+        assert_eq!(fake.0.lock().unwrap().len(), 1, "sent by this node");
+
+        let vault = PrivateKey::random(&mut rand::rng());
+        let secret = seal(&vault, CONTEXT, SECRET, &[HOST]);
+        let tee = SealedKeys {
+            forward: Some(forward),
+            ..holding(vec![vault])
+        };
+        let _answer = run(&fake, Some(tee))
+            .send(&borsh::to_vec(&body_naming(&secret)).unwrap())
+            .expect("opened here");
+        assert_eq!(fake.0.lock().unwrap().len(), 2, "a TEE opens it itself");
+        assert!(seen.lock().unwrap().is_empty(), "nothing was forwarded");
+    }
+
+    #[test]
+    fn a_tees_refusal_reaches_the_app_as_its_error() {
+        let vault = PrivateKey::random(&mut rand::rng());
+        let secret = seal(&vault, CONTEXT, SECRET, &[HOST]);
+        let (forward, _seen) = tee_answering(Err("the namespace's TEE refused it".to_owned()));
+        let err = run(&Arc::new(Fake::default()), Some(forwarding(forward)))
+            .send(&borsh::to_vec(&body_naming(&secret)).unwrap())
+            .unwrap_err();
+        assert_eq!(err, "the namespace's TEE refused it");
+    }
+
+    #[test]
+    fn a_member_takes_an_answer_only_under_a_namespace_tees_signature() {
+        let tee = PrivateKey::random(&mut rand::rng());
+        let request = b"request".to_vec();
+        let response = b"response".to_vec();
+        let signed = |key: &PrivateKey, response: &[u8]| ForwardedAnswer::Sent {
+            response: response.to_vec(),
+            tee: *key.public_key(),
+            signature: key
+                .sign(&forwarded_answer_message(&CONTEXT, &request, response))
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        };
+        let read = |answer: &ForwardedAnswer, tees: &[calimero_primitives::identity::PublicKey]| {
+            read_forwarded_answer(&CONTEXT, &request, &borsh::to_vec(answer).unwrap(), tees)
+        };
+        let tees = [tee.public_key()];
+
+        assert_eq!(
+            read(&signed(&tee, &response), &tees),
+            Ok(Some(response.clone()))
+        );
+        assert_eq!(
+            read(&ForwardedAnswer::NotTee, &tees),
+            Ok(None),
+            "ask the next peer"
+        );
+
+        let stranger = PrivateKey::random(&mut rand::rng());
+        assert!(
+            read(&signed(&stranger, &response), &tees).is_err(),
+            "not a TEE of it"
+        );
+        let ForwardedAnswer::Sent {
+            tee: key,
+            signature,
+            ..
+        } = signed(&tee, &response)
+        else {
+            unreachable!()
+        };
+        let swapped = ForwardedAnswer::Sent {
+            response: b"{\"success\":true}".to_vec(),
+            tee: key,
+            signature,
+        };
+        assert!(
+            read(&swapped, &tees).is_err(),
+            "a response the TEE did not sign"
+        );
+        let other_request = read_forwarded_answer(
+            &CONTEXT,
+            b"other",
+            &borsh::to_vec(&signed(&tee, &response)).unwrap(),
+            &tees,
+        );
+        assert!(other_request.is_err(), "an answer to another request");
+        let refused = read(
+            &ForwardedAnswer::Refused {
+                reason: "not approved".to_owned(),
+            },
+            &tees,
+        )
+        .unwrap_err();
+        assert!(refused.contains("not approved"), "{refused}");
+    }
+
+    fn run(fake: &Arc<Fake>, sealed: Option<SealedKeys>) -> Arc<dyn OutboundHost> {
+        service(fake)
+            .for_run(
+                forms(),
+                vec![VERIFY.to_owned()],
+                Some(approving(&declared())),
+                sealed,
+                "ctx".to_owned(),
+            )
+            .expect("the app declares a URL")
+    }
+
+    fn body_naming(secret: &SealedSecret) -> OutboundRequest {
+        post(
+            VERIFY,
+            &format!("secret={}&response=tok", secret.placeholder()),
+        )
+    }
+
+    #[test]
+    fn a_tee_fills_in_a_sealed_secret_and_takes_it_back_out_of_the_answer() {
+        let vault = PrivateKey::random(&mut rand::rng());
+        let secret = seal(&vault, CONTEXT, SECRET, &[HOST]);
+        let fake = Arc::new(Fake::default());
+        let answer = run(&fake, Some(holding(vec![vault])))
+            .send(&borsh::to_vec(&body_naming(&secret)).unwrap())
+            .expect("sent");
+
+        assert_eq!(
+            fake.0.lock().unwrap()[0].1,
+            format!("secret={SECRET}&response=tok").into_bytes(),
+            "the host got the value"
+        );
+        let body =
+            String::from_utf8(OutboundResponse::try_from_slice(&answer).unwrap().body).unwrap();
+        assert!(!body.contains(SECRET), "the app never sees it: {body}");
+        assert!(body.contains("[redacted]"));
+    }
+
+    #[test]
+    fn a_node_that_is_not_a_tee_of_the_namespace_refuses_with_sealed_unavailable() {
+        let vault = PrivateKey::random(&mut rand::rng());
+        let secret = seal(&vault, CONTEXT, SECRET, &[HOST]);
+        for sealed in [None, Some(holding(vec![]))] {
+            let fake = Arc::new(Fake::default());
+            let err = run(&fake, sealed)
+                .send(&borsh::to_vec(&body_naming(&secret)).unwrap())
+                .unwrap_err();
+            assert_eq!(
+                OutboundRefusal::of(&err),
+                Some(OutboundRefusal::SealedUnavailable),
+                "{err}"
+            );
+            assert!(fake.0.lock().unwrap().is_empty(), "nothing was sent");
+        }
+    }
+
+    #[test]
+    fn a_sealed_secret_goes_only_to_its_own_hosts_and_opens_only_in_its_context() {
+        let vault = PrivateKey::random(&mut rand::rng());
+        let fake = Arc::new(Fake::default());
+        let elsewhere = seal(&vault, CONTEXT, SECRET, &["api.example.com"]);
+        let err = run(
+            &fake,
+            Some(holding(vec![PrivateKey::from(*vault.as_bytes())])),
+        )
+        .send(&borsh::to_vec(&body_naming(&elsewhere)).unwrap())
+        .unwrap_err();
+        assert!(
+            err.contains("may not be sent to challenges.cloudflare.com"),
+            "{err}"
+        );
+
+        let other_context = seal(&vault, [0xC1; 32], SECRET, &[HOST]);
+        let err = run(
+            &fake,
+            Some(holding(vec![PrivateKey::from(*vault.as_bytes())])),
+        )
+        .send(&borsh::to_vec(&body_naming(&other_context)).unwrap())
+        .unwrap_err();
+        assert!(err.contains("does not open on this node"), "{err}");
+
+        let other_key = seal(
+            &PrivateKey::random(&mut rand::rng()),
+            CONTEXT,
+            SECRET,
+            &[HOST],
+        );
+        let err = run(&fake, Some(holding(vec![vault])))
+            .send(&borsh::to_vec(&body_naming(&other_key)).unwrap())
+            .unwrap_err();
+        assert!(err.contains("does not open on this node"), "{err}");
+
+        for malformed in ["{{sealed:zz}}", "{{sealed:ab01}}", "{{sealed:ab01"] {
+            let err = run(&fake, Some(holding(vec![])))
+                .send(&borsh::to_vec(&post(VERIFY, malformed)).unwrap())
+                .unwrap_err();
+            assert!(
+                err.contains("malformed") || err.contains("unterminated"),
+                "{malformed}: {err}"
+            );
+        }
+        assert!(fake.0.lock().unwrap().is_empty(), "nothing was sent");
+    }
+
+    #[test]
+    fn a_sealed_and_a_named_secret_fill_in_side_by_side() {
+        let vault = PrivateKey::random(&mut rand::rng());
+        let secret = seal(&vault, CONTEXT, "sealed-value", &[HOST]);
+        let fake = Arc::new(Fake::default());
+        let body = format!(
+            "a={{{{secret:TURNSTILE_SECRET}}}}&b={}&c=1",
+            secret.placeholder()
+        );
+        let _answer = run(&fake, Some(holding(vec![vault])))
+            .send(&borsh::to_vec(&post(VERIFY, &body)).unwrap())
+            .expect("sent");
+        assert_eq!(
+            fake.0.lock().unwrap()[0].1,
+            format!("a={SECRET}&b=sealed-value&c=1").into_bytes()
+        );
+    }
 }

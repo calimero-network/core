@@ -52,6 +52,7 @@ use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use calimero_network_primitives::messages::DialFailed;
 use calimero_network_primitives::stream::Stream;
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
@@ -72,6 +73,8 @@ pub(crate) enum OpenStreamResponse {
     Ok(Stream),
     /// Synthesise an error string.
     Err(String),
+    /// The peer could not be dialed, as the real network reports it.
+    DialFailed,
     /// Sleep for `Duration` then return `Err` — useful for
     /// exercising `tokio::time::timeout` wrapping the call.
     SleepThenErr(Duration, String),
@@ -220,6 +223,14 @@ impl MockSyncNetwork {
         self
     }
 
+    /// Queue a dial failure for the next `open_stream` call.
+    pub(crate) fn push_open_stream_dial_failed(&self) -> &Self {
+        self.open_stream_responses
+            .lock()
+            .push_back(OpenStreamResponse::DialFailed);
+        self
+    }
+
     /// Queue a response that sleeps then errors. The caller's
     /// `tokio::time::timeout` wrapper should fire before the
     /// sleep completes if `sleep_for > timeout`.
@@ -357,6 +368,11 @@ impl SyncNetwork for MockSyncNetwork {
             )),
             Some(OpenStreamResponse::Ok(stream)) => Ok(stream),
             Some(OpenStreamResponse::Err(msg)) => Err(eyre::eyre!(msg)),
+            Some(OpenStreamResponse::DialFailed) => Err(DialFailed(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "no addresses for peer",
+            ))
+            .into()),
             Some(OpenStreamResponse::SleepThenErr(sleep_for, msg)) => {
                 time::sleep(sleep_for).await;
                 Err(eyre::eyre!(msg))
