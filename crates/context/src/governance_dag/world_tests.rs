@@ -1336,9 +1336,11 @@ mod held_ops {
 /// still holds the same verdicts and rows.
 mod concurrent {
     use calimero_account::AccountId;
+    use calimero_context_config::VisibilityMode;
     use calimero_governance_store::test_fixtures::{
-        account_for, admission_quote_with, dummy_member_removed_op, fork_store, guarded_group_op,
-        guarded_root_op, real_join_account, seal_for_test, signed_invitation_for,
+        account_for, admission_quote_with, derived_group_id, dummy_member_removed_op, fork_store,
+        group_created, guarded_group_op, guarded_root_op, real_join_account, seal_for_test,
+        signed_invitation_for,
     };
     use calimero_governance_store::{
         parked_op, CapabilitiesRepository, MetadataRepository, NamespaceOpLogService, Parked,
@@ -2713,6 +2715,122 @@ mod concurrent {
         .expect("the older key reaches the unkeyed node");
 
         assert_landed_the_same(&[keyed, unkeyed], world, &[&first, &second], &joiner);
+    }
+
+    /// The owner's root op `op`, signed at `parents`.
+    fn owner_root_op(
+        store: &Store,
+        world: &World,
+        parents: &[[u8; 32]],
+        op: RootOp,
+    ) -> SignedNamespaceOp {
+        SignedNamespaceOp::sign(
+            &world.owner_sk,
+            world.namespace.to_bytes().into(),
+            parents.to_vec(),
+            unused_nonce(),
+            seal_for_test(store, world.namespace, op),
+        )
+        .expect("sign a root op")
+    }
+
+    /// A folder `inner` inside the open folder `outer`, and a private space `space`, all
+    /// created through the log; the world's own groups are not in it.
+    async fn folders_and_a_space(
+        store: &Store,
+        world: &World,
+    ) -> (ContextGroupId, ContextGroupId, ContextGroupId) {
+        let owner = world.actor(ActorState::Owner).account;
+        let ns = world.namespace.to_bytes();
+        let outer = derived_group_id(&owner, ns, false, 0x71);
+        let inner = derived_group_id(&owner, outer, false, 0x72);
+        for (parent, restricted, tag) in [(ns, false, 0x71), (outer, false, 0x72), (ns, true, 0x73)]
+        {
+            let created = owner_root_op(
+                store,
+                world,
+                &heads(store, world),
+                group_created(owner, parent, restricted, tag),
+            );
+            apply(store, &created)
+                .await
+                .expect("the owner creates a group");
+        }
+        let space = derived_group_id(&owner, ns, true, 0x73);
+        (outer.into(), inner.into(), space.into())
+    }
+
+    fn reparent(
+        store: &Store,
+        world: &World,
+        parents: &[[u8; 32]],
+        child: ContextGroupId,
+        new_parent: ContextGroupId,
+    ) -> SignedNamespaceOp {
+        owner_root_op(
+            store,
+            world,
+            parents,
+            RootOp::GroupReparented {
+                child_group_id: child.to_bytes().into(),
+                new_parent_id: new_parent.to_bytes().into(),
+            },
+        )
+    }
+
+    /// Whether `first` and `second` each applied, in each arrival order: each was judged at
+    /// the cut it was signed at, where the other had not happened.
+    async fn applied_in_both_orders(
+        store: &Store,
+        first: &SignedNamespaceOp,
+        second: &SignedNamespaceOp,
+    ) -> [[bool; 2]; 2] {
+        let mut verdicts = [[false; 2]; 2];
+        for (row, order) in verdicts.iter_mut().zip([[0, 1], [1, 0]]) {
+            let node = fork_store(store);
+            for which in order {
+                let op = [first, second][which];
+                row[which] = apply(&node, op).await.is_ok();
+            }
+        }
+        verdicts
+    }
+
+    #[actix::test]
+    async fn a_move_into_a_space_concurrent_with_a_move_out_lands_the_same_in_either_order() {
+        let (world, store) = world_with_a_logged_admin().await;
+        let (_outer, inner, space) = folders_and_a_space(&store, world).await;
+        let parents = heads(&store, world);
+        let into = reparent(&store, world, &parents, inner, space);
+        let out = reparent(&store, world, &parents, inner, world.namespace);
+
+        let verdicts = applied_in_both_orders(&store, &into, &out).await;
+
+        assert_eq!(verdicts, [[true, true]; 2]);
+    }
+
+    #[actix::test]
+    async fn making_a_folder_private_concurrent_with_its_move_into_a_space_lands_the_same_in_either_order(
+    ) {
+        let (world, store) = world_with_a_logged_admin().await;
+        let (_outer, inner, space) = folders_and_a_space(&store, world).await;
+        let parents = heads(&store, world);
+        let into = reparent(&store, world, &parents, inner, space);
+        let make_private = signed_in(
+            &store,
+            world,
+            &inner,
+            &world.owner_sk,
+            &parents,
+            unused_nonce(),
+            &GroupOp::SubgroupVisibilitySet {
+                mode: VisibilityMode::Restricted,
+            },
+        );
+
+        let verdicts = applied_in_both_orders(&store, &into, &make_private).await;
+
+        assert_eq!(verdicts, [[true, true]; 2]);
     }
 
     /// A nonce no signer of the world has used: a reused one is refused at its cut.
