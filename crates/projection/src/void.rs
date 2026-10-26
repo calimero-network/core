@@ -1136,10 +1136,10 @@ impl<'a> Analysis<'a> {
             if void.contains(&op.id()) {
                 continue;
             }
-            // Past the budget a role change counts as a demotion, the owner's aside: the
-            // one it might be is the one that matters.
+            // Past the budget a role change counts as a demotion, the owner's in a group
+            // never private aside: the one it might be is the one that matters.
             let was_admin = if self.over_budget() {
-                self.owner_at(op) != Some(member)
+                self.owner_at(op) != Some(member) || self.ever_private.contains(&group)
             } else {
                 let before = self.ancestors_of(op.id());
                 let view = self.fold(

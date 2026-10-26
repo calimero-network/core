@@ -1395,6 +1395,17 @@ fn past_the_fold_budget_the_owner_is_reached_only_by_a_private_removal_or_its_ow
         "a private removal"
     );
 
+    let demoted = |folder: ContextGroupId| {
+        let (mut log, head) = eng_private_space();
+        let granted = add_in(folder, ALICE, &[&head], OWNER, GroupMemberRole::Admin);
+        let role = add_in(folder, ALICE, &[&granted], OWNER, GroupMemberRole::Member);
+        let by_owner = add_in(folder, OWNER, &[&granted], YARA, GroupMemberRole::Member);
+        log.extend([granted, role, by_owner.clone()]);
+        ScopeState::void_ops_bounded(&log, base(), None, &[], 0).contains(&by_owner.id())
+    };
+    assert!(!demoted(subgroup(0x41)), "an open role change");
+    assert!(demoted(subgroup(0x42)), "a private role change");
+
     let (mut log, head) = eng_private_space();
     let revoke = gov(
         OWNER,
