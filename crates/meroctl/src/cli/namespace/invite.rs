@@ -16,12 +16,6 @@ pub struct InviteCommand {
     )]
     pub expiration_timestamp: Option<u64>,
 
-    #[clap(
-        long,
-        help = "Generate invitations recursively for namespace child groups"
-    )]
-    pub recursive: bool,
-
     /// Accounts permitted to admit a claim of this invitation.
     ///
     /// Without any, the node fills the list in from the group's admins and TEE
@@ -52,7 +46,6 @@ impl InviteCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let request = CreateGroupInvitationApiRequest {
             expiration_timestamp: self.expiration_timestamp,
-            recursive: Some(self.recursive),
             admitters: self.admitters,
             admitter_addrs: self.admitter_addrs,
         };

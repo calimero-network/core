@@ -3260,8 +3260,6 @@ pub struct CreateGroupInvitationApiRequest {
     /// Defaults to 1 year when not provided.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expiration_timestamp: Option<u64>,
-    #[serde(default)]
-    pub recursive: Option<bool>,
     /// Accounts permitted to admit a claim of this invitation, 64 hex each.
     ///
     /// Empty or absent is filled in at mint from the group's admins and TEE
@@ -3300,27 +3298,6 @@ pub struct CreateGroupInvitationApiResponseData {
     pub invitation: SignedGroupOpenInvitation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_name: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecursiveInvitationEntry {
-    pub group_id: String,
-    pub invitation: SignedGroupOpenInvitation,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group_name: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateRecursiveInvitationApiResponseData {
-    pub invitations: Vec<RecursiveInvitationEntry>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateRecursiveInvitationApiResponse {
-    pub data: CreateRecursiveInvitationApiResponseData,
 }
 
 /// Atomically move a group to a new parent. Replaces the old

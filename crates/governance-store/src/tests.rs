@@ -5945,12 +5945,6 @@ fn member_added_does_nothing_for_non_rejoiner_peers() {
 }
 
 // -----------------------------------------------------------------------
-// create_recursive_invitations / collect_visible_descendant_groups —
-// recursive namespace invitations must not leak into (or even enumerate)
-// private subgroups the inviter cannot see.
-// -----------------------------------------------------------------------
-
-// -----------------------------------------------------------------------
 // NamespaceGovernance::apply_signed_op — governance state machine tests
 // -----------------------------------------------------------------------
 
@@ -17464,15 +17458,6 @@ mod invite_capability {
     }
 
     impl Fixture {
-        /// Mint through the store's own minting path, as the inviting node does.
-        fn mint(&self, group: ContextGroupId) -> EyreResult<Vec<SignedGroupOpenInvitation>> {
-            Ok(NamespaceRepository::new(&self.store)
-                .create_recursive_invitations(&group, &self.member_sk, 3600, 1, &[])?
-                .into_iter()
-                .map(|(_, invitation)| invitation)
-                .collect())
-        }
-
         /// Revoke every capability the member holds in the subgroup.
         fn revoke(&self) {
             CapabilitiesRepository::new(&self.store)
@@ -17616,42 +17601,9 @@ mod invite_capability {
     }
 
     #[test]
-    fn a_holder_that_is_not_an_admin_mints_an_invitation_that_redeems() {
-        let f = fixture(INVITE);
-        assert!(!MembershipRepository::new(&f.store)
-            .is_admin(&f.subgroup, &f.member)
-            .unwrap());
-
-        let minted = f
-            .mint(f.subgroup)
-            .expect("a CAN_INVITE_MEMBERS holder may mint");
-        assert_eq!(minted.len(), 1);
-        let invitation = minted.into_iter().next().unwrap();
-        assert_eq!(
-            invitation.invitation.admitters,
-            vec![f.admin],
-            "a non-admin inviter cannot admit, so the admins are the default admitters"
-        );
-
-        let joiner_sk = PrivateKey::from([0xC3u8; 32]);
-        apply_member_joined(&f.store, f.ns_id, &joiner_sk, invitation, 1, &f.admin_sk)
-            .expect("a peer must accept a join under a CAN_INVITE_MEMBERS holder's invitation");
-        assert!(f.is_member(&joiner_sk));
-    }
-
-    #[test]
-    fn a_member_without_the_capability_can_neither_mint_nor_have_one_redeemed() {
+    fn a_member_without_the_capability_has_no_invitation_redeemed() {
         let f = fixture(0);
 
-        let err = f
-            .mint(f.subgroup)
-            .expect_err("a plain member must not be able to mint");
-        assert!(
-            format!("{err:#}").contains("create invitation"),
-            "expected an authorization refusal, got: {err:#}"
-        );
-
-        // Signed by hand, bypassing the mint: the peers' gate is what holds.
         let invitation = sign_off_node(&f.member_sk, f.subgroup, vec![f.admin]);
         let joiner_sk = PrivateKey::from([0xC4u8; 32]);
         let err = apply_member_joined(&f.store, f.ns_id, &joiner_sk, invitation, 1, &f.admin_sk)
@@ -17667,7 +17619,7 @@ mod invite_capability {
     #[test]
     fn revoking_the_capability_before_redemption_refuses_the_join() {
         let f = fixture(INVITE);
-        let invitation = f.mint(f.subgroup).unwrap().into_iter().next().unwrap();
+        let invitation = sign_off_node(&f.member_sk, f.subgroup, vec![f.admin]);
 
         // Folded before the join: the join is judged against state that has it.
         f.revoke();
@@ -17690,7 +17642,7 @@ mod invite_capability {
     #[test]
     fn a_revoke_in_the_joins_cut_refuses_it_even_where_live_rows_still_grant() {
         let f = fixture(INVITE);
-        let invitation = f.mint(f.subgroup).unwrap().into_iter().next().unwrap();
+        let invitation = sign_off_node(&f.member_sk, f.subgroup, vec![f.admin]);
 
         let joiner_sk = PrivateKey::from([0xC6u8; 32]);
         let err = apply_join_at_cut(&f, &joiner_sk, invitation, &FixedAuthorizer(false))
@@ -17709,7 +17661,7 @@ mod invite_capability {
     #[test]
     fn a_revoke_concurrent_with_the_join_does_not_refuse_it_on_the_replica_that_folded_it_first() {
         let f = fixture(INVITE);
-        let invitation = f.mint(f.subgroup).unwrap().into_iter().next().unwrap();
+        let invitation = sign_off_node(&f.member_sk, f.subgroup, vec![f.admin]);
         f.revoke();
 
         let joiner_sk = PrivateKey::from([0xC7u8; 32]);
@@ -17737,33 +17689,6 @@ mod invite_capability {
         apply_member_joined(&f.store, f.ns_id, &joiner_sk, invitation, 1, &f.admin_sk)
             .expect("an off-node invitation from a bound CAN_INVITE_MEMBERS holder must redeem");
         assert!(f.is_member(&joiner_sk));
-    }
-
-    /// A recursive mint names only groups the inviter may invite into. The
-    /// holder has the grant at the namespace root and is a plain member of the
-    /// subgroup; capabilities do not cross into subgroups, so an invitation to
-    /// the subgroup would be refused by every peer at redemption.
-    #[test]
-    fn a_recursive_mint_skips_subgroups_the_holder_holds_no_grant_in() {
-        let f = fixture(0);
-        // The root needs an admin to default the admitters to.
-        MembershipRepository::new(&f.store)
-            .add_member(&f.ns_gid, &f.admin, GroupMemberRole::Admin)
-            .unwrap();
-        MembershipRepository::new(&f.store)
-            .add_member(&f.ns_gid, &f.member, GroupMemberRole::Member)
-            .unwrap();
-        CapabilitiesRepository::new(&f.store)
-            .set_member_capability(&f.ns_gid, &f.member, INVITE)
-            .unwrap();
-
-        let minted = f.mint(f.ns_gid).expect("the holder may invite at the root");
-        let groups: Vec<_> = minted.iter().map(|i| i.invitation.group_id).collect();
-        assert_eq!(
-            groups,
-            vec![f.ns_gid],
-            "only the root: the subgroup grants the holder nothing to invite with"
-        );
     }
 
     /// An account with no node that was added by account and never device-linked:

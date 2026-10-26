@@ -439,7 +439,6 @@ same body. Every field is optional.
 | field | meaning |
 | --- | --- |
 | `expirationTimestamp` | Validity in **seconds**, clamped to 24 hours. Not an absolute time despite the name. |
-| `recursive` | Also mint invitations for the namespace's child groups. |
 | `admitters` | Accounts allowed to admit a claim, 64 hex each. **Signed** into the invitation. Omit and the node fills in the group's admins plus its TEE nodes; it refuses to mint if that set is empty. |
 | `admitterAddrs` | libp2p multiaddrs for those admitters, each including its `/p2p/<peer-id>` suffix. **Not signed.** Omit and the node fills in what it knows. |
 

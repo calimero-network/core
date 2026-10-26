@@ -62,9 +62,8 @@ description: >
      `crates/node/src/sync/manager/relay_sealed_join.rs`.
   2. The SUBGROUP-targeted invitation join (`root_sealed_for_group`, #3858 /
      #3859). `POST /admin-api/namespaces/:id/invite` refuses a non-root group
-     — *"namespace_id must reference a root group (namespace)"* — so a
-     subgroup invitation is only reachable through the `recursive` flag, which
-     the merobox `create_namespace_invitation` step does not expose. An
+     — *"namespace_id must reference a root group (namespace)"* — so no
+     subgroup invitation can be minted. An
      admin-push `add_group_members` is not a substitute: that publishes a
      `MemberAdded` GroupOp, not a join, so it would exercise none of this.
 

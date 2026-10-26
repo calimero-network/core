@@ -23,12 +23,6 @@ description: >
       "who happened to be added": flip the same subgroup to `Open` and
       the namespace owner is back in.
 
-  Recursive-invitation leakage (a namespace admin recursively inviting a
-  third party must not mint invitations into / enumerate private
-  subgroups it isn't in) is exercised by the `calimero-context` unit
-  tests `create_recursive_invitations_omits_private_subgroups_inviter_not_in`
-  and `collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_in`.
-
 force_pull_image: false
 
 auth_mode: embedded

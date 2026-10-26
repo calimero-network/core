@@ -674,7 +674,7 @@ fn default_invited_role() -> u8 {
 /// attributes: appending a field to a borsh struct is NOT wire-compatible
 /// (an old peer decoding a new payload errors on trailing bytes; a new
 /// peer decoding an old payload hits EOF on the option tag). This struct
-/// also rides the **binary P2P wire** — `create_recursive_invitations`
+/// also rides the **binary P2P wire** — a join
 /// embeds it in a `SignedNamespaceOp`. So mixed-version peers exchanging
 /// these namespace ops over borsh will reject each other's gossip. That
 /// is an **accepted lockstep-upgrade assumption** (the same one that
