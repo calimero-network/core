@@ -222,4 +222,34 @@ mod tests {
         );
         assert!(!lists_the_folder_in_the_space(false).await);
     }
+
+    #[actix::test]
+    async fn a_private_space_is_hidden_from_an_account_removed_from_the_workspace() {
+        use calimero_governance_store::test_fixtures::{dummy_member_removed_op, enrol_member};
+        use calimero_primitives::context::GroupMemberRole;
+        use calimero_primitives::identity::PrivateKey;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (board, _drafts, account) = crate::test_support::seed_private_space(&store, true);
+        let (state, _blob_dir) = crate::test_support::admin_state(&store).await;
+        let namespace = NamespaceRepository::new(&store).resolve(&board).unwrap();
+        let hidden =
+            || hidden_by_space(&state, &board, Some(AuthenticatedAccount(account))).unwrap();
+        assert!(!hidden(), "precondition: a member of the space reads it");
+
+        let admin_sk = PrivateKey::from([0xAD; 32]);
+        let admin = enrol_member(&store, &namespace, &admin_sk.public_key());
+        MembershipRepository::new(&store)
+            .add_member(&namespace, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        crate::test_support::apply_through_governance(
+            &store,
+            &namespace,
+            &admin_sk,
+            dummy_member_removed_op(account),
+        )
+        .expect("the admin removes the account from the workspace");
+
+        assert!(hidden(), "its space row ended with its workspace row");
+    }
 }
