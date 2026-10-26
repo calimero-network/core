@@ -1,0 +1,14 @@
+# Convergence-race findings that predate `scripts/lint-e2e-convergence.py`.
+#
+# A burndown backlog, not an allowlist: each line is a scenario step that reads or
+# acts on another node's state without establishing that it arrived, so each can fail
+# intermittently and will do so with a misleading symptom (a null value, an
+# "undefined" string reaching a parser, a key-less join). They are baselined only so
+# the check could land without failing on its first run.
+#
+# Remove a line by adding a `wait_for_sync` covering the nodes involved. A stale entry
+# is reported as a notice rather than an error, so a fix never needs to touch this file
+# to go green — but leaving the line means the next regression in that step is silenced.
+apps/name-registry-admin/workflows/name-registry-admin.yml: R3 'The admin answers the release' reads on ['admin-names-owner'] after barrier 'Wait for the release to reach every node', which has no `expect` - the hashes agreeing does not prove the data this read needs has been applied
+apps/name-registry-admin/workflows/name-registry-admin.yml: R3 'The admin's view of rose after the rebid' reads on ['admin-names-owner'] after barrier 'Wait for the rebid to reach every node', which has no `expect` - the hashes agreeing does not prove the data this read needs has been applied
+apps/name-registry-admin/workflows/name-registry-admin.yml: R3 'The old admin cannot resolve lily' reads on ['admin-names-owner'] after barrier 'Wait for Bob's claim to lily to reach every node', which has no `expect` - the hashes agreeing does not prove the data this read needs has been applied
