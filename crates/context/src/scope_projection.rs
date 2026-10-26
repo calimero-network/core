@@ -2264,12 +2264,8 @@ impl ScopeProjections {
         // for the same reason it abstains on a gap. The walk is shared, so both
         // answers come from one pass.
         //
-        // Scoped to the groups that can move THIS membership - the root and the
-        // target's private space ([`deciding_groups`]) - and not to the
-        // namespace. A hole in
-        // a sibling subgroup is one this node may never be able to fill, so
-        // abstaining on it would park the question permanently rather than
-        // conservatively.
+        // Scoped to the root and the target's groups up to its space root
+        // ([`deciding_groups`]): a sibling subgroup's hole may never be fillable here.
         // The genesis root admin and default cap are in no op, so they are read first.
         let base = authority_base(store, namespace_id)?;
         let walked = self.walk(&scope, self.logs.get(&scope)?, heads, base);
@@ -2695,10 +2691,8 @@ impl ScopeProjections {
         // `Some(false)` straight back as a refusal. Two nodes with different keys
         // would decide the same op differently.
         //
-        // Scoped to the groups whose ops can MOVE this question - the root and the
-        // target's private space ([`deciding_groups`]) - not to the namespace. Every
-        // group in a space has the space's members, so a sibling subgroup's hole
-        // cannot change the answer, and neither can the history above the space.
+        // Scoped to the root and the target's groups up to its space root
+        // ([`deciding_groups`]): nothing outside them can move the answer.
         //
         // The namespace-wide version of this check is what an earlier attempt
         // shipped, and e2e refused it within the hour: a node legitimately not a
@@ -4033,13 +4027,8 @@ fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero
     Some(view)
 }
 
-/// The groups whose ops can move an authority question about `group` at a cut, and so
-/// must be readable: the namespace root, `group`, and every group above it up to and
-/// including its private-space root, or up to the root in the open space.
-///
-/// Each is sealed under the workspace key or the space's own, so the walk never needs
-/// the key of a space above `group`'s. An edge whose visibility is unknown sits in an
-/// unreadable group already in the set, so the climb never stops at one.
+/// The groups that must be readable to decide a question about `group`: the root, `group`,
+/// and every group above it up to its space root (up to the root in the open space).
 fn deciding_groups(
     view: &calimero_authz::AclView,
     group: ContextGroupId,
@@ -4235,7 +4224,9 @@ mod tests {
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation,
     };
+    use calimero_context_config::MemberCapabilities;
     use calimero_governance_store::MetaRepository;
+    use calimero_governance_types::GroupOp;
     use calimero_governance_types::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_op::OpPayload;
     use calimero_primitives::context::GroupMemberRole;
@@ -5985,9 +5976,6 @@ mod tests {
     /// An admin of a Restricted group who leaves the workspace holds no authority in it.
     #[test]
     fn a_member_removed_from_the_root_holds_no_authority_in_a_restricted_group() {
-        use calimero_context_config::MemberCapabilities;
-        use calimero_governance_types::GroupOp;
-
         let ns = [0x91; 32];
         let ns_gid = ContextGroupId::from(ns);
         let s = ContextGroupId::from([0x92; 32]);
