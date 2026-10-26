@@ -3,6 +3,7 @@
 
 use super::context::GroupApplyCtx;
 use crate::private_space::Tree;
+use crate::TreeReads;
 use crate::{
     delete_group_and_parent_edge, MembershipError, MetaError, MetaRepository, NamespaceRepository,
 };
@@ -32,7 +33,17 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>) -> EyreResult<()> {
             group_id.to_bytes()
         )));
     }
-    Tree::at_cut(store, ctx.authorizer(), group_id, ctx.cut())?.require_may_delete(group_id)?;
+    Tree::at_cut(
+        store,
+        ctx.authorizer(),
+        group_id,
+        ctx.cut(),
+        TreeReads {
+            chains: &[],
+            subtrees: &[*group_id],
+        },
+    )?
+    .require_may_delete(group_id)?;
     // A context anywhere below would be left in a group nobody can reach, so the
     // whole subtree must be empty; its groups then go with it, children first.
     let subtree = NamespaceRepository::new(store).collect_subtree_for_cascade(group_id)?;

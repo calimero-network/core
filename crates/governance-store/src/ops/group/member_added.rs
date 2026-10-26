@@ -5,6 +5,7 @@ use super::super::super::build_auto_follow_set_if_enabled;
 use super::super::super::contexts::restore_member_context_identities;
 use super::context::GroupApplyCtx;
 use crate::private_space::Tree;
+use crate::TreeReads;
 use crate::{
     MembershipError, MembershipPolicy, MembershipRepository, NamespaceRepository, ReentryRepository,
 };
@@ -27,8 +28,17 @@ pub(crate) fn apply(
     }
     // The root never has a parent, so only a subgroup's target needs the tree.
     if NamespaceRepository::new(store).parent(group_id)?.is_some() {
-        Tree::at_cut(store, ctx.authorizer(), group_id, ctx.cut())?
-            .require_member_row_target(group_id)?;
+        Tree::at_cut(
+            store,
+            ctx.authorizer(),
+            group_id,
+            ctx.cut(),
+            TreeReads {
+                chains: &[*group_id],
+                subtrees: &[],
+            },
+        )?
+        .require_member_row_target(group_id)?;
     }
     ctx.permissions()
         .require_manage_members(signer, "add member")?;

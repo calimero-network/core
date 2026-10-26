@@ -3,6 +3,7 @@
 
 use super::context::NamespaceApplyCtx;
 use crate::private_space::Tree;
+use crate::TreeReads;
 use crate::{
     delete_group_and_parent_edge, enumerate_group_contexts, unregister_context_from_group,
     ApplyError, CapabilitiesError, GroupDeletedRejection, MetaRepository, NamespaceError,
@@ -53,7 +54,17 @@ pub(crate) fn apply(
     if MetaRepository::new(store).load(&root_gid)?.is_some() {
         ctx.require_in_namespace(&root_gid)?;
         let (parents, authorizer) = ctx.apply_auth();
-        Tree::at_cut(store, authorizer, &ns_gid, parents)?.require_may_delete(&root_gid)?;
+        Tree::at_cut(
+            store,
+            authorizer,
+            &ns_gid,
+            parents,
+            TreeReads {
+                chains: &[],
+                subtrees: &[root_gid],
+            },
+        )?
+        .require_may_delete(&root_gid)?;
         // Ownership names an account, the op carries a key: resolve, then
         // compare. An unresolvable signer is not the owner and falls through to
         // the capability gate below, which refuses it for the same reason.

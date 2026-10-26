@@ -29,7 +29,7 @@ use calimero_governance_store::metrics::{
 use calimero_governance_store::{
     namespace_founder, CapabilitiesRepository, DenyListRepository, MembershipRepository,
     NamespaceDagService, NamespaceOpLogService, NamespaceRepository, OpenedNamespaceOp,
-    ReentryAtCut, SubgroupEdges,
+    ReentryAtCut, SubgroupEdges, TreeReads,
 };
 use calimero_governance_types::{NamespaceOp, RootOp};
 use calimero_op::{Op, OpPayload, ScopeId};
@@ -2941,15 +2941,16 @@ impl ScopeProjections {
     }
 
     /// The subgroup edges of `group`'s namespace at the cut, `child -> (parent, restricted)`;
-    /// `None` a cut not fully folded, or one holding an op this node cannot read of any group in
-    /// the tree: it may have moved an edge or flipped its visibility, and nodes with other keys
-    /// would answer otherwise.
+    /// `None` a cut not fully folded, or one holding an op this node cannot read of a group in
+    /// `reads`: it may have flipped an edge's visibility, and nodes with other keys would answer
+    /// otherwise. Ops of any other group are not read by the rule and do not block.
     #[must_use]
     pub fn subgroup_edges_at_cut(
         &self,
         store: &Store,
         group: ContextGroupId,
         heads: &[[u8; 32]],
+        reads: TreeReads<'_>,
     ) -> Option<SubgroupEdges> {
         let (view, _, _) = self.auth_cut_context(store, group, heads)?;
         let namespace = NamespaceRepository::new(store)
@@ -2960,19 +2961,16 @@ impl ScopeProjections {
         let base = authority_base(store, namespace)?;
         let walked = self.walk(&scope, self.logs.get(&scope)?, heads, base);
         let id = |scope: &ScopeId| ContextGroupId::from(*scope.as_bytes());
-        let mut in_tree = BTreeSet::from([ContextGroupId::from(namespace)]);
-        for (child, edge) in &view.subgroups {
-            in_tree.extend([id(child), id(&edge.parent)]);
-        }
-        if walked.first_opaque_in_any(&in_tree).is_some() {
+        let edges: SubgroupEdges = view
+            .subgroups
+            .iter()
+            .map(|(child, edge)| (id(child), (id(&edge.parent), edge.restricted)))
+            .collect();
+        let read = groups_read(&edges, ContextGroupId::from(namespace), reads);
+        if walked.first_opaque_in_any(&read).is_some() {
             return None;
         }
-        Some(
-            view.subgroups
-                .iter()
-                .map(|(child, edge)| (id(child), (id(&edge.parent), edge.restricted)))
-                .collect(),
-        )
+        Some(edges)
     }
 
     /// The account whose `GroupCreated` made `group`, at the cut: `Some(None)` is no creation
@@ -3730,6 +3728,40 @@ fn deciding_groups(
             .is_some_and(|edge| edge.restricted);
         if walled && root_reads && walked.first_opaque_in(ancestor).is_none() {
             break;
+        }
+    }
+    groups
+}
+
+/// The root, `reads.chains` and their ancestors, and every strict descendant of `reads.subtrees`.
+fn groups_read(
+    edges: &SubgroupEdges,
+    root: ContextGroupId,
+    reads: TreeReads<'_>,
+) -> BTreeSet<ContextGroupId> {
+    let mut groups = BTreeSet::from([root]);
+    for start in reads.chains {
+        let mut current = *start;
+        // The bound stops a cycle in a malformed tree.
+        for _ in 0..=edges.len() {
+            let _new = groups.insert(current);
+            let Some((parent, _)) = edges.get(&current) else {
+                break;
+            };
+            current = *parent;
+        }
+    }
+    for child in edges.keys() {
+        let mut current = *child;
+        for _ in 0..=edges.len() {
+            let Some((parent, _)) = edges.get(&current) else {
+                break;
+            };
+            if reads.subtrees.contains(parent) {
+                let _new = groups.insert(*child);
+                break;
+            }
+            current = *parent;
         }
     }
     groups

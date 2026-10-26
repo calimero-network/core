@@ -4,6 +4,7 @@
 use super::context::NamespaceApplyCtx;
 use crate::op_events::OpEvent;
 use crate::private_space::Tree;
+use crate::TreeReads;
 use crate::{
     ApplyError, CapabilitiesRepository, GroupCreatedRejection, MembershipRepository,
     MetaRepository, NamespaceError, NamespaceFoundingRepository, NamespaceRepository,
@@ -105,8 +106,17 @@ pub(crate) fn apply(
 
     if restricted {
         let (parents, authorizer) = ctx.apply_auth();
-        Tree::at_cut(store, authorizer, &ns_gid, parents)?
-            .require_may_create(&parent_gid, restricted)?;
+        Tree::at_cut(
+            store,
+            authorizer,
+            &ns_gid,
+            parents,
+            TreeReads {
+                chains: &[parent_gid],
+                subtrees: &[],
+            },
+        )?
+        .require_may_create(&parent_gid, restricted)?;
     }
 
     // The originating node's `create_group` handler pre-populates

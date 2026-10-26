@@ -4,6 +4,7 @@
 use super::context::NamespaceApplyCtx;
 use crate::op_events::OpEvent;
 use crate::private_space::Tree;
+use crate::TreeReads;
 use crate::{NamespaceRepository, ReparentOutcome};
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
@@ -22,8 +23,17 @@ pub(crate) fn apply(
     ctx.require_in_namespace(&child)?;
     let (parents, authorizer) = ctx.apply_auth();
     let ns_gid = ContextGroupId::from(ctx.namespace_id().to_bytes());
-    Tree::at_cut(ctx.store(), authorizer, &ns_gid, parents)?
-        .require_may_reparent(&child, &new_parent)?;
+    Tree::at_cut(
+        ctx.store(),
+        authorizer,
+        &ns_gid,
+        parents,
+        TreeReads {
+            chains: &[child, new_parent],
+            subtrees: &[child],
+        },
+    )?
+    .require_may_reparent(&child, &new_parent)?;
     match NamespaceRepository::new(ctx.store()).reparent(&child, &new_parent)? {
         ReparentOutcome::Reparented { old_parent } => {
             let ns_id = ctx.namespace_id();

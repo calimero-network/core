@@ -22,7 +22,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::metrics::{record_at_cut_undecidable, UndecidableCause};
 use calimero_governance_store::{
     AtCutAuthorizer, AtCutMembershipPath, GroupRows, NamespaceDagService, ReentryAtCut,
-    StandingReads, SubgroupEdges,
+    StandingReads, SubgroupEdges, TreeReads,
 };
 use calimero_op::{Op, ScopeId};
 use calimero_primitives::application::ApplicationId;
@@ -463,6 +463,7 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         &self,
         group: &ContextGroupId,
         parents: &[[u8; 32]],
+        reads: TreeReads<'_>,
     ) -> Option<SubgroupEdges> {
         // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
         if parents.is_empty() {
@@ -470,7 +471,7 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         }
         self.folded(group)?
             .0
-            .subgroup_edges_at_cut(self.store, *group, parents)
+            .subgroup_edges_at_cut(self.store, *group, parents, reads)
     }
 
     fn group_creator_at_cut(
@@ -1049,7 +1050,8 @@ mod tests {
             crate::unified_op_store::persist_op(&store, op).expect("persist");
         }
 
-        let edges = |cut: &Op| authorizer.subgroup_edges_at_cut(&root, &[cut.id()]);
+        let edges =
+            |cut: &Op| authorizer.subgroup_edges_at_cut(&root, &[cut.id()], reads(&[], &[]));
         assert_eq!(edges(&alice), Some(Default::default()));
         assert_eq!(edges(&make_a), Some([(a, (root, false))].into()));
         assert_eq!(
@@ -1057,7 +1059,10 @@ mod tests {
             Some([(a, (b, false)), (b, (root, true))].into()),
             "the move is seen only at a cut that holds it"
         );
-        assert_eq!(authorizer.subgroup_edges_at_cut(&root, &[]), None);
+        assert_eq!(
+            authorizer.subgroup_edges_at_cut(&root, &[], reads(&[], &[])),
+            None
+        );
     }
 
     #[test]
@@ -1083,7 +1088,8 @@ mod tests {
             crate::unified_op_store::persist_op(&store, op).expect("persist");
         }
 
-        let edges = |cut: &Op| authorizer.subgroup_edges_at_cut(&root, &[cut.id()]);
+        let edges =
+            |cut: &Op| authorizer.subgroup_edges_at_cut(&root, &[cut.id()], reads(&[a], &[]));
         assert_eq!(edges(&make_a), Some([(a, (root, true))].into()));
         assert_eq!(edges(&of_a), None, "an edge's visibility may have flipped");
         let judged = |cut: &Op| {
@@ -1092,6 +1098,7 @@ mod tests {
                 &authorizer,
                 &root,
                 &[cut.id()],
+                reads(&[a], &[]),
             )
         };
         assert!(judged(&make_a).is_ok());
@@ -1107,6 +1114,94 @@ mod tests {
             edges(&of_elsewhere),
             Some([(a, (root, true))].into()),
             "a group outside the tree cannot move an edge"
+        );
+    }
+
+    fn reads<'a>(chains: &'a [ContextGroupId], subtrees: &'a [ContextGroupId]) -> TreeReads<'a> {
+        TreeReads { chains, subtrees }
+    }
+
+    #[test]
+    fn an_unreadable_op_of_an_unrelated_space_does_not_block_the_answer() {
+        let (store, _sam, alice, _removal) = namespace();
+        let authorizer = EphemeralProjectionAuthorizer::new(&store);
+        let root = ContextGroupId::from(NS);
+        let (a, space) = (
+            ContextGroupId::from([0xA1; 32]),
+            ContextGroupId::from([0xB1; 32]),
+        );
+        let created = |child: ContextGroupId, restricted: bool, parents: &[&Op]| {
+            gov(
+                OWNER,
+                parents,
+                OpPayload::SubgroupCreated {
+                    child: ScopeId::from(child.to_bytes()),
+                    parent: ScopeId::from(NS),
+                    restricted,
+                    admin: acct(OWNER),
+                },
+            )
+        };
+        let make_a = created(a, false, &[&alice]);
+        let make_space = created(space, true, &[&make_a]);
+        let sealed = gov(OWNER, &[&make_space], OpPayload::Opaque { group: space });
+        for op in [&make_a, &make_space, &sealed] {
+            crate::unified_op_store::persist_op(&store, op).expect("persist");
+        }
+
+        let at = |chains: &[ContextGroupId], subtrees: &[ContextGroupId]| {
+            authorizer.subgroup_edges_at_cut(&root, &[sealed.id()], reads(chains, subtrees))
+        };
+        assert_eq!(
+            at(&[a], &[a]),
+            Some([(a, (root, false)), (space, (root, true))].into()),
+            "a node without the space's key still reads the tree for a folder elsewhere"
+        );
+        assert_eq!(at(&[space], &[]), None, "the space's own chain is read");
+        assert_eq!(at(&[], &[root]), None, "a space below the subject is read");
+    }
+
+    #[test]
+    fn an_unreadable_op_of_a_descendant_blocks_only_rules_that_read_below() {
+        let (store, _sam, alice, _removal) = namespace();
+        let authorizer = EphemeralProjectionAuthorizer::new(&store);
+        let root = ContextGroupId::from(NS);
+        let (folder, space) = (
+            ContextGroupId::from([0xA1; 32]),
+            ContextGroupId::from([0xB1; 32]),
+        );
+        let created =
+            |child: ContextGroupId, parent: ContextGroupId, restricted, parents: &[&Op]| {
+                gov(
+                    OWNER,
+                    parents,
+                    OpPayload::SubgroupCreated {
+                        child: ScopeId::from(child.to_bytes()),
+                        parent: ScopeId::from(parent.to_bytes()),
+                        restricted,
+                        admin: acct(OWNER),
+                    },
+                )
+            };
+        let make_folder = created(folder, root, false, &[&alice]);
+        let make_space = created(space, folder, true, &[&make_folder]);
+        let sealed = gov(OWNER, &[&make_space], OpPayload::Opaque { group: space });
+        for op in [&make_folder, &make_space, &sealed] {
+            crate::unified_op_store::persist_op(&store, op).expect("persist");
+        }
+
+        let at = |chains: &[ContextGroupId], subtrees: &[ContextGroupId]| {
+            authorizer.subgroup_edges_at_cut(&root, &[sealed.id()], reads(chains, subtrees))
+        };
+        assert_eq!(
+            at(&[], &[folder]),
+            None,
+            "a delete or make-private reads below"
+        );
+        assert!(at(&[folder], &[]).is_some(), "a chain does not reach down");
+        assert!(
+            at(&[], &[space]).is_some(),
+            "a group's own ops are not below it"
         );
     }
 }

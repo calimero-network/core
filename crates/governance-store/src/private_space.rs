@@ -10,7 +10,7 @@ use calimero_context_config::VisibilityMode;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer, SubgroupEdges};
+use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer, SubgroupEdges, TreeReads};
 use crate::{
     ApplyError, CapabilitiesRepository, NamespaceError, NamespaceRepository, PrivateSpaceError,
     MAX_NAMESPACE_DEPTH,
@@ -20,16 +20,17 @@ use crate::{
 pub struct Tree(SubgroupEdges);
 
 impl Tree {
-    /// The tree at the cut of an op of `group`. A cut the authorizer cannot answer is undecidable
+    /// The tree at the cut of an op of `group`, judged on the groups in `reads`. A cut the authorizer cannot answer is undecidable
     /// unless there is no cut to resolve (empty, or no projection), which reads live.
     pub fn at_cut(
         store: &Store,
         authorizer: &dyn AtCutAuthorizer,
         group: &ContextGroupId,
         parents: &[[u8; 32]],
+        reads: TreeReads<'_>,
     ) -> EyreResult<Self> {
         let namespace = NamespaceRepository::new(store).resolve(group)?;
-        if let Some(edges) = authorizer.subgroup_edges_at_cut(&namespace, parents) {
+        if let Some(edges) = authorizer.subgroup_edges_at_cut(&namespace, parents, reads) {
             return Ok(Self(edges));
         }
         ensure_cut_resolvable(authorizer, group, parents, "private space structure")?;

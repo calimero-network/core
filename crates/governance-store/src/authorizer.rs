@@ -277,12 +277,14 @@ pub trait AtCutAuthorizer: Send + Sync {
 
     /// The subgroup edges of `group`'s namespace at the cut, `child -> (parent, restricted)`;
     /// the root has no entry. `None` = the cut is not answered here (see
-    /// [`Self::can_resolve_cut`]); the private-space rules then read live only when
-    /// the cut is resolvable. Default `None`, as for [`Self::direct_role_at_cut`].
+    /// [`Self::can_resolve_cut`]), or an op this node cannot read of a group in `reads`; the
+    /// private-space rules then read live only when the cut is resolvable. Default `None`, as
+    /// for [`Self::direct_role_at_cut`].
     fn subgroup_edges_at_cut(
         &self,
         _group: &ContextGroupId,
         _parents: &[[u8; 32]],
+        _reads: TreeReads<'_>,
     ) -> Option<SubgroupEdges> {
         None
     }
@@ -392,6 +394,14 @@ pub(crate) fn ensure_cut_resolvable(
         group_id: group.to_string(),
         signer: subject.to_string(),
     });
+}
+
+/// The groups a private-space rule reads: each of `chains` and its ancestors, and the strict
+/// descendants of each of `subtrees`. An op sealed in any other group cannot change the answer.
+#[derive(Clone, Copy)]
+pub struct TreeReads<'a> {
+    pub chains: &'a [ContextGroupId],
+    pub subtrees: &'a [ContextGroupId],
 }
 
 /// A namespace's subgroup edges, `child -> (parent, restricted)`.
