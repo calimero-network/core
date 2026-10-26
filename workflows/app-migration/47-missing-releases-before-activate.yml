@@ -150,26 +150,26 @@ steps:
       - "404"
       - '.error != null'
 
-  # Installing only the target still leaves the middle release missing.
-  - name: Install migration-suite-v3 (the target) on node 2
+  # Installed oldest first, as listed: each install drops only its own release.
+  - name: Install migration-suite-v2 on node 2
     type: install_application
     node: app-migration-missing-2
-    path: dist/com.calimero.migration-suite-3.0.0.mpk
+    path: dist/com.calimero.migration-suite-2.0.0.mpk
     dev: true
 
-  - name: Only the middle release is still missing
+  - name: Only the target is still missing
     type: script
     script: workflows/app-migration/upgrade-status.sh
     target: local
     args:
       - app-migration-missing-2
       - "{{namespace_id}}"
-      - '(.missingReleases | map(.version)) == ["2.0.0"]'
+      - '(.missingReleases | map(.version)) == ["3.0.0"]'
 
-  - name: Install migration-suite-v2 on node 2
+  - name: Install migration-suite-v3 (the target) on node 2
     type: install_application
     node: app-migration-missing-2
-    path: dist/com.calimero.migration-suite-2.0.0.mpk
+    path: dist/com.calimero.migration-suite-3.0.0.mpk
     dev: true
 
   - name: Nothing is missing once both are installed
