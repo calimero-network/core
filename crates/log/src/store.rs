@@ -3,6 +3,11 @@
 //! One redb database per node holds all groups. Every value is sealed with
 //! AES-256-GCM under the node's storage key, so the disk holds only ciphertext.
 
+#![allow(
+    clippy::result_large_err,
+    reason = "openraft's trait signatures fix these error types"
+)]
+
 use std::fmt::Debug;
 use std::ops::{Bound, RangeBounds};
 use std::path::Path;
@@ -44,7 +49,11 @@ impl Sealer {
             .map_err(|_| eyre::eyre!("no randomness"))?;
         let mut buf = plain.to_vec();
         self.key
-            .seal_in_place_append_tag(Nonce::assume_unique_for_key(nonce), Aad::from(aad), &mut buf)
+            .seal_in_place_append_tag(
+                Nonce::assume_unique_for_key(nonce),
+                Aad::from(aad),
+                &mut buf,
+            )
             .map_err(|_| eyre::eyre!("seal failed"))?;
         let mut out = nonce.to_vec();
         out.extend_from_slice(&buf);
@@ -56,7 +65,8 @@ impl Sealer {
             eyre::bail!("sealed value too short");
         }
         let (nonce, body) = sealed.split_at(NONCE_LEN);
-        let nonce = Nonce::try_assume_unique_for_key(nonce).map_err(|_| eyre::eyre!("bad nonce"))?;
+        let nonce =
+            Nonce::try_assume_unique_for_key(nonce).map_err(|_| eyre::eyre!("bad nonce"))?;
         let mut buf = body.to_vec();
         let plain = self
             .key
@@ -93,7 +103,12 @@ impl Db {
         aad
     }
 
-    pub fn put_meta<T: Serialize>(&self, group: GroupId, name: &str, value: &T) -> eyre::Result<()> {
+    pub fn put_meta<T: Serialize>(
+        &self,
+        group: GroupId,
+        name: &str,
+        value: &T,
+    ) -> eyre::Result<()> {
         let plain = serde_json::to_vec(value)?;
         let sealed = self.sealer.seal(&Self::aad(group, name), &plain)?;
         let tx = self.db.begin_write()?;
@@ -105,7 +120,11 @@ impl Db {
         Ok(())
     }
 
-    pub fn get_meta<T: DeserializeOwned>(&self, group: GroupId, name: &str) -> eyre::Result<Option<T>> {
+    pub fn get_meta<T: DeserializeOwned>(
+        &self,
+        group: GroupId,
+        name: &str,
+    ) -> eyre::Result<Option<T>> {
         let tx = self.db.begin_read()?;
         let t = tx.open_table(META)?;
         let Some(v) = t.get((group, name))? else {
@@ -252,7 +271,9 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 
     async fn save_committed(&mut self, committed: Option<LogId>) -> Result<(), StorageError> {
-        self.db.put_meta(self.group, "committed", &committed).map_err(io)
+        self.db
+            .put_meta(self.group, "committed", &committed)
+            .map_err(io)
     }
 
     async fn read_committed(&mut self) -> Result<Option<LogId>, StorageError> {
@@ -263,7 +284,11 @@ impl RaftLogStorage<TypeConfig> for LogStore {
             .flatten())
     }
 
-    async fn append<I>(&mut self, entries: I, callback: LogFlushed<TypeConfig>) -> Result<(), StorageError>
+    async fn append<I>(
+        &mut self,
+        entries: I,
+        callback: LogFlushed<TypeConfig>,
+    ) -> Result<(), StorageError>
     where
         I: IntoIterator<Item = Entry> + OptionalSend,
         I::IntoIter: OptionalSend,
@@ -289,7 +314,11 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 
     async fn purge(&mut self, log_id: LogId) -> Result<(), StorageError> {
-        self.db.put_meta(self.group, "purged", &log_id).map_err(io)?;
-        self.db.delete_range(self.group, 0, log_id.index).map_err(io)
+        self.db
+            .put_meta(self.group, "purged", &log_id)
+            .map_err(io)?;
+        self.db
+            .delete_range(self.group, 0, log_id.index)
+            .map_err(io)
     }
 }

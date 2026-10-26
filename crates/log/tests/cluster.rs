@@ -44,7 +44,13 @@ struct Net {
 struct Wire(Arc<Net>, NodeId);
 
 impl Transport for Wire {
-    fn send(&self, target: NodeId, _addr: String, group: GroupId, request: RpcRequest) -> BoxFuture<Result<RpcResponse, String>> {
+    fn send(
+        &self,
+        target: NodeId,
+        _addr: String,
+        group: GroupId,
+        request: RpcRequest,
+    ) -> BoxFuture<Result<RpcResponse, String>> {
         let net = Arc::clone(&self.0);
         let me = self.1;
         Box::pin(async move {
@@ -78,8 +84,19 @@ fn config() -> Config {
     }
 }
 
-async fn start_node(net: &Arc<Net>, id: NodeId, dir: &tempfile::TempDir) -> (Arc<Engine>, Arc<Group<Kv>>) {
-    let engine = Engine::open(id, &dir.path().join("log.redb"), &KEY, Arc::new(Wire(Arc::clone(net), id)), config()).unwrap();
+async fn start_node(
+    net: &Arc<Net>,
+    id: NodeId,
+    dir: &tempfile::TempDir,
+) -> (Arc<Engine>, Arc<Group<Kv>>) {
+    let engine = Engine::open(
+        id,
+        &dir.path().join("log.redb"),
+        &KEY,
+        Arc::new(Wire(Arc::clone(net), id)),
+        config(),
+    )
+    .unwrap();
     let group = engine.start_group(1, Kv::default()).await.unwrap();
     let _prev = net.engines.write().unwrap().insert(id, Arc::clone(&engine));
     (engine, group)
@@ -117,7 +134,10 @@ async fn put(c: &Cluster, key: &str, value: &str) -> u64 {
     for _ in 0..50 {
         let id = leader(c).await;
         let cmd = format!("{key}={value}").into_bytes();
-        match c.groups[&id].propose(|_m, _applied| Proposal::Append(cmd)).await {
+        match c.groups[&id]
+            .propose(|_m, _applied| Proposal::Append(cmd))
+            .await
+        {
             Ok(p) => return p.index,
             Err(WriteError::NotLeader { .. } | WriteError::Unavailable(_)) => {
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -159,7 +179,11 @@ async fn survives_leader_loss() {
     }
     // The old leader comes back and catches up.
     let _removed = c.net.down.lock().unwrap().remove(&old);
-    assert!(c.groups[&old].wait_applied(index, Duration::from_secs(10)).await);
+    assert!(
+        c.groups[&old]
+            .wait_applied(index, Duration::from_secs(10))
+            .await
+    );
     assert_eq!(get(&c.groups[&old], "b").as_deref(), Some("2"));
 }
 
@@ -168,7 +192,10 @@ async fn strong_read_needs_the_leader() {
     let c = cluster(3).await;
     let _ = put(&c, "k", "v").await;
     let id = leader(&c).await;
-    let v = c.groups[&id].read_strong(|m, _| m.map.get("k").cloned()).await.unwrap();
+    let v = c.groups[&id]
+        .read_strong(|m, _| m.map.get("k").cloned())
+        .await
+        .unwrap();
     assert_eq!(v.as_deref(), Some("v"));
     let follower = c.groups.keys().find(|k| **k != id).unwrap();
     assert!(matches!(
@@ -193,7 +220,10 @@ async fn proposals_see_previous_writes() {
             .unwrap();
     }
     assert_eq!(get(g, "n").as_deref(), Some("10"));
-    let reply = g.propose(|_, _| Proposal::Reply(b"cached".to_vec())).await.unwrap();
+    let reply = g
+        .propose(|_, _| Proposal::Reply(b"cached".to_vec()))
+        .await
+        .unwrap();
     assert!(!reply.appended);
     assert_eq!(reply.output, b"cached");
 }
@@ -231,7 +261,10 @@ async fn new_node_catches_up_and_becomes_voter() {
     let dir = tempfile::tempdir().unwrap();
     let (_e, g4) = start_node(&c.net, 4, &dir).await;
     let lid = leader(&c).await;
-    c.groups[&lid].add_learner(4, "node-4".into()).await.unwrap();
+    c.groups[&lid]
+        .add_learner(4, "node-4".into())
+        .await
+        .unwrap();
     assert!(g4.wait_applied(last, Duration::from_secs(10)).await);
     assert_eq!(get(&g4, "k49").as_deref(), Some("49"));
     // Swap node 1 out for node 4.

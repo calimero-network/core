@@ -44,7 +44,6 @@ use tokio::sync::Mutex;
 use url::Url;
 use zeroize::Zeroizing;
 
-
 /// Produces the transport key a sealed session is opened to, after verifying
 /// the node's attestation. Called on first use and again after a node restart.
 pub trait Attest: Send + Sync + std::fmt::Debug {
@@ -658,4 +657,3 @@ fn refusal_code(err: &eyre::Report) -> Option<&str> {
     err.downcast_ref::<SealedRefusal>()
         .and_then(|refusal| refusal.code.as_deref())
 }
-

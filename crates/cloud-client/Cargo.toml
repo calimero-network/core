@@ -1,0 +1,29 @@
+[package]
+name = "calimero-cloud-client"
+description = "Client for the Calimero cloud (release-v2): attestation, sealed channel, passkeys, calls"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+base64.workspace = true
+eyre.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+reqwest = { workspace = true, features = ["json", "stream"] }
+ring.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+url.workspace = true
+
+calimero-identity.workspace = true
+calimero-sealed.workspace = true
+calimero-tee-attestation.workspace = true
+
+[features]
+testing = ["calimero-identity/testing"]

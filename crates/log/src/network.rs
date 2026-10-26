@@ -1,5 +1,10 @@
 //! Raft RPCs between nodes, over a pluggable [`Transport`].
 
+#![allow(
+    clippy::result_large_err,
+    reason = "openraft's trait signatures fix these error types"
+)]
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -85,7 +90,9 @@ impl Connection {
             .send(self.target, self.addr.clone(), self.group, request)
             .await
         {
-            Ok(RpcResponse::Error(e)) => Err(RPCError::Network(NetworkError::new(&AnyError::error(e)))),
+            Ok(RpcResponse::Error(e)) => {
+                Err(RPCError::Network(NetworkError::new(&AnyError::error(e))))
+            }
             Ok(r) => Ok(r),
             Err(e) => Err(RPCError::Unreachable(Unreachable::new(&AnyError::error(e)))),
         }
@@ -93,7 +100,9 @@ impl Connection {
 }
 
 fn unexpected<E: std::error::Error>() -> RPCError<NodeId, BasicNode, E> {
-    RPCError::Network(NetworkError::new(&AnyError::error("unexpected RPC response")))
+    RPCError::Network(NetworkError::new(&AnyError::error(
+        "unexpected RPC response",
+    )))
 }
 
 impl RaftNetwork<TypeConfig> for Connection {

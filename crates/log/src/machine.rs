@@ -1,15 +1,24 @@
 //! Adapter between openraft's state machine trait and a group's [`Machine`].
 
+#![allow(
+    clippy::result_large_err,
+    reason = "openraft's trait signatures fix these error types"
+)]
+
 use std::io::Cursor;
 use std::sync::{Arc, RwLock};
 
 use openraft::storage::RaftStateMachine;
-use openraft::{AnyError, EntryPayload, OptionalSend, RaftSnapshotBuilder, Snapshot, StorageIOError};
+use openraft::{
+    AnyError, EntryPayload, OptionalSend, RaftSnapshotBuilder, Snapshot, StorageIOError,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use crate::store::Db;
-use crate::types::{Bytes, Entry, GroupId, LogId, SnapshotMeta, StorageError, StoredMembership, TypeConfig};
+use crate::types::{
+    Bytes, Entry, GroupId, LogId, SnapshotMeta, StorageError, StoredMembership, TypeConfig,
+};
 
 /// What a group replicates. The engine calls `apply` on every node, in log
 /// order, with the committed command bytes; the output goes back to the writer.
@@ -103,11 +112,7 @@ impl<M: Machine> StateMachine<M> {
             let meta = SnapshotMeta {
                 last_log_id: last,
                 last_membership: st.membership.clone(),
-                snapshot_id: format!(
-                    "{}-{}",
-                    last.map_or(0, |l| l.index),
-                    self.snapshots_built
-                ),
+                snapshot_id: format!("{}-{}", last.map_or(0, |l| l.index), self.snapshots_built),
             };
             (st.machine.snapshot(), meta)
         };
@@ -115,7 +120,9 @@ impl<M: Machine> StateMachine<M> {
             meta: meta.clone(),
             data: Bytes(data.clone()),
         };
-        self.db.put_meta(self.group, "snapshot", &stored).map_err(io)?;
+        self.db
+            .put_meta(self.group, "snapshot", &stored)
+            .map_err(io)?;
         Ok(Snapshot {
             meta,
             snapshot: Box::new(Cursor::new(data)),
@@ -205,7 +212,9 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
             meta: meta.clone(),
             data: Bytes(data),
         };
-        self.db.put_meta(self.group, "snapshot", &stored).map_err(io)?;
+        self.db
+            .put_meta(self.group, "snapshot", &stored)
+            .map_err(io)?;
         let _ = self
             .applied_tx
             .send(meta.last_log_id.map_or(0, |l| l.index));

@@ -139,6 +139,8 @@ members = [
     "./crates/log",
     "./crates/sealed",
     "./crates/identity",
+    "./crates/cloud-node",
+    "./crates/cloud-client",
 
     "./crates/store",
     "./crates/store/blobs",
@@ -416,6 +418,11 @@ calimero-projection = { path = "./crates/projection" }
 calimero-prelude = { path = "./crates/prelude" }
 calimero-primitives = { path = "./crates/primitives" }
 calimero-runtime = { path = "./crates/runtime" }
+calimero-log = { path = "./crates/log" }
+calimero-sealed = { path = "./crates/sealed" }
+calimero-identity = { path = "./crates/identity" }
+calimero-cloud-node = { path = "./crates/cloud-node" }
+calimero-cloud-client = { path = "./crates/cloud-client" }
 calimero-search = { path = "./crates/search" }
 calimero-sdk = { path = "./crates/sdk" }
 calimero-sdk-macros = { path = "./crates/sdk/macros" }

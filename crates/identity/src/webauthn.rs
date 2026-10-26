@@ -106,7 +106,8 @@ fn parse_auth_data(data: &[u8]) -> Result<AuthData, Error> {
             .ok_or(Error::Malformed("credential id"))?
             .to_vec();
         let key_bytes = &rest[18 + id_len..];
-        let key: Value = ciborium::de::from_reader(key_bytes).map_err(|_| Error::Malformed("COSE key"))?;
+        let key: Value =
+            ciborium::de::from_reader(key_bytes).map_err(|_| Error::Malformed("COSE key"))?;
         credential = Some((id, key));
     }
     Ok(AuthData {
@@ -279,7 +280,9 @@ pub fn verify_assertion(
     check_flags(rp, &auth)?;
     // A counter that does not advance signals a cloned authenticator, unless
     // both are zero (synced passkeys do not count).
-    if (auth.sign_count != 0 || credential.sign_count != 0) && auth.sign_count <= credential.sign_count {
+    if (auth.sign_count != 0 || credential.sign_count != 0)
+        && auth.sign_count <= credential.sign_count
+    {
         return Err(Error::Mismatch("signature counter"));
     }
     let mut message = auth_bytes;

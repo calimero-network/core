@@ -20,10 +20,11 @@ impl SoftAuthenticator {
     /// A new passkey for `rp_id`, used from `origin`.
     #[must_use]
     pub fn new(rp_id: &str, origin: &str) -> Self {
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &SystemRandom::new())
-            .expect("key generation")
-            .as_ref()
-            .to_vec();
+        let pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &SystemRandom::new())
+                .expect("key generation")
+                .as_ref()
+                .to_vec();
         Self {
             pkcs8,
             credential_id: random::<16>().to_vec(),
@@ -46,8 +47,12 @@ impl SoftAuthenticator {
     }
 
     fn pair(&self) -> EcdsaKeyPair {
-        EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &self.pkcs8, &SystemRandom::new())
-            .expect("valid key")
+        EcdsaKeyPair::from_pkcs8(
+            &ECDSA_P256_SHA256_ASN1_SIGNING,
+            &self.pkcs8,
+            &SystemRandom::new(),
+        )
+        .expect("valid key")
     }
 
     #[must_use]
@@ -82,13 +87,23 @@ impl SoftAuthenticator {
             (Value::Integer(1.into()), Value::Integer(2.into())),
             (Value::Integer(3.into()), Value::Integer((-7).into())),
             (Value::Integer((-1).into()), Value::Integer(1.into())),
-            (Value::Integer((-2).into()), Value::Bytes(public[1..33].to_vec())),
-            (Value::Integer((-3).into()), Value::Bytes(public[33..65].to_vec())),
+            (
+                Value::Integer((-2).into()),
+                Value::Bytes(public[1..33].to_vec()),
+            ),
+            (
+                Value::Integer((-3).into()),
+                Value::Bytes(public[33..65].to_vec()),
+            ),
         ]);
         let mut cose_bytes = Vec::new();
         ciborium::ser::into_writer(&cose, &mut cose_bytes).expect("cbor");
         let mut attested = vec![0_u8; 16]; // AAGUID
-        attested.extend_from_slice(&u16::try_from(self.credential_id.len()).expect("short id").to_be_bytes());
+        attested.extend_from_slice(
+            &u16::try_from(self.credential_id.len())
+                .expect("short id")
+                .to_be_bytes(),
+        );
         attested.extend_from_slice(&self.credential_id);
         attested.extend_from_slice(&cose_bytes);
         let auth_data = self.auth_data(0x01 | 0x04 | 0x40, Some(attested));

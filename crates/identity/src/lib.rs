@@ -87,7 +87,9 @@ pub fn mint_session(key: &[u8; 32], claims: &SessionClaims) -> String {
 /// Read a token's claims without checking it, to find which key to check with.
 pub fn peek_session(token: &str) -> Result<SessionClaims, Error> {
     let mut parts = token.split('.');
-    let (Some("v1"), Some(body), Some(_), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+    let (Some("v1"), Some(body), Some(_), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
         return Err(Error::Malformed("session token"));
     };
     serde_json::from_slice(&from_b64url(body)?).map_err(|_| Error::Malformed("session claims"))
@@ -96,7 +98,9 @@ pub fn peek_session(token: &str) -> Result<SessionClaims, Error> {
 /// Check a session token's MAC under `key` and its expiry against `now`.
 pub fn verify_session(key: &[u8; 32], token: &str, now: u64) -> Result<SessionClaims, Error> {
     let mut parts = token.split('.');
-    let (Some("v1"), Some(body), Some(tag), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+    let (Some("v1"), Some(body), Some(tag), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
         return Err(Error::Malformed("session token"));
     };
     hmac::verify(
@@ -105,8 +109,8 @@ pub fn verify_session(key: &[u8; 32], token: &str, now: u64) -> Result<SessionCl
         &from_b64url(tag)?,
     )
     .map_err(|_| Error::BadSignature)?;
-    let claims: SessionClaims =
-        serde_json::from_slice(&from_b64url(body)?).map_err(|_| Error::Malformed("session claims"))?;
+    let claims: SessionClaims = serde_json::from_slice(&from_b64url(body)?)
+        .map_err(|_| Error::Malformed("session claims"))?;
     if claims.expires_at <= now {
         return Err(Error::Expired);
     }

@@ -91,7 +91,6 @@ use zeroize::{Zeroize, Zeroizing};
 pub use crate::session::SESSION_LIFETIME;
 use crate::session::{SessionId, SessionKeys, Sessions, MESSAGE_1_LEN, SESSION_ID_LEN};
 
-
 /// Where a session is opened, under the node's mount (see [`SealedOptions`]).
 pub const HANDSHAKE_PATH: &str = "/sealed/v2/handshake";
 /// Where sealed requests are posted, under the node's mount.
@@ -913,4 +912,3 @@ fn header_pairs(headers: &HeaderMap) -> Vec<(String, String)> {
         })
         .collect()
 }
-

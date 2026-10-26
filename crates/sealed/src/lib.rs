@@ -20,4 +20,6 @@ pub mod client;
 pub mod server;
 mod session;
 
-pub use server::{expire_sessions, intercept, SealedOptions, SealedTransport, HANDSHAKE_PATH, SEALED_PATH};
+pub use server::{
+    expire_sessions, intercept, SealedOptions, SealedTransport, HANDSHAKE_PATH, SEALED_PATH,
+};

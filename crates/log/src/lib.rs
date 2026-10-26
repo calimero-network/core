@@ -7,6 +7,11 @@
 //! node runs WASM on the leader) use [`Group::propose`], which serializes
 //! proposals per group and confirms leadership before building the command.
 
+#![allow(
+    clippy::result_large_err,
+    reason = "openraft's trait signatures fix these error types"
+)]
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
@@ -155,7 +160,10 @@ impl<M: Machine> Group<M> {
         let _guard = self.propose_lock.lock().await;
         self.confirm_leader().await?;
         let (proposal, applied) = {
-            let st = self.shared.read().map_err(|e| WriteError::Unavailable(e.to_string()))?;
+            let st = self
+                .shared
+                .read()
+                .map_err(|e| WriteError::Unavailable(e.to_string()))?;
             let applied = st.applied_index();
             (build(&st.machine, applied), applied)
         };
@@ -195,7 +203,10 @@ impl<M: Machine> Group<M> {
 
     /// Read this node's applied state.
     pub fn read_local<R>(&self, f: impl FnOnce(&M, u64) -> R) -> R {
-        let st = self.shared.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let st = self
+            .shared
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         f(&st.machine, st.applied_index())
     }
 
@@ -293,7 +304,9 @@ impl<M: Machine> Group<M> {
         if status.leader == Some(target) {
             return Ok(());
         }
-        Err(WriteError::Unavailable("leader transfer is not supported yet".into()))
+        Err(WriteError::Unavailable(
+            "leader transfer is not supported yet".into(),
+        ))
     }
 
     /// Force a snapshot now.
@@ -379,12 +392,28 @@ impl Engine {
 
     /// Called when an RPC arrives for a group this node does not host yet; the
     /// callback starts it (returning `true`) or declines.
-    pub fn set_group_factory(&self, f: impl Fn(GroupId) -> BoxFuture<bool> + Send + Sync + 'static) {
-        *self.factory.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(f));
+    pub fn set_group_factory(
+        &self,
+        f: impl Fn(GroupId) -> BoxFuture<bool> + Send + Sync + 'static,
+    ) {
+        *self
+            .factory
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(f));
     }
 
     /// Start (or reopen) a group with `machine` as its state machine.
-    pub async fn start_group<M: Machine>(&self, id: GroupId, machine: M) -> eyre::Result<Arc<Group<M>>> {
+    ///
+    /// Refuses a group this engine already hosts: two Raft instances over one
+    /// group's log would each think they own it.
+    pub async fn start_group<M: Machine>(
+        &self,
+        id: GroupId,
+        machine: M,
+    ) -> eyre::Result<Arc<Group<M>>> {
+        if self.hosts(id) {
+            eyre::bail!("group {id} is already running on this node");
+        }
         let config = openraft::Config {
             cluster_name: format!("group-{id}"),
             heartbeat_interval: self.config.heartbeat_ms,
@@ -396,7 +425,8 @@ impl Engine {
         }
         .validate()?;
         let (applied_tx, applied_rx) = watch::channel(0);
-        let sm = machine::StateMachine::open(id, Arc::clone(&self.db), machine, Arc::new(applied_tx))?;
+        let sm =
+            machine::StateMachine::open(id, Arc::clone(&self.db), machine, Arc::new(applied_tx))?;
         let shared = sm.shared();
         let log = LogStore::new(id, Arc::clone(&self.db));
         let network = network::Network {

@@ -47,9 +47,18 @@ async fn serve(options: SealedOptions) -> (Url, Arc<SealedTransport>, tokio::tas
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
-        axum::serve(listener, axum::ServiceExt::<axum::extract::Request>::into_make_service(app)).await.unwrap();
+        axum::serve(
+            listener,
+            axum::ServiceExt::<axum::extract::Request>::into_make_service(app),
+        )
+        .await
+        .unwrap();
     });
-    (format!("http://{addr}/").parse().unwrap(), transport, handle)
+    (
+        format!("http://{addr}/").parse().unwrap(),
+        transport,
+        handle,
+    )
 }
 
 #[tokio::test]
@@ -85,7 +94,10 @@ async fn event_stream_opens_frame_by_frame() {
     while let Some(chunk) = stream.next().await {
         body.push_str(&String::from_utf8_lossy(&chunk.unwrap()));
     }
-    assert!(body.contains("data: e0") && body.contains("data: e2"), "{body}");
+    assert!(
+        body.contains("data: e0") && body.contains("data: e2"),
+        "{body}"
+    );
 }
 
 #[tokio::test]
@@ -105,8 +117,12 @@ async fn required_mode_refuses_plain_requests() {
         unsealed_paths: vec!["/attestation".into()],
     };
     let (url, _transport, _h) = serve(options).await;
-    let plain = reqwest::get(url.join("apps/x/intents").unwrap()).await.unwrap();
+    let plain = reqwest::get(url.join("apps/x/intents").unwrap())
+        .await
+        .unwrap();
     assert_eq!(plain.status(), 403);
-    let allowed = reqwest::get(url.join("attestation").unwrap()).await.unwrap();
+    let allowed = reqwest::get(url.join("attestation").unwrap())
+        .await
+        .unwrap();
     assert_eq!(allowed.status(), 200);
 }

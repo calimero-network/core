@@ -15,7 +15,7 @@ pub type NodeId = u64;
 
 /// The opaque bytes a group's state machine interprets. Serialized as base64 so
 /// RPC bodies stay compact JSON.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Bytes(pub Vec<u8>);
 
 impl fmt::Debug for Bytes {

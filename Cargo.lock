@@ -1197,6 +1197,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-cloud-client"
+version = "0.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "calimero-identity",
+ "calimero-sealed",
+ "calimero-tee-attestation",
+ "eyre",
+ "futures-util",
+ "hex",
+ "reqwest 0.12.28",
+ "ring",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "calimero-cloud-node"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "calimero-account",
+ "calimero-cloud-client",
+ "calimero-identity",
+ "calimero-log",
+ "calimero-primitives",
+ "calimero-runtime",
+ "calimero-sealed",
+ "calimero-tee-attestation",
+ "clap",
+ "eyre",
+ "futures-util",
+ "hex",
+ "reqwest 0.12.28",
+ "ring",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
 name = "calimero-config"
 version = "0.0.0"
 dependencies = [
@@ -10975,6 +11028,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
