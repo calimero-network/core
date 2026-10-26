@@ -26,6 +26,10 @@ use actix::{
     Actor, ActorFutureExt, Addr, ArbiterHandle, AsyncContext, Context, Handler, Message, WrapFuture,
 };
 use calimero_utils_actix::supervise::exit_on_panic;
+use prometheus_client::encoding::EncodeLabelSet;
+use prometheus_client::metrics::counter::Counter;
+use prometheus_client::metrics::family::Family;
+use prometheus_client::registry::Registry;
 use tracing::{debug, info, warn};
 
 use crate::handlers::state_delta::{handle_state_delta, StateDeltaContext, StateDeltaMessage};
@@ -113,7 +117,7 @@ pub struct StateDeltaJob {
 #[derive(Clone, Debug)]
 pub struct StateDeltaSender {
     addr: Addr<StateDeltaActor>,
-    dropped_total: Arc<AtomicU64>,
+    metrics: StateDeltaDropMetrics,
 }
 
 /// Error returned by [`StateDeltaSender::try_send`] when the actor's
@@ -126,18 +130,96 @@ pub enum StateDeltaSendError {
     Closed,
 }
 
+/// Why the dispatch site dropped a job instead of running it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DropReason {
+    MailboxFull,
+    ActorClosed,
+}
+
+impl DropReason {
+    fn label(self) -> &'static str {
+        match self {
+            DropReason::MailboxFull => "mailbox_full",
+            DropReason::ActorClosed => "actor_closed",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct DropReasonLabel {
+    reason: String,
+}
+
+/// One owned [`Counter`] per [`DropReason`], clones of the entries in the
+/// `state_delta_dropped_total{reason=...}` family. The exhaustive matches make
+/// a new reason a compile error until it is counted.
+#[derive(Clone, Debug)]
+struct StateDeltaDropMetrics {
+    mailbox_full: Counter,
+    actor_closed: Counter,
+}
+
+impl StateDeltaDropMetrics {
+    fn new(registry: &mut Registry) -> Self {
+        let dropped = Family::<DropReasonLabel, Counter>::default();
+        registry.register(
+            "state_delta_dropped",
+            "StateDelta jobs dropped before processing, by reason",
+            dropped.clone(),
+        );
+        Self::from_family(&dropped)
+    }
+
+    #[cfg(test)]
+    fn new_unregistered() -> Self {
+        Self::from_family(&Family::<DropReasonLabel, Counter>::default())
+    }
+
+    fn from_family(dropped: &Family<DropReasonLabel, Counter>) -> Self {
+        let counter = |reason: DropReason| {
+            dropped
+                .get_or_create(&DropReasonLabel {
+                    reason: reason.label().to_owned(),
+                })
+                .clone()
+        };
+        Self {
+            mailbox_full: counter(DropReason::MailboxFull),
+            actor_closed: counter(DropReason::ActorClosed),
+        }
+    }
+
+    fn counter(&self, reason: DropReason) -> &Counter {
+        match reason {
+            DropReason::MailboxFull => &self.mailbox_full,
+            DropReason::ActorClosed => &self.actor_closed,
+        }
+    }
+
+    fn record_drop(&self, reason: DropReason) {
+        let _prev = self.counter(reason).inc();
+    }
+
+    fn dropped_total(&self) -> u64 {
+        self.mailbox_full.get() + self.actor_closed.get()
+    }
+}
+
 impl StateDeltaSender {
-    /// Non-blocking enqueue. Increments the drop counter on
-    /// `Full`. Errors are returned so the caller can log per-message
+    /// Non-blocking enqueue. Counts the drop on `Full` and `Closed`. Errors are returned so the caller can log per-message
     /// context (context_id, delta_id) at the dispatch site.
     pub fn try_send(&self, job: StateDeltaJob) -> Result<(), StateDeltaSendError> {
         match self.addr.try_send(job) {
             Ok(()) => Ok(()),
             Err(actix::dev::SendError::Full(_)) => {
-                let _prev = self.dropped_total.fetch_add(1, Ordering::Relaxed);
+                self.metrics.record_drop(DropReason::MailboxFull);
                 Err(StateDeltaSendError::Full)
             }
-            Err(actix::dev::SendError::Closed(_)) => Err(StateDeltaSendError::Closed),
+            Err(actix::dev::SendError::Closed(_)) => {
+                self.metrics.record_drop(DropReason::ActorClosed);
+                Err(StateDeltaSendError::Closed)
+            }
         }
     }
 }
@@ -158,21 +240,21 @@ pub struct StateDeltaActor {
     /// storm in the summary log.
     over_budget_total: Arc<AtomicU64>,
     /// Jobs refused because [`STATE_DELTA_MAX_IN_FLIGHT`] was already
-    /// reached. Kept apart from `dropped_total` (mailbox overflow) so a
+    /// reached. Kept apart from the drop counters (mailbox overflow) so a
     /// concurrency stall is distinguishable from an arrival-rate burst.
     shed_total: Arc<AtomicU64>,
-    dropped_total: Arc<AtomicU64>,
+    metrics: StateDeltaDropMetrics,
 }
 
 impl StateDeltaActor {
-    fn new(dropped_total: Arc<AtomicU64>) -> Self {
+    fn new(metrics: StateDeltaDropMetrics) -> Self {
         Self {
             in_flight: Arc::new(AtomicU64::new(0)),
             processed_total: Arc::new(AtomicU64::new(0)),
             error_total: Arc::new(AtomicU64::new(0)),
             over_budget_total: Arc::new(AtomicU64::new(0)),
             shed_total: Arc::new(AtomicU64::new(0)),
-            dropped_total,
+            metrics,
         }
     }
 
@@ -181,7 +263,7 @@ impl StateDeltaActor {
         let errors = self.error_total.load(Ordering::Relaxed);
         let over_budget = self.over_budget_total.load(Ordering::Relaxed);
         let shed = self.shed_total.load(Ordering::Relaxed);
-        let dropped = self.dropped_total.load(Ordering::Relaxed);
+        let dropped = self.metrics.dropped_total();
         let in_flight = self.in_flight.load(Ordering::Relaxed);
         info!(
             processed_total = processed,
@@ -312,9 +394,13 @@ impl Handler<StateDeltaJob> for StateDeltaActor {
 /// pool and pass it here rather than letting this function call
 /// `Arbiter::new()` itself — the latter only works when a `System`
 /// is registered on the calling thread.
-pub fn start_state_delta_actor(arbiter: &ArbiterHandle, capacity: usize) -> StateDeltaSender {
-    let dropped_total = Arc::new(AtomicU64::new(0));
-    let dropped_for_actor = Arc::clone(&dropped_total);
+pub fn start_state_delta_actor(
+    arbiter: &ArbiterHandle,
+    capacity: usize,
+    registry: &mut Registry,
+) -> StateDeltaSender {
+    let metrics = StateDeltaDropMetrics::new(registry);
+    let metrics_for_actor = metrics.clone();
 
     // Set the mailbox capacity in the constructor closure (before any
     // message arrives) rather than in `started()`, so the bound is in
@@ -322,13 +408,10 @@ pub fn start_state_delta_actor(arbiter: &ArbiterHandle, capacity: usize) -> Stat
     // the actor's first lifecycle hook.
     let addr = exit_on_panic(arbiter, move |ctx| {
         ctx.set_mailbox_capacity(capacity);
-        StateDeltaActor::new(dropped_for_actor)
+        StateDeltaActor::new(metrics_for_actor)
     });
 
-    StateDeltaSender {
-        addr,
-        dropped_total,
-    }
+    StateDeltaSender { addr, metrics }
 }
 
 #[cfg(test)]
@@ -341,10 +424,32 @@ mod tests {
     #[actix::test]
     async fn sender_clones_and_starts_with_zero_drops() {
         let arbiter = actix::Arbiter::new();
-        let sender = start_state_delta_actor(&arbiter.handle(), 8);
-        assert_eq!(sender.dropped_total.load(Ordering::Relaxed), 0);
+        let sender = start_state_delta_actor(&arbiter.handle(), 8, &mut Registry::default());
+        assert_eq!(sender.metrics.dropped_total(), 0);
         let _clone = sender.clone();
         let _stopped = arbiter.stop();
+    }
+
+    #[test]
+    fn record_drop_routes_each_reason_to_its_own_counter() {
+        let m = StateDeltaDropMetrics::new_unregistered();
+        m.record_drop(DropReason::MailboxFull);
+        m.record_drop(DropReason::MailboxFull);
+        m.record_drop(DropReason::ActorClosed);
+        assert_eq!(m.counter(DropReason::MailboxFull).get(), 2);
+        assert_eq!(m.counter(DropReason::ActorClosed).get(), 1);
+        assert_eq!(m.dropped_total(), 3);
+    }
+
+    #[test]
+    fn registered_family_exposes_one_series_per_reason() {
+        let mut registry = Registry::default();
+        let m = StateDeltaDropMetrics::new(&mut registry);
+        m.record_drop(DropReason::ActorClosed);
+        let mut out = String::new();
+        prometheus_client::encoding::text::encode(&mut out, &registry).expect("encode");
+        assert!(out.contains("state_delta_dropped_total{reason=\"actor_closed\"} 1"));
+        assert!(out.contains("state_delta_dropped_total{reason=\"mailbox_full\"} 0"));
     }
 
     /// Slots are handed out up to the ceiling and refused past it, so a
