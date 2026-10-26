@@ -329,13 +329,6 @@ steps:
     member_id: '{{node2_account}}'
     capabilities: 256
 
-  - name: Grant node-2 CAN_MANAGE_METADATA on subgroup
-    type: set_member_capabilities
-    node: e2e-node-1
-    group_id: '{{sub}}'
-    member_id: '{{node2_account}}'
-    capabilities: 256
-
   - name: Wait for namespace capability sync
     type: wait_for_sync
     group_id: '{{ns}}'
