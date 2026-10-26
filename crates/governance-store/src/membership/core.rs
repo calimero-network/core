@@ -342,8 +342,15 @@ impl<'a> MembershipRepository<'a> {
                 let caps = CapabilitiesRepository::new(self.store)
                     .member_capability(&parent, identity)?
                     .unwrap_or(0);
+                // A private space's members are the members of every folder in it.
+                let space_root = NamespaceRepository::new(self.store)
+                    .parent(&parent)?
+                    .is_some()
+                    && CapabilitiesRepository::new(self.store).subgroup_visibility(&parent)?
+                        != VisibilityMode::Open;
                 anchor_decision = Some(
-                    if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits() != 0 {
+                    if space_root || caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits() != 0
+                    {
                         MembershipPath::Inherited {
                             anchor: parent,
                             via_admin: false,

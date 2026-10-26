@@ -688,6 +688,52 @@ fn apply_local_signed_group_op_nonce_and_admin() {
     assert!(apply_local_signed_group_op(&store, &op_bad).is_err());
 }
 
+/// A member of a private space needs no join bit to read a folder in it.
+#[test]
+fn a_private_space_member_reads_a_folder_in_it() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let store = test_store();
+    let root = test_group_id();
+    let (board, minutes, open) = (
+        ContextGroupId::from([0x71; 32]),
+        ContextGroupId::from([0x72; 32]),
+        ContextGroupId::from([0x73; 32]),
+    );
+    let namespaces = NamespaceRepository::new(&store);
+    namespaces.nest(&root, &board).unwrap();
+    namespaces.nest(&board, &minutes).unwrap();
+    namespaces.nest(&root, &open).unwrap();
+    let capabilities = CapabilitiesRepository::new(&store);
+    capabilities
+        .set_subgroup_visibility(&board, VisibilityMode::Restricted)
+        .unwrap();
+    capabilities
+        .set_subgroup_visibility(&minutes, VisibilityMode::Open)
+        .unwrap();
+    capabilities
+        .set_subgroup_visibility(&open, VisibilityMode::Open)
+        .unwrap();
+
+    let dave = enrol_member(&store, &root, &PrivateKey::random(&mut rng).public_key());
+    let members = MembershipRepository::new(&store);
+    members
+        .add_member(&board, &dave, GroupMemberRole::Member)
+        .unwrap();
+    capabilities
+        .set_member_capability(
+            &board,
+            &dave,
+            MemberCapabilities::CAN_MANAGE_METADATA.bits(),
+        )
+        .unwrap();
+    assert!(members.is_member(&minutes, &dave).unwrap(), "Minutes read");
+}
+
 /// Regression test for #2516: two concurrent same-signer governance ops are
 /// DAG siblings with consecutive nonces, so causal delivery imposes no order
 /// between them and they can land in either order. The old `nonce <= last`

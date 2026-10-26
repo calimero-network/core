@@ -286,10 +286,16 @@ impl AclView {
                 };
             }
             if anchor_decision.is_none() && self.has_direct_row(parent, author) {
+                // A private space's members are the members of every folder in it.
+                let space_root = self
+                    .subgroups
+                    .get(&ScopeId::from(parent.to_bytes()))
+                    .is_some_and(|edge| edge.restricted);
                 anchor_decision = Some(
-                    if self.effective_cap(parent, author, default_cap_base)
-                        & CAN_JOIN_OPEN_SUBGROUPS
-                        != 0
+                    if space_root
+                        || self.effective_cap(parent, author, default_cap_base)
+                            & CAN_JOIN_OPEN_SUBGROUPS
+                            != 0
                     {
                         MemberPathAtCut::Inherited {
                             anchor: parent,
