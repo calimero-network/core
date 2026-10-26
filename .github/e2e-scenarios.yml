@@ -51,6 +51,12 @@ scenarios:
   # just a signature on each request. Verified by unit tests and by a
   # byte fixture three implementations agree on, but until this nothing
   # had ever presented one to a running node.
+  # A non-admin mints an invitation, so the joiner must reach an admitter named
+  # in `admitter_addrs` rather than the node that minted it.
+  - workflow: delegated-invitation-routing
+    file: workflows/delegated-invitation-routing.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
   - workflow: delegated-proof
     file: workflows/delegated-proof.yml
     app: scaffolding-e2e
