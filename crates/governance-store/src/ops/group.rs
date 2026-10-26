@@ -38,6 +38,7 @@ mod member_role_set;
 mod member_set_auto_follow;
 mod noop;
 mod on_behalf;
+mod outbound_approval_set;
 mod root_guarded;
 pub(crate) mod shared_writers_rotated;
 mod subgroup_visibility_set;
@@ -333,6 +334,11 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             *cascade_hlc,
             RegistryCoords::new(package, version),
         )?,
+        GroupOp::OutboundApprovalSet {
+            signer,
+            prefixes,
+            reviewed,
+        } => outbound_approval_set::apply(ctx, signer, prefixes, reviewed)?,
         // `GroupOp` is `#[non_exhaustive]` from a different crate,
         // so the wildcard is required by the compiler. When a new
         // variant is added in `calimero-governance-types`, it lands

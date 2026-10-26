@@ -67,21 +67,53 @@ pub async fn handler(
         .await
         .map_err(parse_api_error);
 
-    match result {
-        Ok(response) => ApiResponse {
-            payload: CreateNamespaceApiResponse {
-                data: CreateNamespaceApiResponseData {
-                    namespace_id: hex::encode(response.group_id.to_bytes()),
-                    founding: response
-                        .founding
-                        .map(|f| super::founding_api(&f.founder, &f.salt)),
-                },
-            },
-        }
-        .into_response(),
+    let response = match result {
+        Ok(response) => response,
         Err(err) => {
             error!(error=?err, "Failed to create namespace");
-            err.into_response()
+            return err.into_response();
         }
+    };
+    // The namespace exists before it can approve anything, so this runs after.
+    // A refusal is reported, naming the namespace, rather than undoing it.
+    let outbound_approval = match req.approve_outbound {
+        None => None,
+        Some(selection) => {
+            match super::outbound_approvals::approve(
+                &state,
+                response.group_id,
+                req.application_id,
+                selection,
+                false,
+            )
+            .await
+            {
+                Ok(approved) => Some(super::outbound_approvals::api_data(&approved)),
+                Err(err) => {
+                    error!(error=?err, "Namespace created, but approving outbound requests failed");
+                    return ApiError {
+                        status_code: err.status_code,
+                        message: format!(
+                            "namespace {} was created, but approving outbound requests failed: {}",
+                            hex::encode(response.group_id.to_bytes()),
+                            err.message
+                        ),
+                    }
+                    .into_response();
+                }
+            }
+        }
+    };
+    ApiResponse {
+        payload: CreateNamespaceApiResponse {
+            data: CreateNamespaceApiResponseData {
+                namespace_id: hex::encode(response.group_id.to_bytes()),
+                founding: response
+                    .founding
+                    .map(|f| super::founding_api(&f.founder, &f.salt)),
+                outbound_approval,
+            },
+        },
     }
+    .into_response()
 }

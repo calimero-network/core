@@ -329,6 +329,7 @@ const fn payload_requires_init_pop(payload: &InitPayload) -> bool {
             | InitPayload::TeeAdmissionRequest { .. }
             | InitPayload::TeeReleaseAdmissionRequest { .. }
             | InitPayload::TeeAdmissionChallengeRequest { .. }
+            | InitPayload::SealedOutboundRequest { .. }
     )
 }
 
@@ -344,7 +345,8 @@ fn payload_names_another_context(init_context: &ContextId, payload: &InitPayload
         | InitPayload::TreeNodeChildrenRequest { context_id, .. }
         | InitPayload::LevelWiseRequest { context_id, .. }
         | InitPayload::EntityPush { context_id, .. }
-        | InitPayload::EntityDeletePush { context_id, .. } => context_id != init_context,
+        | InitPayload::EntityDeletePush { context_id, .. }
+        | InitPayload::SealedOutboundRequest { context_id, .. } => context_id != init_context,
         InitPayload::BlobShare { .. }
         | InitPayload::NamespaceBackfillRequest { .. }
         | InitPayload::NamespaceJoinRequest { .. }
@@ -3958,6 +3960,22 @@ impl SyncManager {
             bail!("no owned identities found for context: {}", context.id);
         };
 
+        // A member's outbound request naming a sealed secret: the requester is
+        // proven and a member by now, and the context manager decides the rest
+        // (whether this node is a TEE that may open it, and every gate again).
+        if let InitPayload::SealedOutboundRequest { request, .. } = payload {
+            self.handle_sealed_outbound_request(
+                context_id,
+                their_identity,
+                our_identity,
+                request,
+                stream,
+                nonce,
+            )
+            .await?;
+            return Ok(Some(()));
+        }
+
         // Inbound sync-gate (mirror of the outbound gate in
         // `initiate_sync_inner`): if an application upgrade is pending on
         // this context, decline to SERVE context state. An ahead peer
@@ -4174,7 +4192,8 @@ impl SyncManager {
                 unreachable!("handled by early return above")
             }
             InitPayload::GroupKeyRequest { .. }
-            | InitPayload::GroupKeyRequestWithResponderProof { .. } => {
+            | InitPayload::GroupKeyRequestWithResponderProof { .. }
+            | InitPayload::SealedOutboundRequest { .. } => {
                 unreachable!("handled by early return above")
             }
         };
@@ -4595,6 +4614,13 @@ mod init_pop_gate_tests {
             InitPayload::TeeAdmissionChallengeRequest {
                 namespace_id: [0; 32],
             },
+            // A TEE sends the request with a secret only it can open, and only
+            // for a member that may write in the context, so the requester must
+            // hold the identity it names.
+            InitPayload::SealedOutboundRequest {
+                context_id: ctx,
+                request: vec![],
+            },
         ];
         for p in &requires {
             assert!(
@@ -4645,7 +4671,7 @@ mod init_pop_gate_tests {
         }
     }
 
-    fn context_payloads(ctx: ContextId) -> [InitPayload; 8] {
+    fn context_payloads(ctx: ContextId) -> [InitPayload; 9] {
         [
             InitPayload::DeltaRequest {
                 context_id: ctx,
@@ -4680,6 +4706,10 @@ mod init_pop_gate_tests {
             InitPayload::EntityDeletePush {
                 context_id: ctx,
                 deletions: vec![],
+            },
+            InitPayload::SealedOutboundRequest {
+                context_id: ctx,
+                request: vec![],
             },
         ]
     }
@@ -4922,6 +4952,7 @@ mod handshake;
 mod namespace_join;
 mod namespace_sync;
 mod relay_sealed_join;
+mod sealed_outbound;
 mod tee_admission;
 
 // Re-exported for the `tests` submodule, which reaches these namespace helpers

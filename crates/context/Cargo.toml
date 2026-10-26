@@ -16,6 +16,7 @@ either.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true
+libp2p = { workspace = true, features = ["gossipsub"] }
 ouroboros.workspace = true
 prometheus-client.workspace = true
 rand.workspace = true
@@ -35,6 +36,7 @@ calimero-context-client.workspace = true
 calimero-governance-store.workspace = true
 calimero-crypto.workspace = true
 calimero-dag.workspace = true
+calimero-bundle.workspace = true
 calimero-governance-types.workspace = true
 calimero-network-primitives.workspace = true
 calimero-node-primitives.workspace = true

@@ -529,6 +529,11 @@ pub(crate) fn setup(
             "/namespaces/for-application/{application_id}",
             get(namespaces::list_for_application::handler),
         )
+        // What a namespace lets each publisher's apps reach (`approveOutbound`).
+        .route(
+            "/namespaces/{namespace_id}/outbound-approvals",
+            get(namespaces::outbound_approvals::list).put(namespaces::outbound_approvals::set),
+        )
         // Namespace governance (Phase 2)
         .route(
             "/namespaces/{namespace_id}/groups",
@@ -1184,7 +1189,8 @@ fn namespace_refusal_status(err: &NamespaceError) -> Option<StatusCode> {
         | Refusal::CannotDeleteRoot(_)
         | Refusal::SelfParentEdge
         | Refusal::TeePolicyNotOnSubgroup(_)
-        | Refusal::TeeAuthoringPolicyNotOnSubgroup(_) => StatusCode::BAD_REQUEST,
+        | Refusal::TeeAuthoringPolicyNotOnSubgroup(_)
+        | Refusal::OutboundApprovalNotOnSubgroup(_) => StatusCode::BAD_REQUEST,
         // Valid in general, but not against the tree as it stands.
         Refusal::NestingCycle | Refusal::AlreadyHasParent(_) | Refusal::ReparentCycle { .. } => {
             StatusCode::CONFLICT

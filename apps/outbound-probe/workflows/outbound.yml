@@ -2,8 +2,9 @@ name: Outbound Requests — Every Gate, End To End
 description: >
   An app method asks its node for one HTTPS request (`env::http_request`). The
   node makes it only when its operator turned outbound requests on for the
-  host, the app's signed manifest declares a URL prefix covering it, and the
-  run writes state on this node. A secret the request names is filled in by
+  host, the app's signed manifest declares a URL prefix covering it, the
+  app's namespace approved that prefix for the app's publisher, and the run
+  writes state on this node. A secret the request names is filled in by
   the node and removed from the answer.
 
   The probe's node (outbound-a) starts with outbound off, then its operator
@@ -13,6 +14,10 @@ description: >
 
   WHAT GOES RED, AND WHY:
     * Off by default: before the operator's config, `probe` traps.
+    * The namespace approves: with the operator's config but no approval, a
+      declared URL is refused `NotApproved`; after an admin approves the
+      manifest's prefixes it goes through, and after they revoke them it is
+      refused `NotApproved` again.
     * The request carries the secret and the app never sees it: the echo
       reports two secrets substituted (header and body), and the answer the
       app stores shows `[redacted]` where they were, never the value.
@@ -110,6 +115,35 @@ steps:
     tail_lines: 20000
     timeout: 60
     check_interval: 2
+
+  # ---------- The namespace has not approved anything yet ----------
+
+  - name: A declared URL the namespace has not approved
+    type: call
+    node: outbound-a
+    context_id: "{{context_id}}"
+    method: probe_url
+    args:
+      url: "https://echo.outbound.test/v1/check"
+    outputs:
+      unapproved: result
+
+  - name: Assert it was refused NotApproved, with no request made
+    type: assert
+    statements:
+      - "contains({{unapproved}}, refused:)"
+      - "contains({{unapproved}}, [NotApproved])"
+      - "not_contains({{unapproved}}, 200 {)"
+
+  - name: An admin approves the prefixes the probe's manifest declares
+    type: script
+    script: scripts/approve-outbound.sh
+    target: local
+    args:
+      - "http://localhost:2562"
+      - "{{context_id}}"
+      - "{{app_id}}"
+      - "manifest"
 
   # ---------- A declared request, with a secret ----------
 
@@ -261,6 +295,34 @@ steps:
       path: "check"
       body: "n=2"
     expected_failure: true
+
+  # ---------- Revoking the approval ----------
+
+  - name: An admin revokes every prefix they approved for the probe's publisher
+    type: script
+    script: scripts/approve-outbound.sh
+    target: local
+    args:
+      - "http://localhost:2562"
+      - "{{context_id}}"
+      - "{{app_id}}"
+      - "none"
+
+  - name: The same declared URL, after the revocation
+    type: call
+    node: outbound-a
+    context_id: "{{context_id}}"
+    method: probe_url
+    args:
+      url: "https://echo.outbound.test/v1/check"
+    outputs:
+      revoked: result
+
+  - name: Assert it is refused NotApproved again
+    type: assert
+    statements:
+      - "contains({{revoked}}, refused:)"
+      - "contains({{revoked}}, [NotApproved])"
 
   - name: No panics
     type: assert_log_absent

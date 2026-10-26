@@ -29,7 +29,8 @@ use calimero_network_primitives::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, NetworkConfig, RelayConfig,
     RendezvousConfig, SwarmConfig,
 };
-use calimero_network_primitives::messages::{NetworkEvent, NetworkEventDispatcher};
+use calimero_network_primitives::messages::{DialFailed, NetworkEvent, NetworkEventDispatcher};
+use calimero_network_primitives::stream::CALIMERO_STREAM_PROTOCOL;
 use futures_util::StreamExt;
 use libp2p::core::PeerRecord;
 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage, MessageId};
@@ -46,6 +47,7 @@ use tokio::time::timeout;
 use crate::behaviour::{Behaviour, BehaviourEvent};
 use crate::blob_provider_record::BlobProviderRecord;
 use crate::discovery::MAX_RENDEZVOUS_DIALS_PER_EVENT;
+use crate::handlers::commands::open_stream::open_stream_error;
 use crate::handlers::stream::swarm::kad::MAX_RECORDS_PER_SOURCE;
 use crate::NetworkManager;
 
@@ -853,4 +855,28 @@ async fn a_discovered_event_dials_at_most_the_per_event_cap() {
         .connection_counters()
         .num_pending_outgoing();
     assert_eq!(dialed as usize, MAX_RENDEZVOUS_DIALS_PER_EVENT);
+}
+
+/// The error libp2p-stream gives for a peer with no address is what the
+/// namespace join classifies on, so run the real dial rather than a built error.
+#[tokio::test]
+async fn opening_a_stream_to_a_peer_with_no_address_reports_a_failed_dial() {
+    let mut manager = build_manager().await;
+    let mut control = manager.swarm.behaviour().stream.new_control();
+    let open = control.open_stream(PeerId::random(), CALIMERO_STREAM_PROTOCOL);
+    tokio::pin!(open);
+
+    let result = timeout(Duration::from_secs(5), async {
+        loop {
+            tokio::select! {
+                result = &mut open => break result,
+                _event = manager.swarm.select_next_some() => {}
+            }
+        }
+    })
+    .await
+    .expect("the dial fails without an address");
+
+    let err = open_stream_error(result.expect_err("no address to dial"));
+    assert!(err.downcast_ref::<DialFailed>().is_some(), "{err:?}");
 }
