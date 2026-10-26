@@ -53,6 +53,10 @@ struct Args {
     replicas: usize,
     #[arg(long, env = "MEROD_BACKUP_DIR")]
     backup_dir: Option<PathBuf>,
+    /// Rotate the session-signing key after this many seconds (at least 1800:
+    /// the previous key must outlive the 15-minute sessions it signed).
+    #[arg(long, env = "MEROD_SESSION_KEY_ROTATION", default_value_t = 6 * 3600)]
+    session_key_rotation_secs: u64,
 }
 
 #[tokio::main]
@@ -95,6 +99,7 @@ async fn main() -> eyre::Result<()> {
         replicas: args.replicas,
         backup_dir: args.backup_dir,
         raft: calimero_log::Config::default(),
+        session_key_rotation_secs: args.session_key_rotation_secs.max(1800),
     };
     let running = run(config).await?;
     tokio::signal::ctrl_c().await?;

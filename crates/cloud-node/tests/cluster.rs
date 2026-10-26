@@ -44,6 +44,10 @@ struct Cluster {
 
 impl Cluster {
     async fn start(n: u64) -> Self {
+        Self::start_with(n, |_| {}).await
+    }
+
+    async fn start_with(n: u64, configure: impl Fn(&mut Config)) -> Self {
         let ports: Vec<u16> = (0..n).map(|_| free_port()).collect();
         let urls: Vec<String> = ports
             .iter()
@@ -58,7 +62,7 @@ impl Cluster {
         let mut dirs = Vec::new();
         for (i, port) in ports.iter().enumerate() {
             let dir = tempfile::tempdir().unwrap();
-            let config = Config {
+            let mut config = Config {
                 node_id: i as u64 + 1,
                 public_url: urls[i].clone(),
                 listen: format!("127.0.0.1:{port}").parse().unwrap(),
@@ -82,7 +86,9 @@ impl Cluster {
                     election_max_ms: 1000,
                     snapshot_every: 200,
                 },
+                session_key_rotation_secs: 6 * 3600,
             };
+            configure(&mut config);
             nodes.push(Some(run(config).await.unwrap()));
             dirs.push(dir);
         }
@@ -663,4 +669,62 @@ async fn a_failed_init_is_reported_not_hidden() {
         .unwrap_err();
     assert_eq!(err.code(), Some("INIT_FAILED"), "{err}");
     assert!(err.details().unwrap()["appId"].is_string());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn quotas_are_enforced_by_the_log() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let ops = c.client(1);
+    ops.use_api_key("ops-secret").await;
+    let mut quotas = ops.get("ops/quotas").await.unwrap();
+    assert_eq!(quotas["maxAppsPerAccount"], json!(100));
+    quotas["maxAppsPerAccount"] = json!(1);
+    quotas["maxApiKeysPerAccount"] = json!(1);
+    let _ok = ops.post("ops/quotas", quotas).await.unwrap();
+
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let _first = alice.create_app("one", &bundle, json!({})).await.unwrap();
+    let err = alice
+        .create_app("two", &bundle, json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
+
+    let _key = alice.create_api_key(json!({})).await.unwrap();
+    let err = alice.create_api_key(json!({})).await.unwrap_err();
+    assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn session_keys_rotate_and_old_sessions_stay_valid() {
+    let c = Cluster::start_with(3, |cfg| cfg.session_key_rotation_secs = 3).await;
+    let (alice, pk) = signed_up(&c, 0, "alice").await;
+    let version = || {
+        c.nodes[0]
+            .as_ref()
+            .unwrap()
+            .node
+            .sys(|s| s.session_keys.last().map(|k| k.version))
+            .unwrap()
+    };
+    let before = version();
+    // Wait for exactly one rotation (keys are kept: current and previous).
+    let mut after = before;
+    for _ in 0..80 {
+        after = version();
+        if after > before {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(after > before, "key did not rotate ({before} -> {after})");
+    // The session minted under the previous key still works...
+    let _me = alice.me().await.unwrap();
+    // ...and a new sign-in is signed with the current key.
+    let mut pk = pk;
+    let fresh = c.client(2);
+    let s = fresh.sign_in(&mut pk).await.unwrap();
+    let claims = calimero_identity::peek_session(&s.session_token).unwrap();
+    assert_eq!(claims.key_version, after);
 }

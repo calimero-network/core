@@ -55,6 +55,9 @@ pub struct Config {
     /// Where encrypted snapshots go (object storage stand-in), if anywhere.
     pub backup_dir: Option<PathBuf>,
     pub raft: calimero_log::Config,
+    /// How old the session-signing key K_s gets before the leader adds a new one.
+    /// The previous key keeps verifying, so it must outlive a session (15 min).
+    pub session_key_rotation_secs: u64,
 }
 
 /// Request to run a method.
@@ -135,6 +138,15 @@ impl Transport for PeerTransport {
                 .map_err(|e| e.to_string())?;
             serde_json::from_value(resp).map_err(|e| e.to_string())
         })
+    }
+}
+
+/// A command the system log refused at apply.
+pub fn rejected(reason: &str) -> ApiError {
+    if reason.starts_with(crate::system::QUOTA_PREFIX) {
+        ApiError::new(429, "QUOTA_EXCEEDED", reason)
+    } else {
+        ApiError::bad_request("REJECTED", reason)
     }
 }
 
@@ -285,7 +297,7 @@ impl Node {
             match self.system.write(bytes.clone()).await {
                 Ok((index, out)) => {
                     let _ = index;
-                    return output(&out).map_err(|e| ApiError::bad_request("REJECTED", &e));
+                    return output(&out).map_err(|e| rejected(&e));
                 }
                 Err(WriteError::NotLeader {
                     leader: Some((id, addr)),
@@ -422,10 +434,20 @@ impl Node {
             for node in missing {
                 let _r = self.sys_write(&SystemCmd::RegisterNode { node }).await;
             }
-            if self.sys(|s| s.session_keys.is_empty()) {
+            // The first session key, then a new one whenever the current one is old enough.
+            let current = self.sys(|s| s.session_keys.last().map(|k| (k.version, k.created_at)));
+            let now = crate::types::now_secs();
+            let due = current.map_or(Some(1), |(version, created_at)| {
+                (created_at + self.config.session_key_rotation_secs <= now).then_some(version + 1)
+            });
+            if let Some(version) = due {
                 let key = calimero_identity::b64url(&calimero_identity::random::<32>());
                 let _r = self
-                    .sys_write(&SystemCmd::AddSessionKey { version: 1, key })
+                    .sys_write(&SystemCmd::AddSessionKey {
+                        version,
+                        key,
+                        created_at: now,
+                    })
                     .await;
             }
         }

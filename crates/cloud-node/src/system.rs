@@ -21,7 +21,34 @@ use crate::types::{
 pub struct SessionKey {
     pub version: u32,
     pub key: String,
+    /// Unix seconds; the leader rotates the key once it is old enough.
+    #[serde(default)]
+    pub created_at: u64,
 }
+
+/// Per-account limits, replicated so every node enforces the same ones at apply.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Quotas {
+    pub max_apps_per_account: u32,
+    pub max_bundle_bytes_per_account: u64,
+    pub max_api_keys_per_account: u32,
+    pub max_orgs_per_account: u32,
+}
+
+impl Default for Quotas {
+    fn default() -> Self {
+        Self {
+            max_apps_per_account: 100,
+            max_bundle_bytes_per_account: 1024 * 1024 * 1024,
+            max_api_keys_per_account: 50,
+            max_orgs_per_account: 20,
+        }
+    }
+}
+
+/// The prefix of every apply error that is a quota refusal.
+pub const QUOTA_PREFIX: &str = "quota exceeded";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +79,8 @@ pub struct SystemState {
     pub orgs: BTreeMap<OrgId, Org>,
     /// invite token hash -> invite
     pub invites: BTreeMap<String, Invite>,
+    #[serde(default)]
+    pub quotas: Quotas,
 }
 
 impl SystemState {
@@ -185,6 +214,11 @@ pub enum SystemCmd {
     AddSessionKey {
         version: u32,
         key: String,
+        #[serde(default)]
+        created_at: u64,
+    },
+    SetQuotas {
+        quotas: Quotas,
     },
     CreateOrg {
         org_id: OrgId,
@@ -275,6 +309,17 @@ impl SystemMachine {
                 if !s.accounts.contains_key(&actor) {
                     return Err("unknown account");
                 }
+                if !s.bundles.contains_key(&hash) {
+                    let used: u64 = s
+                        .bundles
+                        .values()
+                        .filter(|b| b.uploaded_by == actor)
+                        .map(|b| b.size)
+                        .sum();
+                    if used + size > s.quotas.max_bundle_bytes_per_account {
+                        return Err("quota exceeded: bundle storage");
+                    }
+                }
                 let _prev = s.bundles.entry(hash.clone()).or_insert(BundleRecord {
                     hash: hash.clone(),
                     size,
@@ -285,6 +330,10 @@ impl SystemMachine {
             SystemCmd::CreateApp { mut app } => {
                 if !s.bundles.contains_key(&app.bundle) {
                     return Err("unknown bundle");
+                }
+                let owned = s.apps.values().filter(|a| a.owner == app.owner).count();
+                if owned >= s.quotas.max_apps_per_account as usize {
+                    return Err("quota exceeded: apps");
                 }
                 if s.apps.contains_key(&app.app_id) {
                     return Err("app exists");
@@ -434,6 +483,14 @@ impl SystemMachine {
                 if !s.accounts.contains_key(&record.account) {
                     return Err("unknown account");
                 }
+                let keys = s
+                    .api_keys
+                    .values()
+                    .filter(|k| k.account == record.account)
+                    .count();
+                if keys >= s.quotas.max_api_keys_per_account as usize {
+                    return Err("quota exceeded: API keys");
+                }
                 let id = record.key_id.clone();
                 let _prev = s.api_keys.insert(hash, record);
                 Ok(json!({ "keyId": id }))
@@ -473,11 +530,23 @@ impl SystemMachine {
                 let _new = s.revoked_sessions.insert(session);
                 Ok(Value::Null)
             }
-            SystemCmd::AddSessionKey { version, key } => {
+            SystemCmd::SetQuotas { quotas } => {
+                s.quotas = quotas;
+                Ok(Value::Null)
+            }
+            SystemCmd::AddSessionKey {
+                version,
+                key,
+                created_at,
+            } => {
                 if s.session_keys.iter().any(|k| k.version >= version) {
                     return Err("stale session key version");
                 }
-                s.session_keys.push(SessionKey { version, key });
+                s.session_keys.push(SessionKey {
+                    version,
+                    key,
+                    created_at,
+                });
                 // Keep the current and previous key only.
                 while s.session_keys.len() > 2 {
                     let _old = s.session_keys.remove(0);
@@ -494,6 +563,14 @@ impl SystemMachine {
                 }
                 if s.orgs.contains_key(&org_id) {
                     return Err("organization exists");
+                }
+                let owned = s
+                    .orgs
+                    .values()
+                    .filter(|o| o.members.get(&actor) == Some(&OrgRole::Owner))
+                    .count();
+                if owned >= s.quotas.max_orgs_per_account as usize {
+                    return Err("quota exceeded: organizations");
                 }
                 let mut members = BTreeMap::new();
                 let _prev = members.insert(actor, OrgRole::Owner);

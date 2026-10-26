@@ -34,6 +34,10 @@ architecture spec.
   `AppRecord`; a failed init answers `422 INIT_FAILED` (`AppState::init_error`).
 - **Identity inside the app**: `env::account_id` and `env::executor_id` are both the
   caller's account (no devices in release-v2); the context id is `SHA-256(app_id)`.
+- **Session keys** rotate: the system leader adds K_s v+1 once the current key is
+  `session_key_rotation_secs` old (default 6 h); the previous key keeps verifying.
+- **Quotas** (`system::Quotas`, set with `POST /ops/quotas`) live in the system state and
+  are checked at apply, so every node enforces the same limits; refusals are `429 QUOTA_EXCEEDED`.
 - **Read-your-writes across nodes**: lookups of system objects (`Node::sys_until`) wait
   up to 2 s for the local replica to apply a write committed elsewhere.
 
@@ -41,7 +45,7 @@ architecture spec.
 
 KMS fetch (dev key or `--storage-key`), real measurement policy, SDK host functions for
 orgs (`env::org_role`), rollback counter, placement across zones, snapshot restore into a
-running cluster, quotas, event audiences, session key rotation.
+running cluster, event audiences, pruning of revoked session ids.
 
 ## Commands
 

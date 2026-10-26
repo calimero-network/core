@@ -1441,7 +1441,7 @@ async fn internal_system(
     match node.system.write(bytes).await {
         Ok((_i, out)) => crate::system::output(&out)
             .map(Json)
-            .map_err(|e| ApiError::bad_request("REJECTED", &e)),
+            .map_err(|e| crate::node::rejected(&e)),
         Err(e) => Err(ApiError::unavailable(&e.to_string())),
     }
 }
@@ -1709,6 +1709,23 @@ async fn ops_set_replicas(
     Ok(Json(json!({ "status": g.status() })))
 }
 
+async fn ops_quotas_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    operator(&node, &headers)?;
+    Ok(Json(
+        serde_json::to_value(node.sys(|s| s.quotas.clone())).unwrap_or_default(),
+    ))
+}
+
+async fn ops_quotas_set(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(quotas): Json<crate::system::Quotas>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    let _ok = node.sys_write(&SystemCmd::SetQuotas { quotas }).await?;
+    Ok(Json(json!({})))
+}
+
 async fn ops_backup(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
     let n = node
@@ -1767,6 +1784,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/nodes", post(ops_register_node))
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))
         .route("/ops/backup", post(ops_backup))
+        .route("/ops/quotas", get(ops_quotas_get).post(ops_quotas_set))
         // Bundles (peer blob pushes, uploads) exceed axum's 2 MiB default; the sealed envelope caps requests at 64 MiB.
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(node)
