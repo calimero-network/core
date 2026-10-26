@@ -225,6 +225,10 @@ steps:
       - outbound-b
     timeout: 60
     check_interval: 2
+    expect:
+      method: last
+      equals:
+        output: "{{a_last}}"
 
   - name: What outbound-b holds
     type: call
