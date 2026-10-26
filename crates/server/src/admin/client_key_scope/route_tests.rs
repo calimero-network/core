@@ -1180,6 +1180,53 @@ async fn a_bound_key_cannot_retarget_its_namespace_or_install() {
 }
 
 #[actix::test]
+async fn an_app_origin_joins_by_inheritance_only_inside_its_own_application() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+    let join = |group: &ContextGroupId| {
+        format!(
+            "/groups/{}/join-via-inheritance",
+            hex::encode(group.to_bytes())
+        )
+    };
+
+    let (status, body) = node
+        .call_on_origin_of(
+            &node.mine.app,
+            Some(&token),
+            Method::POST,
+            &join(&node.mine.namespace),
+            None,
+        )
+        .await;
+    assert_ne!(status, StatusCode::FORBIDDEN, "its own group: {body}");
+
+    let (status, body) = node
+        .call_on_origin_of(
+            &node.mine.app,
+            Some(&token),
+            Method::POST,
+            &join(&node.theirs.namespace),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "another app's group: {body}");
+    assert!(body.to_string().contains(GROUP_REFUSAL), "{body}");
+
+    let (status, body) = node
+        .call_on_origin_of(
+            &node.mine.app,
+            Some(&token),
+            Method::POST,
+            &join(&ContextGroupId::from(NAMESPACE)),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a group outside: {body}");
+    assert!(body.to_string().contains(GROUP_REFUSAL), "{body}");
+}
+
+#[actix::test]
 async fn a_bound_key_joins_only_into_its_own_application() {
     let node = Node::new().await;
     let token = node.bound_to_mine().await;
