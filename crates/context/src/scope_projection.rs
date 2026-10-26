@@ -3703,23 +3703,69 @@ impl calimero_governance_store::FoldedTeeAuthority for FoldedProjections<'_> {
     }
 }
 
-/// The at-cut view without the rows of an account that holds no root row: only the owner
-/// and the TEE roles, which are admitted into a subgroup alone, hold any.
+/// The payload an op folds as, through relay seats and root guards.
+fn folded_payload(op: &Op) -> &OpPayload {
+    let mut payload = &op.payload;
+    while let OpPayload::RelaySeated { carried, .. } | OpPayload::RootGuarded { carried, .. } =
+        payload
+    {
+        payload = carried;
+    }
+    payload
+}
+
+/// The at-cut view with the space rows that ended with a root membership dropped:
+/// those written before the account's latest root removal or leave, even after it
+/// rejoined, and all of them for an account with no root row, bar a TEE that never
+/// held one. The owner is exempt.
 fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> calimero_authz::AclView {
-    let mut view = ScopeState::acl_view_from_ancestry(walked);
-    let Some((root, owner)) = base.root else {
+    let view = ScopeState::acl_view_from_ancestry(walked);
+    let Some((root, founder)) = base.root else {
         return view;
     };
     let owner = view
         .root_at_cut(base.root)
-        .map_or(owner, |(_, owner)| owner);
+        .map_or(founder, |(_, owner)| owner);
+    let live: Vec<&Op> = walked
+        .ops()
+        .iter()
+        .copied()
+        .filter(|op| !walked.is_void(op))
+        .collect();
+    let mut lost: Vec<([u8; 32], AccountId)> = Vec::new();
+    let mut held_root: BTreeSet<AccountId> = BTreeSet::new();
+    for op in &live {
+        match folded_payload(op) {
+            OpPayload::MemberRemoved { group, member }
+            | OpPayload::MemberLeft { group, member }
+                if *group == root =>
+            {
+                lost.push((op.id(), *member));
+            }
+            OpPayload::MemberAdded { group, member, .. }
+            | OpPayload::MemberJoinedWithDevice { group, member, .. }
+                if *group == root =>
+            {
+                let _ = held_root.insert(*member);
+            }
+            _ => {}
+        }
+    }
+    let ended = ended_rows(walked, &live, &lost, root, owner);
+    let mut view = if ended.is_empty() {
+        view
+    } else {
+        ScopeState::acl_view_from_ancestry(&walked.without(&ended.stale))
+    };
     let in_root: BTreeSet<AccountId> = view
         .groups
         .get(&root)
         .map(|members| members.keys().copied().collect())
         .unwrap_or_default();
     let exempt = |account: &AccountId, role: Option<&GroupMemberRole>| {
-        *account == owner || in_root.contains(account) || role.is_some_and(GroupMemberRole::is_tee)
+        *account == owner
+            || in_root.contains(account)
+            || (role.is_some_and(GroupMemberRole::is_tee) && !held_root.contains(account))
     };
     for rows in view.groups.values_mut() {
         rows.retain(|account, role| exempt(account, Some(role)));
@@ -3735,7 +3781,72 @@ fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> calimero_authz:
         .retain(|(group, account), _| held(group, account));
     view.group_admin
         .retain(|group, account| held(group, account));
+    for (child, admin) in &ended.admin_seats {
+        if view.group_admin.get(child) == Some(admin) {
+            let _ = view.group_admin.remove(child);
+        }
+    }
     view
+}
+
+/// What a root loss ended: the row-writing ops before it, and the admin seats it ends.
+#[derive(Default)]
+struct EndedRows {
+    stale: BTreeSet<[u8; 32]>,
+    admin_seats: Vec<(ContextGroupId, AccountId)>,
+}
+
+impl EndedRows {
+    fn is_empty(&self) -> bool {
+        self.stale.is_empty() && self.admin_seats.is_empty()
+    }
+}
+
+/// The ops before each of `lost` (root losses of an account) that wrote it a row outside
+/// the root, walked over every op so a void one does not hide what lies behind it.
+fn ended_rows(
+    walked: &CutAncestry<'_>,
+    live: &[&Op],
+    lost: &[([u8; 32], AccountId)],
+    root: ContextGroupId,
+    owner: AccountId,
+) -> EndedRows {
+    let mut ended = EndedRows::default();
+    if lost.is_empty() {
+        return ended;
+    }
+    let parents: HashMap<[u8; 32], &Vec<[u8; 32]>> = walked
+        .ops()
+        .iter()
+        .map(|op| (op.id(), &op.parents))
+        .collect();
+    for (loss, account) in lost.iter().filter(|(_, account)| *account != owner) {
+        let mut before: HashSet<[u8; 32]> = HashSet::new();
+        let mut queue = vec![*loss];
+        while let Some(id) = queue.pop() {
+            if let Some(held) = parents.get(&id) {
+                queue.extend(held.iter().copied().filter(|p| before.insert(*p)));
+            }
+        }
+        for op in live.iter().filter(|op| before.contains(&op.id())) {
+            match folded_payload(op) {
+                OpPayload::MemberAdded { group, member, .. }
+                | OpPayload::MemberJoinedWithDevice { group, member, .. }
+                | OpPayload::MemberCapabilitySet { group, member, .. }
+                    if *group != root && member == account =>
+                {
+                    let _ = ended.stale.insert(op.id());
+                }
+                OpPayload::SubgroupCreated { child, admin, .. } if admin == account => {
+                    ended
+                        .admin_seats
+                        .push((ContextGroupId::from(*child.as_bytes()), *admin));
+                }
+                _ => {}
+            }
+        }
+    }
+    ended
 }
 
 /// The groups whose ops can move an authority question about `group` at a cut, and so
@@ -5346,6 +5457,90 @@ mod tests {
                 BTreeSet::from_iter(expected)
             );
         }
+    }
+
+    /// The view at the end of a linear chain of `payloads`, the owner being `[1; 32]`.
+    fn chain_view(root: ContextGroupId, payloads: Vec<OpPayload>) -> calimero_authz::AclView {
+        let mut log: Vec<Op> = Vec::new();
+        for payload in payloads {
+            let parents = log.last().map(Op::id).into_iter().collect();
+            log.push(Op::new(
+                ScopeId::from(root.to_bytes()),
+                parents,
+                calimero_op::Authorship::unattributed(PublicKey::from([1u8; 32])),
+                hlc(log.len() as u64),
+                payload,
+                [0u8; 32],
+                [0u8; 64],
+            ));
+        }
+        let head = log.last().map(Op::id).into_iter().collect::<Vec<_>>();
+        let base = AuthorityBase {
+            root: Some((root, AccountId::from([1u8; 32]))),
+            default_cap_base: 0,
+        };
+        at_cut_view(&ScopeState::cut_ancestry(&log, &head), base)
+    }
+
+    fn member_op(group: ContextGroupId, who: u8, role: GroupMemberRole) -> OpPayload {
+        OpPayload::MemberAdded {
+            group,
+            member: AccountId::from([who; 32]),
+            role,
+        }
+    }
+
+    fn removed_op(group: ContextGroupId, who: u8) -> OpPayload {
+        OpPayload::MemberRemoved {
+            group,
+            member: AccountId::from([who; 32]),
+        }
+    }
+
+    fn holds_row(view: &calimero_authz::AclView, group: ContextGroupId, who: u8) -> bool {
+        view.groups
+            .get(&group)
+            .is_some_and(|rows| rows.contains_key(&AccountId::from([who; 32])))
+    }
+
+    #[test]
+    fn rejoining_the_root_restores_no_row_in_a_space() {
+        let (root, space) = (ContextGroupId::from([3; 32]), ContextGroupId::from([4; 32]));
+        let view = chain_view(
+            root,
+            vec![
+                member_op(root, 9, GroupMemberRole::Member),
+                member_op(space, 9, GroupMemberRole::Member),
+                removed_op(root, 9),
+                member_op(root, 9, GroupMemberRole::Member),
+            ],
+        );
+        assert!(holds_row(&view, root, 9));
+        assert!(!holds_row(&view, space, 9));
+    }
+
+    #[test]
+    fn a_tee_removed_from_the_root_loses_its_space_row() {
+        let (root, space) = (ContextGroupId::from([3; 32]), ContextGroupId::from([4; 32]));
+        let view = chain_view(
+            root,
+            vec![
+                member_op(root, 9, GroupMemberRole::ReadOnlyTee),
+                member_op(space, 9, GroupMemberRole::ReadOnlyTee),
+                removed_op(root, 9),
+            ],
+        );
+        assert!(!holds_row(&view, space, 9));
+    }
+
+    #[test]
+    fn a_tee_that_never_held_a_root_row_keeps_its_space_row() {
+        let (root, space) = (ContextGroupId::from([3; 32]), ContextGroupId::from([4; 32]));
+        let view = chain_view(
+            root,
+            vec![member_op(space, 9, GroupMemberRole::ReadOnlyTee)],
+        );
+        assert!(holds_row(&view, space, 9));
     }
 
     /// An admin of a Restricted group who leaves the workspace holds no authority in it.

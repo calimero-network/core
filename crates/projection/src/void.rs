@@ -179,7 +179,6 @@ struct Removal<'a> {
 impl ScopeState {
     /// The ops of `log` that carry no authority; `Err` past the fold budget, which no
     /// node may answer by guessing.
-    #[must_use]
     pub fn void_ops(log: &[Op], base: AuthorityBase) -> Result<BTreeSet<[u8; 32]>, OverBudget> {
         Self::void_ops_with(log, base, None)
     }
@@ -187,7 +186,6 @@ impl ScopeState {
     /// [`Self::void_ops`] over `log` plus `candidate`, an op about to join it.
     /// [`Acting`] names where it acts, and what admits it, when its payload does not;
     /// its cut must be whole.
-    #[must_use]
     pub fn void_ops_with(
         log: &[Op],
         base: AuthorityBase,
@@ -198,7 +196,6 @@ impl ScopeState {
 
     /// [`Self::void_ops_with`] that also judges `held`, ops of `log` the projection
     /// models nothing about, each with the group it acted in.
-    #[must_use]
     pub fn void_ops_judging(
         log: &[Op],
         base: AuthorityBase,
