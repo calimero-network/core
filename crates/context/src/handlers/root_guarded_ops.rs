@@ -341,11 +341,7 @@ mod tests {
 
     #[actix::test]
     async fn an_owner_delete_of_the_namespace_is_published() {
-        let (store, mut harness, namespace, subgroup) = owned_namespace().await;
-        owner_delete(&harness, subgroup)
-            .await
-            .expect("the owner deletes the space first");
-        let _deleted = harness.published_topics();
+        let (store, mut harness, namespace, _space) = owned_namespace().await;
 
         owner_delete(&harness, namespace)
             .await
@@ -362,10 +358,30 @@ mod tests {
     }
 
     #[actix::test]
-    async fn an_owner_delete_of_a_group_holding_a_space_publishes_nothing() {
-        let (store, mut harness, namespace, subgroup) = owned_namespace().await;
+    async fn an_owner_delete_of_a_folder_holding_a_space_publishes_nothing() {
+        let (store, mut harness, namespace, _unused) = owned_namespace().await;
+        let new_group = async |parent, restricted| {
+            harness
+                .manager
+                .send(CreateGroupRequest {
+                    salt: None,
+                    bytecode_id: None,
+                    application_id: Some(ApplicationId::from(APP)),
+                    name: None,
+                    parent_group_id: Some(parent),
+                    restricted,
+                })
+                .await
+                .expect("the manager answers")
+                .expect("the group is created")
+                .group_id
+        };
+        let folder = new_group(namespace, false).await;
+        let space = new_group(folder, true).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let _created = harness.published_topics();
 
-        let err = owner_delete(&harness, namespace).await.unwrap_err();
+        let err = owner_delete(&harness, folder).await.unwrap_err();
 
         assert!(
             matches!(
@@ -374,10 +390,7 @@ mod tests {
             ),
             "expected HoldsSpace, got {err:?}"
         );
-        assert!(MetaRepository::new(&store)
-            .load(&subgroup)
-            .unwrap()
-            .is_some());
+        assert!(MetaRepository::new(&store).load(&space).unwrap().is_some());
         assert!(
             harness.published_topics().is_empty(),
             "a refused delete reached the wire"

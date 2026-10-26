@@ -148,9 +148,10 @@ impl Tree {
         Ok(())
     }
 
-    /// A group is deleted after the spaces beneath it, never with them.
+    /// A folder is deleted after the spaces beneath it, never with them. The namespace root
+    /// is the whole workspace and goes with everything in it.
     pub fn require_may_delete(&self, group: &ContextGroupId) -> EyreResult<()> {
-        if self.private_below(group)? {
+        if self.0.contains_key(group) && self.private_below(group)? {
             bail!(PrivateSpaceError::HoldsSpace(group.to_string()));
         }
         Ok(())
