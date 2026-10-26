@@ -1747,13 +1747,18 @@ impl<'a> NamespaceGovernance<'a> {
         if membership.is_live_member(namespace, account)? {
             return Ok(true);
         }
+        // A TEE is exempt only while it never held a workspace row: an exit at the root ends it.
+        let left_workspace = crate::ReentryRepository::new(self.store)
+            .block_of(namespace, account)?
+            .is_some();
         for held in [group, &space] {
             let owner = MetaRepository::new(self.store)
                 .load(held)?
                 .is_some_and(|meta| meta.owner_identity == *account);
-            let tee = membership
-                .role_of(held, account)?
-                .is_some_and(|role| role.is_tee());
+            let tee = !left_workspace
+                && membership
+                    .role_of(held, account)?
+                    .is_some_and(|role| role.is_tee());
             if owner || tee {
                 return Ok(true);
             }
