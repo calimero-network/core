@@ -1445,8 +1445,12 @@ impl<'a> NamespaceGovernance<'a> {
         // would leave the op logged but the head un-advanced, and a later
         // re-receive of that op would hit the guard, skip the apply, and never
         // advance the head for it — orphaning it from the DAG head lineage.
-        self.advance_dag_head(delta_id, &parent_ids, head.next_nonce)?;
-        self.store_operation(&signed)?;
+        NamespaceDagService::new(self.store, self.namespace_id).advance_head_and_store(
+            delta_id,
+            &parent_ids,
+            head.next_nonce,
+            &signed,
+        )?;
 
         // Same signal as in `sign_apply_and_publish` above — the local DAG
         // just advanced on the publisher path, so the readiness FSM needs
