@@ -3733,7 +3733,8 @@ fn deciding_groups(
     groups
 }
 
-/// The root, `reads.chains` and their ancestors, and every strict descendant of `reads.subtrees`.
+/// The root, `reads.chains` and their ancestors, and every strict descendant of `reads.subtrees`,
+/// less what sits in a space.
 fn groups_read(
     edges: &SubgroupEdges,
     root: ContextGroupId,
@@ -3764,7 +3765,24 @@ fn groups_read(
             current = *parent;
         }
     }
+    groups.retain(|group| !in_space(edges, group));
     groups
+}
+
+/// Whether `group` is a private space root or below one. Its own sealed ops are not edge ops:
+/// a space root's flip, move and deletion are sealed for the workspace.
+fn in_space(edges: &SubgroupEdges, group: &ContextGroupId) -> bool {
+    let mut current = *group;
+    for _ in 0..=edges.len() {
+        let Some((parent, restricted)) = edges.get(&current) else {
+            return false;
+        };
+        if *restricted {
+            return true;
+        }
+        current = *parent;
+    }
+    false
 }
 
 /// The account `key` signs for at this view. A certificate names its signing key

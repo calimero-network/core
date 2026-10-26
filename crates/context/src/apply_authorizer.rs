@@ -1077,7 +1077,7 @@ mod tests {
             OpPayload::SubgroupCreated {
                 child: ScopeId::from(a.to_bytes()),
                 parent: ScopeId::from(NS),
-                restricted: true,
+                restricted: false,
                 admin: acct(OWNER),
             },
         );
@@ -1090,8 +1090,12 @@ mod tests {
 
         let edges =
             |cut: &Op| authorizer.subgroup_edges_at_cut(&root, &[cut.id()], reads(&[a], &[]));
-        assert_eq!(edges(&make_a), Some([(a, (root, true))].into()));
-        assert_eq!(edges(&of_a), None, "an edge's visibility may have flipped");
+        assert_eq!(edges(&make_a), Some([(a, (root, false))].into()));
+        assert_eq!(
+            edges(&of_a),
+            None,
+            "an open group's sealed op may be a visibility flip"
+        );
         let judged = |cut: &Op| {
             calimero_governance_store::private_space::Tree::at_cut(
                 &store,
@@ -1112,7 +1116,7 @@ mod tests {
         );
         assert_eq!(
             edges(&of_elsewhere),
-            Some([(a, (root, true))].into()),
+            Some([(a, (root, false))].into()),
             "a group outside the tree cannot move an edge"
         );
     }
@@ -1157,8 +1161,11 @@ mod tests {
             Some([(a, (root, false)), (space, (root, true))].into()),
             "a node without the space's key still reads the tree for a folder elsewhere"
         );
-        assert_eq!(at(&[space], &[]), None, "the space's own chain is read");
-        assert_eq!(at(&[], &[root]), None, "a space below the subject is read");
+        assert_eq!(
+            at(&[space], &[root]),
+            Some([(a, (root, false)), (space, (root, true))].into()),
+            "a space's own sealed ops are not edge ops: those are sealed for the workspace"
+        );
     }
 
     #[test]
@@ -1184,7 +1191,7 @@ mod tests {
                 )
             };
         let make_folder = created(folder, root, false, &[&alice]);
-        let make_space = created(space, folder, true, &[&make_folder]);
+        let make_space = created(space, folder, false, &[&make_folder]);
         let sealed = gov(OWNER, &[&make_space], OpPayload::Opaque { group: space });
         for op in [&make_folder, &make_space, &sealed] {
             crate::unified_op_store::persist_op(&store, op).expect("persist");

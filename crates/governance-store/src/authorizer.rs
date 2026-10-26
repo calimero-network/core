@@ -397,7 +397,7 @@ pub(crate) fn ensure_cut_resolvable(
 }
 
 /// The groups a private-space rule reads: each of `chains` and its ancestors, and the strict
-/// descendants of each of `subtrees`. An op sealed in any other group cannot change the answer.
+/// descendants of each of `subtrees`. An op sealed in any other group, or inside a space, cannot change the answer.
 #[derive(Clone, Copy)]
 pub struct TreeReads<'a> {
     pub chains: &'a [ContextGroupId],
