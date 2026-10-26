@@ -367,9 +367,8 @@ steps:
     type: assert_api_response
     node: private-folders-2
     path: /admin-api/groups/{{f_projects}}/metadata
-    match:
+    not_match:
       data.name: Hidden
-    expect_no_match: true
 
   - name: Projects' member list is refused on node-2
     type: assert_api_response

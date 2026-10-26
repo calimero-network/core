@@ -340,9 +340,8 @@ steps:
     type: assert_api_response
     node: private-folders-4
     path: /admin-api/groups/{{f_board}}/metadata
-    match:
+    not_match:
       data.data.topic: after-dave
-    expect_no_match: true
 
   - name: Minutes's info is refused on node-4
     type: assert_api_response
