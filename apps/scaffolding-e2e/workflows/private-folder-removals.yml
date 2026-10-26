@@ -1,11 +1,13 @@
-name: E2E Private Folders - Every Member Node Reads Identical Minutes State
+name: E2E Private Folders - Removing A Member From A Parent Folder Stops At A Private Child, Removing Her From The Workspace Reaches It
 description: >
-  Bob (Minutes only) and Carol (Board and Minutes) are added to Minutes, a private folder inside Board.
-  Minutes' member list, metadata and context list must be identical on Alice's, Bob's and Carol's nodes.
-  The identical-state steps are kept apart from the steps naming the expected value, so a run shows which one fails.
+  Carol is a member of Board and Admin of Minutes, a private folder inside Board.
+  Alice first removes Carol from Board: Carol keeps her Minutes seat and can still act in Minutes, and all three nodes agree on Minutes.
+  Carol is then put back in Board and Alice removes her from the workspace: she must be gone from Board and Minutes on every node still in the workspace,
+  her later Minutes ops must not land, and the nodes must agree on Minutes.
+  Consistency and target steps are kept apart.
 
   Tree: workspace -> Secret (private), Board (private) -> Minutes (private) -> Notes (open).
-  Nodes: 1 Alice (workspace owner), 2 Bob, 3 Carol.
+  Nodes: 1 Alice (workspace owner), 2 Bob (member of Minutes), 3 Carol (member of Board, Admin of Minutes).
 
 force_pull_image: false
 
@@ -172,6 +174,14 @@ steps:
     - identity: '{{id_c}}'
       role: Member
 
+  - name: Carol is added to Minutes as Admin
+    type: add_group_members
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    members:
+    - identity: '{{id_c}}'
+      role: Admin
+
   - name: Bob is added to Minutes as Member
     type: add_group_members
     node: private-folders-1
@@ -179,22 +189,6 @@ steps:
     members:
     - identity: '{{id_b}}'
       role: Member
-
-  - name: Carol is added to Minutes as Member
-    type: add_group_members
-    node: private-folders-1
-    group_id: '{{f_minutes}}'
-    members:
-    - identity: '{{id_c}}'
-      role: Member
-
-  - name: Alice creates a context in Minutes
-    type: create_context
-    node: private-folders-1
-    application_id: '{{app}}'
-    group_id: '{{f_minutes}}'
-    outputs:
-      ctx: contextId
 
   - name: Alice names Secret
     type: set_group_metadata
@@ -239,139 +233,7 @@ steps:
     check_interval: 2
     trigger_sync: true
 
-  # Wait until every node reports the full Minutes seat list before comparing.
-
-  - name: Node-1 lists Alice's Minutes seat
-    type: assert_api_response
-    node: private-folders-1
-    path: /admin-api/groups/{{f_minutes}}/members
-    where:
-      identity: '{{acc_a}}'
-    present:
-    - identity
-    retries: 30
-    interval: 2
-
-  - name: Node-1 lists Bob's Minutes seat
-    type: assert_api_response
-    node: private-folders-1
-    path: /admin-api/groups/{{f_minutes}}/members
-    where:
-      identity: '{{acc_b}}'
-    present:
-    - identity
-    retries: 30
-    interval: 2
-
-  - name: Node-1 lists Carol's Minutes seat
-    type: assert_api_response
-    node: private-folders-1
-    path: /admin-api/groups/{{f_minutes}}/members
-    where:
-      identity: '{{acc_c}}'
-    present:
-    - identity
-    retries: 30
-    interval: 2
-
-  - name: Node-1 reads Minutes' metadata
-    type: assert_api_response
-    node: private-folders-1
-    path: /admin-api/groups/{{f_minutes}}/metadata
-    match:
-      data.name: Minutes
-      data.data.topic: weekly
-    retries: 30
-    interval: 2
-
-  - name: Node-1 lists the Minutes context
-    type: assert_api_response
-    node: private-folders-1
-    path: /admin-api/groups/{{f_minutes}}/contexts
-    where:
-      contextId: '{{ctx}}'
-    present:
-    - contextId
-    retries: 30
-    interval: 2
-
-  - name: Node-2 lists Alice's Minutes seat
-    type: assert_api_response
-    node: private-folders-2
-    path: /admin-api/groups/{{f_minutes}}/members
-    where:
-      identity: '{{acc_a}}'
-    present:
-    - identity
-    retries: 30
-    interval: 2
-
-  - name: Node-2 lists Bob's Minutes seat
-    type: assert_api_response
-    node: private-folders-2
-    path: /admin-api/groups/{{f_minutes}}/members
-    where:
-      identity: '{{acc_b}}'
-    present:
-    - identity
-    retries: 30
-    interval: 2
-
-  - name: Node-2 lists Carol's Minutes seat
-    type: assert_api_response
-    node: private-folders-2
-    path: /admin-api/groups/{{f_minutes}}/members
-    where:
-      identity: '{{acc_c}}'
-    present:
-    - identity
-    retries: 30
-    interval: 2
-
-  - name: Node-2 reads Minutes' metadata
-    type: assert_api_response
-    node: private-folders-2
-    path: /admin-api/groups/{{f_minutes}}/metadata
-    match:
-      data.name: Minutes
-      data.data.topic: weekly
-    retries: 30
-    interval: 2
-
-  - name: Node-2 lists the Minutes context
-    type: assert_api_response
-    node: private-folders-2
-    path: /admin-api/groups/{{f_minutes}}/contexts
-    where:
-      contextId: '{{ctx}}'
-    present:
-    - contextId
-    retries: 30
-    interval: 2
-
-  - name: Node-3 lists Alice's Minutes seat
-    type: assert_api_response
-    node: private-folders-3
-    path: /admin-api/groups/{{f_minutes}}/members
-    where:
-      identity: '{{acc_a}}'
-    present:
-    - identity
-    retries: 30
-    interval: 2
-
-  - name: Node-3 lists Bob's Minutes seat
-    type: assert_api_response
-    node: private-folders-3
-    path: /admin-api/groups/{{f_minutes}}/members
-    where:
-      identity: '{{acc_b}}'
-    present:
-    - identity
-    retries: 30
-    interval: 2
-
-  - name: Node-3 lists Carol's Minutes seat
+  - name: Carol's node lists her Minutes Admin seat before the removal
     type: assert_api_response
     node: private-folders-3
     path: /admin-api/groups/{{f_minutes}}/members
@@ -379,31 +241,86 @@ steps:
       identity: '{{acc_c}}'
     present:
     - identity
+    match:
+      role: Admin
     retries: 30
     interval: 2
 
-  - name: Node-3 reads Minutes' metadata
+  - name: Carol's node reads Board before the removal
     type: assert_api_response
     node: private-folders-3
+    path: /admin-api/groups/{{f_board}}/metadata
+    match:
+      data.name: Board
+      data.data.topic: board
+    retries: 30
+    interval: 2
+
+  - name: Carol is removed from Board
+    type: remove_group_members
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    members:
+    - '{{acc_c}}'
+
+  - name: Carol is gone from Board on Alice's node
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_c}}'
+    expect_no_match: true
+
+  - name: Settle the removal onto every node
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Carol's node refuses Board's member list once she is removed
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_board}}/members
+    expected_failure: true
+    retries: 30
+    interval: 2
+
+  # Carol acts in Minutes after the removal.
+
+  - name: Carol renames the Minutes topic
+    type: set_group_metadata
+    node: private-folders-3
+    group_id: '{{f_minutes}}'
+    record_name: Minutes
+    data:
+      topic: carol-after-removal
+
+  # Consistency: all three nodes hold the same Minutes state.
+
+  - name: Node-1 receives Carol's rename
+    type: assert_api_response
+    node: private-folders-1
     path: /admin-api/groups/{{f_minutes}}/metadata
     match:
       data.name: Minutes
-      data.data.topic: weekly
+      data.data.topic: carol-after-removal
     retries: 30
     interval: 2
 
-  - name: Node-3 lists the Minutes context
+  - name: Node-2 receives Carol's rename
     type: assert_api_response
-    node: private-folders-3
-    path: /admin-api/groups/{{f_minutes}}/contexts
-    where:
-      contextId: '{{ctx}}'
-    present:
-    - contextId
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    match:
+      data.name: Minutes
+      data.data.topic: carol-after-removal
     retries: 30
     interval: 2
-
-  # Consistency: whatever the value, the three nodes hold the same one.
 
   - name: Node-1 lists the Minutes members
     type: list_group_members
@@ -479,35 +396,9 @@ steps:
     - '{{mdtopic1}} == {{mdtopic3}}'
     - '{{mdby1}} == {{mdby3}}'
 
-  # Target value: Alice is Admin, Bob and Carol are Members, and the metadata is what Alice set.
+  # Target value: Carol keeps her Minutes Admin seat everywhere.
 
-  - name: Alice holds the Minutes Admin seat
-    type: assert_api_response
-    node: private-folders-1
-    path: /admin-api/groups/{{f_minutes}}/members
-    where:
-      identity: '{{acc_a}}'
-    present:
-    - identity
-    match:
-      role: Admin
-    retries: 30
-    interval: 2
-
-  - name: Bob holds a Minutes Member seat
-    type: assert_api_response
-    node: private-folders-1
-    path: /admin-api/groups/{{f_minutes}}/members
-    where:
-      identity: '{{acc_b}}'
-    present:
-    - identity
-    match:
-      role: Member
-    retries: 30
-    interval: 2
-
-  - name: Carol holds a Minutes Member seat
+  - name: Node-1 lists Carol's Minutes Admin seat after the Board removal
     type: assert_api_response
     node: private-folders-1
     path: /admin-api/groups/{{f_minutes}}/members
@@ -516,15 +407,234 @@ steps:
     present:
     - identity
     match:
-      role: Member
+      role: Admin
     retries: 30
     interval: 2
 
-  - name: Minutes' metadata is the record Alice set
+  - name: Node-2 lists Carol's Minutes Admin seat after the Board removal
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    match:
+      role: Admin
+    retries: 30
+    interval: 2
+
+  - name: Node-3 lists Carol's Minutes Admin seat after the Board removal
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    match:
+      role: Admin
+    retries: 30
+    interval: 2
+
+  # Carol is put back in Board, so the workspace removal below has a Board seat to reach.
+
+  - name: Carol is added back to Board as Member
+    type: add_group_members
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    members:
+    - identity: '{{id_c}}'
+      role: Member
+
+  - name: Settle the Board seat onto every node
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Alice's node lists Carol's Board seat again
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists Carol's Minutes seat before the removal
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    match:
+      role: Admin
+    retries: 30
+    interval: 2
+
+  - name: Carol is removed from workspace
+    type: remove_group_members
+    node: private-folders-1
+    group_id: '{{ns}}'
+    members:
+    - '{{acc_c}}'
+
+  # Carol is gone from every folder she held, on the nodes that stay in the workspace.
+
+  - name: Node-1 lists no Minutes seat for Carol
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Node-2 lists no Minutes seat for Carol
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Alice's node lists no Board seat for Carol
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_c}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  # Carol tries to act in Minutes after the removal; the script reports the status and the state decides.
+
+  - name: Carol tries to rename Minutes
+    type: script
+    script: scripts/group-attempt.sh
+    target: local
+    args:
+    - private-folders-3
+    - PUT
+    - /admin-api/groups/{{f_minutes}}/metadata
+    - '{"name":"Minutes","data":{"topic":"carol-after-workspace-removal"}}'
+
+  - name: Carol tries to add herself to Board again
+    type: script
+    script: scripts/group-attempt.sh
+    target: local
+    args:
+    - private-folders-3
+    - POST
+    - /admin-api/groups/{{f_board}}/members
+    - '{"members":[{"identity":"{{acc_c}}","role":"Admin"}]}'
+
+  - name: Let the refused ops reach every peer
+    type: wait
+    seconds: 20
+
+  - name: Settle the workspace governance without Carol
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Target value: her ops did not land.
+
+  - name: Alice's node still reads the Minutes topic Carol set before her removal
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    match:
+      data.name: Minutes
+      data.data.topic: carol-after-removal
+    retries: 30
+    interval: 2
+
+  - name: Bob's node still reads the Minutes topic Carol set before her removal
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    match:
+      data.name: Minutes
+      data.data.topic: carol-after-removal
+    retries: 30
+    interval: 2
+
+  - name: Alice's node still lists no Board seat for Carol
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_board}}/members
+    where:
+      identity: '{{acc_c}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  # Consistency: the two nodes in the workspace agree on Minutes.
+
+  - name: Node-1 lists the Minutes members after the workspace removal
+    type: list_group_members
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    outputs:
+      m1: members
+
+  - name: Node-2 lists the Minutes members after the workspace removal
+    type: list_group_members
+    node: private-folders-2
+    group_id: '{{f_minutes}}'
+    outputs:
+      m2: members
+
+  - name: Minutes member list is identical on node-1 and node-2 after the workspace removal
+    type: json_assert
+    statements:
+    - json_subset({{m1}}, {{m2}})
+    - json_subset({{m2}}, {{m1}})
+
+  - name: Node-1 reads the Minutes metadata after the workspace removal
+    type: get_group_metadata
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    outputs:
+      mdname1: name
+      mdtopic1: data.topic
+      mdby1: updatedBy
+
+  - name: Node-2 reads the Minutes metadata after the workspace removal
+    type: get_group_metadata
+    node: private-folders-2
+    group_id: '{{f_minutes}}'
+    outputs:
+      mdname2: name
+      mdtopic2: data.topic
+      mdby2: updatedBy
+
+  - name: Minutes metadata is identical on node-1 and node-2 after the workspace removal
     type: assert
     statements:
-    - '{{mdname1}} == Minutes'
-    - '{{mdtopic1}} == weekly'
+    - '{{mdname1}} == {{mdname2}}'
+    - '{{mdtopic1}} == {{mdtopic2}}'
+    - '{{mdby1}} == {{mdby2}}'
 
 stop_all_nodes: true
 restart: false

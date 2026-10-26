@@ -1,12 +1,14 @@
-name: E2E Private Folders - Removing A Member From The Parent Folder Does Not Reach A Private Child
+name: E2E Private Folders - A Workspace Admin Outside A Private Folder Is Locked Out Of It, And Invitations Target Only The Workspace Or A Private Folder
 description: >
-  Carol is a member of Board and Admin of Minutes, a private folder inside Board.
-  Alice removes Carol from Board.
-  Carol keeps her Minutes seat and can still act in Minutes, and all three nodes agree on Minutes.
-  Consistency and target steps are kept apart.
+  Alice owns the workspace and administers Board. An invitation can be minted for the workspace and for a private folder, but one targeting
+  Notes, an open folder inside the private folder Minutes, must be refused.
+  Alice then leaves Minutes, where Bob is Admin.
+  Alice's node must refuse to show Minutes' name, members or contexts, must not list Minutes under Board,
+  and her rename and add-member attempts must leave Minutes unchanged on Bob's and Carol's nodes.
+  The invitation and the attempt steps go through scripts that report the status instead of failing, so the judgement is made on state or on the status in the log.
 
   Tree: workspace -> Secret (private), Board (private) -> Minutes (private) -> Notes (open).
-  Nodes: 1 Alice (workspace owner), 2 Bob (member of Minutes), 3 Carol (member of Board, Admin of Minutes).
+  Nodes: 1 Alice (workspace owner, not in Minutes after she leaves), 2 Bob (Admin of Minutes), 3 Carol (member of Board).
 
 force_pull_image: false
 
@@ -173,21 +175,13 @@ steps:
     - identity: '{{id_c}}'
       role: Member
 
-  - name: Carol is added to Minutes as Admin
-    type: add_group_members
-    node: private-folders-1
-    group_id: '{{f_minutes}}'
-    members:
-    - identity: '{{id_c}}'
-      role: Admin
-
-  - name: Bob is added to Minutes as Member
+  - name: Bob is added to Minutes as Admin
     type: add_group_members
     node: private-folders-1
     group_id: '{{f_minutes}}'
     members:
     - identity: '{{id_b}}'
-      role: Member
+      role: Admin
 
   - name: Alice names Secret
     type: set_group_metadata
@@ -232,45 +226,145 @@ steps:
     check_interval: 2
     trigger_sync: true
 
-  - name: Carol's node lists her Minutes Admin seat before the removal
+  - name: Bob's node reads Minutes before Alice leaves
     type: assert_api_response
-    node: private-folders-3
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    match:
+      data.name: Minutes
+      data.data.topic: weekly
+    retries: 30
+    interval: 2
+
+  - name: Alice creates a context in Minutes
+    type: create_context
+    node: private-folders-1
+    application_id: '{{app}}'
+    group_id: '{{f_minutes}}'
+    outputs:
+      ctx: contextId
+
+  # Invitations are minted while Alice still sits in Minutes.
+
+  - name: An invitation targeting the workspace is accepted
+    type: script
+    script: scripts/group-invite.sh
+    target: local
+    args:
+    - private-folders-1
+    - '{{ns}}'
+    - accepted
+
+  - name: An invitation targeting the private folder Board is accepted
+    type: script
+    script: scripts/group-invite.sh
+    target: local
+    args:
+    - private-folders-1
+    - '{{f_board}}'
+    - accepted
+
+  - name: An invitation targeting the private folder Minutes is accepted
+    type: script
+    script: scripts/group-invite.sh
+    target: local
+    args:
+    - private-folders-1
+    - '{{f_minutes}}'
+    - accepted
+
+  - name: An invitation targeting the open folder Notes inside Minutes is refused
+    type: script
+    script: scripts/group-invite.sh
+    target: local
+    args:
+    - private-folders-1
+    - '{{f_notes}}'
+    - refused
+
+  - name: Alice hands Minutes to Bob
+    type: transfer_ownership
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    new_owner: '{{acc_b}}'
+
+  - name: Alice leaves Minutes
+    type: leave_group
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+
+  - name: Bob's node sees Alice gone from Minutes
+    type: assert_api_response
+    node: private-folders-2
     path: /admin-api/groups/{{f_minutes}}/members
     where:
-      identity: '{{acc_c}}'
-    present:
-    - identity
-    match:
-      role: Admin
+      identity: '{{acc_a}}'
+    expect_no_match: true
     retries: 30
     interval: 2
 
-  - name: Carol's node reads Board before the removal
-    type: assert_api_response
-    node: private-folders-3
-    path: /admin-api/groups/{{f_board}}/metadata
-    match:
-      data.name: Board
-      data.data.topic: board
-    retries: 30
-    interval: 2
+  # Alice, a workspace admin outside Minutes, cannot read it.
 
-  - name: Carol is removed from Board
-    type: remove_group_members
-    node: private-folders-1
-    group_id: '{{f_board}}'
-    members:
-    - '{{acc_c}}'
-
-  - name: Carol is gone from Board on Alice's node
+  - name: 'Minutes on Alice''s node: info is refused'
     type: assert_api_response
     node: private-folders-1
-    path: /admin-api/groups/{{f_board}}/members
+    path: /admin-api/groups/{{f_minutes}}
+    expected_failure: true
+
+  - name: 'Minutes on Alice''s node: member list is refused'
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/members
+    expected_failure: true
+
+  - name: 'Minutes on Alice''s node: metadata name is not readable'
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    absent:
+    - data.name
+
+  - name: Alice's node refuses Minutes' context list
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/contexts
+    expected_failure: true
+
+  - name: Alice's node does not list Minutes under Board
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_board}}/subgroups
     where:
-      identity: '{{acc_c}}'
+      groupId: '{{f_minutes}}'
     expect_no_match: true
 
-  - name: Settle the removal onto every node
+  # Alice cannot act in it.
+
+  - name: Alice tries to rename Minutes
+    type: script
+    script: scripts/group-attempt.sh
+    target: local
+    args:
+    - private-folders-1
+    - PUT
+    - /admin-api/groups/{{f_minutes}}/metadata
+    - '{"name":"Hijacked","data":{"topic":"hijacked"}}'
+
+  - name: Alice tries to add Carol to Minutes
+    type: script
+    script: scripts/group-attempt.sh
+    target: local
+    args:
+    - private-folders-1
+    - POST
+    - /admin-api/groups/{{f_minutes}}/members
+    - '{"members":[{"identity":"{{acc_c}}","role":"Member"}]}'
+
+  - name: Let the refused ops reach every peer
+    type: wait
+    seconds: 20
+
+  - name: Settle the workspace governance
     type: wait_for_sync
     group_id: '{{ns}}'
     nodes:
@@ -281,160 +375,59 @@ steps:
     check_interval: 2
     trigger_sync: true
 
-  - name: Carol's node refuses Board's member list once she is removed
+  # Minutes is unchanged where it is held.
+
+  - name: Bob's node still reads Minutes' original name and topic
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    match:
+      data.name: Minutes
+      data.data.topic: weekly
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists no Minutes seat for Carol
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists Bob as Minutes Admin
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_b}}'
+    present:
+    - identity
+    match:
+      role: Admin
+    retries: 30
+    interval: 2
+
+  - name: 'Minutes on Carol''s node: info is refused'
     type: assert_api_response
     node: private-folders-3
-    path: /admin-api/groups/{{f_board}}/members
+    path: /admin-api/groups/{{f_minutes}}
     expected_failure: true
-    retries: 30
-    interval: 2
 
-  # Carol acts in Minutes after the removal.
-
-  - name: Carol renames the Minutes topic
-    type: set_group_metadata
-    node: private-folders-3
-    group_id: '{{f_minutes}}'
-    record_name: Minutes
-    data:
-      topic: carol-after-removal
-
-  # Consistency: all three nodes hold the same Minutes state.
-
-  - name: Node-1 receives Carol's rename
+  - name: 'Minutes on Carol''s node: member list is refused'
     type: assert_api_response
-    node: private-folders-1
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/members
+    expected_failure: true
+
+  - name: 'Minutes on Carol''s node: metadata name is not readable'
+    type: assert_api_response
+    node: private-folders-3
     path: /admin-api/groups/{{f_minutes}}/metadata
-    match:
-      data.name: Minutes
-      data.data.topic: carol-after-removal
-    retries: 30
-    interval: 2
-
-  - name: Node-2 receives Carol's rename
-    type: assert_api_response
-    node: private-folders-2
-    path: /admin-api/groups/{{f_minutes}}/metadata
-    match:
-      data.name: Minutes
-      data.data.topic: carol-after-removal
-    retries: 30
-    interval: 2
-
-  - name: Node-1 lists the Minutes members
-    type: list_group_members
-    node: private-folders-1
-    group_id: '{{f_minutes}}'
-    outputs:
-      m1: members
-
-  - name: Node-2 lists the Minutes members
-    type: list_group_members
-    node: private-folders-2
-    group_id: '{{f_minutes}}'
-    outputs:
-      m2: members
-
-  - name: Node-3 lists the Minutes members
-    type: list_group_members
-    node: private-folders-3
-    group_id: '{{f_minutes}}'
-    outputs:
-      m3: members
-
-  - name: Minutes member list is identical on node-1 and node-2
-    type: json_assert
-    statements:
-    - json_subset({{m1}}, {{m2}})
-    - json_subset({{m2}}, {{m1}})
-
-  - name: Minutes member list is identical on node-1 and node-3
-    type: json_assert
-    statements:
-    - json_subset({{m1}}, {{m3}})
-    - json_subset({{m3}}, {{m1}})
-
-  - name: Node-1 reads the Minutes metadata
-    type: get_group_metadata
-    node: private-folders-1
-    group_id: '{{f_minutes}}'
-    outputs:
-      mdname1: name
-      mdtopic1: data.topic
-      mdby1: updatedBy
-
-  - name: Node-2 reads the Minutes metadata
-    type: get_group_metadata
-    node: private-folders-2
-    group_id: '{{f_minutes}}'
-    outputs:
-      mdname2: name
-      mdtopic2: data.topic
-      mdby2: updatedBy
-
-  - name: Node-3 reads the Minutes metadata
-    type: get_group_metadata
-    node: private-folders-3
-    group_id: '{{f_minutes}}'
-    outputs:
-      mdname3: name
-      mdtopic3: data.topic
-      mdby3: updatedBy
-
-  - name: Minutes metadata is identical on node-1 and node-2
-    type: assert
-    statements:
-    - '{{mdname1}} == {{mdname2}}'
-    - '{{mdtopic1}} == {{mdtopic2}}'
-    - '{{mdby1}} == {{mdby2}}'
-
-  - name: Minutes metadata is identical on node-1 and node-3
-    type: assert
-    statements:
-    - '{{mdname1}} == {{mdname3}}'
-    - '{{mdtopic1}} == {{mdtopic3}}'
-    - '{{mdby1}} == {{mdby3}}'
-
-  # Target value: Carol keeps her Minutes Admin seat everywhere.
-
-  - name: Node-1 lists Carol's Minutes Admin seat after the Board removal
-    type: assert_api_response
-    node: private-folders-1
-    path: /admin-api/groups/{{f_minutes}}/members
-    where:
-      identity: '{{acc_c}}'
-    present:
-    - identity
-    match:
-      role: Admin
-    retries: 30
-    interval: 2
-
-  - name: Node-2 lists Carol's Minutes Admin seat after the Board removal
-    type: assert_api_response
-    node: private-folders-2
-    path: /admin-api/groups/{{f_minutes}}/members
-    where:
-      identity: '{{acc_c}}'
-    present:
-    - identity
-    match:
-      role: Admin
-    retries: 30
-    interval: 2
-
-  - name: Node-3 lists Carol's Minutes Admin seat after the Board removal
-    type: assert_api_response
-    node: private-folders-3
-    path: /admin-api/groups/{{f_minutes}}/members
-    where:
-      identity: '{{acc_c}}'
-    present:
-    - identity
-    match:
-      role: Admin
-    retries: 30
-    interval: 2
+    absent:
+    - data.name
 
 stop_all_nodes: true
 restart: false

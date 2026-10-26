@@ -1,10 +1,12 @@
-name: E2E Private Folders - An Open Folder Inside A Private Folder Follows The Private Folder's Members
+name: E2E Private Folders - An Open Folder Follows Its Private Parent's Members, And Opening A Private Folder Shows It To Its Parent's Members
 description: >
   Notes is an open folder inside the private folder Minutes.
   Bob (member of Minutes) sees Notes, joins it by inheritance and uses a context in it.
   Carol (member of Board only) sees neither Minutes nor Notes, and cannot join Notes by inheritance.
+  Alice then switches Minutes to open: Carol's node must list Minutes and read its name, and all three nodes must report Minutes as open.
+  Consistency and target steps are kept apart.
 
-  Tree: workspace -> Secret (private), Board (private) -> Minutes (private) -> Notes (open).
+  Tree: workspace -> Secret (private), Board (private) -> Minutes (private, then open) -> Notes (open).
   Nodes: 1 Alice (workspace owner), 2 Bob (member of Minutes), 3 Carol (member of Board).
 
 force_pull_image: false
@@ -480,6 +482,103 @@ steps:
     type: assert_api_response
     node: private-folders-2
     path: /admin-api/groups/{{f_notes}}/members
+    where:
+      identity: '{{acc_b}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Carol's node reads Board
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_board}}/metadata
+    match:
+      data.name: Board
+      data.data.topic: board
+    retries: 30
+    interval: 2
+
+  - name: Minutes is private before the flip
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}
+    match:
+      data.subgroupVisibility: restricted
+
+  - name: Alice switches Minutes to open
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    visibility: open
+
+  - name: Settle the visibility flip
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Consistency: every node reports the same visibility.
+
+  - name: Node-1 reports Minutes as open
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}
+    match:
+      data.subgroupVisibility: open
+    retries: 30
+    interval: 2
+
+  - name: Node-2 reports Minutes as open
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}
+    match:
+      data.subgroupVisibility: open
+    retries: 30
+    interval: 2
+
+  # Target value: Board's members now see Minutes.
+
+  - name: Carol's node lists the open Minutes
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_board}}/subgroups
+    where:
+      groupId: '{{f_minutes}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Carol's node reads the open Minutes' name and topic
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    match:
+      data.name: Minutes
+      data.data.topic: weekly
+    retries: 30
+    interval: 2
+
+  - name: Carol's node reports Minutes as open
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}
+    match:
+      data.subgroupVisibility: open
+    retries: 30
+    interval: 2
+
+  - name: Bob keeps his Minutes seat
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/members
     where:
       identity: '{{acc_b}}'
     present:
