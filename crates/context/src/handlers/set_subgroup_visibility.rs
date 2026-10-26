@@ -1,3 +1,5 @@
+use calimero_context_config::VisibilityMode;
+use calimero_governance_store::private_space::Tree;
 use calimero_governance_store::NamespaceRepository;
 use std::sync::Arc;
 
@@ -53,6 +55,14 @@ impl Handler<SetSubgroupVisibilityRequest> for ContextManager {
                 .require_can_manage_visibility(&preflight.signer)
         {
             return ActorResponse::reply(Err(err));
+        }
+
+        if matches!(subgroup_visibility, VisibilityMode::Restricted) {
+            if let Err(err) = Tree::live(&self.datastore, &group_id)
+                .and_then(|tree| tree.require_may_make_private(&group_id))
+            {
+                return ActorResponse::reply(Err(err));
+            }
         }
 
         let datastore = preflight.datastore.clone();

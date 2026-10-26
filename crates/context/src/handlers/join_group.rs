@@ -27,6 +27,7 @@ use crate::handlers::rejoin_namespace::RejoinLock;
 use crate::ContextManager;
 use calimero_governance_store::op_events::subscribe as subscribe_op_events;
 use calimero_governance_store::op_events::OpEvent;
+use calimero_governance_store::private_space::require_root_invitation_target;
 
 const NAMESPACE_MESH_GRACE: Duration = Duration::from_secs(2);
 
@@ -69,6 +70,10 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     ));
                 }
             };
+
+        if let Err(err) = require_root_invitation_target(&ns_id.to_bytes().into(), &group_id) {
+            return ActorResponse::reply(Err(err));
+        }
 
         let namespace_id = ns_id.to_bytes();
         let datastore = self.datastore.clone();

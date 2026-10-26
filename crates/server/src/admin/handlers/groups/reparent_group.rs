@@ -6,6 +6,7 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::local_governance::RootOp;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
+use calimero_governance_store::private_space::Tree;
 use calimero_primitives::identity::PrivateKey;
 use calimero_server_primitives::admin::{ReparentGroupApiRequest, ReparentGroupApiResponse};
 use tracing::{error, info};
@@ -57,6 +58,12 @@ pub async fn handler(
             Ok(result) => result,
             Err(err) => return parse_api_error(err).into_response(),
         };
+
+    if let Err(err) = Tree::live(&state.store, &child_group_id)
+        .and_then(|tree| tree.require_may_reparent(&child_group_id, &new_parent_id))
+    {
+        return parse_api_error(err).into_response();
+    }
 
     let signer_sk = PrivateKey::from(sk_bytes);
     // Sealed under the namespace key: where a group sits in the tree is

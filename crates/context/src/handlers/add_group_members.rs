@@ -13,6 +13,7 @@ use tracing::{info, warn};
 use crate::ContextManager;
 use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
+use calimero_governance_store::private_space::Tree;
 use calimero_governance_store::{
     AccountBindingRepository, DeviceBinding, GroupKeyring, NamespaceRepository,
     NodeDeviceRepository,
@@ -40,6 +41,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
+                Tree::live(&datastore, &group_id)?.require_member_row_target(&group_id)?;
                 let ns_id = NamespaceRepository::new(&datastore).resolve(&group_id)?;
                 // One scan for the whole batch: `devices_of` per member rescans
                 // the binding column once per member, and the batch is unbounded.

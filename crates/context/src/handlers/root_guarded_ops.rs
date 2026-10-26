@@ -20,6 +20,8 @@ use calimero_governance_store::NamespaceRepository;
 use calimero_primitives::identity::PrivateKey;
 use tracing::info;
 
+use calimero_governance_store::private_space::Tree;
+
 use crate::ContextManager;
 
 impl ContextManager {
@@ -105,6 +107,11 @@ impl Handler<OwnerDeleteGroupRequest> for ContextManager {
         }: OwnerDeleteGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        if let Err(err) = Tree::live(&self.datastore, &group_id)
+            .and_then(|tree| tree.require_may_delete(&group_id))
+        {
+            return ActorResponse::reply(Err(err));
+        }
         self.publish_guarded_group_op(
             group_id,
             GroupOp::GroupDelete,
@@ -192,12 +199,14 @@ mod tests {
 
     use calimero_account::AccountId;
     use calimero_context_client::group::{
-        AddGroupMembersRequest, CreateGroupRequest, LeaveNamespaceRequest, ListGroupMembersRequest,
-        ListNamespacesRequest, OwnerDeleteGroupRequest, SetTeeAdmissionPolicyRequest,
+        AddGroupMembersRequest, CreateGroupInvitationRequest, CreateGroupRequest,
+        LeaveNamespaceRequest, ListGroupMembersRequest, ListNamespacesRequest,
+        OwnerDeleteGroupRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
         SetTeeAuthoringPolicyRequest, SignedReleaseTrust,
     };
     use calimero_context_client::local_governance::{SignedNamespaceOp, TeeAdmissionMode};
     use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::VisibilityMode;
     use calimero_dag::DeltaApplier;
     use calimero_governance_store::{
         get_op_head, register_context_in_group, GroupKeyring, KeyringError, MembershipRepository,
@@ -332,7 +341,11 @@ mod tests {
 
     #[actix::test]
     async fn an_owner_delete_of_the_namespace_is_published() {
-        let (store, mut harness, namespace, _subgroup) = owned_namespace().await;
+        let (store, mut harness, namespace, subgroup) = owned_namespace().await;
+        owner_delete(&harness, subgroup)
+            .await
+            .expect("the owner deletes the space first");
+        let _deleted = harness.published_topics();
 
         owner_delete(&harness, namespace)
             .await
@@ -345,6 +358,106 @@ mod tests {
         assert!(
             harness.published_topics().contains(&topic(&namespace)),
             "the delete never left this node"
+        );
+    }
+
+    #[actix::test]
+    async fn an_owner_delete_of_a_group_holding_a_space_publishes_nothing() {
+        let (store, mut harness, namespace, subgroup) = owned_namespace().await;
+
+        let err = owner_delete(&harness, namespace).await.unwrap_err();
+
+        assert!(
+            matches!(
+                err.downcast_ref::<calimero_governance_store::PrivateSpaceError>(),
+                Some(calimero_governance_store::PrivateSpaceError::HoldsSpace(_))
+            ),
+            "expected HoldsSpace, got {err:?}"
+        );
+        assert!(MetaRepository::new(&store)
+            .load(&subgroup)
+            .unwrap()
+            .is_some());
+        assert!(
+            harness.published_topics().is_empty(),
+            "a refused delete reached the wire"
+        );
+    }
+
+    fn refused_by_private_space(err: &eyre::Report) -> bool {
+        err.downcast_ref::<calimero_governance_store::PrivateSpaceError>()
+            .is_some()
+    }
+
+    #[actix::test]
+    async fn a_request_that_breaks_the_space_structure_is_refused_before_it_is_signed() {
+        let (_store, mut harness, namespace, space) = owned_namespace().await;
+        let folder = harness
+            .manager
+            .send(CreateGroupRequest {
+                salt: None,
+                bytecode_id: None,
+                application_id: Some(ApplicationId::from(APP)),
+                name: None,
+                parent_group_id: Some(space),
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("a folder inside the space")
+            .group_id;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let _created = harness.published_topics();
+
+        let nested = harness
+            .manager
+            .send(CreateGroupRequest {
+                salt: None,
+                bytecode_id: None,
+                application_id: Some(ApplicationId::from(APP)),
+                name: None,
+                parent_group_id: Some(space),
+                restricted: true,
+            })
+            .await
+            .expect("the manager answers");
+        let private = harness
+            .manager
+            .send(SetSubgroupVisibilityRequest {
+                group_id: folder,
+                subgroup_visibility: VisibilityMode::Restricted,
+            })
+            .await
+            .expect("the manager answers");
+        let member = harness
+            .manager
+            .send(AddGroupMembersRequest {
+                group_id: folder,
+                members: vec![(
+                    MemberIdentity::from(AccountId::from([0xB0; 32])),
+                    GroupMemberRole::Member,
+                )],
+            })
+            .await
+            .expect("the manager answers");
+        let invitation = harness
+            .manager
+            .send(CreateGroupInvitationRequest {
+                group_id: space,
+                expiration_timestamp: None,
+                admitters: vec![],
+                admitter_addrs: vec![],
+            })
+            .await
+            .expect("the manager answers");
+
+        assert!(refused_by_private_space(&nested.unwrap_err()));
+        assert!(refused_by_private_space(&private.unwrap_err()));
+        assert!(refused_by_private_space(&member.unwrap_err()));
+        assert!(refused_by_private_space(&invitation.unwrap_err()));
+        assert!(
+            harness.published_topics().is_empty(),
+            "a refused request reached the wire for {namespace:?}"
         );
     }
 

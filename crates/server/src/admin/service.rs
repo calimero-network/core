@@ -13,6 +13,7 @@ use calimero_context_client::messages::{ExecuteError, SharedRotationRefusal};
 use calimero_governance_store::{
     ApplyError, CapabilitiesError, ContextRegistrationError, GroupCreatedRejection,
     GroupDeletedRejection, MemberJoinedOpenRejection, MembershipError, MetaError, NamespaceError,
+    PrivateSpaceError,
 };
 use eyre::Report;
 use rust_embed::{EmbeddedFile, RustEmbed};
@@ -1345,6 +1346,20 @@ pub fn parse_api_error(err: Report) -> ApiError {
             message: format!("{err:#}"),
         };
     }
+    // A private space structure rule refused the request: what is asked cannot be
+    // done to the tree as it stands, or names the wrong group.
+    if let Some(refusal) = err.downcast_ref::<PrivateSpaceError>() {
+        return ApiError {
+            status_code: match refusal {
+                PrivateSpaceError::Nested(_)
+                | PrivateSpaceError::LeavesSpace(_)
+                | PrivateSpaceError::HoldsSpace(_) => StatusCode::CONFLICT,
+                PrivateSpaceError::InvitationTargetNotRoot(_)
+                | PrivateSpaceError::MemberRowOutsideSpaceRoot(_) => StatusCode::BAD_REQUEST,
+            },
+            message: format!("{err:#}"),
+        };
+    }
     // A membership-gate rejection ("node is not a member of group X") is a
     // legitimate client-side precondition, not a server fault. Surface it as a
     // typed 403 with its (safe, intended) message instead of letting it fall
@@ -1892,6 +1907,21 @@ mod parse_api_error_tests {
     fn last_admin_maps_to_409_not_403() {
         let api = parse_api_error(MembershipError::LastAdmin.into());
         assert_eq!(api.status_code, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn private_space_refusals_map_to_4xx() {
+        let nested = calimero_governance_store::PrivateSpaceError::Nested("g".to_owned());
+        assert_eq!(
+            parse_api_error(nested.into()).status_code,
+            StatusCode::CONFLICT
+        );
+        let target =
+            calimero_governance_store::PrivateSpaceError::InvitationTargetNotRoot("g".to_owned());
+        assert_eq!(
+            parse_api_error(target.into()).status_code,
+            StatusCode::BAD_REQUEST
+        );
     }
 
     #[test]

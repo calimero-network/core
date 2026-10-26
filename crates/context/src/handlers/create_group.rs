@@ -16,6 +16,7 @@ use crate::handlers::ensure_account_namespace::is_established;
 use crate::ContextManager;
 use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
+use calimero_governance_store::private_space::Tree;
 use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, MetadataRepository,
 };
@@ -209,6 +210,11 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     .into()));
                 }
             };
+            if let Err(err) = Tree::live(&self.datastore, parent_id)
+                .and_then(|tree| tree.require_may_create(parent_id, restricted))
+            {
+                return ActorResponse::reply(Err(err));
+            }
             // Authorization. Namespace-root admins may create a subgroup at
             // any depth. A non-admin namespace member may create one *directly
             // under the namespace root* if they hold `CAN_CREATE_SUBGROUP`

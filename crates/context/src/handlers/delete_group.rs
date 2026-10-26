@@ -11,6 +11,7 @@ use tracing::info;
 use crate::ContextManager;
 use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
+use calimero_governance_store::private_space::Tree;
 
 impl Handler<DeleteGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <DeleteGroupRequest as Message>::Result>;
@@ -63,6 +64,8 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                     "cannot delete the namespace root '{group_id:?}': use delete_namespace instead"
                 );
                 }
+
+                Tree::live(&self.datastore, &group_id)?.require_may_delete(&group_id)?;
 
                 // Authorization (re-checked on every peer in `execute_group_deleted`):
                 // the subgroup's owner, an admin of the namespace root, or a
