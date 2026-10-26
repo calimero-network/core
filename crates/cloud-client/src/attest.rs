@@ -170,7 +170,9 @@ pub async fn verify(
     // Refuse what no policy could admit before reaching for the network.
     let release = match &policy.measurements {
         Measurements::None => {
-            eyre::bail!("real quote refused: this client trusts no TD image (no measurement policy)")
+            eyre::bail!(
+                "real quote refused: this client trusts no TD image (no measurement policy)"
+            )
         }
         Measurements::Pinned(_) => None,
         Measurements::Release { min_version, .. } => {
@@ -185,12 +187,24 @@ pub async fn verify(
     let b = &result.quote.body;
     let profile = match (&policy.measurements, release) {
         (Measurements::Pinned(m), _) => m.clone(),
-        (Measurements::Release { allowed_profiles, .. }, Some(version)) => {
+        (
+            Measurements::Release {
+                allowed_profiles, ..
+            },
+            Some(version),
+        ) => {
             let release = fetch_release(version.clone())
                 .await
                 .map_err(|e| eyre::eyre!("mero-tee release {version}: {e:#}"))?;
             let name = release
-                .matching_profile(allowed_profiles, &b.mrtd, &b.rtmr0, &b.rtmr1, &b.rtmr2, &b.rtmr3)
+                .matching_profile(
+                    allowed_profiles,
+                    &b.mrtd,
+                    &b.rtmr0,
+                    &b.rtmr1,
+                    &b.rtmr2,
+                    &b.rtmr3,
+                )
                 .ok_or_else(|| {
                     eyre::eyre!(
                         "the quote matches none of the allowed profiles ({}) of release {version}",
@@ -291,7 +305,10 @@ mod tests {
         let err = verify(&doc("not-a-version"), &[2; 32], &policy)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("no valid mero-tee release"), "{err}");
+        assert!(
+            err.to_string().contains("no valid mero-tee release"),
+            "{err}"
+        );
     }
 
     #[test]

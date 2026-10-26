@@ -1201,10 +1201,12 @@ name = "calimero-cloud-client"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
+ "calimero-cloud-node",
  "calimero-identity",
  "calimero-sealed",
  "calimero-tee-attestation",
  "calimero-tee-release",
+ "clap",
  "eyre",
  "futures-util",
  "hex",
@@ -1212,6 +1214,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "url",

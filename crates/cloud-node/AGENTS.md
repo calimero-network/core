@@ -59,4 +59,5 @@ running cluster, event audiences, pruning of revoked session ids.
 cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release   # test fixture
 cargo test -p calimero-cloud-node    # 3-node cluster in process, sealed, real WASM
 cargo run -p calimero-cloud-node --bin merod-v2 -- --help
+cargo run -p calimero-cloud-node --bin merod-v2 -- local   # dev cluster: 3 nodes on :2501-2503 (`local.rs`)
 ```

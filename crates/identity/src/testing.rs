@@ -46,6 +46,48 @@ impl SoftAuthenticator {
         }
     }
 
+    /// Save this passkey (private key included) as JSON. A file passkey is for
+    /// development clusters only: whoever reads the file holds the account.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        serde_json::json!({
+            "pkcs8": b64url(&self.pkcs8),
+            "credentialId": b64url(&self.credential_id),
+            "rpId": self.rp_id,
+            "origin": self.origin,
+            "counter": self.counter,
+        })
+        .to_string()
+    }
+
+    /// Load a passkey saved with [`Self::to_json`].
+    pub fn from_json(json: &str) -> Result<Self, crate::Error> {
+        let v: serde_json::Value =
+            serde_json::from_str(json).map_err(|_| crate::Error::Malformed("passkey file"))?;
+        let field = |k: &str| {
+            v[k].as_str()
+                .ok_or(crate::Error::Malformed("passkey file field"))
+        };
+        let pkcs8 = crate::from_b64url(field("pkcs8")?)?;
+        // Refuse a file whose key does not load now, not at the first signature.
+        let _check = EcdsaKeyPair::from_pkcs8(
+            &ECDSA_P256_SHA256_ASN1_SIGNING,
+            &pkcs8,
+            &SystemRandom::new(),
+        )
+        .map_err(|_| crate::Error::Malformed("passkey key"))?;
+        Ok(Self {
+            pkcs8,
+            credential_id: crate::from_b64url(field("credentialId")?)?,
+            rp_id: field("rpId")?.to_owned(),
+            origin: field("origin")?.to_owned(),
+            counter: v["counter"]
+                .as_u64()
+                .and_then(|c| u32::try_from(c).ok())
+                .unwrap_or(0),
+        })
+    }
+
     fn pair(&self) -> EcdsaKeyPair {
         EcdsaKeyPair::from_pkcs8(
             &ECDSA_P256_SHA256_ASN1_SIGNING,

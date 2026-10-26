@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use calimero_cloud_node::attest::Mode;
 use calimero_cloud_client::Measurements;
+use calimero_cloud_node::attest::Mode;
 use calimero_cloud_node::{kms, run, Config};
 use clap::Parser;
 
@@ -62,7 +62,12 @@ struct Args {
     #[arg(long, env = "MEROD_STORAGE_KEY_FILE", conflicts_with_all = ["storage_key", "kms_url"])]
     storage_key_file: Option<PathBuf>,
     /// Fetch the storage key from mero-kms by running `merod kms disk-key`.
-    #[arg(long, env = "MEROD_KMS_URL", requires = "kms_identity", conflicts_with = "storage_key")]
+    #[arg(
+        long,
+        env = "MEROD_KMS_URL",
+        requires = "kms_identity",
+        conflicts_with = "storage_key"
+    )]
     kms_url: Option<String>,
     /// The cluster's disk identity (shared by its nodes, so they derive one key).
     #[arg(long, env = "MEROD_KMS_IDENTITY")]
@@ -84,14 +89,87 @@ struct Args {
     peer_min_release: Option<String>,
 }
 
+/// `merod-v2 local`: a development cluster in this process.
+#[derive(Debug, Parser)]
+#[command(name = "merod-v2 local")]
+struct LocalArgs {
+    /// How many nodes.
+    #[arg(long, default_value_t = 3)]
+    nodes: u64,
+    /// Node i listens on base-port + i.
+    #[arg(long, default_value_t = 2500)]
+    base_port: u16,
+    /// Where the cluster keeps its state (kept across restarts).
+    #[arg(long, default_value = ".merod-v2-local")]
+    dir: PathBuf,
+    /// Start from empty state.
+    #[arg(long)]
+    fresh: bool,
+    /// The Ops API token (default: a new random one, printed).
+    #[arg(long, env = "MEROD_OPS_TOKEN")]
+    ops_token: Option<String>,
+    /// Origins allowed to run passkey ceremonies.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "http://localhost:3000,http://localhost:5173"
+    )]
+    origins: Vec<String>,
+}
+
+async fn local(args: LocalArgs) -> eyre::Result<()> {
+    if args.fresh && args.dir.exists() {
+        std::fs::remove_dir_all(&args.dir)?;
+    }
+    let token = args
+        .ops_token
+        .unwrap_or_else(|| hex::encode(calimero_identity::random::<16>()));
+    let cluster = calimero_cloud_node::local::start(
+        args.nodes,
+        args.base_port,
+        &args.dir,
+        &token,
+        args.origins,
+    )
+    .await?;
+    println!(
+        "Local cluster \"{}\" (development: mock attestation, dev storage key)",
+        calimero_cloud_node::local::CLUSTER
+    );
+    for (i, url) in cluster.urls.iter().enumerate() {
+        println!("  node {}  {url}", i + 1);
+    }
+    println!("  state     {}", args.dir.display());
+    println!("  ops token {token}");
+    println!();
+    println!(
+        "  calimero-cloud --url {} --allow-mock login --dev-passkey ./dev-passkey.json",
+        cluster.urls[0]
+    );
+    tokio::signal::ctrl_c().await?;
+    cluster.stop().await;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
+    let is_local = std::env::args().nth(1).as_deref() == Some("local");
+    // A local cluster's nodes start one after another, so openraft reports the
+    // ones not up yet; that is noise for a developer (RUST_LOG still overrides).
+    let default_filter = if is_local {
+        "warn,openraft=off"
+    } else {
+        "info,openraft=warn"
+    };
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,openraft=warn".into()),
+                .unwrap_or_else(|_| default_filter.into()),
         )
         .init();
+    if is_local {
+        return local(LocalArgs::parse_from(std::env::args().skip(1))).await;
+    }
     let args = Args::parse();
     let mut peers = BTreeMap::new();
     for p in &args.peers {

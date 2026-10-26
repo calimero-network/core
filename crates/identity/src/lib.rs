@@ -213,6 +213,18 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_passkey_keeps_signing_and_counting() {
+        let mut auth = SoftAuthenticator::new("localhost", "http://localhost:3000");
+        let challenge = random::<32>();
+        let mut cred = verify_registration(&rp(), &challenge, &auth.register(&challenge)).unwrap();
+        cred.sign_count = verify_assertion(&rp(), &[6; 32], &cred, &auth.assert(&[6; 32])).unwrap();
+        let mut loaded = SoftAuthenticator::from_json(&auth.to_json()).unwrap();
+        assert_eq!(loaded.credential_id(), auth.credential_id());
+        assert!(verify_assertion(&rp(), &[7; 32], &cred, &loaded.assert(&[7; 32])).is_ok());
+        assert!(SoftAuthenticator::from_json("{}").is_err());
+    }
+
+    #[test]
     fn session_tokens() {
         let key = random::<32>();
         let claims = SessionClaims {
