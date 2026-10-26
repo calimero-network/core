@@ -287,6 +287,12 @@ pub trait AtCutAuthorizer: Send + Sync {
         None
     }
 
+    /// Whether this authorizer holds the tree's history, so that a `None` from
+    /// [`Self::subgroup_edges_at_cut`] on a real cut is undecidable, never a reason to read live.
+    fn reads_tree_at_cut(&self) -> bool {
+        false
+    }
+
     /// Drop what this authorizer has folded: the store changed under it, as when a key
     /// arrives and ops parked unreadable can now be read.
     fn forget(&self) {}

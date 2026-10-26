@@ -455,6 +455,10 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
             .direct_role_at_cut(self.store, *group, member, parents)
     }
 
+    fn reads_tree_at_cut(&self) -> bool {
+        true
+    }
+
     fn subgroup_edges_at_cut(
         &self,
         group: &ContextGroupId,
@@ -1054,5 +1058,55 @@ mod tests {
             "the move is seen only at a cut that holds it"
         );
         assert_eq!(authorizer.subgroup_edges_at_cut(&root, &[]), None);
+    }
+
+    #[test]
+    fn an_unreadable_op_of_a_group_in_the_tree_leaves_its_cut_undecidable() {
+        let (store, _sam, alice, _removal) = namespace();
+        let authorizer = EphemeralProjectionAuthorizer::new(&store);
+        let root = ContextGroupId::from(NS);
+        let a = ContextGroupId::from([0xA1; 32]);
+        let make_a = gov(
+            OWNER,
+            &[&alice],
+            OpPayload::SubgroupCreated {
+                child: ScopeId::from(a.to_bytes()),
+                parent: ScopeId::from(NS),
+                restricted: true,
+                admin: acct(OWNER),
+            },
+        );
+        // Sealed under a key this node lacks: it may be a visibility op of `a`.
+        let sealed = |group: ContextGroupId| gov(OWNER, &[&make_a], OpPayload::Opaque { group });
+        let (of_a, of_elsewhere) = (sealed(a), sealed(ContextGroupId::from([0xEE; 32])));
+        for op in [&make_a, &of_a, &of_elsewhere] {
+            crate::unified_op_store::persist_op(&store, op).expect("persist");
+        }
+
+        let edges = |cut: &Op| authorizer.subgroup_edges_at_cut(&root, &[cut.id()]);
+        assert_eq!(edges(&make_a), Some([(a, (root, true))].into()));
+        assert_eq!(edges(&of_a), None, "an edge's visibility may have flipped");
+        let judged = |cut: &Op| {
+            calimero_governance_store::private_space::Tree::at_cut(
+                &store,
+                &authorizer,
+                &root,
+                &[cut.id()],
+            )
+        };
+        assert!(judged(&make_a).is_ok());
+        let err = judged(&of_a).err().expect("the tree is not read live");
+        assert!(
+            err.chain().any(|cause| matches!(
+                cause.downcast_ref::<calimero_governance_store::ApplyError>(),
+                Some(calimero_governance_store::ApplyError::AuthorityUndecidable { .. })
+            )),
+            "{err:#}"
+        );
+        assert_eq!(
+            edges(&of_elsewhere),
+            Some([(a, (root, true))].into()),
+            "a group outside the tree cannot move an edge"
+        );
     }
 }

@@ -12,7 +12,7 @@ use eyre::{bail, Result as EyreResult};
 
 use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer, SubgroupEdges};
 use crate::{
-    CapabilitiesRepository, NamespaceError, NamespaceRepository, PrivateSpaceError,
+    ApplyError, CapabilitiesRepository, NamespaceError, NamespaceRepository, PrivateSpaceError,
     MAX_NAMESPACE_DEPTH,
 };
 
@@ -33,6 +33,12 @@ impl Tree {
             return Ok(Self(edges));
         }
         ensure_cut_resolvable(authorizer, group, parents, "private space structure")?;
+        if !parents.is_empty() && authorizer.reads_tree_at_cut() {
+            bail!(ApplyError::AuthorityUndecidable {
+                group_id: group.to_string(),
+                signer: "private space structure".to_owned(),
+            });
+        }
         Self::live(store, group)
     }
 

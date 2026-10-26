@@ -2941,7 +2941,9 @@ impl ScopeProjections {
     }
 
     /// The subgroup edges of `group`'s namespace at the cut, `child -> (parent, restricted)`;
-    /// `None` a cut not fully folded.
+    /// `None` a cut not fully folded, or one holding an op this node cannot read of any group in
+    /// the tree: it may have moved an edge or flipped its visibility, and nodes with other keys
+    /// would answer otherwise.
     #[must_use]
     pub fn subgroup_edges_at_cut(
         &self,
@@ -2950,13 +2952,25 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<SubgroupEdges> {
         let (view, _, _) = self.auth_cut_context(store, group, heads)?;
+        let namespace = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        let scope = ScopeId::from(namespace);
+        let base = authority_base(store, namespace)?;
+        let walked = self.walk(&scope, self.logs.get(&scope)?, heads, base);
+        let id = |scope: &ScopeId| ContextGroupId::from(*scope.as_bytes());
+        let mut in_tree = BTreeSet::from([ContextGroupId::from(namespace)]);
+        for (child, edge) in &view.subgroups {
+            in_tree.extend([id(child), id(&edge.parent)]);
+        }
+        if walked.first_opaque_in_any(&in_tree).is_some() {
+            return None;
+        }
         Some(
             view.subgroups
                 .iter()
-                .map(|(child, edge)| {
-                    let id = |scope: &ScopeId| ContextGroupId::from(*scope.as_bytes());
-                    (id(child), (id(&edge.parent), edge.restricted))
-                })
+                .map(|(child, edge)| (id(child), (id(&edge.parent), edge.restricted)))
                 .collect(),
         )
     }
