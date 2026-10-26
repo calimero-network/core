@@ -1,0 +1,480 @@
+name: E2E Private Folders - An Open Folder Inside A Private Folder Follows The Private Folder's Members
+description: >
+  Notes is an open folder inside the private folder Minutes.
+  Bob (member of Minutes) sees Notes, joins it by inheritance and uses a context in it.
+  Carol (member of Board only) sees neither Minutes nor Notes, and cannot join Notes by inheritance.
+
+  Tree: workspace -> Secret (private), Board (private) -> Minutes (private) -> Notes (open).
+  Nodes: 1 Alice (workspace owner), 2 Bob (member of Minutes), 3 Carol (member of Board).
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: private-folders
+
+steps:
+
+  - name: Login on node-1
+    type: login
+    node: private-folders-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: private-folders-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: private-folders-3
+    username: dev
+    password: dev-password
+
+  # Workspace: node-1 (Alice) owns it, nodes 2.. join as plain members.
+  # Alice is node-1, Bob node-2, Carol node-3, Dave node-4.
+
+  - name: Install the application on Alice's node
+    type: install_application
+    node: private-folders-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Alice creates the workspace
+    type: create_namespace
+    node: private-folders-1
+    application_id: '{{app}}'
+    outputs:
+      ns: namespaceId
+
+  - name: Read Alice's account and key
+    type: node_identity
+    node: private-folders-1
+    outputs:
+      acc_a: accountId
+      key_a: publicKey
+
+  - name: Invite node-2 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_b: invitation
+
+  - name: Node-2 joins the workspace
+    type: join_namespace
+    node: private-folders-2
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_b}}'
+    outputs:
+      id_b: memberIdentity
+      acc_b: memberAccount
+
+  - name: Invite node-3 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_c: invitation
+
+  - name: Node-3 joins the workspace
+    type: join_namespace
+    node: private-folders-3
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_c}}'
+    outputs:
+      id_c: memberIdentity
+      acc_c: memberAccount
+
+  # The tree: Secret and Board are private folders directly under the workspace,
+  # Minutes is a private folder inside Board, Notes is an open folder inside Minutes.
+
+  - name: Alice creates the Secret folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: secret
+    outputs:
+      f_secret: groupId
+
+  - name: Alice marks Secret restricted
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_secret}}'
+    visibility: restricted
+
+  - name: Alice creates the Board folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: board
+    outputs:
+      f_board: groupId
+
+  - name: Alice marks Board restricted
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    visibility: restricted
+
+  - name: Alice creates the Minutes folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: minutes
+    outputs:
+      f_minutes: groupId
+
+  - name: Alice nests Minutes under board
+    type: reparent_group
+    node: private-folders-1
+    child_group_id: '{{f_minutes}}'
+    new_parent_id: '{{f_board}}'
+
+  - name: Alice marks Minutes restricted
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    visibility: restricted
+
+  - name: Alice creates the Notes folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: notes
+    outputs:
+      f_notes: groupId
+
+  - name: Alice nests Notes under minutes
+    type: reparent_group
+    node: private-folders-1
+    child_group_id: '{{f_notes}}'
+    new_parent_id: '{{f_minutes}}'
+
+  - name: Alice marks Notes open
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_notes}}'
+    visibility: open
+
+  - name: Carol is added to Board as Member
+    type: add_group_members
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    members:
+    - identity: '{{id_c}}'
+      role: Member
+
+  - name: Alice lets Minutes members join its open folders
+    type: set_default_capabilities
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    capabilities: 4
+
+  - name: Bob is added to Minutes as Member
+    type: add_group_members
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    members:
+    - identity: '{{id_b}}'
+      role: Member
+
+  - name: Alice creates a context in Notes
+    type: create_context
+    node: private-folders-1
+    application_id: '{{app}}'
+    group_id: '{{f_notes}}'
+    outputs:
+      ctx: contextId
+
+  - name: Alice names Secret
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_secret}}'
+    record_name: Secret
+    data:
+      topic: secret
+
+  - name: Alice names Board
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    record_name: Board
+    data:
+      topic: board
+
+  - name: Alice names Minutes
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    record_name: Minutes
+    data:
+      topic: weekly
+
+  - name: Alice names Notes
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_notes}}'
+    record_name: Notes
+    data:
+      topic: actions
+
+  - name: Settle the workspace governance onto every node
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Bob sees Notes through Minutes.
+
+  - name: Bob's node lists Notes under Minutes
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/subgroups
+    where:
+      groupId: '{{f_notes}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Bob joins Notes by inheritance
+    type: join_subgroup_inheritance
+    node: private-folders-2
+    group_id: '{{f_notes}}'
+
+  - name: Bob reads the name and metadata of Notes
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_notes}}/metadata
+    match:
+      data.name: Notes
+      data.data.topic: actions
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists the context
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_notes}}/contexts
+    where:
+      contextId: '{{ctx}}'
+    present:
+    - contextId
+    retries: 30
+    interval: 2
+
+  - name: Bob joins the context
+    type: join_context
+    node: private-folders-2
+    context_id: '{{ctx}}'
+    outputs:
+      ckey_b: memberPublicKey
+
+  - name: Settle the context on Alice and Bob
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Bob writes
+    type: call
+    node: private-folders-2
+    context_id: '{{ctx}}'
+    method: set
+    args:
+      key: from_b
+      value: b_msg
+    executor_public_key: '{{ckey_b}}'
+
+  - name: Settle the context after Bob's write
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    timeout: 30
+    check_interval: 2
+
+  - name: Alice reads Bob's write
+    type: call
+    node: private-folders-1
+    context_id: '{{ctx}}'
+    method: get
+    args:
+      key: from_b
+    executor_public_key: '{{key_a}}'
+    outputs:
+      alice_read_b: result
+
+  - name: Alice sees Bob's write
+    type: json_assert
+    statements:
+    - 'json_equal({{alice_read_b}}, {"output": "b_msg"})'
+
+  - name: Alice writes
+    type: call
+    node: private-folders-1
+    context_id: '{{ctx}}'
+    method: set
+    args:
+      key: from_a_to_b
+      value: a_msg
+    executor_public_key: '{{key_a}}'
+
+  - name: Settle the context after Alice's write to Bob
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    timeout: 30
+    check_interval: 2
+
+  - name: Bob reads Alice's write
+    type: call
+    node: private-folders-2
+    context_id: '{{ctx}}'
+    method: get
+    args:
+      key: from_a_to_b
+    executor_public_key: '{{ckey_b}}'
+    outputs:
+      b_read_alice: result
+
+  - name: Bob sees Alice's write
+    type: json_assert
+    statements:
+    - 'json_equal({{b_read_alice}}, {"output": "a_msg"})'
+
+  # Carol sees nothing of Minutes or Notes.
+
+  - name: Carol's node lists Board
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/namespaces/{{ns}}/groups
+    where:
+      groupId: '{{f_board}}'
+    present:
+    - groupId
+    retries: 30
+    interval: 2
+
+  - name: Carol's node does not list Minutes under Board
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_board}}/subgroups
+    where:
+      groupId: '{{f_minutes}}'
+    expect_no_match: true
+
+  - name: 'Minutes on Carol''s node: info is refused'
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}
+    expected_failure: true
+
+  - name: 'Minutes on Carol''s node: member list is refused'
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/members
+    expected_failure: true
+
+  - name: 'Minutes on Carol''s node: metadata name is not readable'
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    absent:
+    - data.name
+
+  - name: 'Notes on Carol''s node: info is refused'
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_notes}}
+    expected_failure: true
+
+  - name: 'Notes on Carol''s node: member list is refused'
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_notes}}/members
+    expected_failure: true
+
+  - name: 'Notes on Carol''s node: metadata name is not readable'
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_notes}}/metadata
+    absent:
+    - data.name
+
+  - name: Carol's node does not list the Notes context
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_notes}}/contexts
+    expected_failure: true
+
+  - name: Carol tries to join Notes by inheritance
+    type: script
+    script: scripts/group-attempt.sh
+    target: local
+    args:
+    - private-folders-3
+    - POST
+    - /admin-api/groups/{{f_notes}}/join-via-inheritance
+    - '{}'
+
+  - name: Let the refused join reach every peer
+    type: wait
+    seconds: 15
+
+  # Carol holds no Notes seat on Alice's node or on Bob's.
+
+  - name: Alice's node lists no Notes seat for Carol
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_notes}}/members
+    where:
+      identity: '{{acc_c}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists no Notes seat for Carol
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_notes}}/members
+    where:
+      identity: '{{acc_c}}'
+    expect_no_match: true
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists Bob's Notes seat
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_notes}}/members
+    where:
+      identity: '{{acc_b}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120

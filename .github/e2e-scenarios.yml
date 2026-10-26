@@ -245,6 +245,57 @@ scenarios:
   - workflow: group-leave-then-rejoin-via-inheritance
     file: workflows/group-leave-then-rejoin-via-inheritance.yml
     app: scaffolding-e2e
+  # Nested private folders across three or four nodes. Governance-only ones fetch no bytecode.
+  - workflow: private-folder-nested-member-lists
+    file: workflows/private-folder-nested-member-lists.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: private-folder-nested-member-reads
+    file: workflows/private-folder-nested-member-reads.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: private-folder-nested-member-writes
+    file: workflows/private-folder-nested-member-writes.yml
+    app: scaffolding-e2e
+  - workflow: private-folder-nested-member-named-before-join
+    file: workflows/private-folder-nested-member-named-before-join.yml
+    app: scaffolding-e2e
+  - workflow: private-folder-direct-member-reads
+    file: workflows/private-folder-direct-member-reads.yml
+    app: scaffolding-e2e
+  - workflow: private-folder-nested-consistency
+    file: workflows/private-folder-nested-consistency.yml
+    app: scaffolding-e2e
+  - workflow: private-folder-open-subfolder-inherits
+    file: workflows/private-folder-open-subfolder-inherits.yml
+    app: scaffolding-e2e
+  - workflow: private-folder-workspace-admin-locked-out
+    file: workflows/private-folder-workspace-admin-locked-out.yml
+    app: scaffolding-e2e
+  - workflow: private-folder-parent-removal-stops-at-child
+    file: workflows/private-folder-parent-removal-stops-at-child.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: private-folder-workspace-removal-reaches-child
+    file: workflows/private-folder-workspace-removal-reaches-child.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: private-folder-visibility-flip
+    file: workflows/private-folder-visibility-flip.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: private-folder-invite-targets
+    file: workflows/private-folder-invite-targets.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: private-folder-concurrent-removal-board
+    file: workflows/private-folder-concurrent-removal-board.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: private-folder-concurrent-removal-workspace
+    file: workflows/private-folder-concurrent-removal-workspace.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
   - workflow: group-private-add-then-write
     file: workflows/group-private-add-then-write.yml
     app: scaffolding-e2e

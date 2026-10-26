@@ -1,0 +1,480 @@
+name: E2E Private Folders - Carol Adds Dave To Minutes While Alice Removes Carol From Board
+description: >
+  Carol (member of Board, Admin of Minutes) and Alice are cut off from each other.
+  Carol adds Dave to Minutes while Alice removes Carol from Board.
+  After they reconnect every node must hold the same Dave seat in Minutes, and it must be the right one:
+  Dave stays, because removing Carol from Board does not reach the private Minutes.
+  Consistency and target steps are kept apart.
+
+  The cut is made with stop_node and start_node: node-3 is down while Alice removes Carol,
+  then node-3 runs alone while every other node is down, so Carol authors her op without having seen the removal.
+  Tree: workspace -> Secret (private), Board (private) -> Minutes (private) -> Notes (open).
+  Nodes: 1 Alice (workspace owner), 2 Bob (member of Minutes), 3 Carol (member of Board, Admin of Minutes), 4 Dave (workspace member only).
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 4
+  image: merod:local
+  prefix: private-folders
+
+steps:
+
+  - name: Login on node-1
+    type: login
+    node: private-folders-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: private-folders-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: private-folders-3
+    username: dev
+    password: dev-password
+
+  - name: Login on node-4
+    type: login
+    node: private-folders-4
+    username: dev
+    password: dev-password
+
+  # Workspace: node-1 (Alice) owns it, nodes 2.. join as plain members.
+  # Alice is node-1, Bob node-2, Carol node-3, Dave node-4.
+
+  - name: Install the application on Alice's node
+    type: install_application
+    node: private-folders-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Alice creates the workspace
+    type: create_namespace
+    node: private-folders-1
+    application_id: '{{app}}'
+    outputs:
+      ns: namespaceId
+
+  - name: Read Alice's account and key
+    type: node_identity
+    node: private-folders-1
+    outputs:
+      acc_a: accountId
+      key_a: publicKey
+
+  - name: Invite node-2 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_b: invitation
+
+  - name: Node-2 joins the workspace
+    type: join_namespace
+    node: private-folders-2
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_b}}'
+    outputs:
+      id_b: memberIdentity
+      acc_b: memberAccount
+
+  - name: Invite node-3 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_c: invitation
+
+  - name: Node-3 joins the workspace
+    type: join_namespace
+    node: private-folders-3
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_c}}'
+    outputs:
+      id_c: memberIdentity
+      acc_c: memberAccount
+
+  - name: Invite node-4 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_d: invitation
+
+  - name: Node-4 joins the workspace
+    type: join_namespace
+    node: private-folders-4
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_d}}'
+    outputs:
+      id_d: memberIdentity
+      acc_d: memberAccount
+
+  # The tree: Secret and Board are private folders directly under the workspace,
+  # Minutes is a private folder inside Board, Notes is an open folder inside Minutes.
+
+  - name: Alice creates the Secret folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: secret
+    outputs:
+      f_secret: groupId
+
+  - name: Alice marks Secret restricted
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_secret}}'
+    visibility: restricted
+
+  - name: Alice creates the Board folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: board
+    outputs:
+      f_board: groupId
+
+  - name: Alice marks Board restricted
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    visibility: restricted
+
+  - name: Alice creates the Minutes folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: minutes
+    outputs:
+      f_minutes: groupId
+
+  - name: Alice nests Minutes under board
+    type: reparent_group
+    node: private-folders-1
+    child_group_id: '{{f_minutes}}'
+    new_parent_id: '{{f_board}}'
+
+  - name: Alice marks Minutes restricted
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    visibility: restricted
+
+  - name: Alice creates the Notes folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: notes
+    outputs:
+      f_notes: groupId
+
+  - name: Alice nests Notes under minutes
+    type: reparent_group
+    node: private-folders-1
+    child_group_id: '{{f_notes}}'
+    new_parent_id: '{{f_minutes}}'
+
+  - name: Alice marks Notes open
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_notes}}'
+    visibility: open
+
+  - name: Carol is added to Board as Member
+    type: add_group_members
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    members:
+    - identity: '{{id_c}}'
+      role: Member
+
+  - name: Carol is added to Minutes as Admin
+    type: add_group_members
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    members:
+    - identity: '{{id_c}}'
+      role: Admin
+
+  - name: Bob is added to Minutes as Member
+    type: add_group_members
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    members:
+    - identity: '{{id_b}}'
+      role: Member
+
+  - name: Alice names Secret
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_secret}}'
+    record_name: Secret
+    data:
+      topic: secret
+
+  - name: Alice names Board
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    record_name: Board
+    data:
+      topic: board
+
+  - name: Alice names Minutes
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    record_name: Minutes
+    data:
+      topic: weekly
+
+  - name: Alice names Notes
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_notes}}'
+    record_name: Notes
+    data:
+      topic: actions
+
+  - name: Settle the workspace governance onto every node
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    - private-folders-4
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Carol's node lists her Minutes Admin seat before the cut
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    match:
+      role: Admin
+    retries: 30
+    interval: 2
+
+  - name: Bob's node lists Carol's Minutes Admin seat before the cut
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    match:
+      role: Admin
+    retries: 30
+    interval: 2
+
+  # Cut: Carol's node is down while Alice removes her.
+
+  - name: Stop Carol's node
+    type: stop_node
+    nodes:
+    - private-folders-3
+
+  - name: Carol is removed from Board
+    type: remove_group_members
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    members:
+    - '{{acc_c}}'
+
+  - name: Settle the removal onto the nodes that stay up
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-4
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Carol's node runs alone, so it has not seen the removal.
+
+  - name: Stop every other node
+    type: stop_node
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-4
+
+  - name: Start Carol's node on its own
+    type: start_node
+    nodes:
+    - private-folders-3
+
+  - name: Carol adds Dave to Minutes
+    type: add_group_members
+    node: private-folders-3
+    group_id: '{{f_minutes}}'
+    members:
+    - identity: '{{id_d}}'
+      role: Member
+
+  # Reconnect.
+
+  - name: Start the other nodes
+    type: start_node
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-4
+
+  - name: Let the nodes find each other and exchange history
+    type: wait
+    seconds: 30
+
+  - name: Settle the workspace governance on every node still in it
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    - private-folders-4
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Let late operations land
+    type: wait
+    seconds: 20
+
+  # Consistency: whatever the value, all four nodes hold the same Minutes member list.
+
+  - name: Node-1 lists the Minutes members
+    type: list_group_members
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    outputs:
+      m1: members
+
+  - name: Node-2 lists the Minutes members
+    type: list_group_members
+    node: private-folders-2
+    group_id: '{{f_minutes}}'
+    outputs:
+      m2: members
+
+  - name: Node-3 lists the Minutes members
+    type: list_group_members
+    node: private-folders-3
+    group_id: '{{f_minutes}}'
+    outputs:
+      m3: members
+
+  - name: Node-4 lists the Minutes members
+    type: list_group_members
+    node: private-folders-4
+    group_id: '{{f_minutes}}'
+    outputs:
+      m4: members
+
+  - name: Minutes member list is identical on node-1 and node-2
+    type: json_assert
+    statements:
+    - json_subset({{m1}}, {{m2}})
+    - json_subset({{m2}}, {{m1}})
+
+  - name: Minutes member list is identical on node-1 and node-3
+    type: json_assert
+    statements:
+    - json_subset({{m1}}, {{m3}})
+    - json_subset({{m3}}, {{m1}})
+
+  - name: Minutes member list is identical on node-1 and node-4
+    type: json_assert
+    statements:
+    - json_subset({{m1}}, {{m4}})
+    - json_subset({{m4}}, {{m1}})
+
+  # Target value: Dave stays in Minutes, Carol keeps her seat.
+
+  - name: Node-1 lists Dave's Minutes seat
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_d}}'
+    present:
+    - identity
+    match:
+      role: Member
+    retries: 30
+    interval: 2
+
+  - name: Node-2 lists Dave's Minutes seat
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_d}}'
+    present:
+    - identity
+    match:
+      role: Member
+    retries: 30
+    interval: 2
+
+  - name: Node-3 lists Dave's Minutes seat
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_d}}'
+    present:
+    - identity
+    match:
+      role: Member
+    retries: 30
+    interval: 2
+
+  - name: Node-4 lists Dave's Minutes seat
+    type: assert_api_response
+    node: private-folders-4
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_d}}'
+    present:
+    - identity
+    match:
+      role: Member
+    retries: 30
+    interval: 2
+
+  - name: Alice's node lists Carol's Minutes Admin seat
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    match:
+      role: Admin
+    retries: 30
+    interval: 2
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120

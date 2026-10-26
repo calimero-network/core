@@ -1,0 +1,531 @@
+name: E2E Private Folders - Every Member Node Reads Identical Minutes State
+description: >
+  Bob (Minutes only) and Carol (Board and Minutes) are added to Minutes, a private folder inside Board.
+  Minutes' member list, metadata and context list must be identical on Alice's, Bob's and Carol's nodes.
+  The identical-state steps are kept apart from the steps naming the expected value, so a run shows which one fails.
+
+  Tree: workspace -> Secret (private), Board (private) -> Minutes (private) -> Notes (open).
+  Nodes: 1 Alice (workspace owner), 2 Bob, 3 Carol.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: private-folders
+
+steps:
+
+  - name: Login on node-1
+    type: login
+    node: private-folders-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: private-folders-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: private-folders-3
+    username: dev
+    password: dev-password
+
+  # Workspace: node-1 (Alice) owns it, nodes 2.. join as plain members.
+  # Alice is node-1, Bob node-2, Carol node-3, Dave node-4.
+
+  - name: Install the application on Alice's node
+    type: install_application
+    node: private-folders-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Alice creates the workspace
+    type: create_namespace
+    node: private-folders-1
+    application_id: '{{app}}'
+    outputs:
+      ns: namespaceId
+
+  - name: Read Alice's account and key
+    type: node_identity
+    node: private-folders-1
+    outputs:
+      acc_a: accountId
+      key_a: publicKey
+
+  - name: Invite node-2 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_b: invitation
+
+  - name: Node-2 joins the workspace
+    type: join_namespace
+    node: private-folders-2
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_b}}'
+    outputs:
+      id_b: memberIdentity
+      acc_b: memberAccount
+
+  - name: Invite node-3 to the workspace
+    type: create_namespace_invitation
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    outputs:
+      inv_c: invitation
+
+  - name: Node-3 joins the workspace
+    type: join_namespace
+    node: private-folders-3
+    namespace_id: '{{ns}}'
+    invitation: '{{inv_c}}'
+    outputs:
+      id_c: memberIdentity
+      acc_c: memberAccount
+
+  # The tree: Secret and Board are private folders directly under the workspace,
+  # Minutes is a private folder inside Board, Notes is an open folder inside Minutes.
+
+  - name: Alice creates the Secret folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: secret
+    outputs:
+      f_secret: groupId
+
+  - name: Alice marks Secret restricted
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_secret}}'
+    visibility: restricted
+
+  - name: Alice creates the Board folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: board
+    outputs:
+      f_board: groupId
+
+  - name: Alice marks Board restricted
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    visibility: restricted
+
+  - name: Alice creates the Minutes folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: minutes
+    outputs:
+      f_minutes: groupId
+
+  - name: Alice nests Minutes under board
+    type: reparent_group
+    node: private-folders-1
+    child_group_id: '{{f_minutes}}'
+    new_parent_id: '{{f_board}}'
+
+  - name: Alice marks Minutes restricted
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    visibility: restricted
+
+  - name: Alice creates the Notes folder
+    type: create_group_in_namespace
+    node: private-folders-1
+    namespace_id: '{{ns}}'
+    group_name: notes
+    outputs:
+      f_notes: groupId
+
+  - name: Alice nests Notes under minutes
+    type: reparent_group
+    node: private-folders-1
+    child_group_id: '{{f_notes}}'
+    new_parent_id: '{{f_minutes}}'
+
+  - name: Alice marks Notes open
+    type: set_subgroup_visibility
+    node: private-folders-1
+    group_id: '{{f_notes}}'
+    visibility: open
+
+  - name: Carol is added to Board as Member
+    type: add_group_members
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    members:
+    - identity: '{{id_c}}'
+      role: Member
+
+  - name: Bob is added to Minutes as Member
+    type: add_group_members
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    members:
+    - identity: '{{id_b}}'
+      role: Member
+
+  - name: Carol is added to Minutes as Member
+    type: add_group_members
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    members:
+    - identity: '{{id_c}}'
+      role: Member
+
+  - name: Alice creates a context in Minutes
+    type: create_context
+    node: private-folders-1
+    application_id: '{{app}}'
+    group_id: '{{f_minutes}}'
+    outputs:
+      ctx: contextId
+
+  - name: Alice names Secret
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_secret}}'
+    record_name: Secret
+    data:
+      topic: secret
+
+  - name: Alice names Board
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_board}}'
+    record_name: Board
+    data:
+      topic: board
+
+  - name: Alice names Minutes
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    record_name: Minutes
+    data:
+      topic: weekly
+
+  - name: Alice names Notes
+    type: set_group_metadata
+    node: private-folders-1
+    group_id: '{{f_notes}}'
+    record_name: Notes
+    data:
+      topic: actions
+
+  - name: Settle the workspace governance onto every node
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+    - private-folders-1
+    - private-folders-2
+    - private-folders-3
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # Wait until every node reports the full Minutes seat list before comparing.
+
+  - name: Node-1 lists Alice's Minutes seat
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_a}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Node-1 lists Bob's Minutes seat
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_b}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Node-1 lists Carol's Minutes seat
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Node-1 reads Minutes' metadata
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    match:
+      data.name: Minutes
+      data.data.topic: weekly
+    retries: 30
+    interval: 2
+
+  - name: Node-1 lists the Minutes context
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/contexts
+    where:
+      contextId: '{{ctx}}'
+    present:
+    - contextId
+    retries: 30
+    interval: 2
+
+  - name: Node-2 lists Alice's Minutes seat
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_a}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Node-2 lists Bob's Minutes seat
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_b}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Node-2 lists Carol's Minutes seat
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Node-2 reads Minutes' metadata
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    match:
+      data.name: Minutes
+      data.data.topic: weekly
+    retries: 30
+    interval: 2
+
+  - name: Node-2 lists the Minutes context
+    type: assert_api_response
+    node: private-folders-2
+    path: /admin-api/groups/{{f_minutes}}/contexts
+    where:
+      contextId: '{{ctx}}'
+    present:
+    - contextId
+    retries: 30
+    interval: 2
+
+  - name: Node-3 lists Alice's Minutes seat
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_a}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Node-3 lists Bob's Minutes seat
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_b}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Node-3 lists Carol's Minutes seat
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    retries: 30
+    interval: 2
+
+  - name: Node-3 reads Minutes' metadata
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/metadata
+    match:
+      data.name: Minutes
+      data.data.topic: weekly
+    retries: 30
+    interval: 2
+
+  - name: Node-3 lists the Minutes context
+    type: assert_api_response
+    node: private-folders-3
+    path: /admin-api/groups/{{f_minutes}}/contexts
+    where:
+      contextId: '{{ctx}}'
+    present:
+    - contextId
+    retries: 30
+    interval: 2
+
+  # Consistency: whatever the value, the three nodes hold the same one.
+
+  - name: Node-1 lists the Minutes members
+    type: list_group_members
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    outputs:
+      m1: members
+
+  - name: Node-2 lists the Minutes members
+    type: list_group_members
+    node: private-folders-2
+    group_id: '{{f_minutes}}'
+    outputs:
+      m2: members
+
+  - name: Node-3 lists the Minutes members
+    type: list_group_members
+    node: private-folders-3
+    group_id: '{{f_minutes}}'
+    outputs:
+      m3: members
+
+  - name: Minutes member list is identical on node-1 and node-2
+    type: json_assert
+    statements:
+    - json_subset({{m1}}, {{m2}})
+    - json_subset({{m2}}, {{m1}})
+
+  - name: Minutes member list is identical on node-1 and node-3
+    type: json_assert
+    statements:
+    - json_subset({{m1}}, {{m3}})
+    - json_subset({{m3}}, {{m1}})
+
+  - name: Node-1 reads the Minutes metadata
+    type: get_group_metadata
+    node: private-folders-1
+    group_id: '{{f_minutes}}'
+    outputs:
+      mdname1: name
+      mdtopic1: data.topic
+      mdby1: updatedBy
+
+  - name: Node-2 reads the Minutes metadata
+    type: get_group_metadata
+    node: private-folders-2
+    group_id: '{{f_minutes}}'
+    outputs:
+      mdname2: name
+      mdtopic2: data.topic
+      mdby2: updatedBy
+
+  - name: Node-3 reads the Minutes metadata
+    type: get_group_metadata
+    node: private-folders-3
+    group_id: '{{f_minutes}}'
+    outputs:
+      mdname3: name
+      mdtopic3: data.topic
+      mdby3: updatedBy
+
+  - name: Minutes metadata is identical on node-1 and node-2
+    type: assert
+    statements:
+    - '{{mdname1}} == {{mdname2}}'
+    - '{{mdtopic1}} == {{mdtopic2}}'
+    - '{{mdby1}} == {{mdby2}}'
+
+  - name: Minutes metadata is identical on node-1 and node-3
+    type: assert
+    statements:
+    - '{{mdname1}} == {{mdname3}}'
+    - '{{mdtopic1}} == {{mdtopic3}}'
+    - '{{mdby1}} == {{mdby3}}'
+
+  # Target value: Alice is Admin, Bob and Carol are Members, and the metadata is what Alice set.
+
+  - name: Alice holds the Minutes Admin seat
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_a}}'
+    present:
+    - identity
+    match:
+      role: Admin
+    retries: 30
+    interval: 2
+
+  - name: Bob holds a Minutes Member seat
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_b}}'
+    present:
+    - identity
+    match:
+      role: Member
+    retries: 30
+    interval: 2
+
+  - name: Carol holds a Minutes Member seat
+    type: assert_api_response
+    node: private-folders-1
+    path: /admin-api/groups/{{f_minutes}}/members
+    where:
+      identity: '{{acc_c}}'
+    present:
+    - identity
+    match:
+      role: Member
+    retries: 30
+    interval: 2
+
+  - name: Minutes' metadata is the record Alice set
+    type: assert
+    statements:
+    - '{{mdname1}} == Minutes'
+    - '{{mdtopic1}} == weekly'
+
+stop_all_nodes: true
+restart: false
+wait_timeout: 120
