@@ -77,11 +77,21 @@ pub async fn get_handler(
         &state.ctx_client,
         client_key,
         node_owner,
-        account,
+        account.clone(),
         device,
         &group_id,
     ) {
         return refusal;
+    }
+    match super::list_subgroups::hidden_by_space(&state, &group_id, account.map(|Extension(a)| a)) {
+        Ok(false) => {}
+        Ok(true) => {
+            return ApiResponse {
+                payload: GetMetadataApiResponse { data: None },
+            }
+            .into_response()
+        }
+        Err(err) => return parse_api_error(err).into_response(),
     }
 
     let member = match parse_account(&account_str) {

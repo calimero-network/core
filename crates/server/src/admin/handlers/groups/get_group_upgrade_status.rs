@@ -30,11 +30,16 @@ pub async fn handler(
         &state.ctx_client,
         client_key,
         node_owner,
-        account,
+        account.clone(),
         device,
         &group_id,
     ) {
         return refusal;
+    }
+    match super::list_subgroups::hidden_by_space(&state, &group_id, account.map(|Extension(a)| a)) {
+        Ok(false) => {}
+        Ok(true) => return super::list_subgroups::space_outsider_refusal(),
+        Err(err) => return parse_api_error(err).into_response(),
     }
 
     info!(group_id=%group_id_str, "Getting group upgrade status");

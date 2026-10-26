@@ -5,6 +5,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_server_primitives::admin::{ListSubgroupsApiResponse, SubgroupEntryApiResponse};
 use tracing::{info, warn};
@@ -69,6 +70,55 @@ pub(crate) fn visible_children(
 
     let children = NamespaceRepository::new(&state.store).list_children(group_id)?;
 
+    if hidden_by_space(state, group_id, account.clone())? {
+        return Ok(Vec::new());
+    }
+
+    let caller_account = caller_account(state, group_id, account);
+    let mut subgroups = Vec::with_capacity(children.len());
+    for child in children {
+        // `Open` subgroups are always listed; `Restricted` subgroups are
+        // listed only for the parent-group admin or a member of the
+        // child (see `subgroup_visible_to`). On any visibility/membership
+        // lookup error we skip the child — the conservative choice never
+        // leaks a private subgroup. A `caller` of `None` (this node has
+        // no namespace identity for the parent group) likewise hides all
+        // `Restricted` children.
+        match MembershipRepository::new(&state.store).subgroup_visible_to(
+            group_id,
+            &child,
+            caller_account.as_ref(),
+        ) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(err) => {
+                warn!(
+                    ?err,
+                    parent_group_id = %group_id_str,
+                    child_group_id = %hex::encode(child.to_bytes()),
+                    "subgroup visibility check failed; hiding subgroup from list"
+                );
+                continue;
+            }
+        }
+
+        let name = MetadataRepository::new(&state.store)
+            .group_metadata(&child)?
+            .and_then(|r| r.name);
+        subgroups.push((child, name));
+    }
+
+    Ok(subgroups)
+}
+
+/// The account a request asks as: its own session account, else this node's account in
+/// `group_id`'s namespace. `None` is no account here, which sees nothing restricted.
+pub(crate) fn caller_account(
+    state: &AdminState,
+    group_id: &ContextGroupId,
+    account: Option<crate::auth::AuthenticatedAccount>,
+) -> Option<AccountId> {
+    let group_id_str = hex::encode(group_id.to_bytes());
     // Caller identity comes from the node's *own* namespace identity for
     // the parent group, NOT from the JWT subject. The JWT's `sub` is an
     // opaque user id that doesn't parse as a `PublicKey`
@@ -112,125 +162,51 @@ pub(crate) fn visible_children(
                 None
             })
     });
-    let caller_account = account.map(|account| account.0).or(node_account);
+    account.map(|account| account.0).or(node_account)
+}
 
-    // Outsiders see that a private space exists, never what is inside it.
-    if Tree::live(&state.store, group_id)?.in_space(group_id)? {
-        let is_member = match caller_account.as_ref() {
-            Some(account) => {
-                MembershipRepository::new(&state.store).is_member(group_id, account)?
-            }
-            None => false,
-        };
-        if !is_member {
-            return Ok(Vec::new());
-        }
+/// The answer to a read that `hidden_by_space` rules out.
+pub(crate) fn space_outsider_refusal() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    crate::admin::service::ApiError {
+        status_code: axum::http::StatusCode::FORBIDDEN,
+        message: "not a member of this private space".to_owned(),
     }
+    .into_response()
+}
 
-    let mut subgroups = Vec::with_capacity(children.len());
-    for child in children {
-        // `Open` subgroups are always listed; `Restricted` subgroups are
-        // listed only for the parent-group admin or a member of the
-        // child (see `subgroup_visible_to`). On any visibility/membership
-        // lookup error we skip the child — the conservative choice never
-        // leaks a private subgroup. A `caller` of `None` (this node has
-        // no namespace identity for the parent group) likewise hides all
-        // `Restricted` children.
-        match MembershipRepository::new(&state.store).subgroup_visible_to(
-            group_id,
-            &child,
-            caller_account.as_ref(),
-        ) {
-            Ok(true) => {}
-            Ok(false) => continue,
-            Err(err) => {
-                warn!(
-                    ?err,
-                    parent_group_id = %group_id_str,
-                    child_group_id = %hex::encode(child.to_bytes()),
-                    "subgroup visibility check failed; hiding subgroup from list"
-                );
-                continue;
-            }
-        }
-
-        let name = MetadataRepository::new(&state.store)
-            .group_metadata(&child)?
-            .and_then(|r| r.name);
-        subgroups.push((child, name));
+/// Whether `group_id` is a private space root or inside one, and the caller no member of it:
+/// outsiders learn that a space exists, never what is inside it.
+pub(crate) fn hidden_by_space(
+    state: &AdminState,
+    group_id: &ContextGroupId,
+    account: Option<crate::auth::AuthenticatedAccount>,
+) -> eyre::Result<bool> {
+    if !Tree::live(&state.store, group_id)?.in_space(group_id)? {
+        return Ok(false);
     }
-
-    Ok(subgroups)
+    let Some(caller) = caller_account(state, group_id, account) else {
+        return Ok(true);
+    };
+    Ok(!MembershipRepository::new(&state.store).is_member(group_id, &caller)?)
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
-    use calimero_context_client::client::ContextClient;
-    use calimero_context_config::types::ContextGroupId;
-    use calimero_context_config::VisibilityMode;
-    use calimero_governance_store::{CapabilitiesRepository, MembershipRepository};
-    use calimero_primitives::context::GroupMemberRole;
-    use calimero_primitives::identity::PublicKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
-    use calimero_utils_actix::LazyRecipient;
 
     use super::*;
     use crate::auth::AuthenticatedAccount;
-    use crate::NodeReadiness;
 
-    /// Whether `caller`, a workspace member, is shown `drafts` among the children of the private
-    /// space `board`, which holds it; `in_board` seats the caller in the space.
+    /// Whether a workspace member is shown `drafts` among the children of the private space
+    /// `board`; `in_board` seats the member in the space.
     async fn lists_the_folder_in_the_space(in_board: bool) -> bool {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let ns = ContextGroupId::from([0xD0u8; 32]);
-        let (board, drafts) = (
-            ContextGroupId::from([0xD1u8; 32]),
-            ContextGroupId::from([0xD2u8; 32]),
-        );
-        let account =
-            calimero_context::test_support::enrol(&store, &ns, &PublicKey::from([0x5D; 32]));
-        let nest = |parent, child| {
-            NamespaceRepository::new(&store)
-                .nest(parent, child)
-                .unwrap();
-        };
-        nest(&ns, &board);
-        nest(&board, &drafts);
-        CapabilitiesRepository::new(&store)
-            .set_subgroup_visibility(&board, VisibilityMode::Restricted)
-            .unwrap();
-        CapabilitiesRepository::new(&store)
-            .set_subgroup_visibility(&drafts, VisibilityMode::Open)
-            .unwrap();
-        MembershipRepository::new(&store)
-            .add_member(&ns, &account, GroupMemberRole::Member)
-            .unwrap();
-        if in_board {
-            MembershipRepository::new(&store)
-                .add_member(&board, &account, GroupMemberRole::Member)
-                .unwrap();
-        }
-        let (event_sender, _rx) = tokio::sync::broadcast::channel(16);
-        let (node_client, _blob_dir) = crate::test_support::test_node_client(
-            &store,
-            crate::test_support::stub_node_manager(vec![]),
-            event_sender,
-        )
-        .await;
-        let ctx_client =
-            ContextClient::new(store.clone(), node_client.clone(), LazyRecipient::new());
-        let state = AdminState::new(
-            store,
-            ctx_client,
-            node_client,
-            Arc::new(NodeReadiness::new()),
-            [0; 32],
-            #[cfg(feature = "mock-attestation")]
-            false,
-        );
+        let (board, drafts, account) = crate::test_support::seed_private_space(&store, in_board);
+        let (state, _blob_dir) = crate::test_support::admin_state(&store).await;
 
         visible_children(&state, &board, Some(AuthenticatedAccount(account)))
             .expect("the listing answers")

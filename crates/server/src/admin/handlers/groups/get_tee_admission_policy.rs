@@ -20,11 +20,18 @@ use crate::AdminState;
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    account: Option<Extension<crate::auth::AuthenticatedAccount>>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
+
+    match super::list_subgroups::hidden_by_space(&state, &group_id, account.map(|Extension(a)| a)) {
+        Ok(false) => {}
+        Ok(true) => return super::list_subgroups::space_outsider_refusal(),
+        Err(err) => return parse_api_error(err).into_response(),
+    }
 
     info!(group_id=%group_id_str, "Getting TEE admission policy");
 

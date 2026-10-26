@@ -304,6 +304,50 @@ pub(crate) fn seed_namespace_with_restricted_subgroup(
     )
 }
 
+/// A workspace with a private space `board` holding an open folder `drafts`, and a workspace
+/// member `account` who sits in the space only if `in_board`.
+pub(crate) fn seed_private_space(
+    store: &Store,
+    in_board: bool,
+) -> (
+    calimero_context_config::types::ContextGroupId,
+    calimero_context_config::types::ContextGroupId,
+    calimero_primitives::identity::AccountId,
+) {
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::VisibilityMode;
+    use calimero_governance_store::{
+        CapabilitiesRepository, MembershipRepository, NamespaceRepository,
+    };
+    use calimero_primitives::context::GroupMemberRole;
+
+    let ns = ContextGroupId::from([0xD0u8; 32]);
+    let (board, drafts) = (
+        ContextGroupId::from([0xD1u8; 32]),
+        ContextGroupId::from([0xD2u8; 32]),
+    );
+    let account = calimero_context::test_support::enrol(store, &ns, &PublicKey::from([0x5D; 32]));
+    NamespaceRepository::new(store).nest(&ns, &board).unwrap();
+    NamespaceRepository::new(store)
+        .nest(&board, &drafts)
+        .unwrap();
+    let caps = CapabilitiesRepository::new(store);
+    caps.set_subgroup_visibility(&board, VisibilityMode::Restricted)
+        .unwrap();
+    caps.set_subgroup_visibility(&drafts, VisibilityMode::Open)
+        .unwrap();
+    let members = MembershipRepository::new(store);
+    members
+        .add_member(&ns, &account, GroupMemberRole::Member)
+        .unwrap();
+    if in_board {
+        members
+            .add_member(&board, &account, GroupMemberRole::Member)
+            .unwrap();
+    }
+    (board, drafts, account)
+}
+
 /// Nest `subgroup` under `namespace` with `context` in it, and make each key a
 /// member of both under its own account, bound as one device of that account.
 pub(crate) fn seed_device_members<const N: usize>(
