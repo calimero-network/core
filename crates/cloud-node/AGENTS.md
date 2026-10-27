@@ -152,8 +152,10 @@ architecture spec.
   replica). `DELETE /apps/{app}/blobs/{id}` (owner or org admin) commits
   `AppCmd::BlobForget`, then `Node::collect_blob` deletes the bytes on every
   node (`internal/blob/delete`) unless another app still marks the same content
-  (an app whose answer is unknown counts as holding it) or it is a bundle or a
-  release `.mpk`.
+  (asked of each app's leader, `blob_held_strong`: a lagging replica could miss
+  a mark just committed; an app whose leader does not answer counts as holding
+  it) or it is a bundle or a release `.mpk`. Known window: the same content
+  uploaded to another app between that check and the deletion loses its bytes.
 - **Inspection** (v1's context storage, application ABI, usage):
   `GET /apps/{app}/storage` (keys, bytes, blobs), `GET /apps/{app}/abi` (the
   bundle's embedded ABI), `GET /auth/usage` (the account's apps, bundle bytes,

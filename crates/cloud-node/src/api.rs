@@ -3241,6 +3241,8 @@ async fn internal_blob_delete(
 struct HeldBody {
     app: String,
     id: String,
+    #[serde(default)]
+    strong: bool,
 }
 
 async fn internal_blob_held(
@@ -3254,9 +3256,15 @@ async fn internal_blob_held(
     let g = node
         .hosted(&app.app_id)
         .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
-    Ok(Json(
-        json!({ "held": g.read_local(|m, _| m.holds_blob(&raw)) }),
-    ))
+    // `strong`: answered only by the app's leader, after it confirmed it leads.
+    let held = if body.strong {
+        g.read_strong(|m, _| m.holds_blob(&raw))
+            .await
+            .map_err(|e| ApiError::unavailable(&e.to_string()))?
+    } else {
+        g.read_local(|m, _| m.holds_blob(&raw))
+    };
+    Ok(Json(json!({ "held": held })))
 }
 
 /// The system leader's applied index, once it confirmed it leads.

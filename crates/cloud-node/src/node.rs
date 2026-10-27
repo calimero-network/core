@@ -1090,8 +1090,10 @@ impl Node {
             return;
         }
         for app in &apps {
-            // Unknown counts as held: never delete what an app may need.
-            if self.blob_held(app, id).await.unwrap_or(true) {
+            // Read on each app's leader: a lagging replica could miss a mark
+            // committed a moment ago (the same content uploaded to another
+            // app). Unknown counts as held: never delete what an app may need.
+            if self.blob_held_strong(app, id).await.unwrap_or(true) {
                 return;
             }
         }
@@ -1116,6 +1118,32 @@ impl Node {
 
     /// Whether `id` is one of `app`'s blobs. A replica that has not applied
     /// the upload yet says no, so the others are asked too.
+    /// [`Self::blob_held`] as `app`'s leader answers it (a linearizable
+    /// read); `None` when no replica could answer as leader.
+    pub async fn blob_held_strong(&self, app: &AppRecord, id: &[u8; 32]) -> Option<bool> {
+        if let Some(g) = self.replica_group(app) {
+            if let Ok(held) = g.read_strong(|m, _| m.holds_blob(id)).await {
+                return Some(held);
+            }
+        }
+        let others: Vec<String> = self.sys(|s| {
+            app.replicas
+                .iter()
+                .filter(|r| **r != self.config.node_id)
+                .filter_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
+                .collect()
+        });
+        let body = json!({ "app": app.app_id, "id": hex::encode(id), "strong": true });
+        for addr in others {
+            if let Ok(v) = self.peer_forward(&addr, "internal/blob/held", &body).await {
+                if let Some(held) = v["held"].as_bool() {
+                    return Some(held);
+                }
+            }
+        }
+        None
+    }
+
     pub async fn blob_held(&self, app: &AppRecord, id: &[u8; 32]) -> Result<bool, ApiError> {
         if let Some(g) = self.replica_group(app) {
             if g.read_local(|m, _| m.holds_blob(id)) {
