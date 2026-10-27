@@ -1,0 +1,30 @@
+[package]
+name = "calimero-app-sdk"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "The Rust app SDK runtime for calimero:app: encoding, tables, collections and env"
+publish = false
+
+[features]
+# The test harness (a later task) lives behind this feature.
+testing = []
+
+[dependencies]
+base64.workspace = true
+ciborium.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rand.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde = { workspace = true, features = ["derive"] }

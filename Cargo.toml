@@ -105,6 +105,7 @@ members = [
     "./crates/app-build",
     "./crates/app-engine-wasmtime",
     "./crates/app-host",
+    "./crates/app-sdk",
     "./crates/app-wit",
     "./crates/auth",
     "./crates/build-utils",
@@ -315,6 +316,7 @@ prettyplease = "0.3"
 proc-macro2 = "1.0"
 # pinned to the major libp2p-metrics uses; moves when libp2p does
 prometheus-client = "0.23"
+proptest = "1.12.0"
 quote = "1.0.37"
 rand = "0.10"
 rand_chacha = "0.10.0"
@@ -411,6 +413,7 @@ calimero-app-wit = { path = "./crates/app-wit" }
 calimero-app-build = { path = "./crates/app-build" }
 calimero-app-engine-wasmtime = { path = "./crates/app-engine-wasmtime" }
 calimero-app-host = { path = "./crates/app-host" }
+calimero-app-sdk = { path = "./crates/app-sdk" }
 calimero-build-utils = { path = "./crates/build-utils" }
 calimero-bundle = { path = "./crates/bundle" }
 calimero-blobstore = { path = "./crates/store/blobs" }
