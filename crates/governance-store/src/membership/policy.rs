@@ -80,7 +80,10 @@ impl<'a> MembershipPolicy<'a> {
             return Ok(blocks);
         }
         ensure_cut_resolvable(self.authorizer, &self.group_id, self.parents, member)?;
-        Ok(self.membership.is_admin(member)? && !self.membership.has_another_admin(member)?)
+        Ok(
+            MembershipRepository::new(self.store).is_explicit_admin(&self.group_id, member)?
+                && !self.membership.has_another_admin(member)?,
+        )
     }
 
     /// Refuse adding a new member to a leaderless folder, judged at the op's cut.

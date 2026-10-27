@@ -12973,6 +12973,29 @@ mod self_leave_rotation {
     }
 
     #[test]
+    fn the_successor_can_leave_the_workspace_and_the_next_member_takes_over() {
+        let (f, [(low_sk, low), (_, high)]) = leaderless_folder();
+        let op = SignedGroupOp::sign(
+            &low_sk,
+            f.ns_gid.to_bytes().into(),
+            vec![],
+            1,
+            GroupOp::MemberLeft {
+                member: low,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        )
+        .expect("sign MemberLeft");
+
+        apply_local_signed_group_op(&f.store, &op).expect("a stand-in admin may leave");
+
+        let repo = MembershipRepository::new(&f.store);
+        assert!(!repo.is_admin(&f.sub_gid, &low).unwrap());
+        assert!(repo.is_admin(&f.sub_gid, &high).unwrap());
+    }
+
+    #[test]
     fn a_member_who_left_the_workspace_is_never_the_successor() {
         let (f, [(_, low), (_, high)]) = leaderless_folder();
         MembershipRepository::new(&f.store)
