@@ -2823,6 +2823,50 @@ mod concurrent {
         )
     }
 
+    /// The heir of a space root is its admin at the transfer's cut, so the member it then adds
+    /// is let in on every node, not only where the transfer's apply seated it.
+    #[actix::test]
+    async fn the_heir_of_a_space_root_adds_a_member_on_every_node() {
+        let (world, store) = world_with_a_logged_admin().await;
+        let heir = world.actor(ActorState::NamespaceAdmin);
+        let member_sk = joined_member(&store, world, 0xC4, [0xC4; 32]).await;
+        let member = account_for(&member_sk.public_key());
+        let nodes = [fork_store(&store), fork_store(&store)];
+        let transfer = transfer_at(
+            &store,
+            world,
+            &world.restricted,
+            &heads(&store, world),
+            heir.account,
+        );
+        let add = signed_in(
+            &store,
+            world,
+            &world.restricted,
+            &heir.sign_sk,
+            &[transfer.content_hash().expect("hash the transfer")],
+            unused_nonce(),
+            &GroupOp::MemberAdded {
+                member,
+                role: GroupMemberRole::Member,
+            },
+        );
+
+        for node in &nodes {
+            apply(node, &transfer)
+                .await
+                .expect("the owner hands over the space");
+            apply(node, &add).await.expect("the heir's add is logged");
+            assert_eq!(
+                MembershipRepository::new(node)
+                    .role_of(&world.restricted, &member)
+                    .expect("read the role"),
+                Some(GroupMemberRole::Member),
+                "the heir's add did not apply"
+            );
+        }
+    }
+
     fn owner_of(node: &Store, group: &ContextGroupId) -> Option<AccountId> {
         calimero_governance_store::MetaRepository::new(node)
             .load(group)

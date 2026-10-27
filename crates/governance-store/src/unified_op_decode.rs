@@ -281,10 +281,11 @@ pub fn op_from_namespace_op_with_binding(
         // `Noop` made every cut behind any unmodelled op look unreadable.
         NamespaceOp::Group { group_id, .. } => match decrypted_group_op {
             // Every group op folds into the namespace scope, so only the root's
-            // owner is that scope's root admin; a subgroup's owner is already its
-            // admin. A guarded transfer of a subgroup still folds as its
-            // `RootGuarded` node, carrying nothing, so it is counted against the
-            // subgroup's owner-op counter as the live apply counts it.
+            // owner is that scope's root admin. A guarded transfer of a subgroup
+            // folds as its `RootGuarded` node, counted against the subgroup's
+            // owner-op counter as the live apply counts it, carrying the heir's
+            // admin row: the apply seats a space root's heir, and a folder's heir
+            // already holds that row.
             Some(group_op)
                 if group_id.to_bytes() != signed.namespace_id.to_bytes()
                     && matches!(group_op.unguarded(), GroupOp::TransferOwnership { .. }) =>
@@ -298,7 +299,14 @@ pub fn op_from_namespace_op_with_binding(
                         chain,
                         ..
                     } => OpPayload::RootGuarded {
-                        carried: Box::new(OpPayload::Noop),
+                        carried: Box::new(match group_op.unguarded() {
+                            GroupOp::TransferOwnership { new_owner } => OpPayload::MemberAdded {
+                                group,
+                                member: *new_owner,
+                                role: calimero_primitives::context::GroupMemberRole::Admin,
+                            },
+                            _ => OpPayload::Noop,
+                        }),
                         group,
                         account,
                         counter,
