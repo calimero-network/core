@@ -2618,3 +2618,48 @@ async fn a_read_only_members_emit_only_call_is_refused() {
         .await
         .unwrap();
 }
+
+/// I1 (Ruling 39): calls run off the async workers. With two workers and two calls that
+/// each run to the 2 s deadline at once, other tasks (Raft heartbeats, HTTP) keep running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_calls_do_not_stall_the_async_workers() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.budget = Some(calimero_app_host::Budget {
+            fuel: u64::MAX,
+            ..calimero_app_host::Budget::call()
+        });
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let a = alice.create_app("a", &bundle, json!({})).await.unwrap();
+    let b = alice.create_app("b", &bundle, json!({})).await.unwrap();
+
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let probe = {
+        let stop = Arc::clone(&stop);
+        tokio::spawn(async move {
+            let mut worst = Duration::ZERO;
+            let mut last = std::time::Instant::now();
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                let now = std::time::Instant::now();
+                worst = worst.max(now - last);
+                last = now;
+            }
+            worst
+        })
+    };
+    let (ra, rb) = tokio::join!(
+        alice.call(&a, "spin", json!({}), None),
+        alice.call(&b, "spin", json!({}), None),
+    );
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let worst = probe.await.unwrap();
+    assert_eq!(ra.unwrap_err().code(), Some("TIMEOUT"));
+    assert_eq!(rb.unwrap_err().code(), Some("TIMEOUT"));
+    assert!(
+        worst < Duration::from_millis(500),
+        "a task waited {worst:?} for a worker"
+    );
+}

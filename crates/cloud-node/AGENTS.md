@@ -18,8 +18,11 @@ architecture spec.
   8-byte generation prefix (D39, generation 0). A run gets the current `Arc` as its
   `StateView`; apply uses `Arc::make_mut`, so it copies only while a view still holds
   the old version. Calls run inside `Group::propose_led` (serialized per app, on the
-  machine's read lock, so the diff is built on exactly the state it applies to); views
-  run outside the lock on a blocking thread (`spawn_blocking`). Host records
+  machine's read lock, so the diff is built on exactly the state it applies to), and
+  their wasm run (calls, ticks, `init`) leaves the async workers through
+  `tokio::task::block_in_place` (`node::off_workers`, Ruling 39; test
+  `slow_calls_do_not_stall_the_async_workers`); views run outside the lock on a blocking
+  thread (`spawn_blocking`). Host records
   (idempotency, `last_ts_ms`, `last_id`, `install_ts_ms`, `timers`) are `AppState`
   fields, never keys in `kv`.
 - **Outcomes and statuses** (spec section 5, D23, D36): `Ok` → 200; `AppError` →

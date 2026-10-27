@@ -880,6 +880,21 @@ impl Node {
         }
     }
 
+    /// [`Self::run`] for a run that becomes a log entry (call, tick, `init`), which
+    /// runs inside `Group::propose_led`, on the machine's read lock, for up to its
+    /// deadline: off the async workers (Ruling 39), so Raft heartbeats, the system
+    /// group and HTTP keep running beside it.
+    fn run_logged(
+        &self,
+        prepared: &Prepared,
+        app_id: &str,
+        state: Arc<dyn calimero_app_host::StateView>,
+        applied: u64,
+        invocation: Invocation,
+    ) -> Outcome {
+        off_workers(|| self.run(prepared, app_id, state, applied, invocation))
+    }
+
     /// The next `(id_term, id_seq)` for a run this node leads in `term` (D52,
     /// Ruling 29). `term` comes from the leadership check that admitted the
     /// proposal; `logged` is the highest pair the app's log carries (applied up to
@@ -944,7 +959,7 @@ impl Node {
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) = self.next_id(g.id(), leadership.term, m.state.last_id);
                 let outcome = match &prepared {
-                    Ok(prepared) => self.run(
+                    Ok(prepared) => self.run_logged(
                         prepared,
                         &app.app_id,
                         m.view(),
@@ -1086,7 +1101,7 @@ impl Node {
                 let previous_ms = m.state.timers.get(timer).copied();
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) = self.next_id(g.id(), leadership.term, m.state.last_id);
-                let outcome = self.run(
+                let outcome = self.run_logged(
                     prepared,
                     app_id,
                     m.view(),
@@ -1201,7 +1216,7 @@ impl Node {
                 }
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) = self.next_id(g.id(), leadership.term, m.state.last_id);
-                let outcome = self.run(
+                let outcome = self.run_logged(
                     &prepared,
                     &req.app_id,
                     m.view(),
@@ -1687,6 +1702,23 @@ impl Node {
             }
         }
         Ok(written)
+    }
+}
+
+/// Runs `f`, which may block for up to a run's deadline, without holding an async
+/// worker (Ruling 39): on the multi-threaded runtime, `block_in_place` hands this
+/// worker's queued tasks to a fresh worker and turns the thread into a blocking-pool
+/// thread for `f` (it counts against the runtime's blocking threads, like
+/// `spawn_blocking`). The run cannot move to `spawn_blocking` itself: it builds the
+/// proposal on the machine's read lock, under the group's proposal lock, from borrowed
+/// state. Elsewhere (a current-thread runtime, which `block_in_place` refuses) `f` runs
+/// in place.
+fn off_workers<R>(f: impl FnOnce() -> R) -> R {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
     }
 }
 
