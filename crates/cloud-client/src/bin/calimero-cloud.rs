@@ -25,9 +25,14 @@ struct Cli {
     /// Any node of the cluster.
     #[arg(long, env = "CALIMERO_URL", default_value = "http://127.0.0.1:2501/")]
     url: String,
-    /// Trust mock quotes (development clusters such as `merod-v2 local`).
-    #[arg(long, env = "CALIMERO_ALLOW_MOCK")]
+    /// Trust mock quotes (development clusters such as `merod-v2 local`). A flag
+    /// only, never read from the environment, so it cannot linger into a
+    /// production call.
+    #[arg(long)]
     allow_mock: bool,
+    /// Trust a release's debug profiles (the host can read a debug image's memory).
+    #[arg(long)]
+    allow_debug_profiles: bool,
     /// Image profiles a real node's signed mero-tee release must list it under.
     #[arg(long, env = "CALIMERO_TEE_PROFILES", value_delimiter = ',')]
     tee_profiles: Vec<String>,
@@ -599,5 +604,6 @@ fn client_policy(cli: &Cli) -> Policy {
             }
         },
         allowed_tcb_statuses: Vec::new(),
+        allow_debug_profiles: cli.allow_debug_profiles,
     }
 }

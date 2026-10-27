@@ -22,20 +22,27 @@ on `http://localhost:3000` and `http://localhost:5173` may call it (`--origins`)
 
 ```bash
 cargo install --path crates/cloud-client --features cli   # calimero-cloud
-export CALIMERO_URL=http://127.0.0.1:2501/ CALIMERO_ALLOW_MOCK=true
+export CALIMERO_URL=http://127.0.0.1:2501/
+# --allow-mock trusts the local cluster's mock attestation. It is a flag on each
+# command, never an environment variable, so it cannot carry over to a real cluster.
+dev="calimero-cloud --allow-mock"
 
-calimero-cloud login --dev-passkey ./dev-passkey.json --name ada
-calimero-cloud deploy target/wasm32-unknown-unknown/app-release/kv_store.wasm --name kv
-calimero-cloud call <appId> set '{"key":"a","value":"1"}'
-calimero-cloud view <appId> get '{"key":"a"}'
-calimero-cloud events <appId>
-calimero-cloud apikey create --app <appId> --read-only
+$dev login --dev-passkey ./dev-passkey.json --name ada
+$dev deploy target/wasm32-unknown-unknown/app-release/kv_store.wasm --name kv
+$dev call <appId> set '{"key":"a","value":"1"}'
+$dev view <appId> get '{"key":"a"}'
+$dev events <appId>
+$dev apikey create --app <appId> --read-only
 ```
 
 `--dev-passkey` keeps a passkey in a file, which only a development cluster
 accepts (`--allow-mock`). Against a real cluster, use an API key made in the
 console (`CALIMERO_API_KEY`) and name the images you trust:
-`--tee-profiles <profile> [--min-release <version>]`.
+`--tee-profiles <profile> [--min-release <version>]`. The release floor defaults
+to the client's `DEFAULT_MIN_RELEASE`, and debug profiles are refused unless you
+pass `--allow-debug-profiles`. Install apps there as signed packages
+(`calimero-cloud install PACKAGE --version V`); raw `deploy` is for development
+clusters.
 
 ## 3. From code
 

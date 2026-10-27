@@ -1236,6 +1236,7 @@ dependencies = [
  "calimero-bundle",
  "calimero-cloud-client",
  "calimero-identity",
+ "calimero-kms-client",
  "calimero-log",
  "calimero-prelude",
  "calimero-primitives",
@@ -1245,6 +1246,7 @@ dependencies = [
  "calimero-storage",
  "calimero-tee-attestation",
  "calimero-wasm-abi",
+ "camino",
  "clap",
  "ed25519-dalek 3.0.0",
  "eyre",
@@ -1506,6 +1508,36 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "calimero-kms-client"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "calimero-primitives",
+ "calimero-tee-attestation",
+ "calimero-tee-release",
+ "camino",
+ "clap",
+ "curve25519-dalek 5.0.0",
+ "eyre",
+ "hex",
+ "libp2p-identity",
+ "rand 0.10.2",
+ "reqwest 0.12.28",
+ "ring",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
+ "zeroize",
 ]
 
 [[package]]

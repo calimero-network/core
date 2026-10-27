@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 axum.workspace = true
 base64.workspace = true
+camino.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 eyre.workspace = true
 futures-util.workspace = true
@@ -43,6 +44,7 @@ calimero-app-downloader.workspace = true
 calimero-bundle.workspace = true
 calimero-cloud-client.workspace = true
 calimero-identity.workspace = true
+calimero-kms-client.workspace = true
 calimero-log.workspace = true
 calimero-prelude.workspace = true
 calimero-primitives.workspace = true

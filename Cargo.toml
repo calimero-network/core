@@ -141,6 +141,7 @@ members = [
     "./crates/sealed",
     "./crates/identity",
     "./crates/cloud-node",
+    "./crates/kms-client",
     "./crates/cloud-client",
 
     "./crates/store",
@@ -424,6 +425,7 @@ calimero-log = { path = "./crates/log" }
 calimero-sealed = { path = "./crates/sealed" }
 calimero-identity = { path = "./crates/identity" }
 calimero-cloud-node = { path = "./crates/cloud-node" }
+calimero-kms-client = { path = "./crates/kms-client" }
 calimero-cloud-client = { path = "./crates/cloud-client" }
 calimero-search = { path = "./crates/search" }
 calimero-sdk = { path = "./crates/sdk" }

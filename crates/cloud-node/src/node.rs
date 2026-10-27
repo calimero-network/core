@@ -302,6 +302,12 @@ impl Node {
                 app_hash: None,
                 measurements: self.config.peer_measurements.clone(),
                 allowed_tcb_statuses: Vec::new(),
+                // A node trusts debug peers only when it runs a debug image itself.
+                allow_debug_profiles: self
+                    .config
+                    .tee_profile
+                    .as_deref()
+                    .is_some_and(calimero_cloud_client::attest::is_debug_profile),
             },
         };
         let t = Arc::new(calimero_sealed::client::SealedTransport::attested(

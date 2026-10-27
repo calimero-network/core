@@ -59,6 +59,19 @@ pub struct Policy {
     pub measurements: Measurements,
     /// Accepted TCB statuses of a real quote; empty means `UpToDate` only.
     pub allowed_tcb_statuses: Vec<String>,
+    /// Trust a release's debug profiles (a debuggable image: the host can read
+    /// its memory). Off unless a caller asks; they are never trusted silently.
+    pub allow_debug_profiles: bool,
+}
+
+/// The oldest mero-tee release a client trusts when it names none: the floor
+/// that keeps a node from presenting an old release with known issues.
+pub const DEFAULT_MIN_RELEASE: &str = "2.3.109";
+
+/// Whether a release profile is a debug image.
+#[must_use]
+pub fn is_debug_profile(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("debug")
 }
 
 /// How a real quote's measurement registers are judged.
@@ -72,7 +85,7 @@ pub enum Measurements {
     /// The signed mero-tee release the node names in its attestation: its
     /// Sigstore-verified `published-mrtds.json` must list the quote's registers
     /// under one of `allowed_profiles`, and the release must be at least
-    /// `min_version` when one is given.
+    /// `min_version` ([`DEFAULT_MIN_RELEASE`] when none is given).
     Release {
         allowed_profiles: Vec<String>,
         min_version: Option<String>,
@@ -175,9 +188,10 @@ pub async fn verify(
             )
         }
         Measurements::Pinned(_) => None,
-        Measurements::Release { min_version, .. } => {
-            Some(claimed_release(doc, min_version.as_deref())?)
-        }
+        Measurements::Release { min_version, .. } => Some(claimed_release(
+            doc,
+            Some(min_version.as_deref().unwrap_or(DEFAULT_MIN_RELEASE)),
+        )?),
     };
     let mut second = [0; 32];
     second.copy_from_slice(&expected[32..]);
@@ -196,6 +210,18 @@ pub async fn verify(
             let release = fetch_release(version.clone())
                 .await
                 .map_err(|e| eyre::eyre!("mero-tee release {version}: {e:#}"))?;
+            let trusted: Vec<String> = allowed_profiles
+                .iter()
+                .filter(|p| policy.allow_debug_profiles || !is_debug_profile(p))
+                .cloned()
+                .collect();
+            if trusted.is_empty() {
+                eyre::bail!(
+                    "every allowed profile ({}) is a debug image, which this policy does not trust",
+                    allowed_profiles.join(", ")
+                );
+            }
+            let allowed_profiles = &trusted;
             let name = release
                 .matching_profile(
                     allowed_profiles,
@@ -289,6 +315,27 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no measurement policy"), "{err}");
+    }
+
+    /// Xil's review, issue 14: with no floor named, any old release was trusted.
+    #[tokio::test]
+    async fn the_default_floor_applies_when_none_is_named() {
+        let policy = Policy {
+            measurements: Measurements::Release {
+                allowed_profiles: vec!["locked-read-only".into()],
+                min_version: None,
+            },
+            ..Policy::default()
+        };
+        let err = verify(&doc("2.3.9"), &[2; 32], &policy).await.unwrap_err();
+        assert!(err.to_string().contains(DEFAULT_MIN_RELEASE), "{err}");
+    }
+
+    #[test]
+    fn debug_profiles_are_recognised() {
+        assert!(is_debug_profile("debug-read-only"));
+        assert!(is_debug_profile("locked-DEBUG"));
+        assert!(!is_debug_profile("locked-read-only"));
     }
 
     #[tokio::test]
