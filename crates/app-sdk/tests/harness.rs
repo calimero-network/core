@@ -346,6 +346,25 @@ fn team_events_reach_team_members() {
     assert_eq!(t.events_for("bob").len(), 1, "bob left before the second");
 }
 
+/// The harness runs the node's `HostCore`, so an event naming more than 1,000 accounts
+/// gets the same soft error as on a node (Ruling 43).
+#[test]
+fn an_event_names_at_most_a_thousand_accounts() {
+    let mut t = app();
+    let accounts = |n: usize| (0..n).map(|i| format!("acct-{i}")).collect::<Vec<_>>();
+    t.as_("bob")
+        .call("notify", json!({ "accounts": accounts(1_000), "id": "x" }))
+        .unwrap();
+    let r = t
+        .as_("bob")
+        .call("notify", json!({ "accounts": accounts(1_001), "id": "x" }));
+    let Err(Failure::App { code, fields }) = r else {
+        panic!("{r:?}");
+    };
+    assert_eq!(code, "Emit");
+    assert_eq!(fields["message"], "too many audience accounts");
+}
+
 #[test]
 fn caller_checks_come_before_confirmation() {
     let mut t = app();

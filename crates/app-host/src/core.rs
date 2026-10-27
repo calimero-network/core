@@ -44,6 +44,8 @@ pub const MAX_EVENTS: usize = 1_000;
 pub const MAX_EVENT_NAME_BYTES: usize = 100;
 /// Bytes of an event's data.
 pub const MAX_EVENT_DATA_BYTES: usize = 16 * 1024;
+/// Accounts one event's `accounts` audience may name (Ruling 43).
+pub const MAX_AUDIENCE_ACCOUNTS: usize = 1_000;
 
 /// `emit`'s soft errors (the WIT `result<_, string>`), fixed so every engine and SDK
 /// returns and matches the same strings.
@@ -53,6 +55,7 @@ pub const EMIT_DATA_TOO_LARGE: &str = "event data too large";
 pub const EMIT_BAD_AUDIENCE: &str = "malformed audience";
 pub const EMIT_UNKNOWN_TEAM: &str = "unknown team";
 pub const EMIT_FOREIGN_ORG: &str = "audience names another org";
+pub const EMIT_TOO_MANY_ACCOUNTS: &str = "too many audience accounts";
 
 const ACTIONS_DISABLED: &str = "actions are not enabled";
 const XCALL_DISABLED: &str = "xcall is not enabled";
@@ -350,7 +353,21 @@ impl HostCore {
         if let Err(reason) = self.check_event(&event) {
             return Ok(Err(reason.to_owned()));
         }
-        self.charge(event.name.len().saturating_add(event.data.len()))?;
+        // The audience is kept with the event, so its strings count too (Ruling 43).
+        let audience = match &event.audience {
+            Audience::All | Audience::Caller => 0,
+            Audience::Accounts(accounts) => accounts
+                .iter()
+                .fold(0usize, |n, a| n.saturating_add(a.len())),
+            Audience::Team(id) | Audience::OrgMembers(id) | Audience::OrgAdmins(id) => id.len(),
+        };
+        self.charge(
+            event
+                .name
+                .len()
+                .saturating_add(event.data.len())
+                .saturating_add(audience),
+        )?;
         self.events.push(event);
         Ok(Ok(()))
     }
@@ -370,6 +387,9 @@ impl HostCore {
             Audience::Accounts(accounts) => {
                 if accounts.is_empty() || accounts.iter().any(String::is_empty) {
                     return Err(EMIT_BAD_AUDIENCE);
+                }
+                if accounts.len() > MAX_AUDIENCE_ACCOUNTS {
+                    return Err(EMIT_TOO_MANY_ACCOUNTS);
                 }
                 Ok(())
             }

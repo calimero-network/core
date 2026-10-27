@@ -182,6 +182,12 @@ impl Rooms {
         Ok(())
     }
 
+    /// Tells `accounts` that `id` was released.
+    pub fn notify(&mut self, accounts: Vec<String>, id: String) -> app::Result<()> {
+        env::emit(Event::Released { id }, Audience::Accounts(accounts))?;
+        Ok(())
+    }
+
     /// `len` random bytes (seeded in a logged run).
     pub fn roll(&mut self, len: u64) -> app::Result<Vec<u8>> {
         Ok(env::random_bytes(len as usize))

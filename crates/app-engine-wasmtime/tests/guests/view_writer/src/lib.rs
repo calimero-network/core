@@ -8,7 +8,7 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.0","methods":{"put":{"kind":"call"},"write_n":{"kind":"call"},"big":{"kind":"call"},"overwrite":{"kind":"call"}}}"#;
+const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.0","methods":{"put":{"kind":"call"},"write_n":{"kind":"call"},"big":{"kind":"call"},"overwrite":{"kind":"call"},"shout":{"kind":"call"}}}"#;
 
 #[link_section = "calimero:abi"]
 #[used]
@@ -42,6 +42,17 @@ impl Guest for App {
                 let value = vec![9u8; 64 << 10];
                 for _ in 0..n {
                     storage::put(b"same", &value);
+                }
+            }
+            // 100 events, each naming one 1 MiB account: the audience is kept too.
+            "shout" => {
+                let huge = "a".repeat(1 << 20);
+                for _ in 0..100 {
+                    let _ = calimero::app::events::emit(&calimero::app::types::Event {
+                        name: "e".into(),
+                        data: Vec::new(),
+                        audience: calimero::app::types::Audience::Accounts(vec![huge.clone()]),
+                    });
                 }
             }
             _ => return Err(AppError { code: "NoMethod".into(), message: String::new() }),

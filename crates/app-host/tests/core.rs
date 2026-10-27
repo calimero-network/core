@@ -9,8 +9,9 @@ use calimero_app_host::{
     stored_key, Abi, Audience, Caller, Directory, Event, HostCore, HostDenied, InvalidInvocation,
     Invocation, InvocationKind, KeyValue, MethodKind, OrgRole, PrepareError, Status, TimerCtx,
     Usage, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE, EMIT_FOREIGN_ORG, EMIT_NAME_TOO_LONG,
-    EMIT_TOO_MANY, EMIT_UNKNOWN_TEAM, GENERATION, MAX_EVENTS, MAX_EVENT_DATA_BYTES,
-    MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES, MAX_RUN_BYTES, MAX_WRITES, SUPPORTED_ABI_VERSIONS,
+    EMIT_TOO_MANY, EMIT_TOO_MANY_ACCOUNTS, EMIT_UNKNOWN_TEAM, GENERATION, MAX_AUDIENCE_ACCOUNTS,
+    MAX_EVENTS, MAX_EVENT_DATA_BYTES, MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES, MAX_RUN_BYTES,
+    MAX_WRITES, SUPPORTED_ABI_VERSIONS,
 };
 use serde_json::json;
 
@@ -164,6 +165,48 @@ fn bytes_written_past_the_run_cap_are_refused_at_the_call() {
         Err(HostDenied(_))
     ));
     host.storage_delete(b"small").unwrap();
+}
+
+/// N1 (Ruling 43): an event's audience is kept with it, so its account strings count
+/// against the run's bytes, and one event names at most `MAX_AUDIENCE_ACCOUNTS` accounts.
+/// The re-review's probe: 100 events, each naming one 1 MiB account, were all kept.
+#[test]
+fn audience_accounts_count_against_the_run_and_are_capped() {
+    let state = base(&[]);
+    let inv = inv(InvocationKind::Call);
+    let mut host = core_for(&state, &inv);
+    let huge = "a".repeat(MAX_RUN_BYTES);
+    let mut kept = 0usize;
+    for _ in 0..100 {
+        let mut e = event();
+        e.audience = Audience::Accounts(vec![huge.clone()]);
+        match host.emit(e) {
+            Ok(Ok(())) => kept += huge.len(),
+            Ok(Err(soft)) => panic!("soft error {soft}"),
+            Err(HostDenied(_)) => break,
+        }
+    }
+    assert!(kept <= MAX_RUN_BYTES, "kept {kept} bytes of audience");
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    assert!(out.events.is_empty());
+
+    // Small accounts add up too: the run's budget is shared with writes.
+    let mut host = core_for(&state, &inv);
+    host.storage_put(b"k", &vec![0u8; MAX_RUN_BYTES - 32])
+        .unwrap();
+    let mut e = event();
+    e.audience = Audience::Accounts(vec!["x".repeat(64)]);
+    assert!(matches!(host.emit(e), Err(HostDenied(_))));
+
+    // The count cap is a soft error; at the cap the event is kept.
+    let mut host = core_for(&state, &inv);
+    let mut e = event();
+    e.audience = Audience::Accounts((0..=MAX_AUDIENCE_ACCOUNTS).map(|i| i.to_string()).collect());
+    assert_eq!(host.emit(e), Ok(Err(EMIT_TOO_MANY_ACCOUNTS.to_owned())));
+    assert_eq!(EMIT_TOO_MANY_ACCOUNTS, "too many audience accounts");
+    let mut e = event();
+    e.audience = Audience::Accounts((0..MAX_AUDIENCE_ACCOUNTS).map(|i| i.to_string()).collect());
+    assert_eq!(host.emit(e), Ok(Ok(())));
 }
 
 #[test]

@@ -566,6 +566,21 @@ fn writes_past_the_run_cap_trap_host_denied_at_the_call() {
         started.elapsed()
     );
 
+    // N1 (Ruling 43): event audiences count too; 100 events naming a 1 MiB account each
+    // stop at the first.
+    let out = fx.engine.invoke(
+        &app,
+        host(InvocationKind::Call, "shout", b""),
+        Budget::call(),
+    );
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::HostDenied),
+        "{:?}",
+        out.status
+    );
+    assert!(out.events.is_empty());
+
     // Under the cap the same writes succeed: 15 versions of 64 KiB.
     let out = fx.engine.invoke(
         &app,
