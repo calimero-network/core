@@ -222,7 +222,7 @@ impl Node {
         });
         let engine = Engine::open(
             config.node_id,
-            &config.data_dir.join("log.redb"),
+            &config.data_dir,
             &config.storage_key,
             Arc::clone(&peer_transport) as Arc<dyn Transport>,
             config.raft.clone(),
@@ -1509,6 +1509,9 @@ impl Node {
     }
 
     /// Write encrypted snapshots of the app groups this node leads.
+    ///
+    /// A backup is the group's snapshot file as the log wrote it: streamed
+    /// from disk, sealed frame by frame, never the whole state in memory.
     pub async fn backup(&self) -> eyre::Result<usize> {
         let Some(dir) = self.config.backup_dir.clone() else {
             return Ok(0);
@@ -1523,21 +1526,29 @@ impl Node {
             if !g.status().is_leader {
                 continue;
             }
-            let (app_id, applied, data) = g.read_local(|m, applied| {
-                (
-                    m.app_id.clone(),
-                    applied,
-                    calimero_log::Machine::snapshot(m),
-                )
-            });
-            let key = crate::backup::snapshot_key(&self.config.storage_key, &app_id);
-            let sealer = calimero_log::store::Sealer::new(&key);
-            let sealed = sealer.seal(app_id.as_bytes(), &data)?;
+            let (app_id, applied) = g.read_local(|m, applied| (m.app_id.clone(), applied));
+            // Bring the snapshot up to what this node has applied first.
+            let fresh =
+                |s: &Option<(u64, String, PathBuf)>| s.as_ref().is_some_and(|s| s.0 >= applied);
+            let mut snap = self.engine.snapshot_file(g.id())?;
+            if !fresh(&snap) {
+                g.snapshot_now().await?;
+                for _ in 0..100 {
+                    snap = self.engine.snapshot_file(g.id())?;
+                    if fresh(&snap) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+            let Some((index, id, file)) = snap else {
+                continue;
+            };
             let path = dir.join(&app_id);
             std::fs::create_dir_all(&path)?;
-            let file = path.join(format!("{applied:020}.snap"));
-            if !file.exists() {
-                std::fs::write(&file, sealed)?;
+            let out = path.join(crate::backup::file_name(index, g.id(), &id));
+            if !out.exists() {
+                let _bytes = std::fs::copy(&file, &out)?;
                 written += 1;
             }
         }

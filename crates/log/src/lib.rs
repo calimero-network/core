@@ -13,7 +13,7 @@
 )]
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -21,14 +21,19 @@ use openraft::error::{CheckIsLeaderError, ClientWriteError, InitializeError, Raf
 use openraft::{BasicNode, ServerState};
 use tokio::sync::{watch, Mutex};
 
+mod legacy;
 pub mod machine;
+#[cfg(test)]
+mod migration_tests;
 pub mod network;
 pub mod store;
 pub mod types;
 
-pub use machine::{Applied, Machine, Shared};
+pub use legacy::MigrationReport;
+pub use machine::{read_snapshot_file, Applied, Machine, Shared};
 pub use network::{BoxFuture, RpcRequest, RpcResponse, Transport};
 use store::{Db, LogStore};
+pub use store::{GroupState, StateTx};
 pub use types::{Bytes, GroupId, NodeId, Raft};
 
 /// Timing and compaction settings shared by all groups on a node.
@@ -73,6 +78,9 @@ pub enum WriteError {
 /// goes to the blob store and the entry carries its hash.
 pub const MAX_ENTRY_BYTES: usize = 1024 * 1024;
 
+/// The size of one snapshot chunk on the wire.
+pub const SNAPSHOT_CHUNK_BYTES: u64 = 1024 * 1024;
+
 /// What a proposal builder decided.
 pub enum Proposal {
     /// Append these command bytes to the log.
@@ -116,6 +124,7 @@ pub struct Group<M: Machine> {
     node: NodeId,
     raft: Raft,
     shared: Shared<M>,
+    state: GroupState,
     applied_rx: watch::Receiver<u64>,
     propose_lock: Mutex<()>,
 }
@@ -135,6 +144,12 @@ impl<M: Machine> Group<M> {
     #[must_use]
     pub fn raft(&self) -> &Raft {
         &self.raft
+    }
+
+    /// The group's durable state on this node.
+    #[must_use]
+    pub fn state(&self) -> &GroupState {
+        &self.state
     }
 
     /// Form the group with these voters. Harmless if it was already formed.
@@ -381,15 +396,25 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Open the node's database at `path`, encrypted under `key`.
+    /// Open the node's database under `dir`, sealed under `key`.
+    ///
+    /// A directory still holding the previous format (`log.redb`) is migrated
+    /// first; the old file is kept beside, renamed `log.redb.migrated`.
     pub fn open(
         node: NodeId,
-        path: &Path,
+        dir: &Path,
         key: &[u8; 32],
         transport: Arc<dyn Transport>,
         config: Config,
     ) -> eyre::Result<Arc<Self>> {
-        let db = Db::open(path, key)?;
+        let legacy_path = dir.join(legacy::FILE);
+        let migrate = legacy_path.exists();
+        let db = Db::open(dir, key)?;
+        if migrate {
+            let report = legacy::Legacy::open(&legacy_path, key)?.migrate_into(&db)?;
+            std::fs::rename(&legacy_path, dir.join(format!("{}.migrated", legacy::FILE)))?;
+            tracing::info!(?report, "migrated the log from the previous storage format");
+        }
         Ok(Arc::new(Self {
             node,
             db,
@@ -398,6 +423,22 @@ impl Engine {
             groups: RwLock::new(HashMap::new()),
             factory: RwLock::new(None),
         }))
+    }
+
+    /// The durable state of `group` on this node, whether or not it runs here.
+    #[must_use]
+    pub fn group_state(&self, group: GroupId) -> GroupState {
+        let generation = store::load_generation(&self.db, group).unwrap_or(0);
+        GroupState {
+            db: Arc::clone(&self.db),
+            group,
+            generation: Arc::new(std::sync::atomic::AtomicU32::new(generation)),
+        }
+    }
+
+    /// The snapshot `group` serves on this node: its index, id and sealed file.
+    pub fn snapshot_file(&self, group: GroupId) -> eyre::Result<Option<(u64, String, PathBuf)>> {
+        machine::current_snapshot_file(&self.db, group)
     }
 
     /// Store a sealed blob on this node (outside every log).
@@ -446,6 +487,10 @@ impl Engine {
             election_timeout_max: self.config.election_max_ms,
             snapshot_policy: openraft::SnapshotPolicy::LogsSinceLast(self.config.snapshot_every),
             max_in_snapshot_log_to_keep: 100,
+            // Snapshot chunks travel as JSON RPC bodies: keep each well under
+            // the node's body limit and give it time to arrive.
+            snapshot_max_chunk_size: SNAPSHOT_CHUNK_BYTES,
+            install_snapshot_timeout: 10_000,
             ..Default::default()
         }
         .validate()?;
@@ -453,6 +498,7 @@ impl Engine {
         let sm =
             machine::StateMachine::open(id, Arc::clone(&self.db), machine, Arc::new(applied_tx))?;
         let shared = sm.shared();
+        let state = sm.state();
         let log = LogStore::new(id, Arc::clone(&self.db));
         let network = network::Network {
             group: id,
@@ -464,6 +510,7 @@ impl Engine {
             node: self.node,
             raft,
             shared,
+            state,
             applied_rx,
             propose_lock: Mutex::new(()),
         });

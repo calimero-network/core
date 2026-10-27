@@ -107,6 +107,13 @@ architecture spec.
   answers `404` (`GET /orgs/{org}/teams/{team}`). `DeleteTeam` takes the teams
   below it and their apps. Metadata (`POST /orgs/{org}/teams/{team}`) is the
   app's (a folder's name and colour).
+- **App state on disk** (`app.rs`): `AppMachine` holds no state in memory but its
+  small `Head` (bundle, pending follow-ups, timers, ring bounds). The app's keys are
+  hidden rows of its group (`rows::KV`), idempotency records too (`rows::IDEM`, expired
+  oldest first from a ring per TTL class), events a ring of `EVENT_RING` (`rows::EVENT`).
+  Runs read through `StateRead` (`KvView` for the app, a `BTreeMap` in tests); the
+  system group stays in memory (`Machine::IN_MEMORY`). Backups (`Node::backup`) copy the
+  group's sealed snapshot file; `backup::latest` opens one with K_r.
 - **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
   its applied index, `internal/system/index`; this replica waits for it). Org
   and team reads use it, and so does an access check before it refuses.

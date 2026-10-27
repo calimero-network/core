@@ -1,7 +1,6 @@
 //! Raft type configuration shared by every group.
 
 use std::fmt;
-use std::io::Cursor;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -54,7 +53,7 @@ openraft::declare_raft_types!(
         NodeId = NodeId,
         Node = openraft::BasicNode,
         Entry = openraft::Entry<TypeConfig>,
-        SnapshotData = Cursor<Vec<u8>>,
+        SnapshotData = tokio::fs::File,
 );
 
 pub type Raft = openraft::Raft<TypeConfig>;

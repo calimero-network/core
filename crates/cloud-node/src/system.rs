@@ -1011,7 +1011,14 @@ impl SystemMachine {
 }
 
 impl Machine for SystemMachine {
-    fn apply(&mut self, _index: u64, command: &[u8]) -> Vec<u8> {
+    const IN_MEMORY: bool = true;
+
+    fn apply(
+        &mut self,
+        _index: u64,
+        command: &[u8],
+        _state: &mut calimero_log::StateTx<'_>,
+    ) -> Vec<u8> {
         match serde_json::from_slice::<SystemCmd>(command) {
             Ok(cmd) => match self.run(cmd) {
                 Ok(v) => ok(v),
