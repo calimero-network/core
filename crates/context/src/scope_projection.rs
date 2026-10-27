@@ -6172,6 +6172,54 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_that_entered_a_space_is_no_workspace_members_to_read() {
+        let (root, space, drafts) = (
+            ContextGroupId::from([0x61; 32]),
+            ContextGroupId::from([0x62; 32]),
+            ContextGroupId::from([0x63; 32]),
+        );
+        let created = |child: ContextGroupId, restricted: bool| OpPayload::SubgroupCreated {
+            child: ScopeId::from(child.to_bytes()),
+            parent: ScopeId::from(root.to_bytes()),
+            restricted,
+            admin: AccountId::from([1; 32]),
+        };
+        let view = chain_view(
+            root,
+            vec![
+                member_op(root, 9, GroupMemberRole::Member),
+                created(space, true),
+                created(drafts, false),
+                OpPayload::SubgroupReparented {
+                    child: ScopeId::from(drafts.to_bytes()),
+                    new_parent: ScopeId::from(space.to_bytes()),
+                },
+            ],
+        );
+        let bob = AccountId::from([9; 32]);
+
+        assert!(!view.is_member_at_cut(drafts, &bob, None, 0));
+        assert!(!view.is_member_at_cut(space, &bob, None, 0));
+    }
+
+    #[test]
+    fn a_workspace_member_outside_a_space_is_no_member_of_its_folders_at_the_nodes_gate() {
+        use calimero_governance_store::authz_matrix::{ActorState, World};
+
+        let world = World::shared();
+        let (projections, _namespace, heads) =
+            ScopeProjections::ephemeral_projection(&world.store, &world.subject)
+                .expect("the world folds");
+        for state in [ActorState::NamespaceAdmin, ActorState::OtherNamespaceMember] {
+            let actor = world.actor(state);
+            let member = projections
+                .member_now_checked_with(&world.store, &world.subject, &actor.sign_pk(), &heads)
+                .expect("no store fault");
+            assert!(!member, "{} read the folder", state.label());
+        }
+    }
+
+    #[test]
     fn rejoining_the_root_restores_no_row_in_a_space() {
         let (root, space) = (ContextGroupId::from([3; 32]), ContextGroupId::from([4; 32]));
         let view = chain_view(

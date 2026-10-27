@@ -1107,7 +1107,9 @@ impl SyncManager {
                 "joiner identity is bound to no account in this namespace"
             ));
         };
-        if !MembershipRepository::new(&store).is_live_member(&subgroup_gid, &joiner.account)? {
+        // Authorized against the group whose key is served: a folder of a space is the space's seat.
+        let key_group_id = calimero_governance_store::key_covering_group(&store, &subgroup_gid)?;
+        if !MembershipRepository::new(&store).is_live_member(&key_group_id, &joiner.account)? {
             let msg = StreamMessage::Message {
                 sequence_id: 0,
                 payload: MessagePayload::OpenSubgroupJoinRejected {
@@ -1150,7 +1152,6 @@ impl SyncManager {
         // `join_subgroup_inheritance` skips the request entirely in that case;
         // this arm is what makes a stray one diagnosable rather than silently
         // wrong.
-        let key_group_id = calimero_governance_store::key_covering_group(&store, &subgroup_gid)?;
         if key_group_id == ContextGroupId::from(namespace_id) {
             debug!(
                 namespace_id = %hex::encode(namespace_id),
@@ -1171,43 +1172,17 @@ impl SyncManager {
             return Ok(());
         }
 
-        // A folder of a private space rides the space's key, served from the space root.
-        let key_envelope_bytes = match GroupKeyring::new(&store, key_group_id).load_current_key()? {
-            Some((_key_id, group_key)) => {
-                let ns_gid = ContextGroupId::from(namespace_id);
-                match NamespaceRepository::new(&store).resolve_identity_record(&ns_gid)? {
-                    Some(record) => {
-                        let sender_sk =
-                            calimero_primitives::identity::PrivateKey::from(record.private_key);
-                        match GroupKeyring::wrap_for_member(
-                            &sender_sk,
-                            &joiner_public_key,
-                            &subgroup_gid.to_bytes(),
-                            &group_key,
-                        ) {
-                            Ok(envelope) => borsh::to_vec(&envelope).unwrap_or_default(),
-                            Err(err) => {
-                                warn!(
-                                    namespace_id = %hex::encode(namespace_id),
-                                    subgroup_id = %hex::encode(subgroup_id),
-                                    %err,
-                                    "failed to wrap subgroup key for joiner"
-                                );
-                                Vec::new()
-                            }
-                        }
-                    }
-                    None => {
-                        warn!(
-                            namespace_id = %hex::encode(namespace_id),
-                            "no namespace identity, cannot wrap subgroup key"
-                        );
-                        Vec::new()
-                    }
-                }
-            }
-            None => Vec::new(),
-        };
+        // One gate: the key responder judges and serves, from the covering group's keyring.
+        let (key_envelope_bytes, _responder) = calimero_governance_store::build_group_key_delivery(
+            &store,
+            namespace_id.into(),
+            subgroup_id,
+            calimero_governance_store::KeyRequester {
+                identity: joiner_public_key,
+                device: Some(joiner.device),
+            },
+            None,
+        )?;
 
         debug!(
             namespace_id = %hex::encode(namespace_id),
@@ -4893,6 +4868,9 @@ mod join_responder_tests {
         let member = party(0x09);
         let account = enrol_member(&r.store, &ns(), &member.public_key());
         MembershipRepository::new(&r.store)
+            .add_member(&ns(), &account, GroupMemberRole::Member)
+            .unwrap();
+        MembershipRepository::new(&r.store)
             .add_member(&parent, &account, GroupMemberRole::Member)
             .unwrap();
         caps.set_member_capability(
@@ -4956,6 +4934,30 @@ mod join_responder_tests {
         remove_from_subgroup(&r, &member);
 
         assert_eq!(join_subgroup(&r, &member).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_stale_folder_row_without_a_seat_in_the_space_is_served_no_key() {
+        let r = responder().await;
+        let _inherited = inherited_member(&r);
+        let stale = party(0x0D);
+        let account = enrol_member(&r.store, &ns(), &stale.public_key());
+        MembershipRepository::new(&r.store)
+            .add_member(&ns(), &account, GroupMemberRole::Member)
+            .unwrap();
+        MembershipRepository::new(&r.store)
+            .add_member(
+                &ContextGroupId::from(SUBGROUP),
+                &account,
+                GroupMemberRole::Member,
+            )
+            .unwrap();
+
+        assert_eq!(
+            join_subgroup(&r, &stale).await,
+            None,
+            "a row of the folder is no seat in its space"
+        );
     }
 
     #[tokio::test]

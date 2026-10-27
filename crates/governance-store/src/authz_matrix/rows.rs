@@ -12,7 +12,7 @@ use calimero_store::Store;
 
 use super::{
     assert_covered, assert_matches, observe, Actor, ActorState, GatedOp, Home, OpTable, Outcome,
-    Row, World, NAMESPACE_MEMBERS, SUBJECT_MEMBERS,
+    Row, World, NAMESPACE_MEMBERS, SPACE_MEMBERS, SUBJECT_MEMBERS,
 };
 use crate::test_fixtures::{binding_rejection, device_kem_secret, device_scope};
 use crate::warrant_gate::{check_delegated_delta, WarrantRefusal};
@@ -21,19 +21,6 @@ use crate::{
     AdmissionCut, BindingRejected, GroupKeyring,
 };
 use ActorState::*;
-
-/// The space's members: the key of a folder is the space's, and a folder's exits do not end a seat.
-const SPACE_MEMBERS: &[ActorState] = &[
-    Owner,
-    DirectAdmin,
-    DirectMember,
-    InheritedAdmin,
-    InheritedMember,
-    Kicked,
-    Left,
-    ReadmittedAfterKick,
-    SecondDevice,
-];
 
 const TABLES: &[OpTable] = &[
     OpTable {

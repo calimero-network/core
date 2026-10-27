@@ -7,7 +7,7 @@ use std::time::Duration;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::authz_matrix::{
     assert_covered, assert_matches, Actor, ActorState, GatedOp, Home, Observed, OpTable, Outcome,
-    World, SUBJECT_MEMBERS,
+    World, SPACE_MEMBERS,
 };
 use calimero_governance_store::test_fixtures::signed_invitation_for;
 use calimero_governance_store::{member_account_in_namespace, GroupKeyring};
@@ -47,7 +47,7 @@ const TABLES: &[OpTable] = &[
     },
     OpTable {
         op: GatedOp::OpenSubgroupJoinKey,
-        allow: SUBJECT_MEMBERS,
+        allow: SPACE_MEMBERS,
         gap: &[],
     },
     OpTable {

@@ -83,6 +83,19 @@ closed_set! {
 }
 
 /// Live members of the subject, by any path, on a live device of theirs.
+/// The space's members: the key of a folder is the space's, and a folder's exits do not end a seat.
+pub const SPACE_MEMBERS: &[ActorState] = &[
+    ActorState::Owner,
+    ActorState::DirectAdmin,
+    ActorState::DirectMember,
+    ActorState::InheritedAdmin,
+    ActorState::InheritedMember,
+    ActorState::Kicked,
+    ActorState::Left,
+    ActorState::ReadmittedAfterKick,
+    ActorState::SecondDevice,
+];
+
 pub const SUBJECT_MEMBERS: &[ActorState] = &[
     ActorState::Owner,
     ActorState::DirectAdmin,
