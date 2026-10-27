@@ -50,6 +50,7 @@ calimero-sealed.workspace = true
 calimero-tee-attestation.workspace = true
 
 [dev-dependencies]
+calimero-app-build.workspace = true
 calimero-cloud-client = { workspace = true, features = ["testing"] }
 calimero-identity = { workspace = true, features = ["testing"] }
 tempfile.workspace = true

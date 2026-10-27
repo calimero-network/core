@@ -4,12 +4,13 @@
 //! `calimero:abi` custom section sits inside a nested core module. The build
 //! lifts it to the component's top level so a reader looks in one place.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
 
 use eyre::Result as EyreResult;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use wasmparser::ComponentTypeRef;
 use wasmparser::Parser;
 use wasmparser::Payload;
@@ -73,6 +74,79 @@ pub fn build_component(crate_dir: &Path, target_dir: &Path) -> EyreResult<Built>
         abi,
         imports,
     })
+}
+
+/// Builds `crate_dir` like [`build_component`], reusing a result cached under `cache_dir`.
+///
+/// The cache key is the SHA-256 of the crate's `Cargo.toml`, `Cargo.lock` and every file under
+/// its `src/`, plus every file under each of `also_hash` (the SDK crates the guest links), so
+/// an edit to any of them rebuilds. The component is `cache_dir/<crate dir name>-<hash>.wasm`;
+/// cargo's own target directory is `cache_dir/target/<crate dir name>`.
+pub fn build_component_cached(
+    crate_dir: &Path,
+    also_hash: &[&Path],
+    cache_dir: &Path,
+) -> EyreResult<Vec<u8>> {
+    let name = crate_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| eyre::eyre!("{} has no name", crate_dir.display()))?;
+    let mut hasher = Sha256::new();
+    let mut files = vec![crate_dir.join("Cargo.toml"), crate_dir.join("Cargo.lock")];
+    collect_files(&crate_dir.join("src"), &mut files)?;
+    for dir in also_hash {
+        collect_files(dir, &mut files)?;
+    }
+    files.sort();
+    for file in files {
+        // A missing Cargo.lock is fine; any other unreadable file is an error.
+        match std::fs::read(&file) {
+            Ok(bytes) => {
+                hasher.update(file.to_string_lossy().as_bytes());
+                hasher.update((bytes.len() as u64).to_be_bytes());
+                hasher.update(bytes);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => eyre::bail!("{}: {e}", file.display()),
+        }
+    }
+    let hash: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let cached = cache_dir.join(format!("{name}-{}.wasm", &hash[..16]));
+    if let Ok(bytes) = std::fs::read(&cached) {
+        return Ok(bytes);
+    }
+    std::fs::create_dir_all(cache_dir)?;
+    let built = build_component(crate_dir, &cache_dir.join("target").join(name))?;
+    // Write beside, then rename: a concurrent reader never sees half a file.
+    let tmp = cache_dir.join(format!("{name}-{}.{}.tmp", &hash[..16], std::process::id()));
+    std::fs::write(&tmp, &built.component)?;
+    std::fs::rename(&tmp, &cached)?;
+    Ok(built.component)
+}
+
+/// Every file under `dir` (none when it does not exist), skipping build output.
+fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> EyreResult<()> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => eyre::bail!("{}: {e}", dir.display()),
+    };
+    for entry in entries {
+        let path = entry?.path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|n| n == "target") {
+                continue;
+            }
+            collect_files(&path, out)?;
+        } else {
+            out.push(path);
+        }
+    }
+    Ok(())
 }
 
 /// Lists the component's top-level imports, fully qualified.

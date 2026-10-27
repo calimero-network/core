@@ -1117,6 +1117,7 @@ dependencies = [
  "calimero-app-wit",
  "eyre",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "wasmparser 0.262.0",
 ]
@@ -1343,6 +1344,7 @@ dependencies = [
  "base64 0.23.1",
  "borsh",
  "calimero-account",
+ "calimero-app-build",
  "calimero-cloud-client",
  "calimero-identity",
  "calimero-log",
