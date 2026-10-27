@@ -2279,10 +2279,17 @@ impl<'a> NamespaceGovernance<'a> {
             RootOp::GroupCreated { group_id, .. } => ContextGroupId::from(group_id.to_bytes()),
             _ => return Ok(false),
         };
-        Ok(NamespaceRepository::new(self.store)
-            .parent(&group_id)?
-            .is_some()
-            && CapabilitiesRepository::new(self.store).has_subgroup_visibility(&group_id)?)
+        // The creator row outlives the group, so a group created here and since deleted is folded.
+        Ok(
+            crate::group_creator::GroupCreatorRepository::new(self.store)
+                .creator(&group_id)?
+                .is_some()
+                || (NamespaceRepository::new(self.store)
+                    .parent(&group_id)?
+                    .is_some()
+                    && CapabilitiesRepository::new(self.store)
+                        .has_subgroup_visibility(&group_id)?),
+        )
     }
 
     pub(crate) fn retry_encrypted_ops_for_group(

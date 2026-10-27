@@ -683,6 +683,99 @@ impl crate::authorizer::AtCutAuthorizer for NoWorkspaceRow {
     }
 }
 
+/// Judges every admin question yes and shows a fixed tree at the cut, except to a rule that reads
+/// below a group: those cuts stay undecidable, as a delete's does on a node outside its space.
+pub struct TreeUnlessBelow(pub crate::SubgroupEdges);
+
+impl crate::authorizer::AtCutAuthorizer for TreeUnlessBelow {
+    fn is_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        Some(true)
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        Some(true)
+    }
+
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        Some(true)
+    }
+
+    fn is_admin_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        Some(true)
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        Some(false)
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        None
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _context: &calimero_primitives::context::ContextId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        None
+    }
+
+    fn reads_tree_at_cut(&self) -> bool {
+        true
+    }
+
+    fn subgroup_edges_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _parents: &[[u8; 32]],
+        reads: crate::TreeReads<'_>,
+    ) -> Option<crate::SubgroupEdges> {
+        reads.subtrees.is_empty().then(|| self.0.clone())
+    }
+}
+
 /// The [`crate::BindingRejected`] anywhere in an apply error's chain.
 pub fn binding_rejection(err: &eyre::Report) -> Option<crate::BindingRejected> {
     err.chain()

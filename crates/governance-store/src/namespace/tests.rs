@@ -4669,6 +4669,80 @@ fn a_space_created_past_its_creators_removal_seats_no_one() {
     );
 }
 
+/// A key arrival replays the sealed root ops of the namespace. A create the node applied and then
+/// deleted is not folded again, even where the delete's own replay cannot be decided.
+#[test]
+fn a_replay_does_not_bring_back_a_deleted_group_whose_delete_it_cannot_decide() {
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let ns_id = [0xAAu8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let admin = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    // Another member's node: the ops are not its own, so a replay judges them.
+    let local = PrivateKey::from([0xBA; 32]);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &local.public_key(), local.as_bytes())
+        .unwrap();
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
+    let publish = |nonce: u64, parents: Vec<[u8; 32]>, op: RootOp| {
+        let signed = SignedNamespaceOp::sign(
+            &admin_sk,
+            ns_id.into(),
+            parents,
+            nonce,
+            seal_for_test(&store, ns_gid, op),
+        )
+        .expect("sign");
+        gov.apply_signed_op(&signed)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
+            .expect("apply");
+        signed
+    };
+    let create = publish(
+        1,
+        vec![],
+        crate::test_fixtures::group_created(admin, ns_id, true, 0x01),
+    );
+    let space = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+        &admin, ns_id, true, 1,
+    ));
+    let _delete = publish(
+        2,
+        vec![create.content_hash().unwrap()],
+        RootOp::GroupDeleted {
+            root_group_id: space.to_bytes().into(),
+            cascade_group_ids: Vec::new(),
+            cascade_context_ids: Vec::new(),
+        },
+    );
+    assert!(MetaRepository::new(&store).load(&space).unwrap().is_none());
+
+    let at_cut = crate::test_fixtures::TreeUnlessBelow(Default::default());
+    let _ = NamespaceGovernance::new(&store, ns_id.into())
+        .with_apply_auth(&crate::test_fixtures::TEST_CUT, &at_cut)
+        .retry_encrypted_ops_for_group(ns_id);
+
+    assert!(MetaRepository::new(&store).load(&space).unwrap().is_none());
+    assert!(!NamespaceRepository::new(&store)
+        .list_children(&ns_gid)
+        .unwrap()
+        .contains(&space));
+}
+
 /// An open folder that moves into a space keeps no direct row: its seats become the space's.
 #[test]
 fn an_open_folder_moving_into_a_space_loses_its_direct_rows() {
