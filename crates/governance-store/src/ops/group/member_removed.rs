@@ -90,6 +90,17 @@ pub(crate) fn apply(
     //
     // Gate the namespace-root check behind the already-loaded role check:
     // only a TEE removal cascades, so every non-TEE removal skips it.
+    // Read at the op's cut, so the replicas agree whatever order concurrent moves arrive in.
+    let tree = crate::private_space::Tree::at_cut(
+        store,
+        ctx.authorizer(),
+        group_id,
+        ctx.cut(),
+        crate::TreeReads {
+            chains: &[*group_id],
+            subtrees: &[*group_id],
+        },
+    )?;
     if removed_role.is_some() {
         let namespaces = NamespaceRepository::new(store);
         // A namespace root is exactly a group with no parent edge, so a single
@@ -104,8 +115,7 @@ pub(crate) fn apply(
             // `collect_descendants` returns the FULL subtree (every level, not
             // just direct children) and excludes the root itself, so one pass
             // covers each descendant group's own directly-registered contexts.
-            let descendants = namespaces.collect_descendants(group_id)?;
-            let tree = crate::private_space::Tree::live(store, group_id)?;
+            let descendants = tree.below(group_id)?;
             for sub in &descendants {
                 // Defensive: `collect_descendants` excludes the root, but were
                 // it ever to return `group_id` itself, the membership teardown
@@ -191,7 +201,7 @@ pub(crate) fn apply(
     }
     cascade_remove_member_from_group_tree(store, group_id, member)?;
     MembershipRepository::new(store).remove_member(group_id, member)?;
-    end_rows_in_space_folders(store, group_id, member)?;
+    end_rows_in_space_folders(store, &tree, group_id, member)?;
     // Add to deny-list: state deltas from this member will be
     // dropped at the receive entry point before the cross-DAG
     // check runs. Cleared if/when the member is re-added.
@@ -279,15 +289,15 @@ pub(crate) fn apply(
 /// seats are the space's.
 pub(crate) fn end_rows_in_space_folders(
     store: &calimero_store::Store,
+    tree: &crate::private_space::Tree,
     group_id: &calimero_context_config::types::ContextGroupId,
     member: &AccountId,
 ) -> EyreResult<()> {
-    let namespaces = NamespaceRepository::new(store);
-    if crate::private_space::Tree::live(store, group_id)?.space_of(group_id)? != Some(*group_id) {
+    if tree.space_of(group_id)? != Some(*group_id) {
         return Ok(());
     }
     let membership = MembershipRepository::new(store);
-    for folder in namespaces.collect_descendants(group_id)? {
+    for folder in tree.below(group_id)? {
         if membership.role_of(&folder, member)?.is_some() {
             membership.remove_member(&folder, member)?;
         }

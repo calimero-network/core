@@ -117,6 +117,17 @@ impl Tree {
             .is_some_and(|space| space != *group))
     }
 
+    /// Every group below `group` in this tree.
+    pub fn below(&self, group: &ContextGroupId) -> EyreResult<Vec<ContextGroupId>> {
+        let mut below = Vec::new();
+        for child in self.0.keys() {
+            if self.is_below(child, group)? {
+                below.push(*child);
+            }
+        }
+        Ok(below)
+    }
+
     fn is_private(&self, group: &ContextGroupId) -> bool {
         self.0.get(group).is_some_and(|(_, restricted)| *restricted)
     }

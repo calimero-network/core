@@ -4601,6 +4601,217 @@ fn a_folder_created_inside_a_space_gives_its_creator_no_row() {
     assert_eq!(rows.role_of(&folder, &admin).unwrap(), None);
 }
 
+/// The owner of a folder inside a space, with no seat in the space, cannot delete it by a
+/// namespace op either; with a seat it can.
+#[test]
+fn a_folder_owner_without_a_seat_cannot_delete_it_by_a_namespace_op() {
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_config::VisibilityMode;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+    let ns_id = [0xA4u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let (space, folder) = (
+        ContextGroupId::from([0xA5u8; 32]),
+        ContextGroupId::from([0xA6u8; 32]),
+    );
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &space)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&space, &folder)
+        .unwrap();
+    let caps = CapabilitiesRepository::new(&store);
+    caps.set_subgroup_visibility(&space, VisibilityMode::Restricted)
+        .unwrap();
+    caps.set_subgroup_visibility(&folder, VisibilityMode::Open)
+        .unwrap();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner = enrol_member(&store, &ns_gid, &owner_sk.public_key());
+    for group in [&ns_gid, &space] {
+        MetaRepository::new(&store)
+            .save(group, &sample_meta_with_admin(admin))
+            .unwrap();
+    }
+    let mut folder_meta = sample_meta_with_admin(admin);
+    folder_meta.owner_identity = owner;
+    MetaRepository::new(&store)
+        .save(&folder, &folder_meta)
+        .unwrap();
+    let rows = MembershipRepository::new(&store);
+    for group in [&ns_gid, &space] {
+        rows.add_member(group, &admin, GroupMemberRole::Admin)
+            .unwrap();
+    }
+    rows.add_member(&ns_gid, &owner, GroupMemberRole::Member)
+        .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
+    let delete = |nonce: u64| {
+        let op = SignedNamespaceOp::sign(
+            &owner_sk,
+            ns_id.into(),
+            vec![],
+            nonce,
+            seal_for_test(
+                &store,
+                ns_gid,
+                RootOp::GroupDeleted {
+                    root_group_id: folder.to_bytes().into(),
+                    cascade_group_ids: Vec::new(),
+                    cascade_context_ids: Vec::new(),
+                },
+            ),
+        )
+        .expect("sign GroupDeleted");
+        gov.apply_signed_op(&op)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
+    };
+
+    assert!(
+        delete(1).is_err(),
+        "an owner with no seat deleted its folder"
+    );
+    assert!(MetaRepository::new(&store).load(&folder).unwrap().is_some());
+
+    rows.add_member(&space, &owner, GroupMemberRole::Member)
+        .unwrap();
+    delete(2).expect("with a seat in the space the owner deletes its folder");
+}
+
+/// A TEE attestation join that targets a folder inside a private space is refused: seats are
+/// rows of the space root, never of its folders.
+#[test]
+fn a_tee_attestation_join_into_a_folder_of_a_space_is_refused() {
+    use calimero_context_client::local_governance::SignedGroupOp;
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let namespace_id = [0x91u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let parent = ContextGroupId::from([0x92u8; 32]);
+    let subgroup = ContextGroupId::from([0x93u8; 32]);
+    let ((verifier_sk, verifier_pk), verifier) =
+        bootstrap_namespace_with_admin_account(&store, namespace_id);
+    for group in [parent, subgroup] {
+        MetaRepository::new(&store)
+            .save(&group, &sample_meta_with_admin(verifier))
+            .unwrap();
+    }
+    nest_for_test(&store, &ns_gid, &parent);
+    nest_for_test(&store, &parent, &subgroup);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&parent, VisibilityMode::Restricted)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&parent, &verifier, GroupMemberRole::Admin)
+        .unwrap();
+    GroupKeyring::new(&store, subgroup)
+        .store_key(&[0x94; 32])
+        .unwrap();
+
+    // The admission policy is read from the op log, so it is applied as a real op.
+    let ns_key = [0x95u8; 32];
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&ns_key)
+        .unwrap();
+    let policy = GroupKeyring::encrypt_op(
+        &ns_key,
+        &crate::test_fixtures::guarded_group_op(
+            &store,
+            &ns_gid,
+            &verifier_pk,
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec!["m1".to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec!["r1".to_owned()],
+                allowed_rtmr2: vec!["r2".to_owned()],
+                allowed_rtmr3: vec!["r3".to_owned()],
+                allowed_tcb_statuses: vec!["ok".to_owned()],
+                accept_mock: true,
+            },
+        ),
+    )
+    .unwrap();
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let head = gov.read_head_record().unwrap();
+    gov.apply_signed_op(
+        &SignedNamespaceOp::sign(
+            &verifier_sk,
+            namespace_id.into(),
+            head.parent_hashes.clone(),
+            head.next_nonce,
+            NamespaceOp::Group {
+                group_id: namespace_id.into(),
+                key_id: key_id.into(),
+                encrypted: policy,
+                key_rotation: None,
+                registers: None,
+            },
+        )
+        .unwrap(),
+    )
+    .expect("the policy op applies");
+
+    // The TEE holds a direct row in the subgroup and inherits into it from the parent.
+    let tee_sk = PrivateKey::from([0x96u8; 32]);
+    let tee_pk = tee_sk.public_key();
+    let tee = enrol_member(&store, &ns_gid, &tee_pk);
+    MembershipRepository::new(&store)
+        .add_member(&parent, &tee, GroupMemberRole::ReadOnlyTee)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &parent,
+            &tee,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+
+    let attest = |group: ContextGroupId| {
+        let signed = SignedGroupOp::sign(
+            &verifier_sk,
+            group.to_bytes().into(),
+            vec![],
+            1,
+            GroupOp::MemberJoinedViaTeeAttestation {
+                member: tee,
+                quote_hash: [0x97; 32],
+                mrtd: "m1".to_owned(),
+                rtmr0: String::new(),
+                rtmr1: "r1".to_owned(),
+                rtmr2: "r2".to_owned(),
+                rtmr3: "r3".to_owned(),
+                tcb_status: "ok".to_owned(),
+                role: GroupMemberRole::ReadOnlyTee,
+            },
+        )
+        .unwrap();
+        crate::apply_local_signed_group_op(&store, &signed)
+    };
+
+    assert!(
+        attest(subgroup).is_err(),
+        "a TEE was seated in a folder of a space"
+    );
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&subgroup, &tee)
+            .unwrap(),
+        None
+    );
+}
+
 #[test]
 fn governance_group_created_rejects_cross_namespace_parent() {
     use calimero_context_client::local_governance::SignedNamespaceOp;

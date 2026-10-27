@@ -539,6 +539,39 @@ async fn handle_new_tee_member(
 #[cfg(test)]
 mod dispatch_tests {
     use super::*;
+
+    #[test]
+    fn only_a_folder_inside_a_space_is_skipped_for_tee_admission() {
+        use calimero_context_config::VisibilityMode;
+        use calimero_governance_store::{CapabilitiesRepository, NamespaceRepository};
+        use calimero_store::db::InMemoryDB;
+
+        let store = Store::new(std::sync::Arc::new(InMemoryDB::owned()));
+        let ns = ContextGroupId::from([0xB0; 32]);
+        let (space, folder, open) = (
+            ContextGroupId::from([0xB1; 32]),
+            ContextGroupId::from([0xB2; 32]),
+            ContextGroupId::from([0xB3; 32]),
+        );
+        let namespaces = NamespaceRepository::new(&store);
+        namespaces.nest(&ns, &space).unwrap();
+        namespaces.nest(&space, &folder).unwrap();
+        namespaces.nest(&ns, &open).unwrap();
+        let caps = CapabilitiesRepository::new(&store);
+        caps.set_subgroup_visibility(&space, VisibilityMode::Restricted)
+            .unwrap();
+        caps.set_subgroup_visibility(&folder, VisibilityMode::Open)
+            .unwrap();
+        caps.set_subgroup_visibility(&open, VisibilityMode::Open)
+            .unwrap();
+
+        assert!(is_folder_in_space(&store, &folder));
+        assert!(
+            !is_folder_in_space(&store, &space),
+            "a space root is admitted to"
+        );
+        assert!(!is_folder_in_space(&store, &open));
+    }
     use calimero_governance_store::op_events::OpEvent;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;

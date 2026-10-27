@@ -2848,6 +2848,41 @@ mod concurrent {
         assert_eq!(verdicts, [[true, true]; 2]);
     }
 
+    #[actix::test]
+    async fn a_removal_from_a_space_concurrent_with_a_folders_move_into_it_lands_the_same_in_either_order(
+    ) {
+        let (world, store) = world_with_a_logged_admin().await;
+        let (_outer, inner, _other) = folders_and_a_space(&store, world).await;
+        let space = world.restricted;
+        let member = world.actor(ActorState::DirectMember).account;
+        let rows = calimero_governance_store::MembershipRepository::new(&store);
+        rows.add_member(&inner, &member, GroupMemberRole::Member)
+            .expect("seat the member");
+        let parents = heads(&store, world);
+        let into = reparent(&store, world, &parents, inner, space);
+        let remove = signed_in(
+            &store,
+            world,
+            &space,
+            &world.owner_sk,
+            &parents,
+            unused_nonce(),
+            &GroupOp::MemberRemoved {
+                member,
+                expected_group_state_hash: [0; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        );
+
+        let nodes = in_both_orders(&store, &into, &remove).await;
+
+        assert_same_rows(&nodes, |node| {
+            calimero_governance_store::MembershipRepository::new(node)
+                .role_of(&inner, &member)
+                .expect("read the row")
+        });
+    }
+
     /// A nonce no signer of the world has used: a reused one is refused at its cut.
     fn unused_nonce() -> u64 {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 32);

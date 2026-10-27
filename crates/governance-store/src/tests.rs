@@ -11302,6 +11302,70 @@ mod tee_member_removed_event_tests {
         }
     }
 
+    /// The owner of a folder inside a space, with no seat in the space, cannot delete it.
+    #[test]
+    #[serial_test::serial]
+    fn a_folder_owner_without_a_seat_in_the_space_cannot_delete_the_folder() {
+        use calimero_context_config::VisibilityMode;
+
+        let store = test_store();
+        let ns_gid = ContextGroupId::from([0xE2; 32]);
+        let space = ContextGroupId::from([0xE3; 32]);
+        let folder = ContextGroupId::from([0xE4; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ns_gid, &space)
+            .unwrap();
+        NamespaceRepository::new(&store)
+            .nest(&space, &folder)
+            .unwrap();
+        let caps = CapabilitiesRepository::new(&store);
+        caps.set_subgroup_visibility(&space, VisibilityMode::Restricted)
+            .unwrap();
+        caps.set_subgroup_visibility(&folder, VisibilityMode::Open)
+            .unwrap();
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+        let admin = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+        let owner_sk = PrivateKey::from([0xEC; 32]);
+        let owner = enrol_member(&store, &ns_gid, &owner_sk.public_key());
+        for group in [&ns_gid, &space] {
+            MetaRepository::new(&store)
+                .save(group, &sample_meta_with_admin(admin))
+                .unwrap();
+        }
+        let mut folder_meta = sample_meta_with_admin(admin);
+        folder_meta.owner_identity = owner;
+        MetaRepository::new(&store)
+            .save(&folder, &folder_meta)
+            .unwrap();
+        let rows = MembershipRepository::new(&store);
+        for group in [&ns_gid, &space] {
+            rows.add_member(group, &admin, GroupMemberRole::Admin)
+                .unwrap();
+        }
+        rows.add_member(&ns_gid, &owner, GroupMemberRole::Member)
+            .unwrap();
+
+        let delete = SignedGroupOp::sign(
+            &owner_sk,
+            folder.to_bytes().into(),
+            vec![],
+            1,
+            crate::test_fixtures::guarded_group_op(
+                &store,
+                &folder,
+                &owner_sk.public_key(),
+                GroupOp::GroupDelete,
+            ),
+        )
+        .expect("sign GroupDelete");
+
+        assert!(
+            apply_local_signed_group_op(&store, &delete).is_err(),
+            "an owner with no seat in the space deleted its folder"
+        );
+        assert!(MetaRepository::new(&store).load(&folder).unwrap().is_some());
+    }
+
     /// An account that leaves the namespace holds no live row in a private space either.
     #[test]
     #[serial_test::serial]
