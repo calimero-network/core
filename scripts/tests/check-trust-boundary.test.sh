@@ -12,7 +12,7 @@ CHECK="$ROOT/scripts/check-trust-boundary.py"
 TEMPLATE=$(cat "$ROOT/.github/pull_request_template.md")
 ANSWERED=$(printf '%s\n' "$TEMPLATE" | sed 's/: \[ \] yes \[ \] no$/: [ ] yes [x] no/')
 IDENTITY='- Takes an identity from a message field instead of a signature or the authenticated channel'
-SENSITIVE="crates/node/src/sync/manager/mod.rs"
+SENSITIVE="crates/cloud-node/src/api.rs"
 NBSP=$(printf '\302\240')
 ZWSP=$(printf '\342\200\213')
 PASS=0
@@ -46,7 +46,7 @@ check "a tag in inline code hides nothing"       0 "$SENSITIVE"                 
 check "a literal <!-- in a fence hides nothing"   0 "$SENSITIVE"                  '```'$'\n''<!--'$'\n''```'$'\n'"$ANSWERED"
 check "a workflow change is covered"              1 ".github/workflows/x.yml"     ""                 "missing:"
 check "a sibling module file is covered"          1 "crates/runtime/src/logic/host_functions.rs" "" "missing:"
-check "a prefix-sharing path is not covered"      0 "crates/nodex/src/lib.rs"     ""
+check "a prefix-sharing path is not covered"      0 "crates/sealedx/src/lib.rs"   ""
 check "a missing block fails"                     1 "$SENSITIVE"                  "## Description"   "missing:"
 check "the unanswered template fails"             1 "$SENSITIVE"                  "$TEMPLATE"        "tick exactly one"
 check "both boxes ticked fails"                   1 "$SENSITIVE"                  "$(with_identity_line "$IDENTITY: [x] yes [x] no")" "tick exactly one"

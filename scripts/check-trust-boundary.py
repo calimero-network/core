@@ -16,16 +16,18 @@ TEMPLATE = Path(__file__).resolve().parent.parent / ".github" / "pull_request_te
 TRUST_BOUNDARY_PATHS = (  # a directory, or the `<path>.rs` module file beside it
     ".github/workflows",
     "crates/account",
-    "crates/auth",
-    "crates/authz",
+    "crates/app-downloader",
     "crates/bundle",
-    "crates/context",
-    "crates/governance-store",
-    "crates/governance-types",
-    "crates/network",
-    "crates/node",
+    "crates/cloud-client",
+    "crates/cloud-node",
+    "crates/identity",
+    "crates/kms-client",
+    "crates/merod",
+    "crates/outbound",
     "crates/runtime/src/logic/host_functions",
-    "crates/server",
+    "crates/sealed",
+    "crates/tee-attestation",
+    "crates/tee-release",
 )
 SECTION_TITLE = "trust boundary"
 INVISIBLE_CHARS = " ​‌‍⁠﻿"  # render as nothing or as a plain space
