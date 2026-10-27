@@ -2122,6 +2122,12 @@ impl SyncManager {
                 }
             };
 
+        debug!(
+            awaiting = awaiting.len(),
+            member_keyless = member_keyless.len(),
+            unbootstrapped = unbootstrapped.len(),
+            "group-key recovery: worklists"
+        );
         // The namespace's heads now: a key-request pause ends as soon as they move.
         let heads =
             calimero_governance_store::NamespaceDagService::new(&store, namespace_id.into())

@@ -2720,7 +2720,8 @@ impl ScopeProjections {
             group,
             ContextGroupId::from(namespace_id),
         );
-        if walked.first_opaque_in_any(&relevant).is_some() {
+        if let Some(opaque) = walked.first_opaque_in_any(&relevant) {
+            log_opaque_blocker(store, namespace_id, group, heads, opaque);
             return Err(UndecidableCause::AncestryUnreadable);
         }
         let mut sorted_heads = heads.to_vec();
@@ -4300,6 +4301,47 @@ fn fold_view(
         let _ = view.group_admin.remove(&group);
     }
     Some(view)
+}
+
+/// Name the op that makes a cut unreadable: the key it cites and whether this node is already
+/// asking for that key, so a stuck hold shows what to fetch.
+fn log_opaque_blocker(
+    store: &Store,
+    namespace_id: [u8; 32],
+    group: ContextGroupId,
+    cut: &[[u8; 32]],
+    opaque: [u8; 32],
+) {
+    let cited = NamespaceOpLogService::new(store, namespace_id.into())
+        .get_signed_op(opaque)
+        .ok()
+        .flatten()
+        .and_then(|signed| match signed.op {
+            NamespaceOp::Group {
+                group_id, key_id, ..
+            }
+            | NamespaceOp::RootSealedForGroup {
+                group_id, key_id, ..
+            } => Some((group_id.to_bytes(), key_id.to_bytes())),
+            NamespaceOp::RootSealed { key_id, .. }
+            | NamespaceOp::RootRelaySealed { key_id, .. } => {
+                Some((namespace_id, key_id.to_bytes()))
+            }
+            _ => None,
+        });
+    let awaiting =
+        calimero_governance_store::namespace_group_keys_awaiting(store, namespace_id.into())
+            .unwrap_or_default();
+    let key_awaited = cited.is_some_and(|pair| awaiting.contains(&pair));
+    tracing::debug!(
+        group = ?group,
+        cut = ?cut.iter().map(hex::encode).collect::<Vec<_>>(),
+        opaque_op = %hex::encode(opaque),
+        opaque_group = ?cited.map(|(g, _)| hex::encode(g)),
+        key_id = ?cited.map(|(_, k)| hex::encode(k)),
+        key_awaited,
+        "cut unreadable: an op in its ancestry is sealed under a key this node lacks or is parked"
+    );
 }
 
 /// The groups that must be readable to decide a question about `group`: the root, `group`,
