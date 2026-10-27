@@ -923,6 +923,13 @@ mod held_ops {
                     .is_none(),
                 "{node} kept the subgroup"
             );
+            assert!(
+                !calimero_governance_store::NamespaceRepository::new(store)
+                    .list_children(&f.world.namespace)
+                    .expect("list the namespace's children")
+                    .contains(&f.subgroup),
+                "{node} still lists the deleted subgroup"
+            );
         }
     }
 
