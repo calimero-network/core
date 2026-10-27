@@ -42,19 +42,21 @@ architecture spec.
   `DELETE /packages/{p}[/{v}]` is refused while an app runs the release (a WASM
   another release ships stays). Raw `POST /bundles` is development only
   (`allow_unsigned_bundles`, on with `--dev`).
-- **Governance** (`system::Governance`, `UpgradePolicy`, shared with clients in
-  `calimero_cloud_client::attest`): who moves apps to new code, chosen at
-  deployment (`--upgrade-policy owner|operator`, default owner). The first leader
-  writes `SystemCmd::Genesis` before any account exists (`CreateAccount` waits
-  for it); a second genesis is refused, so a restart with another flag changes
-  nothing. Every receipt-key quote binds it (`receipt_key_binding(key,
-  governance)`, `AttestationDoc::governance`), so `verify_app_cluster` proves it.
-  Operator-managed: `POST /ops/releases` approves releases for every app
-  (`operator_releases`, which `approved_releases` then answers), `POST
-  /ops/apps/{app}/upgrade` upgrades any app to an installed release
-  (`UpgradeApp { by_operator }`); owners approve no releases but still upgrade
-  their own apps. Owner-managed: both ops routes answer 403.
-- **Owner approvals** (owner-managed clusters; `system::ReleaseScope`, `Org/Account::approved_releases`): the
+- **Governance** (`system::Governance`, `Authority`, shared with clients in
+  `calimero_cloud_client::attest`): three decisions, each held by exactly one
+  party chosen at deployment, `owner` (default) or `operator`:
+  `--release-approvals` (which mero-tee releases may hold the data),
+  `--app-upgrades`, `--outbound-approvals`. The first leader writes
+  `SystemCmd::Genesis` before any account exists (`CreateAccount` waits for it);
+  a second genesis is refused, so a restart with other flags changes nothing.
+  Every receipt-key quote binds it (`receipt_key_binding(key, governance)`,
+  `AttestationDoc::governance`), so `verify_app_cluster` proves it. Operator
+  side: `POST /ops/releases` (`operator_releases`, which `approved_releases`
+  then answers), `POST /ops/apps/{app}/upgrade` (an installed release;
+  `UpgradeApp { by_operator }`), `POST /ops/outbound` (`operator_outbound`,
+  `ReleaseScope::Cluster`). Owner side: the passkey routes below. Whichever
+  party does not hold a decision gets 403 (API) and a refusal (`apply`).
+- **Owner approvals** (where the owner holds the decision; `system::ReleaseScope`, `Org/Account::approved_releases`): the
   mero-tee releases that may hold an org's (or an account's own) apps; the one it
   began on is approved at creation, others by the owner with a passkey assertion
   (`POST /orgs/{org}/releases`, `/auth/releases`, logged as consent). Enforced by the
@@ -82,7 +84,7 @@ architecture spec.
   sets, blob marks. App code's overlay answers nothing there and a run that tries is
   refused; the host writes with `Overlay::set_host` and reads with
   `Storage::host_get`. Rotations follow v1's host rules (`rotation_refusal`).
-- **Access is judged fresh**: every gated request and every client call's leader
+- **Access is judged fresh**: every request carrying a credential, every gated request and every client call's leader
   read the system state through `sys_fresh` (a read index), so a removal committed
   elsewhere holds before the next request.
 - **Ops replica moves** run on the app group's leader; any other replica answers

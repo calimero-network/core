@@ -29,20 +29,22 @@ merod-v2 --node-id 1 --listen 0.0.0.0:2501 --public-url https://n1.eu1.example/ 
   `--session-key-rotation-secs` (default 6 h, at least 30 min); the previous key
   keeps verifying.
 - **Browsers.** `--origins` are both the passkey origins and the CORS origins.
-- **Upgrade policy.** `--upgrade-policy owner` (default) or `operator`, fixed
-  the first time the cluster starts and attested with every node's receipt key,
-  so users can check it (`verify_app_cluster`). Owner-managed: each app's owner
-  (an organization's owner for its apps) approves the mero-tee releases that may
-  hold its data and upgrades it, with a passkey; the operator can do neither.
-  Operator-managed: the operator approves releases for every app
-  (`POST /ops/releases { version }`) and may upgrade any app to an installed
-  release (`POST /ops/apps/{app}/upgrade { version | bundle }`); owners still
-  upgrade their own apps. Pick operator-managed only where users trust the
-  operator with code that reads their data.
+- **Governance.** Three decisions, each given at deployment to either each
+  app's `owner` (the default; an organization's owner for its apps, with a
+  passkey) or the `operator` (for every app, through the Ops API):
+  `--release-approvals` (which mero-tee releases may hold the data:
+  `POST /ops/releases { version }`), `--app-upgrades`
+  (`POST /ops/apps/{app}/upgrade { version | bundle }`, an installed release)
+  and `--outbound-approvals` (`POST /ops/outbound { package, prefixes }`). The
+  party not chosen cannot make that decision. They are fixed the first time the
+  cluster starts and attested with every node's receipt key, so users check
+  them (`verify_app_cluster`). Give the operator a decision only where users
+  trust it with code, or destinations, that read their data.
 - **Outbound HTTPS.** Off unless `--settings FILE` has an `[outbound]` table
   (`enabled`, `hosts`, and `env_secrets` or a loopback `sidecar`), v1's
-  `[context.outbound]`. The operator only bounds the hosts and holds the
-  secrets; which prefixes an app may reach is its owner's approval.
+  `[context.outbound]`. The operator bounds the hosts and holds the secrets;
+  which prefixes an app may reach is approved by whoever `--outbound-approvals`
+  names.
 
 ## The Ops API
 

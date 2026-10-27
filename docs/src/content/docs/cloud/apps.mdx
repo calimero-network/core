@@ -81,10 +81,12 @@ repository builds against the `release-v2` SDK and deploys unchanged
   namespace admin's place: a call (never a view, init or migration, nor a
   read-only member's call) may send one request under a prefix its signed
   manifest declares (`outbound` in `[package.metadata.calimero]`), to a host
-  the operator allows, once the app's owner approved that prefix for the
-  publisher: `POST /orgs/{org}/outbound` (or `/auth/outbound` for your own apps)
-  `{ package, prefixes: "manifest" | [...], replace }`, with a passkey
-  assertion (`approveOutbound` / `approve_outbound` in the clients). Until then
+  the operator allows, once that prefix was approved for the publisher by
+  whoever the cluster's deployment gave outbound approvals (its governance,
+  which `verify_app_cluster` reports). By the owner: `POST /orgs/{org}/outbound`
+  (or `/auth/outbound` for your own apps) `{ package, prefixes: "manifest" |
+  [...], replace }`, with a passkey assertion (`approve_outbound` in the Rust
+  client). By the operator: `POST /ops/outbound`. Until then
   the request is refused with `NotApproved` (or `AwaitingApproval` for a prefix
   a later release added), which the app can show. Secrets the operator holds
   (`{{secret:NAME}}`) are filled in by the node and redacted from the answer.

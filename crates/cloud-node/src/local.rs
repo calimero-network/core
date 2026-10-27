@@ -77,7 +77,7 @@ pub async fn start(
             registry: registry.clone(),
             allow_unsigned_bundles: true,
             outbound: None,
-            upgrade_policy: crate::system::UpgradePolicy::Owner,
+            governance: Default::default(),
         };
         nodes.push(run(config).await?);
     }

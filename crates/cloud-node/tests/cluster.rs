@@ -102,7 +102,7 @@ impl Cluster {
                 registry: None,
                 allow_unsigned_bundles: true,
                 outbound: None,
-                upgrade_policy: calimero_cloud_node::system::UpgradePolicy::Owner,
+                governance: Default::default(),
             };
             configure(&mut config);
             nodes.push(Some(run(config).await.unwrap()));
@@ -2278,26 +2278,57 @@ async fn outbound_requests_need_the_owners_approval() {
 
 // ---------------------------------------------------------------- governance
 
-/// Who moves apps to new code is chosen when the cluster is deployed, and a
-/// user proves which: every replica binds the cluster's governance into its
-/// receipt-key quote. Owner-managed, the operator can neither upgrade an app
-/// nor approve a release; operator-managed, it does both for every app, and
-/// owners approve no releases (they still upgrade their own apps).
+/// Who decides releases, app upgrades and outbound hosts is chosen per
+/// deployment, each one either the operator's or the owner's, and a user
+/// proves which: every replica binds the governance into its receipt-key
+/// quote, and a replica claiming other rules is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
-    use calimero_cloud_node::system::UpgradePolicy;
-    for policy in [UpgradePolicy::Owner, UpgradePolicy::Operator] {
-        let operator = policy == UpgradePolicy::Operator;
-        let c = Cluster::start_with(3, |cfg| cfg.upgrade_policy = policy).await;
+    use calimero_cloud_node::system::{Authority, Governance};
+    let (owner, operator) = (Authority::Owner, Authority::Operator);
+    let deployments = [
+        Governance {
+            releases: owner,
+            app_upgrades: owner,
+            outbound: owner,
+        },
+        Governance {
+            releases: operator,
+            app_upgrades: operator,
+            outbound: operator,
+        },
+        // A managed cluster whose operator rolls out node releases, while
+        // each app's owner keeps its code and its outbound hosts.
+        Governance {
+            releases: operator,
+            app_upgrades: owner,
+            outbound: owner,
+        },
+    ];
+    for g in deployments {
+        let op = |a: Authority| a == Authority::Operator;
+        let configured = g.clone();
+        let c = Cluster::start_with(3, move |cfg| cfg.governance = configured.clone()).await;
         let (alice, mut pk) = signed_up(&c, 0, "alice").await;
         let kv = kv_wasm();
         let (app, _ctx) = deploy(&alice, "kv", kv.clone(), json!({})).await;
         let next = alice.upload_bundle(variant(&kv, "next")).await.unwrap();
+        let publisher = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let _ = alice
+            .upload_package(mpk_declaring(
+                "com.test.gov",
+                "0.1.0",
+                &variant(&kv, "pkg"),
+                &publisher,
+                &["https://api.example.com/v1/"],
+            ))
+            .await
+            .unwrap();
 
+        // What the user proves.
         let proven = alice.verify_app_cluster(&app).await.unwrap();
-        assert_eq!(proven.keys.len(), 3, "{policy:?}");
-        assert_eq!(proven.governance.upgrades, policy, "{policy:?}");
-        // A replica claiming other rules than its quote binds is refused.
+        assert_eq!(proven.keys.len(), 3, "{g:?}");
+        assert_eq!(proven.governance, g, "{g:?}");
         let nonce = [5u8; 32];
         let docs = alice
             .get(&format!(
@@ -2308,64 +2339,89 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
             .unwrap();
         let mut doc: calimero_cloud_client::attest::AttestationDoc =
             serde_json::from_value(docs["replicas"][0]["attestation"].clone()).unwrap();
-        let policy_mock = Policy {
+        let mock = Policy {
             allow_mock: true,
             ..Policy::default()
         };
         assert!(
-            calimero_cloud_client::attest::verify_receipt_key(&doc, &nonce, &policy_mock)
+            calimero_cloud_client::attest::verify_receipt_key(&doc, &nonce, &mock)
                 .await
                 .is_ok()
         );
-        doc.governance = Some(calimero_cloud_client::attest::Governance {
-            upgrades: if operator {
-                UpgradePolicy::Owner
-            } else {
-                UpgradePolicy::Operator
-            },
-        });
+        let mut forged = g.clone();
+        forged.app_upgrades = if op(g.app_upgrades) { owner } else { operator };
+        doc.governance = Some(forged);
         assert!(
-            calimero_cloud_client::attest::verify_receipt_key(&doc, &nonce, &policy_mock)
+            calimero_cloud_client::attest::verify_receipt_key(&doc, &nonce, &mock)
                 .await
                 .is_err(),
-            "{policy:?}: a forged governance verified"
+            "{g:?}: a forged governance verified"
         );
 
         let ops = c.client(1);
         ops.use_api_key("ops-secret").await;
         let status = ops.get("ops/status").await.unwrap();
-        assert_eq!(
-            status["governance"]["upgrades"],
-            json!(policy),
-            "{policy:?}"
-        );
+        assert_eq!(status["governance"], json!(g), "{g:?}");
 
-        let upgraded = ops
+        // App upgrades: exactly one of the two may.
+        let by_operator = ops
             .post(
                 &format!("ops/apps/{app}/upgrade"),
                 json!({ "bundle": next }),
             )
             .await;
-        assert_eq!(upgraded.is_ok(), operator, "{policy:?}: {upgraded:?}");
-        if operator {
-            let a = alice.get(&format!("apps/{app}")).await.unwrap();
-            assert_eq!(a["bundle"], json!(next), "the directory records it");
-            // The app still answers, on the new bundle.
-            let _ = alice
-                .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
-                .await
-                .unwrap();
-        }
+        assert_eq!(
+            by_operator.is_ok(),
+            op(g.app_upgrades),
+            "{g:?}: {by_operator:?}"
+        );
+        let by_owner = alice
+            .upgrade_app(&app, json!({ "bundle": next }), &mut pk)
+            .await;
+        assert_eq!(by_owner.is_ok(), !op(g.app_upgrades), "{g:?}: {by_owner:?}");
+        let a = alice.get(&format!("apps/{app}")).await.unwrap();
+        assert_eq!(
+            a["bundle"],
+            json!(next),
+            "{g:?}: upgraded by whoever holds it"
+        );
+        let _ = alice
+            .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
+            .await
+            .unwrap();
 
+        // Release approvals.
         let ops_release = ops
             .post("ops/releases", json!({ "version": "9.0.0" }))
             .await;
-        assert_eq!(ops_release.is_ok(), operator, "{policy:?}: {ops_release:?}");
+        assert_eq!(
+            ops_release.is_ok(),
+            op(g.releases),
+            "{g:?}: {ops_release:?}"
+        );
         let owner_release = alice.approve_release(None, "9.0.0", &mut pk).await;
         assert_eq!(
             owner_release.is_ok(),
-            !operator,
-            "{policy:?}: {owner_release:?}"
+            !op(g.releases),
+            "{g:?}: {owner_release:?}"
+        );
+
+        // Outbound approvals.
+        let ops_outbound = ops
+            .post("ops/outbound", json!({ "package": "com.test.gov" }))
+            .await;
+        assert_eq!(
+            ops_outbound.is_ok(),
+            op(g.outbound),
+            "{g:?}: {ops_outbound:?}"
+        );
+        let owner_outbound = alice
+            .approve_outbound(None, "com.test.gov", None, false, &mut pk)
+            .await;
+        assert_eq!(
+            owner_outbound.is_ok(),
+            !op(g.outbound),
+            "{g:?}: {owner_outbound:?}"
         );
     }
 }

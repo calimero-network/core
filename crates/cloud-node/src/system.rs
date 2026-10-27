@@ -172,10 +172,14 @@ pub struct SystemState {
     /// state from before governance, which reads as [`Governance::default`].
     #[serde(default)]
     pub governance: Option<Governance>,
-    /// Under [`UpgradePolicy::Operator`]: the mero-tee releases the operator
-    /// approved to hold every app's data.
+    /// When the operator holds release approvals ([`Governance::releases`]):
+    /// the mero-tee releases it approved to hold every app's data.
     #[serde(default)]
     pub operator_releases: BTreeSet<String>,
+    /// When the operator holds outbound approvals ([`Governance::outbound`]):
+    /// what it approved, by package signer, for every app.
+    #[serde(default)]
+    pub operator_outbound: BTreeMap<String, crate::types::OutboundApproval>,
     /// When each session in `revoked_sessions` was revoked (Unix seconds), so
     /// it can be forgotten once no token of it can still be valid.
     #[serde(default)]
@@ -186,14 +190,19 @@ pub struct SystemState {
     pub rotated_refresh: BTreeMap<String, RefreshRecord>,
 }
 
-pub use calimero_cloud_client::attest::{Governance, UpgradePolicy};
+pub use calimero_cloud_client::attest::{Authority, Governance};
 
 /// Whose release approvals a change is to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum ReleaseScope {
-    Org { org: OrgId },
+    Org {
+        org: OrgId,
+    },
     Account,
+    /// Every app, by the operator: only where the deployment gave it this
+    /// decision ([`Governance`]).
+    Cluster,
 }
 
 /// How long a revoked session is remembered: past every token it could have
@@ -206,7 +215,7 @@ impl SystemState {
     /// (state from before approvals), which leaves the app unrestricted.
     #[must_use]
     pub fn approved_releases(&self, app: &AppRecord) -> Option<&BTreeSet<String>> {
-        if self.governance().upgrades == UpgradePolicy::Operator {
+        if self.governance().releases == Authority::Operator {
             let set = &self.operator_releases;
             return (!set.is_empty()).then_some(set);
         }
@@ -225,6 +234,9 @@ impl SystemState {
         app: &AppRecord,
         signer: &str,
     ) -> Option<&crate::types::OutboundApproval> {
+        if self.governance().outbound == Authority::Operator {
+            return self.operator_outbound.get(signer);
+        }
         match &app.org {
             Some(o) => self.orgs.get(o)?.outbound_approvals.get(signer),
             None => self
@@ -374,8 +386,8 @@ pub enum SystemCmd {
     UpgradeApp {
         app_id: AppId,
         bundle: String,
-        /// The operator upgraded it (`actor` empty), which only
-        /// [`UpgradePolicy::Operator`] allows.
+        /// The operator upgraded it (`actor` empty): allowed only where the
+        /// deployment gave it app upgrades, and then nobody else may.
         #[serde(default)]
         by_operator: bool,
         actor: AccountId,
@@ -476,13 +488,13 @@ pub enum SystemCmd {
     /// operator cannot change who upgrades the apps once people rely on it.
     Genesis {
         governance: Governance,
-        /// The founding node's release: under [`UpgradePolicy::Operator`] it
-        /// holds the apps until the operator approves another.
+        /// The founding node's release: where the operator holds release
+        /// approvals, it holds the apps until the operator approves another.
         #[serde(default)]
         release: Option<String>,
     },
-    /// Under [`UpgradePolicy::Operator`], the operator approves (or withdraws)
-    /// a mero-tee release for every app's data.
+    /// Where the operator holds release approvals, it approves (or
+    /// withdraws) a mero-tee release for every app's data.
     SetOperatorRelease {
         version: String,
         approved: bool,
@@ -836,9 +848,16 @@ impl SystemMachine {
                 if !s.bundles.contains_key(&bundle) {
                     return Err("unknown bundle");
                 }
+                let operator = s.governance().app_upgrades == Authority::Operator;
+                if by_operator != operator {
+                    return Err(if operator {
+                        "this cluster's apps are upgraded by its operator"
+                    } else {
+                        "this cluster's apps are upgraded by their owners"
+                    });
+                }
                 let allowed = if by_operator {
-                    s.governance().upgrades == UpgradePolicy::Operator
-                        && s.apps.contains_key(&app_id)
+                    s.apps.contains_key(&app_id)
                 } else {
                     s.apps
                         .get(&app_id)
@@ -1151,14 +1170,14 @@ impl SystemMachine {
                 if s.governance.is_some() || !s.accounts.is_empty() {
                     return Err("the cluster's governance is fixed at genesis");
                 }
-                if governance.upgrades == UpgradePolicy::Operator {
+                if governance.releases == Authority::Operator {
                     s.operator_releases = release.into_iter().collect();
                 }
                 s.governance = Some(governance.clone());
                 Ok(json!({ "governance": governance }))
             }
             SystemCmd::SetOperatorRelease { version, approved } => {
-                if s.governance().upgrades != UpgradePolicy::Operator {
+                if s.governance().releases != Authority::Operator {
                     return Err("this cluster's releases are approved by each app's owner");
                 }
                 let set = &mut s.operator_releases;
@@ -1179,10 +1198,11 @@ impl SystemMachine {
                 actor,
                 consent: _,
             } => {
-                if s.governance().upgrades == UpgradePolicy::Operator {
+                if s.governance().releases == Authority::Operator {
                     return Err("this cluster's releases are approved by its operator");
                 }
                 let set = match &scope {
+                    ReleaseScope::Cluster => return Err("the operator uses SetOperatorRelease"),
                     ReleaseScope::Org { org } => {
                         let o = s.orgs.get_mut(org).ok_or("no such organization")?;
                         if o.role(&actor) != Some(OrgRole::Owner) {
@@ -1223,7 +1243,16 @@ impl SystemMachine {
                     .latest()
                     .map(|v| v.outbound.clone())
                     .unwrap_or_default();
+                let operator = s.governance().outbound == Authority::Operator;
+                if operator != (scope == ReleaseScope::Cluster) {
+                    return Err(if operator {
+                        "this cluster's outbound hosts are approved by its operator"
+                    } else {
+                        "this cluster's outbound hosts are approved by each app's owner"
+                    });
+                }
                 let approvals = match &scope {
+                    ReleaseScope::Cluster => &mut s.operator_outbound,
                     ReleaseScope::Org { org } => {
                         let o = s.orgs.get_mut(org).ok_or("no such organization")?;
                         if o.role(&actor) != Some(OrgRole::Owner) {
@@ -1645,7 +1674,7 @@ impl Machine for SystemMachine {
 mod tests {
     use serde_json::json;
 
-    use super::{Governance, ReleaseScope, SystemCmd, SystemMachine, SystemState, UpgradePolicy};
+    use super::{Authority, Governance, ReleaseScope, SystemCmd, SystemMachine, SystemState};
 
     fn account(id: &str) -> SystemCmd {
         SystemCmd::CreateAccount {
@@ -1656,10 +1685,18 @@ mod tests {
         }
     }
 
-    fn genesis(upgrades: UpgradePolicy) -> SystemCmd {
+    fn genesis(governance: Governance) -> SystemCmd {
         SystemCmd::Genesis {
-            governance: Governance { upgrades },
+            governance,
             release: Some("2.0.0".into()),
+        }
+    }
+
+    fn all(who: Authority) -> Governance {
+        Governance {
+            releases: who,
+            app_upgrades: who,
+            outbound: who,
         }
     }
 
@@ -1672,103 +1709,140 @@ mod tests {
             m.run(account("alice")).is_err(),
             "an account before genesis"
         );
-        let _ok = m.run(genesis(UpgradePolicy::Operator)).unwrap();
+        let _ok = m.run(genesis(all(Authority::Operator))).unwrap();
         let _ok = m.run(account("alice")).unwrap();
-        assert!(m.run(genesis(UpgradePolicy::Owner)).is_err());
-        assert_eq!(m.state.governance().upgrades, UpgradePolicy::Operator);
+        assert!(m.run(genesis(all(Authority::Owner))).is_err());
+        assert_eq!(m.state.governance(), all(Authority::Operator));
 
         // Even before any account, a second genesis is refused.
         let mut m = SystemMachine::default();
-        let _ok = m.run(genesis(UpgradePolicy::Owner)).unwrap();
-        assert!(m.run(genesis(UpgradePolicy::Operator)).is_err());
-        assert_eq!(m.state.governance().upgrades, UpgradePolicy::Owner);
+        let _ok = m.run(genesis(all(Authority::Owner))).unwrap();
+        assert!(m.run(genesis(all(Authority::Operator))).is_err());
+        assert_eq!(m.state.governance(), all(Authority::Owner));
 
-        // State from before governance reads as owner-managed.
-        assert_eq!(SystemState::default().governance(), Governance::default());
-        assert_eq!(Governance::default().upgrades, UpgradePolicy::Owner);
+        // State from before governance reads as owner-decided throughout.
+        assert_eq!(SystemState::default().governance(), all(Authority::Owner));
     }
 
-    /// Owner-managed: only the app's owner approves releases and upgrades.
-    /// Operator-managed: the operator approves releases for every app and may
-    /// upgrade any; owners still upgrade their own, and approve no releases.
+    /// Each decision (releases, app upgrades, outbound hosts) belongs to
+    /// exactly one party, chosen independently at deployment: where the
+    /// operator holds it the owner cannot take it, and the other way round.
     #[test]
-    fn the_policy_decides_who_moves_apps_to_new_code() {
-        for policy in [UpgradePolicy::Owner, UpgradePolicy::Operator] {
-            let operator = policy == UpgradePolicy::Operator;
-            let mut m = SystemMachine::default();
-            let _ok = m.run(genesis(policy)).unwrap();
-            let _ok = m.run(account("alice")).unwrap();
-            if let Some(a) = m.state.accounts.get_mut("alice") {
-                let _new = a.approved_releases.insert("2.0.0".into());
+    fn each_decision_belongs_to_the_party_the_deployment_chose() {
+        let both = [Authority::Owner, Authority::Operator];
+        for releases in both {
+            for app_upgrades in both {
+                for outbound in both {
+                    let g = Governance {
+                        releases,
+                        app_upgrades,
+                        outbound,
+                    };
+                    check(&g);
+                }
             }
-            for hash in ["b1", "b2"] {
-                let _prev = m.state.bundles.insert(
-                    hash.into(),
-                    serde_json::from_value(
-                        json!({ "hash": hash, "size": 1, "uploadedBy": "alice" }),
-                    )
-                    .unwrap(),
-                );
-            }
-            let _prev = m.state.apps.insert(
-                "app".into(),
-                serde_json::from_value(json!({
-                    "appId": "app", "name": "app", "group": 2, "bundle": "b1",
-                    "owner": "alice", "replicas": [1, 2, 3], "createdAt": 0
-                }))
-                .unwrap(),
-            );
-            let upgrade = |by_operator: bool, actor: &str, bundle: &str| SystemCmd::UpgradeApp {
-                app_id: "app".into(),
-                bundle: bundle.into(),
-                by_operator,
-                actor: actor.into(),
-                consent: serde_json::Value::Null,
-            };
-
-            let by_operator = m.run(upgrade(true, "", "b2"));
-            assert_eq!(
-                by_operator.is_ok(),
-                operator,
-                "{policy:?}: operator upgrade"
-            );
-            assert!(
-                m.run(upgrade(false, "alice", "b1")).is_ok(),
-                "{policy:?}: owner"
-            );
-            assert!(
-                m.run(upgrade(false, "mallory", "b2")).is_err(),
-                "{policy:?}"
-            );
-
-            let ops_release = m.run(SystemCmd::SetOperatorRelease {
-                version: "2.1.0".into(),
-                approved: true,
-            });
-            assert_eq!(
-                ops_release.is_ok(),
-                operator,
-                "{policy:?}: operator release"
-            );
-            let owner_release = m.run(SystemCmd::SetReleaseApproval {
-                scope: ReleaseScope::Account,
-                version: "2.1.0".into(),
-                approved: true,
-                actor: "alice".into(),
-                consent: serde_json::Value::Null,
-            });
-            assert_eq!(
-                owner_release.is_ok(),
-                !operator,
-                "{policy:?}: owner release"
-            );
-
-            // Whoever approved it, 2.1.0 may now hold the app; nothing else new may.
-            let app = m.state.apps["app"].clone();
-            assert!(m.state.release_may_hold(&app, Some("2.0.0")), "{policy:?}");
-            assert!(m.state.release_may_hold(&app, Some("2.1.0")), "{policy:?}");
-            assert!(!m.state.release_may_hold(&app, Some("9.9.9")), "{policy:?}");
         }
+    }
+
+    fn check(g: &Governance) {
+        let op = |a: Authority| a == Authority::Operator;
+        let mut m = SystemMachine::default();
+        let _ok = m.run(genesis(g.clone())).unwrap();
+        let _ok = m.run(account("alice")).unwrap();
+        if let Some(a) = m.state.accounts.get_mut("alice") {
+            let _new = a.approved_releases.insert("2.0.0".into());
+        }
+        for hash in ["b1", "b2"] {
+            let _prev = m.state.bundles.insert(
+                hash.into(),
+                serde_json::from_value(json!({ "hash": hash, "size": 1, "uploadedBy": "alice" }))
+                    .unwrap(),
+            );
+        }
+        let _prev = m.state.apps.insert(
+            "app".into(),
+            serde_json::from_value(json!({
+                "appId": "app", "name": "app", "group": 2, "bundle": "b1",
+                "owner": "alice", "replicas": [1, 2, 3], "createdAt": 0
+            }))
+            .unwrap(),
+        );
+        let _prev = m.state.packages.insert(
+            "p".into(),
+            serde_json::from_value(json!({
+                "name": "p", "signerId": "did:key:zP", "owner": "alice",
+                "versions": { "1.0.0": {
+                    "version": "1.0.0", "mpk": "00", "mpkSize": 1, "source": "upload",
+                    "services": { "": "b1" }, "outbound": ["https://api.example.com/v1/"],
+                    "installedBy": "alice", "installedAt": 0
+                } }
+            }))
+            .unwrap(),
+        );
+
+        // App upgrades.
+        let upgrade = |by_operator: bool, actor: &str| SystemCmd::UpgradeApp {
+            app_id: "app".into(),
+            bundle: "b2".into(),
+            by_operator,
+            actor: actor.into(),
+            consent: serde_json::Value::Null,
+        };
+        let by_operator = m.run(upgrade(true, "")).is_ok();
+        let by_owner = m.run(upgrade(false, "alice")).is_ok();
+        assert_eq!(by_operator, op(g.app_upgrades), "{g:?}: operator upgrade");
+        assert_eq!(by_owner, !op(g.app_upgrades), "{g:?}: owner upgrade");
+        assert!(m.run(upgrade(false, "mallory")).is_err(), "{g:?}");
+
+        // Release approvals.
+        let ops_release = m.run(SystemCmd::SetOperatorRelease {
+            version: "2.1.0".into(),
+            approved: true,
+        });
+        let owner_release = m.run(SystemCmd::SetReleaseApproval {
+            scope: ReleaseScope::Account,
+            version: "2.1.0".into(),
+            approved: true,
+            actor: "alice".into(),
+            consent: serde_json::Value::Null,
+        });
+        assert_eq!(
+            ops_release.is_ok(),
+            op(g.releases),
+            "{g:?}: operator release"
+        );
+        assert_eq!(
+            owner_release.is_ok(),
+            !op(g.releases),
+            "{g:?}: owner release"
+        );
+        let app = m.state.apps["app"].clone();
+        assert!(m.state.release_may_hold(&app, Some("2.0.0")), "{g:?}");
+        assert!(m.state.release_may_hold(&app, Some("2.1.0")), "{g:?}");
+        assert!(!m.state.release_may_hold(&app, Some("9.9.9")), "{g:?}");
+
+        // Outbound approvals.
+        let outbound = |scope: ReleaseScope, actor: &str| SystemCmd::SetOutboundApproval {
+            scope,
+            package: "p".into(),
+            selection: calimero_primitives::outbound::OutboundSelection::Manifest,
+            replace: false,
+            actor: actor.into(),
+            consent: serde_json::Value::Null,
+        };
+        let ops_outbound = m.run(outbound(ReleaseScope::Cluster, "")).is_ok();
+        let owner_outbound = m.run(outbound(ReleaseScope::Account, "alice")).is_ok();
+        assert_eq!(ops_outbound, op(g.outbound), "{g:?}: operator outbound");
+        assert_eq!(owner_outbound, !op(g.outbound), "{g:?}: owner outbound");
+        let approved = m
+            .state
+            .outbound_approval(&app, "did:key:zP")
+            .map(|a| a.prefixes.clone());
+        assert_eq!(
+            approved,
+            Some(vec!["https://api.example.com/v1/".to_owned()]),
+            "{g:?}: the app reads the approval its deployment's party made"
+        );
     }
 
     /// "Move this team to the top" is `parent: Some(None)`; it was lost on its

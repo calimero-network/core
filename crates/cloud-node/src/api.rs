@@ -163,6 +163,10 @@ async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>
         return Ok(None);
     };
     let token = value.strip_prefix("Bearer ").unwrap_or(value).trim();
+    // A credential is judged on the cluster's latest system state (a read
+    // index): a session or key revoked through another node is refused here
+    // at once, not once this replica catches up.
+    node.sys_fresh().await;
     if let Some(_key) = token.strip_prefix("cal_") {
         let hash = calimero_identity::api_key_hash(token);
         let rec = node
@@ -745,7 +749,9 @@ async fn set_release_approval(
     let subject = match &scope {
         crate::system::ReleaseScope::Org { org } => format!("org:{org}"),
         crate::system::ReleaseScope::Account => format!("account:{account}"),
+        crate::system::ReleaseScope::Cluster => "cluster".to_owned(),
     };
+    owner_holds(node, |g| g.releases, "release approvals")?;
     let method = if body.approved {
         "__approve_release"
     } else {
@@ -829,7 +835,9 @@ async fn set_outbound_approval(
     let subject = match &scope {
         crate::system::ReleaseScope::Org { org } => format!("org:{org}"),
         crate::system::ReleaseScope::Account => format!("account:{account}"),
+        crate::system::ReleaseScope::Cluster => "cluster".to_owned(),
     };
+    owner_holds(node, |g| g.outbound, "outbound approvals")?;
     let consent = consent(
         node,
         &p,
@@ -1414,8 +1422,11 @@ async fn gate(
     // Access is judged on the cluster's latest system state (a read index): a
     // removal or revocation committed through another node holds before the
     // next request, read or write, and a grant is seen at once (Xil's review:
-    // access judged on lagging local state).
-    node.sys_fresh().await;
+    // access judged on lagging local state). `principal` already read fresh
+    // for a request that carries a credential.
+    if p.is_none() {
+        node.sys_fresh().await;
+    }
     let reaches = node.sys(|s| s.may_reach(app, account));
     if !reaches {
         return Err(if p.is_none() {
@@ -1820,6 +1831,7 @@ async fn app_upgrade(
     // owner's decision (the organization's owner for an org app), never an
     // operator's or an admin's: new code reads the app's data.
     let app = node.app(&app_id).await?;
+    owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
     if !node.sys(|s| s.may_upgrade(&app, &account)) {
         return Err(ApiError::forbidden(
             "only the app's owner (or its organization's owner) may upgrade it",
@@ -2768,15 +2780,36 @@ async fn ops_quotas_set(
     Ok(Json(json!({})))
 }
 
-/// Refused unless the cluster was deployed with the operator managing
-/// upgrades: on an owner-managed cluster the operator moves no app to new code.
-fn operator_upgrades(node: &Node) -> Result<(), ApiError> {
-    if node.sys(|s| s.governance().upgrades) == crate::system::UpgradePolicy::Operator {
+/// Refused unless the deployment gave the operator this decision
+/// (`--release-approvals`, `--app-upgrades`, `--outbound-approvals`).
+fn operator_holds(
+    node: &Node,
+    which: fn(&crate::system::Governance) -> crate::system::Authority,
+    what: &str,
+) -> Result<(), ApiError> {
+    if which(&node.sys(crate::system::SystemState::governance))
+        == crate::system::Authority::Operator
+    {
         Ok(())
     } else {
-        Err(ApiError::forbidden(
-            "this cluster was deployed with owner-managed upgrades",
-        ))
+        Err(ApiError::forbidden(&format!(
+            "this cluster was deployed with {what} decided by each app's owner"
+        )))
+    }
+}
+
+/// The owner's side of [`operator_holds`]: refused where the operator decides.
+fn owner_holds(
+    node: &Node,
+    which: fn(&crate::system::Governance) -> crate::system::Authority,
+    what: &str,
+) -> Result<(), ApiError> {
+    if which(&node.sys(crate::system::SystemState::governance)) == crate::system::Authority::Owner {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(&format!(
+            "this cluster was deployed with {what} decided by its operator"
+        )))
     }
 }
 
@@ -2795,11 +2828,43 @@ async fn ops_release(
     Json(body): Json<OpsReleaseBody>,
 ) -> ApiResult {
     operator(&node, &headers)?;
-    operator_upgrades(&node)?;
+    operator_holds(&node, |g| g.releases, "release approvals")?;
     Ok(Json(
         node.sys_write(&SystemCmd::SetOperatorRelease {
             version: body.version,
             approved: body.approved,
+        })
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpsOutboundBody {
+    package: String,
+    #[serde(default = "manifest")]
+    prefixes: calimero_primitives::outbound::OutboundSelection,
+    #[serde(default)]
+    replace: bool,
+}
+
+/// Approve URL prefixes a package's publisher may call out to, for every app,
+/// where the deployment gave the operator outbound approvals.
+async fn ops_outbound(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<OpsOutboundBody>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    operator_holds(&node, |g| g.outbound, "outbound approvals")?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::SetOutboundApproval {
+            scope: crate::system::ReleaseScope::Cluster,
+            package: body.package,
+            selection: body.prefixes,
+            replace: body.replace,
+            actor: String::new(),
+            consent: Value::Null,
         })
         .await?,
     ))
@@ -2829,7 +2894,7 @@ async fn ops_upgrade(
     Json(body): Json<OpsUpgradeBody>,
 ) -> ApiResult {
     operator(&node, &headers)?;
-    operator_upgrades(&node)?;
+    operator_holds(&node, |g| g.app_upgrades, "app upgrades")?;
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let current = node.release_of(&app.bundle);
@@ -2958,6 +3023,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))
         .route("/ops/backup", post(ops_backup))
         .route("/ops/releases", post(ops_release))
+        .route("/ops/outbound", post(ops_outbound))
         .route("/ops/apps/{app}/upgrade", post(ops_upgrade))
         .route("/ops/quotas", get(ops_quotas_get).post(ops_quotas_set))
         // Bundles (peer blob pushes, uploads) exceed axum's 2 MiB default; the sealed envelope caps requests at 64 MiB.

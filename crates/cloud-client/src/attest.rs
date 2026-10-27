@@ -48,32 +48,38 @@ pub struct AttestationDoc {
     pub governance: Option<Governance>,
 }
 
-/// Who may move a cluster's apps to new code: chosen when the cluster is
+/// Who holds one decision over a cluster's apps. Chosen when the cluster is
 /// deployed, recorded in its system state at genesis, and never changed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum UpgradePolicy {
-    /// Each app's owner (an organization's owner for its apps) approves the
-    /// mero-tee releases that may hold their data and upgrades their apps,
-    /// with a passkey. The operator can do neither.
+pub enum Authority {
+    /// Each app's owner (an organization's owner for its apps), with a
+    /// passkey assertion. The operator cannot.
     #[default]
     Owner,
-    /// The operator approves releases for the whole cluster and may upgrade
-    /// any app (owners still upgrade their own). For a managed deployment
-    /// whose users trust its operator with code.
+    /// The operator, for every app (the Ops API). Owners cannot. For a
+    /// managed deployment whose users trust its operator with this decision.
     Operator,
 }
 
-/// The rules a cluster was deployed with, as its replicas attest them.
+/// The rules a cluster was deployed with, as its replicas attest them: who
+/// decides each thing that lets new code, or a new destination, reach an
+/// app's data.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Governance {
-    pub upgrades: UpgradePolicy,
+    /// Which mero-tee releases may hold the apps' data (cluster upgrades).
+    pub releases: Authority,
+    /// Who upgrades an app to another bundle.
+    pub app_upgrades: Authority,
+    /// Who approves the URL prefixes an app may call out to.
+    pub outbound: Authority,
 }
 
 impl Governance {
     /// The bytes a quote binds: the JSON, fields in declaration order
-    /// (`{"upgrades":"owner"}`, what `JSON.stringify` writes too).
+    /// (`{"releases":"owner","appUpgrades":"owner","outbound":"owner"}`, what
+    /// `JSON.stringify` writes for the same object too).
     #[must_use]
     pub fn canonical(&self) -> Vec<u8> {
         serde_json::to_vec(self).unwrap_or_default()

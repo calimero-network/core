@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use calimero_cloud_client::Measurements;
 use calimero_cloud_node::attest::Mode;
+use calimero_cloud_node::system::{Authority, Governance};
 use calimero_cloud_node::{kms, run, Config};
 use clap::Parser;
 
@@ -90,22 +91,28 @@ struct Args {
     /// Accept raw WASM uploads, which carry no publisher signature (default: only with --dev).
     #[arg(long, env = "MEROD_ALLOW_UNSIGNED_BUNDLES")]
     allow_unsigned_bundles: bool,
-    /// Who moves apps to new code, fixed when the cluster is first started:
-    /// `owner` (each app's owner approves releases and upgrades, with a
-    /// passkey) or `operator` (the operator does, for every app). Attested
-    /// with every receipt key. Later starts cannot change it.
-    #[arg(long, env = "MEROD_UPGRADE_POLICY", default_value = "owner", value_parser = upgrade_policy)]
-    upgrade_policy: calimero_cloud_node::system::UpgradePolicy,
+    /// Who approves the mero-tee releases that may hold the apps' data
+    /// (cluster upgrades): `owner` (each app's owner, with a passkey) or
+    /// `operator` (for every app). Fixed when the cluster first starts and
+    /// attested with every receipt key, as are the two below.
+    #[arg(long, env = "MEROD_RELEASE_APPROVALS", default_value = "owner", value_parser = authority)]
+    release_approvals: Authority,
+    /// Who upgrades apps to another bundle: `owner` or `operator`.
+    #[arg(long, env = "MEROD_APP_UPGRADES", default_value = "owner", value_parser = authority)]
+    app_upgrades: Authority,
+    /// Who approves the URL prefixes apps may call out to: `owner` or `operator`.
+    #[arg(long, env = "MEROD_OUTBOUND_APPROVALS", default_value = "owner", value_parser = authority)]
+    outbound_approvals: Authority,
     /// A TOML settings file; its `[outbound]` table is the outbound HTTPS
     /// policy (hosts, secrets). Without it, apps cannot call out.
     #[arg(long, env = "MEROD_SETTINGS")]
     settings: Option<PathBuf>,
 }
 
-fn upgrade_policy(s: &str) -> Result<calimero_cloud_node::system::UpgradePolicy, String> {
+fn authority(s: &str) -> Result<Authority, String> {
     match s {
-        "owner" => Ok(calimero_cloud_node::system::UpgradePolicy::Owner),
-        "operator" => Ok(calimero_cloud_node::system::UpgradePolicy::Operator),
+        "owner" => Ok(Authority::Owner),
+        "operator" => Ok(Authority::Operator),
         other => Err(format!("{other:?}: expected owner or operator")),
     }
 }
@@ -299,7 +306,11 @@ async fn main() -> eyre::Result<()> {
         registry: args.registry_url,
         allow_unsigned_bundles: args.allow_unsigned_bundles || args.dev,
         outbound: outbound(args.settings.as_deref())?,
-        upgrade_policy: args.upgrade_policy,
+        governance: Governance {
+            releases: args.release_approvals,
+            app_upgrades: args.app_upgrades,
+            outbound: args.outbound_approvals,
+        },
     };
     let running = run(config).await?;
     tokio::signal::ctrl_c().await?;

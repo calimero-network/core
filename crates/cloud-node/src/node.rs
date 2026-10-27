@@ -72,10 +72,11 @@ pub struct Config {
     /// Take raw WASM uploads (`POST /bundles`), which carry no publisher
     /// signature. Development only; production installs signed packages.
     pub allow_unsigned_bundles: bool,
-    /// Who may move apps to new code (`--upgrade-policy`). Written to the
-    /// system state at genesis by the first leader; after that the state's
-    /// value holds, whatever a restarted node is given.
-    pub upgrade_policy: crate::system::UpgradePolicy,
+    /// Who decides releases, app upgrades and outbound hosts
+    /// (`--release-approvals`, `--app-upgrades`, `--outbound-approvals`).
+    /// Written to the system state at genesis by the first leader; after that
+    /// the state's value holds, whatever a restarted node is given.
+    pub governance: crate::system::Governance,
     /// The operator's outbound HTTPS policy (`[outbound]` in `--settings`);
     /// `None`: `http_request` traps in every run.
     pub outbound: Option<Arc<calimero_outbound::OutboundService>>,
@@ -655,9 +656,7 @@ impl Node {
             if self.sys(|s| s.governance.is_none() && s.accounts.is_empty()) {
                 let _r = self
                     .sys_write(&SystemCmd::Genesis {
-                        governance: crate::system::Governance {
-                            upgrades: self.config.upgrade_policy,
-                        },
+                        governance: self.config.governance.clone(),
                         release: Some(self.own_release()),
                     })
                     .await;
