@@ -31,7 +31,7 @@ pub struct AppBlobs {
 
 impl BlobHost for AppBlobs {
     fn get(&self, blob: [u8; 32], state: &dyn Storage) -> Result<Option<Vec<u8>>, String> {
-        if state.get(&blob_key(&blob)).is_none() {
+        if state.host_get(&blob_key(&blob)).is_none() {
             return Ok(None);
         }
         let node = self.node.upgrade().ok_or("node is shutting down")?;

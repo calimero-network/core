@@ -522,7 +522,16 @@ pub struct Overlay<'a> {
     /// Prepended to every key: empty for the app's state, an account's space
     /// for its private storage ([`private_prefix`]).
     prefix: Vec<u8>,
+    /// Set when app code touched [`RESERVED`]: the run is refused.
+    reserved_touched: std::cell::Cell<bool>,
 }
+
+/// The host's key space in an app's state: accounts' private spaces, cells'
+/// writer sets, the app's blob marks. App code addresses the app's state with
+/// raw keys too (`storage_read`/`storage_write`), so the unprefixed overlay
+/// answers nothing under this prefix and a run that tries to read or write it
+/// is refused; only the host writes there (`Overlay::set_host`).
+pub const RESERVED: &[u8] = b"\0calimero.";
 
 /// Where a shared-storage cell's current writer set lives in the app's state.
 ///
@@ -573,7 +582,30 @@ impl<'a> Overlay<'a> {
             writes: BTreeMap::new(),
             order: Vec::new(),
             prefix,
+            reserved_touched: std::cell::Cell::new(false),
         }
+    }
+
+    /// Whether app code reaches `key` in the host's space, which it may not.
+    fn forbidden(&self, key: &[u8]) -> bool {
+        let hit = self.prefix.is_empty() && key.starts_with(RESERVED);
+        if hit {
+            self.reserved_touched.set(true);
+        }
+        hit
+    }
+
+    /// Whether app code read or wrote the host's key space ([`RESERVED`]).
+    #[must_use]
+    pub fn touched_reserved(&self) -> bool {
+        self.reserved_touched.get()
+    }
+
+    /// A write by the host itself, which may be under [`RESERVED`].
+    pub fn set_host(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        let key = self.full(&key);
+        self.order.push(key.clone());
+        let _prev = self.writes.insert(key, Some(value));
     }
 
     fn full(&self, key: &[u8]) -> Vec<u8> {
@@ -603,6 +635,9 @@ impl<'a> Overlay<'a> {
 
 impl Storage for Overlay<'_> {
     fn get(&self, key: &Key) -> Option<StoreValue> {
+        if self.forbidden(key) {
+            return None;
+        }
         let key = self.full(key);
         match self.writes.get(&key) {
             Some(v) => v.clone(),
@@ -611,6 +646,9 @@ impl Storage for Overlay<'_> {
     }
 
     fn set(&mut self, key: Key, value: StoreValue) -> Option<StoreValue> {
+        if self.forbidden(&key) {
+            return None;
+        }
         let prev = self.get(&key);
         let key = self.full(&key);
         self.order.push(key.clone());
@@ -619,6 +657,9 @@ impl Storage for Overlay<'_> {
     }
 
     fn remove(&mut self, key: &Key) -> Option<Vec<u8>> {
+        if self.forbidden(key) {
+            return None;
+        }
         let prev = self.get(key);
         let key = self.full(key);
         self.order.push(key.clone());
@@ -628,6 +669,14 @@ impl Storage for Overlay<'_> {
 
     fn has(&self, key: &Key) -> bool {
         self.get(key).is_some()
+    }
+
+    fn host_get(&self, key: &Key) -> Option<StoreValue> {
+        let key = self.full(key);
+        match self.writes.get(&key) {
+            Some(v) => v.clone(),
+            None => self.base.get(&Bytes(key)).map(|v| v.0.clone()),
+        }
     }
 
     fn shared_writers(&self, cell: &[u8; 32]) -> Option<CellWriters> {
@@ -641,6 +690,63 @@ impl Storage for Overlay<'_> {
             Some(bytes) => borsh::from_slice(&bytes).ok().map(CellWriters::Rotated),
         }
     }
+}
+
+/// Why a run's writer-set rotations may not take effect, if they may not: v1's
+/// host-side rules (`shared_rotations.rs`). Each rotation steps from the set in
+/// effect (the state's, or at genesis the run's own prior if the cell id commits
+/// to it, or this run's previous rotation of the cell), and the run's account
+/// must hold `ADMIN` in it (so a `Frozen` cell, which grants none, never rotates).
+/// A TEE run or a cross-app call may not rotate, as v1's delegated and TEE runs
+/// could not.
+fn rotation_refusal(
+    overlay: &Overlay<'_>,
+    rotations: &[calimero_storage::shared_writers::SharedRotation],
+    account: &calimero_account::AccountId,
+    caller: &Caller,
+    env: &RunEnv,
+) -> Option<String> {
+    use calimero_storage::entities::OpMask;
+    use calimero_storage::shared_writers::{CellWriters, Writers};
+    if rotations.is_empty() {
+        return None;
+    }
+    if env.tee_trigger {
+        return Some("a TEE run may not rotate a cell's writers".into());
+    }
+    if matches!(caller, Caller::App { .. } | Caller::Public) {
+        return Some("only an account's own call may rotate a cell's writers".into());
+    }
+    let mut stepped: BTreeMap<calimero_storage::address::Id, Writers> = BTreeMap::new();
+    for r in rotations {
+        let in_effect = match stepped.get(&r.cell) {
+            Some(w) => w.clone(),
+            None => {
+                match calimero_runtime::store::Storage::shared_writers(overlay, r.cell.as_bytes()) {
+                    Some(CellWriters::Rotated(w)) => w,
+                    Some(CellWriters::Genesis)
+                        if calimero_storage::collections::cell_id_binds(r.cell, &r.prior) =>
+                    {
+                        r.prior.clone()
+                    }
+                    Some(CellWriters::Genesis) => {
+                        return Some(
+                            "the rotation's prior set is not the one the cell id commits to".into(),
+                        )
+                    }
+                    None => return Some("the cell's writers could not be read".into()),
+                }
+            }
+        };
+        if !in_effect
+            .get(account)
+            .is_some_and(|mask| mask.contains(OpMask::ADMIN))
+        {
+            return Some("only a writer holding ADMIN may rotate the cell's writers".into());
+        }
+        let _prev = stepped.insert(r.cell, r.new.clone());
+    }
+    None
 }
 
 /// Write `state` (borsh of the app's state) as the app's root entry, with the
@@ -909,6 +1015,14 @@ impl Executor {
                 };
             }
         }
+        if overlay.touched_reserved() {
+            return Outcome {
+                status: Status::AppError,
+                error: Value::String("the migration addressed the host's key space".into()),
+                logs: out.logs,
+                ..Outcome::default()
+            };
+        }
         if let Err(e) =
             write_root_state(&mut overlay, base, context, caller.account_bytes(), &state)
         {
@@ -996,21 +1110,44 @@ impl Executor {
             },
         );
         let mut new_blobs = Vec::new();
+        let mut refused: Option<String> = None;
         if let Ok(out) = &result {
             if out.returns.is_ok() {
                 // Rotations of shared cells' writers take effect with the run's writes.
-                for r in &out.shared_rotations {
-                    if let Ok(bytes) = borsh::to_vec(&r.new) {
-                        let _prev = overlay.set(writers_key(r.cell.as_bytes()), bytes);
+                match rotation_refusal(&overlay, &out.shared_rotations, &account, caller, env) {
+                    Some(why) => refused = Some(why),
+                    None => {
+                        for r in &out.shared_rotations {
+                            if let Ok(bytes) = borsh::to_vec(&r.new) {
+                                overlay.set_host(writers_key(r.cell.as_bytes()), bytes);
+                            }
+                        }
                     }
                 }
                 // So are the blobs it wrote, and they are this app's.
                 for (id, bytes) in &out.new_blobs {
                     let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                    let _prev = overlay.set(blob_key(id), size.to_le_bytes().to_vec());
+                    overlay.set_host(blob_key(id), size.to_le_bytes().to_vec());
                     new_blobs.push((hex::encode(id), bytes.clone()));
                 }
             }
+        }
+        if overlay.touched_reserved() {
+            refused = Some(format!(
+                "the run addressed the host's key space ({}*); app code may not",
+                String::from_utf8_lossy(RESERVED).trim_start_matches('\0')
+            ));
+        }
+        if let Some(why) = refused {
+            return (
+                Outcome {
+                    status: Status::AppError,
+                    error: Value::String(why),
+                    logs: result.map(|o| o.logs).unwrap_or_default(),
+                    ..Outcome::default()
+                },
+                None,
+            );
         }
         let mut diff = overlay.into_diff();
         if let Some(p) = private {
@@ -1148,6 +1285,115 @@ mod tests {
         assert!(!main.has(&b"note".to_vec()));
         assert!(!as_bob.has(&b"note".to_vec()));
         assert_eq!(as_alice.get(&b"note".to_vec()), Some(b"alice's".to_vec()));
+    }
+
+    /// Xil's review, issue 1: app code reading or writing raw keys could reach
+    /// another account's private space (and the host's writer sets and blob
+    /// marks), because they sat in the same map under a prefix.
+    #[test]
+    fn app_code_cannot_reach_the_hosts_key_space() {
+        let alice = [1_u8; 32];
+        let mut state = BTreeMap::new();
+        let mut key = private_prefix(&alice);
+        key.extend_from_slice(b"note");
+        let _prev = state.insert(Bytes(key.clone()), Bytes(b"alice's".to_vec()));
+
+        // Bob's run, through the main overlay, asks for Alice's key verbatim.
+        let mut bob = Overlay::new(&state);
+        assert_eq!(bob.get(&key), None, "read refused");
+        assert_eq!(bob.set(key.clone(), b"bob's".to_vec()), None);
+        let _ = bob.remove(&key);
+        assert!(bob.touched_reserved(), "the run is refused");
+        assert!(bob.into_diff().is_empty(), "nothing lands");
+
+        // The same for a forged writer set and a forged blob mark.
+        for host_key in [writers_key(&[7; 32]), blob_key(&[9; 32])] {
+            let mut o = Overlay::new(&state);
+            let _ = o.set(host_key, vec![0]);
+            assert!(o.touched_reserved());
+            assert!(o.into_diff().is_empty());
+        }
+
+        // Ordinary keys are untouched, and the host still writes its own space.
+        let mut o = Overlay::new(&state);
+        let _ = o.set(b"plain".to_vec(), b"v".to_vec());
+        o.set_host(blob_key(&[9; 32]), vec![1]);
+        assert!(!o.touched_reserved());
+        assert_eq!(o.into_diff().len(), 2);
+    }
+
+    /// Xil's review, issue 8: a rotation needs `ADMIN` in the set in effect, and
+    /// at genesis a prior the cell id commits to.
+    #[test]
+    fn rotations_follow_v1s_host_rules() {
+        use calimero_storage::address::Id;
+        use calimero_storage::collections::cell_id;
+        use calimero_storage::entities::OpMask;
+        use calimero_storage::shared_writers::{SharedRotation, Writers};
+
+        let admin = calimero_account::AccountId::from([1_u8; 32]);
+        let writer = calimero_account::AccountId::from([2_u8; 32]);
+        let genesis: Writers = [
+            (admin, OpMask::ADMIN.union(OpMask::WRITE)),
+            (writer, OpMask::WRITE),
+        ]
+        .into_iter()
+        .collect();
+        let cell = cell_id(Id::new([3; 32]), &genesis);
+        let new: Writers = [(admin, OpMask::ADMIN.union(OpMask::WRITE))]
+            .into_iter()
+            .collect();
+        let rotation = |prior: &Writers| SharedRotation {
+            cell,
+            prior: prior.clone(),
+            new: new.clone(),
+        };
+        let base = BTreeMap::new();
+        let o = Overlay::new(&base);
+        let as_account = |_: &calimero_account::AccountId| Caller::Account {
+            account: "acct".into(),
+        };
+        let env = RunEnv::default();
+
+        assert_eq!(
+            rotation_refusal(&o, &[rotation(&genesis)], &admin, &as_account(&admin), &env),
+            None
+        );
+        assert!(
+            rotation_refusal(
+                &o,
+                &[rotation(&genesis)],
+                &writer,
+                &as_account(&writer),
+                &env
+            )
+            .is_some(),
+            "a writer without ADMIN"
+        );
+        let forged: Writers = [(writer, OpMask::ADMIN)].into_iter().collect();
+        assert!(
+            rotation_refusal(
+                &o,
+                &[rotation(&forged)],
+                &writer,
+                &as_account(&writer),
+                &env
+            )
+            .is_some(),
+            "a prior the cell id does not commit to"
+        );
+        let tee = RunEnv {
+            tee_trigger: true,
+            ..RunEnv::default()
+        };
+        assert!(
+            rotation_refusal(&o, &[rotation(&genesis)], &admin, &as_account(&admin), &tee)
+                .is_some()
+        );
+        let app = Caller::App {
+            app: "other".into(),
+        };
+        assert!(rotation_refusal(&o, &[rotation(&genesis)], &admin, &app, &env).is_some());
     }
 
     #[test]

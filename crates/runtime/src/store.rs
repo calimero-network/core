@@ -17,6 +17,13 @@ pub trait Storage: Reflect {
     fn remove(&mut self, key: &Key) -> Option<Vec<u8>>;
     fn has(&self, key: &Key) -> bool;
 
+    /// A read by the host itself (a `BlobHost` checking the app's blob marks),
+    /// never by app code. A backend that hides its host key space from app
+    /// code's `get` answers it here; every other backend is `get`.
+    fn host_get(&self, key: &Key) -> Option<Value> {
+        self.get(key)
+    }
+
     /// The writers of the `SharedStorage` cell `cell` at this run's governance cut.
     /// `None` when they cannot be resolved, `Some(Genesis)` when no rotation took
     /// effect. A backend with no governance to ask leaves every cell at genesis.
