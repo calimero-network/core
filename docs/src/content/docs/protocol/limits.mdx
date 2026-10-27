@@ -44,7 +44,7 @@ events — must stay under **1 MiB**.
 | One log entry | 1 MiB | `calimero_log::MAX_ENTRY_BYTES` |
 | One sealed request, one HTTP body | 64 MiB | `MAX_SEALED_BYTES`, `DefaultBodyLimit` |
 | A raw development bundle | 16 MiB | `bundle_put` |
-| A package `.mpk` | 512 MiB (fetched from a registry; uploads are bounded by the request size) | `MAX_MPK_BYTES` |
+| One blob (an uploaded file, a package `.mpk`, uploaded or fetched from a registry) | 47 MiB: it reaches the other nodes base64-encoded in one sealed request | `MAX_BLOB_BYTES`, `MAX_MPK_BYTES` |
 | Metadata (organization, member, team, app) | 16 KiB of JSON | `MAX_METADATA_BYTES` |
 | Passkeys per account | 10 | `AddPasskey` |
 | Aliases per account | 1000, each 1–64 characters | `MAX_ALIASES` |

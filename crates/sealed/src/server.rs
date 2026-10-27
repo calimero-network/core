@@ -106,7 +106,7 @@ const HEADER_LEN: usize = 1 + SESSION_ID_LEN + 8;
 const TAG_LEN: usize = 16;
 
 /// Largest sealed request accepted.
-const MAX_SEALED_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_SEALED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SEALED_IN_FLIGHT: usize = 4 * MAX_SEALED_BYTES; // sealed bytes held at once, node-wide
 const SEALED_READ_TIME: Duration = Duration::from_secs(120); // a 64 MiB body at 4.5 Mbit/s
 const MAX_GROWTH: usize = 4 * 1024 * 1024; // unused capacity a request's buffer is charged for

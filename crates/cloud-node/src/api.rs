@@ -4326,6 +4326,8 @@ pub fn router(node: Arc<Node>) -> Router {
         )
         .route("/ops/quotas", get(ops_quotas_get).post(ops_quotas_set))
         // Bundles (peer blob pushes, uploads) exceed axum's 2 MiB default; the sealed envelope caps requests at 64 MiB.
-        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))
+        .layer(axum::extract::DefaultBodyLimit::max(
+            calimero_sealed::server::MAX_SEALED_BYTES,
+        ))
         .with_state(node)
 }

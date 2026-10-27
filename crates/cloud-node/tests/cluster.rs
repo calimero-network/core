@@ -1016,6 +1016,23 @@ async fn eventually(
     panic!("{method} never got there; last answer {last}");
 }
 
+/// A blob reaches the other nodes base64-encoded inside a sealed request
+/// capped at 64 MiB, so the node refuses one too large to spread (413) before
+/// keeping any of it, instead of storing it and failing to reach a majority.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_blob_too_large_to_reach_the_other_nodes_is_refused_up_front() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (files, _) = deploy(&alice, "files", mero_wasm("blobs", "blobs"), json!({})).await;
+    let e = alice
+        .upload_blob(&files, vec![7u8; 48 * 1024 * 1024])
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("TOO_LARGE"), "{e}");
+    let listed = alice.get(&format!("apps/{files}/blobs")).await.unwrap();
+    assert_eq!(listed["blobs"], json!([]), "{listed}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn blobs_are_the_apps_own_and_reach_every_node() {
     let c = Cluster::start(3).await;

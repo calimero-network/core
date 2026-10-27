@@ -292,6 +292,11 @@ pub const READ_ONLY: &str = "read-only in this team: the call would write";
 pub const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A command the system log refused at apply.
+/// The largest blob (an app's file, a package's `.mpk`) a node keeps: it
+/// reaches the other nodes base64-encoded inside one sealed request
+/// (`calimero_sealed::server::MAX_SEALED_BYTES`), with 1 MiB left for the rest.
+pub const MAX_BLOB_BYTES: usize = (calimero_sealed::server::MAX_SEALED_BYTES - (1 << 20)) / 4 * 3;
+
 pub fn rejected(reason: &str) -> ApiError {
     if reason.starts_with(crate::system::QUOTA_PREFIX) {
         ApiError::new(429, "QUOTA_EXCEEDED", reason)
@@ -1081,6 +1086,16 @@ impl Node {
     /// Store a blob here and on the other nodes; `Ok` once a majority holds it.
     /// Its id is `hex(SHA-256(bytes))`, the key the store files it under.
     pub async fn store_blob(&self, bytes: &[u8]) -> Result<String, ApiError> {
+        if bytes.len() > MAX_BLOB_BYTES {
+            return Err(ApiError::new(
+                413,
+                "TOO_LARGE",
+                &format!(
+                    "a blob is limited to {} MiB (what reaches the other nodes)",
+                    MAX_BLOB_BYTES >> 20
+                ),
+            ));
+        }
         let id = hex::encode(calimero_identity::sha256(bytes));
         self.engine
             .put_blob(&id, bytes)

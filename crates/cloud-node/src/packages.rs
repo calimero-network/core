@@ -27,8 +27,10 @@ use crate::node::Node;
 use crate::system::{BundleSource, PackageRef, PackageVersion, SystemCmd};
 use crate::types::now_secs;
 
-/// The largest `.mpk` a node takes, uploaded or fetched (v1's artifact cap).
-pub const MAX_MPK_BYTES: usize = 512 * 1024 * 1024;
+/// The largest `.mpk` a node takes, uploaded or fetched: it is kept as a blob,
+/// so the blob limit (v1 allowed 512 MiB; a release-v2 blob must reach a
+/// majority inside one sealed request).
+pub const MAX_MPK_BYTES: usize = crate::node::MAX_BLOB_BYTES;
 
 /// The release a bundle hash came from, as the system log recorded it.
 #[derive(Clone, Debug)]
@@ -61,7 +63,7 @@ pub fn verify(mpk: Arc<[u8]>) -> Result<(VerifiedBundle, ServiceWasm), ApiError>
         return Err(ApiError::new(
             413,
             "TOO_LARGE",
-            "a package is limited to 512 MiB",
+            &format!("a package is limited to {} MiB", MAX_MPK_BYTES >> 20),
         ));
     }
     let bundle = VerifiedBundle::open(mpk, &runtime_version())
