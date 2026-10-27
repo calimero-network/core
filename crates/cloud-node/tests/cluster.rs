@@ -2626,3 +2626,178 @@ async fn blobs_list_and_delete_and_storage_is_inspectable() {
         b"another".to_vec()
     );
 }
+
+// ---------------------------------------------------------------- upgrade runs, aliases
+
+async fn finished_run(cl: &Client, org: &str, run: &str) -> Value {
+    for _ in 0..200 {
+        let r = cl.upgrade_run(org, run).await.unwrap();
+        if r["finished"] == json!(true) {
+            return r;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("upgrade run {run} never finished");
+}
+
+/// v1's group upgrade (with cascade), its status and retry, and each app's
+/// last upgrade; and v1's aliases.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
+    let c = Cluster::start_with(3, |cfg| cfg.allow_unsigned_bundles = true).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+    let kv = kv_wasm();
+    let _ = alice
+        .upload_package(mpk("com.test.kv", "0.1.0", &kv, &publisher))
+        .await
+        .unwrap();
+    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let team = |name: &str, parent: Option<&str>| {
+        let alice = &alice;
+        let org = org.clone();
+        let body = json!({ "name": name, "join": "invite", "parent": parent });
+        async move {
+            alice
+                .post(&format!("orgs/{org}/teams"), body)
+                .await
+                .unwrap()["teamId"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        }
+    };
+    let eng = team("eng", None).await;
+    let web = team("web", Some(&eng)).await;
+    let ops = team("ops", None).await;
+    let mut apps = BTreeMap::new();
+    for (name, t) in [("top", &eng), ("below", &web), ("elsewhere", &ops)] {
+        let app = alice
+            .post(
+                "apps",
+                json!({ "name": name, "package": "com.test.kv", "org": org,
+                        "access": { "kind": "team", "team": t } }),
+            )
+            .await
+            .unwrap()["appId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let _prev = apps.insert(name, app);
+    }
+    let _ = alice
+        .upload_package(mpk("com.test.kv", "0.2.0", &variant(&kv, "v2"), &publisher))
+        .await
+        .unwrap();
+
+    // Eng and the teams below it, not ops.
+    let run = alice
+        .upgrade_org(
+            &org,
+            json!({ "package": "com.test.kv", "version": "0.2.0", "team": eng, "cascade": true }),
+            &mut pk,
+        )
+        .await
+        .unwrap();
+    let run_id = run["runId"].as_str().unwrap().to_owned();
+    assert_eq!(run["apps"].as_array().unwrap().len(), 2, "{run}");
+    let done = finished_run(&alice, &org, &run_id).await;
+    assert_eq!(done["done"].as_array().unwrap().len(), 2, "{done}");
+    assert_eq!(done["failed"], json!({}));
+    for name in ["top", "below"] {
+        let a = alice.get(&format!("apps/{}", apps[name])).await.unwrap();
+        assert_eq!(a["lastUpgrade"]["ok"], json!(true), "{name}: {a}");
+        assert_eq!(a["lastUpgrade"]["run"], json!(run_id));
+    }
+    let untouched = alice
+        .get(&format!("apps/{}", apps["elsewhere"]))
+        .await
+        .unwrap();
+    assert!(untouched.get("lastUpgrade").is_none(), "{untouched}");
+    // Still serving after the run.
+    let _ = alice
+        .call(
+            &apps["below"],
+            "set",
+            json!({ "key": "k", "value": "v" }),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // A failed upgrade is recorded with its reason, and a retry runs it again.
+    let f1 = mero_wasm(
+        "migrations/scenario-migration-check-fail-v1",
+        "scenario_migration_check_fail_v1",
+    );
+    let f2 = mero_wasm(
+        "migrations/scenario-migration-check-fail-v2",
+        "scenario_migration_check_fail_v2",
+    );
+    let _ = alice
+        .upload_package(mpk("com.test.checked", "1.0.0", &f1, &publisher))
+        .await
+        .unwrap();
+    let checked = alice
+        .post(
+            "apps",
+            json!({ "name": "checked", "package": "com.test.checked", "org": org }),
+        )
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for k in ["x", "y"] {
+        let _ = alice
+            .call(&checked, "set_item", json!({ "key": k, "value": k }), None)
+            .await
+            .unwrap();
+    }
+    let _ = alice
+        .upload_package(mpk("com.test.checked", "2.0.0", &f2, &publisher))
+        .await
+        .unwrap();
+    let run = alice
+        .upgrade_org(
+            &org,
+            json!({ "package": "com.test.checked", "version": "2.0.0" }),
+            &mut pk,
+        )
+        .await
+        .unwrap();
+    let failed = finished_run(&alice, &org, run["runId"].as_str().unwrap()).await;
+    assert!(failed["failed"].get(&checked).is_some(), "{failed}");
+    let a = alice.get(&format!("apps/{checked}")).await.unwrap();
+    assert_eq!(a["lastUpgrade"]["ok"], json!(false), "{a}");
+    assert_ne!(a["lastUpgrade"]["error"], Value::Null, "{a}");
+    let retry = alice
+        .retry_upgrade_run(&org, run["runId"].as_str().unwrap(), &mut pk)
+        .await
+        .unwrap();
+    assert_eq!(retry["apps"], json!([checked]), "{retry}");
+    let again = finished_run(&alice, &org, retry["runId"].as_str().unwrap()).await;
+    assert!(again["failed"].get(&checked).is_some(), "{again}");
+
+    // Aliases: this account's names for apps.
+    let _ = alice.set_alias("main", &apps["top"]).await.unwrap();
+    assert_eq!(
+        alice.alias("main").await.unwrap()["appId"],
+        json!(apps["top"])
+    );
+    assert_eq!(
+        alice.aliases().await.unwrap()["aliases"]["main"],
+        json!(apps["top"])
+    );
+    let (bob, _bpk) = signed_up(&c, 1, "bob").await;
+    assert!(bob.alias("main").await.is_err(), "aliases are per account");
+    assert!(
+        bob.set_alias("x", &apps["top"]).await.is_err(),
+        "an app bob cannot reach"
+    );
+    let _ = alice.delete_alias("main").await.unwrap();
+    assert!(alice.alias("main").await.is_err());
+}

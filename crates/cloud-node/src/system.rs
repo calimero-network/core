@@ -247,6 +247,26 @@ impl SystemState {
         }
     }
 
+    /// Note an app's upgrade on the organization-wide run it belongs to.
+    fn note_run(&mut self, run: Option<&str>, app: &str, error: Option<Value>) {
+        let Some(run) = run else {
+            return;
+        };
+        for o in self.orgs.values_mut() {
+            if let Some(r) = o.upgrade_runs.get_mut(run) {
+                r.failed.remove(app);
+                r.done.retain(|a| a != app);
+                match error {
+                    Some(e) => {
+                        let _prev = r.failed.insert(app.to_owned(), e);
+                    }
+                    None => r.done.push(app.to_owned()),
+                }
+                return;
+            }
+        }
+    }
+
     /// The rules this cluster was deployed with.
     #[must_use]
     pub fn governance(&self) -> Governance {
@@ -381,7 +401,7 @@ pub enum SystemCmd {
         actor: AccountId,
     },
     CreateApp {
-        app: AppRecord,
+        app: Box<AppRecord>,
     },
     UpgradeApp {
         app_id: AppId,
@@ -391,6 +411,12 @@ pub enum SystemCmd {
         #[serde(default)]
         by_operator: bool,
         actor: AccountId,
+        /// When it was proposed (Unix seconds), for the app's upgrade record.
+        #[serde(default)]
+        at: u64,
+        /// The organization-wide run it belongs to.
+        #[serde(default)]
+        run: Option<String>,
         /// The owner's passkey assertion over this upgrade.
         #[serde(default)]
         consent: Value,
@@ -553,6 +579,31 @@ pub enum SystemCmd {
         credential: String,
         label: String,
     },
+    /// An upgrade that did not run (its migration failed, or it was refused
+    /// on the app's group): the app keeps its bundle, and says why.
+    UpgradeFailed {
+        app_id: AppId,
+        bundle: String,
+        by: String,
+        at: u64,
+        error: Value,
+        #[serde(default)]
+        run: Option<String>,
+    },
+    StartUpgradeRun {
+        org: OrgId,
+        run: Box<crate::types::UpgradeRun>,
+    },
+    FinishUpgradeRun {
+        org: OrgId,
+        run_id: String,
+    },
+    /// An account names an app (`Some`) or drops the name (`None`).
+    SetAlias {
+        account: AccountId,
+        alias: String,
+        app: Option<AppId>,
+    },
     SetOrgRole {
         org: OrgId,
         account: AccountId,
@@ -644,8 +695,11 @@ pub enum SystemCmd {
     },
 }
 
-/// The longest passkey label, in characters.
+/// The longest passkey label or alias, in characters.
 const MAX_LABEL_CHARS: usize = 64;
+
+/// How many aliases one account keeps.
+const MAX_ALIASES: usize = 1000;
 
 /// Refuses metadata over [`crate::types::MAX_METADATA_BYTES`].
 fn metadata_fits(metadata: &Value) -> Result<(), &'static str> {
@@ -848,7 +902,8 @@ impl SystemMachine {
                 }
                 Ok(json!({ "removed": gone }))
             }
-            SystemCmd::CreateApp { mut app } => {
+            SystemCmd::CreateApp { app } => {
+                let mut app = *app;
                 if !s.bundles.contains_key(&app.bundle) {
                     return Err("unknown bundle");
                 }
@@ -885,6 +940,8 @@ impl SystemMachine {
                 bundle,
                 by_operator,
                 actor,
+                at,
+                run,
                 consent: _,
             } => {
                 if !s.bundles.contains_key(&bundle) {
@@ -910,8 +967,93 @@ impl SystemMachine {
                         "only the app's owner (or its organization's owner) may upgrade it",
                     );
                 }
+                let by = if by_operator {
+                    "operator".to_owned()
+                } else {
+                    actor
+                };
                 if let Some(a) = s.apps.get_mut(&app_id) {
+                    a.last_upgrade = Some(crate::types::UpgradeRecord {
+                        from: a.bundle.clone(),
+                        to: bundle.clone(),
+                        at,
+                        by,
+                        ok: true,
+                        error: Value::Null,
+                        run: run.clone(),
+                    });
                     a.bundle = bundle;
+                }
+                s.note_run(run.as_deref(), &app_id, None);
+                Ok(Value::Null)
+            }
+            SystemCmd::UpgradeFailed {
+                app_id,
+                bundle,
+                by,
+                at,
+                error,
+                run,
+            } => {
+                let a = s.apps.get_mut(&app_id).ok_or("no such app")?;
+                a.last_upgrade = Some(crate::types::UpgradeRecord {
+                    from: a.bundle.clone(),
+                    to: bundle,
+                    at,
+                    by,
+                    ok: false,
+                    error: error.clone(),
+                    run: run.clone(),
+                });
+                s.note_run(run.as_deref(), &app_id, Some(error));
+                Ok(Value::Null)
+            }
+            SystemCmd::StartUpgradeRun { org, run } => {
+                let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
+                if o.upgrade_runs.contains_key(&run.run_id) {
+                    return Err("that run exists");
+                }
+                while o.upgrade_runs.len() >= crate::types::UPGRADE_RUNS_KEPT {
+                    let oldest = o
+                        .upgrade_runs
+                        .values()
+                        .min_by_key(|r| (r.started_at, r.run_id.clone()))
+                        .map(|r| r.run_id.clone());
+                    match oldest {
+                        Some(id) => {
+                            let _gone = o.upgrade_runs.remove(&id);
+                        }
+                        None => break,
+                    }
+                }
+                let _prev = o.upgrade_runs.insert(run.run_id.clone(), *run);
+                Ok(Value::Null)
+            }
+            SystemCmd::FinishUpgradeRun { org, run_id } => {
+                let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
+                let r = o.upgrade_runs.get_mut(&run_id).ok_or("no such run")?;
+                r.finished = true;
+                Ok(serde_json::to_value(&*r).unwrap_or_default())
+            }
+            SystemCmd::SetAlias {
+                account,
+                alias,
+                app,
+            } => {
+                if alias.is_empty() || alias.chars().count() > MAX_LABEL_CHARS {
+                    return Err("an alias is 1 to 64 characters");
+                }
+                let a = s.accounts.get_mut(&account).ok_or("unknown account")?;
+                match app {
+                    Some(app) => {
+                        if a.aliases.len() >= MAX_ALIASES && !a.aliases.contains_key(&alias) {
+                            return Err("too many aliases");
+                        }
+                        let _prev = a.aliases.insert(alias, app);
+                    }
+                    None => {
+                        let _gone = a.aliases.remove(&alias);
+                    }
                 }
                 Ok(Value::Null)
             }
@@ -1203,6 +1345,7 @@ impl SystemMachine {
                         outbound_approvals: BTreeMap::new(),
                         metadata: Value::Null,
                         member_metadata: BTreeMap::new(),
+                        upgrade_runs: BTreeMap::new(),
                     },
                 );
                 Ok(json!({ "orgId": org_id }))
@@ -1932,6 +2075,8 @@ mod tests {
             bundle: "b2".into(),
             by_operator,
             actor: actor.into(),
+            at: 0,
+            run: None,
             consent: serde_json::Value::Null,
         };
         let by_operator = m.run(upgrade(true, "")).is_ok();

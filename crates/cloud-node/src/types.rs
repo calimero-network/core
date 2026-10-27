@@ -106,7 +106,54 @@ pub struct AppRecord {
     /// Set by its owner or an admin of its organization.
     #[serde(default)]
     pub metadata: serde_json::Value,
+    /// The last upgrade tried on this app, done or failed (v1's upgrade status).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_upgrade: Option<UpgradeRecord>,
 }
+
+/// One upgrade of one app, as the directory remembers it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeRecord {
+    pub from: String,
+    pub to: String,
+    /// Unix seconds.
+    pub at: u64,
+    /// The account that upgraded it, or `operator`.
+    pub by: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub error: serde_json::Value,
+    /// The organization-wide run it was part of, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+}
+
+/// An upgrade of many apps at once (v1's group upgrade, with cascade): every
+/// app of the organization (or of a team, and with `cascade` the teams below
+/// it) that runs `package`, to `version`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeRun {
+    pub run_id: String,
+    pub package: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<TeamId>,
+    #[serde(default)]
+    pub cascade: bool,
+    /// The account that started it, or `operator`.
+    pub by: String,
+    pub started_at: u64,
+    pub apps: Vec<AppId>,
+    pub done: Vec<AppId>,
+    /// App -> why its upgrade failed.
+    pub failed: std::collections::BTreeMap<AppId, serde_json::Value>,
+    pub finished: bool,
+}
+
+/// How many upgrade runs an organization remembers.
+pub const UPGRADE_RUNS_KEPT: usize = 20;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -127,6 +174,9 @@ pub struct Account {
     /// id: v1's device label.
     #[serde(default)]
     pub passkey_labels: std::collections::BTreeMap<String, String>,
+    /// The account's own names for apps (v1's aliases): alias -> app id.
+    #[serde(default)]
+    pub aliases: std::collections::BTreeMap<String, AppId>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -269,6 +319,9 @@ pub struct Org {
     /// title. Set by the member, or by an admin.
     #[serde(default)]
     pub member_metadata: std::collections::BTreeMap<AccountId, serde_json::Value>,
+    /// Organization-wide upgrade runs, the newest [`UPGRADE_RUNS_KEPT`].
+    #[serde(default)]
+    pub upgrade_runs: std::collections::BTreeMap<String, UpgradeRun>,
 }
 
 /// The most bytes of JSON one metadata value holds (org, member, team, app).

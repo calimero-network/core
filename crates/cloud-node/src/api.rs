@@ -486,6 +486,7 @@ async fn register_finish(
                 approved_releases: [node.own_release()].into_iter().collect(),
                 outbound_approvals: std::collections::BTreeMap::new(),
                 passkey_labels: std::collections::BTreeMap::new(),
+                aliases: std::collections::BTreeMap::new(),
             },
         })
         .await?;
@@ -1235,7 +1236,7 @@ async fn app_create(
     });
     let out = node
         .sys_write(&SystemCmd::CreateApp {
-            app: crate::types::AppRecord {
+            app: Box::new(crate::types::AppRecord {
                 app_id: app_id.clone(),
                 name: body.name,
                 group: 0,
@@ -1248,7 +1249,8 @@ async fn app_create(
                 created_at: now_secs(),
                 init_args: body.init_args,
                 metadata: body.metadata,
-            },
+                last_upgrade: None,
+            }),
         })
         .await?;
     // Wait for the app's first entry (init) to commit somewhere.
@@ -1884,61 +1886,493 @@ async fn app_upgrade(
         app_id,
         bundle,
         body.migrate,
-        Caller::Account {
-            account: account.clone(),
+        Upgrader {
+            caller: Caller::Account {
+                account: account.clone(),
+            },
+            actor: account,
+            by_operator: false,
+            consent,
+            run: None,
         },
-        account,
-        false,
-        consent,
     )
     .await
 }
 
+/// Who is upgrading, as the directory records it.
+#[derive(Clone)]
+struct Upgrader {
+    /// Who the migration runs as.
+    caller: Caller,
+    /// The account, or empty for the operator.
+    actor: String,
+    by_operator: bool,
+    consent: Value,
+    /// The organization-wide run this belongs to.
+    run: Option<String>,
+}
+
+impl Upgrader {
+    fn by(&self) -> String {
+        if self.by_operator {
+            "operator".to_owned()
+        } else {
+            self.actor.clone()
+        }
+    }
+}
+
 /// Run an upgrade on the app's group and, once it succeeded, record the new
-/// bundle in the directory (where `UpgradeApp` judges who may).
-#[allow(clippy::too_many_arguments, reason = "the upgrade's whole context")]
+/// bundle in the directory (where `UpgradeApp` judges who may). A failure is
+/// recorded too: the app's last upgrade says why.
 async fn run_upgrade(
     node: &Node,
     app_id: String,
     bundle: String,
     migrate: Option<String>,
-    caller: Caller,
-    actor: String,
-    by_operator: bool,
-    consent: Value,
+    who: Upgrader,
 ) -> ApiResult {
-    let applied = node
+    let applied = match node
         .call(&CallRequest::new(
             app_id.clone(),
             "__upgrade".into(),
             json!({ "bundle": bundle, "migrate": migrate }),
-            caller,
+            who.caller.clone(),
         ))
-        .await?;
-    // The app now runs the new bundle: the directory says so too.
-    if applied.status == Status::Ok {
-        let _ok = node
-            .sys_write(&SystemCmd::UpgradeApp {
-                app_id,
-                bundle,
-                by_operator,
-                actor,
-                consent,
-            })
-            .await?;
-    }
+        .await
+    {
+        Ok(a) => a,
+        Err(e) => {
+            let error = json!({ "code": e.code, "message": e.message });
+            note_failed_upgrade(node, &app_id, &bundle, &who, error).await;
+            return Err(e);
+        }
+    };
     // A refused or failed upgrade leaves the app on its bundle; say so as an
     // error, not a 200 a client can mistake for success.
     if applied.status != Status::Ok {
+        note_failed_upgrade(node, &app_id, &bundle, &who, applied.error.clone()).await;
         return Err(
             ApiError::new(422, "UPGRADE_FAILED", "the upgrade did not run").with_details(
                 json!({ "index": applied.index, "status": applied.status, "error": applied.error }),
             ),
         );
     }
+    // The app now runs the new bundle: the directory says so too.
+    let _ok = node
+        .sys_write(&SystemCmd::UpgradeApp {
+            app_id,
+            bundle,
+            by_operator: who.by_operator,
+            actor: who.actor,
+            at: now_secs(),
+            run: who.run,
+            consent: who.consent,
+        })
+        .await?;
     Ok(Json(
         json!({ "index": applied.index, "status": applied.status, "error": applied.error }),
     ))
+}
+
+async fn note_failed_upgrade(
+    node: &Node,
+    app_id: &str,
+    bundle: &str,
+    who: &Upgrader,
+    error: Value,
+) {
+    let _r = node
+        .sys_write(&SystemCmd::UpgradeFailed {
+            app_id: app_id.to_owned(),
+            bundle: bundle.to_owned(),
+            by: who.by(),
+            at: now_secs(),
+            error,
+            run: who.run.clone(),
+        })
+        .await;
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OrgUpgradeBody {
+    package: String,
+    version: String,
+    /// Only the apps of this team (and, with `cascade`, of the teams below it).
+    #[serde(default)]
+    team: Option<String>,
+    #[serde(default)]
+    cascade: bool,
+    #[serde(default)]
+    migrate: Option<String>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// The apps an organization-wide upgrade of `package` covers.
+fn run_targets(
+    node: &Node,
+    org: &str,
+    package: &str,
+    team: Option<&str>,
+    cascade: bool,
+) -> Vec<crate::types::AppRecord> {
+    let apps: Vec<crate::types::AppRecord> = node.sys(|s| {
+        let Some(o) = s.orgs.get(org) else {
+            return Vec::new();
+        };
+        let teams: Option<Vec<String>> = team.map(|t| {
+            if cascade {
+                o.subtree(t)
+            } else {
+                vec![t.to_owned()]
+            }
+        });
+        s.apps
+            .values()
+            .filter(|a| a.org.as_deref() == Some(org))
+            .filter(|a| match (&teams, &a.access) {
+                (None, _) => true,
+                (Some(ts), Access::Team { team }) => ts.contains(team),
+                (Some(_), _) => false,
+            })
+            .cloned()
+            .collect()
+    });
+    apps.into_iter()
+        .filter(|a| {
+            node.release_of(&a.bundle)
+                .is_some_and(|r| r.at.package == package)
+        })
+        .collect()
+}
+
+/// The bundle `version` of the package gives an app (same service), if installed.
+fn target_bundle(node: &Node, app: &crate::types::AppRecord, version: &str) -> Option<String> {
+    let r = node.release_of(&app.bundle)?;
+    let service = r.at.service.clone().unwrap_or_default();
+    node.sys(|s| {
+        s.packages
+            .get(&r.at.package)?
+            .versions
+            .get(version)?
+            .services
+            .get(&service)
+            .cloned()
+    })
+}
+
+/// Start an organization-wide upgrade: recorded, then run app by app in the
+/// background; `GET /orgs/{org}/upgrades/{run}` follows it.
+async fn start_run(
+    node: Arc<Node>,
+    org: String,
+    body: OrgUpgradeBody,
+    apps: Vec<crate::types::AppRecord>,
+    who: Upgrader,
+) -> ApiResult {
+    let run_id = b64url(&random::<12>());
+    let run = crate::types::UpgradeRun {
+        run_id: run_id.clone(),
+        package: body.package.clone(),
+        version: body.version.clone(),
+        team: body.team.clone(),
+        cascade: body.cascade,
+        by: who.by(),
+        started_at: now_secs(),
+        apps: apps.iter().map(|a| a.app_id.clone()).collect(),
+        done: Vec::new(),
+        failed: std::collections::BTreeMap::new(),
+        finished: false,
+    };
+    let _ok = node
+        .sys_write(&SystemCmd::StartUpgradeRun {
+            org: org.clone(),
+            run: Box::new(run.clone()),
+        })
+        .await?;
+    let who = Upgrader {
+        run: Some(run_id.clone()),
+        ..who
+    };
+    let version = body.version.clone();
+    let migrate = body.migrate.clone();
+    let _task = tokio::spawn(async move {
+        for app in apps {
+            match target_bundle(&node, &app, &version) {
+                Some(bundle) if bundle == app.bundle => {
+                    // Already there: done, nothing to run.
+                    let _r = node
+                        .sys_write(&SystemCmd::UpgradeApp {
+                            app_id: app.app_id.clone(),
+                            bundle,
+                            by_operator: who.by_operator,
+                            actor: who.actor.clone(),
+                            at: now_secs(),
+                            run: who.run.clone(),
+                            consent: who.consent.clone(),
+                        })
+                        .await;
+                }
+                Some(bundle) => {
+                    let _r = run_upgrade(
+                        &node,
+                        app.app_id.clone(),
+                        bundle,
+                        migrate.clone(),
+                        who.clone(),
+                    )
+                    .await;
+                }
+                None => {
+                    note_failed_upgrade(
+                        &node,
+                        &app.app_id,
+                        "",
+                        &who,
+                        json!({ "code": "NOT_INSTALLED", "message": "the release ships no bundle for this app's service" }),
+                    )
+                    .await;
+                }
+            }
+        }
+        let _r = node
+            .sys_write(&SystemCmd::FinishUpgradeRun { org, run_id })
+            .await;
+    });
+    Ok(Json(serde_json::to_value(run).unwrap_or_default()))
+}
+
+/// Upgrade every app of an organization (or a team, with `cascade` its
+/// subtree) that runs `package` to `version`: the org owner's, with one passkey
+/// assertion over the whole run, where owners hold app upgrades.
+async fn org_upgrade(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(mut body): Json<OrgUpgradeBody>,
+) -> ApiResult {
+    let p = person(&node, &headers).await?;
+    let account = p.account()?;
+    owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
+    if node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&account))) != Some(OrgRole::Owner) {
+        return Err(ApiError::forbidden(
+            "only the organization's owner upgrades all its apps",
+        ));
+    }
+    // Installed from the registry first if the cluster lacks the release.
+    let _bundle = node
+        .resolve_release(&body.package, Some(&body.version), None, &account)
+        .await;
+    let consent = consent(
+        &node,
+        &p,
+        &format!("org:{org}"),
+        "__upgrade_org",
+        &json!({
+            "package": body.package, "version": body.version, "team": body.team,
+            "cascade": body.cascade, "migrate": body.migrate,
+        }),
+        body.confirm.take(),
+    )
+    .await?;
+    let apps = run_targets(
+        &node,
+        &org,
+        &body.package,
+        body.team.as_deref(),
+        body.cascade,
+    );
+    let who = Upgrader {
+        caller: Caller::Account {
+            account: account.clone(),
+        },
+        actor: account,
+        by_operator: false,
+        consent,
+        run: None,
+    };
+    start_run(node, org, body, apps, who).await
+}
+
+/// [`org_upgrade`] by the operator, where the deployment gave it app upgrades.
+async fn ops_org_upgrade(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<OrgUpgradeBody>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    operator_holds(&node, |g| g.app_upgrades, "app upgrades")?;
+    if !node.sys(|s| s.orgs.contains_key(&org)) {
+        return Err(ApiError::not_found("no such organization"));
+    }
+    let apps = run_targets(
+        &node,
+        &org,
+        &body.package,
+        body.team.as_deref(),
+        body.cascade,
+    );
+    let who = Upgrader {
+        caller: Caller::Public,
+        actor: String::new(),
+        by_operator: true,
+        consent: Value::Null,
+        run: None,
+    };
+    start_run(node, org, body, apps, who).await
+}
+
+/// An organization-wide upgrade's progress (v1's upgrade and cascade status).
+async fn org_upgrade_status(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((org, run)): Path<(String, String)>,
+) -> ApiResult {
+    let account = signed_in(&node, &headers).await?.account()?;
+    let r = node
+        .sys(|s| {
+            let o = s.orgs.get(&org)?;
+            o.role(&account)?;
+            o.upgrade_runs.get(&run).cloned()
+        })
+        .ok_or_else(|| ApiError::not_found("no such upgrade"))?;
+    Ok(Json(serde_json::to_value(r).unwrap_or_default()))
+}
+
+/// Run an organization-wide upgrade again for the apps that failed, under the
+/// same terms (v1's retry), as a new run.
+async fn org_upgrade_retry(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((org, run)): Path<(String, String)>,
+    body: Option<Json<Value>>,
+) -> ApiResult {
+    let prev = node
+        .sys(|s| s.orgs.get(&org)?.upgrade_runs.get(&run).cloned())
+        .ok_or_else(|| ApiError::not_found("no such upgrade"))?;
+    let failed: Vec<crate::types::AppRecord> = node.sys(|s| {
+        prev.failed
+            .keys()
+            .filter_map(|a| s.apps.get(a).cloned())
+            .collect()
+    });
+    let mut retry = OrgUpgradeBody {
+        package: prev.package.clone(),
+        version: prev.version.clone(),
+        team: prev.team.clone(),
+        cascade: prev.cascade,
+        migrate: None,
+        confirm: body.and_then(|Json(b)| serde_json::from_value(b["confirm"].clone()).ok()),
+    };
+    if prev.by == "operator" {
+        operator(&node, &headers)?;
+        operator_holds(&node, |g| g.app_upgrades, "app upgrades")?;
+        let who = Upgrader {
+            caller: Caller::Public,
+            actor: String::new(),
+            by_operator: true,
+            consent: Value::Null,
+            run: None,
+        };
+        return start_run(node, org, retry, failed, who).await;
+    }
+    let p = person(&node, &headers).await?;
+    let account = p.account()?;
+    owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
+    if node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&account))) != Some(OrgRole::Owner) {
+        return Err(ApiError::forbidden(
+            "only the organization's owner upgrades all its apps",
+        ));
+    }
+    let consent = consent(
+        &node,
+        &p,
+        &format!("org:{org}"),
+        "__upgrade_org_retry",
+        &json!({ "run": run }),
+        retry.confirm.take(),
+    )
+    .await?;
+    let who = Upgrader {
+        caller: Caller::Account {
+            account: account.clone(),
+        },
+        actor: account,
+        by_operator: false,
+        consent,
+        run: None,
+    };
+    start_run(node, org, retry, failed, who).await
+}
+
+#[derive(Deserialize)]
+struct AliasBody {
+    app: String,
+}
+
+/// Name an app for this account (v1's aliases).
+async fn alias_set(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(alias): Path<String>,
+    Json(body): Json<AliasBody>,
+) -> ApiResult {
+    let account = signed_in(&node, &headers).await?.account()?;
+    let app = node.canonical_app_id(&body.app);
+    let rec = node.app(&app).await?;
+    if !node.sys(|s| s.may_reach(&rec, Some(&account))) {
+        return Err(ApiError::not_found("no such app"));
+    }
+    let _ok = node
+        .sys_write(&SystemCmd::SetAlias {
+            account,
+            alias,
+            app: Some(app),
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+async fn alias_delete(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(alias): Path<String>,
+) -> ApiResult {
+    let account = signed_in(&node, &headers).await?.account()?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetAlias {
+            account,
+            alias,
+            app: None,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+async fn alias_get(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(alias): Path<String>,
+) -> ApiResult {
+    let account = signed_in(&node, &headers).await?.account()?;
+    let app = node
+        .sys(|s| s.accounts.get(&account)?.aliases.get(&alias).cloned())
+        .ok_or_else(|| ApiError::not_found("no such alias"))?;
+    Ok(Json(json!({ "alias": alias, "appId": app })))
+}
+
+async fn alias_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    let account = signed_in(&node, &headers).await?.account()?;
+    let aliases = node.sys(|s| {
+        s.accounts
+            .get(&account)
+            .map(|a| a.aliases.clone())
+            .unwrap_or_default()
+    });
+    Ok(Json(json!({ "aliases": aliases })))
 }
 
 #[derive(Deserialize)]
@@ -3250,10 +3684,13 @@ async fn ops_upgrade(
         app_id,
         bundle,
         body.migrate,
-        Caller::Public,
-        String::new(),
-        true,
-        Value::Null,
+        Upgrader {
+            caller: Caller::Public,
+            actor: String::new(),
+            by_operator: true,
+            consent: Value::Null,
+            run: None,
+        },
     )
     .await
 }
@@ -3286,6 +3723,8 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/auth/outbound", post(account_outbound_approval))
         .route("/auth/me", get(me))
         .route("/auth/usage", get(usage))
+        .route("/auth/aliases", get(alias_list))
+        .route("/auth/aliases/{alias}", get(alias_get).put(alias_set).delete(alias_delete))
         .route("/auth/apikeys", post(apikey_create).get(apikey_list))
         .route("/auth/apikeys/{key}", delete(apikey_revoke))
         .route("/bundles", post(bundle_put))
@@ -3310,6 +3749,9 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/orgs", post(org_create))
         .route("/orgs/{org}", get(org_get).delete(org_delete))
         .route("/orgs/{org}/metadata", post(org_metadata))
+        .route("/orgs/{org}/upgrade", post(org_upgrade))
+        .route("/orgs/{org}/upgrades/{run}", get(org_upgrade_status))
+        .route("/orgs/{org}/upgrades/{run}/retry", post(org_upgrade_retry))
         .route("/orgs/{org}/members/{account}/metadata", post(member_metadata))
         .route("/orgs/{org}/members", post(org_set_member))
         .route("/orgs/{org}/members/{account}", delete(org_remove_member))
@@ -3344,6 +3786,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/releases", post(ops_release))
         .route("/ops/outbound", post(ops_outbound))
         .route("/ops/apps/{app}/upgrade", post(ops_upgrade))
+        .route("/ops/orgs/{org}/upgrade", post(ops_org_upgrade))
         .route("/ops/quotas", get(ops_quotas_get).post(ops_quotas_set))
         // Bundles (peer blob pushes, uploads) exceed axum's 2 MiB default; the sealed envelope caps requests at 64 MiB.
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))

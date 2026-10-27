@@ -581,6 +581,79 @@ impl Client {
         self.json(method, path, Some(body)).await
     }
 
+    /// Upgrade every app of `org` that runs `body.package` to
+    /// `body.version` (optionally only `team`, with `cascade` its subtree):
+    /// the org owner's, approved with their passkey. Answers the run, which
+    /// [`Self::upgrade_run`] follows.
+    pub async fn upgrade_org(
+        &self,
+        org: &str,
+        body: Value,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.post_confirmed(
+            &format!("orgs/{}/upgrade", path_segment(org)),
+            body,
+            passkey,
+        )
+        .await
+    }
+
+    /// An organization-wide upgrade run: its apps, done and failed.
+    pub async fn upgrade_run(&self, org: &str, run: &str) -> Result<Value> {
+        self.get(&format!(
+            "orgs/{}/upgrades/{}",
+            path_segment(org),
+            path_segment(run)
+        ))
+        .await
+    }
+
+    /// Run the failed apps of an upgrade run again, as a new run.
+    pub async fn retry_upgrade_run(
+        &self,
+        org: &str,
+        run: &str,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.post_confirmed(
+            &format!(
+                "orgs/{}/upgrades/{}/retry",
+                path_segment(org),
+                path_segment(run)
+            ),
+            json!({}),
+            passkey,
+        )
+        .await
+    }
+
+    /// Name an app for this account.
+    pub async fn set_alias(&self, alias: &str, app: &str) -> Result<Value> {
+        self.json(
+            Method::PUT,
+            &format!("auth/aliases/{}", path_segment(alias)),
+            Some(json!({ "app": app })),
+        )
+        .await
+    }
+
+    /// The app an alias names: `{ alias, appId }`.
+    pub async fn alias(&self, alias: &str) -> Result<Value> {
+        self.get(&format!("auth/aliases/{}", path_segment(alias)))
+            .await
+    }
+
+    /// Every alias of this account: `{ aliases: { alias: appId } }`.
+    pub async fn aliases(&self) -> Result<Value> {
+        self.get("auth/aliases").await
+    }
+
+    pub async fn delete_alias(&self, alias: &str) -> Result<Value> {
+        self.delete(&format!("auth/aliases/{}", path_segment(alias)))
+            .await
+    }
+
     /// Delete an organization with its teams, invites and apps: the owner's,
     /// approved with their passkey.
     pub async fn delete_org(&self, org: &str, passkey: &mut dyn Passkey) -> Result<Value> {

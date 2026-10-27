@@ -105,6 +105,17 @@ architecture spec.
   `__calimero_migration_check` must pass, and the host writes the root entry
   (`write_root_state`). The directory records the new bundle only once the
   upgrade succeeded.
+- **Upgrade runs** (v1's group upgrade, cascade, status, retry): `POST
+  /orgs/{org}/upgrade { package, version, team?, cascade? }` (the org owner, one
+  passkey assertion for the run) or `POST /ops/orgs/{org}/upgrade` (where the
+  operator holds app upgrades) records a `types::UpgradeRun` in the org
+  (`StartUpgradeRun`, newest `UPGRADE_RUNS_KEPT`), then upgrades its apps one by
+  one in a background task; each `UpgradeApp`/`UpgradeFailed` notes the app on
+  the run and on `AppRecord::last_upgrade`. `GET /orgs/{org}/upgrades/{run}`
+  follows it; `.../retry` runs the failed apps again as a new run. A release
+  missing from the cluster is installed from the registry first (owner runs).
+- **Aliases** (v1's): `Account::aliases`, `PUT/GET/DELETE /auth/aliases/{alias}`
+  and `GET /auth/aliases`; an alias names only an app its account reaches.
 - **Metadata and org lifecycle** (v1's group/member/context metadata, device
   labels, owner-delete): `Org::metadata` (admins or `MANAGE_METADATA`),
   `Org::member_metadata` (the member or an admin), `AppRecord::metadata` (owner
