@@ -51,6 +51,15 @@ architecture spec.
   `Node::place` skips such nodes, `/ops/apps/{app}/replicas` refuses them. Upgrades
   are the app's owner's (or its org's owner's), with a passkey assertion over the
   exact upgrade (`consent` on `UpgradeApp`).
+- **Outbound HTTPS** (`calimero-outbound`, v1's gate): `Config::outbound` from
+  `--settings` (`[outbound]`). `Node::outbound_for` hands a client only to
+  `call_local`'s runs (calls, follow-ups, timers; not a read-only member's), for
+  a bundle that is a signed release declaring prefixes; identity = (package,
+  pinned signer), approval = `Org/Account::outbound_approvals[signer]`, set by
+  the owner with `SetOutboundApproval` (`POST /orgs/{org}/outbound`,
+  `/auth/outbound`, passkey consent; `merge_approval` at apply). The request is
+  made inside the propose lock, on its own thread (`run_blocking`); a leader-race
+  re-run sends it again.
 - **Receipts**: every `/intents` and `/views` answer carries a `Receipt` signed by the
   answering node's receipt key (Ed25519, in memory, made at start), over
   `(app, index, SHA-256(JCS(result)), node)`. The key is attested on its own

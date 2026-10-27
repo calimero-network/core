@@ -90,6 +90,30 @@ struct Args {
     /// Accept raw WASM uploads, which carry no publisher signature (default: only with --dev).
     #[arg(long, env = "MEROD_ALLOW_UNSIGNED_BUNDLES")]
     allow_unsigned_bundles: bool,
+    /// A TOML settings file; its `[outbound]` table is the outbound HTTPS
+    /// policy (hosts, secrets). Without it, apps cannot call out.
+    #[arg(long, env = "MEROD_SETTINGS")]
+    settings: Option<PathBuf>,
+}
+
+/// `--settings`: what the operator configures beyond the flags.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Settings {
+    outbound: calimero_outbound::OutboundSettings,
+}
+
+fn outbound(
+    path: Option<&std::path::Path>,
+) -> eyre::Result<Option<std::sync::Arc<calimero_outbound::OutboundService>>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| eyre::eyre!("reading {}: {e}", path.display()))?;
+    let settings: Settings =
+        toml::from_str(&text).map_err(|e| eyre::eyre!("{}: {e}", path.display()))?;
+    calimero_outbound::OutboundService::from_settings(&settings.outbound)
 }
 
 /// `merod-v2 local`: a development cluster in this process.
@@ -260,6 +284,7 @@ async fn main() -> eyre::Result<()> {
         peer_measurements,
         registry: args.registry_url,
         allow_unsigned_bundles: args.allow_unsigned_bundles || args.dev,
+        outbound: outbound(args.settings.as_deref())?,
     };
     let running = run(config).await?;
     tokio::signal::ctrl_c().await?;

@@ -202,6 +202,24 @@ impl SystemState {
         (!set.is_empty()).then_some(set)
     }
 
+    /// What `app`'s owner (its organization's, or its account's outside one)
+    /// approved for apps signed by `signer` to call out to.
+    #[must_use]
+    pub fn outbound_approval(
+        &self,
+        app: &AppRecord,
+        signer: &str,
+    ) -> Option<&crate::types::OutboundApproval> {
+        match &app.org {
+            Some(o) => self.orgs.get(o)?.outbound_approvals.get(signer),
+            None => self
+                .accounts
+                .get(&app.owner)?
+                .outbound_approvals
+                .get(signer),
+        }
+    }
+
     /// Whether `account` may upgrade `app`: its owner, or the owner of its
     /// organization.
     #[must_use]
@@ -434,6 +452,21 @@ pub enum SystemCmd {
         scope: ReleaseScope,
         version: String,
         approved: bool,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// The owner approves URL prefixes for a package's publisher to call out
+    /// to, in an org's apps or their own outside one (v1's namespace
+    /// `OutboundApprovalSet`). `selection` is the latest release's declared
+    /// list or chosen prefixes; `replace` sets exactly those (how a prefix is
+    /// revoked), else they are added. Logged with the passkey consent.
+    SetOutboundApproval {
+        scope: ReleaseScope,
+        package: String,
+        selection: calimero_primitives::outbound::OutboundSelection,
+        #[serde(default)]
+        replace: bool,
         actor: AccountId,
         #[serde(default)]
         consent: Value,
@@ -1055,6 +1088,7 @@ impl SystemMachine {
                         default_capabilities: crate::types::caps::DEFAULT,
                         capabilities: BTreeMap::new(),
                         approved_releases: release.into_iter().collect(),
+                        outbound_approvals: BTreeMap::new(),
                     },
                 );
                 Ok(json!({ "orgId": org_id }))
@@ -1092,6 +1126,54 @@ impl SystemMachine {
                     let _gone = set.remove(&version);
                 }
                 Ok(json!({ "approvedReleases": set }))
+            }
+            SystemCmd::SetOutboundApproval {
+                scope,
+                package,
+                selection,
+                replace,
+                actor,
+                consent: _,
+            } => {
+                let record = s.packages.get(&package).ok_or("no such package")?;
+                let signer = record.signer_id.clone();
+                let declared = record
+                    .latest()
+                    .map(|v| v.outbound.clone())
+                    .unwrap_or_default();
+                let approvals = match &scope {
+                    ReleaseScope::Org { org } => {
+                        let o = s.orgs.get_mut(org).ok_or("no such organization")?;
+                        if o.role(&actor) != Some(OrgRole::Owner) {
+                            return Err("only the organization's owner approves outbound hosts");
+                        }
+                        &mut o.outbound_approvals
+                    }
+                    ReleaseScope::Account => {
+                        &mut s
+                            .accounts
+                            .get_mut(&actor)
+                            .ok_or("unknown account")?
+                            .outbound_approvals
+                    }
+                };
+                let existing = approvals.get(&signer).map(|a| calimero_outbound::Approval {
+                    prefixes: a.prefixes.clone(),
+                    reviewed: a.reviewed.clone(),
+                });
+                let merged = calimero_outbound::merge_approval(
+                    existing.as_ref(),
+                    &declared,
+                    &selection,
+                    replace,
+                )
+                .map_err(|_| "an approved prefix is not an https URL prefix, or too many")?;
+                let approval = crate::types::OutboundApproval {
+                    prefixes: merged.prefixes,
+                    reviewed: merged.reviewed,
+                };
+                let _prev = approvals.insert(signer.clone(), approval.clone());
+                Ok(json!({ "signer": signer, "approval": approval }))
             }
             SystemCmd::SetOrgRole {
                 org,

@@ -547,6 +547,31 @@ impl Client {
             .await
     }
 
+    /// Approve URL prefixes `package`'s publisher may call out to, from an
+    /// organization's apps (`org`) or the account's own (`None`): `prefixes`
+    /// `None` approves every prefix its latest release declares; `replace`
+    /// sets exactly `prefixes` (how one is revoked).
+    pub async fn approve_outbound(
+        &self,
+        org: Option<&str>,
+        package: &str,
+        prefixes: Option<&[String]>,
+        replace: bool,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        let path = match org {
+            Some(o) => format!("orgs/{}/outbound", path_segment(o)),
+            None => "auth/outbound".to_owned(),
+        };
+        let prefixes = prefixes.map_or_else(|| json!("manifest"), |p| json!(p));
+        self.post_confirmed(
+            &path,
+            json!({ "package": package, "prefixes": prefixes, "replace": replace }),
+            passkey,
+        )
+        .await
+    }
+
     /// Call a method. Retries with the same idempotency key are answered once.
     pub async fn call(
         &self,

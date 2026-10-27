@@ -141,6 +141,7 @@ members = [
     "./crates/sealed",
     "./crates/identity",
     "./crates/cloud-node",
+    "./crates/outbound",
     "./crates/kms-client",
     "./crates/cloud-client",
 
@@ -403,6 +404,7 @@ calimero-blobstore = { path = "./crates/store/blobs" }
 calimero-client = { path = "./crates/client" }
 calimero-config = { path = "./crates/config" }
 calimero-context = { path = "./crates/context" }
+calimero-outbound = { path = "./crates/outbound" }
 calimero-context-config = { path = "./crates/context/config", default-features = false }
 calimero-context-client = { path = "./crates/context/primitives" }
 calimero-governance-types = { path = "./crates/governance-types" }

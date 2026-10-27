@@ -406,6 +406,9 @@ pub struct CloudRun {
     pub tee_trigger: bool,
     /// The keys behind the sealing host functions for this run.
     pub sealing: logic::SealingContext,
+    /// Outbound HTTPS (`http_request`): the node gives one only to a run that
+    /// writes, of an app whose owner approved what it declares.
+    pub outbound: Option<Arc<dyn logic::OutboundHost>>,
 }
 
 /// A compiled WASM module ready for execution.
@@ -556,6 +559,7 @@ impl Module {
             xcall_origin,
             tee_trigger,
             sealing,
+            outbound,
         } = cloud;
         self.run_inner(
             context,
@@ -570,7 +574,7 @@ impl Module {
             tee_trigger,
             sealing,
             search,
-            None,
+            outbound,
             false,
             caller_org,
             blobs,

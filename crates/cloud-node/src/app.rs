@@ -1140,6 +1140,9 @@ pub struct RunEnv {
     pub tee_trigger: bool,
     /// The keys `TeeSecret` and the other sealing host functions use.
     pub sealing: calimero_runtime::logic::SealingContext,
+    /// Outbound HTTPS (`http_request`): only a writing run's, and only under
+    /// what its app declares and its owner approved.
+    pub outbound: Option<Arc<dyn calimero_runtime::logic::OutboundHost>>,
 }
 
 /// The storage entities a run's artifact (a borsh `StorageDelta`) touches, and
@@ -1396,6 +1399,7 @@ impl Executor {
                 xcall_origin: env.xcall_origin.map(Into::into),
                 tee_trigger: env.tee_trigger,
                 sealing: env.sealing.clone(),
+                outbound: env.outbound.clone(),
             },
         );
         let mut new_blobs = Vec::new();

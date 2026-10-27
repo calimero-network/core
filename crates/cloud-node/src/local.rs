@@ -76,6 +76,7 @@ pub async fn start(
             peer_measurements: calimero_cloud_client::Measurements::None,
             registry: registry.clone(),
             allow_unsigned_bundles: true,
+            outbound: None,
         };
         nodes.push(run(config).await?);
     }

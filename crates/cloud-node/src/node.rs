@@ -72,6 +72,9 @@ pub struct Config {
     /// Take raw WASM uploads (`POST /bundles`), which carry no publisher
     /// signature. Development only; production installs signed packages.
     pub allow_unsigned_bundles: bool,
+    /// The operator's outbound HTTPS policy (`[outbound]` in `--settings`);
+    /// `None`: `http_request` traps in every run.
+    pub outbound: Option<Arc<calimero_outbound::OutboundService>>,
 }
 
 /// Request to run a method.
@@ -807,6 +810,43 @@ impl Node {
         Err(ApiError::unavailable("no peer holds the bundle"))
     }
 
+    /// The outbound client for a writing run of `app_id` on `bundle`: `None`
+    /// when the operator turned outbound off, or the bundle is no signed
+    /// release declaring a prefix. A declared prefix the owner has not approved
+    /// still gets a client, whose refusal (`AWAITING_APPROVAL`, `NOT_APPROVED`)
+    /// the app can show.
+    fn outbound_for(
+        &self,
+        app_id: &str,
+        bundle: &str,
+    ) -> Option<Arc<dyn calimero_runtime::logic::OutboundHost>> {
+        let service = self.config.outbound.as_ref()?;
+        let release = self.release_of(bundle)?;
+        let (identity, approval) = self.sys(|s| {
+            let signer = s.packages.get(&release.at.package)?.signer_id.clone();
+            let approval = s.apps.get(app_id).and_then(|app| {
+                s.outbound_approval(app, &signer)
+                    .map(|a| calimero_outbound::Approval {
+                        prefixes: a.prefixes.clone(),
+                        reviewed: a.reviewed.clone(),
+                    })
+            });
+            Some((
+                calimero_outbound::AppIdentity {
+                    package: release.at.package.clone(),
+                    signer,
+                },
+                approval,
+            ))
+        })?;
+        service.for_run(
+            identity,
+            release.version.outbound.clone(),
+            approval,
+            app_id.to_owned(),
+        )
+    }
+
     /// What a run of `app_id` by `caller` is handed besides its call.
     fn env(&self, app_id: &str, caller: &Caller) -> RunEnv {
         let opener = caller.account().map(|a| {
@@ -1118,6 +1158,14 @@ impl Node {
             Some(app) => crate::api::read_only_in(self, &app, req.caller.account()).await,
             None => false,
         };
+        // A call writes: it may call out, under what its app declares and its
+        // owner approved. Views, inits, migrations and a read-only member's
+        // calls get no client.
+        if !read_only {
+            env.outbound = bundle
+                .as_deref()
+                .and_then(|b| self.outbound_for(&req.app_id, b));
+        }
         let mut fresh_blobs = Vec::new();
         let p = g
             .propose(|m, applied| {

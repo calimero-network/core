@@ -1,0 +1,37 @@
+[package]
+name = "calimero-outbound"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description.workspace = true
+publish = true
+
+[dependencies]
+borsh.workspace = true
+eyre.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "macros", "rt", "rt-multi-thread", "time", "net"] }
+tracing.workspace = true
+url.workspace = true
+zeroize.workspace = true
+
+calimero-bundle.workspace = true
+calimero-primitives.workspace = true
+calimero-runtime.workspace = true
+
+[dev-dependencies]
+# A local TLS server with its own CA, for the transport's tests.
+rcgen.workspace = true
+rustls.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio-rustls.workspace = true
+
+[features]
+# DEV/TEST ONLY: `[outbound.testing]`, which answers requests to `.test` hosts
+# in-process and takes literal secrets.
+outbound-testing = []
+

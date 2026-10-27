@@ -1241,6 +1241,7 @@ dependencies = [
  "calimero-identity",
  "calimero-kms-client",
  "calimero-log",
+ "calimero-outbound",
  "calimero-prelude",
  "calimero-primitives",
  "calimero-runtime",
@@ -1749,6 +1750,27 @@ dependencies = [
  "calimero-projection",
  "calimero-storage",
  "calimero-tee-attestation",
+]
+
+[[package]]
+name = "calimero-outbound"
+version = "0.0.0"
+dependencies = [
+ "borsh",
+ "calimero-bundle",
+ "calimero-primitives",
+ "calimero-runtime",
+ "eyre",
+ "rcgen",
+ "reqwest 0.12.28",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "url",
+ "zeroize",
 ]
 
 [[package]]

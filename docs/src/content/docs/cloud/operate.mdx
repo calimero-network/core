@@ -29,6 +29,10 @@ merod-v2 --node-id 1 --listen 0.0.0.0:2501 --public-url https://n1.eu1.example/ 
   `--session-key-rotation-secs` (default 6 h, at least 30 min); the previous key
   keeps verifying.
 - **Browsers.** `--origins` are both the passkey origins and the CORS origins.
+- **Outbound HTTPS.** Off unless `--settings FILE` has an `[outbound]` table
+  (`enabled`, `hosts`, and `env_secrets` or a loopback `sidecar`), v1's
+  `[context.outbound]`. The operator only bounds the hosts and holds the
+  secrets; which prefixes an app may reach is its owner's approval.
 
 ## The Ops API
 

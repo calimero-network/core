@@ -115,6 +115,10 @@ pub struct Account {
     /// an organization (as [`Org::approved_releases`]).
     #[serde(default)]
     pub approved_releases: std::collections::BTreeSet<String>,
+    /// Outbound URL prefixes approved for the apps this account owns outside
+    /// an organization (as [`Org::outbound_approvals`]).
+    #[serde(default)]
+    pub outbound_approvals: std::collections::BTreeMap<String, OutboundApproval>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -245,6 +249,20 @@ pub struct Org {
     /// A node on any other release is sent none of their data.
     #[serde(default)]
     pub approved_releases: std::collections::BTreeSet<String>,
+    /// Outbound URL prefixes the owner approved, by package signer (`did:key`):
+    /// an app's run reaches only a prefix its manifest declares and this holds.
+    #[serde(default)]
+    pub outbound_approvals: std::collections::BTreeMap<String, OutboundApproval>,
+}
+
+/// What an owner approved for one publisher's apps to call out to.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutboundApproval {
+    /// The approved URL prefixes.
+    pub prefixes: Vec<String>,
+    /// Every prefix the owner was shown, approved or not: one declared later
+    /// reads as awaiting approval, one left out as not approved.
+    pub reviewed: Vec<String>,
 }
 
 impl Org {

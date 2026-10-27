@@ -475,6 +475,7 @@ async fn register_finish(
                 // The release this account began on holds its apps until the
                 // owner approves another.
                 approved_releases: [node.own_release()].into_iter().collect(),
+                outbound_approvals: std::collections::BTreeMap::new(),
             },
         })
         .await?;
@@ -789,6 +790,90 @@ async fn account_release_approval(
     set_release_approval(&node, &headers, crate::system::ReleaseScope::Account, body).await
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OutboundApprovalBody {
+    /// The package whose publisher (its pinned signer) the approval is for.
+    package: String,
+    /// `"manifest"` (the default: every prefix the latest release declares)
+    /// or the prefixes to approve.
+    #[serde(default = "manifest")]
+    prefixes: calimero_primitives::outbound::OutboundSelection,
+    /// Set exactly these (how a prefix is revoked) instead of adding them.
+    #[serde(default)]
+    replace: bool,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+const fn manifest() -> calimero_primitives::outbound::OutboundSelection {
+    calimero_primitives::outbound::OutboundSelection::Manifest
+}
+
+/// Approve URL prefixes a package's publisher may call out to from the apps
+/// of `scope`, with a passkey assertion over the exact change. The owner
+/// decides, never the operator: the operator only bounds the hosts.
+async fn set_outbound_approval(
+    node: &Node,
+    headers: &HeaderMap,
+    scope: crate::system::ReleaseScope,
+    body: OutboundApprovalBody,
+) -> ApiResult {
+    let p = person(node, headers).await?;
+    let account = p.account()?;
+    let subject = match &scope {
+        crate::system::ReleaseScope::Org { org } => format!("org:{org}"),
+        crate::system::ReleaseScope::Account => format!("account:{account}"),
+    };
+    let consent = consent(
+        node,
+        &p,
+        &subject,
+        "__approve_outbound",
+        &json!({
+            "package": body.package,
+            "prefixes": body.prefixes,
+            "replace": body.replace,
+        }),
+        body.confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::SetOutboundApproval {
+            scope,
+            package: body.package,
+            selection: body.prefixes,
+            replace: body.replace,
+            actor: account,
+            consent,
+        })
+        .await?,
+    ))
+}
+
+async fn org_outbound_approval(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<OutboundApprovalBody>,
+) -> ApiResult {
+    set_outbound_approval(
+        &node,
+        &headers,
+        crate::system::ReleaseScope::Org { org },
+        body,
+    )
+    .await
+}
+
+async fn account_outbound_approval(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<OutboundApprovalBody>,
+) -> ApiResult {
+    set_outbound_approval(&node, &headers, crate::system::ReleaseScope::Account, body).await
+}
+
 /// Sign out everywhere: revoke every session of the caller's account.
 async fn logout_all(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let p = person(&node, &headers).await?;
@@ -827,6 +912,8 @@ async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
         "passkeyId": p.session.as_ref().and_then(|s| s.passkey.clone()),
         // Releases approved to hold this account's own apps.
         "approvedReleases": acc.approved_releases,
+        // Outbound prefixes approved for this account's own apps, by signer.
+        "outboundApprovals": acc.outbound_approvals,
     })))
 }
 
@@ -2673,6 +2760,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/auth/logout", post(logout))
         .route("/auth/logout-all", post(logout_all))
         .route("/auth/releases", post(account_release_approval))
+        .route("/auth/outbound", post(account_outbound_approval))
         .route("/auth/me", get(me))
         .route("/auth/apikeys", post(apikey_create).get(apikey_list))
         .route("/auth/apikeys/{key}", delete(apikey_revoke))
@@ -2699,6 +2787,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/orgs/{org}/teams/{team}", get(team_get).post(team_update).delete(team_delete))
         .route("/orgs/{org}/capabilities", post(org_capabilities))
         .route("/orgs/{org}/releases", post(org_release_approval))
+        .route("/orgs/{org}/outbound", post(org_outbound_approval))
         .route("/orgs/{org}/teams/{team}/members", post(team_set_member))
         .route(
             "/orgs/{org}/teams/{team}/members/{account}",

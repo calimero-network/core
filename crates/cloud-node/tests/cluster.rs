@@ -101,6 +101,7 @@ impl Cluster {
                 peer_measurements: calimero_cloud_client::Measurements::None,
                 registry: None,
                 allow_unsigned_bundles: true,
+                outbound: None,
             };
             configure(&mut config);
             nodes.push(Some(run(config).await.unwrap()));
@@ -1564,6 +1565,17 @@ async fn upgrades_plan_and_run_the_apps_migration_and_its_check() {
 
 /// A signed single-service `.mpk`, the shape `cargo mero bundle` produces.
 fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u8> {
+    mpk_declaring(package, version, wasm, key, &[])
+}
+
+/// [`mpk`] whose manifest declares `outbound` URL prefixes.
+fn mpk_declaring(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+) -> Vec<u8> {
     use sha2::Digest;
     let manifest = calimero_bundle::BundleManifest {
         version: "1.0".to_owned(),
@@ -1586,7 +1598,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKe
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),
-        outbound: Vec::new(),
+        outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
         services: None,
         signature: None,
     };
@@ -2145,4 +2157,119 @@ async fn answers_carry_receipts_from_attested_replicas() {
     assert_eq!(receipt.index, view.index);
     assert!(receipt.verify(&keys[&receipt.node], &view.result));
     assert!(!receipt.verify(&keys[&receipt.node], &json!("forged")));
+}
+
+// ---------------------------------------------------------------- outbound
+
+async fn probe(cl: &Client, app: &str) -> Value {
+    cl.call(
+        app,
+        "probe",
+        json!({ "path": "check", "body": "a=1" }),
+        None,
+    )
+    .await
+    .unwrap()
+    .result
+}
+
+/// v1's outbound gate, with the owner's approval in place of the namespace
+/// admin's: a run reaches a declared prefix only once the app's owner
+/// approved it for the publisher, never on the operator's say; a view and
+/// another account's approval reach nothing; a replace revokes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn outbound_requests_need_the_owners_approval() {
+    const PREFIX: &str = "https://echo.outbound.test/v1/";
+    const PACKAGE: &str = "com.calimero.outbound-probe";
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let signer = calimero_bundle::derive_signer_id_did_key(publisher.verifying_key().as_bytes());
+    let settings = calimero_outbound::OutboundSettings {
+        enabled: true,
+        hosts: vec!["echo.outbound.test".to_owned()],
+        testing: Some(calimero_outbound::OutboundTestSettings {
+            echo: true,
+            secrets: [(
+                "ECHO_KEY".to_owned(),
+                calimero_outbound::TestSecretSettings {
+                    value: "s3cret-value".to_owned(),
+                    packages: vec![PACKAGE.to_owned()],
+                    signers: vec![signer.clone()],
+                    hosts: vec!["echo.outbound.test".to_owned()],
+                },
+            )]
+            .into(),
+        }),
+        ..calimero_outbound::OutboundSettings::default()
+    };
+    let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
+    let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let _ = alice
+        .upload_package(mpk_declaring(
+            PACKAGE,
+            "0.1.0",
+            &wasm("outbound_probe"),
+            &publisher,
+            &[PREFIX],
+        ))
+        .await
+        .unwrap();
+    let app = alice
+        .post("apps", json!({ "name": "probe", "package": PACKAGE }))
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The operator allows the host and the manifest declares the prefix, but
+    // the owner was never asked.
+    let before = probe(&alice, &app).await;
+    assert!(
+        before.as_str().unwrap().contains("[NotApproved]"),
+        "{before}"
+    );
+
+    // Bob approving for his own apps reaches nothing of Alice's.
+    let _ = bob
+        .approve_outbound(None, PACKAGE, None, false, &mut bob_pk)
+        .await
+        .unwrap();
+    let still = probe(&alice, &app).await;
+    assert!(still.as_str().unwrap().contains("[NotApproved]"), "{still}");
+
+    // The owner approves what the release declares, with a passkey.
+    let approved = alice
+        .approve_outbound(None, PACKAGE, None, false, &mut alice_pk)
+        .await
+        .unwrap();
+    assert_eq!(approved["signer"], json!(signer));
+    assert_eq!(approved["approval"]["prefixes"], json!([PREFIX]));
+    let sent = probe(&alice, &app).await;
+    let sent = sent.as_str().unwrap();
+    assert!(sent.starts_with("200 "), "{sent}");
+    assert!(sent.contains("/v1/check"), "{sent}");
+    // The secret went out, and its echo came back redacted.
+    assert!(!sent.contains("s3cret-value"), "{sent}");
+    assert!(sent.contains("[redacted]"), "{sent}");
+
+    // A view gets no client, approval or not.
+    let view = alice
+        .view(&app, "probe_in_view", json!({}), Consistency::Strong)
+        .await;
+    assert!(
+        !format!("{view:?}").contains("200 "),
+        "a view called out: {view:?}"
+    );
+
+    // Replacing with nothing revokes: what was reviewed reads as not approved.
+    let _ = alice
+        .approve_outbound(None, PACKAGE, Some(&[]), true, &mut alice_pk)
+        .await
+        .unwrap();
+    let revoked = probe(&alice, &app).await;
+    assert!(
+        revoked.as_str().unwrap().contains("[NotApproved]"),
+        "{revoked}"
+    );
 }
