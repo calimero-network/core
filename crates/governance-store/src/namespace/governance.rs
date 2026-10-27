@@ -50,6 +50,9 @@ mod voided;
 
 use self::voided::may_void_others;
 
+/// Log rows a keyed key request may scan for citations of the key it names.
+const MAX_KEY_CITATION_ROWS: usize = 20_000;
+
 /// A key rotation unwrap failure that the caller should handle.
 #[derive(Debug)]
 pub struct KeyUnwrapFailure {
@@ -1767,8 +1770,12 @@ impl<'a> NamespaceGovernance<'a> {
     /// Whether an op of `space`, or of a folder it covers, names `key_id` in the clear: history
     /// a current member may read, so any epoch it was sealed under may be served to one.
     fn space_ops_cite_key(&self, space: &ContextGroupId, key_id: &[u8; 32]) -> EyreResult<bool> {
-        let cited = NamespaceOpLogService::new(self.store, self.namespace_id)
-            .collect_buffered_group_op_keys()?;
+        // A bounded scan: past the budget the request is refused, not left to walk the whole log.
+        let Some(cited) = NamespaceOpLogService::new(self.store, self.namespace_id)
+            .collect_buffered_group_op_keys_within(MAX_KEY_CITATION_ROWS)?
+        else {
+            return Ok(false);
+        };
         Ok(cited.into_iter().any(|(group, cited_key)| {
             cited_key == *key_id
                 && crate::key_covering_group(self.store, &ContextGroupId::from(group))

@@ -680,7 +680,19 @@ impl<'a> NamespaceOpLogService<'a> {
     /// pull to learn which groups it has undecryptable pending ops for.
     /// Deduplicated on `(group_id, key_id)`.
     pub fn collect_buffered_group_op_keys(&self) -> EyreResult<Vec<([u8; 32], [u8; 32])>> {
+        Ok(self
+            .collect_buffered_group_op_keys_within(usize::MAX)?
+            .unwrap_or_default())
+    }
+
+    /// [`Self::collect_buffered_group_op_keys`] over at most `max_rows` log rows: `None` when the
+    /// log holds more, so a caller on a hot path refuses instead of scanning without bound.
+    pub fn collect_buffered_group_op_keys_within(
+        &self,
+        max_rows: usize,
+    ) -> EyreResult<Option<Vec<([u8; 32], [u8; 32])>>> {
         let mut seen = std::collections::BTreeSet::new();
+        let mut rows = 0usize;
         let handle = self.store.handle();
         let start =
             calimero_store::key::NamespaceGovOp::new(self.namespace_id.to_bytes(), [0u8; 32]);
@@ -710,6 +722,10 @@ impl<'a> NamespaceOpLogService<'a> {
             if key.namespace_id() != self.namespace_id.to_bytes() {
                 break;
             }
+            rows += 1;
+            if rows > max_rows {
+                return Ok(None);
+            }
             let value: calimero_store::key::NamespaceGovOpValue = match handle.get(&key) {
                 Ok(Some(v)) => v,
                 Ok(None) => continue,
@@ -737,7 +753,7 @@ impl<'a> NamespaceOpLogService<'a> {
             seen.extend(sealed_under);
         }
 
-        Ok(seen.into_iter().collect())
+        Ok(Some(seen.into_iter().collect()))
     }
 
     pub fn collect_opaque_skeleton_delta_ids_for_group(

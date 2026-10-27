@@ -4745,6 +4745,131 @@ fn a_replay_does_not_bring_back_a_deleted_group_whose_delete_it_cannot_decide() 
     }
 }
 
+/// A create that stopped after writing the parent edge is finished by the next apply: the
+/// creator row, which a replay reads as "folded", is the last thing written.
+#[test]
+fn a_half_made_group_is_finished_by_the_next_create() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+    let ns_id = [0xABu8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let admin = enrol_member(&store, &ns_gid, &admin_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
+        .unwrap();
+    let space = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+        &admin, ns_id, true, 1,
+    ));
+    // The state a crash after the edge leaves.
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &space)
+        .unwrap();
+    assert_eq!(
+        crate::group_creator::GroupCreatorRepository::new(&store)
+            .creator(&space)
+            .unwrap(),
+        None
+    );
+
+    let op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id.into(),
+        vec![],
+        1,
+        seal_for_test(
+            &store,
+            ns_gid,
+            crate::test_fixtures::group_created(admin, ns_id, true, 1),
+        ),
+    )
+    .expect("sign");
+    NamespaceGovernance::new(&store, ns_id.into())
+        .apply_signed_op(&op)
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
+        .expect("apply");
+
+    assert_eq!(
+        crate::group_creator::GroupCreatorRepository::new(&store)
+            .creator(&space)
+            .unwrap(),
+        Some(admin)
+    );
+    assert!(CapabilitiesRepository::new(&store)
+        .has_subgroup_visibility(&space)
+        .unwrap());
+}
+
+/// A scan of the log for cited keys stops at its budget instead of walking all of it.
+#[test]
+fn the_cited_key_scan_is_bounded() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+    let ns_id = [0xACu8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let admin = enrol_member(&store, &ns_gid, &admin_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
+        .unwrap();
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
+    for (nonce, tag) in [(1u64, 1u8), (2, 2), (3, 3)] {
+        let op = SignedNamespaceOp::sign(
+            &admin_sk,
+            ns_id.into(),
+            vec![],
+            nonce,
+            seal_for_test(
+                &store,
+                ns_gid,
+                crate::test_fixtures::group_created(admin, ns_id, false, tag),
+            ),
+        )
+        .expect("sign");
+        gov.apply_signed_op(&op)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
+            .expect("apply");
+    }
+
+    let log = NamespaceOpLogService::new(&store, ns_id.into());
+    assert!(log
+        .collect_buffered_group_op_keys_within(1)
+        .unwrap()
+        .is_none());
+    assert!(log
+        .collect_buffered_group_op_keys_within(100)
+        .unwrap()
+        .is_some_and(|keys| !keys.is_empty()));
+}
+
 /// An open folder that moves into a space keeps no direct row: its seats become the space's.
 #[test]
 fn an_open_folder_moving_into_a_space_loses_its_direct_rows() {
