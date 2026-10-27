@@ -1460,23 +1460,26 @@ async fn a_second_passkey_is_another_device_of_the_same_account() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn upgrades_plan_and_run_the_apps_migration_and_its_check() {
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
-    let upgrade = |app: String, bundle: String| {
-        let alice = &alice;
-        async move {
-            // A refused upgrade is a 422 whose details carry the run's status.
-            match alice
-                .post(&format!("apps/{app}/upgrade"), json!({ "bundle": bundle }))
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    assert_eq!(e.code(), Some("UPGRADE_FAILED"), "{e}");
-                    e.details().cloned().unwrap()
-                }
+    let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
+    // An upgrade is approved with the owner's passkey; a refused one is a 422
+    // whose details carry the run's status.
+    async fn upgrade(
+        alice: &Client,
+        key: &mut SoftAuthenticator,
+        app: String,
+        bundle: String,
+    ) -> Value {
+        match alice
+            .upgrade_app(&app, json!({ "bundle": bundle }), key)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                assert_eq!(e.code(), Some("UPGRADE_FAILED"), "{e}");
+                e.details().cloned().unwrap()
             }
         }
-    };
+    }
 
     // v1 -> v2 adds a field: the node finds the migration in v2's ABI, runs
     // it, and v1's data reads under v2 beside the new field's default.
@@ -1504,7 +1507,7 @@ async fn upgrades_plan_and_run_the_apps_migration_and_its_check() {
         ))
         .await
         .unwrap();
-    let up = upgrade(app.clone(), v2.clone()).await;
+    let up = upgrade(&alice, &mut alice_key, app.clone(), v2.clone()).await;
     assert_eq!(up["status"], "ok", "{up}");
     assert_eq!(
         strong_view(&alice, &app, "get_item", json!({ "key": "a" })).await,
@@ -1515,7 +1518,7 @@ async fn upgrades_plan_and_run_the_apps_migration_and_its_check() {
         json!("added in v2")
     );
     // Down again is refused, and the app stays on v2.
-    let down = upgrade(app.clone(), v1).await;
+    let down = upgrade(&alice, &mut alice_key, app.clone(), v1).await;
     assert_eq!(down["status"], "appError", "{down}");
     assert_eq!(
         strong_view(&alice, &app, "get_notes", json!({})).await,
@@ -1544,7 +1547,7 @@ async fn upgrades_plan_and_run_the_apps_migration_and_its_check() {
         ))
         .await
         .unwrap();
-    let refused = upgrade(app.clone(), f2.clone()).await;
+    let refused = upgrade(&alice, &mut alice_key, app.clone(), f2.clone()).await;
     assert_eq!(refused["status"], "appError", "{refused}");
     assert_eq!(
         strong_view(&alice, &app, "item_count", json!({})).await,
@@ -1684,7 +1687,7 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         cfg.allow_unsigned_bundles = false;
     })
     .await;
-    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let kv = kv_wasm();
     registry.publish(
@@ -1791,10 +1794,7 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         mpk("com.test.kv", "1.0.1", &v101, &publisher),
     );
     let up = alice
-        .post(
-            &format!("apps/{app}/upgrade"),
-            json!({ "version": "1.0.1" }),
-        )
+        .upgrade_app(&app, json!({ "version": "1.0.1" }), &mut alice_key)
         .await
         .unwrap();
     assert_eq!(up["status"], json!("ok"), "{up}");
@@ -1986,4 +1986,135 @@ async fn sessions_confirmations_and_key_scopes_hold() {
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
+}
+
+/// The owner, not the operator, decides which mero-tee releases hold an app:
+/// a node on a release the owner has not approved is placed nothing, cannot be
+/// moved onto, and is sent no entries; approving lets it in, withdrawing stops
+/// it again. Upgrades need the owner's passkey over the exact upgrade.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn only_releases_the_owner_approved_hold_an_apps_data() {
+    let c = Cluster::start_with(3, |cfg| {
+        // The operator rolled node 3 onto a new release.
+        cfg.tee_release = Some(if cfg.node_id == 3 { "2.0.0" } else { "1.0.0" }.into());
+    })
+    .await;
+    let (alice, mut key) = signed_up(&c, 0, "alice").await;
+    assert_eq!(
+        alice.me().await.unwrap()["approvedReleases"],
+        json!(["1.0.0"])
+    );
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let created = alice
+        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+        .await
+        .unwrap();
+    let app = created["appId"].as_str().unwrap().to_owned();
+    let mut replicas: Vec<u64> = serde_json::from_value(created["replicas"].clone()).unwrap();
+    replicas.sort_unstable();
+    assert_eq!(
+        replicas,
+        vec![1, 2],
+        "the unapproved node is placed nothing"
+    );
+    let _ = alice
+        .call(&app, "set", json!({ "key": "k", "value": "v1" }), None)
+        .await
+        .unwrap();
+
+    // The operator cannot move the app onto it.
+    let ops = |i: usize| {
+        let client = c.client(i);
+        async move {
+            client.use_api_key("ops-secret").await;
+            client
+        }
+    };
+    let e = ops(0)
+        .await
+        .post(
+            &format!("ops/apps/{app}/replicas"),
+            json!({ "replicas": [1, 2, 3] }),
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("403"), "{e}");
+
+    // An upgrade needs the owner's passkey over this upgrade.
+    let e = alice
+        .post(&format!("apps/{app}/upgrade"), json!({ "bundle": bundle }))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+    let (bob, _bob_key) = signed_up(&c, 1, "bob").await;
+    let e = bob
+        .post(&format!("apps/{app}/upgrade"), json!({ "bundle": bundle }))
+        .await
+        .unwrap_err();
+    assert!(
+        e.to_string().starts_with("403") || e.to_string().starts_with("404"),
+        "{e}"
+    );
+
+    // The owner approves 2.0.0: now the app may move there, and node 3 serves it.
+    let _ok = alice
+        .approve_release(None, "2.0.0", &mut key)
+        .await
+        .unwrap();
+    let leader = c.app_leader(&app).unwrap();
+    let _moved = ops(leader)
+        .await
+        .post(
+            &format!("ops/apps/{app}/replicas"),
+            json!({ "replicas": [1, 2, 3] }),
+        )
+        .await
+        .unwrap();
+    let session = alice.session().await.unwrap();
+    let on3 = c.client(2);
+    on3.use_session(session).await;
+    let mut seen = None;
+    for _ in 0..100 {
+        if let Ok(v) = on3
+            .view(
+                &app,
+                "get",
+                json!({ "key": "k" }),
+                Consistency::Stale { min_index: 0 },
+            )
+            .await
+        {
+            seen = Some(v.result);
+            if seen == Some(json!("v1")) {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(seen, Some(json!("v1")), "node 3 caught up once approved");
+
+    // Withdrawn again: node 3 is sent nothing new.
+    let _ok = alice
+        .post_confirmed(
+            "auth/releases",
+            json!({ "version": "2.0.0", "approved": false }),
+            &mut key,
+        )
+        .await
+        .unwrap();
+    let _ = alice
+        .call(&app, "set", json!({ "key": "k", "value": "v2" }), None)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let v = on3
+        .view(
+            &app,
+            "get",
+            json!({ "key": "k" }),
+            Consistency::Stale { min_index: 0 },
+        )
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!("v1"), "the new write never reached node 3");
 }

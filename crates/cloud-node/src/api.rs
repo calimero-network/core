@@ -415,6 +415,9 @@ async fn register_finish(
                 name,
                 created_at: now_secs(),
                 passkeys: vec![cred.clone()],
+                // The release this account began on holds its apps until the
+                // owner approves another.
+                approved_releases: [node.own_release()].into_iter().collect(),
             },
         })
         .await?;
@@ -649,6 +652,86 @@ async fn logout(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult 
     Ok(Json(json!({})))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReleaseApprovalBody {
+    /// The mero-tee release, as attestations name it.
+    version: String,
+    /// `false` withdraws an approval.
+    #[serde(default = "yes")]
+    approved: bool,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+const fn yes() -> bool {
+    true
+}
+
+/// Approve (or withdraw) a mero-tee release for the apps of `scope`, with a
+/// passkey assertion over the exact change. Until the owner approves a
+/// release, nodes on it get none of those apps' data.
+async fn set_release_approval(
+    node: &Node,
+    headers: &HeaderMap,
+    scope: crate::system::ReleaseScope,
+    body: ReleaseApprovalBody,
+) -> ApiResult {
+    let p = person(node, headers).await?;
+    let account = p.account()?;
+    let subject = match &scope {
+        crate::system::ReleaseScope::Org { org } => format!("org:{org}"),
+        crate::system::ReleaseScope::Account => format!("account:{account}"),
+    };
+    let method = if body.approved {
+        "__approve_release"
+    } else {
+        "__withdraw_release"
+    };
+    let consent = consent(
+        node,
+        &p,
+        &subject,
+        method,
+        &json!({ "version": body.version }),
+        body.confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::SetReleaseApproval {
+            scope,
+            version: body.version,
+            approved: body.approved,
+            actor: account,
+            consent,
+        })
+        .await?,
+    ))
+}
+
+async fn org_release_approval(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<ReleaseApprovalBody>,
+) -> ApiResult {
+    set_release_approval(
+        &node,
+        &headers,
+        crate::system::ReleaseScope::Org { org },
+        body,
+    )
+    .await
+}
+
+async fn account_release_approval(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<ReleaseApprovalBody>,
+) -> ApiResult {
+    set_release_approval(&node, &headers, crate::system::ReleaseScope::Account, body).await
+}
+
 /// Sign out everywhere: revoke every session of the caller's account.
 async fn logout_all(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let p = person(&node, &headers).await?;
@@ -685,6 +768,8 @@ async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
         "via": if p.api_key.is_some() { "apiKey" } else { "session" },
         // The passkey (device) this session was opened with.
         "passkeyId": p.session.as_ref().and_then(|s| s.passkey.clone()),
+        // Releases approved to hold this account's own apps.
+        "approvedReleases": acc.approved_releases,
     })))
 }
 
@@ -963,9 +1048,19 @@ async fn app_create(
         &owner,
     )
     .await?;
-    let replicas = node.place();
+    // Only nodes on a release the owner approved may hold the app.
+    let approved = node.sys(|s| {
+        match &body.org {
+            Some(o) => s.orgs.get(o).map(|o| o.approved_releases.clone()),
+            None => s.accounts.get(&owner).map(|a| a.approved_releases.clone()),
+        }
+        .filter(|set| !set.is_empty())
+    });
+    let replicas = node.place(approved.as_ref()).await;
     if replicas.is_empty() {
-        return Err(ApiError::unavailable("no nodes registered yet"));
+        return Err(ApiError::unavailable(
+            "no node runs a release this app's owner approved",
+        ));
     }
     let app_id = b64url(&random::<16>());
     let access = body.access.unwrap_or(if body.org.is_some() {
@@ -1535,6 +1630,9 @@ struct UpgradeBody {
     version: Option<String>,
     #[serde(default)]
     service: Option<String>,
+    /// The owner's passkey approval of this exact upgrade (412 asks for it).
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
     /// The bundle's migration export, if the state shape changed.
     #[serde(default)]
     migrate: Option<String>,
@@ -1544,24 +1642,19 @@ async fn app_upgrade(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(app_id): Path<String>,
-    Json(body): Json<UpgradeBody>,
+    Json(mut body): Json<UpgradeBody>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
-    let account = person(&node, &headers).await?.account()?;
+    let p = person(&node, &headers).await?;
+    let account = p.account()?;
     // Who may upgrade is the system log's rule (`UpgradeApp`); asked first, so
-    // a refused or failed upgrade records nothing.
+    // a refused or failed upgrade records nothing. An upgrade is the app's
+    // owner's decision (the organization's owner for an org app), never an
+    // operator's or an admin's: new code reads the app's data.
     let app = node.app(&app_id).await?;
-    let may = app.owner == account
-        || node.sys(|s| {
-            app.org
-                .as_ref()
-                .and_then(|o| s.orgs.get(o))
-                .and_then(|o| o.role(&account))
-                .is_some_and(|r| r >= OrgRole::Admin)
-        });
-    if !may {
-        return Err(crate::node::rejected(
-            "only the owner or an org admin may upgrade",
+    if !node.sys(|s| s.may_upgrade(&app, &account)) {
+        return Err(ApiError::forbidden(
+            "only the app's owner (or its organization's owner) may upgrade it",
         ));
     }
     // A version alone means the app's own package and service.
@@ -1587,6 +1680,16 @@ async fn app_upgrade(
     if !node.sys(|s| s.bundles.contains_key(&bundle)) {
         return Err(crate::node::rejected("unknown bundle"));
     }
+    // A fresh passkey assertion over this exact upgrade, logged as consent.
+    let consent = consent(
+        &node,
+        &p,
+        &app_id,
+        "__upgrade",
+        &json!({ "bundle": bundle, "migrate": body.migrate }),
+        body.confirm.take(),
+    )
+    .await?;
     let applied = node
         .call(&CallRequest::new(
             app_id.clone(),
@@ -1604,6 +1707,7 @@ async fn app_upgrade(
                 app_id,
                 bundle,
                 actor: account,
+                consent,
             })
             .await?;
     }
@@ -1663,6 +1767,7 @@ async fn org_create(
             org_id,
             name: body.name,
             actor: account,
+            release: Some(node.own_release()),
         })
         .await?;
     Ok(Json(v))
@@ -2386,6 +2491,17 @@ async fn ops_set_replicas(
         ));
     }
     let app = node.app(&app_id).await?;
+    // The operator moves an app only onto nodes on a release its owner
+    // approved: a move is how data would reach a new image.
+    for id in &b.replicas {
+        let release = node.release_of_node(*id).await;
+        if !node.sys(|s| s.release_may_hold(&app, release.as_deref())) {
+            return Err(ApiError::forbidden(&format!(
+                "node {id} runs release {}, which this app's owner has not approved",
+                release.as_deref().unwrap_or("(not attested yet)")
+            )));
+        }
+    }
     // Only the leader changes membership; others redirect before writing anything.
     if let Some(st) = node.hosted(&app_id).map(|g| g.status()) {
         if let (false, Some(id)) = (st.is_leader, st.leader) {
@@ -2480,6 +2596,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/auth/refresh", post(refresh))
         .route("/auth/logout", post(logout))
         .route("/auth/logout-all", post(logout_all))
+        .route("/auth/releases", post(account_release_approval))
         .route("/auth/me", get(me))
         .route("/auth/apikeys", post(apikey_create).get(apikey_list))
         .route("/auth/apikeys/{key}", delete(apikey_revoke))
@@ -2504,6 +2621,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/orgs/{org}/teams", post(team_create))
         .route("/orgs/{org}/teams/{team}", get(team_get).post(team_update).delete(team_delete))
         .route("/orgs/{org}/capabilities", post(org_capabilities))
+        .route("/orgs/{org}/releases", post(org_release_approval))
         .route("/orgs/{org}/teams/{team}/members", post(team_set_member))
         .route(
             "/orgs/{org}/teams/{team}/members/{account}",

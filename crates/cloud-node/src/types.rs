@@ -111,6 +111,10 @@ pub struct Account {
     pub name: String,
     pub created_at: u64,
     pub passkeys: Vec<Credential>,
+    /// mero-tee releases approved to hold the apps this account owns outside
+    /// an organization (as [`Org::approved_releases`]).
+    #[serde(default)]
+    pub approved_releases: std::collections::BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -236,6 +240,11 @@ pub struct Org {
     pub default_capabilities: u32,
     #[serde(default)]
     pub capabilities: std::collections::BTreeMap<AccountId, u32>,
+    /// mero-tee releases the owner approved to hold this organization's apps
+    /// (the release the org was created on, then each one the owner approves).
+    /// A node on any other release is sent none of their data.
+    #[serde(default)]
+    pub approved_releases: std::collections::BTreeSet<String>,
 }
 
 impl Org {

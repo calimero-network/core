@@ -251,6 +251,9 @@ pub async fn verify(
 #[derive(Debug, Clone)]
 pub struct HttpAttestor {
     pub policy: Policy,
+    /// Filled with the release the node's verified attestation names, for a
+    /// caller that decides by it (a node sending an app's data to a peer).
+    pub seen_release: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl calimero_sealed::client::Attest for HttpAttestor {
@@ -277,7 +280,11 @@ impl calimero_sealed::client::Attest for HttpAttestor {
                 .error_for_status()?
                 .json()
                 .await?;
-            verify(&doc, &nonce, &self.policy).await
+            let key = verify(&doc, &nonce, &self.policy).await?;
+            if let Ok(mut seen) = self.seen_release.lock() {
+                *seen = Some(doc.release.version.clone());
+            }
+            Ok(key)
         })
     }
 }

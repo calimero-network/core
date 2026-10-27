@@ -177,11 +177,51 @@ pub struct SystemState {
     pub rotated_refresh: BTreeMap<String, RefreshRecord>,
 }
 
+/// Whose release approvals a change is to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ReleaseScope {
+    Org { org: OrgId },
+    Account,
+}
+
 /// How long a revoked session is remembered: past every token it could have
 /// minted (sessions live 15 minutes), with room for clock differences.
 pub const REVOKED_SESSION_KEEP_SECS: u64 = 60 * 60;
 
 impl SystemState {
+    /// The releases approved to hold `app`'s data: its organization's, or its
+    /// owner's for an app outside one. Empty means none was ever recorded
+    /// (state from before approvals), which leaves the app unrestricted.
+    #[must_use]
+    pub fn approved_releases(&self, app: &AppRecord) -> Option<&BTreeSet<String>> {
+        let set = match &app.org {
+            Some(o) => &self.orgs.get(o)?.approved_releases,
+            None => &self.accounts.get(&app.owner)?.approved_releases,
+        };
+        (!set.is_empty()).then_some(set)
+    }
+
+    /// Whether `account` may upgrade `app`: its owner, or the owner of its
+    /// organization.
+    #[must_use]
+    pub fn may_upgrade(&self, app: &AppRecord, account: &str) -> bool {
+        app.owner == account
+            || app.org.as_ref().is_some_and(|o| {
+                self.orgs.get(o).and_then(|o| o.role(account)) == Some(OrgRole::Owner)
+            })
+    }
+
+    /// Whether a node on `release` may hold `app`'s data. `None` is a node
+    /// whose release is not known yet, which may not.
+    #[must_use]
+    pub fn release_may_hold(&self, app: &AppRecord, release: Option<&str>) -> bool {
+        match self.approved_releases(app) {
+            None => true,
+            Some(set) => release.is_some_and(|r| set.contains(r)),
+        }
+    }
+
     /// Revoke `session`: its refresh tokens go and its tokens stop verifying.
     fn revoke_session(&mut self, session: &str, now: u64) {
         self.refresh.retain(|_, r| r.session != session);
@@ -296,6 +336,9 @@ pub enum SystemCmd {
         app_id: AppId,
         bundle: String,
         actor: AccountId,
+        /// The owner's passkey assertion over this upgrade.
+        #[serde(default)]
+        consent: Value,
     },
     TransferApp {
         app_id: AppId,
@@ -380,6 +423,20 @@ pub enum SystemCmd {
         org_id: OrgId,
         name: String,
         actor: AccountId,
+        /// The release of the node the org was created through: approved from
+        /// the start, so its apps run where the org began.
+        #[serde(default)]
+        release: Option<String>,
+    },
+    /// The owner approves (or withdraws) a mero-tee release for an org's apps,
+    /// or for their own apps outside one. Logged with the passkey consent.
+    SetReleaseApproval {
+        scope: ReleaseScope,
+        version: String,
+        approved: bool,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
     },
     SetOrgRole {
         org: OrgId,
@@ -699,21 +756,19 @@ impl SystemMachine {
                 app_id,
                 bundle,
                 actor,
+                consent: _,
             } => {
                 if !s.bundles.contains_key(&bundle) {
                     return Err("unknown bundle");
                 }
-                let can = s.apps.get(&app_id).is_some_and(|a| {
-                    a.owner == actor
-                        || a.org.as_ref().is_some_and(|o| {
-                            s.orgs
-                                .get(o)
-                                .and_then(|o| o.role(&actor))
-                                .is_some_and(|r| r >= OrgRole::Admin)
-                        })
-                });
-                if !can {
-                    return Err("only the owner or an org admin may upgrade");
+                if !s
+                    .apps
+                    .get(&app_id)
+                    .is_some_and(|a| s.may_upgrade(a, &actor))
+                {
+                    return Err(
+                        "only the app's owner (or its organization's owner) may upgrade it",
+                    );
                 }
                 if let Some(a) = s.apps.get_mut(&app_id) {
                     a.bundle = bundle;
@@ -972,6 +1027,7 @@ impl SystemMachine {
                 org_id,
                 name,
                 actor,
+                release,
             } => {
                 if !s.accounts.contains_key(&actor) {
                     return Err("unknown account");
@@ -998,9 +1054,44 @@ impl SystemMachine {
                         teams: BTreeMap::new(),
                         default_capabilities: crate::types::caps::DEFAULT,
                         capabilities: BTreeMap::new(),
+                        approved_releases: release.into_iter().collect(),
                     },
                 );
                 Ok(json!({ "orgId": org_id }))
+            }
+            SystemCmd::SetReleaseApproval {
+                scope,
+                version,
+                approved,
+                actor,
+                consent: _,
+            } => {
+                let set = match &scope {
+                    ReleaseScope::Org { org } => {
+                        let o = s.orgs.get_mut(org).ok_or("no such organization")?;
+                        if o.role(&actor) != Some(OrgRole::Owner) {
+                            return Err("only the organization's owner approves releases");
+                        }
+                        &mut o.approved_releases
+                    }
+                    ReleaseScope::Account => {
+                        &mut s
+                            .accounts
+                            .get_mut(&actor)
+                            .ok_or("unknown account")?
+                            .approved_releases
+                    }
+                };
+                if approved {
+                    let _new = set.insert(version);
+                } else {
+                    // An empty set would leave the apps unrestricted.
+                    if set.len() == 1 && set.contains(&version) {
+                        return Err("the last approved release cannot be withdrawn");
+                    }
+                    let _gone = set.remove(&version);
+                }
+                Ok(json!({ "approvedReleases": set }))
             }
             SystemCmd::SetOrgRole {
                 org,

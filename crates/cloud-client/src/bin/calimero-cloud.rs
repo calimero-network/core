@@ -76,6 +76,16 @@ enum Cmd {
         #[command(flatten)]
         opts: AppOpts,
     },
+    /// Approve a mero-tee release to hold your apps (`--org` for an
+    /// organization's): nodes on any other release get none of their data.
+    ApproveRelease {
+        version: String,
+        #[arg(long)]
+        org: Option<String>,
+        /// The owner's passkey file (development clusters).
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
+    },
     /// Install a signed package: `PACKAGE --version V` from the node's registry,
     /// or a local `.mpk` file.
     Install {
@@ -204,6 +214,10 @@ enum AppCmd {
         version: Option<String>,
         #[arg(long)]
         migrate: Option<String>,
+        /// The owner's passkey file that approves it (development clusters);
+        /// elsewhere the owner approves in the console.
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
 }
 
@@ -353,6 +367,12 @@ async fn authenticate(cli: &Cli, client: &Client, sessions: &Sessions) -> eyre::
     Ok(())
 }
 
+/// The passkey kept in a development passkey file.
+fn load_dev_passkey(path: &std::path::Path) -> eyre::Result<SoftAuthenticator> {
+    SoftAuthenticator::from_json(&std::fs::read_to_string(path)?)
+        .map_err(|e| eyre::eyre!("{}: {e}", path.display()))
+}
+
 fn app_body(opts: &AppOpts) -> eyre::Result<Value> {
     let mut o = json!({ "confirmMethods": opts.confirm_methods });
     if let Some(a) = &opts.init_args {
@@ -497,13 +517,34 @@ async fn main() -> eyre::Result<()> {
             bundle,
             version,
             migrate,
+            dev_passkey,
         }) => {
-            client
-                .post(
-                    &format!("apps/{app}/upgrade"),
-                    json!({ "bundle": bundle, "version": version, "migrate": migrate }),
-                )
-                .await?
+            let body = json!({ "bundle": bundle, "version": version, "migrate": migrate });
+            match dev_passkey {
+                Some(path) => {
+                    let mut pk = load_dev_passkey(path)?;
+                    let out = client.upgrade_app(app, body, &mut pk).await;
+                    // The passkey's counter moved; keep it.
+                    write_private(path, &pk.to_json())?;
+                    out?
+                }
+                None => client.post(&format!("apps/{app}/upgrade"), body).await?,
+            }
+        }
+        Cmd::ApproveRelease {
+            version,
+            org,
+            dev_passkey,
+        } => {
+            let path = dev_passkey.as_ref().ok_or_else(|| {
+                eyre::eyre!("approving a release needs the owner's passkey: --dev-passkey FILE")
+            })?;
+            let mut pk = load_dev_passkey(path)?;
+            let out = client
+                .approve_release(org.as_deref(), version, &mut pk)
+                .await;
+            write_private(path, &pk.to_json())?;
+            out?
         }
         Cmd::Call {
             app,

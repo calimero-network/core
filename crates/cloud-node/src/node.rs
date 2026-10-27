@@ -157,6 +157,8 @@ pub struct Node {
     http: reqwest::Client,
     cluster_secret: String,
     pub challenges: Mutex<HashMap<String, crate::api::Pending>>,
+    /// The release each peer's verified attestation named, by address.
+    peer_releases: Mutex<HashMap<String, Arc<Mutex<Option<String>>>>>,
     /// Event streams this node is serving (`/apps/{app}/events`).
     pub event_streams: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
@@ -187,6 +189,11 @@ impl Transport for PeerTransport {
         let node = self.node.lock().ok().and_then(|n| n.upgrade());
         Box::pin(async move {
             let node = node.ok_or("node is shutting down")?;
+            if !node.may_send(&addr, group).await {
+                return Err(format!(
+                    "{addr} runs a release the app's owner has not approved; it gets none of the app's data"
+                ));
+            }
             let body = json!({ "group": group, "rpc": request });
             let resp = node
                 .peer_post(&addr, "internal/raft", &body)
@@ -261,6 +268,7 @@ impl Node {
                 .build()?,
             challenges: Mutex::new(HashMap::new()),
             event_streams: std::sync::Arc::default(),
+            peer_releases: Mutex::new(HashMap::new()),
             starting: tokio::sync::Mutex::new(()),
             search: Search::default(),
             facts: Mutex::new(HashMap::new()),
@@ -299,7 +307,12 @@ impl Node {
             return Ok(Arc::clone(p));
         }
         let url: Url = addr.parse()?;
+        let seen_release = Arc::new(Mutex::new(None));
+        if let Ok(mut r) = self.peer_releases.lock() {
+            let _prev = r.insert(addr.to_owned(), Arc::clone(&seen_release));
+        }
         let attestor = HttpAttestor {
+            seen_release,
             policy: Policy {
                 allow_mock: self.config.allow_mock_peers,
                 app_hash: None,
@@ -456,6 +469,59 @@ impl Node {
         if let Some(i) = index {
             let _caught_up = self.system.wait_applied(i, Duration::from_secs(2)).await;
         }
+    }
+
+    /// The release node `id` runs, as its verified attestation names it (this
+    /// node's own for itself), attesting the node first if this one has not
+    /// yet. `None` when it cannot be attested.
+    pub async fn release_of_node(&self, id: NodeId) -> Option<String> {
+        if id == self.config.node_id {
+            return Some(self.own_release());
+        }
+        let addr = self.sys(|s| s.nodes.get(&id).map(|n| n.addr.clone()))?;
+        if self.release_at(&addr).is_none() {
+            // Any sealed request attests it.
+            let _ = self
+                .peer_post(&addr, "internal/system/index", &json!({}))
+                .await;
+        }
+        self.release_at(&addr)
+    }
+
+    fn release_at(&self, addr: &str) -> Option<String> {
+        let slot = self.peer_releases.lock().ok()?.get(addr).cloned()?;
+        let r = slot.lock().ok()?.clone();
+        r
+    }
+
+    /// Whether the peer at `addr` may be sent `group`'s data: its attested
+    /// release must be one the app's owner approved (requirement: no
+    /// operator-driven upgrade reaches an app's data without that approval).
+    /// The system group goes to every attested peer.
+    async fn may_send(&self, addr: &str, group: GroupId) -> bool {
+        if group == SYSTEM_GROUP {
+            return true;
+        }
+        let Some(app) = self.sys(|s| s.apps.values().find(|a| a.group == group).cloned()) else {
+            return true;
+        };
+        if self.release_at(addr).is_none() {
+            // Not attested yet: any sealed request attests it.
+            let _ = self
+                .peer_post(addr, "internal/system/index", &json!({}))
+                .await;
+        }
+        let release = self.release_at(addr);
+        self.sys(|s| s.release_may_hold(&app, release.as_deref()))
+    }
+
+    /// The mero-tee release this node runs, as its attestation names it.
+    #[must_use]
+    pub fn own_release(&self) -> String {
+        self.config
+            .tee_release
+            .clone()
+            .unwrap_or_else(|| self.config.release.clone())
     }
 
     /// Read the system state, waiting up to two seconds for `f` to find
@@ -1507,13 +1573,29 @@ impl Node {
         self.app_group(group)
     }
 
-    /// Pick replicas for a new app: the least-loaded nodes.
     #[must_use]
-    pub fn place(&self) -> Vec<NodeId> {
+    /// Pick replicas for a new app: the least-loaded nodes whose release is in
+    /// `approved` (when the app's owner restricted releases).
+    pub async fn place(
+        &self,
+        approved: Option<&std::collections::BTreeSet<String>>,
+    ) -> Vec<NodeId> {
+        let mut allowed = Vec::new();
+        for id in self.sys(|s| s.nodes.keys().copied().collect::<Vec<_>>()) {
+            let ok = match approved {
+                None => true,
+                Some(set) => self
+                    .release_of_node(id)
+                    .await
+                    .is_some_and(|r| set.contains(&r)),
+            };
+            if ok {
+                allowed.push(id);
+            }
+        }
         self.sys(|s| {
-            let mut load: Vec<(usize, NodeId)> = s
-                .nodes
-                .keys()
+            let mut load: Vec<(usize, NodeId)> = allowed
+                .iter()
                 .map(|id| {
                     (
                         s.apps.values().filter(|a| a.replicas.contains(id)).count(),

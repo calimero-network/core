@@ -138,7 +138,10 @@ impl Client {
         let sealed = Arc::new(SealedTransport::attested(
             base.clone(),
             http.clone(),
-            Arc::new(HttpAttestor { policy }),
+            Arc::new(HttpAttestor {
+                policy,
+                seen_release: Arc::default(),
+            }),
         ));
         Ok(Self {
             base,
@@ -439,6 +442,69 @@ impl Client {
         }
         let v = self.post("apps", body).await?;
         Ok(v["appId"].as_str().unwrap_or_default().to_owned())
+    }
+
+    /// POST `body` to `path`; when the node answers 412 CONFIRM_REQUIRED, sign
+    /// its challenge with `passkey` and send it again with the approval. What
+    /// an owner approves this way: confirm methods, upgrades, release approvals.
+    pub async fn post_confirmed(
+        &self,
+        path: &str,
+        body: Value,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        let details = match self.post(path, body.clone()).await {
+            Ok(v) => return Ok(v),
+            Err(e) if e.code() == Some("CONFIRM_REQUIRED") => {
+                e.details().cloned().unwrap_or(Value::Null)
+            }
+            Err(e) => return Err(e),
+        };
+        let challenge =
+            calimero_identity::from_b64url(details["challenge"].as_str().unwrap_or_default())
+                .map_err(|e| eyre::eyre!("{e}"))?;
+        let assertion = passkey.get(&challenge);
+        let mut body = body;
+        if let Some(b) = body.as_object_mut() {
+            let _prev = b.insert(
+                "confirm".into(),
+                json!({ "challengeId": details["challengeId"], "assertion": assertion }),
+            );
+        }
+        self.post(path, body).await
+    }
+
+    /// Upgrade an app (`body`: `{ version }`, `{ bundle }`, optional
+    /// `migrate`), approved with the owner's passkey.
+    pub async fn upgrade_app(
+        &self,
+        app: &str,
+        body: Value,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.post_confirmed(
+            &format!("apps/{}/upgrade", path_segment(app)),
+            body,
+            passkey,
+        )
+        .await
+    }
+
+    /// Approve a mero-tee release for an organization's apps (`org`), or for
+    /// the account's own apps outside one (`None`). Until then, nodes on that
+    /// release get none of those apps' data.
+    pub async fn approve_release(
+        &self,
+        org: Option<&str>,
+        version: &str,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        let path = match org {
+            Some(o) => format!("orgs/{}/releases", path_segment(o)),
+            None => "auth/releases".to_owned(),
+        };
+        self.post_confirmed(&path, json!({ "version": version }), passkey)
+            .await
     }
 
     /// Call a method. Retries with the same idempotency key are answered once.
