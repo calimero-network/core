@@ -153,6 +153,15 @@ steps:
     child_group_id: '{{dm_group}}'
     new_parent_id: '{{team_group}}'
 
+  - name: Node-1 holds the folder's move into the private space
+    type: wait_for_sync
+    group_id: '{{dm_group}}'
+    nodes:
+      - paired-nested-1
+      - paired-nested-2
+    timeout: 60
+    trigger_sync: true
+
   - name: Node-1 creates a context in the inner subgroup
     type: create_context
     node: paired-nested-1
