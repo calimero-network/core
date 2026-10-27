@@ -2425,3 +2425,131 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
         );
     }
 }
+
+// ---------------------------------------------------------------- orgs, metadata
+
+async fn account_id(cl: &Client) -> String {
+    cl.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// v1's group metadata, member metadata, context metadata, device labels and
+/// owner-delete: who may set each, what reads them back, and that deleting an
+/// organization takes its apps and invites, with the owner's passkey.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn org_metadata_labels_and_deletion_work_like_v1() {
+    let c = Cluster::start(3).await;
+    let (alice, mut apk) = signed_up(&c, 0, "alice").await;
+    let (bob, _bpk) = signed_up(&c, 1, "bob").await;
+    let bob_id = account_id(&bob).await;
+    let alice_id = account_id(&alice).await;
+    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = alice
+        .post(
+            &format!("orgs/{org}/members"),
+            json!({ "account": bob_id, "role": "member" }),
+        )
+        .await
+        .unwrap();
+
+    // Organization metadata: an admin's; a member reads it.
+    let _ = alice
+        .set_org_metadata(&org, json!({ "logo": "acme.svg" }))
+        .await
+        .unwrap();
+    assert!(bob
+        .set_org_metadata(&org, json!({ "logo": "x" }))
+        .await
+        .is_err());
+    let o = bob.get(&format!("orgs/{org}")).await.unwrap();
+    assert_eq!(o["metadata"]["logo"], json!("acme.svg"));
+
+    // Member metadata: the member's own, or an admin's; not another member's.
+    let _ = bob
+        .set_member_metadata(&org, &bob_id, json!({ "title": "Engineer" }))
+        .await
+        .unwrap();
+    assert!(bob
+        .set_member_metadata(&org, &alice_id, json!({ "title": "x" }))
+        .await
+        .is_err());
+    let _ = alice
+        .set_member_metadata(&org, &bob_id, json!({ "title": "Lead" }))
+        .await
+        .unwrap();
+    let o = alice.get(&format!("orgs/{org}")).await.unwrap();
+    assert_eq!(o["memberMetadata"][&bob_id]["title"], json!("Lead"));
+    // Over 16 KiB is refused.
+    let big = "x".repeat(17 * 1024);
+    assert!(alice
+        .set_org_metadata(&org, json!({ "big": big }))
+        .await
+        .is_err());
+
+    // App metadata: its owner's or an org admin's; it reads back with the app.
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice
+        .post(
+            "apps",
+            json!({ "name": "kv", "bundle": bundle, "org": org, "metadata": { "icon": "a" } }),
+        )
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        alice.get(&format!("apps/{app}")).await.unwrap()["metadata"]["icon"],
+        json!("a")
+    );
+    assert!(bob
+        .set_app_metadata(&app, json!({ "icon": "b" }))
+        .await
+        .is_err());
+    let _ = alice
+        .set_app_metadata(&app, json!({ "icon": "c" }))
+        .await
+        .unwrap();
+    assert_eq!(
+        bob.get(&format!("apps/{app}")).await.unwrap()["metadata"]["icon"],
+        json!("c")
+    );
+
+    // Passkey labels.
+    let cred = alice.me().await.unwrap()["passkeys"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = alice.label_passkey(&cred, "laptop").await.unwrap();
+    assert_eq!(
+        alice.me().await.unwrap()["passkeys"][0]["label"],
+        json!("laptop")
+    );
+    assert!(bob.label_passkey(&cred, "mine").await.is_err());
+
+    // Deleting the organization: only the owner, with a passkey; its apps go.
+    let invite = alice
+        .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(bob.delete(&format!("orgs/{org}")).await.is_err());
+    let e = alice.delete(&format!("orgs/{org}")).await.unwrap_err();
+    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+    let gone = alice.delete_org(&org, &mut apk).await.unwrap();
+    assert_eq!(gone["apps"], json!([app]));
+    assert!(alice.get(&format!("orgs/{org}")).await.is_err());
+    assert!(alice.get(&format!("apps/{app}")).await.is_err());
+    let (carol, _cpk) = signed_up(&c, 2, "carol").await;
+    assert!(carol
+        .post(&format!("invites/{invite}/redeem"), json!({}))
+        .await
+        .is_err());
+}

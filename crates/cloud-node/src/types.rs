@@ -102,6 +102,10 @@ pub struct AppRecord {
     /// The arguments `init` ran with (JSON; `null` for none).
     #[serde(default)]
     pub init_args: serde_json::Value,
+    /// The app instance's metadata (v1's context metadata): a title, an icon.
+    /// Set by its owner or an admin of its organization.
+    #[serde(default)]
+    pub metadata: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -119,6 +123,10 @@ pub struct Account {
     /// an organization (as [`Org::outbound_approvals`]).
     #[serde(default)]
     pub outbound_approvals: std::collections::BTreeMap<String, OutboundApproval>,
+    /// A name for each of the account's passkeys (its devices), by credential
+    /// id: v1's device label.
+    #[serde(default)]
+    pub passkey_labels: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -253,7 +261,18 @@ pub struct Org {
     /// an app's run reaches only a prefix its manifest declares and this holds.
     #[serde(default)]
     pub outbound_approvals: std::collections::BTreeMap<String, OutboundApproval>,
+    /// The organization's own metadata (v1's group metadata), for its apps
+    /// and frontends to read: a name's display form, a logo, settings.
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+    /// Per-member metadata (v1's member metadata): a display name, a role
+    /// title. Set by the member, or by an admin.
+    #[serde(default)]
+    pub member_metadata: std::collections::BTreeMap<AccountId, serde_json::Value>,
 }
+
+/// The most bytes of JSON one metadata value holds (org, member, team, app).
+pub const MAX_METADATA_BYTES: usize = 16 * 1024;
 
 /// What an owner approved for one publisher's apps to call out to.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

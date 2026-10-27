@@ -507,7 +507,19 @@ impl Client {
         body: Value,
         passkey: &mut dyn Passkey,
     ) -> Result<Value> {
-        let details = match self.post(path, body.clone()).await {
+        self.confirmed(Method::POST, path, body, passkey).await
+    }
+
+    /// `method` on `path`, answering a `412 CONFIRM_REQUIRED` with a passkey
+    /// assertion over the node's challenge.
+    async fn confirmed(
+        &self,
+        method: Method,
+        path: &str,
+        body: Value,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        let details = match self.json(method.clone(), path, Some(body.clone())).await {
             Ok(v) => return Ok(v),
             Err(e) if e.code() == Some("CONFIRM_REQUIRED") => {
                 e.details().cloned().unwrap_or(Value::Null)
@@ -525,7 +537,65 @@ impl Client {
                 json!({ "challengeId": details["challengeId"], "assertion": assertion }),
             );
         }
-        self.post(path, body).await
+        self.json(method, path, Some(body)).await
+    }
+
+    /// Delete an organization with its teams, invites and apps: the owner's,
+    /// approved with their passkey.
+    pub async fn delete_org(&self, org: &str, passkey: &mut dyn Passkey) -> Result<Value> {
+        self.confirmed(
+            Method::DELETE,
+            &format!("orgs/{}", path_segment(org)),
+            json!({}),
+            passkey,
+        )
+        .await
+    }
+
+    /// Set an organization's metadata (an admin's, or a holder of
+    /// `MANAGE_METADATA`).
+    pub async fn set_org_metadata(&self, org: &str, metadata: Value) -> Result<Value> {
+        self.post(
+            &format!("orgs/{}/metadata", path_segment(org)),
+            json!({ "metadata": metadata }),
+        )
+        .await
+    }
+
+    /// Set a member's metadata (theirs, or an admin's); `null` clears it.
+    pub async fn set_member_metadata(
+        &self,
+        org: &str,
+        account: &str,
+        metadata: Value,
+    ) -> Result<Value> {
+        self.post(
+            &format!(
+                "orgs/{}/members/{}/metadata",
+                path_segment(org),
+                path_segment(account)
+            ),
+            json!({ "metadata": metadata }),
+        )
+        .await
+    }
+
+    /// Set an app instance's metadata (its owner's, or an org admin's).
+    pub async fn set_app_metadata(&self, app: &str, metadata: Value) -> Result<Value> {
+        self.post(
+            &format!("apps/{}/metadata", path_segment(app)),
+            json!({ "metadata": metadata }),
+        )
+        .await
+    }
+
+    /// Name one of this account's passkeys; `""` clears the name.
+    pub async fn label_passkey(&self, credential: &str, label: &str) -> Result<Value> {
+        self.post(
+            &format!("auth/passkeys/{}", path_segment(credential)),
+            json!({ "label": label }),
+        )
+        .await
     }
 
     /// Upgrade an app (`body`: `{ version }`, `{ bundle }`, optional

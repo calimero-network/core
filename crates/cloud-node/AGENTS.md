@@ -105,6 +105,14 @@ architecture spec.
   `__calimero_migration_check` must pass, and the host writes the root entry
   (`write_root_state`). The directory records the new bundle only once the
   upgrade succeeded.
+- **Metadata and org lifecycle** (v1's group/member/context metadata, device
+  labels, owner-delete): `Org::metadata` (admins or `MANAGE_METADATA`),
+  `Org::member_metadata` (the member or an admin), `AppRecord::metadata` (owner
+  or org admin), each at most `MAX_METADATA_BYTES` (16 KiB, team metadata too);
+  `Account::passkey_labels` (`POST /auth/passkeys/{cred} { label }`).
+  `DELETE /orgs/{org}` is the owner's, with a passkey assertion (412 first),
+  and takes the org's teams, invites and apps. Ownership moves with
+  `SetOrgRole { role: owner }`; leaving is `RemoveOrgMember` on oneself.
 - **Devices**: a person is their account, and each passkey is a device: the
   session names the one it was opened with (`SessionClaims::passkey`,
   `passkeyId` in `/auth/me`); `auth/passkeys/add` adds one.

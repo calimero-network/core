@@ -524,6 +524,35 @@ pub enum SystemCmd {
         #[serde(default)]
         consent: Value,
     },
+    /// The owner deletes the organization: its teams, invites and apps go
+    /// with it. Logged with the owner's passkey consent.
+    DeleteOrg {
+        org: OrgId,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    SetOrgMetadata {
+        org: OrgId,
+        metadata: Value,
+        actor: AccountId,
+    },
+    SetMemberMetadata {
+        org: OrgId,
+        account: AccountId,
+        metadata: Value,
+        actor: AccountId,
+    },
+    SetAppMetadata {
+        app_id: AppId,
+        metadata: Value,
+        actor: AccountId,
+    },
+    SetPasskeyLabel {
+        account: AccountId,
+        credential: String,
+        label: String,
+    },
     SetOrgRole {
         org: OrgId,
         account: AccountId,
@@ -613,6 +642,19 @@ pub enum SystemCmd {
         account: AccountId,
         now: u64,
     },
+}
+
+/// The longest passkey label, in characters.
+const MAX_LABEL_CHARS: usize = 64;
+
+/// Refuses metadata over [`crate::types::MAX_METADATA_BYTES`].
+fn metadata_fits(metadata: &Value) -> Result<(), &'static str> {
+    if serde_json::to_vec(metadata).map_or(usize::MAX, |v| v.len())
+        > crate::types::MAX_METADATA_BYTES
+    {
+        return Err("metadata is larger than 16 KiB");
+    }
+    Ok(())
 }
 
 /// The system group's state machine.
@@ -1159,6 +1201,8 @@ impl SystemMachine {
                         capabilities: BTreeMap::new(),
                         approved_releases: release.into_iter().collect(),
                         outbound_approvals: BTreeMap::new(),
+                        metadata: Value::Null,
+                        member_metadata: BTreeMap::new(),
                     },
                 );
                 Ok(json!({ "orgId": org_id }))
@@ -1286,6 +1330,104 @@ impl SystemMachine {
                 let _prev = approvals.insert(signer.clone(), approval.clone());
                 Ok(json!({ "signer": signer, "approval": approval }))
             }
+            SystemCmd::DeleteOrg {
+                org,
+                actor,
+                consent: _,
+            } => {
+                let o = s.orgs.get(&org).ok_or("no such organization")?;
+                if o.role(&actor) != Some(OrgRole::Owner) {
+                    return Err("only the organization's owner deletes it");
+                }
+                let _gone = s.orgs.remove(&org);
+                s.invites.retain(|_, i| i.org != org);
+                let apps: Vec<String> = s
+                    .apps
+                    .values()
+                    .filter(|a| a.org.as_deref() == Some(org.as_str()))
+                    .map(|a| a.app_id.clone())
+                    .collect();
+                for a in &apps {
+                    let _removed = s.apps.remove(a);
+                }
+                Ok(json!({ "apps": apps }))
+            }
+            SystemCmd::SetOrgMetadata {
+                org,
+                metadata,
+                actor,
+            } => {
+                metadata_fits(&metadata)?;
+                let o = self.org_mut(&org)?;
+                if o.role(&actor) < Some(OrgRole::Admin)
+                    && !o.may(&actor, None, crate::types::caps::MANAGE_METADATA)
+                {
+                    return Err("not allowed to change this organization's metadata");
+                }
+                o.metadata = metadata;
+                Ok(Value::Null)
+            }
+            SystemCmd::SetMemberMetadata {
+                org,
+                account,
+                metadata,
+                actor,
+            } => {
+                metadata_fits(&metadata)?;
+                let o = self.org_mut(&org)?;
+                if o.role(&account).is_none() {
+                    return Err("not a member");
+                }
+                if actor != account && o.role(&actor) < Some(OrgRole::Admin) {
+                    return Err("a member's metadata is theirs or an admin's to set");
+                }
+                if metadata.is_null() {
+                    let _gone = o.member_metadata.remove(&account);
+                } else {
+                    let _prev = o.member_metadata.insert(account, metadata);
+                }
+                Ok(Value::Null)
+            }
+            SystemCmd::SetAppMetadata {
+                app_id,
+                metadata,
+                actor,
+            } => {
+                metadata_fits(&metadata)?;
+                let app = s.apps.get(&app_id).ok_or("no such app")?;
+                let admin = app.org.as_ref().is_some_and(|o| {
+                    s.orgs
+                        .get(o)
+                        .and_then(|o| o.role(&actor))
+                        .is_some_and(|r| r >= OrgRole::Admin)
+                });
+                if app.owner != actor && !admin {
+                    return Err("only the owner or an org admin sets an app's metadata");
+                }
+                if let Some(a) = s.apps.get_mut(&app_id) {
+                    a.metadata = metadata;
+                }
+                Ok(Value::Null)
+            }
+            SystemCmd::SetPasskeyLabel {
+                account,
+                credential,
+                label,
+            } => {
+                if label.chars().count() > MAX_LABEL_CHARS {
+                    return Err("a passkey label is at most 64 characters");
+                }
+                let a = s.accounts.get_mut(&account).ok_or("unknown account")?;
+                if !a.passkeys.iter().any(|c| c.id == credential) {
+                    return Err("no such passkey");
+                }
+                if label.is_empty() {
+                    let _gone = a.passkey_labels.remove(&credential);
+                } else {
+                    let _prev = a.passkey_labels.insert(credential, label);
+                }
+                Ok(Value::Null)
+            }
             SystemCmd::SetOrgRole {
                 org,
                 account,
@@ -1335,6 +1477,7 @@ impl SystemMachine {
                 }
                 let _prev = o.members.remove(&account);
                 let _caps = o.capabilities.remove(&account);
+                let _meta = o.member_metadata.remove(&account);
                 for t in o.teams.values_mut() {
                     let _prev = t.members.remove(&account);
                     let _was = t.read_only.remove(&account);
@@ -1462,6 +1605,9 @@ impl SystemMachine {
                 }
                 if join.is_some() && !o.may(&actor, Some(&team), caps::MANAGE_VISIBILITY) {
                     return Err("not allowed to change this team's visibility");
+                }
+                if let Some(m) = &metadata {
+                    metadata_fits(m)?;
                 }
                 if metadata.is_some() && !o.may(&actor, Some(&team), caps::MANAGE_METADATA) {
                     return Err("not allowed to change this team's metadata");

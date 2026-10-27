@@ -485,6 +485,7 @@ async fn register_finish(
                 // owner approves another.
                 approved_releases: [node.own_release()].into_iter().collect(),
                 outbound_approvals: std::collections::BTreeMap::new(),
+                passkey_labels: std::collections::BTreeMap::new(),
             },
         })
         .await?;
@@ -918,7 +919,11 @@ async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     Ok(Json(json!({
         "accountId": acc.account_id,
         "name": acc.name,
-        "passkeys": acc.passkeys.iter().map(|c| json!({ "id": c.id, "signCount": c.sign_count })).collect::<Vec<_>>(),
+        "passkeys": acc.passkeys.iter().map(|c| json!({
+            "id": c.id,
+            "signCount": c.sign_count,
+            "label": acc.passkey_labels.get(&c.id),
+        })).collect::<Vec<_>>(),
         "orgs": orgs,
         "via": if p.api_key.is_some() { "apiKey" } else { "session" },
         // The passkey (device) this session was opened with.
@@ -1184,6 +1189,9 @@ struct CreateAppBody {
     /// Arguments for the app's `init`, as JSON.
     #[serde(default)]
     init_args: Value,
+    /// The instance's metadata (v1's context metadata).
+    #[serde(default)]
+    metadata: Value,
 }
 
 async fn app_create(
@@ -1239,6 +1247,7 @@ async fn app_create(
                 replicas,
                 created_at: now_secs(),
                 init_args: body.init_args,
+                metadata: body.metadata,
             },
         })
         .await?;
@@ -1999,6 +2008,130 @@ async fn org_get(
         teams.retain(|id, _| o.sees_team(&account, id));
     }
     Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+struct MetadataBody {
+    metadata: Value,
+}
+
+#[derive(Deserialize, Default)]
+struct DeleteOrgBody {
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Delete an organization, its teams, invites and apps: the owner's, with a
+/// passkey assertion over this exact deletion (a 412 asks for it).
+async fn org_delete(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    body: Option<Json<DeleteOrgBody>>,
+) -> ApiResult {
+    let p = person(&node, &headers).await?;
+    let actor = p.account()?;
+    let is_owner =
+        node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)) == Some(OrgRole::Owner));
+    if !is_owner {
+        return Err(ApiError::forbidden(
+            "only the organization's owner deletes it",
+        ));
+    }
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let consent = consent(
+        &node,
+        &p,
+        &format!("org:{org}"),
+        "__delete_org",
+        &json!({ "org": org }),
+        confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::DeleteOrg {
+            org,
+            actor,
+            consent,
+        })
+        .await?,
+    ))
+}
+
+async fn org_metadata(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<MetadataBody>,
+) -> ApiResult {
+    let actor = signed_in(&node, &headers).await?.account()?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetOrgMetadata {
+            org,
+            metadata: body.metadata,
+            actor,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+async fn member_metadata(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((org, account)): Path<(String, String)>,
+    Json(body): Json<MetadataBody>,
+) -> ApiResult {
+    let actor = signed_in(&node, &headers).await?.account()?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetMemberMetadata {
+            org,
+            account,
+            metadata: body.metadata,
+            actor,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+async fn app_metadata(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+    Json(body): Json<MetadataBody>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let actor = signed_in(&node, &headers).await?.account()?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetAppMetadata {
+            app_id,
+            metadata: body.metadata,
+            actor,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+#[derive(Deserialize)]
+struct PasskeyLabelBody {
+    label: String,
+}
+
+/// Name one of the caller's passkeys (v1's device label).
+async fn passkey_label(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(cred): Path<String>,
+    Json(body): Json<PasskeyLabelBody>,
+) -> ApiResult {
+    let account = person(&node, &headers).await?.account()?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetPasskeyLabel {
+            account,
+            credential: cred,
+            label: body.label,
+        })
+        .await?;
+    Ok(Json(json!({})))
 }
 
 #[derive(Deserialize)]
@@ -2968,7 +3101,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/auth/passkey/login/finish", post(login_finish))
         .route("/auth/passkeys/add/begin", post(passkey_add_begin))
         .route("/auth/passkeys/add/finish", post(passkey_add_finish))
-        .route("/auth/passkeys/{cred}", delete(passkey_remove))
+        .route("/auth/passkeys/{cred}", post(passkey_label).delete(passkey_remove))
         .route("/auth/refresh", post(refresh))
         .route("/auth/logout", post(logout))
         .route("/auth/logout-all", post(logout_all))
@@ -2984,6 +3117,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/packages/{package}/{version}", delete(package_version_uninstall))
         .route("/apps", post(app_create).get(app_list))
         .route("/apps/{app}", get(app_get).delete(app_delete))
+        .route("/apps/{app}/metadata", post(app_metadata))
         .route("/apps/{app}/intents", post(intents))
         .route("/apps/{app}/attestation", get(app_attestation))
         .route("/apps/{app}/views", post(views))
@@ -2993,7 +3127,9 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/blobs", post(blob_upload))
         .route("/apps/{app}/blobs/{id}", get(blob_download))
         .route("/orgs", post(org_create))
-        .route("/orgs/{org}", get(org_get))
+        .route("/orgs/{org}", get(org_get).delete(org_delete))
+        .route("/orgs/{org}/metadata", post(org_metadata))
+        .route("/orgs/{org}/members/{account}/metadata", post(member_metadata))
         .route("/orgs/{org}/members", post(org_set_member))
         .route("/orgs/{org}/members/{account}", delete(org_remove_member))
         .route("/orgs/{org}/teams", post(team_create))
