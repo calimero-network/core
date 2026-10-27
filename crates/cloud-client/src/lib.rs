@@ -852,9 +852,44 @@ impl Client {
         app: &str,
         from: u64,
     ) -> Result<impl Stream<Item = (String, String, Value)>> {
-        let resp = self
-            .send(Method::GET, &format!("apps/{app}/events?from={from}"), None)
-            .await?;
+        self.sse(&format!("apps/{app}/events?from={from}")).await
+    }
+
+    /// Publish this device's presence in `app` (hex-encoded by the client;
+    /// `None` retracts). Send the same `seq` and state again as a heartbeat
+    /// (entries not refreshed within 7 s are gone).
+    pub async fn publish_presence(
+        &self,
+        app: &str,
+        seq: u64,
+        state: Option<&[u8]>,
+    ) -> Result<Value> {
+        self.post(
+            &format!("apps/{}/presence", path_segment(app)),
+            json!({ "seq": seq, "state": state.map(hex::encode) }),
+        )
+        .await
+    }
+
+    /// Who is present in `app`: `{ present: [{ account, device, state }] }`.
+    pub async fn presence(&self, app: &str) -> Result<Value> {
+        self.get(&format!("apps/{}/presence", path_segment(app)))
+            .await
+    }
+
+    /// Presence as a stream: `("", "snapshot", [...])` first, then
+    /// `("", "presence", { account, device, state })` per change.
+    pub async fn presence_stream(
+        &self,
+        app: &str,
+    ) -> Result<impl Stream<Item = (String, String, Value)>> {
+        self.sse(&format!("apps/{}/presence/stream", path_segment(app)))
+            .await
+    }
+
+    /// A server-sent event stream: `(id, event, data)` per frame.
+    async fn sse(&self, path: &str) -> Result<impl Stream<Item = (String, String, Value)>> {
+        let resp = self.send(Method::GET, path, None).await?;
         if !resp.status().is_success() {
             return Err(Error::Api {
                 status: resp.status().as_u16(),

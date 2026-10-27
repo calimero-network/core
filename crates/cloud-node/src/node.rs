@@ -200,6 +200,8 @@ pub struct Node {
     peer_releases: Mutex<HashMap<String, Arc<Mutex<Option<String>>>>>,
     /// Event streams this node is serving (`/apps/{app}/events`).
     pub event_streams: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Every app's ephemeral presence, in memory only.
+    pub presence: crate::presence::Presence,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
     /// Full-text search over the apps hosted here.
@@ -308,6 +310,7 @@ impl Node {
                 .build()?,
             challenges: Mutex::new(HashMap::new()),
             event_streams: std::sync::Arc::default(),
+            presence: crate::presence::Presence::default(),
             peer_releases: Mutex::new(HashMap::new()),
             starting: tokio::sync::Mutex::new(()),
             search: Search::default(),
@@ -1223,6 +1226,31 @@ impl Node {
                 warn!(blob = %id, error = %e, "blob not stored");
             }
         }
+    }
+
+    /// Apply a presence update here and pass it to every other node; it
+    /// does not wait for them (presence is best effort, and refreshed).
+    pub fn publish_presence(self: &Arc<Self>, u: crate::presence::Update) {
+        if !self.presence.apply(&u, crate::types::now_ms()).spreads() {
+            return;
+        }
+        let peers: Vec<String> = self.sys(|s| {
+            s.nodes
+                .values()
+                .filter(|n| n.id != self.config.node_id)
+                .map(|n| n.addr.clone())
+                .collect()
+        });
+        let node = Arc::clone(self);
+        let body = serde_json::to_value(&u).unwrap_or_default();
+        drop(tokio::spawn(async move {
+            let _r = futures_util::future::join_all(
+                peers
+                    .iter()
+                    .map(|addr| node.peer_post(addr, "internal/presence", &body)),
+            )
+            .await;
+        }));
     }
 
     /// After a run's entry committed: its blobs to the other nodes.

@@ -156,6 +156,14 @@ architecture spec.
   a mark just committed; an app whose leader does not answer counts as holding
   it) or it is a bundle or a release `.mpk`. Known window: the same content
   uploaded to another app between that check and the deletion loses its bytes.
+- **Presence** (`presence.rs`, v1's ephemeral awareness channel): in memory on
+  every node, never in a log. `POST /apps/{app}/presence { seq, state }` (anyone
+  who reaches the app; one entry per account and device) applies it here and
+  passes it to every other node (`internal/presence`); `GET .../presence` and
+  `GET .../presence/stream` (SSE: `snapshot`, then `presence` diffs). v1's rules:
+  newest seq wins, a retract is a tombstone, a heartbeat (same seq and state)
+  refreshes and is passed on too, `PRESENCE_TTL_MS` (7 s) sweep each second,
+  `MAX_AUTHORS_PER_APP` (512, the stalest evicted), 4 KiB of state.
 - **Inspection** (v1's context storage, application ABI, usage):
   `GET /apps/{app}/storage` (keys, bytes, blobs), `GET /apps/{app}/abi` (the
   bundle's embedded ABI), `GET /auth/usage` (the account's apps, bundle bytes,

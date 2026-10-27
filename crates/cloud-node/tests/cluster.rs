@@ -2801,3 +2801,100 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
     let _ = alice.delete_alias("main").await.unwrap();
     assert!(alice.alias("main").await.is_err());
 }
+
+// ---------------------------------------------------------------- presence
+
+/// v1's ephemeral presence: members on different nodes see each other, live;
+/// the newest seq wins and a retract shows them leaving; a heartbeat keeps an
+/// entry alive on every node and silence expires it everywhere. Nothing of it
+/// is in the app's log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn presence_reaches_every_node_and_expires() {
+    let c = Cluster::start(3).await;
+    let (alice, _apk) = signed_up(&c, 0, "alice").await;
+    let (bob, _bpk) = signed_up(&c, 1, "bob").await;
+    let (carol, _cpk) = signed_up(&c, 2, "carol").await;
+    let (app, _) = deploy(
+        &alice,
+        "doc",
+        kv_wasm(),
+        json!({ "access": { "kind": "public" } }),
+    )
+    .await;
+    let alice_id = account_id(&alice).await;
+
+    let mut stream = Box::pin(bob.presence_stream(&app).await.unwrap());
+    let (_, kind, snap) = stream.next().await.unwrap();
+    assert_eq!(kind, "snapshot");
+    assert_eq!(snap, json!([]));
+
+    let _ = alice
+        .publish_presence(&app, 1, Some(b"cursor:3"))
+        .await
+        .unwrap();
+    let (_, kind, d) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(kind, "presence");
+    assert_eq!(d["account"], json!(alice_id));
+    assert_eq!(d["state"], json!(hex::encode(b"cursor:3")));
+    // A third node has it too.
+    let mut seen = false;
+    for _ in 0..100 {
+        if carol.presence(&app).await.unwrap()["present"]
+            .as_array()
+            .unwrap()
+            .len()
+            == 1
+        {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(seen, "the third node never saw alice");
+
+    // An older seq does not win; a retract shows alice leaving.
+    let _ = alice
+        .publish_presence(&app, 0, Some(b"stale"))
+        .await
+        .unwrap();
+    let _ = alice.publish_presence(&app, 2, None).await.unwrap();
+    let (_, _, d) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(d["state"], Value::Null, "{d}");
+    assert_eq!(bob.presence(&app).await.unwrap()["present"], json!([]));
+
+    // Heartbeats keep an entry alive past the TTL on every node; silence ends it.
+    let _ = alice
+        .publish_presence(&app, 3, Some(b"here"))
+        .await
+        .unwrap();
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let _ = alice
+            .publish_presence(&app, 3, Some(b"here"))
+            .await
+            .unwrap();
+    }
+    for cl in [&bob, &carol] {
+        assert_eq!(
+            cl.presence(&app).await.unwrap()["present"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+            "kept alive by heartbeats"
+        );
+    }
+    tokio::time::sleep(Duration::from_millis(
+        calimero_cloud_node::presence::PRESENCE_TTL_MS + 1_500,
+    ))
+    .await;
+    for cl in [&alice, &bob, &carol] {
+        assert_eq!(cl.presence(&app).await.unwrap()["present"], json!([]));
+    }
+}

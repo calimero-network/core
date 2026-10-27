@@ -21,6 +21,7 @@ pub mod kms;
 pub mod local;
 pub mod node;
 pub mod packages;
+pub mod presence;
 pub mod services;
 pub mod system;
 pub mod types;
@@ -115,6 +116,20 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
             }
             let Some(node) = weak.upgrade() else { return };
             node.reconcile().await;
+        }
+    }));
+
+    // Presence entries nobody refreshed leave.
+    let weak = Arc::downgrade(&node);
+    let stop = shutdown.clone();
+    drop(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = tokio::time::sleep(Duration::from_secs(1)) => {}
+            }
+            let Some(node) = weak.upgrade() else { return };
+            node.presence.sweep(crate::types::now_ms());
         }
     }));
 

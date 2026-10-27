@@ -1809,6 +1809,105 @@ async fn events(
 }
 
 #[derive(Deserialize)]
+struct PresenceBody {
+    seq: u64,
+    /// Hex; `null` retracts.
+    #[serde(default)]
+    state: Option<String>,
+}
+
+/// Publish the caller's presence in an app (v1's `presence-intents`): anyone
+/// who reaches the app, one entry per device (the session's passkey, or the
+/// API key). Re-send the same `seq` and state as a heartbeat.
+async fn presence_publish(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+    Json(body): Json<PresenceBody>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let p = gate(&node, &headers, &app, "*", false).await?;
+    let account = p.account()?;
+    if let Some(s) = &body.state {
+        if hex::decode(s).is_err() || s.len() > 2 * crate::presence::MAX_STATE_BYTES {
+            return Err(ApiError::bad_request(
+                "BAD_STATE",
+                "state is hex of at most 4 KiB",
+            ));
+        }
+    }
+    let device = match (&p.session, &p.api_key) {
+        (Some(s), _) => s.passkey.clone().unwrap_or_else(|| s.session.clone()),
+        (None, Some(k)) => format!("key:{}", k.key_id),
+        (None, None) => String::new(),
+    };
+    node.publish_presence(crate::presence::Update {
+        app: app_id,
+        account,
+        device,
+        seq: body.seq,
+        state: body.state,
+    });
+    Ok(Json(json!({})))
+}
+
+/// Who is present in an app now.
+async fn presence_get(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let _p = gate(&node, &headers, &app, "*", false).await?;
+    Ok(Json(json!({ "present": node.presence.snapshot(&app_id) })))
+}
+
+/// Presence as a stream: a `snapshot` event, then a `presence` event per change
+/// (`state: null` when someone left).
+async fn presence_stream(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> Result<Response, ApiError> {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let _p = gate(&node, &headers, &app, "*", false).await?;
+    let slot = StreamSlot::take(&node)?;
+    let (now, rx) = node.presence.subscribe(&app_id);
+    let first = futures_util::stream::once(async move {
+        Ok::<_, Infallible>(
+            Event::default()
+                .event("snapshot")
+                .data(serde_json::to_string(&now).unwrap_or_default()),
+        )
+    });
+    let live = tokio_stream::wrappers::BroadcastStream::new(rx)
+        .filter_map(|r| async move { r.ok() })
+        .map(move |d| {
+            let _held = &slot;
+            Ok(Event::default()
+                .event("presence")
+                .data(serde_json::to_string(&d).unwrap_or_default()))
+        });
+    Ok(Sse::new(first.chain(live))
+        .keep_alive(KeepAlive::default())
+        .into_response())
+}
+
+/// A presence update another node took (and authenticated).
+async fn internal_presence(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(u): Json<crate::presence::Update>,
+) -> ApiResult {
+    peer_only(&node, &headers)?;
+    let _applied = node.presence.apply(&u, crate::types::now_ms());
+    Ok(Json(json!({})))
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpgradeBody {
     /// A bundle hash, or a `version` of the app's package (or another `package`).
@@ -3745,6 +3844,8 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/metadata", post(app_metadata))
         .route("/apps/{app}/storage", get(app_storage))
         .route("/apps/{app}/abi", get(app_abi))
+        .route("/apps/{app}/presence", get(presence_get).post(presence_publish))
+        .route("/apps/{app}/presence/stream", get(presence_stream))
         .route("/apps/{app}/intents", post(intents))
         .route("/apps/{app}/attestation", get(app_attestation))
         .route("/apps/{app}/views", post(views))
@@ -3784,6 +3885,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/blob/held", post(internal_blob_held))
         .route("/internal/blob/delete", post(internal_blob_delete))
         .route("/internal/storage", post(internal_storage))
+        .route("/internal/presence", post(internal_presence))
         .route("/internal/view", post(internal_view))
         .route("/internal/app-ready", post(internal_app_ready))
         .route("/internal/events", get(internal_events))
