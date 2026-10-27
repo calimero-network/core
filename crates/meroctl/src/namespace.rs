@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use clap::{Subcommand, ValueEnum};
 use serde_json::{json, Value};
 
-use crate::env::{json_arg, load_dev_passkey, need_passkey, save_passkey, Env};
+use crate::env::{json_arg, Env};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum Role {
@@ -187,11 +187,8 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
             namespace,
             dev_passkey,
         } => {
-            let file = need_passkey(dev_passkey.as_ref(), "deleting an organization")?;
-            let mut pk = load_dev_passkey(file)?;
-            let out = client.delete_org(&namespace, &mut pk).await;
-            save_passkey(file, &pk)?;
-            out?
+            env.delete_approved(&namespace, dev_passkey.as_deref())
+                .await?
         }
         NamespaceCmd::Invite {
             namespace,
@@ -320,15 +317,21 @@ pub async fn outbound(
     replace: bool,
     dev_passkey: Option<PathBuf>,
 ) -> eyre::Result<Value> {
-    let file = need_passkey(dev_passkey.as_ref(), "an outbound approval")?;
-    let mut pk = load_dev_passkey(file)?;
-    let prefixes = (!prefixes.is_empty()).then_some(prefixes);
-    let out = env
-        .client
-        .approve_outbound(namespace, package, prefixes, replace, &mut pk)
-        .await;
-    save_passkey(file, &pk)?;
-    Ok(out?)
+    let path = match namespace {
+        Some(ns) => format!("orgs/{ns}/outbound"),
+        None => "auth/outbound".to_owned(),
+    };
+    let prefixes = if prefixes.is_empty() {
+        json!("manifest")
+    } else {
+        json!(prefixes)
+    };
+    env.post_approved(
+        &path,
+        json!({ "package": package, "prefixes": prefixes, "replace": replace }),
+        dev_passkey.as_deref(),
+    )
+    .await
 }
 
 /// The owner approves a mero-tee release (an org's apps, or the account's own).
@@ -338,12 +341,10 @@ pub async fn approve_release(
     version: &str,
     dev_passkey: Option<PathBuf>,
 ) -> eyre::Result<Value> {
-    let file = need_passkey(dev_passkey.as_ref(), "a release approval")?;
-    let mut pk = load_dev_passkey(file)?;
-    let out = env
-        .client
-        .approve_release(namespace, version, &mut pk)
-        .await;
-    save_passkey(file, &pk)?;
-    Ok(out?)
+    let path = match namespace {
+        Some(ns) => format!("orgs/{ns}/releases"),
+        None => "auth/releases".to_owned(),
+    };
+    env.post_approved(&path, json!({ "version": version }), dev_passkey.as_deref())
+        .await
 }

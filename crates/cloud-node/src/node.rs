@@ -136,6 +136,25 @@ pub struct CallRequest {
     /// on `internal/call`, which only peers reach.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<Trigger>,
+    /// One of the node's own commands ([`HOST_METHODS`]), which the node
+    /// issues itself once the API has judged who may. Never set from a
+    /// client's request; peers pass it along on `internal/call`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub host: bool,
+}
+
+/// The node's own commands, run by [`Node::call`] only for a [`CallRequest::host`]
+/// request: they change what the app is (its bundle, its blob marks), so
+/// authority over them is the API's (`run_upgrade`, the blob routes), never
+/// the app's or a caller's.
+pub const HOST_METHODS: [&str; 3] = ["__upgrade", "__blob", "__blob_forget"];
+
+/// Whether a method name is reserved: the node's commands and the runtime's
+/// own exports (`__calimero_*`) are not methods a client, an xcall or a
+/// follow-up may name.
+#[must_use]
+pub fn reserved_method(method: &str) -> bool {
+    method.starts_with("__")
 }
 
 impl CallRequest {
@@ -151,6 +170,17 @@ impl CallRequest {
             consent: None,
             input: None,
             trigger: None,
+            host: false,
+        }
+    }
+
+    /// One of the node's own commands, after the API judged `caller` may.
+    #[must_use]
+    pub fn host(app_id: String, method: &str, args: Value, caller: Caller) -> Self {
+        debug_assert!(HOST_METHODS.contains(&method));
+        Self {
+            host: true,
+            ..Self::new(app_id, method.to_owned(), args, caller)
         }
     }
 
@@ -1338,10 +1368,10 @@ impl Node {
             None => None,
         };
         let now = now_ms();
-        if req.method == "__upgrade" {
+        if req.host && req.method == "__upgrade" {
             return self.upgrade_local(g, req).await;
         }
-        if req.method == "__blob_forget" {
+        if req.host && req.method == "__blob_forget" {
             let cmd = AppCmd::BlobForget {
                 id: req.args["id"].as_str().unwrap_or_default().to_owned(),
             };
@@ -1350,7 +1380,7 @@ impl Node {
             return serde_json::from_slice(&out)
                 .map_err(|e| WriteError::Unavailable(e.to_string()));
         }
-        if req.method == "__blob" {
+        if req.host && req.method == "__blob" {
             let cmd = AppCmd::Blob {
                 id: req.args["id"].as_str().unwrap_or_default().to_owned(),
                 size: req.args["size"].as_u64().unwrap_or_default(),
@@ -1367,6 +1397,8 @@ impl Node {
             None => Arc::new(BundleFacts::default()),
         };
         let refused: Option<String> = match &req.trigger {
+            // The API refuses these first; an xcall or follow-up naming one ends here.
+            _ if reserved_method(&req.method) => Some(format!("{} is not a method", req.method)),
             None => None,
             Some(Trigger::Timer { .. }) => {
                 env.tee_trigger = true;
@@ -1745,6 +1777,8 @@ impl Node {
                     Err(WriteError::NotLeader {
                         leader: Some((id, addr)),
                     }) if id != self.config.node_id && !addr.is_empty() => Some(addr),
+                    // No leader will take it either: answer now, as a forward does.
+                    Err(e @ WriteError::TooLarge { .. }) => return Err(status_of(&e)),
                     Err(e) => {
                         debug!(error = %e, "call not yet possible here");
                         None

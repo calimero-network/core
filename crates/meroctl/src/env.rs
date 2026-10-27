@@ -210,6 +210,23 @@ impl Env {
         })
     }
 
+    /// Delete an organization, which its owner approves (as [`Self::post_approved`]).
+    pub async fn delete_approved(
+        &self,
+        org: &str,
+        dev_passkey: Option<&Path>,
+    ) -> eyre::Result<Value> {
+        match dev_passkey {
+            Some(file) => {
+                let mut pk = load_dev_passkey(file)?;
+                let out = self.client.delete_org(org, &mut pk).await;
+                save_passkey(file, &pk)?;
+                Ok(out?)
+            }
+            None => Ok(self.client.delete(&format!("orgs/{org}")).await?),
+        }
+    }
+
     /// POST that an owner approves: with `--dev-passkey`, the challenge is
     /// signed with that file's passkey; without it, a real cluster answers
     /// `412 CONFIRM_REQUIRED` and the owner approves in the console.
@@ -234,12 +251,4 @@ impl Env {
 /// Keep a development passkey after use: its counter moved.
 pub fn save_passkey(file: &Path, pk: &SoftAuthenticator) -> eyre::Result<()> {
     write_private(file, &pk.to_json())
-}
-
-/// A file passkey argument, required where the owner must approve and no
-/// console is at hand.
-pub fn need_passkey<'a>(p: Option<&'a PathBuf>, what: &str) -> eyre::Result<&'a Path> {
-    p.map(PathBuf::as_path).ok_or_else(|| {
-        eyre::eyre!("{what} needs the owner's approval: --dev-passkey FILE (development clusters)")
-    })
 }

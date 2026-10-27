@@ -547,6 +547,10 @@ fn scenario(root: &Path, url: &str) {
     assert_eq!(proven["governance"]["appUpgrades"], "owner");
 
     // Clean up: an organization goes with its contexts; logout forgets the session.
+    // Without a file passkey the request still goes out: the node asks for the
+    // owner's approval, which on a real cluster is given in the console.
+    let asked = alice.try_run(&["namespace", "delete", &org]).unwrap_err();
+    assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
     let _ = alice.run(&["namespace", "delete", &org, "--dev-passkey", pk]);
     let _ = alice.run(&["context", "delete", &raw]);
     let _ = alice.run(&["context", "alias", "remove", "notes"]);

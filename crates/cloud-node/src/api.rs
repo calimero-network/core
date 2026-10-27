@@ -1787,6 +1787,7 @@ async fn intents(
     Path(app_id): Path<String>,
     Json(body): Json<IntentBody>,
 ) -> Result<Response, ApiError> {
+    not_reserved(&body.method)?;
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, &body.method, true).await?;
@@ -1831,6 +1832,19 @@ async fn intents(
     Ok(answer(&node, &app_id, applied))
 }
 
+/// The node's commands and the runtime's exports are not an app's methods
+/// (`node::reserved_method`): a client naming one would otherwise reach
+/// `__upgrade` or `__blob` past the API's authority checks.
+fn not_reserved(method: &str) -> Result<(), ApiError> {
+    if crate::node::reserved_method(method) {
+        return Err(ApiError::bad_request(
+            "RESERVED_METHOD",
+            &format!("{method} is not a method of this app"),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ViewBody {
@@ -1849,6 +1863,7 @@ async fn views(
     Path(app_id): Path<String>,
     Json(body): Json<ViewBody>,
 ) -> Result<Response, ApiError> {
+    not_reserved(&body.method)?;
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, &body.method, false).await?;
@@ -2217,9 +2232,9 @@ async fn run_upgrade(
     who: Upgrader,
 ) -> ApiResult {
     let applied = match node
-        .call(&CallRequest::new(
+        .call(&CallRequest::host(
             app_id.clone(),
-            "__upgrade".into(),
+            "__upgrade",
             json!({ "bundle": bundle, "migrate": migrate }),
             who.caller.clone(),
         ))
@@ -3308,9 +3323,9 @@ async fn blob_upload(
     let id = node.store_blob(&body).await?;
     let size = body.len() as u64;
     let a = node
-        .call(&CallRequest::new(
+        .call(&CallRequest::host(
             app_id,
-            "__blob".into(),
+            "__blob",
             json!({ "id": id, "size": size }),
             p.caller,
         ))
@@ -3419,9 +3434,9 @@ async fn blob_delete(
         return Err(ApiError::not_found("no such blob in this app"));
     }
     let a = node
-        .call(&CallRequest::new(
+        .call(&CallRequest::host(
             app_id,
-            "__blob_forget".into(),
+            "__blob_forget",
             json!({ "id": hex::encode(raw) }),
             p.caller,
         ))

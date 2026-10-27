@@ -22,6 +22,12 @@ is its command line.
 - **API** (`api.rs`), all inside the sealed channel except `/attestation` and `/health`:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/internal/*` (peers), `/ops/*` (mdma: counts only, no read path).
+- **Reserved methods** (`node::reserved_method`, `__*`): the node's own commands
+  (`HOST_METHODS`: `__upgrade`, `__blob`, `__blob_forget`) run only for a
+  `CallRequest::host` request, which only the API builds after judging who may;
+  `/intents` and `/views` refuse a `__` method (`400 RESERVED_METHOD`), and an
+  xcall or follow-up naming one is refused at the leader. Regression:
+  `the_nodes_own_commands_cannot_be_called_as_methods`.
 - **Confirm methods**: `intents` answers `412 CONFIRM_REQUIRED` with a challenge over
   the exact call; the retry carries a passkey assertion, which is logged as consent.
 - **Bundles are blobs, not log entries**: `POST /bundles` stores the WASM in every
@@ -250,10 +256,11 @@ is its command line.
   runs as a strong view: it writes nothing and may search (v1's rule).
 - **Browsers**: `config.origins` are the CORS origins too (`lib.rs`, outermost layer).
 - **Storage key** (`kms.rs`): K_r = HKDF(KMS key, cluster). A TDX node takes it from
-  mero-kms only (`kms::key_source`: `--storage-key`/`--storage-key-file` need `--dev`). The KMS key comes from
-  merod's own client (`merod kms disk-key`: release-policy-verified KMS, key sealed
-  to the TD), run by merod (`--kms-url --kms-identity`) or by the boot script
-  (`--storage-key-file`). The cluster's nodes share the disk identity, so they share K_r.
+  mero-kms only (`kms::key_source`: `--storage-key`/`--storage-key-file` need `--dev`),
+  fetched by merod itself (`--kms-url --kms-identity`; `calimero-kms-client`:
+  release-policy-verified KMS, key sealed to the TD). The boot script uses the same
+  client for the data disk's key (`merod kms disk-key`). The cluster's nodes share
+  the disk identity, so they share K_r.
 - **Peers' quotes** are judged like a client's (`calimero_cloud_client::Measurements`):
   in TDX mode the signed mero-tee release the peer names, profiles from
   `--peer-profiles` (default: this node's `MERO_TEE_PROFILE`), floor `--peer-min-release`.
@@ -267,8 +274,8 @@ is its command line.
 ## Not done yet (prototype)
 
 rollback counter (proposed: a mero-kms epoch, restored nodes rejoin as learners),
-per-app keys from mero-kms, placement across zones, snapshot restore into a
-running cluster, event audiences, pruning of revoked session ids, search indexes that survive a restart (rebuilt from state now).
+keys per app from mero-kms, placement across zones, snapshot restore into a
+running cluster, event audiences, search indexes that survive a restart (rebuilt from state now).
 
 ## Commands
 

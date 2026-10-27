@@ -27,9 +27,10 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   refreshed when they expire. A context argument is an alias of the account or
   an id (`Env::app`).
 - What an owner approves (`context update`, `namespace delete`, approvals,
-  `group upgrade`) takes `--dev-passkey FILE` on a development cluster; on a
-  real one the node answers `412 CONFIRM_REQUIRED` and the owner approves in
-  the console.
+  `group upgrade trigger/retry`) takes `--dev-passkey FILE` on a development
+  cluster (`Env::post_approved`, `delete_approved`); without it the request is
+  sent as is and the node answers `412 CONFIRM_REQUIRED`: on a real cluster
+  the owner approves in the console.
 - Output is JSON; commands that stream (watch, presence stream, metrics,
   downloads) write their own and answer `null`, which is not printed.
 

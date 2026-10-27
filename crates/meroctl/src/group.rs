@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use clap::{Subcommand, ValueEnum};
 use serde_json::{json, Value};
 
-use crate::env::{json_arg, load_dev_passkey, need_passkey, save_passkey, Env};
+use crate::env::{json_arg, Env};
 use crate::namespace::{org, Join};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -270,20 +270,15 @@ pub async fn run(cmd: GroupCmd, env: &Env) -> eyre::Result<Value> {
             migrate,
             dev_passkey,
         }) => {
-            let file = need_passkey(dev_passkey.as_ref(), "an organization upgrade")?;
-            let mut pk = load_dev_passkey(file)?;
-            let out = client
-                .upgrade_org(
-                    &namespace,
-                    json!({
-                        "package": package, "version": version, "team": group,
-                        "cascade": cascade, "migrate": migrate,
-                    }),
-                    &mut pk,
-                )
-                .await;
-            save_passkey(file, &pk)?;
-            out?
+            env.post_approved(
+                &format!("orgs/{namespace}/upgrade"),
+                json!({
+                    "package": package, "version": version, "team": group,
+                    "cascade": cascade, "migrate": migrate,
+                }),
+                dev_passkey.as_deref(),
+            )
+            .await?
         }
         GroupCmd::Upgrade(UpgradeCmd::Status { namespace, run }) => {
             client.upgrade_run(&namespace, &run).await?
@@ -293,11 +288,12 @@ pub async fn run(cmd: GroupCmd, env: &Env) -> eyre::Result<Value> {
             run,
             dev_passkey,
         }) => {
-            let file = need_passkey(dev_passkey.as_ref(), "retrying an upgrade")?;
-            let mut pk = load_dev_passkey(file)?;
-            let out = client.retry_upgrade_run(&namespace, &run, &mut pk).await;
-            save_passkey(file, &pk)?;
-            out?
+            env.post_approved(
+                &format!("orgs/{namespace}/upgrades/{run}/retry"),
+                json!({}),
+                dev_passkey.as_deref(),
+            )
+            .await?
         }
     })
 }

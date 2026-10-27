@@ -2361,6 +2361,99 @@ async fn outbound_requests_need_the_owners_approval() {
 /// deployment, each one either the operator's or the owner's, and a user
 /// proves which: every replica binds the governance into its receipt-key
 /// quote, and a replica claiming other rules is refused.
+/// The node's own commands (`__upgrade`, `__blob`, `__blob_forget`) are not
+/// methods anyone can call: through `/intents` they would switch an app's
+/// bundle with no owner approval, or mark another app's blob as one's own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_nodes_own_commands_cannot_be_called_as_methods() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (bob, _bpk) = signed_up(&c, 1, "bob").await;
+    let kv = kv_wasm();
+    let (public, _) = deploy(
+        &alice,
+        "public",
+        kv.clone(),
+        json!({ "access": { "kind": "public" } }),
+    )
+    .await;
+    let other = alice.upload_bundle(variant(&kv, "other")).await.unwrap();
+    let before = alice.get(&format!("apps/{public}")).await.unwrap()["bundle"].clone();
+
+    for (who, caller) in [("bob", &bob), ("the owner", &alice)] {
+        let r = caller
+            .call(&public, "__upgrade", json!({ "bundle": other }), None)
+            .await;
+        assert!(r.is_err(), "{who} upgraded through /intents: {r:?}");
+    }
+    assert_eq!(
+        alice.get(&format!("apps/{public}")).await.unwrap()["bundle"],
+        before,
+        "the bundle is unchanged"
+    );
+
+    // Alice's private blob, and bob's own app.
+    let (private, _) = deploy(&alice, "private", kv.clone(), json!({})).await;
+    let up = alice
+        .upload_blob(&private, b"alice's".to_vec())
+        .await
+        .unwrap();
+    let id = up["id"].as_str().unwrap().to_owned();
+    let (mine, _) = deploy(&bob, "mine", kv.clone(), json!({})).await;
+    for method in ["__blob", "__blob_forget"] {
+        let r = bob
+            .call(&mine, method, json!({ "id": id, "size": 7 }), None)
+            .await;
+        assert!(r.is_err(), "{method} through /intents: {r:?}");
+    }
+    assert!(
+        bob.download_blob(&mine, &id).await.is_err(),
+        "bob cannot read alice's blob through his app"
+    );
+    assert!(
+        bob.view(
+            &public,
+            "__upgrade",
+            json!({}),
+            calimero_cloud_client::Consistency::Strong
+        )
+        .await
+        .is_err(),
+        "nor as a view"
+    );
+}
+
+/// A write too large for one log entry is refused at once as `413
+/// TOO_LARGE`, whichever node takes it: the leader's own refusal is not a
+/// "no leader yet" to retry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_write_too_large_for_the_log_is_refused_at_once_on_every_node() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _) = deploy(
+        &alice,
+        "kv",
+        kv_wasm(),
+        json!({ "access": { "kind": "public" } }),
+    )
+    .await;
+    let big = "x".repeat(calimero_log::MAX_ENTRY_BYTES + 1024);
+    for i in 0..3 {
+        let (cl, _) = signed_up(&c, i, &format!("user{i}")).await;
+        let started = std::time::Instant::now();
+        let r = cl
+            .call(&app, "set", json!({ "key": "big", "value": big }), None)
+            .await;
+        let e = r.expect_err("an entry over the cap is refused");
+        assert_eq!(e.code(), Some("TOO_LARGE"), "node {i}: {e}");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "node {i} answered after {:?}",
+            started.elapsed()
+        );
+    }
+}
+
 /// Where the operator upgrades apps, the operator installs the releases it
 /// upgrades to: from an uploaded `.mpk`, with its ops token, no account
 /// needed. It uninstalls only what it installed.

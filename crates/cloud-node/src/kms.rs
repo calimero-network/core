@@ -1,10 +1,10 @@
 //! The node's storage key K_r, from mero-kms.
 //!
 //! The KMS client (`calimero-kms-client`) verifies the KMS against the signed
-//! release policy and receives a key sealed to this TD. Either the image's boot
-//! script fetches the key (`merod kms disk-key`) and passes the key file
-//! (`--storage-key-file`), or merod fetches it itself (`--kms-url` with
-//! `--kms-identity`).
+//! release policy and receives a key sealed to this TD. A TDX node fetches it
+//! itself (`--kms-url` with `--kms-identity`), and only so (`key_source`); the
+//! image's boot script uses the same client for the data disk's key (`merod
+//! kms disk-key`). `--storage-key`/`--storage-key-file` are development only.
 //!
 //! The KMS derives a key per identity, so the nodes of one cluster share one
 //! disk identity and get one key. K_r is derived from it, bound to the cluster.
@@ -127,6 +127,17 @@ mod tests {
         assert_eq!(a, derive_storage_key(&[7; 32], "eu1"));
         assert_ne!(a, derive_storage_key(&[7; 32], "eu2"));
         assert_ne!(a, derive_storage_key(&[8; 32], "eu1"));
+    }
+
+    /// K_r for a known KMS key, computed outside this crate (Python's HKDF):
+    /// a change here makes every node's store unopenable, so it needs a
+    /// migration, not a new vector.
+    #[test]
+    fn the_storage_key_derivation_is_unchanged() {
+        assert_eq!(
+            hex::encode(derive_storage_key(&[0x11; 32], "eu1")),
+            "54497d225e155f92eab5683043166f13a25d699033b0a5a74c30d8fd4253e0e6"
+        );
     }
 
     #[test]
