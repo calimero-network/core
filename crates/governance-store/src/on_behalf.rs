@@ -383,7 +383,7 @@ mod tests {
             _: &ContextGroupId,
             _: &calimero_primitives::context::ContextId,
             _: &[[u8; 32]],
-        ) -> Option<Option<ContextGroupId>> {
+        ) -> Option<Result<Option<ContextGroupId>, crate::Undecidable>> {
             None
         }
         fn can_resolve_cut(&self, _: &ContextGroupId, _: &[[u8; 32]]) -> bool {

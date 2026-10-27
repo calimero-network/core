@@ -587,7 +587,7 @@ impl crate::authorizer::AtCutAuthorizer for FixedAuthorizer {
         _group: &ContextGroupId,
         _context: &calimero_primitives::context::ContextId,
         _parents: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, crate::Undecidable>> {
         None
     }
 }
@@ -667,7 +667,7 @@ impl crate::authorizer::AtCutAuthorizer for NoWorkspaceRow {
         _group: &ContextGroupId,
         _context: &calimero_primitives::context::ContextId,
         _parents: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, crate::Undecidable>> {
         None
     }
 
@@ -758,7 +758,7 @@ impl crate::authorizer::AtCutAuthorizer for TreeUnlessBelow {
         _group: &ContextGroupId,
         _context: &calimero_primitives::context::ContextId,
         _parents: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, crate::Undecidable>> {
         None
     }
 
@@ -862,7 +862,7 @@ impl crate::authorizer::AtCutAuthorizer for NotMemberAtCut {
         _group: &ContextGroupId,
         _context: &calimero_primitives::context::ContextId,
         _parents: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, crate::Undecidable>> {
         None
     }
 }
@@ -942,7 +942,7 @@ impl crate::authorizer::AtCutAuthorizer for InheritsAtCut {
         _group: &ContextGroupId,
         _context: &calimero_primitives::context::ContextId,
         _parents: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, crate::Undecidable>> {
         None
     }
 }
@@ -1112,7 +1112,7 @@ impl crate::authorizer::AtCutAuthorizer for UnresolvableAuthorizer {
         _group: &ContextGroupId,
         _context: &calimero_primitives::context::ContextId,
         _parents: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, crate::Undecidable>> {
         None
     }
 
@@ -1199,7 +1199,7 @@ impl crate::authorizer::AtCutAuthorizer for SealedSubgroupAuthorizer {
         _group: &ContextGroupId,
         _context: &calimero_primitives::context::ContextId,
         _parents: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, crate::Undecidable>> {
         None
     }
 
@@ -1307,7 +1307,7 @@ impl crate::authorizer::AtCutAuthorizer for LiveCutJudge<'_> {
         _group: &ContextGroupId,
         _context: &calimero_primitives::context::ContextId,
         _parents: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, crate::Undecidable>> {
         None
     }
 
@@ -1392,7 +1392,7 @@ impl crate::authorizer::AtCutAuthorizer for SealedHistoryAuthorizer {
         _group: &ContextGroupId,
         _context: &calimero_primitives::context::ContextId,
         _parents: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, crate::Undecidable>> {
         None
     }
 

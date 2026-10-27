@@ -19,6 +19,7 @@ use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
 use super::context::GroupApplyCtx;
+use crate::Undecidable;
 use crate::{
     get_group_for_context, ContextRegistrationError, MembershipRepository, NamespaceRepository,
     SharedWritersRotatedRejection as Rejection,
@@ -91,7 +92,12 @@ pub(super) fn refuse_moving_rotated_context(
             .authorizer()
             .context_rotation_group_at_cut(ctx.group_id(), context_id, ctx.cut())
         {
-            Some(answer) => answer,
+            Some(Ok(answer)) => answer,
+            // Out of budget is no abstention: live would answer differently per node.
+            Some(Err(Undecidable)) => bail!(crate::ApplyError::AuthorityUndecidable {
+                group_id: ctx.group_id().to_string(),
+                signer: ctx.signer().to_string(),
+            }),
             None => {
                 ctx.ensure_live_fallback_is_sound(ctx.signer())?;
                 rotated_in_live(ctx.store(), context_id)?
@@ -297,7 +303,7 @@ mod tests {
         let authorizer = AtCut {
             store: &w.store,
             roles: BTreeMap::new(),
-            rotated: Some(None),
+            rotated: Some(Ok(None)),
         };
         crate::apply_local_signed_group_op_at_cut(&w.store, &signed, &authorizer)
             .expect("the cut holds no rotation");
@@ -453,7 +459,7 @@ mod tests {
     struct AtCut<'a> {
         store: &'a Store,
         roles: BTreeMap<ContextGroupId, Option<GroupMemberRole>>,
-        rotated: Option<Option<ContextGroupId>>,
+        rotated: Option<Result<Option<ContextGroupId>, crate::Undecidable>>,
     }
 
     impl crate::authorizer::AtCutAuthorizer for AtCut<'_> {
@@ -527,7 +533,7 @@ mod tests {
             _: &ContextGroupId,
             _: &ContextId,
             _: &[[u8; 32]],
-        ) -> Option<Option<ContextGroupId>> {
+        ) -> Option<Result<Option<ContextGroupId>, crate::Undecidable>> {
             self.rotated
         }
     }
@@ -624,7 +630,7 @@ mod tests {
         let authorizer = AtCut {
             store: &w.store,
             roles: BTreeMap::new(),
-            rotated: Some(Some(w.group)),
+            rotated: Some(Ok(Some(w.group))),
         };
         let err = refusal(crate::apply_local_signed_group_op_at_cut(
             &w.store,
@@ -634,6 +640,29 @@ mod tests {
         assert!(matches!(
             registration(&err),
             Some(ContextRegistrationError::HasRotatedCells { .. })
+        ));
+    }
+
+    /// A cut whose rotations could not be decided in budget parks the op; it never asks the
+    /// live record, which here says nothing rotated.
+    #[test]
+    fn a_detach_whose_rotation_verdict_is_over_budget_is_undecidable() {
+        let w = world(test_group_id(), test_group_id());
+        let signed =
+            SignedGroupOp::sign(&w.admin_sk, w.group, TEST_CUT.to_vec(), 1, detach()).unwrap();
+        let authorizer = AtCut {
+            store: &w.store,
+            roles: BTreeMap::new(),
+            rotated: Some(Err(crate::Undecidable)),
+        };
+        let err = refusal(crate::apply_local_signed_group_op_at_cut(
+            &w.store,
+            &signed,
+            &authorizer,
+        ));
+        assert!(matches!(
+            err.downcast_ref::<crate::ApplyError>(),
+            Some(crate::ApplyError::AuthorityUndecidable { .. })
         ));
     }
 }

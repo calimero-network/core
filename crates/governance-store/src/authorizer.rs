@@ -212,7 +212,7 @@ pub trait AtCutAuthorizer: Send + Sync {
         group: &ContextGroupId,
         context: &ContextId,
         parents: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>>;
+    ) -> Option<Result<Option<ContextGroupId>, Undecidable>>;
 
     /// Could this authorizer decide ANY authority question for `group` at `parents`?
     ///
@@ -532,7 +532,7 @@ impl AtCutAuthorizer for LiveFallbackAuthorizer {
         _group: &ContextGroupId,
         _context: &ContextId,
         _parents: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, Undecidable>> {
         None
     }
 }

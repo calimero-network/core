@@ -1317,7 +1317,7 @@ mod tests {
             _: &ContextGroupId,
             _: &calimero_primitives::context::ContextId,
             _: &[[u8; 32]],
-        ) -> Option<Option<ContextGroupId>> {
+        ) -> Option<Result<Option<ContextGroupId>, crate::Undecidable>> {
             None
         }
         fn direct_role_at_cut(

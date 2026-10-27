@@ -349,7 +349,7 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
         _: &ContextGroupId,
         _: &calimero_primitives::context::ContextId,
         _: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, crate::Undecidable>> {
         None
     }
 
@@ -362,7 +362,7 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
         group: &ContextGroupId,
         capability: u32,
         op: &Op,
-    ) -> Option<Result<bool, Undecidable>> {
+    ) -> Option<Result<bool, crate::Undecidable>> {
         if op.parents.is_empty() {
             return Some(Ok(false));
         }
@@ -374,7 +374,7 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
         Some(
             ScopeState::void_ops_with(&log, self.base(), Some((op, Some(acting))))
                 .map(|void| void.contains(&op.id()))
-                .map_err(|_| Undecidable),
+                .map_err(|_| crate::Undecidable),
         )
     }
 
@@ -383,11 +383,11 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
         _group: &ContextGroupId,
         applied: Option<&Op>,
         held: &[([u8; 32], ContextGroupId)],
-    ) -> Option<Result<BTreeSet<[u8; 32]>, Undecidable>> {
+    ) -> Option<Result<BTreeSet<[u8; 32]>, crate::Undecidable>> {
         let log = self.log();
         Some(
             ScopeState::void_ops_judging(&log, self.base(), applied.map(|op| (op, None)), held)
-                .map_err(|_| Undecidable),
+                .map_err(|_| crate::Undecidable),
         )
     }
 

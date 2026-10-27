@@ -166,7 +166,7 @@ impl AtCutAuthorizer for VoidJudge<'_> {
         _: &ContextGroupId,
         _: &ContextId,
         _: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, Undecidable>> {
         None
     }
 
@@ -562,7 +562,7 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         group: &ContextGroupId,
         context: &ContextId,
         parents: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, Undecidable>> {
         // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
         if parents.is_empty() {
             return None;
@@ -796,7 +796,7 @@ impl AtCutAuthorizer for ProjectionAuthorizer<'_> {
         _group: &ContextGroupId,
         _context: &ContextId,
         _parents: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, Undecidable>> {
         None
     }
 

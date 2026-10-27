@@ -69,13 +69,20 @@ impl Handler<DeleteContextRequest> for ContextManager {
                         )
                 });
             let refused = match at_heads {
-                Some(Some(group)) => Err(eyre::eyre!(
+                Some(Ok(Some(group))) => Err(eyre::eyre!(
                     calimero_governance_store::ContextRegistrationError::HasRotatedCells {
                         group_id: hex::encode(group.to_bytes()),
                         context_id: context_id.to_string(),
                     }
                 )),
-                Some(None) => Ok(()),
+                Some(Ok(None)) => Ok(()),
+                // Too large to decide here; the record is no answer for it.
+                Some(Err(_)) => Err(eyre::eyre!(
+                    calimero_governance_store::ApplyError::AuthorityUndecidable {
+                        group_id: group_id.to_string(),
+                        signer: context_id.to_string(),
+                    }
+                )),
                 None => calimero_governance_store::require_context_not_rotated(
                     &self.datastore,
                     &context_id,

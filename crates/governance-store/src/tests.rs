@@ -8337,7 +8337,7 @@ impl crate::authorizer::AtCutAuthorizer for CutWithdrawal {
         _: &ContextGroupId,
         _: &ContextId,
         _: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, crate::Undecidable>> {
         None
     }
 
@@ -16453,7 +16453,7 @@ mod account_plane_apply {
             _: &ContextGroupId,
             _: &calimero_primitives::context::ContextId,
             _: &[[u8; 32]],
-        ) -> Option<Option<ContextGroupId>> {
+        ) -> Option<Result<Option<ContextGroupId>, crate::Undecidable>> {
             None
         }
 

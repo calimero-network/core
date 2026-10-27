@@ -177,7 +177,7 @@ impl AtCutAuthorizer for Probe<'_> {
         _: &ContextGroupId,
         _: &ContextId,
         _: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, crate::Undecidable>> {
         None
     }
 

@@ -3290,7 +3290,22 @@ impl ScopeProjections {
         group: ContextGroupId,
         context: &ContextId,
         heads: &[[u8; 32]],
-    ) -> Option<Option<ContextGroupId>> {
+    ) -> Option<Result<Option<ContextGroupId>, Undecidable>> {
+        self.context_rotation_group_within(store, group, context, heads, |ops| {
+            FoldBudget::for_step_cuts(ops)
+        })
+    }
+
+    /// [`Self::context_rotation_group_at_cut`] with the budget `budget_for` gives a log of
+    /// that many ops; `Some(Err)` once it is spent, which is no abstention.
+    fn context_rotation_group_within(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        context: &ContextId,
+        heads: &[[u8; 32]],
+        budget_for: impl Fn(usize) -> FoldBudget,
+    ) -> Option<Result<Option<ContextGroupId>, Undecidable>> {
         let namespace_id = NamespaceRepository::new(store)
             .resolve(&group)
             .ok()?
@@ -3308,13 +3323,11 @@ impl ScopeProjections {
         // As for the fold, standing is read at the step's own parents, so the group's
         // ancestors there must be readable too.
         let root_group = ContextGroupId::from(namespace_id);
-        let budget = FoldBudget::for_step_cuts(walked.ops().len());
-        let mut relevant = deciding_groups(
-            &at_cut_view_within(&walked, base, &budget)?,
-            &self.whole_tree(&scope),
-            group,
-            root_group,
-        );
+        let budget = budget_for(walked.ops().len());
+        let Some(head_view) = at_cut_view_within(&walked, base, &budget) else {
+            return Some(Err(Undecidable));
+        };
+        let mut relevant = deciding_groups(&head_view, &self.whole_tree(&scope), group, root_group);
         let mut pinned = false;
         for op in walked.ops().iter().filter(|op| !walked.is_void(op)) {
             let OpPayload::SharedWritersRotated {
@@ -3333,8 +3346,11 @@ impl ScopeProjections {
             {
                 continue;
             }
-            let view =
-                at_cut_view_within(&self.walk(&scope, log, &op.parents, base), base, &budget)?;
+            let Some(view) =
+                at_cut_view_within(&self.walk(&scope, log, &op.parents, base), base, &budget)
+            else {
+                return Some(Err(Undecidable));
+            };
             relevant.extend(deciding_groups(
                 &view,
                 &self.whole_tree(&scope),
@@ -3350,7 +3366,7 @@ impl ScopeProjections {
         if walked.first_opaque_in_any(&relevant).is_some() {
             return None;
         }
-        Some(pinned.then_some(group))
+        Some(Ok(pinned.then_some(group)))
     }
 
     /// The account `key` speaks for in `group` at a view if it is a member there, not
@@ -4157,6 +4173,7 @@ fn at_cut_view_within(
     base: AuthorityBase,
     budget: &FoldBudget,
 ) -> Option<calimero_authz::AclView> {
+    budget.charge(walked.ops().len())?;
     let makers = valid_space_makers(walked, base, budget)?;
     fold_view(walked, base, &makers, budget)
 }
@@ -7349,9 +7366,26 @@ mod tests {
             w.reg
                 .context_rotation_group_at_cut(&w.store, group, &w.context, heads)
         };
-        assert_eq!(at(&[[0xD8; 32]]), Some(Some(group)));
-        assert_eq!(at(&joins), Some(None), "before the rotation");
+        assert_eq!(at(&[[0xD8; 32]]), Some(Ok(Some(group))));
+        assert_eq!(at(&joins), Some(Ok(None)), "before the rotation");
         assert_eq!(at(&[[0xEE; 32]]), None, "an ancestor is missing");
+    }
+
+    /// A spent budget is its own answer, never an abstention a node would settle from live.
+    #[test]
+    fn an_exhausted_budget_makes_the_rotation_verdict_undecidable() {
+        let (mut w, ..) = rotations();
+        let joins = w.joins.clone();
+        let (admin, group) = (w.admin_pk, w.group);
+        w.rotate(admin, group, [0xD8; 32], &joins);
+
+        let spent =
+            w.reg
+                .context_rotation_group_within(&w.store, group, &w.context, &[[0xD8; 32]], |_| {
+                    FoldBudget::new(0)
+                });
+
+        assert_eq!(spent, Some(Err(Undecidable)));
     }
 
     /// A step that does not rest on the cell's genesis set neither pins the
@@ -7366,7 +7400,7 @@ mod tests {
         assert_eq!(
             w.reg
                 .context_rotation_group_at_cut(&w.store, group, &w.context, &[[0xDA; 32]]),
-            Some(None)
+            Some(Ok(None))
         );
         assert_eq!(w.at(&[[0xDA; 32]]), Some(CellWriters::Genesis));
     }
@@ -7575,10 +7609,10 @@ mod tests {
             ([0xC2; 32], "a member of another group"),
             ([0xC3; 32], "a step published in a sibling group"),
         ] {
-            assert_eq!(pinned(&w, id), Some(None), "{what}");
+            assert_eq!(pinned(&w, id), Some(Ok(None)), "{what}");
         }
         w.rotate(admin, group, [0xC4; 32], &joins);
-        assert_eq!(pinned(&w, [0xC4; 32]), Some(Some(group)), "control");
+        assert_eq!(pinned(&w, [0xC4; 32]), Some(Ok(Some(group))), "control");
     }
 
     /// A step counts only where the apply would have taken it: in the context's
@@ -7640,7 +7674,7 @@ mod tests {
             Some(CellWriters::Rotated(w.rotated.clone())),
             "control: no removal yet"
         );
-        assert_eq!(pinned(&w), Some(Some(group)), "control: pinned");
+        assert_eq!(pinned(&w), Some(Ok(Some(group))), "control: pinned");
 
         // The owner removes the step's signer on a branch that has not seen the step.
         w.reg.ingest_op(
@@ -7661,7 +7695,7 @@ mod tests {
         for heads in [&[[0xB1; 32]][..], &[[0xB1; 32], [0xB2; 32]]] {
             assert_eq!(w.at(heads), Some(CellWriters::Genesis), "{heads:?}");
         }
-        assert_eq!(pinned(&w), Some(None), "a void step pins nothing");
+        assert_eq!(pinned(&w), Some(Ok(None)), "a void step pins nothing");
     }
 
     fn signed_group(
