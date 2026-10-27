@@ -36,6 +36,13 @@ architecture spec.
   are not idempotent yet. Regression: merobox `workflow-examples/cloud-v2/frozen-leader.yml`.
 - **Leader races**: a call whose diff was built on replaced state applies as a no-op
   (`conflict`, no idempotency record); `Node::call` re-runs it instead of failing.
+- **Upgrades plan their migration from the ABIs** (`services::plan_upgrade`, v1's
+  `plan_upgrade`): without a named `migrate`, an upgrade one state version up runs
+  the target's `#[app::migrate]` edge; a downgrade, a jump or a missing edge is
+  refused. Bundles without an ABI upgrade code-only.
+- **Devices**: a person is their account, and each passkey is a device: the
+  session names the one it was opened with (`SessionClaims::passkey`,
+  `passkeyId` in `/auth/me`); `auth/passkeys/add` adds one.
 - **Init**: `POST /apps` takes `initArgs` (JSON) for the app's `init`, kept on the
   `AppRecord`; a failed init answers `422 INIT_FAILED` (`AppState::init_error`).
 - **Identity inside the app**: `env::account_id` and `env::executor_id` are both the

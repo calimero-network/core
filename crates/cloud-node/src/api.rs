@@ -194,7 +194,7 @@ async fn person(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError>
     Ok(p)
 }
 
-async fn new_session(node: &Node, account: &str) -> ApiResult {
+async fn new_session(node: &Node, account: &str, passkey: &str) -> ApiResult {
     let (version, key) = node
         .sys(|s| s.current_session_key())
         .ok_or_else(|| ApiError::unavailable("the cluster has no session key yet"))?;
@@ -207,6 +207,7 @@ async fn new_session(node: &Node, account: &str) -> ApiResult {
             session: session.clone(),
             expires_at,
             key_version: version,
+            passkey: Some(passkey.to_owned()),
         },
     );
     let refresh = format!("rt_{}", b64url(&random::<32>()));
@@ -217,6 +218,7 @@ async fn new_session(node: &Node, account: &str) -> ApiResult {
                 account: account.to_owned(),
                 session,
                 expires_at: now_secs() + REFRESH_TTL,
+                passkey: Some(passkey.to_owned()),
             },
         })
         .await?;
@@ -364,11 +366,11 @@ async fn register_finish(
                 account_id: account.clone(),
                 name,
                 created_at: now_secs(),
-                passkeys: vec![cred],
+                passkeys: vec![cred.clone()],
             },
         })
         .await?;
-    new_session(&node, &account).await
+    new_session(&node, &account, &cred.id).await
 }
 
 async fn login_begin(State(node): State<Arc<Node>>) -> ApiResult {
@@ -440,7 +442,7 @@ async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionB
         ));
     };
     let account = check_assertion(&node, &challenge, &body.assertion, None).await?;
-    new_session(&node, &account).await
+    new_session(&node, &account, &body.assertion.credential_id).await
 }
 
 async fn passkey_add_begin(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
@@ -544,6 +546,7 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
         account: rec.account.clone(),
         session: rec.session.clone(),
         expires_at: now_secs() + REFRESH_TTL,
+        passkey: rec.passkey.clone(),
     };
     let _ok = node
         .sys_write(&SystemCmd::UseRefresh {
@@ -562,6 +565,7 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
             session: rec.session,
             expires_at,
             key_version: version,
+            passkey: rec.passkey,
         },
     );
     Ok(Json(
@@ -603,6 +607,8 @@ async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
         "passkeys": acc.passkeys.iter().map(|c| json!({ "id": c.id, "signCount": c.sign_count })).collect::<Vec<_>>(),
         "orgs": orgs,
         "via": if p.api_key.is_some() { "apiKey" } else { "session" },
+        // The passkey (device) this session was opened with.
+        "passkeyId": p.session.as_ref().and_then(|s| s.passkey.clone()),
     })))
 }
 

@@ -952,11 +952,12 @@ impl SystemMachine {
                 }
                 let t = o.teams.get_mut(&team).ok_or("no such team")?;
                 let _prev = t.members.remove(&account);
-                let _was = t.read_only.remove(&account);
+                let was_read_only = t.read_only.remove(&account);
                 let _caps = t.capabilities.remove(&account);
-                // Leaving is one's own; a removal also keeps them from coming
-                // back by inheritance.
-                if actor != account {
+                // A removal keeps them from coming back by inheritance, and so
+                // does leaving while read-only: leaving must not shed the role
+                // (v1). Leaving otherwise is one's own business.
+                if actor != account || was_read_only {
                     let _new = t.removed.insert(account);
                 }
                 Ok(Value::Null)

@@ -74,6 +74,10 @@ pub struct SessionClaims {
     pub expires_at: u64,
     /// Which K_s version signed it.
     pub key_version: u32,
+    /// The passkey the session was opened with (its credential id): the
+    /// device, for whoever asks which one this is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passkey: Option<String>,
 }
 
 /// Mint a session token: `v1.<claims>.<mac>`, MAC = HMAC-SHA256 under `key`.
@@ -232,6 +236,7 @@ mod tests {
             session: "s1".into(),
             expires_at: 1000,
             key_version: 1,
+            passkey: None,
         };
         let token = mint_session(&key, &claims);
         assert_eq!(verify_session(&key, &token, 999).unwrap(), claims);

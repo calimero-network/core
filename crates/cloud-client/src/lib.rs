@@ -229,6 +229,20 @@ impl Client {
         Ok(s)
     }
 
+    /// Add another passkey (another device) to the signed-in account.
+    /// Returns its credential id.
+    pub async fn add_passkey(&self, passkey: &mut dyn Passkey) -> Result<String> {
+        let begin = self.post("auth/passkeys/add/begin", json!({})).await?;
+        let registration = passkey.create(&begin["options"]);
+        let done = self
+            .post(
+                "auth/passkeys/add/finish",
+                json!({ "challengeId": begin["challengeId"], "registration": registration }),
+            )
+            .await?;
+        Ok(done["credentialId"].as_str().unwrap_or_default().to_owned())
+    }
+
     /// Sign in with an existing passkey.
     pub async fn sign_in(&self, passkey: &mut dyn Passkey) -> Result<Session> {
         let begin = self.post("auth/passkey/login/begin", json!({})).await?;

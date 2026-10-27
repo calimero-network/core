@@ -1329,11 +1329,29 @@ async fn teams_work_like_v1_subgroups() {
         .unwrap();
     let err = set(&bob, &child_app, "ro").await.unwrap_err();
     assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
-    // A call that writes nothing still runs for him.
-    let read = bob
-        .call(&child_app, "len", json!({}), None)
+    // Leaving does not shed the role: he does not come back by inheritance.
+    let _ok = bob
+        .delete(&format!("orgs/{org}/teams/{child}/members/{bob_id}"))
         .await
         .unwrap();
+    assert!(bob
+        .view(
+            &child_app,
+            "get",
+            json!({ "key": "k" }),
+            Consistency::Strong
+        )
+        .await
+        .is_err());
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/teams/{child}/members"),
+            json!({ "account": bob_id, "role": "readOnly" }),
+        )
+        .await
+        .unwrap();
+    // A call that writes nothing still runs for him.
+    let read = bob.call(&child_app, "len", json!({}), None).await.unwrap();
     assert_eq!(read.result, json!(1));
     set(&bob, &secret_app, "still writes the parent")
         .await
@@ -1418,4 +1436,19 @@ async fn teams_work_like_v1_subgroups() {
     assert_eq!(gone["teams"].as_array().unwrap().len(), 2, "{gone}");
     assert_eq!(gone["apps"], json!([child_app]));
     assert!(alice.get(&format!("apps/{child_app}")).await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_second_passkey_is_another_device_of_the_same_account() {
+    let c = Cluster::start(3).await;
+    let (laptop, _pk) = signed_up(&c, 0, "alice").await;
+    let mut phone_key = SoftAuthenticator::new("localhost", ORIGIN);
+    let phone_cred = laptop.add_passkey(&mut phone_key).await.unwrap();
+    let phone = c.client(1);
+    let _s = phone.sign_in(&mut phone_key).await.unwrap();
+    let (a, b) = (laptop.me().await.unwrap(), phone.me().await.unwrap());
+    assert_eq!(a["accountId"], b["accountId"]);
+    assert_eq!(b["passkeyId"], json!(phone_cred));
+    assert_ne!(a["passkeyId"], b["passkeyId"]);
+    assert_eq!(b["passkeys"].as_array().unwrap().len(), 2);
 }

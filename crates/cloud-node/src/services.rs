@@ -297,3 +297,81 @@ impl Search {
             .remove(app_id);
     }
 }
+
+/// The migration an upgrade from `current` to `target` runs, planned from the
+/// two bundles' embedded ABIs as v1 plans it (`calimero-context`'s
+/// `plan_upgrade`): `None` when the state shape is unchanged, the target's
+/// `#[app::migrate]` edge from the current state version for one step up.
+/// Bundles that embed no ABI (built without `cargo mero`) upgrade code-only.
+///
+/// # Errors
+/// A downgrade, a jump of more than one version, a missing edge, or one side
+/// with an ABI and the other without.
+pub fn plan_upgrade(current: &[u8], target: &[u8]) -> Result<Option<String>, String> {
+    use calimero_wasm_abi::embed::read_embedded_state_schema as abi;
+    let (cur, tgt) = match (abi(current), abi(target)) {
+        (None, None) => return Ok(None),
+        (Some(c), Some(t)) => (c, t),
+        (None, Some(_)) => return Err("the current bundle embeds no ABI to plan from".into()),
+        (Some(_), None) => return Err("the target bundle embeds no ABI to plan from".into()),
+    };
+    let (from, to) = (
+        cur.state_version_or_default(),
+        tgt.state_version_or_default(),
+    );
+    if from == to {
+        return Ok(None);
+    }
+    if to < from {
+        return Err(format!(
+            "a downgrade of the state from version {from} to {to}"
+        ));
+    }
+    if to != from + 1 {
+        return Err(format!(
+            "state version {from} to {to}: upgrade one version at a time"
+        ));
+    }
+    tgt.edge_from(from)
+        .map(|e| Some(e.method))
+        .ok_or_else(|| format!("the target declares no migration from state version {from}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_wasm_abi::embed::write_embedded_state_schema;
+    use calimero_wasm_abi::schema::{Manifest, MigrationEdgeAbi};
+
+    use super::plan_upgrade;
+
+    /// An empty module carrying a manifest at `version`, with migrations from
+    /// each of `edges` (named `migrate_from_<v>`).
+    fn bundle(version: u32, edges: &[u32]) -> Vec<u8> {
+        let mut m = Manifest::new();
+        m.state_version = Some(version);
+        m.migrations = edges
+            .iter()
+            .map(|v| MigrationEdgeAbi {
+                method: format!("migrate_from_{v}"),
+                from_version: *v,
+            })
+            .collect();
+        write_embedded_state_schema(b"\0asm\x01\0\0\0", &m).unwrap()
+    }
+
+    #[test]
+    fn an_upgrade_runs_the_targets_migration_edge_as_v1_plans_it() {
+        assert_eq!(plan_upgrade(&bundle(1, &[]), &bundle(1, &[])), Ok(None));
+        assert_eq!(
+            plan_upgrade(&bundle(1, &[]), &bundle(2, &[1])),
+            Ok(Some("migrate_from_1".to_owned()))
+        );
+        assert!(plan_upgrade(&bundle(2, &[]), &bundle(1, &[])).is_err());
+        assert!(plan_upgrade(&bundle(1, &[]), &bundle(3, &[1, 2])).is_err());
+        assert!(plan_upgrade(&bundle(1, &[]), &bundle(2, &[])).is_err());
+        // Built without `cargo mero` on both sides: code only.
+        let plain = b"\0asm\x01\0\0\0".to_vec();
+        assert_eq!(plan_upgrade(&plain, &plain), Ok(None));
+        assert!(plan_upgrade(&plain, &bundle(2, &[1])).is_err());
+    }
+}

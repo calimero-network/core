@@ -1092,7 +1092,7 @@ impl Node {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        let migrate = req
+        let mut migrate = req
             .args
             .get("migrate")
             .and_then(Value::as_str)
@@ -1101,6 +1101,31 @@ impl Node {
             .module_for(&bundle)
             .await
             .map_err(|e| WriteError::Unavailable(e.message))?;
+        // Without a named migration, plan it from the two ABIs, as v1 does.
+        if migrate.is_none() {
+            let current = g.read_local(|m, _| m.state.bundle.clone());
+            if let Some(current) = current.filter(|c| *c != bundle) {
+                let (from, to) = (
+                    self.bundle_wasm(&current).await,
+                    self.bundle_wasm(&bundle).await,
+                );
+                if let (Ok(from), Ok(to)) = (from, to) {
+                    match crate::services::plan_upgrade(&from, &to) {
+                        Ok(planned) => migrate = planned,
+                        Err(why) => {
+                            return Ok(Applied {
+                                index: g.applied(),
+                                status: Status::AppError,
+                                result: Value::Null,
+                                error: Value::String(format!("upgrade refused: {why}")),
+                                events: Vec::new(),
+                                conflict: false,
+                            })
+                        }
+                    }
+                }
+            }
+        }
         let env = self.env(&req.app_id, &req.caller);
         let p = g
             .propose(|m, applied| {

@@ -138,6 +138,9 @@ pub struct RefreshRecord {
     pub account: AccountId,
     pub session: String,
     pub expires_at: u64,
+    /// The passkey the session was opened with.
+    #[serde(default)]
+    pub passkey: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
