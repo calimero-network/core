@@ -1,0 +1,585 @@
+[
+ {
+  "as": "ada",
+  "op": "call",
+  "method": "addRoom",
+  "args": {
+   "id": "r1",
+   "name": "Atlas",
+   "capacity": 8
+  }
+ },
+ {
+  "as": "ada",
+  "op": "call",
+  "method": "addRoom",
+  "args": {
+   "id": "r2",
+   "name": "Boreal",
+   "capacity": 4
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "addRoom",
+  "args": {
+   "id": "r3",
+   "name": "Nope",
+   "capacity": 2
+  },
+  "expect": {
+   "error": "Forbidden"
+  }
+ },
+ {
+  "as": "ada",
+  "op": "call",
+  "method": "addRoom",
+  "args": {
+   "id": "r1",
+   "name": "Again",
+   "capacity": 2
+  },
+  "expect": {
+   "error": "Duplicate",
+   "fields": {
+    "index": "id"
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "book",
+  "args": {
+   "roomId": "r1",
+   "start": "1700000100000",
+   "slotCount": 2,
+   "title": "standup"
+  },
+  "save": "b1"
+ },
+ {
+  "as": "cy",
+  "op": "call",
+  "method": "book",
+  "args": {
+   "roomId": "r1",
+   "start": "1700001000000",
+   "slotCount": 1,
+   "title": "clash"
+  },
+  "expect": {
+   "error": "Taken",
+   "fields": {
+    "start": "1700001000000"
+   }
+  }
+ },
+ {
+  "as": "cy",
+  "op": "call",
+  "method": "book",
+  "args": {
+   "roomId": "r1",
+   "start": "1700000100000",
+   "slotCount": 2,
+   "title": "clash"
+  },
+  "expect": {
+   "error": "Taken",
+   "fields": {
+    "start": "1700000100000"
+   }
+  }
+ },
+ {
+  "as": "cy",
+  "op": "call",
+  "method": "book",
+  "args": {
+   "roomId": "r1",
+   "start": "1700000100001",
+   "slotCount": 1,
+   "title": "x"
+  },
+  "expect": {
+   "error": "Invalid",
+   "fields": {
+    "reason": "start must be a multiple of the slot length"
+   }
+  }
+ },
+ {
+  "as": "cy",
+  "op": "call",
+  "method": "book",
+  "args": {
+   "roomId": "r1",
+   "start": "1700004600000",
+   "slotCount": 0,
+   "title": "x"
+  },
+  "expect": {
+   "error": "Invalid",
+   "fields": {
+    "reason": "slotCount must be between 1 and 8"
+   }
+  }
+ },
+ {
+  "as": "cy",
+  "op": "call",
+  "method": "book",
+  "args": {
+   "roomId": "r1",
+   "start": "1700004600000",
+   "slotCount": 9,
+   "title": "x"
+  },
+  "expect": {
+   "error": "Invalid",
+   "fields": {
+    "reason": "slotCount must be between 1 and 8"
+   }
+  }
+ },
+ {
+  "as": "cy",
+  "op": "call",
+  "method": "book",
+  "args": {
+   "roomId": "nope",
+   "start": "1700004600000",
+   "slotCount": 1,
+   "title": "x"
+  },
+  "expect": {
+   "error": "NotFound"
+  }
+ },
+ {
+  "as": "gus",
+  "op": "call",
+  "method": "book",
+  "args": {
+   "roomId": "r1",
+   "start": "1700004600000",
+   "slotCount": 1,
+   "title": "x"
+  },
+  "expect": {
+   "error": "Forbidden"
+  }
+ },
+ {
+  "as": "@anonymous",
+  "op": "call",
+  "method": "book",
+  "args": {
+   "roomId": "r1",
+   "start": "1700004600000",
+   "slotCount": 1,
+   "title": "x"
+  },
+  "expect": {
+   "error": "LoginRequired"
+  }
+ },
+ {
+  "as": "gus",
+  "op": "view",
+  "method": "availability",
+  "args": {
+   "roomId": "r1",
+   "dayStart": "1700000100000"
+  },
+  "expect": {
+   "error": "Forbidden"
+  }
+ },
+ {
+  "as": "cy",
+  "op": "view",
+  "method": "availability",
+  "args": {
+   "roomId": "r1",
+   "dayStart": "1700000100000"
+  },
+  "expect": {
+   "ok": [
+    {
+     "start": "1700000100000",
+     "end": "1700001000000",
+     "bookingId": "$b1",
+     "title": null,
+     "mine": false
+    },
+    {
+     "start": "1700001000000",
+     "end": "1700001900000",
+     "bookingId": "$b1",
+     "title": null,
+     "mine": false
+    }
+   ]
+  }
+ },
+ {
+  "as": "ada",
+  "op": "view",
+  "method": "availability",
+  "args": {
+   "roomId": "r1",
+   "dayStart": "1700000100000"
+  },
+  "expect": {
+   "ok": [
+    {
+     "start": "1700000100000",
+     "end": "1700001000000",
+     "bookingId": "$b1",
+     "title": "standup",
+     "mine": false
+    },
+    {
+     "start": "1700001000000",
+     "end": "1700001900000",
+     "bookingId": "$b1",
+     "title": "standup",
+     "mine": false
+    }
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "availability",
+  "args": {
+   "roomId": "r1",
+   "dayStart": "1700000100000"
+  },
+  "expect": {
+   "ok": [
+    {
+     "start": "1700000100000",
+     "end": "1700001000000",
+     "bookingId": "$b1",
+     "title": "standup",
+     "mine": true
+    },
+    {
+     "start": "1700001000000",
+     "end": "1700001900000",
+     "bookingId": "$b1",
+     "title": "standup",
+     "mine": true
+    }
+   ]
+  }
+ },
+ {
+  "as": "cy",
+  "op": "call",
+  "method": "book",
+  "args": {
+   "roomId": "r2",
+   "start": "1700000100000",
+   "slotCount": 1,
+   "title": "sync"
+  },
+  "save": "b2"
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "book",
+  "args": {
+   "roomId": "r1",
+   "start": "1700002800000",
+   "slotCount": 1,
+   "title": "later"
+  },
+  "save": "b4"
+ },
+ {
+  "as": "cy",
+  "op": "call",
+  "method": "checkIn",
+  "args": {
+   "id": "$b1"
+  },
+  "expect": {
+   "error": "NotFound"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "checkIn",
+  "args": {
+   "id": "$b1"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "checkIn",
+  "args": {
+   "id": "nope"
+  },
+  "expect": {
+   "error": "NotFound"
+  }
+ },
+ {
+  "op": "advance",
+  "args": 960000
+ },
+ {
+  "op": "tick",
+  "method": "releaseNoShows"
+ },
+ {
+  "as": "cy",
+  "op": "view",
+  "method": "myBookings",
+  "args": {},
+  "expect": {
+   "ok": []
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "myBookings",
+  "args": {},
+  "expect": {
+   "ok": [
+    {
+     "id": "$b1",
+     "roomId": "r1",
+     "holder": "bob",
+     "start": "1700000100000",
+     "end": "1700001900000",
+     "title": "standup",
+     "checkedIn": true
+    },
+    {
+     "id": "$b4",
+     "roomId": "r1",
+     "holder": "bob",
+     "start": "1700002800000",
+     "end": "1700003700000",
+     "title": "later",
+     "checkedIn": false
+    }
+   ]
+  }
+ },
+ {
+  "as": "cy",
+  "op": "view",
+  "method": "booking",
+  "args": {
+   "id": "$b1"
+  },
+  "expect": {
+   "error": "NotFound"
+  }
+ },
+ {
+  "as": "ada",
+  "op": "view",
+  "method": "booking",
+  "args": {
+   "id": "$b1"
+  },
+  "expect": {
+   "ok": {
+    "id": "$b1",
+    "roomId": "r1",
+    "holder": "bob",
+    "start": "1700000100000",
+    "end": "1700001900000",
+    "title": "standup",
+    "checkedIn": true
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "booking",
+  "args": {
+   "id": "$b2"
+  },
+  "expect": {
+   "error": "NotFound"
+  }
+ },
+ {
+  "as": "cy",
+  "op": "view",
+  "method": "booking",
+  "args": {
+   "id": "$b2"
+  },
+  "expect": {
+   "error": "NotFound"
+  }
+ },
+ {
+  "as": "cy",
+  "op": "call",
+  "method": "book",
+  "args": {
+   "roomId": "r2",
+   "start": "1700000100000",
+   "slotCount": 1,
+   "title": "retry"
+  },
+  "save": "b3"
+ },
+ {
+  "as": "ada",
+  "op": "call",
+  "method": "adminRelease",
+  "args": {
+   "id": "$b3",
+   "reason": "room closed"
+  },
+  "expect": {
+   "confirmRequired": true
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "adminRelease",
+  "args": {
+   "id": "$b3",
+   "reason": "mine now"
+  },
+  "expect": {
+   "error": "Forbidden"
+  },
+  "confirmed": true
+ },
+ {
+  "as": "ada",
+  "op": "call",
+  "method": "adminRelease",
+  "args": {
+   "id": "$b3",
+   "reason": "room closed"
+  },
+  "confirmed": true
+ },
+ {
+  "as": "ada",
+  "op": "call",
+  "method": "adminRelease",
+  "args": {
+   "id": "$b3",
+   "reason": "again"
+  },
+  "expect": {
+   "error": "NotFound"
+  },
+  "confirmed": true
+ },
+ {
+  "op": "removeMember",
+  "args": "cy"
+ },
+ {
+  "as": "ada",
+  "op": "call",
+  "method": "book",
+  "args": {
+   "roomId": "r2",
+   "start": "1700001000000",
+   "slotCount": 1,
+   "title": "review"
+  },
+  "save": "b5"
+ },
+ {
+  "as": "cy",
+  "op": "view",
+  "method": "availability",
+  "args": {
+   "roomId": "r2",
+   "dayStart": "1700000100000"
+  },
+  "expect": {
+   "error": "Forbidden"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "cancel",
+  "args": {
+   "id": "$b4"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "cancel",
+  "args": {
+   "id": "$b4"
+  },
+  "expect": {
+   "error": "NotFound"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "book",
+  "args": {
+   "roomId": "r1",
+   "start": "1700002800000",
+   "slotCount": 1,
+   "title": "again"
+  },
+  "events": {
+   "ada": [
+    "SlotsTaken",
+    "SlotsTaken",
+    "SlotsTaken",
+    "SlotsTaken",
+    "SlotsTaken",
+    "Booked",
+    "SlotsTaken"
+   ],
+   "bob": [
+    "SlotsTaken",
+    "Booked",
+    "SlotsTaken",
+    "SlotsTaken",
+    "Booked",
+    "SlotsTaken",
+    "SlotsTaken",
+    "SlotsTaken",
+    "Booked"
+   ],
+   "cy": [
+    "SlotsTaken",
+    "SlotsTaken",
+    "Booked",
+    "SlotsTaken",
+    "BookingReleased",
+    "SlotsTaken",
+    "Booked",
+    "BookingReleased"
+   ],
+   "gus": []
+  }
+ }
+]
