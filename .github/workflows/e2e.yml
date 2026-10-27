@@ -20,7 +20,18 @@ name: E2E
 # It replaces v1's e2e-rust-apps, e2e-rust-apps-release, sdk-e2e,
 # app-migration-e2e, sync-regression, fuzzy-load-test and wire-contract, which
 # drove v1 nodes in Docker. The nightly run is the soak: the fuzzy loads for
-# their full duration.
+# their full duration, each reporting calls/s and p50/p95/p99 latency per
+# operation (MEROBOX_SOAK_REPORT, in the job summary). Nightly also:
+#
+#   - the same shards against the `merod` inside the latest published release
+#     image (ghcr.io/<owner>/merod:<version>, release.yml), on the workflows
+#     and fixtures of the commit that image was built from: the shipped
+#     artifact, not a fresh cargo build (jobs `release-*`);
+#   - a flamegraph of one node through the kv-store soak, by `perf record -g`
+#     and inferno (job `flamegraph`, scripts/soak-flamegraph.sh).
+#
+# A PR's own image is tested in release.yml (`E2E on the merod image`), which
+# builds it.
 
 on:
   pull_request:
@@ -54,6 +65,15 @@ on:
         description: How long each fuzzy_test step runs (the scenarios' own value applies when empty)
         required: false
         default: ""
+      release_image:
+        description: Also run the shards against a release image's merod ("latest" for the newest release, or an image reference); empty skips it
+        required: false
+        default: ""
+      flamegraph:
+        description: Also profile a node through the kv-store soak (the nightly flamegraph)
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -66,8 +86,11 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
-  # The merobox revision whose cloud-v2 backend and examples this runs.
+  # The merobox revision whose cloud-v2 backend and examples this runs
+  # (release.yml's `E2E on the merod image` names the same).
   MEROBOX_REF: release-v2-parity
+  # The flamegraph job's renderer (`cargo install inferno`, cached).
+  INFERNO_VERSION: 0.12.8
 
 jobs:
   # merod, the fixtures every workflow installs and merobox's example inputs,
@@ -170,10 +193,17 @@ jobs:
         env:
           MEROD_BINARY: ${{ github.workspace }}/target/e2e/merod
           MEROBOX_FUZZY_SECONDS: ${{ github.event_name == 'schedule' && '900' || inputs.soak_seconds || '30' }}
+          MEROBOX_SOAK_REPORT: ${{ github.workspace }}/target/e2e/soak-${{ matrix.shard }}.json
         run: |
           chmod +x "$MEROD_BINARY"
           python3 scripts/cloud-v2-workflows.py --shard ${{ matrix.shard }}/4 \
             --json target/e2e/workflows-${{ matrix.shard }}.json
+
+      - name: Soak latency and throughput
+        if: ${{ !cancelled() }}
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: bash scripts/soak-summary.sh "target/e2e/soak-$SHARD.json" "Soak, shard $SHARD/4 (this tree's merod)"
 
       - name: Upload the results
         if: ${{ !cancelled() }}
@@ -183,6 +213,314 @@ jobs:
           path: target/e2e/workflows-${{ matrix.shard }}.json
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Upload the soak report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: soak-metrics-${{ matrix.shard }}
+          path: target/e2e/soak-${{ matrix.shard }}.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # Nightly: the shipped artifact. The newest published release (a prerelease
+  # included) has its image tagged with its version by release.yml; its merod
+  # runs the four shards of the commit the image was built from (its
+  # org.opencontainers.image.revision label), with that commit's fixtures and
+  # baseline, so a workflow added after the release cannot fail it. A release
+  # older than release-v2 (a v1 node) is reported and not run.
+  release-image:
+    name: Latest release image
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.release_image != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # The release list and the image commit's tree, through `gh api`.
+      contents: read
+      # Pulling the image from ghcr.io.
+      packages: read
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      version: ${{ steps.image.outputs.version }}
+      revision: ${{ steps.image.outputs.revision }}
+      testable: ${{ steps.image.outputs.testable }}
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Pull the image and take merod out of it
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          REQUESTED: ${{ inputs.release_image }}
+        run: |
+          set -euo pipefail
+          if [ -n "$REQUESTED" ] && [ "$REQUESTED" != latest ]; then
+            image=$REQUESTED
+            version=${image##*:}
+          else
+            version=$(gh api "repos/$REPO/releases?per_page=20" --jq '[.[] | select(.draft | not)][0].tag_name')
+            image="ghcr.io/${OWNER,,}/merod:$version"
+          fi
+          docker pull --platform linux/amd64 "$image"
+          revision=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")
+          if [ -z "$revision" ] || [ "$revision" = "<no value>" ]; then
+            revision=$(gh api "repos/$REPO/commits/$version" --jq .sha)
+          fi
+          mkdir -p release
+          id=$(docker create --platform linux/amd64 "$image")
+          docker cp "$id:/usr/local/bin/merod" release/merod
+          docker rm "$id"
+          # release-v2's runner, at that commit: a v1 release has none.
+          testable=false
+          if gh api "repos/$REPO/contents/scripts/cloud-v2-workflows.py?ref=$revision" --silent 2>/dev/null; then
+            testable=true
+          fi
+          {
+            echo "image=$image"
+            echo "version=$version"
+            echo "revision=$revision"
+            echo "testable=$testable"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Latest release image"
+            echo
+            echo "\`$image\` (\`$("$PWD/release/merod" --version 2>/dev/null || echo "merod, no --version")\`), built from $revision."
+            if [ "$testable" != true ]; then
+              echo
+              echo "That commit predates release-v2 (no scripts/cloud-v2-workflows.py): its merod is a v1 node, which merobox's cloud-v2 backend does not run. Nothing is tested until a release-v2 release ships."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload merod
+        if: steps.image.outputs.testable == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-merod
+          path: release/merod
+          if-no-files-found: error
+          retention-days: 1
+
+  release-fixtures:
+    name: merobox cloud-v2 fixtures (release ${{ needs.release-image.outputs.version }})
+    needs: release-image
+    if: needs.release-image.outputs.testable == 'true'
+    runs-on: big-machine
+    timeout-minutes: 60
+    steps:
+      - name: Checkout the release's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-image.outputs.revision }}
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          targets: wasm32-unknown-unknown
+          shared-key: ci-checks
+          save-if: false
+
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
+      - name: Build the fixtures
+        run: python3 scripts/build-cloud-v2-fixtures.py
+
+      - name: Upload them
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-release-fixtures
+          path: target/cloud-v2-wasm
+          if-no-files-found: error
+          retention-days: 1
+
+  release-scenarios:
+    name: merobox cloud-v2 on release ${{ needs.release-image.outputs.version }} (${{ matrix.shard }}/4)
+    needs: [release-image, release-fixtures]
+    runs-on: big-machine
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout the release's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-image.outputs.revision }}
+          persist-credentials: false
+
+      - name: Checkout merobox
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: calimero-network/merobox
+          ref: ${{ env.MEROBOX_REF }}
+          path: merobox
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install merobox
+        run: pip install ./merobox
+
+      - name: Download the fixtures
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: e2e-release-fixtures
+          path: target/cloud-v2-wasm
+
+      - name: Download the release's merod
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-merod
+          path: target/release-image
+
+      - name: Workflows of shard ${{ matrix.shard }}
+        env:
+          MEROD_BINARY: ${{ github.workspace }}/target/release-image/merod
+          MEROBOX_FUZZY_SECONDS: ${{ github.event_name == 'schedule' && '900' || inputs.soak_seconds || '30' }}
+          MEROBOX_SOAK_REPORT: ${{ github.workspace }}/target/release-image/soak-${{ matrix.shard }}.json
+        run: |
+          chmod +x "$MEROD_BINARY"
+          python3 scripts/cloud-v2-workflows.py --shard ${{ matrix.shard }}/4 \
+            --json target/release-image/workflows-${{ matrix.shard }}.json
+
+      # The script is this run's: the release's commit may predate it.
+      - name: Soak latency and throughput
+        if: ${{ !cancelled() }}
+        env:
+          SHARD: ${{ matrix.shard }}
+          VERSION: ${{ needs.release-image.outputs.version }}
+          REPORT: target/release-image/soak-${{ matrix.shard }}.json
+        run: |
+          if [ -s "$REPORT" ]; then
+            merobox cloud soak-report "$REPORT" --title "Soak, shard $SHARD/4 (release $VERSION's merod)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No soak report for shard $SHARD/4 (release $VERSION)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-release-results-${{ matrix.shard }}
+          path: |
+            target/release-image/workflows-${{ matrix.shard }}.json
+            target/release-image/soak-${{ matrix.shard }}.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # Nightly: where one node's CPU goes during the kv-store soak. merod is built
+  # with the `profiling` profile (optimized, with symbols) and frame pointers,
+  # so `perf record -g` sees whole stacks; scripts/soak-flamegraph.sh records
+  # node 1 for most of a 5-minute fuzzy run and inferno draws the SVG.
+  flamegraph:
+    name: merod flamegraph (kv-store soak)
+    needs: fixtures
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.flamegraph)
+    runs-on: big-machine
+    timeout-minutes: 75
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checkout merobox
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: calimero-network/merobox
+          ref: ${{ env.MEROBOX_REF }}
+          path: merobox
+          persist-credentials: false
+
+      # No cache to share: nothing else builds the profiling profile, and a
+      # nightly-only entry would evict the PR caches from the repo's 10 GB.
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: release
+          save-if: false
+
+      - name: Build merod for profiling
+        env:
+          RUSTFLAGS: -C force-frame-pointers=yes
+        run: cargo build -p merod --profile profiling
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install merobox
+        run: pip install ./merobox
+
+      - name: Download the fixtures
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: e2e-fixtures
+          path: target
+
+      - name: Install perf
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          # The tools built for the running kernel when the archive has them;
+          # perf from another kernel's package records user stacks as well.
+          sudo apt-get install -y -q --no-install-recommends linux-tools-common linux-tools-generic "linux-tools-$(uname -r)" \
+            || sudo apt-get install -y -q --no-install-recommends linux-tools-common linux-tools-generic
+          perf="/usr/lib/linux-tools/$(uname -r)/perf"
+          [ -x "$perf" ] || perf=$(find /usr/lib/linux-tools -name perf -type f | sort -V | tail -n1)
+          "$perf" --version
+          echo "PERF=$perf" >> "$GITHUB_ENV"
+          # Let the runner's user sample its own processes, with kernel symbols.
+          sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
+
+      - name: Restore inferno
+        id: inferno
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.inferno
+          key: inferno-${{ env.INFERNO_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install inferno
+        if: steps.inferno.outputs.cache-hit != 'true'
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/inferno-build
+        run: cargo install inferno --version "$INFERNO_VERSION" --locked --root ~/.inferno
+
+      - name: Profile node 1 through the kv-store soak
+        env:
+          MEROD_BINARY: ${{ github.workspace }}/target/profiling/merod
+          MEROBOX_FUZZY_SECONDS: "300"
+        run: |
+          PATH="$HOME/.inferno/bin:$PATH"
+          bash scripts/soak-flamegraph.sh target/flamegraph
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          bash scripts/soak-summary.sh target/flamegraph/soak.json "Soak while profiled (profiling build, node 1 under perf)"
+          if [ -s target/flamegraph/merod-flamegraph.svg ]; then
+            echo "Flamegraph: artifact \`merod-flamegraph\` (merod-flamegraph.svg; merod.folded for inferno-diff-folded)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the flamegraph
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: merod-flamegraph
+          path: target/flamegraph
+          if-no-files-found: ignore
+          retention-days: 30
 
   # merobox's own cloud-v2 examples: a crash and a frozen node, a frozen leader
   # under a latency budget, organizations and keys, signed packages from a

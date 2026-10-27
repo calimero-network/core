@@ -208,12 +208,108 @@ than kept unrun. Each, and why nothing replaces it (or what does):
   example inputs once, for the jobs below;
 - job `merobox cloud-v2 (K/4)`: every release-v2 workflow, core's and the
   apps', in four shards of about equal length (merobox at `MEROBOX_REF`);
-  nightly, the fuzzy loads run 15 minutes each;
+  nightly, the fuzzy loads run 15 minutes each. Each shard's fuzzy load
+  reports its latency and throughput (below) in the job summary and as the
+  artifact `soak-metrics-K`;
 - job `merobox cloud-v2 examples`: merobox's own examples;
 - job `clients against merod`: mero-js's `test:cloud-v2` and
   calimero-client-py's cluster tests against this tree's `merod`. A change that
   breaks a client goes green with the client's fix: a same-named branch there,
   or `sdk-ref: <ref>` (mero-js) / `py-ref: <ref>` (Python) in the PR body.
+
+Those test a debug `cargo build`. Two jobs test the `merod` that ships, the
+binary inside the Docker image (merobox starts processes, so it is copied out
+with `docker create` and `docker cp`):
+
+- **A PR's own image** (`.github/workflows/release.yml`, job
+  `E2E on the merod image`, on PRs and the merge queue whenever the PR builds
+  the image). `Release Merod container` builds the amd64 image as it does for
+  master, loads it instead of pushing it, and hands it on as the artifact
+  `merod-image`; the job runs the smoke list,
+  `scripts/cloud-v2-workflows.py --smoke` (one workflow per area, listed with
+  the fixtures they need in `scripts/cloud-v2-workflows-smoke.json`, every one
+  on the baseline; `check-scenario-coverage.py` checks), and merobox's
+  `kv-store-failover` and `frozen-leader` examples against it, about four
+  minutes after the image. `Image E2E fixtures` builds only the smoke list's
+  fixtures, alongside the binaries.
+- **The latest release's image, nightly** (`e2e.yml`, jobs
+  `Latest release image`, `merobox cloud-v2 fixtures (release V)` and
+  `merobox cloud-v2 on release V (K/4)`; on demand with the `release_image`
+  input: `latest` or an image reference). It pulls
+  `ghcr.io/calimero-network/merod:<version>` for the newest published release
+  (a prerelease included) and runs the four shards, soak included, on the
+  workflows, fixtures and baseline of the commit the image was built from
+  (its `org.opencontainers.image.revision`), so a workflow added after the
+  release does not fail it. A release cut before release-v2 is a v1 node,
+  which merobox does not run: the job says so in its summary and the shards
+  are skipped.
+
+To run the smoke list against a binary taken out of an image locally:
+
+```bash
+docker create --name m ghcr.io/calimero-network/merod:edge && docker cp m:/usr/local/bin/merod /tmp/merod && docker rm m
+python3 scripts/build-cloud-v2-fixtures.py $(jq -r '.fixtures[]' scripts/cloud-v2-workflows-smoke.json)
+MEROD_BINARY=/tmp/merod python3 scripts/cloud-v2-workflows.py --smoke
+```
+
+### Soak latency and throughput
+
+A `fuzzy_test` step times every step it sends to the cluster (one round trip
+each). With `MEROBOX_SOAK_REPORT=file.json` it appends a report to that file:
+per operation, how many ran and failed, operations and calls per second over
+the run, and the p50/p95/p99 (and mean, max) latency of its calls in
+milliseconds, the same per step kind (`call set`, `call get`), and the whole
+run's. `merobox cloud soak-report file.json` (or `scripts/soak-summary.sh`,
+which CI runs) prints it as a table:
+
+```bash
+MEROD_BINARY=target/debug/merod MEROBOX_FUZZY_SECONDS=30 MEROBOX_SOAK_REPORT=soak.json \
+  python3 scripts/cloud-v2-workflows.py workflows/fuzzy-tests/kv-store/fuzzy-test.yml
+merobox cloud soak-report soak.json
+```
+
+A 30-second kv-store run against a debug `merod` on a shared 4-vCPU Linux
+container (the shape of the nightly table, not a reference):
+
+| Operation | Ops | Pass % | Ops/s | Calls | Calls/s | p50 ms | p95 ms | p99 ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| cross_node_write_read | 7 | 100.0 | 0.23 | 14 | 0.46 | 19.5 | 21.8 | 21.8 |
+| list_entries | 29 | 100.0 | 0.96 | 29 | 0.96 | 43.3 | 74.1 | 85.3 |
+| random_read | 28 | 100.0 | 0.93 | 28 | 0.93 | 11.6 | 16.2 | 20.0 |
+| set_and_verify | 96 | 100.0 | 3.18 | 192 | 6.36 | 17.8 | 29.3 | 31.9 |
+| write_burst | 56 | 100.0 | 1.86 | 672 | 22.28 | 25.1 | 30.9 | 33.5 |
+| **all** (30s) | 216 | 100.0 | 7.16 | 935 | 31.00 | 22.1 | 31.8 | 51.1 |
+
+The calls run one at a time, so a call's latency is what one caller sees and
+calls/s is one caller's rate, not the cluster's capacity; the cluster bench
+([below](#cluster-throughput)) measures that. Numbers from a debug build
+(the PR shards) are for comparing runs of the same job, not the release's
+speed; the release image's shards measure that. The pass rate and
+`success_threshold` gate as before; latency gates nothing.
+
+### Flamegraphs
+
+Nightly (or with the `flamegraph` input), job `merod flamegraph (kv-store
+soak)` builds `merod` with the `profiling` profile (optimized, with symbols)
+and `-C force-frame-pointers=yes`, runs the kv-store fuzzy load for five
+minutes, and records node 1 with `perf record -g` for most of it
+(`scripts/soak-flamegraph.sh`; the runner sets `kernel.perf_event_paranoid=-1`).
+inferno renders the samples; the artifact `merod-flamegraph` holds
+`merod-flamegraph.svg`, the folded stacks `merod.folded` (compare two nights
+with `inferno-diff-folded old.folded new.folded | inferno-flamegraph > diff.svg`)
+and the profiled run's soak report. Locally, on Linux:
+
+```bash
+cargo install inferno --version 0.12.8 --locked
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build -p merod --profile profiling
+sudo sysctl -w kernel.perf_event_paranoid=-1
+MEROD_BINARY=target/profiling/merod MEROBOX_FUZZY_SECONDS=120 scripts/soak-flamegraph.sh /tmp/flame
+```
+
+`PERF=/usr/lib/linux-tools/<version>/perf` points it at a perf whose wrapper
+does not match the running kernel; `PROFILE_DELAY`, `PROFILE_SECONDS` and
+`PROFILE_HZ` set when and how it samples, and a second argument names another
+fuzzy workflow (a third, another node).
 
 ## What scenario tests cannot catch
 
