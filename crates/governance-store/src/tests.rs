@@ -12759,6 +12759,52 @@ mod self_leave_rotation {
     }
 
     #[test]
+    fn a_capability_only_member_cannot_remove_someone_who_administers_a_subgroup() {
+        let f = fixture();
+        MembershipRepository::new(&f.store)
+            .add_member(&f.sub_gid, &f.leaver, GroupMemberRole::Admin)
+            .unwrap();
+        let manager_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+        let manager = enrol_member(&f.store, &f.ns_gid, &manager_sk.public_key());
+        MembershipRepository::new(&f.store)
+            .add_member(&f.ns_gid, &manager, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(&f.store)
+            .set_member_capability(
+                &f.ns_gid,
+                &manager,
+                calimero_context_config::MemberCapabilities::MANAGE_MEMBERS.bits(),
+            )
+            .unwrap();
+        let op = SignedGroupOp::sign(
+            &manager_sk,
+            f.ns_gid.to_bytes().into(),
+            vec![],
+            1,
+            crate::test_fixtures::dummy_member_removed_op(f.leaver),
+        )
+        .expect("sign MemberRemoved");
+
+        let _ = apply_local_signed_group_op(&f.store, &op)
+            .expect_err("a capability holder must not strip a sub-folder admin seat");
+
+        assert_eq!(
+            MembershipRepository::new(&f.store)
+                .role_of(&f.sub_gid, &f.leaver)
+                .unwrap(),
+            Some(GroupMemberRole::Admin)
+        );
+        apply_root_removal(&f);
+        assert_eq!(
+            MembershipRepository::new(&f.store)
+                .role_of(&f.sub_gid, &f.leaver)
+                .unwrap(),
+            None,
+            "a root admin may"
+        );
+    }
+
+    #[test]
     fn removing_a_member_from_the_namespace_removes_them_from_every_subgroup() {
         let f = fixture();
         MembershipRepository::new(&f.store)
