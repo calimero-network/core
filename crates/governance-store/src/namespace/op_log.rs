@@ -185,6 +185,19 @@ impl<'a> NamespaceOpLogService<'a> {
                 .map_err(|e| eyre::eyre!("borsh: {e}"))?,
         };
         let _ = batch.put(&key, &value)?;
+        if let NamespaceOp::Group {
+            group_id, key_id, ..
+        }
+        | NamespaceOp::RootSealedForGroup {
+            group_id, key_id, ..
+        } = &op.op
+        {
+            crate::cited_keys::CitedKeyRepository::stage(
+                batch,
+                &calimero_context_config::types::ContextGroupId::from(group_id.to_bytes()),
+                &key_id.to_bytes(),
+            )?;
+        }
 
         // Mirrors `unified_op_store::persist_op` in `calimero-context`; that apply-time
         // dual-write stays as a redundant-but-idempotent belt-and-suspenders.
@@ -683,19 +696,7 @@ impl<'a> NamespaceOpLogService<'a> {
     /// pull to learn which groups it has undecryptable pending ops for.
     /// Deduplicated on `(group_id, key_id)`.
     pub fn collect_buffered_group_op_keys(&self) -> EyreResult<CitedKeys> {
-        Ok(self
-            .collect_buffered_group_op_keys_within(usize::MAX)?
-            .unwrap_or_default())
-    }
-
-    /// [`Self::collect_buffered_group_op_keys`] over at most `max_rows` log rows: `None` when the
-    /// log holds more, so a caller on a hot path refuses instead of scanning without bound.
-    pub fn collect_buffered_group_op_keys_within(
-        &self,
-        max_rows: usize,
-    ) -> EyreResult<Option<CitedKeys>> {
         let mut seen = std::collections::BTreeSet::new();
-        let mut rows = 0usize;
         let handle = self.store.handle();
         let start =
             calimero_store::key::NamespaceGovOp::new(self.namespace_id.to_bytes(), [0u8; 32]);
@@ -725,10 +726,6 @@ impl<'a> NamespaceOpLogService<'a> {
             if key.namespace_id() != self.namespace_id.to_bytes() {
                 break;
             }
-            rows += 1;
-            if rows > max_rows {
-                return Ok(None);
-            }
             let value: calimero_store::key::NamespaceGovOpValue = match handle.get(&key) {
                 Ok(Some(v)) => v,
                 Ok(None) => continue,
@@ -756,7 +753,7 @@ impl<'a> NamespaceOpLogService<'a> {
             seen.extend(sealed_under);
         }
 
-        Ok(Some(seen.into_iter().collect()))
+        Ok(seen.into_iter().collect())
     }
 
     pub fn collect_opaque_skeleton_delta_ids_for_group(

@@ -45,6 +45,7 @@ mod account_namespaces;
 pub mod authorizer;
 mod capabilities;
 pub mod cascade;
+mod cited_keys;
 mod context_registration;
 mod context_tree;
 mod contexts;

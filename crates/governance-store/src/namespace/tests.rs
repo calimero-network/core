@@ -4814,60 +4814,57 @@ fn a_half_made_group_is_finished_by_the_next_create() {
         .unwrap());
 }
 
-/// A scan of the log for cited keys stops at its budget instead of walking all of it.
+/// A key a stored group op cites is found through the index; one no op cites is not, however
+/// large the log: the lookup is a point read.
 #[test]
-fn the_cited_key_scan_is_bounded() {
-    use calimero_context_client::local_governance::SignedNamespaceOp;
-    use rand::rand_core::UnwrapErr;
-    use rand::rngs::SysRng;
-
-    use super::NamespaceGovernance;
+fn a_cited_key_is_found_through_the_index_in_a_large_log() {
+    use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
 
     let store = test_store();
-    let mut rng = UnwrapErr(SysRng);
-    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
-    let admin_sk = PrivateKey::from(admin_sk_bytes);
-    let admin_pk = admin_sk.public_key();
     let ns_id = [0xACu8; 32];
-    let ns_gid = ContextGroupId::from(ns_id);
-    let admin = enrol_member(&store, &ns_gid, &admin_pk);
-    MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin))
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
-        .unwrap();
-    NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
-        .unwrap();
-    let gov = NamespaceGovernance::new(&store, ns_id.into());
-    for (nonce, tag) in [(1u64, 1u8), (2, 2), (3, 3)] {
-        let op = SignedNamespaceOp::sign(
-            &admin_sk,
+    let sk = PrivateKey::from([0x5C; 32]);
+    let group = ContextGroupId::from([0xAD; 32]);
+    let log = NamespaceOpLogService::new(&store, ns_id.into());
+    let op = |nonce: u64, key: [u8; 32]| {
+        SignedNamespaceOp::sign(
+            &sk,
             ns_id.into(),
             vec![],
             nonce,
-            seal_for_test(
-                &store,
-                ns_gid,
-                crate::test_fixtures::group_created(admin, ns_id, false, tag),
-            ),
+            NamespaceOp::Group {
+                group_id: group.to_bytes().into(),
+                key_id: key.into(),
+                encrypted: GroupKeyring::encrypt_op(&[0x77; 32], &GroupOp::Noop).unwrap(),
+                key_rotation: None,
+                registers: None,
+            },
         )
-        .expect("sign");
-        gov.apply_signed_op(&op)
-            .and_then(crate::ApplyNamespaceOpResult::verdict)
-            .expect("apply");
+        .expect("sign")
+    };
+    // Past the budget the earlier scan gave up at.
+    for nonce in 1..=21_000u64 {
+        let mut key = [0u8; 32];
+        key[..8].copy_from_slice(&nonce.to_le_bytes());
+        log.store_signed_operation(&op(nonce, key)).unwrap();
     }
 
-    let log = NamespaceOpLogService::new(&store, ns_id.into());
-    assert!(log
-        .collect_buffered_group_op_keys_within(1)
-        .unwrap()
-        .is_none());
-    assert!(log
-        .collect_buffered_group_op_keys_within(100)
-        .unwrap()
-        .is_some_and(|keys| !keys.is_empty()));
+    let cited = crate::cited_keys::CitedKeyRepository::new(&store);
+    let mut first = [0u8; 32];
+    first[..8].copy_from_slice(&1u64.to_le_bytes());
+    assert!(
+        cited.cites(&group, &first).unwrap(),
+        "the first epoch is found"
+    );
+    assert!(
+        !cited.cites(&group, &[0xEE; 32]).unwrap(),
+        "a key no op cites is not"
+    );
+    assert!(
+        !cited
+            .cites(&ContextGroupId::from([0x01; 32]), &first)
+            .unwrap(),
+        "a key is cited per group"
+    );
 }
 
 /// An open folder that moves into a space keeps no direct row: its seats become the space's.
