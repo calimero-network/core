@@ -27,6 +27,9 @@ pub struct StoredSignedGroupOp {
     pub key_id: KeyId,
 }
 
+/// The `(group id, key id)` pairs the ops of a log cite.
+pub type CitedKeys = Vec<([u8; 32], [u8; 32])>;
+
 /// Service for persisting and reading namespace governance op-log entries.
 pub struct NamespaceOpLogService<'a> {
     store: &'a Store,
@@ -679,7 +682,7 @@ impl<'a> NamespaceOpLogService<'a> {
     /// subgroup's own key). Used by the joiner-side direct key-delivery
     /// pull to learn which groups it has undecryptable pending ops for.
     /// Deduplicated on `(group_id, key_id)`.
-    pub fn collect_buffered_group_op_keys(&self) -> EyreResult<Vec<([u8; 32], [u8; 32])>> {
+    pub fn collect_buffered_group_op_keys(&self) -> EyreResult<CitedKeys> {
         Ok(self
             .collect_buffered_group_op_keys_within(usize::MAX)?
             .unwrap_or_default())
@@ -690,7 +693,7 @@ impl<'a> NamespaceOpLogService<'a> {
     pub fn collect_buffered_group_op_keys_within(
         &self,
         max_rows: usize,
-    ) -> EyreResult<Option<Vec<([u8; 32], [u8; 32])>>> {
+    ) -> EyreResult<Option<CitedKeys>> {
         let mut seen = std::collections::BTreeSet::new();
         let mut rows = 0usize;
         let handle = self.store.handle();
