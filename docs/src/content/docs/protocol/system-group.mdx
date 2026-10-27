@@ -39,7 +39,8 @@ DeleteApp { app_id, actor }
   → refused unless actor is the app's owner, or an admin of its organization
 UpgradeApp { app_id, bundle, by_operator, actor, consent, … }
   → refused unless governance gives app upgrades to whoever this is, and
-    (for an owner) actor is the app's owner or its organization's owner
+    (for an owner) actor is the app's owner, or, for an org app, holds
+    MANAGE_APPLICATION on its team or org-wide (owner, admin, lead, granted)
 InstallPackage { package, signer_id, release }
   → refused if the package is pinned to another signer, or the same
     version is installed with other contents, or the uploader's quota is spent

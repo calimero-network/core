@@ -74,9 +74,12 @@ release.
 
 An upgrade switches an app to another bundle and runs its migration over the
 existing state ([Upgrades & migrations](/protocol/upgrades/)). Where owners
-decide, only the app's owner — or, for an organization's app, the
-organization's owner — may upgrade it, with a passkey step-up over the exact
-upgrade (`consent` on `UpgradeApp`); an organization admin may not. Where the
+decide, the app's owner may upgrade it, and so may, for an organization's
+app, whoever holds v1's `MANAGE_APPLICATION` on its team or across the
+organization: its owner, an admin, the team's leads, or a member granted the
+capability ([Organizations](/protocol/organizations/#capabilities)). Each
+does so with their own passkey step-up over the exact upgrade (`consent` on
+`UpgradeApp`). A personal app stays its owner's alone. Where the
 operator decides, `POST /ops/apps/{app}/upgrade` and organization-wide runs
 through `/ops/orgs/{org}/upgrade` upgrade to a release the operator installed
 itself (`/ops/packages`, recorded as installed by `operator`).
@@ -85,8 +88,10 @@ itself (`/ops/packages`, recorded as installed by `operator`).
 
 An app's signed manifest declares the URL prefixes it may call. A declared
 prefix is usable only once it is approved for the app's **publisher** (the
-package's pinned signer): by the organization's owner
-(`POST /orgs/{org}/outbound`) or the account (`/auth/outbound`) with a passkey
+package's pinned signer): for an organization, by whoever holds
+`MANAGE_APPLICATION` across it (`POST /orgs/{org}/outbound`; a grant on one
+team is not enough, since the approval covers every app of the organization),
+or by the account (`/auth/outbound`), with a passkey
 step-up, or by the operator (`POST /ops/outbound`). The approval records both
 the prefixes approved and every prefix the approver was shown, so a prefix a
 later release adds reads as *awaiting approval* rather than approved. The

@@ -1362,9 +1362,9 @@ async fn set(cl: &Client, app: &str, v: &str) -> Result<(), Box<calimero_cloud_c
 }
 
 /// v1's member capabilities: a member who is not an admin creates apps in the
-/// organization only with `CREATE_APP` and invites only with `INVITE_MEMBERS`
-/// (neither by default, as in v1). No capability lets a member upgrade
-/// another's app: that stays its owner's (or the org owner's) decision.
+/// organization only with `CREATE_APP`, invites only with `INVITE_MEMBERS`,
+/// and upgrades another's org app only with `MANAGE_APPLICATION` (none by
+/// default, as in v1), with their own passkey.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_member_needs_the_capability_to_create_apps_or_invite() {
     const CREATE_APP: u32 = 1 << 0;
@@ -1434,12 +1434,46 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
             .unwrap_err(),
         "above your own role",
     );
-    // Nor another's app's code.
+    // Another's org app: only with MANAGE_APPLICATION.
     let alices = alice.create_app("a", &bundle, in_org).await.unwrap();
     let next = bob.upload_bundle(variant(&kv_wasm(), "v2")).await.unwrap();
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "account": bob_id, "capabilities": CREATE_APP | INVITE_MEMBERS }),
+        )
+        .await
+        .unwrap();
     refused(
         bob.post_confirmed(
             &format!("apps/{alices}/upgrade"),
+            json!({ "bundle": next }),
+            &mut bob_pk,
+        )
+        .await
+        .unwrap_err(),
+        "MANAGE_APPLICATION",
+    );
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "account": bob_id, "capabilities": MANAGE_APPLICATION }),
+        )
+        .await
+        .unwrap();
+    let _upgraded = bob
+        .post_confirmed(
+            &format!("apps/{alices}/upgrade"),
+            json!({ "bundle": next }),
+            &mut bob_pk,
+        )
+        .await
+        .unwrap();
+    // Never a personal app.
+    let personal = alice.create_app("p", &bundle, json!({})).await.unwrap();
+    refused(
+        bob.post_confirmed(
+            &format!("apps/{personal}/upgrade"),
             json!({ "bundle": next }),
             &mut bob_pk,
         )

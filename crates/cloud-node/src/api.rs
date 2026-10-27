@@ -2184,13 +2184,14 @@ async fn app_upgrade(
     let account = p.account()?;
     // Who may upgrade is the system log's rule (`UpgradeApp`); asked first, so
     // a refused or failed upgrade records nothing. An upgrade is the app's
-    // owner's decision (the organization's owner for an org app), never an
-    // operator's or an admin's: new code reads the app's data.
+    // owner's decision, or, for an org app, of whoever holds v1's
+    // `MANAGE_APPLICATION` there (`SystemState::manages_apps`), each with
+    // their own passkey: new code reads the app's data.
     let app = node.app(&app_id).await?;
     owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
     if !node.sys(|s| s.may_upgrade(&app, &account)) {
         return Err(ApiError::forbidden(
-            "only the app's owner (or its organization's owner) may upgrade it",
+            "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization",
         ));
     }
     // A version alone means the app's own package and service.
@@ -2492,8 +2493,10 @@ async fn start_run(
 }
 
 /// Upgrade every app of an organization (or a team, with `cascade` its
-/// subtree) that runs `package` to `version`: the org owner's, with one passkey
-/// assertion over the whole run, where owners hold app upgrades.
+/// subtree) that runs `package` to `version`: for whoever holds
+/// `MANAGE_APPLICATION` there (the owner, an admin, a team's lead, or a member
+/// granted it), with one passkey assertion over the whole run, where owners
+/// hold app upgrades. Each app is still checked on its own (`UpgradeApp`).
 async fn org_upgrade(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -2503,9 +2506,9 @@ async fn org_upgrade(
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
-    if node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&account))) != Some(OrgRole::Owner) {
+    if !node.sys(|s| s.manages_apps(&org, &account, body.team.as_deref())) {
         return Err(ApiError::forbidden(
-            "only the organization's owner upgrades all its apps",
+            "upgrading the organization's apps needs MANAGE_APPLICATION there",
         ));
     }
     // Installed from the registry first if the cluster lacks the release.
@@ -2629,9 +2632,9 @@ async fn org_upgrade_retry(
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
-    if node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&account))) != Some(OrgRole::Owner) {
+    if !node.sys(|s| s.manages_apps(&org, &account, retry.team.as_deref())) {
         return Err(ApiError::forbidden(
-            "only the organization's owner upgrades all its apps",
+            "upgrading the organization's apps needs MANAGE_APPLICATION there",
         ));
     }
     let consent = consent(

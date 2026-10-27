@@ -53,8 +53,9 @@ pub struct AttestationDoc {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Authority {
-    /// Each app's owner (an organization's owner for its apps), with a
-    /// passkey assertion. The operator cannot.
+    /// Each app's owner (for an organization's apps, whoever holds
+    /// `MANAGE_APPLICATION` there), with a passkey assertion. The operator
+    /// cannot.
     #[default]
     Owner,
     /// The operator, for every app (the Ops API). Owners cannot. For a

@@ -288,14 +288,32 @@ impl SystemState {
         self.governance.clone().unwrap_or_default()
     }
 
-    /// Whether `account` may upgrade `app`: its owner, or the owner of its
-    /// organization.
+    /// Whether `account` may upgrade `app`: its owner, or, for an org app,
+    /// whoever [manages the organization's apps](Self::manages_apps) on the
+    /// app's team.
     #[must_use]
     pub fn may_upgrade(&self, app: &AppRecord, account: &str) -> bool {
+        let team = match &app.access {
+            Access::Team { team } => Some(team.as_str()),
+            _ => None,
+        };
         app.owner == account
-            || app.org.as_ref().is_some_and(|o| {
-                self.orgs.get(o).and_then(|o| o.role(account)) == Some(OrgRole::Owner)
-            })
+            || app
+                .org
+                .as_ref()
+                .is_some_and(|o| self.manages_apps(o, account, team))
+    }
+
+    /// v1's `MANAGE_APPLICATION`: whether `account` may upgrade `org`'s apps
+    /// (on `team`, or org-wide when `None`) and approve its outbound hosts.
+    /// The owner, an admin, a team's lead, or a member holding the capability
+    /// there; never someone outside the organization or below member.
+    #[must_use]
+    pub fn manages_apps(&self, org: &str, account: &str, team: Option<&str>) -> bool {
+        self.orgs.get(org).is_some_and(|o| {
+            o.role(account).is_some_and(|r| r >= OrgRole::Member)
+                && o.may(account, team, crate::types::caps::MANAGE_APPLICATION)
+        })
     }
 
     /// Whether a node on `release` may hold `app`'s data. `None` is a node
@@ -1007,7 +1025,7 @@ impl SystemMachine {
                 };
                 if !allowed {
                     return Err(
-                        "only the app's owner (or its organization's owner) may upgrade it",
+                        "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization",
                     );
                 }
                 let by = if by_operator {
@@ -1497,10 +1515,14 @@ impl SystemMachine {
                 let approvals = match &scope {
                     ReleaseScope::Cluster => &mut s.operator_outbound,
                     ReleaseScope::Org { org } => {
-                        let o = s.orgs.get_mut(org).ok_or("no such organization")?;
-                        if o.role(&actor) != Some(OrgRole::Owner) {
-                            return Err("only the organization's owner approves outbound hosts");
+                        // One approval covers every app of the organization,
+                        // so only an org-wide grant reaches it.
+                        if !s.manages_apps(org, &actor, None) {
+                            return Err(
+                                "approving outbound hosts needs MANAGE_APPLICATION in the organization",
+                            );
                         }
+                        let o = s.orgs.get_mut(org).ok_or("no such organization")?;
                         &mut o.outbound_approvals
                     }
                     ReleaseScope::Account => {
@@ -2096,6 +2118,131 @@ mod tests {
                     check(&g);
                 }
             }
+        }
+    }
+
+    /// v1's `MANAGE_APPLICATION`: in an organization, an admin or a member
+    /// holding the capability (org-wide, or on the app's team) upgrades its
+    /// apps and approves its outbound hosts, as the org owner does. A personal
+    /// app stays its owner's, and a team-only grant reaches only that team.
+    #[test]
+    fn manage_application_lets_a_member_upgrade_and_approve_outbound() {
+        const MANAGE_APPLICATION: u32 = 1 << 4;
+        let mut m = SystemMachine::default();
+        let _ok = m.run(genesis(all(Authority::Owner))).unwrap();
+        for who in ["alice", "bob", "carol", "dave", "erin", "frank"] {
+            let _ok = m.run(account(who)).unwrap();
+        }
+        let _prev = m.state.orgs.insert(
+            "org".into(),
+            serde_json::from_value(json!({
+                "orgId": "org", "name": "Docs",
+                "members": {
+                    "alice": "owner", "bob": "member", "carol": "member",
+                    "dave": "admin", "frank": "member"
+                },
+                "capabilities": { "bob": MANAGE_APPLICATION },
+                "teams": { "t": {
+                    "teamId": "t", "name": "T", "join": "invite",
+                    "members": { "frank": false },
+                    "capabilities": { "frank": MANAGE_APPLICATION }
+                } }
+            }))
+            .unwrap(),
+        );
+        for hash in ["b1", "b2"] {
+            let _prev = m.state.bundles.insert(
+                hash.into(),
+                serde_json::from_value(json!({ "hash": hash, "size": 1, "uploadedBy": "alice" }))
+                    .unwrap(),
+            );
+        }
+        let app = |id: &str, org: Option<&str>, access: serde_json::Value| {
+            serde_json::from_value::<crate::types::AppRecord>(json!({
+                "appId": id, "name": id, "group": 2, "bundle": "b1", "owner": "alice",
+                "org": org, "access": access, "replicas": [1, 2, 3], "createdAt": 0
+            }))
+            .unwrap()
+        };
+        for (id, a) in [
+            (
+                "in-org",
+                app("in-org", Some("org"), json!({ "kind": "org" })),
+            ),
+            (
+                "in-team",
+                app(
+                    "in-team",
+                    Some("org"),
+                    json!({ "kind": "team", "team": "t" }),
+                ),
+            ),
+            (
+                "personal",
+                app("personal", None, json!({ "kind": "owner" })),
+            ),
+        ] {
+            let _prev = m.state.apps.insert(id.into(), a);
+        }
+        let upgrade = |app: &str, actor: &str| SystemCmd::UpgradeApp {
+            app_id: app.into(),
+            bundle: "b2".into(),
+            by_operator: false,
+            actor: actor.into(),
+            at: 0,
+            run: None,
+            consent: serde_json::Value::Null,
+        };
+        for (app, actor, may) in [
+            ("in-org", "bob", true),
+            ("in-team", "bob", true),
+            ("in-org", "dave", true),
+            ("in-org", "alice", true),
+            ("in-org", "carol", false),
+            ("in-org", "erin", false),
+            ("in-team", "frank", true),
+            ("in-org", "frank", false),
+            ("personal", "bob", false),
+            ("personal", "dave", false),
+        ] {
+            assert_eq!(
+                m.run(upgrade(app, actor)).is_ok(),
+                may,
+                "{actor} upgrading {app}"
+            );
+        }
+
+        let _prev = m.state.packages.insert(
+            "p".into(),
+            serde_json::from_value(json!({
+                "name": "p", "signerId": "did:key:zP", "owner": "alice",
+                "versions": { "1.0.0": {
+                    "version": "1.0.0", "mpk": "00", "mpkSize": 1, "source": "upload",
+                    "services": { "": "b1" }, "outbound": ["https://api.example.com/v1/"],
+                    "installedBy": "alice", "installedAt": 0
+                } }
+            }))
+            .unwrap(),
+        );
+        let outbound = |actor: &str| SystemCmd::SetOutboundApproval {
+            scope: ReleaseScope::Org { org: "org".into() },
+            package: "p".into(),
+            selection: calimero_primitives::outbound::OutboundSelection::Manifest,
+            replace: false,
+            actor: actor.into(),
+            consent: serde_json::Value::Null,
+        };
+        // An approval covers the whole organization, so a team-only grant
+        // does not reach it.
+        for (actor, may) in [
+            ("bob", true),
+            ("dave", true),
+            ("alice", true),
+            ("carol", false),
+            ("frank", false),
+            ("erin", false),
+        ] {
+            assert_eq!(m.run(outbound(actor)).is_ok(), may, "{actor} approving");
         }
     }
 

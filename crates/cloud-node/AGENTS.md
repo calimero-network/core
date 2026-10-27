@@ -77,14 +77,16 @@ is its command line.
   replicas that hold the data: `Node::may_send` refuses Raft entries/snapshots to a
   peer whose attested release (`HttpAttestor::seen_release`) is not approved,
   `Node::place` skips such nodes, `/ops/apps/{app}/replicas` refuses them. Upgrades
-  are the app's owner's (or its org's owner's), with a passkey assertion over the
-  exact upgrade (`consent` on `UpgradeApp`).
+  are the app's owner's, or, for an org app, of whoever holds `MANAGE_APPLICATION`
+  on its team or org-wide (`SystemState::manages_apps`), with their own passkey
+  assertion over the exact upgrade (`consent` on `UpgradeApp`).
 - **Outbound HTTPS** (`calimero-outbound`, v1's gate): `Config::outbound` from
   `--settings` (`[outbound]`). `Node::outbound_for` hands a client only to
   `call_local`'s runs (calls, follow-ups, timers; not a read-only member's), for
   a bundle that is a signed release declaring prefixes; identity = (package,
   pinned signer), approval = `Org/Account::outbound_approvals[signer]`, set by
-  the owner with `SetOutboundApproval` (`POST /orgs/{org}/outbound`,
+  the account, or for an org whoever holds `MANAGE_APPLICATION` org-wide, with
+  `SetOutboundApproval` (`POST /orgs/{org}/outbound`,
   `/auth/outbound`, passkey consent; `merge_approval` at apply). The request is
   made inside the propose lock, on its own thread (`run_blocking`); a leader-race
   re-run sends it again.
@@ -242,7 +244,7 @@ is its command line.
   the organization keeps a default). An app deployed with `access: team` is
   reached by the team's members; a member whose direct row there is read-only
   runs calls, but one that would write is refused (`403`, `node::READ_ONLY`;
-  v1 discarded the writes). A team's creator leads it. Below admin, creating an app in the organization needs `caps::CREATE_APP` (on its team, or org-wide) and minting an invite `caps::INVITE_MEMBERS` (org-wide, or on each team it names); neither is in `caps::DEFAULT`, as in v1, and a team's leads hold both there. `MANAGE_APPLICATION` grants nothing: upgrades and outbound approvals stay the owner's (regression: `a_member_needs_the_capability_to_create_apps_or_invite`). A member a manager
+  v1 discarded the writes). A team's creator leads it. Below admin, creating an app in the organization needs `caps::CREATE_APP` (on its team, or org-wide) and minting an invite `caps::INVITE_MEMBERS` (org-wide, or on each team it names); neither is in `caps::DEFAULT`, as in v1, and a team's leads hold both there. `caps::MANAGE_APPLICATION` (v1's) lets a member upgrade the org's apps (on the app's team, or org-wide), start org upgrade runs, and approve the org's outbound hosts (org-wide grants only); a personal app stays its owner's (`SystemState::manages_apps`; regressions: `a_member_needs_the_capability_to_create_apps_or_invite`, `manage_application_lets_a_member_upgrade_and_approve_outbound`). A member a manager
   removed does not come back by inheritance until added again (`Team::removed`). Reads are filtered: a
   team one neither reaches nor manages is not listed (`GET /orgs/{org}`) and
   answers `404` (`GET /orgs/{org}/teams/{team}`). `DeleteTeam` takes the teams

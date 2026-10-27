@@ -165,8 +165,9 @@ app's data moves only to nodes on a release approved for it.
 
 Who upgrades depends on `--app-upgrades`.
 
-- **Owner (default).** The app's owner (or its organization's owner) approves
-  each upgrade with a passkey: `POST /apps/{app}/upgrade { version }`, or an
+- **Owner (default).** The app's owner, or for an org app anyone holding
+  `MANAGE_APPLICATION` there (the org owner, an admin, a team lead, or a member
+  granted it), approves each upgrade with their own passkey: `POST /apps/{app}/upgrade { version }`, or an
   organization-wide run `POST /orgs/{org}/upgrade { package, version, team?,
   cascade? }` approved once. Development clusters: `meroctl context update`,
   `meroctl group upgrade trigger`.
