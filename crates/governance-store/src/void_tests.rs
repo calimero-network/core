@@ -16,7 +16,7 @@ use calimero_store::Store;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 
-use crate::authorizer::{AtCutAuthorizer, AtCutMembershipPath, GroupRows, Undecidable};
+use crate::authorizer::{AtCutAuthorizer, AtCutMembershipPath, GroupRows};
 use crate::test_fixtures::{enrol_local_device, enrol_member, sample_meta_with_admin, test_store};
 use crate::{
     CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,

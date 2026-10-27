@@ -704,7 +704,7 @@ fn guarded_ops_are_never_delegable() {
 /// A guarded transfer folds as the admin change it carries only for the
 /// namespace root's own group: group ops fold into the namespace scope, and a
 /// subgroup's owner is no root admin of it. The subgroup's still folds as its
-/// `RootGuarded` node, so the projection counts it as the live counter does.
+/// `RootGuarded` node seating the heir as Admin, so the projection counts it as the live counter does.
 #[test]
 fn a_guarded_subgroup_transfer_names_no_root_admin_but_is_counted() {
     use calimero_op::OpPayload;
@@ -774,5 +774,12 @@ fn a_guarded_subgroup_transfer_names_no_root_admin_but_is_counted() {
         panic!("a subgroup's guarded transfer still folds as a RootGuarded node");
     };
     assert_eq!(group, sub);
-    assert_eq!(*carried, OpPayload::Noop);
+    assert_eq!(
+        *carried,
+        OpPayload::MemberAdded {
+            group: sub,
+            member: new_owner,
+            role: GroupMemberRole::Admin,
+        }
+    );
 }
