@@ -12743,6 +12743,57 @@ mod self_leave_rotation {
              and no admin ever pays it"
         );
     }
+
+    fn apply_root_removal(f: &Fixture) {
+        let admin_sk = NamespaceRepository::new(&f.store)
+            .identity_record(&f.ns_gid)
+            .unwrap()
+            .map(|i| PrivateKey::from(i.private_key))
+            .expect("namespace identity");
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            f.ns_gid.to_bytes().into(),
+            vec![],
+            1,
+            crate::test_fixtures::dummy_member_removed_op(f.leaver),
+        )
+        .expect("sign MemberRemoved");
+        apply_local_signed_group_op(&f.store, &op).expect("apply MemberRemoved");
+    }
+
+    #[test]
+    fn removing_a_member_from_the_namespace_removes_them_from_every_subgroup() {
+        let f = fixture();
+        MembershipRepository::new(&f.store)
+            .add_member(&f.sub_gid, &f.leaver, GroupMemberRole::Admin)
+            .unwrap();
+
+        apply_root_removal(&f);
+
+        assert_eq!(
+            MembershipRepository::new(&f.store)
+                .role_of(&f.sub_gid, &f.leaver)
+                .unwrap(),
+            None,
+            "a workspace removal takes the member out of every sub-folder"
+        );
+        assert!(DenyListRepository::new(&f.store)
+            .is_denied(&f.sub_gid, &f.leaver)
+            .unwrap());
+        assert_eq!(
+            ReentryRepository::new(&f.store)
+                .block_of(&f.sub_gid, &f.leaver)
+                .unwrap(),
+            Some(calimero_store::key::GroupExitReason::Removed),
+            "a removal blocks re-entry as a removal, not a leave"
+        );
+        assert!(
+            PendingRotationRepository::new(&f.store)
+                .is_pending(&f.sub_gid, &f.leaver)
+                .unwrap(),
+            "the sub-folder key must rotate away from the removed member"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------
