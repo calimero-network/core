@@ -942,6 +942,10 @@ fn check_membership_anchor_cap_check_uses_deepest_direct_membership() {
     CapabilitiesRepository::new(&store)
         .set_member_capability(&mid, &alice, 0)
         .unwrap();
+    // A real Admin keeps `mid` from being leaderless, so Alice is no implicit admin.
+    MembershipRepository::new(&store)
+        .add_member(&mid, &AccountId::from([0x02; 32]), GroupMemberRole::Admin)
+        .unwrap();
 
     CapabilitiesRepository::new(&store)
         .set_subgroup_visibility(&mid, VisibilityMode::Open)
@@ -1386,6 +1390,10 @@ fn membership_path_inherited_admin_overrides_anchor_cap_denial() {
         .unwrap();
     CapabilitiesRepository::new(&store)
         .set_member_capability(&mid, &alice, 0)
+        .unwrap();
+    // A real Admin keeps `mid` from being leaderless, so Alice is no implicit admin.
+    MembershipRepository::new(&store)
+        .add_member(&mid, &AccountId::from([0x02; 32]), GroupMemberRole::Admin)
         .unwrap();
 
     CapabilitiesRepository::new(&store)
