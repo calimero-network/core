@@ -181,9 +181,12 @@ impl Tree {
     /// `group` may become private only outside every space and with no space below it.
     /// The namespace root has no visibility to make private, so it is not judged.
     pub fn require_may_make_private(&self, group: &ContextGroupId) -> EyreResult<()> {
-        let Some((parent, _)) = self.0.get(group) else {
+        let Some((parent, restricted)) = self.0.get(group) else {
             return Ok(());
         };
+        if *restricted {
+            bail!(PrivateSpaceError::AlreadyPrivate(group.to_string()));
+        }
         if self.private_on_chain(parent)?.is_some() || self.private_below(group)? {
             bail!(PrivateSpaceError::Nested(group.to_string()));
         }

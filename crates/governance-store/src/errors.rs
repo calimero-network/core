@@ -64,6 +64,9 @@ pub enum PrivateSpaceError {
     #[error("group {0} is a private space; a space cannot be reopened")]
     ReopenRefused(String),
 
+    #[error("group {0} is already a private space")]
+    AlreadyPrivate(String),
+
     #[error("group {0} would leave its private space")]
     LeavesSpace(String),
 

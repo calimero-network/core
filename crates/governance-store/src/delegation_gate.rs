@@ -2255,12 +2255,12 @@ mod founding_tests {
         let channel = ContextGroupId::from(crate::test_fixtures::derived_group_id(
             &f.author,
             f.ns.to_bytes(),
-            true,
+            false,
             0xC7,
         ));
         f.relay_publishes_sealed_root(
             f.wrapped(
-                crate::test_fixtures::group_created(f.author, f.ns.to_bytes(), true, 0xC7),
+                crate::test_fixtures::group_created(f.author, f.ns.to_bytes(), false, 0xC7),
                 2,
             ),
             2,

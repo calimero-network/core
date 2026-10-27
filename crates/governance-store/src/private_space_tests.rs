@@ -651,6 +651,23 @@ fn the_flips_key_rotation_reaches_the_space_maker() {
     );
 }
 
+/// Making a space root private again is refused, and seats nobody.
+#[test]
+fn re_flipping_a_space_root_is_refused_and_seats_nobody() {
+    let s = Space::new();
+    let space = s.private(NS);
+    let sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+    let other = enrol_member(&s.store, &ContextGroupId::from(NS), &sk.public_key());
+    crate::MembershipRepository::new(&s.store)
+        .remove_member(&space.into(), &s.admin)
+        .unwrap();
+
+    assert!(s.set_visibility(space, VisibilityMode::Restricted).is_err());
+    let members = crate::MembershipRepository::new(&s.store);
+    assert_eq!(members.role_of(&space.into(), &s.admin).unwrap(), None);
+    assert_eq!(members.role_of(&space.into(), &other).unwrap(), None);
+}
+
 /// A flip its signer may not make seats nobody: it is refused before anything is written.
 #[test]
 fn an_unauthorized_flip_seats_nobody() {
