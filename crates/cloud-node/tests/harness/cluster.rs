@@ -66,6 +66,7 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
             snapshot_every: 200,
         },
         session_key_rotation_secs: 6 * 3600,
+        read_wait: Duration::from_secs(2),
         tee_release: None,
         tee_profile: None,
         peer_measurements: calimero_cloud_client::Measurements::None,

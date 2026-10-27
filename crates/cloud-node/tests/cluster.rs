@@ -2077,6 +2077,26 @@ async fn an_uploaded_package_is_verified_and_reaches_the_other_nodes() {
     assert_eq!(p["versions"][0]["source"], json!("upload"));
 }
 
+/// A refresh token presented again is a stolen copy, and the session ends,
+/// whichever node it is presented to: a replica that has not applied the
+/// exchange yet must not answer "unknown" and let the thief keep trying.
+/// `read_wait: 0` stands for a replica further behind than a lookup waits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_reused_refresh_token_revokes_the_session_on_a_lagging_node() {
+    let c = Cluster::start_with(3, |cfg| cfg.read_wait = Duration::ZERO).await;
+    for round in 0..10 {
+        let (owner, _pk) = signed_up(&c, 0, &format!("owner{round}")).await;
+        let stolen = owner.session().await.unwrap();
+        let _rotated = owner.refresh().await.unwrap();
+        let thief = c.client(1 + round % 2);
+        thief.use_session(stolen).await;
+        let e = thief.refresh().await.unwrap_err().to_string();
+        assert!(e.contains("already used"), "round {round}: {e}");
+        let e = owner.me().await.unwrap_err().to_string();
+        assert!(e.starts_with("401"), "round {round}: {e}");
+    }
+}
+
 /// Xil's review, issues 5, 6 and 7, each reproduced as the review ran it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn sessions_confirmations_and_key_scopes_hold() {

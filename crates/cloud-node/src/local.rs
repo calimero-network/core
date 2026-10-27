@@ -73,6 +73,7 @@ pub async fn start(
             backup_dir: Some(dir.join("backups")),
             raft: calimero_log::Config::default(),
             session_key_rotation_secs: 6 * 3600,
+            read_wait: std::time::Duration::from_secs(2),
             tee_release: None,
             tee_profile: None,
             peer_measurements: calimero_cloud_client::Measurements::None,

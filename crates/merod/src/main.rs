@@ -294,6 +294,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
         backup_dir: args.backup_dir.clone(),
         raft: calimero_log::Config::default(),
         session_key_rotation_secs: args.session_key_rotation_secs.unwrap_or(6 * 3600).max(1800),
+        read_wait: std::time::Duration::from_secs(2),
         tee_release: args.tee_release.clone(),
         tee_profile: args.tee_profile.clone(),
         peer_measurements,

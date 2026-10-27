@@ -781,7 +781,15 @@ struct RefreshBody {
 
 async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -> ApiResult {
     let old_hash = b64url(&sha256(body.refresh_token.as_bytes()));
-    let Some(rec) = node.sys_until(|s| s.refresh.get(&old_hash).cloned()).await else {
+    let mut found = node.sys_until(|s| s.refresh.get(&old_hash).cloned()).await;
+    if found.is_none() {
+        // Not here yet, or exchanged already: this replica may be behind, so
+        // ask the leader how far the log is before telling a reused token
+        // (revoke the session) from an unknown one.
+        node.sys_fresh().await;
+        found = node.sys(|s| s.refresh.get(&old_hash).cloned());
+    }
+    let Some(rec) = found else {
         // A token already exchanged, presented again: someone else holds a
         // copy, so the session it belongs to ends here.
         if node.sys(|s| s.rotated_refresh.contains_key(&old_hash)) {

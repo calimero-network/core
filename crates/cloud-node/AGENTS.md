@@ -287,7 +287,11 @@ is its command line.
 - **Quotas** (`system::Quotas`, set with `POST /ops/quotas`) live in the system state and
   are checked at apply, so every node enforces the same limits; refusals are `429 QUOTA_EXCEEDED`.
 - **Read-your-writes across nodes**: lookups of system objects (`Node::sys_until`) wait
-  up to 2 s for the local replica to apply a write committed elsewhere.
+  up to `Config::read_wait` (2 s) for the local replica to apply a write committed
+  elsewhere. A refresh that finds no token then does a read index (`sys_fresh`)
+  before answering, so a replica further behind still tells a reused token (the
+  session is revoked) from an unknown one. Regression:
+  `a_reused_refresh_token_revokes_the_session_on_a_lagging_node`.
 
 ## Not done yet (prototype)
 

@@ -95,6 +95,9 @@ pub struct Config {
     /// How old the session-signing key K_s gets before the leader adds a new one.
     /// The previous key keeps verifying, so it must outlive a session (15 min).
     pub session_key_rotation_secs: u64,
+    /// How long a lookup of a system object (`Node::sys_until`) waits for a
+    /// write committed elsewhere to reach this replica before answering.
+    pub read_wait: Duration,
     /// The mero-tee release and image profile this node runs (TDX only); its
     /// attestation names them so clients can fetch the signed measurements.
     pub tee_release: Option<String>,
@@ -695,7 +698,7 @@ impl Node {
     /// applied here yet (read-your-writes across nodes).
     pub async fn sys_until<T>(&self, f: impl Fn(&SystemState) -> Option<T>) -> Option<T> {
         let mut applied = self.system.subscribe_applied();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let deadline = tokio::time::Instant::now() + self.config.read_wait;
         loop {
             if let Some(v) = self.sys(&f) {
                 return Some(v);
