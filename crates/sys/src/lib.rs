@@ -83,6 +83,8 @@ wasm_imports! {
         fn tee_origin() -> Bool;
         fn tee_random_bytes(buf: Ref<BufferMut<'_>>);
         fn tee_authority_keys(register_id: RegisterId);
+        // The namespace TEE key, public, in every run; 0 while there is none.
+        fn tee_sealing_key(register_id: RegisterId) -> Bool;
         fn account_device_keys(account: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
         // The writers of a `SharedStorage` cell at this run's governance cut. Returns 0 when
         // they cannot be resolved, 1 when no rotation took effect (the cell's stored set

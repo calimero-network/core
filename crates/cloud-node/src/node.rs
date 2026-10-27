@@ -861,6 +861,7 @@ impl Node {
             })),
             sealing: calimero_runtime::logic::SealingContext {
                 opener,
+                namespace_sealing_key: Some(self.tee_sealing_key(app_id)),
                 ..Default::default()
             },
             ..RunEnv::default()
@@ -911,7 +912,20 @@ impl Node {
             vault_keys: Vec::new(),
             account_devices,
             stand_ins,
+            namespace_sealing_key: Some(self.tee_sealing_key(app_id)),
         }
+    }
+
+    /// The app's TEE key, public half, as `env::tee_sealing_key` reads it:
+    /// what a value only the app's TEE may read is sealed to (v1's namespace
+    /// TEE key; here the cluster is every app's TEE).
+    fn tee_sealing_key(&self, app_id: &str) -> calimero_runtime::logic::SealingKeyResolver {
+        let tee = calimero_primitives::identity::PrivateKey::from(crate::backup::tee_key(
+            &self.config.storage_key,
+            app_id,
+        ));
+        let public = *AsRef::<[u8; 32]>::as_ref(&tee.public_key());
+        calimero_runtime::logic::SealingKeyResolver(Arc::new(move || Some(public)))
     }
 
     /// What a bundle's ABI declares that the node acts on.

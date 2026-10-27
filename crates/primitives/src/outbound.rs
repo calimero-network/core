@@ -104,6 +104,51 @@ pub struct OutboundResponse {
     pub body: Vec<u8>,
 }
 
+/// What starts a reference to a sealed secret in a header value or the body:
+/// `{{sealed:<hex envelope>}}`. See [`SealedSecret`].
+pub const SEALED_PREFIX: &str = "{{sealed:";
+
+/// The largest sealed envelope a request may name, in bytes.
+pub const MAX_SEALED_ENVELOPE: usize = 4 * 1024;
+
+/// What an app seals for the node to put in an outbound request: the value,
+/// and the only hosts it may ever be sent to. Sealed together, so the app
+/// cannot send the value anywhere the admin did not name when sealing it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshDeserialize, BorshSerialize))]
+pub struct SealedSecretPayload {
+    pub value: String,
+    pub hosts: Vec<String>,
+}
+
+/// A secret sealed to the namespace TEE key, which an app keeps in its state.
+///
+/// Every member replicates it; none can read it. A request names it with
+/// [`placeholder`](Self::placeholder), and only a node that is a TEE authority
+/// of the namespace opens it, fills it in for a host it names, and removes it
+/// from the response, so the app's code never holds the value. On any other
+/// node the request is refused `SealedUnavailable`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "borsh", derive(BorshDeserialize, BorshSerialize))]
+pub struct SealedSecret {
+    /// The namespace TEE key it is sealed to. When the namespace's key
+    /// rotates it no longer is the current one, and the app seals it again.
+    pub key: [u8; 32],
+    /// The [`SealedSecretPayload`], sealed in the app's context.
+    pub envelope: Vec<u8>,
+}
+
+impl SealedSecret {
+    /// What to write in a header value or the body where the value goes.
+    #[must_use]
+    pub fn placeholder(&self) -> String {
+        format!(
+            "{SEALED_PREFIX}{}{SECRET_SUFFIX}",
+            hex::encode(&self.envelope)
+        )
+    }
+}
+
 /// A refusal an app can act on, read from the reason `env::http_request`
 /// returns. Every other refusal (a host the operator does not allow, a URL
 /// outside the manifest, a bound) is a bug in the app or its deployment, and
@@ -116,6 +161,10 @@ pub enum OutboundRefusal {
     /// A newer version of the app declares the prefix and nobody has been
     /// asked about it yet: an admin should approve it from the upgrade.
     AwaitingApproval,
+    /// The request names a [`SealedSecret`] and this node is not a TEE
+    /// authority of the namespace, so it cannot open it: the request has to
+    /// run on one of the namespace's TEE nodes.
+    SealedUnavailable,
 }
 
 impl OutboundRefusal {
@@ -126,19 +175,24 @@ impl OutboundRefusal {
         match self {
             Self::NotApproved => "NotApproved",
             Self::AwaitingApproval => "AwaitingApproval",
+            Self::SealedUnavailable => "SealedUnavailable",
         }
     }
 
     /// The refusal a reason names, if it is one an app can act on.
     #[must_use]
     pub fn of(reason: &str) -> Option<Self> {
-        [Self::NotApproved, Self::AwaitingApproval]
-            .into_iter()
-            .find(|refusal| {
-                reason
-                    .strip_prefix(refusal.word())
-                    .is_some_and(|rest| rest.starts_with(':'))
-            })
+        [
+            Self::NotApproved,
+            Self::AwaitingApproval,
+            Self::SealedUnavailable,
+        ]
+        .into_iter()
+        .find(|refusal| {
+            reason
+                .strip_prefix(refusal.word())
+                .is_some_and(|rest| rest.starts_with(':'))
+        })
     }
 }
 
@@ -202,7 +256,20 @@ mod selection_tests {
             OutboundRefusal::of("no URL prefix the app declares covers it"),
             None
         );
+        assert_eq!(
+            OutboundRefusal::of("SealedUnavailable: this node is not a TEE of the namespace"),
+            Some(OutboundRefusal::SealedUnavailable)
+        );
         assert_eq!(OutboundRefusal::of("NotApprovedYet: something else"), None);
+    }
+
+    #[test]
+    fn a_sealed_secret_is_named_by_its_envelope_in_hex() {
+        let sealed = super::SealedSecret {
+            key: [7; 32],
+            envelope: vec![0xab, 0x01],
+        };
+        assert_eq!(sealed.placeholder(), "{{sealed:ab01}}");
     }
 
     #[test]

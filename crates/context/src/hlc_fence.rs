@@ -107,10 +107,10 @@ pub fn should_fence(
 /// local activation.
 ///
 /// Resolution mirrors execution's per-context binding: the activation marker
-/// (set when a migration commits or a code-only swap activates) → the
-/// application row's `bytecode.blob_id()`, when the context's group registered
-/// that blob (the row is shared by every group naming the id) →
-/// `GroupMeta.bytecode_id`.
+/// (set when a migration commits or a code-only swap activates) → the start
+/// release recorded at join → the application row's `bytecode.blob_id()`, when
+/// the context's group registered that blob (the row is shared by every group
+/// naming the id) → `GroupMeta.bytecode_id`.
 ///
 /// Returns `None` for non-group contexts (no owning group) and when no source
 /// can supply a key. Store errors are propagated as `Err`.
@@ -120,6 +120,11 @@ pub fn loaded_reader_bytecode_id(
 ) -> eyre::Result<Option<[u8; 32]>> {
     // Primary: the per-context activation marker — what this context executes.
     if let Some(blob) = crate::activation::activated_bytecode(store, context_id) {
+        return Ok(Some(blob));
+    }
+
+    // Joined but never activated: the release it started on.
+    if let Some(blob) = crate::activation::start_bytecode(store, context_id) {
         return Ok(Some(blob));
     }
 

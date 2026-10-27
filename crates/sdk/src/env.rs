@@ -1288,6 +1288,54 @@ pub fn tee_authority_keys() -> Vec<[u8; 32]> {
     keys.to_vec()
 }
 
+/// The namespace TEE key a value only the TEE may read is sealed to now, or
+/// `None` while the context's namespace has no TEE authority holding one.
+///
+/// Available in every run: it is public, and every member's node derives it
+/// from the replicated governance log. Seal an outbound secret to it with
+/// [`seal_outbound_secret`]. Under the in-process test harness it is whatever
+/// `TestHost::set_tee_sealing_key` set, `None` by default.
+#[must_use]
+pub fn tee_sealing_key() -> Option<[u8; 32]> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let set: bool = unsafe { sys::tee_sealing_key(DATA_REGISTER) }
+            .try_into()
+            .unwrap_or_else(expected_boolean::<bool>);
+        set.then(|| {
+            let bytes = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+            <[u8; 32]>::try_from(bytes.as_slice()).unwrap_or_else(|_| expected_register())
+        })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::tee_sealing_key()
+}
+
+/// Seals `value` for outbound requests to the namespace's TEE key: only a
+/// node that is a TEE authority of the namespace can fill it into a request,
+/// and only for one of `hosts` (DNS names, lowercase). Store the result and
+/// write its [`placeholder`](calimero_primitives::outbound::SealedSecret::placeholder)
+/// where the value goes in a request's header or body.
+///
+/// `None` while the namespace has no TEE key ([`tee_sealing_key`]): there is no
+/// node that could ever open it, so tell the caller to add a TEE first.
+/// Available in every run; the value passes through this run's memory, never
+/// into state.
+#[must_use]
+pub fn seal_outbound_secret(
+    value: &str,
+    hosts: &[&str],
+) -> Option<calimero_primitives::outbound::SealedSecret> {
+    let key = tee_sealing_key()?;
+    let payload = calimero_primitives::outbound::SealedSecretPayload {
+        value: value.to_owned(),
+        hosts: hosts.iter().map(|h| h.to_ascii_lowercase()).collect(),
+    };
+    let bytes = borsh::to_vec(&payload).ok()?;
+    let envelope = seal_to(&key, &bytes)?;
+    Some(calimero_primitives::outbound::SealedSecret { key, envelope })
+}
+
 /// The signing key of every live device of `account` in the context's
 /// namespace: the keys a value only that member may read is sealed to, so that
 /// each of their devices can open it. Empty for an account with no device

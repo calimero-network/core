@@ -36,9 +36,9 @@ use calimero_store::Store;
 
 use super::super::test_fixtures::{
     bootstrap_namespace_with_admin, bootstrap_namespace_with_admin_account, enrol_member,
-    founded_namespace_for, founder_account_for, namespace_genesis_for, namespace_genesis_naming,
-    namespace_publish_fixture, nest_for_test, sample_meta_with_admin, seal_for_test, test_group_id,
-    test_meta, test_store,
+    flaky_write_store, founded_namespace_for, founder_account_for, namespace_genesis_for,
+    namespace_genesis_naming, namespace_publish_fixture, nest_for_test, sample_meta_with_admin,
+    seal_for_test, test_group_id, test_meta, test_store,
 };
 use super::super::*;
 
@@ -204,6 +204,57 @@ fn namespace_dag_service_store_operation_rejects_namespace_mismatch() {
             .contains("namespace mismatch when storing op"),
         "unexpected error: {err}"
     );
+}
+
+fn policy_op_at(namespace_id: [u8; 32], nonce: u64) -> (SignedNamespaceOp, [u8; 32]) {
+    use calimero_context_client::local_governance::RootOp;
+
+    let signed = SignedNamespaceOp::sign(
+        &PrivateKey::random(&mut UnwrapErr(SysRng)),
+        namespace_id.into(),
+        vec![],
+        nonce,
+        NamespaceOp::Root(RootOp::PolicyUpdated {
+            policy_bytes: vec![1],
+        }),
+    )
+    .unwrap();
+    let delta_id = signed.content_hash().unwrap();
+    (signed, delta_id)
+}
+
+#[test]
+fn a_failed_head_advance_and_store_leaves_neither_head_nor_op() {
+    let store = flaky_write_store(1);
+    let namespace_id = [0x74; 32];
+    let (signed, delta_id) = policy_op_at(namespace_id, 1);
+    let dag = NamespaceDagService::new(&store, namespace_id.into());
+
+    assert!(dag
+        .advance_head_and_store(delta_id, &[], 1, &signed)
+        .is_err());
+
+    assert!(dag.read_head_record().unwrap().parent_hashes.is_empty());
+    assert!(!NamespaceOpLogService::new(&store, namespace_id.into())
+        .contains_op(delta_id)
+        .unwrap());
+}
+
+#[test]
+fn head_advance_and_store_lands_the_head_and_the_op_together() {
+    let store = test_store();
+    let namespace_id = [0x75; 32];
+    let (signed, delta_id) = policy_op_at(namespace_id, 1);
+    let dag = NamespaceDagService::new(&store, namespace_id.into());
+
+    dag.advance_head_and_store(delta_id, &[], 1, &signed)
+        .unwrap();
+
+    let head = dag.read_head_record().unwrap();
+    assert_eq!((head.parent_hashes, head.next_nonce), (vec![delta_id], 2));
+    assert!(NamespaceOpLogService::new(&store, namespace_id.into())
+        .contains_op(delta_id)
+        .unwrap());
 }
 
 fn test_signed_invitation(
@@ -9759,6 +9810,38 @@ fn an_open_join_by_a_device_its_account_never_linked_is_refused() {
     assert!(
         binding.is_none(),
         "a refused open join bound its device: {binding:?}"
+    );
+}
+
+#[test]
+fn an_open_join_naming_another_namespaces_subgroup_is_refused() {
+    let store = test_store();
+    let ns_a = [0xC1u8; 32];
+    let foreign = [0xD2u8; 32];
+    let joiner_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+    let joiner = joiner_sk.public_key();
+    let account = crate::test_fixtures::account_for(&joiner);
+    namespace_with_open_subgroup(&store, ns_a, [0xD1u8; 32], &account);
+    // A group under no namespace of this node's is its own root.
+    MetaRepository::new(&store)
+        .save(
+            &ContextGroupId::from(foreign),
+            &sample_meta_with_admin(account),
+        )
+        .expect("seed the foreign group");
+
+    let account = crate::test_fixtures::real_join_account(&joiner);
+    link_device(&store, ns_a, &account);
+    let err = apply_open_join_with(&store, ns_a, foreign, &joiner_sk, account)
+        .expect_err("a join into this namespace cannot name another namespace's subgroup");
+    assert!(
+        err.chain().any(|c| matches!(
+            c.downcast_ref::<crate::ApplyError>(),
+            Some(crate::ApplyError::MemberJoinedOpenRejected(
+                crate::MemberJoinedOpenRejection::WrongNamespace { .. }
+            ))
+        )),
+        "{err:?}"
     );
 }
 

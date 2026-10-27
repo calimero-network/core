@@ -204,6 +204,11 @@ pub struct SealingContext {
     /// the namespace TEE key once this TEE holds it, else the attested key of
     /// every TEE authority. Empty for any other run.
     pub tee_authority_keys: Vec<[u8; DIGEST_SIZE]>,
+    /// Resolves the namespace TEE key a value only the TEE may read is sealed
+    /// to now, as every member sees it (`tee_sealing_key`). Given to every run,
+    /// since the key is public, and asked only when the run calls for it: it is
+    /// a read of the namespace's governance log.
+    pub namespace_sealing_key: Option<SealingKeyResolver>,
     /// The namespace TEE keys this TEE holds, for a TEE-triggered run; empty
     /// otherwise. An envelope that does not open with `opener` is tried with
     /// each of these.
@@ -218,6 +223,18 @@ pub struct SealingContext {
     /// their account (`env::device_id()`), which is no key, and opens their
     /// envelopes with a key it derives for them; empty on a v1 node.
     pub stand_ins: std::collections::BTreeMap<[u8; DIGEST_SIZE], [u8; DIGEST_SIZE]>,
+}
+
+/// Looks up the namespace TEE key on demand: `None` while there is none.
+#[derive(Clone)]
+pub struct SealingKeyResolver(
+    pub std::sync::Arc<dyn Fn() -> Option<[u8; DIGEST_SIZE]> + Send + Sync>,
+);
+
+impl core::fmt::Debug for SealingKeyResolver {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SealingKeyResolver")
+    }
 }
 
 impl<'a> VMContext<'a> {

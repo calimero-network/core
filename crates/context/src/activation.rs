@@ -56,6 +56,36 @@ pub fn record_activation(store: &Store, context_id: &ContextId, blob: [u8; 32]) 
     }
 }
 
+/// The release this context started on at join, if recorded. Not an activation:
+/// the upgrade gate must still fetch the target release for a context that has only this.
+pub fn start_bytecode(store: &Store, context_id: &ContextId) -> Option<[u8; 32]> {
+    store
+        .handle()
+        .get(&calimero_store::key::ContextStartBytecode::new(*context_id))
+        .ok()
+        .flatten()
+        .map(|v| v.blob)
+}
+
+/// Pin the release a newly joined grouped context starts on, once: the
+/// application row is shared by every release, so each install would move it.
+pub fn record_start_release(store: &Store, context_id: &ContextId) {
+    if start_bytecode(store, context_id).is_some()
+        || !matches!(get_group_for_context(store, context_id), Ok(Some(_)))
+    {
+        return;
+    }
+    if let Ok(Some(blob)) = crate::hlc_fence::loaded_reader_bytecode_id(store, context_id) {
+        let mut handle = store.handle();
+        if let Err(err) = handle.put(
+            &calimero_store::key::ContextStartBytecode::new(*context_id),
+            &calimero_store::types::ContextStartBytecode { blob },
+        ) {
+            debug!(%context_id, %err, "failed to record start release");
+        }
+    }
+}
+
 /// The ABI state version the context's activated bytecode declares, if it was
 /// resolvable when the activation was recorded.
 pub fn activated_state_version(store: &Store, context_id: &ContextId) -> Option<u32> {
@@ -552,6 +582,72 @@ mod tests {
             let store = store();
             context_on_row(&store, V1);
             assert_eq!(executing_blob_off_row(&store, &ctx()), None);
+        }
+
+        fn ladder_group(store: &Store) {
+            let gid = ContextGroupId::from([0x42; 32]);
+            group_on(store, gid, [0x03; 32], &[0x01, 0x02, 0x03]);
+            store
+                .handle()
+                .put(&ContextGroupRef::new((*ctx()).into()), &gid.to_bytes())
+                .unwrap();
+        }
+
+        /// A newer install of the same package overwrites the shared row.
+        #[test]
+        fn a_started_context_keeps_its_release_when_a_newer_one_is_installed() {
+            let store = store();
+            ladder_group(&store);
+            context_on_row(&store, V1);
+            record_start_release(&store, &ctx());
+
+            context_on_row(&store, [0x03; 32]);
+            assert_eq!(
+                crate::hlc_fence::loaded_reader_bytecode_id(&store, &ctx()).unwrap(),
+                Some(V1)
+            );
+        }
+
+        #[test]
+        fn starting_never_overrides_an_existing_start_key() {
+            let store = store();
+            ladder_group(&store);
+            context_on_row(&store, V1);
+            record_start_release(&store, &ctx());
+            context_on_row(&store, [0x03; 32]);
+            record_start_release(&store, &ctx());
+            assert_eq!(start_bytecode(&store, &ctx()), Some(V1));
+        }
+
+        #[test]
+        fn starting_without_a_group_records_nothing() {
+            let store = store();
+            context_on_row(&store, V1);
+            record_start_release(&store, &ctx());
+            assert_eq!(start_bytecode(&store, &ctx()), None);
+        }
+
+        #[test]
+        fn the_start_key_is_not_an_activation() {
+            let store = store();
+            ladder_group(&store);
+            context_on_row(&store, V1);
+            record_start_release(&store, &ctx());
+            assert_eq!(start_bytecode(&store, &ctx()), Some(V1));
+            assert_eq!(activated_bytecode(&store, &ctx()), None);
+        }
+
+        #[test]
+        fn an_activation_marker_wins_over_the_start_key() {
+            let store = store();
+            ladder_group(&store);
+            context_on_row(&store, V1);
+            record_start_release(&store, &ctx());
+            record_activation(&store, &ctx(), V2);
+            assert_eq!(
+                crate::hlc_fence::loaded_reader_bytecode_id(&store, &ctx()).unwrap(),
+                Some(V2)
+            );
         }
     }
 }

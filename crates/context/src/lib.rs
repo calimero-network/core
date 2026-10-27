@@ -48,6 +48,7 @@ pub mod membership_events;
 pub mod migration_events;
 pub mod migration_plan;
 pub mod outbound;
+mod outbound_forward;
 pub mod root_guard;
 pub mod rotation_listener;
 pub mod scope_projection;

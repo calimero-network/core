@@ -2311,6 +2311,19 @@ pub struct ActivateGroupUpgradeFailedContext {
 #[serde(rename_all = "camelCase")]
 pub struct GetGroupUpgradeStatusApiResponse {
     pub data: Option<GroupUpgradeStatusApiData>,
+    /// Releases this node must install before `upgrade/activate` can switch every
+    /// context it holds, oldest first, the target included. Beside `data` because a
+    /// member with no recorded upgrade still needs them. Absent from an older server.
+    #[serde(default)]
+    pub missing_releases: Vec<MissingReleaseApiData>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingReleaseApiData {
+    pub package: String,
+    pub version: String,
+    pub application_id: ApplicationId,
 }
 
 /// Per-group cascade migration status entry returned by `get_cascade_status`.

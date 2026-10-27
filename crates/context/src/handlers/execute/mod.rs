@@ -2508,7 +2508,7 @@ async fn internal_execute(
     let account = principal.account;
     let sealing = sealing_context(
         &datastore,
-        &crate::scope_projection::FoldedProjections(scope_projections),
+        scope_projections,
         &context.id,
         &executor,
         identity_private_key,
@@ -2589,6 +2589,13 @@ async fn internal_execute(
                         app,
                         declared,
                         approval,
+                        Some(outbound_sealed_keys(
+                            &datastore,
+                            node_client,
+                            scope_projections,
+                            context.id,
+                            identity_private_key,
+                        )),
                         context.id.to_string(),
                     ))
                 })
@@ -3323,13 +3330,14 @@ fn on_behalf_refusal(
 /// authority instead.
 fn sealing_context(
     datastore: &Store,
-    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
+    scope_projections: &Arc<std::sync::RwLock<crate::scope_projection::ScopeProjections>>,
     context_id: &ContextId,
     executor: &PublicKey,
     identity_private_key: &PrivateKey,
     tee_authority: bool,
     delegated: bool,
 ) -> eyre::Result<calimero_runtime::logic::SealingContext> {
+    let folded = &crate::scope_projection::FoldedProjections(scope_projections);
     let may_open = tee_authority
         || (!delegated
             && !calimero_governance_store::is_tee_member_key_for_context(
@@ -3368,6 +3376,11 @@ fn sealing_context(
         std::collections::BTreeMap::new()
     };
     Ok(calimero_runtime::logic::SealingContext {
+        namespace_sealing_key: Some(namespace_sealing_key(
+            datastore,
+            scope_projections,
+            *context_id,
+        )),
         opener: may_open
             .then(|| std::sync::Arc::new(PrivateKey::from(*identity_private_key.as_bytes()))),
         tee_authority_keys,
@@ -3375,6 +3388,65 @@ fn sealing_context(
         account_devices,
         stand_ins: std::collections::BTreeMap::new(),
     })
+}
+
+/// The namespace TEE keys a `{{sealed:…}}` in this run's outbound request
+/// opens with, looked up only when a request names one: those this node holds
+/// while it is a TEE authority of the namespace, none otherwise. Without them,
+/// the request goes to a TEE of the namespace (`crate::outbound_forward`).
+fn outbound_sealed_keys(
+    datastore: &Store,
+    node_client: &NodeClient,
+    scope_projections: &Arc<std::sync::RwLock<crate::scope_projection::ScopeProjections>>,
+    context_id: ContextId,
+    identity_private_key: &PrivateKey,
+) -> crate::outbound::SealedKeys {
+    let forward = tokio::runtime::Handle::try_current().ok().map(|runtime| {
+        crate::outbound_forward::network_forwarder(
+            runtime,
+            node_client.clone(),
+            datastore.clone(),
+            Arc::clone(scope_projections),
+            context_id,
+            identity_private_key.public_key(),
+        )
+    });
+    let datastore = datastore.clone();
+    let scope_projections = Arc::clone(scope_projections);
+    let identity = PrivateKey::from(*identity_private_key.as_bytes());
+    crate::outbound::SealedKeys {
+        forward,
+        context_id: *context_id.as_ref(),
+        keys: Arc::new(move || {
+            let folded = crate::scope_projection::FoldedProjections(&scope_projections);
+            let Some(group_id) =
+                calimero_governance_store::get_group_for_context(&datastore, &context_id)?
+            else {
+                return Ok(Vec::new());
+            };
+            calimero_governance_store::tee_outbound_keys(&datastore, &folded, &group_id, &identity)
+        }),
+    }
+}
+
+/// Looks up the namespace TEE key for `context_id` when the run asks for it
+/// (`env::tee_sealing_key`). A read error answers `None`, the same as a
+/// namespace with no TEE, so the app refuses to seal rather than trapping.
+fn namespace_sealing_key(
+    datastore: &Store,
+    scope_projections: &Arc<std::sync::RwLock<crate::scope_projection::ScopeProjections>>,
+    context_id: ContextId,
+) -> calimero_runtime::logic::SealingKeyResolver {
+    let datastore = datastore.clone();
+    let scope_projections = Arc::clone(scope_projections);
+    calimero_runtime::logic::SealingKeyResolver(Arc::new(move || {
+        let folded = crate::scope_projection::FoldedProjections(&scope_projections);
+        let group_id =
+            calimero_governance_store::get_group_for_context(&datastore, &context_id).ok()??;
+        calimero_governance_store::tee_sealing_key(&datastore, &folded, &group_id)
+            .ok()?
+            .map(|key| *key)
+    }))
 }
 
 /// The signing key of every live device of each account bound in the

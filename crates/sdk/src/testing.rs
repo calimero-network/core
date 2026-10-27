@@ -397,6 +397,13 @@ where
         self.call_as(device, f)
     }
 
+    /// Sets the namespace TEE key `env::tee_sealing_key` reports, or `None` for
+    /// a namespace with no TEE (the default). Pass [`TEE_DEVICE_KEY`] for what
+    /// is sealed to it to open in a [`call_as_tee`](Self::call_as_tee) run.
+    pub fn set_tee_sealing_key(&mut self, key: Option<[u8; 32]>) {
+        host::set_tee_sealing_key(key);
+    }
+
     /// Runs `f` as the node's TEE scheduler would: a TEE-triggered run whose
     /// account is `AccountId::TEE_AUTHORITY`, so `#[app::tee]` methods accept it,
     /// `env::tee_random_bytes` works, and `TeeOnly` state is writable.

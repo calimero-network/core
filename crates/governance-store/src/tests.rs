@@ -11,11 +11,13 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{GroupMetaValue, GroupTarget, GroupUpgradeStatus, GroupUpgradeValue};
 use calimero_store::Store;
 
+use crate::nonce_window::NonceWindow;
+
 use super::test_fixtures::{
     account_for, apply_member_joined, dummy_member_removed_op, enrol_member, enrolled,
-    nest_for_test, nest_for_test_unchecked, real_join_account, sample_meta_with_admin,
-    sealed_join_for_test, signed_invitation_for, signed_invitation_with_role, test_group_id,
-    test_meta, test_store,
+    flaky_write_store, nest_for_test, nest_for_test_unchecked, real_join_account,
+    sample_meta_with_admin, sealed_join_for_test, signed_invitation_for,
+    signed_invitation_with_role, test_group_id, test_meta, test_store,
 };
 use super::*;
 
@@ -4539,12 +4541,81 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
 ///
 /// With the old `dag_heads.contains` check step 3 appends a third entry and the
 /// final assertion fails.
-/// A stale op-head (crash between the entry `put` and the head `put`) must not
-/// let a later op overwrite the orphan entry (PR #2473, finding B1).
+fn assert_no_governance_progress(store: &Store, gid: &ContextGroupId, signer: &PublicKey) {
+    assert!(read_op_log_after(store, gid, 0, 10).unwrap().is_empty());
+    assert!(get_op_head(store, gid).unwrap().is_none());
+    assert_eq!(
+        local_state::load_nonce_window(store, gid, signer).unwrap(),
+        NonceWindow::default()
+    );
+}
+
+#[test]
+fn a_failed_op_log_write_leaves_neither_entry_nor_head() {
+    let store = flaky_write_store(1);
+    let gid = test_group_id();
+
+    assert!(
+        local_state::persist_group_op_log_entry(&store, &gid, 1, vec![[7; 32]], b"op").is_err()
+    );
+
+    assert_no_governance_progress(&store, &gid, &PublicKey::from([9; 32]));
+}
+
+#[test]
+fn a_failed_governance_progress_write_leaves_no_entry_head_or_nonce() {
+    let store = flaky_write_store(2);
+    let gid = test_group_id();
+    let signer = PublicKey::from([9; 32]);
+
+    let result = local_state::persist_group_governance_progress(
+        &store,
+        &gid,
+        1,
+        &signer,
+        &NonceWindow::new(1, []),
+        vec![[7; 32]],
+        b"op",
+    );
+    assert!(result.is_err());
+
+    assert_no_governance_progress(&store, &gid, &signer);
+}
+
+#[test]
+fn governance_progress_lands_entry_head_and_nonce_together() {
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([9; 32]);
+
+    local_state::persist_group_governance_progress(
+        &store,
+        &gid,
+        1,
+        &signer,
+        &NonceWindow::new(1, [3]),
+        vec![[7; 32]],
+        b"op",
+    )
+    .unwrap();
+
+    assert_eq!(
+        read_op_log_after(&store, &gid, 0, 10).unwrap(),
+        vec![(1, b"op".to_vec())]
+    );
+    let head = get_op_head(&store, &gid).unwrap().unwrap();
+    assert_eq!((head.sequence, head.dag_heads), (1, vec![[7; 32]]));
+    assert_eq!(
+        local_state::load_nonce_window(&store, &gid, &signer).unwrap(),
+        NonceWindow::new(1, [3])
+    );
+}
+
+/// A stale op-head (an entry committed without its head, as an older build could
+/// leave it) must not let a later op overwrite the orphan entry.
 ///
-/// `persist_group_op_log_entry` writes the op-log entry first, then the head
-/// (non-atomic — `calimero-store` has no batch). A crash in between leaves an
-/// ORPHAN entry at sequence N while the head still points at N-1. Deriving the
+/// An older build wrote the op-log entry first, then the head, as two separate
+/// writes. A crash in between leaves an ORPHAN entry at sequence N while the head still points at N-1. Deriving the
 /// next op's sequence from `GroupOpHeadValue.sequence` would then reuse N and
 /// silently overwrite the orphan (e.g. clobbering a `TeeAdmissionPolicySet`
 /// that a later membership op depends on). The fix derives `next_seq` from the

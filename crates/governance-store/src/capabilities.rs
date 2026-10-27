@@ -232,6 +232,26 @@ impl<'a> CapabilitiesRepository<'a> {
         Ok(())
     }
 
+    /// Delete `member`'s capability row in every context of `group_id`.
+    pub fn delete_member_context_caps(
+        &self,
+        group_id: &ContextGroupId,
+        member: &AccountId,
+    ) -> EyreResult<()> {
+        let gid = group_id.to_bytes();
+        let keys = collect_keys_with_prefix(
+            self.store,
+            GroupContextMemberCap::new(gid, ContextId::from([0u8; 32]), AccountId::from([0u8; 32])),
+            GROUP_CONTEXT_MEMBER_CAP_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
+        let mut handle = self.store.handle();
+        for key in keys.into_iter().filter(|k| k.member() == *member) {
+            handle.delete(&key)?;
+        }
+        Ok(())
+    }
+
     pub fn delete_context_member(
         &self,
         group_id: &ContextGroupId,

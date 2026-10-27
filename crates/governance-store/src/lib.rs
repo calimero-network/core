@@ -200,8 +200,8 @@ pub use self::tee::{
     TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS,
 };
 pub use self::tee_vault::{
-    retired_tee_vault_keys, seal_tee_vault_key, tee_vault, tee_vault_deliveries, tee_vault_keys,
-    TeeVault, TeeVaultDelivery,
+    retired_tee_vault_keys, seal_tee_vault_key, tee_outbound_keys, tee_sealing_key, tee_vault,
+    tee_vault_deliveries, tee_vault_keys, TeeVault, TeeVaultDelivery,
 };
 pub use self::upgrade_ladder::UpgradeLadderRepository;
 pub use self::upgrades::UpgradesRepository;

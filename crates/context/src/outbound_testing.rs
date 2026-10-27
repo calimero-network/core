@@ -154,6 +154,7 @@ mod tests {
                     prefixes: vec![URL.to_owned()],
                     reviewed: vec![URL.to_owned()],
                 }),
+                None,
                 "ctx".to_owned(),
             )
             .unwrap();

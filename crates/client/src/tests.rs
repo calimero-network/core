@@ -702,7 +702,14 @@ async fn get_group_upgrade_status() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(format!("/admin-api/groups/{GID}/upgrade/status")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": null})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": null,
+            "missingReleases": [{
+                "package": "com.acme.app",
+                "version": "1.1.0",
+                "applicationId": "01".repeat(32),
+            }],
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -711,6 +718,8 @@ async fn get_group_upgrade_status() {
     let resp = client.get_group_upgrade_status(GID).await.unwrap();
 
     assert!(resp.data.is_none());
+    assert_eq!(resp.missing_releases.len(), 1);
+    assert_eq!(resp.missing_releases[0].version, "1.1.0");
 }
 
 #[tokio::test]
@@ -1318,6 +1327,23 @@ async fn detect_auth_mode_preserves_base_path() {
     let client = make_client(&base);
     let mode = client.connection().detect_auth_mode().await.unwrap();
     assert!(matches!(mode, crate::connection::AuthMode::None));
+}
+
+#[tokio::test]
+async fn detect_auth_mode_errors_when_node_unreachable() {
+    // Bind then drop, so the port is known-closed and the probe gets a transport error.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let client = make_client(&Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap());
+
+    let mode = client.connection().detect_auth_mode().await;
+    assert!(
+        mode.is_err(),
+        "unreachable node must not downgrade to {mode:?}"
+    );
 }
 
 #[tokio::test]

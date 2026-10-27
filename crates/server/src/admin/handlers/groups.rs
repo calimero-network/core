@@ -40,10 +40,14 @@ pub mod transfer_ownership;
 pub mod update_member_role;
 pub mod upgrade_group;
 
-use calimero_context_client::group::{GroupUpgradeInfo, GroupUpgradeStatus};
+use calimero_context_client::group::{
+    GroupUpgradeInfo, GroupUpgradeStatus, GroupUpgradeStatusResponse,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextId;
-use calimero_server_primitives::admin::GroupUpgradeStatusApiData;
+use calimero_server_primitives::admin::{
+    GetGroupUpgradeStatusApiResponse, GroupUpgradeStatusApiData, MissingReleaseApiData,
+};
 use reqwest::StatusCode;
 
 use crate::admin::service::ApiError;
@@ -86,6 +90,23 @@ fn upgrade_info_to_api_data(info: &GroupUpgradeInfo) -> GroupUpgradeStatusApiDat
         local_contexts_swapped: local_swapped,
         local_contexts_failed: local_failed,
         completed_at,
+    }
+}
+
+pub(crate) fn upgrade_status_response(
+    status: &GroupUpgradeStatusResponse,
+) -> GetGroupUpgradeStatusApiResponse {
+    GetGroupUpgradeStatusApiResponse {
+        data: status.upgrade.as_ref().map(upgrade_info_to_api_data),
+        missing_releases: status
+            .missing_releases
+            .iter()
+            .map(|release| MissingReleaseApiData {
+                package: release.package.clone(),
+                version: release.version.clone(),
+                application_id: release.application_id,
+            })
+            .collect(),
     }
 }
 
@@ -158,9 +179,49 @@ fn parse_account(s: &str) -> Result<calimero_account::AccountId, ApiError> {
 
 #[cfg(test)]
 mod tests {
+    use calimero_context_client::group::{GroupUpgradeStatusResponse, MissingRelease};
+    use calimero_primitives::application::ApplicationId;
     use calimero_primitives::identity::PublicKey;
 
-    use super::{parse_account, parse_context_id, restricted_from};
+    use super::{parse_account, parse_context_id, restricted_from, upgrade_status_response};
+
+    #[test]
+    fn upgrade_status_lists_missing_releases_beside_a_null_upgrade() {
+        let status = GroupUpgradeStatusResponse {
+            upgrade: None,
+            missing_releases: vec![MissingRelease {
+                package: "com.acme.app".to_owned(),
+                version: "1.1.0".to_owned(),
+                application_id: ApplicationId::from([0xAA; 32]),
+            }],
+        };
+
+        let json = serde_json::to_value(upgrade_status_response(&status)).unwrap();
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "data": null,
+                "missingReleases": [{
+                    "package": "com.acme.app",
+                    "version": "1.1.0",
+                    "applicationId": "aa".repeat(32),
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn upgrade_status_with_nothing_missing_has_an_empty_list() {
+        let status = GroupUpgradeStatusResponse {
+            upgrade: None,
+            missing_releases: Vec::new(),
+        };
+
+        let json = serde_json::to_value(upgrade_status_response(&status)).unwrap();
+
+        assert_eq!(json["missingReleases"], serde_json::json!([]));
+    }
 
     #[test]
     fn a_named_visibility_is_honoured() {
