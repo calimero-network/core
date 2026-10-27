@@ -1188,6 +1188,12 @@ async fn views_search_the_apps_own_index_as_it_changes() {
     }
     let page = strong_view(&alice, &chat, "search", json!({ "query": "lunch" })).await;
     assert_eq!(hits(&page), 0, "{page}");
+    // A declared view called as a call runs as a view, so it may search.
+    let called = alice
+        .call(&chat, "search", json!({ "query": "report" }), None)
+        .await
+        .unwrap();
+    assert_eq!(hits(&called.result), 2, "{}", called.result);
     // A write may not search (v1 rule: search is for views).
     assert!(alice
         .call(

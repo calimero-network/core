@@ -82,6 +82,8 @@ architecture spec.
   their own runs open with it. ABI facts (timers, handlers, xcall entry
   points) come from the bundle's embedded ABI (`services::BundleFacts`), so
   apps are built with `cargo mero build`; a bundle without one gets none.
+- **Declared views**: a call (`/intents`) of a method the ABI declares `#[app::view]`
+  runs as a strong view: it writes nothing and may search (v1's rule).
 - **Browsers**: `config.origins` are the CORS origins too (`lib.rs`, outermost layer).
 - **Storage key** (`kms.rs`): K_r = HKDF(KMS key, cluster). The KMS key comes from
   merod's own client (`merod kms disk-key`: release-policy-verified KMS, key sealed

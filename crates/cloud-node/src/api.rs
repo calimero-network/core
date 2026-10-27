@@ -1006,6 +1006,28 @@ async fn intents(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, &body.method, true).await?;
+    // A declared view runs as one, whichever way it is invoked (v1's rule): it
+    // reads the latest state, writes nothing, and may search.
+    if node.facts(&app.bundle).await.views.contains(&body.method) {
+        let a = node
+            .view(&ViewRequest {
+                app_id,
+                method: body.method,
+                args: body.args,
+                caller: p.caller,
+                strong: true,
+                min_index: 0,
+            })
+            .await?;
+        return Ok(answer(Applied {
+            index: a.index,
+            status: a.status,
+            result: a.result,
+            error: a.error,
+            events: Vec::new(),
+            conflict: false,
+        }));
+    }
     let consent_value = if app.confirm_methods.iter().any(|m| m == &body.method) {
         Some(consent(&node, &p, &app_id, &body.method, &body.args, body.confirm).await?)
     } else {

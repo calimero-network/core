@@ -64,6 +64,9 @@ pub struct BundleFacts {
     pub handlers: Vec<String>,
     /// `#[app::xcall]` entry points and who may call them.
     pub xcalls: BTreeMap<String, XCallCallers>,
+    /// `#[app::view]` methods: a call of one runs as a view (v1 ran a declared
+    /// view read-only whichever way it was invoked).
+    pub views: Vec<String>,
 }
 
 impl BundleFacts {
@@ -80,6 +83,9 @@ impl BundleFacts {
             }
             if m.handler {
                 facts.handlers.push(m.name.clone());
+            }
+            if m.intent == calimero_wasm_abi::schema::MethodIntent::ReadOnly {
+                facts.views.push(m.name.clone());
             }
             if m.xcall_callable {
                 let _prev = facts.xcalls.insert(m.name, m.xcall_callers);
