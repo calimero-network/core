@@ -19,7 +19,11 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   is sealed with AES-256-GCM under the storage key, bound to its column, group and
   key. A machine can hide a key (`StateTx::put_hidden`): the row is keyed by an HMAC
   and the key travels inside the sealed value. Log appends, votes and blobs are
-  synced writes; RocksDB shares one WAL sync between concurrent groups.
+  synced writes; RocksDB shares one WAL sync between concurrent groups. The
+  commit index (`save_committed`) is not synced: a node that loses it, or keeps
+  an older one, learns it again and applies each entry once (disk and
+  in-memory machines: `a_lost_or_older_commit_index_is_learned_again`,
+  `an_in_memory_machine_applies_each_entry_once_after_losing_its_commit_index`).
 - State machines (`machine.rs`): a `Machine` writes through `StateTx` in `apply`;
   each applied batch commits its writes and the applied index in one batch, so a
   restart resumes instead of replaying. `Machine::IN_MEMORY` machines (the system
@@ -39,7 +43,7 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
 - Network: `Transport` trait; the node supplies an attested channel, tests an in-memory one.
 
 Tests: `cargo test -p calimero-log` runs a 3-node cluster in one process
-(replication, failover, restart from disk, learner catch-up, no plaintext on disk,
+(replication, failover, restart from disk, a lost or older commit index, learner catch-up, no plaintext on disk,
 a disk machine restarting without replay, a ~6 MiB state streamed to a new node) and
 the redb migration (`migration_tests.rs`).
 

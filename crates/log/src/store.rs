@@ -993,7 +993,11 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 
     async fn save_committed(&mut self, committed: Option<LogId>) -> Result<(), StorageError> {
-        // Not synced: losing it only means re-learning the commit index.
+        // Not synced: losing it only means re-learning the commit index. On
+        // start openraft raises a record below the applied index to it and
+        // replays the log up to one above it; the leader sends the rest.
+        // Tests: `a_lost_or_older_commit_index_is_learned_again`,
+        // `an_in_memory_machine_applies_each_entry_once_after_losing_its_commit_index`.
         let mut tx = Transaction::default();
         self.db
             .stage_meta(&mut tx, self.group, "committed", &committed)

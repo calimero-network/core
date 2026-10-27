@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use calimero_log::store::Db;
+use calimero_log::types::LogId;
 use calimero_log::{
     BoxFuture, Config, Engine, Group, GroupId, GroupState, Machine, NodeId, Proposal, RpcRequest,
     RpcResponse, StateTx, Transport, WriteError,
@@ -555,10 +557,10 @@ fn all_bytes(dir: &std::path::Path) -> String {
 }
 
 /// A key-value machine whose state is the group's durable state: it holds
-/// nothing in memory, and counts the entries it applies.
+/// nothing in memory, and records the index of every entry it applies.
 struct DiskKv {
     state: Option<GroupState>,
-    applies: Arc<std::sync::atomic::AtomicU64>,
+    applies: Arc<Mutex<Vec<u64>>>,
 }
 
 impl DiskKv {
@@ -573,10 +575,8 @@ impl Machine for DiskKv {
         self.state = Some(state);
     }
 
-    fn apply(&mut self, _index: u64, command: &[u8], state: &mut StateTx<'_>) -> Vec<u8> {
-        let _n = self
-            .applies
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    fn apply(&mut self, index: u64, command: &[u8], state: &mut StateTx<'_>) -> Vec<u8> {
+        self.applies.lock().unwrap().push(index);
         let s = String::from_utf8_lossy(command);
         let (k, v) = s.split_once('=').unwrap_or((&s, ""));
         let prev = state.get_hidden(b'k', k.as_bytes()).unwrap_or_default();
@@ -597,7 +597,7 @@ struct DiskCluster {
     net: Arc<Net>,
     dirs: HashMap<NodeId, tempfile::TempDir>,
     groups: HashMap<NodeId, Arc<Group<DiskKv>>>,
-    applies: HashMap<NodeId, Arc<std::sync::atomic::AtomicU64>>,
+    applies: HashMap<NodeId, Arc<Mutex<Vec<u64>>>>,
 }
 
 impl DiskCluster {
@@ -610,7 +610,7 @@ impl DiskCluster {
             config(),
         )
         .unwrap();
-        let applies = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let applies = Arc::new(Mutex::new(Vec::new()));
         let group = engine
             .start_group(
                 1,
@@ -675,14 +675,201 @@ impl DiskCluster {
         panic!("write never succeeded");
     }
 
-    async fn restart(&mut self, id: NodeId) -> Arc<Group<DiskKv>> {
+    /// Stop a node; its files are handed back.
+    async fn stop(&mut self, id: NodeId) -> tempfile::TempDir {
         let engine = self.net.engines.write().unwrap().remove(&id).unwrap();
         engine.shutdown().await;
         drop(engine);
         let _ = self.groups.remove(&id);
         let dir = self.dirs.remove(&id).unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
+        dir
+    }
+
+    async fn restart(&mut self, id: NodeId) -> Arc<Group<DiskKv>> {
+        let dir = self.stop(id).await;
         self.start_node(id, dir).await
+    }
+}
+
+/// A stopped node's stored commit index (group 1).
+fn commit_record(dir: &tempfile::TempDir) -> Option<LogId> {
+    let db = Db::open(dir.path(), &KEY).unwrap();
+    db.get_meta::<Option<LogId>>(1, "committed")
+        .unwrap()
+        .flatten()
+}
+
+/// Replace a stopped node's stored commit index (group 1), as a crash that
+/// lost the unsynced write (`None`) or kept an older one would leave it.
+fn set_commit_record(dir: &tempfile::TempDir, record: Option<LogId>) {
+    let db = Db::open(dir.path(), &KEY).unwrap();
+    db.put_meta(1, "committed", &record).unwrap();
+}
+
+/// `save_committed` writes the commit index unsynced, on the argument that a
+/// node which loses it learns it again. A crash can lose that record or leave
+/// an older one: a node restarted so must catch up to the same state and the
+/// same commit index, applying every entry once, none twice and none skipped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lost_or_older_commit_index_is_learned_again() {
+    let mut c = DiskCluster::new(3).await;
+    let mut keys = Vec::new();
+    let mut last = 0;
+    for i in 0..10 {
+        let key = format!("k{i}");
+        last = c.put(&key, &key).await;
+        keys.push(key);
+    }
+    assert!(
+        c.groups[&3]
+            .wait_applied(last, Duration::from_secs(5))
+            .await
+    );
+    let older = c.groups[&3].raft().metrics().borrow().last_applied.unwrap();
+    for i in 10..30 {
+        let key = format!("k{i}");
+        last = c.put(&key, &key).await;
+        keys.push(key);
+    }
+    // The record rolled back to an older index, then lost.
+    for (round, record) in [Some(older), None].into_iter().enumerate() {
+        for g in c.groups.values() {
+            assert!(g.wait_applied(last, Duration::from_secs(5)).await);
+        }
+        let dir = c.stop(3).await;
+        let stored = commit_record(&dir);
+        assert!(
+            stored.map(|l| l.index) >= Some(last),
+            "round {round}: the store held commit index {stored:?}, behind {last}"
+        );
+        set_commit_record(&dir, record);
+        // The others commit more while it is down.
+        let mut expected = Vec::new();
+        for i in 0..10 {
+            let key = format!("r{round}-{i}");
+            last = c.put(&key, &key).await;
+            expected.push(last);
+            keys.push(key);
+        }
+        let g = c.start_node(3, dir).await;
+        assert!(g.wait_applied(last, Duration::from_secs(10)).await);
+        // Each entry it lacked applied once, in order; nothing it had
+        // applied before the restart applied again.
+        assert_eq!(
+            *c.applies[&3].lock().unwrap(),
+            expected,
+            "round {round}: entries applied after the restart"
+        );
+        let leader = c.leader().await;
+        wait_for("the restarted node to agree with the leader", || {
+            let ours = g.raft().metrics().borrow().last_applied;
+            ours == c.groups[&leader].raft().metrics().borrow().last_applied
+        })
+        .await;
+        for key in &keys {
+            assert_eq!(
+                g.read_local(|m, _| m.get(key)).as_deref(),
+                Some(key.as_str()),
+                "round {round}: {key}"
+            );
+        }
+    }
+    // The commit index it learned again reached its store.
+    let dir = c.stop(3).await;
+    let stored = commit_record(&dir);
+    assert!(
+        stored.map(|l| l.index) >= Some(last),
+        "{stored:?} behind {last}"
+    );
+}
+
+async fn start_ledger(net: &Arc<Net>, id: NodeId, dir: &tempfile::TempDir) -> Arc<Group<Ledger>> {
+    let engine = Engine::open(
+        id,
+        dir.path(),
+        &KEY,
+        Arc::new(Wire(Arc::clone(net), id)),
+        config(),
+    )
+    .unwrap();
+    let group = engine.start_group(1, Ledger::default()).await.unwrap();
+    let _prev = net.engines.write().unwrap().insert(id, engine);
+    group
+}
+
+/// Append `add:1` on whichever running node leads.
+async fn add_one(groups: &HashMap<NodeId, Arc<Group<Ledger>>>) -> u64 {
+    for _ in 0..100 {
+        if let Some(g) = groups.values().find(|g| g.status().is_leader) {
+            if let Ok(p) = g.propose(|_, _| Proposal::Append(b"add:1".to_vec())).await {
+                return p.index;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the add never applied");
+}
+
+/// The same for an in-memory machine (the system group's kind): it restarts
+/// from its last checkpoint and replays its own log up to the commit index
+/// it stored, then learns the rest. With that record older than what it had
+/// applied, or lost, no entry may apply twice or be skipped; `add` is not
+/// idempotent, so either would show in the value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_in_memory_machine_applies_each_entry_once_after_losing_its_commit_index() {
+    let net = Arc::new(Net::default());
+    let mut dirs = HashMap::new();
+    let mut groups = HashMap::new();
+    for id in 1..=3 {
+        let dir = tempfile::tempdir().unwrap();
+        let _prev = groups.insert(id, start_ledger(&net, id, &dir).await);
+        let _prev = dirs.insert(id, dir);
+    }
+    let voters: BTreeMap<NodeId, String> = (1..=3).map(|i| (i, format!("node-{i}"))).collect();
+    groups[&1].initialize(voters).await.unwrap();
+    let mut adds = 0;
+    let mut last = 0;
+    for _ in 0..45 {
+        last = add_one(&groups).await;
+        adds += 1;
+    }
+    for round in 0..2 {
+        // A follower, so no write is lost with it.
+        let leader = loop {
+            if let Some(g) = groups.values().find(|g| g.status().is_leader) {
+                break g.node_id();
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        let id = (1..=3).find(|i| *i != leader).unwrap();
+        assert!(groups[&id].wait_applied(last, Duration::from_secs(5)).await);
+        // Past its last checkpoint (one per 20 entries), behind what it applies next.
+        let older = groups[&id].raft().metrics().borrow().last_applied;
+        for _ in 0..5 {
+            last = add_one(&groups).await;
+            adds += 1;
+        }
+        assert!(groups[&id].wait_applied(last, Duration::from_secs(5)).await);
+        let engine = net.engines.write().unwrap().remove(&id).unwrap();
+        engine.shutdown().await;
+        drop(engine);
+        let _ = groups.remove(&id);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        set_commit_record(&dirs[&id], if round == 0 { older } else { None });
+        for _ in 0..10 {
+            last = add_one(&groups).await;
+            adds += 1;
+        }
+        let _prev = groups.insert(id, start_ledger(&net, id, &dirs[&id]).await);
+        for (n, g) in &groups {
+            assert!(g.wait_applied(last, Duration::from_secs(10)).await);
+            assert_eq!(
+                g.read_local(|m, _| m.value),
+                adds,
+                "round {round}: node {n} applied an entry twice or skipped one"
+            );
+        }
     }
 }
 
@@ -702,7 +889,7 @@ async fn a_disk_machine_restarts_without_replaying_the_log() {
     assert!(g.wait_applied(last, Duration::from_secs(10)).await);
     // Nothing up to `last` ran again: the state and its applied index were
     // committed together.
-    assert_eq!(c.applies[&3].load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(c.applies[&3].lock().unwrap().len(), 0);
     assert_eq!(g.read_local(|m, _| m.get("k29")).as_deref(), Some("29"));
     assert_eq!(g.read_local(|m, _| m.get("k0")).as_deref(), Some("0"));
     // And it keeps applying.
@@ -744,7 +931,7 @@ async fn a_big_state_streams_to_a_new_node() {
         .unwrap();
     assert!(g4.wait_applied(last, Duration::from_secs(30)).await);
     // It installed a snapshot rather than replaying 3000 entries.
-    assert!(c.applies[&4].load(std::sync::atomic::Ordering::Relaxed) < 3000);
+    assert!(c.applies[&4].lock().unwrap().len() < 3000);
     for i in [0, 1234, 2999] {
         assert_eq!(
             g4.read_local(|m, _| m.get(&format!("key-{i:05}")))

@@ -177,6 +177,14 @@ resumes from where it stopped instead of replaying the log.
 The system group's machine keeps its state in memory and is checkpointed with
 every snapshot; a restart restores the checkpoint and replays the log after it.
 
+The commit index is written without a sync: a crash can lose it or leave an
+older one. On start openraft takes the applied index when the record is
+behind it, replays the log up to the record when it is ahead, and learns the
+rest from the leader, so no entry applies twice or is skipped
+(`a_lost_or_older_commit_index_is_learned_again` and
+`an_in_memory_machine_applies_each_entry_once_after_losing_its_commit_index`
+in `crates/log/tests/cluster.rs`).
+
 A **snapshot** is a file of sealed frames under `<data-dir>/snapshots`, written
 from a consistent RocksDB view of the group's rows, never the whole state in
 memory. A follower that needs one receives the file in chunks. Every node of
