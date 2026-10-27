@@ -442,6 +442,14 @@ mod tests {
             })
             .await
             .expect("the manager answers");
+        let reopen = harness
+            .manager
+            .send(SetSubgroupVisibilityRequest {
+                group_id: space,
+                subgroup_visibility: VisibilityMode::Open,
+            })
+            .await
+            .expect("the manager answers");
         let member = harness
             .manager
             .send(AddGroupMembersRequest {
@@ -466,6 +474,7 @@ mod tests {
 
         assert!(refused_by_private_space(&nested.unwrap_err()));
         assert!(refused_by_private_space(&private.unwrap_err()));
+        assert!(refused_by_private_space(&reopen.unwrap_err()));
         assert!(refused_by_private_space(&member.unwrap_err()));
         assert!(refused_by_private_space(&invitation.unwrap_err()));
         assert!(

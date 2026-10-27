@@ -10,18 +10,19 @@ use eyre::Result as EyreResult;
 pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, mode: &VisibilityMode) -> EyreResult<()> {
     let signer = ctx.signer();
     let group_id = ctx.group_id();
-    if matches!(mode, VisibilityMode::Restricted) {
-        Tree::at_cut(
-            ctx.store(),
-            ctx.authorizer(),
-            group_id,
-            ctx.cut(),
-            TreeReads {
-                chains: &[*group_id],
-                subtrees: &[*group_id],
-            },
-        )?
-        .require_may_make_private(group_id)?;
+    let tree = Tree::at_cut(
+        ctx.store(),
+        ctx.authorizer(),
+        group_id,
+        ctx.cut(),
+        TreeReads {
+            chains: &[*group_id],
+            subtrees: &[*group_id],
+        },
+    )?;
+    match mode {
+        VisibilityMode::Restricted => tree.require_may_make_private(group_id)?,
+        VisibilityMode::Open => tree.require_may_reopen(group_id)?,
     }
     ctx.settings().set_subgroup_visibility(signer, *mode)?;
     // Re-trigger inherited auto-follow for this subgroup's contexts. A

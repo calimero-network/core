@@ -9743,7 +9743,7 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
         .store_identity(&ns_gid, &member_pk, member_sk.as_bytes())
         .unwrap();
 
-    // ---- The Open subgroup: born Restricted, owner is its admin ------------
+    // ---- The Open subgroup: born Restricted, owner is its admin, born Open ------------
     let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
     nest_for_test(&store, &ns_gid, &sub_gid);
     MetaRepository::new(&store)
@@ -9756,12 +9756,15 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
     crate::group_creator::GroupCreatorRepository::new(&store)
         .record(&sub_gid, &owner_account)
         .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub_gid, VisibilityMode::Open)
+        .unwrap();
     assert_eq!(
         CapabilitiesRepository::new(&store)
             .subgroup_visibility(&sub_gid)
             .unwrap(),
-        VisibilityMode::Restricted,
-        "precondition: the subgroup is born Restricted"
+        VisibilityMode::Open,
+        "precondition: the subgroup is born Open"
     );
 
     // ---- Mint the NAMESPACE key (Open subgroups encrypt under it) ----------
@@ -9774,7 +9777,7 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
 
     // ---- Buffer the namespace-key-encrypted SubgroupVisibilitySet(Open) ----
     let inner_op = GroupOp::SubgroupVisibilitySet {
-        mode: VisibilityMode::Open,
+        mode: VisibilityMode::Restricted,
     };
     let encrypted = GroupKeyring::encrypt_op(&ns_key, &inner_op).unwrap();
     let flip_op = SignedNamespaceOp::sign(
@@ -9798,7 +9801,7 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
         CapabilitiesRepository::new(&store)
             .subgroup_visibility(&sub_gid)
             .unwrap(),
-        VisibilityMode::Restricted,
+        VisibilityMode::Open,
         "the flip must be effect-skipped while the namespace key is absent"
     );
 
@@ -9818,9 +9821,9 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
         CapabilitiesRepository::new(&store)
             .subgroup_visibility(&sub_gid)
             .unwrap(),
-        VisibilityMode::Open,
+        VisibilityMode::Restricted,
         "#3198: delivering the namespace key must re-drive the Open subgroup's \
-         buffered SubgroupVisibilitySet so it reads Open (enabling inherited follow)"
+         buffered SubgroupVisibilitySet so it reads Restricted"
     );
 }
 
@@ -9895,9 +9898,18 @@ fn a_space_root_flip_sealed_under_the_space_key_is_refused() {
     );
     assert_eq!(visibility(), VisibilityMode::Restricted);
 
-    apply_signed_namespace_op(&store, &flip(&ns_key, 2))
-        .expect("the workspace-sealed flip applies");
-    assert_eq!(visibility(), VisibilityMode::Open);
+    // Sealed for the workspace it is read, and refused as what it is: a space is never reopened.
+    let err = apply_signed_namespace_op(&store, &flip(&ns_key, 2))
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
+        .expect_err("a space is never reopened");
+    assert!(
+        err.chain().any(|cause| matches!(
+            cause.downcast_ref::<crate::PrivateSpaceError>(),
+            Some(crate::PrivateSpaceError::ReopenRefused(_))
+        )),
+        "{err:#}"
+    );
+    assert_eq!(visibility(), VisibilityMode::Restricted);
 }
 
 // -----------------------------------------------------------------------

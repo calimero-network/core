@@ -57,12 +57,13 @@ impl Handler<SetSubgroupVisibilityRequest> for ContextManager {
             return ActorResponse::reply(Err(err));
         }
 
-        if matches!(subgroup_visibility, VisibilityMode::Restricted) {
-            if let Err(err) = Tree::live(&self.datastore, &group_id)
-                .and_then(|tree| tree.require_may_make_private(&group_id))
-            {
-                return ActorResponse::reply(Err(err));
-            }
+        if let Err(err) =
+            Tree::live(&self.datastore, &group_id).and_then(|tree| match subgroup_visibility {
+                VisibilityMode::Restricted => tree.require_may_make_private(&group_id),
+                VisibilityMode::Open => tree.require_may_reopen(&group_id),
+            })
+        {
+            return ActorResponse::reply(Err(err));
         }
 
         let datastore = preflight.datastore.clone();

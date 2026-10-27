@@ -61,6 +61,9 @@ pub enum PrivateSpaceError {
     #[error("group {0} would put a private space inside a private space")]
     Nested(String),
 
+    #[error("group {0} is a private space; a space cannot be reopened")]
+    ReopenRefused(String),
+
     #[error("group {0} would leave its private space")]
     LeavesSpace(String),
 

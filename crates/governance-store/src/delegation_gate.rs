@@ -2301,7 +2301,7 @@ mod founding_tests {
             f.group_wrapped(
                 channel,
                 GroupOp::SubgroupVisibilitySet {
-                    mode: calimero_context_config::VisibilityMode::Open,
+                    mode: calimero_context_config::VisibilityMode::Restricted,
                 },
                 4,
             ),

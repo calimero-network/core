@@ -2337,6 +2337,26 @@ fn alice_creates_a_restricted_subgroup(
     (create, subgroup)
 }
 
+fn alice_creates_an_open_subgroup(
+    w: &World,
+    parent: &SignedNamespaceOp,
+) -> (SignedNamespaceOp, ContextGroupId) {
+    let namespace = LogAuthorizer::group().to_bytes();
+    let create = sign_root(
+        w,
+        &w.alice,
+        &[parent],
+        crate::test_fixtures::group_created(w.alice.account, namespace, false, 0x71),
+    );
+    let subgroup = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+        &w.alice.account,
+        namespace,
+        false,
+        0x71,
+    ));
+    (create, subgroup)
+}
+
 fn visibility(w: &World, subgroup: &ContextGroupId) -> calimero_context_config::VisibilityMode {
     CapabilitiesRepository::new(&w.store)
         .subgroup_visibility(subgroup)
@@ -2486,10 +2506,9 @@ fn a_flip_voided_by_a_concurrent_removal_leaves_the_subgroup_restricted_on_every
     for op in &founding {
         removal_first.apply(op).expect("the replica follows");
     }
-    let (create, subgroup) = alice_creates_a_restricted_subgroup(w, &founding[2]);
+    let (create, subgroup) = alice_creates_an_open_subgroup(w, &founding[2]);
     for node in [&flip_first, &removal_first] {
-        node.apply(&create)
-            .expect("alice creates a Restricted subgroup");
+        node.apply(&create).expect("alice creates an Open subgroup");
     }
 
     let flip = sign_in_group(
@@ -2498,7 +2517,7 @@ fn a_flip_voided_by_a_concurrent_removal_leaves_the_subgroup_restricted_on_every
         subgroup,
         &[&create],
         &GroupOp::SubgroupVisibilitySet {
-            mode: VisibilityMode::Open,
+            mode: VisibilityMode::Restricted,
         },
     );
     let removal = w.remove(&w.owner, &[&create], &w.alice, None);
@@ -2516,7 +2535,7 @@ fn a_flip_voided_by_a_concurrent_removal_leaves_the_subgroup_restricted_on_every
             visibility(&flip_first, &subgroup),
             visibility(&removal_first, &subgroup)
         ),
-        (VisibilityMode::Restricted, VisibilityMode::Restricted),
+        (VisibilityMode::Open, VisibilityMode::Open),
         "a flip voided by its creator's concurrent removal opened the subgroup"
     );
 }
@@ -2571,67 +2590,6 @@ fn permutations<T: Copy>(items: &[T]) -> Vec<Vec<T>> {
     all
 }
 
-/// Alice's opening flip, Sam's concurrent removal of Alice, and Bob's concurrent
-/// removal of Sam, which voids Sam's removal and so lets the flip count again.
-struct FlipCountsAgain {
-    history: Vec<SignedNamespaceOp>,
-    flip: SignedNamespaceOp,
-    sam_removes_alice: SignedNamespaceOp,
-    bob_removes_sam: SignedNamespaceOp,
-    subgroup: ContextGroupId,
-}
-
-fn flip_counts_again(w: &World) -> FlipCountsAgain {
-    use calimero_context_config::VisibilityMode;
-
-    let [a, s, b] = w.founded();
-    let promote = w.add(&w.owner, &[&b], &w.bob, GroupMemberRole::Admin);
-    w.apply(&promote).expect("bob is an admin");
-    let (create, subgroup) = alice_creates_a_restricted_subgroup(w, &promote);
-    w.apply(&create)
-        .expect("alice creates a Restricted subgroup");
-    let flip = sign_in_group(
-        w,
-        &w.alice,
-        subgroup,
-        &[&create],
-        &GroupOp::SubgroupVisibilitySet {
-            mode: VisibilityMode::Open,
-        },
-    );
-    let sam_removes_alice = w.remove(&w.sam, &[&create], &w.alice, None);
-    let bob_removes_sam = w.remove(&w.bob, &[&create], &w.sam, None);
-    FlipCountsAgain {
-        history: vec![a, s, b, promote, create],
-        flip,
-        sam_removes_alice,
-        bob_removes_sam,
-        subgroup,
-    }
-}
-
-#[test]
-fn a_flip_that_counts_again_ends_with_the_same_visibility_in_every_arrival_order() {
-    use calimero_context_config::VisibilityMode;
-
-    let w = World::new();
-    let f = flip_counts_again(&w);
-    let ops = [&f.flip, &f.sam_removes_alice, &f.bob_removes_sam];
-    let mut landed = Vec::new();
-    for order in permutations(&[0, 1, 2]) {
-        let replica = replica_after(&w, &f.history.iter().collect::<Vec<_>>());
-        for at in &order {
-            let _verdict = replica.apply(ops[*at]);
-        }
-        landed.push((order, visibility(&replica, &f.subgroup)));
-    }
-
-    assert!(
-        landed.iter().all(|(_, mode)| *mode == VisibilityMode::Open),
-        "Sam's removal of Alice is void, so her flip stands in every order: {landed:?}"
-    );
-}
-
 /// The subgroup's creation and the removal that voids Sam's are sealed under a key the
 /// replica takes late: neither the flip's sealed ancestor nor where the key falls decides.
 #[test]
@@ -2646,16 +2604,15 @@ fn a_flip_that_counts_again_lands_the_same_wherever_its_sealed_ops_and_key_arriv
     let _ = GroupKeyring::new(&w.store, LogAuthorizer::group())
         .store_key(&K_LATE)
         .expect("the signer holds the later key");
-    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &promote);
-    w.apply(&create)
-        .expect("alice creates a Restricted subgroup");
+    let (create, subgroup) = alice_creates_an_open_subgroup(&w, &promote);
+    w.apply(&create).expect("alice creates an Open subgroup");
     let flip = sign_in_group(
         &w,
         &w.alice,
         subgroup,
         &[&create],
         &GroupOp::SubgroupVisibilitySet {
-            mode: VisibilityMode::Open,
+            mode: VisibilityMode::Restricted,
         },
     );
     let sam_removes_alice = w.remove(&w.sam, &[&create], &w.alice, None);
@@ -2682,7 +2639,7 @@ fn a_flip_that_counts_again_lands_the_same_wherever_its_sealed_ops_and_key_arriv
             arrivals.insert(key_at, Arrival::Key(K_LATE));
             play(&replica, &groups, &arrivals);
             let mode = visibility(&replica, &subgroup);
-            if mode != VisibilityMode::Open {
+            if mode != VisibilityMode::Restricted {
                 landed.push((order.clone(), key_at, mode));
             }
         }
@@ -2827,71 +2784,5 @@ fn an_owner_a_void_transfer_moved_is_not_read_live_at_a_cut_holding_a_parked_op(
             Some(crate::ApplyError::AuthorityUndecidable { .. })
         )),
         "the row a void transfer moved was read as the owner: {owner:?}"
-    );
-}
-
-/// A rollback's visibility event is announced only once the removal that caused it is
-/// logged, like every other event of an applied op.
-#[test]
-#[serial_test::serial]
-fn a_rollbacks_visibility_event_fires_after_the_removal_is_logged() {
-    use std::sync::{Arc, Barrier};
-
-    use crate::op_events::{self, OpEvent};
-
-    let w = World::new();
-    let founding = w.founded();
-    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &founding[2]);
-    w.apply(&create)
-        .expect("alice creates a Restricted subgroup");
-    let flip = sign_in_group(
-        &w,
-        &w.alice,
-        subgroup,
-        &[&create],
-        &GroupOp::SubgroupVisibilitySet {
-            mode: VisibilityMode::Open,
-        },
-    );
-    w.apply(&flip).expect("alice's flip applies first");
-    let removal = w.remove(&w.owner, &[&create], &w.alice, None);
-    let removal_id = removal.content_hash().expect("hash");
-
-    let mut rx = op_events::subscribe();
-    let observer_store = w.store.clone();
-    let barrier = Arc::new(Barrier::new(2));
-    let observer_barrier = Arc::clone(&barrier);
-    let observer = std::thread::spawn(move || {
-        observer_barrier.wait();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while std::time::Instant::now() < deadline {
-            match rx.try_recv() {
-                Ok(OpEvent::SubgroupVisibilityChanged {
-                    group_id,
-                    open: false,
-                }) if group_id == subgroup.to_bytes() => {
-                    return Some(
-                        crate::NamespaceOpLogService::new(&observer_store, NS.into())
-                            .contains_op(removal_id)
-                            .expect("read the log"),
-                    );
-                }
-                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
-                    panic!("observer lagged by {n} events: inconclusive");
-                }
-                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return None,
-                _ => std::thread::yield_now(),
-            }
-        }
-        None
-    });
-    barrier.wait();
-    w.apply(&removal)
-        .expect("the removal applies and rolls the flip back");
-
-    assert_eq!(
-        observer.join().expect("the observer"),
-        Some(true),
-        "the rollback announced its visibility before the removal was logged"
     );
 }

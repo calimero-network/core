@@ -227,6 +227,14 @@ impl Tree {
         Ok(self.private_on_chain(start)?.unwrap_or(*namespace))
     }
 
+    /// A private space root is never opened again.
+    pub fn require_may_reopen(&self, group: &ContextGroupId) -> EyreResult<()> {
+        if self.is_private(group) {
+            bail!(PrivateSpaceError::ReopenRefused(group.to_string()));
+        }
+        Ok(())
+    }
+
     /// A folder is deleted after the spaces beneath it, never with them. The namespace root
     /// is the whole workspace and goes with everything in it.
     pub fn require_may_delete(&self, group: &ContextGroupId) -> EyreResult<()> {
