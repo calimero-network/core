@@ -121,6 +121,14 @@ pub enum Consistency {
     Stale { min_index: u64 },
 }
 
+/// What [`Client::verify_app_cluster`] proved: every replica's attested
+/// receipt key, and the governance they all attest.
+#[derive(Clone, Debug)]
+pub struct AttestedCluster {
+    pub keys: std::collections::BTreeMap<u64, [u8; 32]>,
+    pub governance: attest::Governance,
+}
+
 /// A connection to one node of a cluster.
 pub struct Client {
     base: Url,
@@ -161,13 +169,12 @@ impl Client {
     }
 
     /// Verify every replica of `app`: each one's quote over a fresh nonce,
-    /// held to this client's policy, binding its receipt key. Answers the
-    /// attested receipt key per node; a receipt from any other key, or from a
-    /// node not in this map, is not one to trust.
-    pub async fn verify_app_cluster(
-        &self,
-        app: &str,
-    ) -> Result<std::collections::BTreeMap<u64, [u8; 32]>> {
+    /// held to this client's policy, binding its receipt key and the
+    /// cluster's governance. Answers the attested receipt key per node (a
+    /// receipt from any other key, or from a node not in this map, is not one
+    /// to trust) and the governance every replica attests: who may move the
+    /// app to new code.
+    pub async fn verify_app_cluster(&self, app: &str) -> Result<AttestedCluster> {
         let nonce: [u8; 32] = calimero_identity::random::<32>();
         let v = self
             .get(&format!(
@@ -177,6 +184,7 @@ impl Client {
             ))
             .await?;
         let mut keys = std::collections::BTreeMap::new();
+        let mut governance: Option<attest::Governance> = None;
         for r in v["replicas"].as_array().cloned().unwrap_or_default() {
             let node = r["node"].as_u64().unwrap_or_default();
             let doc: attest::AttestationDoc = serde_json::from_value(r["attestation"].clone())
@@ -184,12 +192,18 @@ impl Client {
             if doc.node != node {
                 return Err(eyre::eyre!("replica {node} answered as node {}", doc.node).into());
             }
-            let key = attest::verify_receipt_key(&doc, &nonce, &self.policy)
+            let (key, rules) = attest::verify_receipt_key(&doc, &nonce, &self.policy)
                 .await
                 .map_err(|e| eyre::eyre!("replica {node}: {e:#}"))?;
+            // One cluster, one set of rules: replicas that disagree are not it.
+            if governance.as_ref().is_some_and(|g| *g != rules) {
+                return Err(eyre::eyre!("replica {node} attests other governance").into());
+            }
+            governance = Some(rules);
             let _prev = keys.insert(node, key);
         }
-        Ok(keys)
+        let governance = governance.ok_or_else(|| eyre::eyre!("no replica of {app} attested"))?;
+        Ok(AttestedCluster { keys, governance })
     }
 
     /// Use an API key for every request.

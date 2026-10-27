@@ -321,11 +321,15 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
     };
     let transport_key = node.transport.public_key();
     let receipts = q.purpose.as_deref() == Some("receipts");
+    // The rules the cluster was deployed with, as this replica's state holds
+    // them: bound with the receipt key, so a user proves both at once.
+    let governance = node.sys(crate::system::SystemState::governance);
     let report = if receipts {
         let mut r = [0; 64];
         r[..32].copy_from_slice(&nonce);
         r[32..].copy_from_slice(&calimero_cloud_client::attest::receipt_key_binding(
             &node.receipt_public(),
+            &governance,
         ));
         r
     } else {
@@ -354,6 +358,7 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         node: node.config.node_id,
         mock: node.config.attestation == crate::attest::Mode::Mock,
         receipt_key: receipts.then(|| hex::encode(node.receipt_public())),
+        governance: receipts.then_some(governance),
     };
     Ok(Json(serde_json::to_value(doc).unwrap_or_default()))
 }
@@ -1853,14 +1858,40 @@ async fn app_upgrade(
         body.confirm.take(),
     )
     .await?;
+    run_upgrade(
+        &node,
+        app_id,
+        bundle,
+        body.migrate,
+        Caller::Account {
+            account: account.clone(),
+        },
+        account,
+        false,
+        consent,
+    )
+    .await
+}
+
+/// Run an upgrade on the app's group and, once it succeeded, record the new
+/// bundle in the directory (where `UpgradeApp` judges who may).
+#[allow(clippy::too_many_arguments, reason = "the upgrade's whole context")]
+async fn run_upgrade(
+    node: &Node,
+    app_id: String,
+    bundle: String,
+    migrate: Option<String>,
+    caller: Caller,
+    actor: String,
+    by_operator: bool,
+    consent: Value,
+) -> ApiResult {
     let applied = node
         .call(&CallRequest::new(
             app_id.clone(),
             "__upgrade".into(),
-            json!({ "bundle": bundle, "migrate": body.migrate }),
-            Caller::Account {
-                account: account.clone(),
-            },
+            json!({ "bundle": bundle, "migrate": migrate }),
+            caller,
         ))
         .await?;
     // The app now runs the new bundle: the directory says so too.
@@ -1869,7 +1900,8 @@ async fn app_upgrade(
             .sys_write(&SystemCmd::UpgradeApp {
                 app_id,
                 bundle,
-                actor: account,
+                by_operator,
+                actor,
                 consent,
             })
             .await?;
@@ -2588,6 +2620,7 @@ async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRes
     Ok(Json(json!({
         "node": node.config.node_id,
         "system": node.system.status(),
+        "governance": node.sys(crate::system::SystemState::governance),
         "groups": groups,
         "nodes": nodes,
         "apps": apps,
@@ -2735,6 +2768,121 @@ async fn ops_quotas_set(
     Ok(Json(json!({})))
 }
 
+/// Refused unless the cluster was deployed with the operator managing
+/// upgrades: on an owner-managed cluster the operator moves no app to new code.
+fn operator_upgrades(node: &Node) -> Result<(), ApiError> {
+    if node.sys(|s| s.governance().upgrades) == crate::system::UpgradePolicy::Operator {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(
+            "this cluster was deployed with owner-managed upgrades",
+        ))
+    }
+}
+
+#[derive(Deserialize)]
+struct OpsReleaseBody {
+    version: String,
+    #[serde(default = "yes")]
+    approved: bool,
+}
+
+/// Approve (or withdraw) a mero-tee release for every app, on a cluster whose
+/// operator manages upgrades.
+async fn ops_release(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<OpsReleaseBody>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    operator_upgrades(&node)?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::SetOperatorRelease {
+            version: body.version,
+            approved: body.approved,
+        })
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpsUpgradeBody {
+    #[serde(default)]
+    bundle: Option<String>,
+    #[serde(default)]
+    package: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    service: Option<String>,
+    #[serde(default)]
+    migrate: Option<String>,
+}
+
+/// Upgrade any app, on a cluster whose operator manages upgrades. The release
+/// must be installed already (the operator holds no account to install as).
+async fn ops_upgrade(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+    Json(body): Json<OpsUpgradeBody>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    operator_upgrades(&node)?;
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let current = node.release_of(&app.bundle);
+    let bundle = match (body.bundle, body.version) {
+        (Some(b), _) => b,
+        (None, Some(version)) => {
+            let package = body
+                .package
+                .or_else(|| current.as_ref().map(|r| r.at.package.clone()))
+                .ok_or_else(|| {
+                    ApiError::bad_request("BAD_REQUEST", "name the package to upgrade to")
+                })?;
+            let service = body
+                .service
+                .or_else(|| current.as_ref().and_then(|r| r.at.service.clone()))
+                .unwrap_or_default();
+            node.sys(|s| {
+                s.packages
+                    .get(&package)
+                    .and_then(|p| p.versions.get(&version))
+                    .and_then(|v| v.services.get(&service).cloned())
+            })
+            .ok_or_else(|| {
+                ApiError::new(
+                    409,
+                    "NOT_INSTALLED",
+                    &format!("{package} {version} is not installed"),
+                )
+            })?
+        }
+        (None, None) => {
+            return Err(ApiError::bad_request(
+                "BAD_REQUEST",
+                "name a version or a bundle",
+            ))
+        }
+    };
+    if !node.sys(|s| s.bundles.contains_key(&bundle)) {
+        return Err(crate::node::rejected("unknown bundle"));
+    }
+    run_upgrade(
+        &node,
+        app_id,
+        bundle,
+        body.migrate,
+        Caller::Public,
+        String::new(),
+        true,
+        Value::Null,
+    )
+    .await
+}
+
 async fn ops_backup(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
     let n = node
@@ -2809,6 +2957,8 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/nodes", post(ops_register_node))
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))
         .route("/ops/backup", post(ops_backup))
+        .route("/ops/releases", post(ops_release))
+        .route("/ops/apps/{app}/upgrade", post(ops_upgrade))
         .route("/ops/quotas", get(ops_quotas_get).post(ops_quotas_set))
         // Bundles (peer blob pushes, uploads) exceed axum's 2 MiB default; the sealed envelope caps requests at 64 MiB.
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))

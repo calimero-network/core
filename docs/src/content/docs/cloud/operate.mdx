@@ -29,6 +29,16 @@ merod-v2 --node-id 1 --listen 0.0.0.0:2501 --public-url https://n1.eu1.example/ 
   `--session-key-rotation-secs` (default 6 h, at least 30 min); the previous key
   keeps verifying.
 - **Browsers.** `--origins` are both the passkey origins and the CORS origins.
+- **Upgrade policy.** `--upgrade-policy owner` (default) or `operator`, fixed
+  the first time the cluster starts and attested with every node's receipt key,
+  so users can check it (`verify_app_cluster`). Owner-managed: each app's owner
+  (an organization's owner for its apps) approves the mero-tee releases that may
+  hold its data and upgrades it, with a passkey; the operator can do neither.
+  Operator-managed: the operator approves releases for every app
+  (`POST /ops/releases { version }`) and may upgrade any app to an installed
+  release (`POST /ops/apps/{app}/upgrade { version | bundle }`); owners still
+  upgrade their own apps. Pick operator-managed only where users trust the
+  operator with code that reads their data.
 - **Outbound HTTPS.** Off unless `--settings FILE` has an `[outbound]` table
   (`enabled`, `hosts`, and `env_secrets` or a loopback `sidecar`), v1's
   `[context.outbound]`. The operator only bounds the hosts and holds the

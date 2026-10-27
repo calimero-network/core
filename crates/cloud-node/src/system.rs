@@ -167,6 +167,15 @@ pub struct SystemState {
     /// Installed packages by name.
     #[serde(default)]
     pub packages: BTreeMap<String, PackageRecord>,
+    /// The rules the cluster was deployed with, written once at genesis
+    /// (`SystemCmd::Genesis`) and attested with every receipt key. `None` is
+    /// state from before governance, which reads as [`Governance::default`].
+    #[serde(default)]
+    pub governance: Option<Governance>,
+    /// Under [`UpgradePolicy::Operator`]: the mero-tee releases the operator
+    /// approved to hold every app's data.
+    #[serde(default)]
+    pub operator_releases: BTreeSet<String>,
     /// When each session in `revoked_sessions` was revoked (Unix seconds), so
     /// it can be forgotten once no token of it can still be valid.
     #[serde(default)]
@@ -176,6 +185,8 @@ pub struct SystemState {
     #[serde(default)]
     pub rotated_refresh: BTreeMap<String, RefreshRecord>,
 }
+
+pub use calimero_cloud_client::attest::{Governance, UpgradePolicy};
 
 /// Whose release approvals a change is to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,6 +206,10 @@ impl SystemState {
     /// (state from before approvals), which leaves the app unrestricted.
     #[must_use]
     pub fn approved_releases(&self, app: &AppRecord) -> Option<&BTreeSet<String>> {
+        if self.governance().upgrades == UpgradePolicy::Operator {
+            let set = &self.operator_releases;
+            return (!set.is_empty()).then_some(set);
+        }
         let set = match &app.org {
             Some(o) => &self.orgs.get(o)?.approved_releases,
             None => &self.accounts.get(&app.owner)?.approved_releases,
@@ -218,6 +233,12 @@ impl SystemState {
                 .outbound_approvals
                 .get(signer),
         }
+    }
+
+    /// The rules this cluster was deployed with.
+    #[must_use]
+    pub fn governance(&self) -> Governance {
+        self.governance.clone().unwrap_or_default()
     }
 
     /// Whether `account` may upgrade `app`: its owner, or the owner of its
@@ -353,6 +374,10 @@ pub enum SystemCmd {
     UpgradeApp {
         app_id: AppId,
         bundle: String,
+        /// The operator upgraded it (`actor` empty), which only
+        /// [`UpgradePolicy::Operator`] allows.
+        #[serde(default)]
+        by_operator: bool,
         actor: AccountId,
         /// The owner's passkey assertion over this upgrade.
         #[serde(default)]
@@ -445,6 +470,22 @@ pub enum SystemCmd {
         /// the start, so its apps run where the org began.
         #[serde(default)]
         release: Option<String>,
+    },
+    /// The cluster's rules, from the first leader's configuration. Accepted
+    /// once, before anyone has an account: after that they are fixed, so an
+    /// operator cannot change who upgrades the apps once people rely on it.
+    Genesis {
+        governance: Governance,
+        /// The founding node's release: under [`UpgradePolicy::Operator`] it
+        /// holds the apps until the operator approves another.
+        #[serde(default)]
+        release: Option<String>,
+    },
+    /// Under [`UpgradePolicy::Operator`], the operator approves (or withdraws)
+    /// a mero-tee release for every app's data.
+    SetOperatorRelease {
+        version: String,
+        approved: bool,
     },
     /// The owner approves (or withdraws) a mero-tee release for an org's apps,
     /// or for their own apps outside one. Logged with the passkey consent.
@@ -788,17 +829,22 @@ impl SystemMachine {
             SystemCmd::UpgradeApp {
                 app_id,
                 bundle,
+                by_operator,
                 actor,
                 consent: _,
             } => {
                 if !s.bundles.contains_key(&bundle) {
                     return Err("unknown bundle");
                 }
-                if !s
-                    .apps
-                    .get(&app_id)
-                    .is_some_and(|a| s.may_upgrade(a, &actor))
-                {
+                let allowed = if by_operator {
+                    s.governance().upgrades == UpgradePolicy::Operator
+                        && s.apps.contains_key(&app_id)
+                } else {
+                    s.apps
+                        .get(&app_id)
+                        .is_some_and(|a| s.may_upgrade(a, &actor))
+                };
+                if !allowed {
                     return Err(
                         "only the app's owner (or its organization's owner) may upgrade it",
                     );
@@ -862,6 +908,11 @@ impl SystemMachine {
                 Ok(Value::Null)
             }
             SystemCmd::CreateAccount { account } => {
+                // The first account waits for genesis: the rules it joins
+                // under are fixed before anyone relies on them.
+                if s.governance.is_none() && s.accounts.is_empty() {
+                    return Err("the cluster is starting");
+                }
                 if s.accounts.contains_key(&account.account_id) {
                     return Err("account exists");
                 }
@@ -1093,6 +1144,34 @@ impl SystemMachine {
                 );
                 Ok(json!({ "orgId": org_id }))
             }
+            SystemCmd::Genesis {
+                governance,
+                release,
+            } => {
+                if s.governance.is_some() || !s.accounts.is_empty() {
+                    return Err("the cluster's governance is fixed at genesis");
+                }
+                if governance.upgrades == UpgradePolicy::Operator {
+                    s.operator_releases = release.into_iter().collect();
+                }
+                s.governance = Some(governance.clone());
+                Ok(json!({ "governance": governance }))
+            }
+            SystemCmd::SetOperatorRelease { version, approved } => {
+                if s.governance().upgrades != UpgradePolicy::Operator {
+                    return Err("this cluster's releases are approved by each app's owner");
+                }
+                let set = &mut s.operator_releases;
+                if approved {
+                    let _new = set.insert(version);
+                } else {
+                    if set.len() == 1 && set.contains(&version) {
+                        return Err("the last approved release cannot be withdrawn");
+                    }
+                    let _gone = set.remove(&version);
+                }
+                Ok(json!({ "approvedReleases": set }))
+            }
             SystemCmd::SetReleaseApproval {
                 scope,
                 version,
@@ -1100,6 +1179,9 @@ impl SystemMachine {
                 actor,
                 consent: _,
             } => {
+                if s.governance().upgrades == UpgradePolicy::Operator {
+                    return Err("this cluster's releases are approved by its operator");
+                }
                 let set = match &scope {
                     ReleaseScope::Org { org } => {
                         let o = s.orgs.get_mut(org).ok_or("no such organization")?;
@@ -1561,7 +1643,133 @@ impl Machine for SystemMachine {
 
 #[cfg(test)]
 mod tests {
-    use super::SystemCmd;
+    use serde_json::json;
+
+    use super::{Governance, ReleaseScope, SystemCmd, SystemMachine, SystemState, UpgradePolicy};
+
+    fn account(id: &str) -> SystemCmd {
+        SystemCmd::CreateAccount {
+            account: serde_json::from_value(
+                json!({ "accountId": id, "name": id, "createdAt": 0, "passkeys": [] }),
+            )
+            .unwrap(),
+        }
+    }
+
+    fn genesis(upgrades: UpgradePolicy) -> SystemCmd {
+        SystemCmd::Genesis {
+            governance: Governance { upgrades },
+            release: Some("2.0.0".into()),
+        }
+    }
+
+    /// The rules are written once, before anyone has an account, and an
+    /// operator who restarts the cluster with other ones changes nothing.
+    #[test]
+    fn governance_is_fixed_at_genesis() {
+        let mut m = SystemMachine::default();
+        assert!(
+            m.run(account("alice")).is_err(),
+            "an account before genesis"
+        );
+        let _ok = m.run(genesis(UpgradePolicy::Operator)).unwrap();
+        let _ok = m.run(account("alice")).unwrap();
+        assert!(m.run(genesis(UpgradePolicy::Owner)).is_err());
+        assert_eq!(m.state.governance().upgrades, UpgradePolicy::Operator);
+
+        // Even before any account, a second genesis is refused.
+        let mut m = SystemMachine::default();
+        let _ok = m.run(genesis(UpgradePolicy::Owner)).unwrap();
+        assert!(m.run(genesis(UpgradePolicy::Operator)).is_err());
+        assert_eq!(m.state.governance().upgrades, UpgradePolicy::Owner);
+
+        // State from before governance reads as owner-managed.
+        assert_eq!(SystemState::default().governance(), Governance::default());
+        assert_eq!(Governance::default().upgrades, UpgradePolicy::Owner);
+    }
+
+    /// Owner-managed: only the app's owner approves releases and upgrades.
+    /// Operator-managed: the operator approves releases for every app and may
+    /// upgrade any; owners still upgrade their own, and approve no releases.
+    #[test]
+    fn the_policy_decides_who_moves_apps_to_new_code() {
+        for policy in [UpgradePolicy::Owner, UpgradePolicy::Operator] {
+            let operator = policy == UpgradePolicy::Operator;
+            let mut m = SystemMachine::default();
+            let _ok = m.run(genesis(policy)).unwrap();
+            let _ok = m.run(account("alice")).unwrap();
+            if let Some(a) = m.state.accounts.get_mut("alice") {
+                let _new = a.approved_releases.insert("2.0.0".into());
+            }
+            for hash in ["b1", "b2"] {
+                let _prev = m.state.bundles.insert(
+                    hash.into(),
+                    serde_json::from_value(
+                        json!({ "hash": hash, "size": 1, "uploadedBy": "alice" }),
+                    )
+                    .unwrap(),
+                );
+            }
+            let _prev = m.state.apps.insert(
+                "app".into(),
+                serde_json::from_value(json!({
+                    "appId": "app", "name": "app", "group": 2, "bundle": "b1",
+                    "owner": "alice", "replicas": [1, 2, 3], "createdAt": 0
+                }))
+                .unwrap(),
+            );
+            let upgrade = |by_operator: bool, actor: &str, bundle: &str| SystemCmd::UpgradeApp {
+                app_id: "app".into(),
+                bundle: bundle.into(),
+                by_operator,
+                actor: actor.into(),
+                consent: serde_json::Value::Null,
+            };
+
+            let by_operator = m.run(upgrade(true, "", "b2"));
+            assert_eq!(
+                by_operator.is_ok(),
+                operator,
+                "{policy:?}: operator upgrade"
+            );
+            assert!(
+                m.run(upgrade(false, "alice", "b1")).is_ok(),
+                "{policy:?}: owner"
+            );
+            assert!(
+                m.run(upgrade(false, "mallory", "b2")).is_err(),
+                "{policy:?}"
+            );
+
+            let ops_release = m.run(SystemCmd::SetOperatorRelease {
+                version: "2.1.0".into(),
+                approved: true,
+            });
+            assert_eq!(
+                ops_release.is_ok(),
+                operator,
+                "{policy:?}: operator release"
+            );
+            let owner_release = m.run(SystemCmd::SetReleaseApproval {
+                scope: ReleaseScope::Account,
+                version: "2.1.0".into(),
+                approved: true,
+                actor: "alice".into(),
+                consent: serde_json::Value::Null,
+            });
+            assert_eq!(
+                owner_release.is_ok(),
+                !operator,
+                "{policy:?}: owner release"
+            );
+
+            // Whoever approved it, 2.1.0 may now hold the app; nothing else new may.
+            let app = m.state.apps["app"].clone();
+            assert!(m.state.release_may_hold(&app, Some("2.0.0")), "{policy:?}");
+            assert!(m.state.release_may_hold(&app, Some("2.1.0")), "{policy:?}");
+            assert!(!m.state.release_may_hold(&app, Some("9.9.9")), "{policy:?}");
+        }
+    }
 
     /// "Move this team to the top" is `parent: Some(None)`; it was lost on its
     /// way through the log, where `null` read back as absent.

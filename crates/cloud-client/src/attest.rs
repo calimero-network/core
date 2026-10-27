@@ -42,15 +42,53 @@ pub struct AttestationDoc {
     /// the transport key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt_key: Option<String>,
+    /// The cluster's governance, fixed at genesis, when the attestation was
+    /// asked for the receipt key: the quote binds it with the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub governance: Option<Governance>,
 }
 
-/// What a receipt-key attestation's report data binds after the nonce.
+/// Who may move a cluster's apps to new code: chosen when the cluster is
+/// deployed, recorded in its system state at genesis, and never changed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpgradePolicy {
+    /// Each app's owner (an organization's owner for its apps) approves the
+    /// mero-tee releases that may hold their data and upgrades their apps,
+    /// with a passkey. The operator can do neither.
+    #[default]
+    Owner,
+    /// The operator approves releases for the whole cluster and may upgrade
+    /// any app (owners still upgrade their own). For a managed deployment
+    /// whose users trust its operator with code.
+    Operator,
+}
+
+/// The rules a cluster was deployed with, as its replicas attest them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Governance {
+    pub upgrades: UpgradePolicy,
+}
+
+impl Governance {
+    /// The bytes a quote binds: the JSON, fields in declaration order
+    /// (`{"upgrades":"owner"}`, what `JSON.stringify` writes too).
+    #[must_use]
+    pub fn canonical(&self) -> Vec<u8> {
+        serde_json::to_vec(self).unwrap_or_default()
+    }
+}
+
+/// What a receipt-key attestation's report data binds after the nonce: the
+/// receipt key and the cluster's governance.
 #[must_use]
-pub fn receipt_key_binding(receipt_key: &[u8; 32]) -> [u8; 32] {
+pub fn receipt_key_binding(receipt_key: &[u8; 32], governance: &Governance) -> [u8; 32] {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
-    h.update(b"calimero.tee-attest.receipt-key.v1");
+    h.update(b"calimero.tee-attest.receipt-key.v2");
     h.update(receipt_key);
+    h.update(sha2::Sha256::digest(governance.canonical()));
     h.finalize().into()
 }
 
@@ -251,22 +289,27 @@ pub async fn verify(
 }
 
 /// Verify a receipt-key attestation (`purpose=receipts`): the same checks as
-/// [`verify`], over a quote that binds the node's receipt key. Answers the key.
+/// [`verify`], over a quote that binds the node's receipt key and the
+/// cluster's governance. Answers both.
 pub async fn verify_receipt_key(
     doc: &AttestationDoc,
     nonce: &[u8; 32],
     policy: &Policy,
-) -> eyre::Result<[u8; 32]> {
+) -> eyre::Result<([u8; 32], Governance)> {
     let key = hex32(
         doc.receipt_key
             .as_deref()
             .ok_or_else(|| eyre::eyre!("the attestation names no receipt key"))?,
     )?;
+    let governance = doc
+        .governance
+        .clone()
+        .ok_or_else(|| eyre::eyre!("the attestation names no governance"))?;
     let mut expected = [0; 64];
     expected[..32].copy_from_slice(nonce);
-    expected[32..].copy_from_slice(&receipt_key_binding(&key));
+    expected[32..].copy_from_slice(&receipt_key_binding(&key, &governance));
     verify_report(doc, nonce, policy, &expected).await?;
-    Ok(key)
+    Ok((key, governance))
 }
 
 /// The quote is genuine (or an allowed mock), from a trusted image, and its
@@ -425,6 +468,7 @@ mod tests {
             node: 1,
             mock: false,
             receipt_key: None,
+            governance: None,
         }
     }
 

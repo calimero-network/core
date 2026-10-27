@@ -90,10 +90,24 @@ struct Args {
     /// Accept raw WASM uploads, which carry no publisher signature (default: only with --dev).
     #[arg(long, env = "MEROD_ALLOW_UNSIGNED_BUNDLES")]
     allow_unsigned_bundles: bool,
+    /// Who moves apps to new code, fixed when the cluster is first started:
+    /// `owner` (each app's owner approves releases and upgrades, with a
+    /// passkey) or `operator` (the operator does, for every app). Attested
+    /// with every receipt key. Later starts cannot change it.
+    #[arg(long, env = "MEROD_UPGRADE_POLICY", default_value = "owner", value_parser = upgrade_policy)]
+    upgrade_policy: calimero_cloud_node::system::UpgradePolicy,
     /// A TOML settings file; its `[outbound]` table is the outbound HTTPS
     /// policy (hosts, secrets). Without it, apps cannot call out.
     #[arg(long, env = "MEROD_SETTINGS")]
     settings: Option<PathBuf>,
+}
+
+fn upgrade_policy(s: &str) -> Result<calimero_cloud_node::system::UpgradePolicy, String> {
+    match s {
+        "owner" => Ok(calimero_cloud_node::system::UpgradePolicy::Owner),
+        "operator" => Ok(calimero_cloud_node::system::UpgradePolicy::Operator),
+        other => Err(format!("{other:?}: expected owner or operator")),
+    }
 }
 
 /// `--settings`: what the operator configures beyond the flags.
@@ -285,6 +299,7 @@ async fn main() -> eyre::Result<()> {
         registry: args.registry_url,
         allow_unsigned_bundles: args.allow_unsigned_bundles || args.dev,
         outbound: outbound(args.settings.as_deref())?,
+        upgrade_policy: args.upgrade_policy,
     };
     let running = run(config).await?;
     tokio::signal::ctrl_c().await?;
