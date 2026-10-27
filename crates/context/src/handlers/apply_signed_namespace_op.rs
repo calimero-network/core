@@ -180,16 +180,15 @@ fn root_auth_requirement(
     match root {
         // Judged as the op it guards; the proof is the apply path's question.
         RootOp::RootGuarded { op, .. } => root_auth_requirement(op, ns_root),
-        RootOp::AdminChanged { .. }
-        | RootOp::PolicyUpdated { .. }
-        | RootOp::GroupReparented { .. } => Some((ns_root, ApplyAuthReq::Admin)),
+        RootOp::AdminChanged { .. } | RootOp::PolicyUpdated { .. } => {
+            Some((ns_root, ApplyAuthReq::Admin))
+        }
         RootOp::GroupCreated { parent_id, .. } => Some((
             *parent_id,
             ApplyAuthReq::AdminOrCap(Cap::CAN_CREATE_SUBGROUP.bits()),
         )),
-        // GroupDeleted authorizes the subgroup OWNER or a
-        // `CAN_DELETE_SUBGROUP` holder at the root, NOT only the root
-        // admin — owner authority isn't in this admin/cap model, so skip.
+        // GroupDeleted and GroupReparented authorize the folder's owner, its space's admin or
+        // the namespace admin, by where it sits: not an admin/cap question, so skip.
         _ => None,
     }
 }

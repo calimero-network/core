@@ -1267,9 +1267,12 @@ pub(crate) fn ensure_sealed_for_the_tree(
             subtrees: &[],
         };
         let tree = Tree::at_cut(store, authorizer, group_id, parents, reads)?;
-        // A group the cut does not show yet has no applicable op; the replay judges it once read.
+        // A group the cut does not show cannot be judged yet: the op parks until it is read.
         if !tree.contains(group_id) {
-            return Ok(());
+            bail!(crate::ApplyError::AuthorityUndecidable {
+                group_id: group_id.to_string(),
+                signer: "the group's seal".to_owned(),
+            });
         }
         if tree.sealed_for_workspace(group_id, op)? {
             namespace_id

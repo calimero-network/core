@@ -1698,7 +1698,10 @@ mod concurrent {
         op: &GroupOp,
     ) -> SignedNamespaceOp {
         // The Restricted subgroup has a key of its own; the rest are under the namespace's.
-        let keyring = if *group == world.restricted {
+        // A space root's tree ops (a flip, a deletion, a transfer) are the workspace's.
+        let keyring = if *group == world.restricted
+            && !calimero_governance_store::private_space::is_tree_op(op)
+        {
             *group
         } else {
             world.namespace
