@@ -9,8 +9,8 @@
 # Migration note: release-v2's ceiling for one blob is 47 MiB, not v1's 500 MiB (a blob
 #   reaches the other nodes base64-encoded in one sealed request:
 #   docs/src/content/docs/protocol/limits.mdx): the sweep's 50, 100 and 250 MiB uploads
-#   are refused (the 50 MiB one naming the limit; past the sealed channel's 64 MiB a
-#   node drops the request unanswered), as v1's sweep stopped below its ceiling. A 40
+#   are refused (the 50 MiB one naming the blob limit, the 100 and 250 MiB ones the
+#   sealed channel's 64 MiB), as v1's sweep stopped below its ceiling. A 40
 #   MiB transfer (apps/blobs/scripts/gen-blob-fixtures.sh) takes the place of the
 #   largest size that still fits
 name: Blob Cross-Node Size Sweep
@@ -240,15 +240,27 @@ steps:
   type: assert
   statements:
   - contains("{{refused_50}}", "a blob is limited to 47 MiB")
-- name: A 100 MiB upload is over the cluster's blob limit
+- name: A 100 MiB upload is over the sealed channel's limit
   type: upload_blob
   app: '{{context_id}}'
   file_path: static/generated/blob-100mib.bin
   account: rust-blob-size-1
   expected_failure: true
-- name: A 250 MiB upload is over the cluster's blob limit
+  outputs:
+    refused_100: error
+- name: The 100 MiB refusal is the node's 413 naming the sealed limit
+  type: assert
+  statements:
+  - contains("{{refused_100}}", "a sealed request is limited to 64 MiB")
+- name: A 250 MiB upload is over the sealed channel's limit
   type: upload_blob
   app: '{{context_id}}'
   file_path: static/generated/blob-250mib.bin
   account: rust-blob-size-1
   expected_failure: true
+  outputs:
+    refused_250: error
+- name: The 250 MiB refusal is the node's 413 naming the sealed limit
+  type: assert
+  statements:
+  - contains("{{refused_250}}", "a sealed request is limited to 64 MiB")
