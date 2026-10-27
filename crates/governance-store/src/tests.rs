@@ -11366,6 +11366,40 @@ mod tee_member_removed_event_tests {
         assert!(MetaRepository::new(&store).load(&folder).unwrap().is_some());
     }
 
+    /// The admin pin on a space root is no seat in the space's folders once its row is gone.
+    #[test]
+    #[serial_test::serial]
+    fn a_pinned_admin_without_a_row_in_the_space_is_no_member_of_its_folders() {
+        use calimero_context_config::VisibilityMode;
+
+        let store = test_store();
+        let ns_gid = ContextGroupId::from([0xE9; 32]);
+        let space = ContextGroupId::from([0xEA; 32]);
+        let folder = ContextGroupId::from([0xEB; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&ns_gid, &space)
+            .unwrap();
+        NamespaceRepository::new(&store)
+            .nest(&space, &folder)
+            .unwrap();
+        let caps = CapabilitiesRepository::new(&store);
+        caps.set_subgroup_visibility(&space, VisibilityMode::Restricted)
+            .unwrap();
+        caps.set_subgroup_visibility(&folder, VisibilityMode::Open)
+            .unwrap();
+        let (_pk, creator) = enrolled(&store, &ns_gid, 0xEF);
+        for group in [&ns_gid, &space, &folder] {
+            MetaRepository::new(&store)
+                .save(group, &sample_meta_with_admin(creator))
+                .unwrap();
+        }
+        let rows = MembershipRepository::new(&store);
+        rows.add_member(&ns_gid, &creator, GroupMemberRole::Member)
+            .unwrap();
+
+        assert!(!rows.is_member(&folder, &creator).unwrap());
+    }
+
     /// An account that leaves the namespace holds no live row in a private space either.
     #[test]
     #[serial_test::serial]

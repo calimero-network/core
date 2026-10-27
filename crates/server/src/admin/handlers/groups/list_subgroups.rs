@@ -182,13 +182,13 @@ pub(crate) fn hidden_by_space(
     group_id: &ContextGroupId,
     account: Option<crate::auth::AuthenticatedAccount>,
 ) -> eyre::Result<bool> {
-    if !Tree::live(&state.store, group_id)?.in_space(group_id)? {
+    let Some(space) = Tree::live(&state.store, group_id)?.space_of(group_id)? else {
         return Ok(false);
-    }
+    };
     let Some(caller) = caller_account(state, group_id, account) else {
         return Ok(true);
     };
-    Ok(!MembershipRepository::new(&state.store).is_member(group_id, &caller)?)
+    Ok(!MembershipRepository::new(&state.store).is_live_member(&space, &caller)?)
 }
 
 #[cfg(test)]
@@ -251,5 +251,21 @@ mod tests {
         .expect("the admin removes the account from the workspace");
 
         assert!(hidden(), "its space row ended with its workspace row");
+    }
+
+    #[actix::test]
+    async fn a_space_creator_removed_from_it_reads_nothing_below_it() {
+        use calimero_governance_store::MetaRepository;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (board, drafts, account) = crate::test_support::seed_private_space(&store, false);
+        let mut meta = calimero_governance_store::test_fixtures::test_meta();
+        meta.admin_identity = account;
+        MetaRepository::new(&store).save(&board, &meta).unwrap();
+        let (state, _blob_dir) = crate::test_support::admin_state(&store).await;
+
+        for group in [board, drafts] {
+            assert!(hidden_by_space(&state, &group, Some(AuthenticatedAccount(account))).unwrap());
+        }
     }
 }

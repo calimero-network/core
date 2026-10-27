@@ -508,8 +508,21 @@ impl<'a> MembershipRepository<'a> {
             return Ok(MembershipPath::Direct);
         }
         let mut walled = false;
+        // Inside a space the seat is a row of the space root: the admin pin outlives it.
+        let in_space = match chain.last() {
+            Some(root) => {
+                CapabilitiesRepository::new(self.store).subgroup_visibility(root)?
+                    == VisibilityMode::Restricted
+            }
+            None => false,
+        };
         for parent in chain {
-            if self.is_admin(parent, identity)? {
+            let admin = if in_space {
+                self.role_of(parent, identity)? == Some(GroupMemberRole::Admin)
+            } else {
+                self.is_admin(parent, identity)?
+            };
+            if admin {
                 return Ok(MembershipPath::Inherited {
                     anchor: *parent,
                     via_admin: true,
