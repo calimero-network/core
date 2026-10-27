@@ -169,6 +169,7 @@ pub(crate) fn apply(
 
     cascade_remove_member_from_group_tree(store, group_id, member)?;
     MembershipRepository::new(store).remove_member(group_id, member)?;
+    super::member_removed::end_rows_in_space_folders(store, group_id, member)?;
     // Deny-list the leaver on this group too. See
     // `MemberRemoved` for the same rationale.
     DenyListRepository::new(store).mark(group_id, member)?;

@@ -157,6 +157,9 @@ pub(crate) fn apply(
                 // not nonce-deduplicated and re-applies on the next receipt,
                 // where the idempotent cascade completes the remaining rows.
                 membership.remove_member(sub, member)?;
+                if crate::pending_rotation::group_rotates_on_departure(store, sub)? {
+                    crate::PendingRotationRepository::new(store).mark(sub, member)?;
+                }
                 // Deny-listing is intentionally gated to DIRECT rows (mirrors
                 // `member_left.rs`). A deny-list entry drops the member's
                 // state-delta traffic on the group's topics "until they
@@ -188,6 +191,7 @@ pub(crate) fn apply(
     }
     cascade_remove_member_from_group_tree(store, group_id, member)?;
     MembershipRepository::new(store).remove_member(group_id, member)?;
+    end_rows_in_space_folders(store, group_id, member)?;
     // Add to deny-list: state deltas from this member will be
     // dropped at the receive entry point before the cross-DAG
     // check runs. Cleared if/when the member is re-added.
@@ -267,6 +271,26 @@ pub(crate) fn apply(
             group_id: group_id.to_bytes(),
             member: *member,
         });
+    }
+    Ok(())
+}
+
+/// Leaving or being removed from a private space ends the account's rows in its folders, whose
+/// seats are the space's.
+pub(crate) fn end_rows_in_space_folders(
+    store: &calimero_store::Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+    member: &AccountId,
+) -> EyreResult<()> {
+    let namespaces = NamespaceRepository::new(store);
+    if crate::private_space::Tree::live(store, group_id)?.space_of(group_id)? != Some(*group_id) {
+        return Ok(());
+    }
+    let membership = MembershipRepository::new(store);
+    for folder in namespaces.collect_descendants(group_id)? {
+        if membership.role_of(&folder, member)?.is_some() {
+            membership.remove_member(&folder, member)?;
+        }
     }
     Ok(())
 }

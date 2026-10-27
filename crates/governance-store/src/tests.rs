@@ -11139,6 +11139,72 @@ mod tee_member_removed_event_tests {
         assert_eq!(rows.role_of(&space, &owner).unwrap(), None);
     }
 
+    /// Leaving or being removed from a private space ends the account's rows in its folders.
+    #[test]
+    #[serial_test::serial]
+    fn leaving_a_space_ends_the_accounts_rows_in_its_folders() {
+        use calimero_context_config::VisibilityMode;
+
+        for removed in [true, false] {
+            let store = test_store();
+            let ns_gid = ContextGroupId::from([0xDE; 32]);
+            let space = ContextGroupId::from([0xDF; 32]);
+            let folder = ContextGroupId::from([0xE0; 32]);
+            NamespaceRepository::new(&store)
+                .nest(&ns_gid, &space)
+                .unwrap();
+            NamespaceRepository::new(&store)
+                .nest(&space, &folder)
+                .unwrap();
+            let caps = CapabilitiesRepository::new(&store);
+            caps.set_subgroup_visibility(&space, VisibilityMode::Restricted)
+                .unwrap();
+            caps.set_subgroup_visibility(&folder, VisibilityMode::Open)
+                .unwrap();
+            let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+            let admin = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+            let member_sk = PrivateKey::from([0xEB; 32]);
+            let member = enrol_member(&store, &ns_gid, &member_sk.public_key());
+            for group in [&ns_gid, &space, &folder] {
+                MetaRepository::new(&store)
+                    .save(group, &sample_meta_with_admin(admin))
+                    .unwrap();
+            }
+            let rows = MembershipRepository::new(&store);
+            for group in [&ns_gid, &space] {
+                rows.add_member(group, &admin, GroupMemberRole::Admin)
+                    .unwrap();
+            }
+            for group in [&ns_gid, &space, &folder] {
+                rows.add_member(group, &member, GroupMemberRole::Member)
+                    .unwrap();
+            }
+
+            let (signer, op) = if removed {
+                (&admin_sk, dummy_member_removed_op(member))
+            } else {
+                (
+                    &member_sk,
+                    GroupOp::MemberLeft {
+                        member,
+                        expected_group_state_hash: [0u8; 32],
+                        expected_context_state_hashes: Vec::new(),
+                    },
+                )
+            };
+            let signed = SignedGroupOp::sign(signer, space.to_bytes().into(), vec![], 1, op)
+                .expect("sign the exit");
+            apply_local_signed_group_op(&store, &signed).expect("apply the exit");
+
+            assert_eq!(rows.role_of(&space, &member).unwrap(), None);
+            assert_eq!(
+                rows.role_of(&folder, &member).unwrap(),
+                None,
+                "removed: {removed}"
+            );
+        }
+    }
+
     /// An account that leaves the namespace holds no live row in a private space either.
     #[test]
     #[serial_test::serial]
@@ -11470,6 +11536,12 @@ mod tee_member_removed_event_tests {
         let rows = MembershipRepository::new(&store);
         assert_eq!(rows.role_of(&subgroup, &member).unwrap(), None);
         assert!(!rows.is_live_member(&subgroup, &member).unwrap());
+        assert!(
+            crate::PendingRotationRepository::new(&store)
+                .is_pending(&subgroup, &member)
+                .unwrap(),
+            "the space's key is owed a rotation"
+        );
 
         let (root_pair, sub_pair) =
             count_removed_events_for_two(&mut rx, ns_gid.to_bytes(), subgroup.to_bytes(), member);
