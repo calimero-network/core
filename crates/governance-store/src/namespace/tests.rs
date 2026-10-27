@@ -8925,6 +8925,90 @@ fn a_folders_key_request_is_judged_and_served_from_its_space() {
     );
 }
 
+#[test]
+fn a_late_namespace_member_is_served_the_namespace_key_a_root_op_cites() {
+    use crate::group_keys::GroupKeyring;
+    use crate::{build_group_key_delivery, KeyRequester};
+    use calimero_context_client::local_governance::{EncryptedRootOp, SignedNamespaceOp};
+
+    let namespace_id = [0xE8u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let responder_sk_bytes = [0x31u8; 32];
+    let responder_sk = PrivateKey::from(responder_sk_bytes);
+    let responder_account = crate::test_fixtures::account_for(&responder_sk.public_key());
+    let joiner_pk = PrivateKey::from([0x5Bu8; 32]).public_key();
+
+    let store = test_store();
+    let (joiner_account, joiner_device, credential) =
+        crate::test_fixtures::enrol_local_device(&store, &ns_gid, &joiner_pk);
+    crate::test_fixtures::record_credential(&store, &ns_gid, &credential);
+    let _ = enrol_member(&store, &ns_gid, &responder_sk.public_key());
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &responder_sk.public_key(), &responder_sk_bytes)
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(responder_account))
+        .unwrap();
+    let earlier = GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x6Eu8; 32])
+        .unwrap();
+    let _current = GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x6Fu8; 32])
+        .unwrap();
+
+    let op = SignedNamespaceOp::sign(
+        &responder_sk,
+        namespace_id.into(),
+        vec![],
+        1,
+        NamespaceOp::RootSealed {
+            key_id: earlier.into(),
+            encrypted: EncryptedRootOp {
+                nonce: [0; 12],
+                ciphertext: vec![0],
+            },
+        },
+    )
+    .unwrap();
+    NamespaceOpLogService::new(&store, namespace_id.into())
+        .store_signed_operation(&op)
+        .unwrap();
+
+    let serve = |key_id: Option<[u8; 32]>| {
+        build_group_key_delivery(
+            &store,
+            namespace_id.into(),
+            namespace_id,
+            KeyRequester {
+                identity: joiner_pk,
+                device: Some(joiner_device),
+            },
+            key_id,
+        )
+        .unwrap()
+        .0
+    };
+    assert!(serve(Some(earlier)).is_empty(), "not a member yet");
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &joiner_account, GroupMemberRole::Member)
+        .unwrap();
+    assert!(
+        !serve(Some(earlier)).is_empty(),
+        "a member is served the earlier namespace key a held root op cites"
+    );
+    assert!(
+        serve(Some([0x99u8; 32])).is_empty(),
+        "a key no op cites is not served"
+    );
+    MembershipRepository::new(&store)
+        .remove_member(&ns_gid, &joiner_account)
+        .unwrap();
+    assert!(
+        serve(Some(earlier)).is_empty(),
+        "a removed account gets nothing"
+    );
+}
+
 /// Log an op of `group` sealed under `key`: what a key request is judged against.
 fn log_op_sealed_under(
     store: &Store,

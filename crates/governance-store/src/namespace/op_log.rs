@@ -185,17 +185,24 @@ impl<'a> NamespaceOpLogService<'a> {
                 .map_err(|e| eyre::eyre!("borsh: {e}"))?,
         };
         let _ = batch.put(&key, &value)?;
-        if let NamespaceOp::Group {
-            group_id, key_id, ..
-        }
-        | NamespaceOp::RootSealedForGroup {
-            group_id, key_id, ..
-        } = &op.op
-        {
+        let cited = match &op.op {
+            NamespaceOp::Group {
+                group_id, key_id, ..
+            }
+            | NamespaceOp::RootSealedForGroup {
+                group_id, key_id, ..
+            } => Some((group_id.to_bytes(), key_id.to_bytes())),
+            NamespaceOp::RootSealed { key_id, .. }
+            | NamespaceOp::RootRelaySealed { key_id, .. } => {
+                Some((self.namespace_id.to_bytes(), key_id.to_bytes()))
+            }
+            _ => None,
+        };
+        if let Some((group, key_id)) = cited {
             crate::cited_keys::CitedKeyRepository::stage(
                 batch,
-                &calimero_context_config::types::ContextGroupId::from(group_id.to_bytes()),
-                &key_id.to_bytes(),
+                &calimero_context_config::types::ContextGroupId::from(group),
+                &key_id,
             )?;
         }
 
