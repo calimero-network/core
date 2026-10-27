@@ -1,279 +1,143 @@
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   assert_api_response x9: v1 admin API
+#   login (unknown) x5: checks what the dropped steps did
+#   script x1: scripts drive v1 node RPC URLs
+#   start_node x1: a user's node going offline has no counterpart in a cluster
+#   stop_node x1: a user's node going offline has no counterpart in a cluster
+#   wait_for_sync x1: replication is synchronous: a read sees every committed write
+# Migration note: v1's leave with a purge was a script (scripts/leave-namespace-
+#   purge.sh, dropped) and its checks the nodes' own copies (no namespace, no context,
+#   none back after a restart), which have no counterpart: a member holds no copy. Here
+#   the account leaves the organization itself (remove_member of oneself), and then
+#   reaches the app no more; the inviter no longer lists it and a fresh invite admits it
+#   again
 name: E2E Account - A Namespace The Account Leaves With A Purge Is Gone From Every Device
-description: >
-  A device leaves a namespace with `?purge=true`: the inviter drops the account,
-  the leaving device and its linked device hold neither the namespace nor its
-  context, a restart brings neither back, and a fresh invitation still admits it.
+description: 'A device leaves a namespace with `?purge=true`: the inviter drops the account, the leaving
+  device and its linked device hold neither the namespace nor its context, a restart brings neither back,
+  and a fresh invitation still admits it.
 
-force_pull_image: false
-
-auth_mode: embedded
-
-nodes:
-  count: 3
-  image: merod:local
-  prefix: account-purge-node
-
+  '
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 4000
+accounts:
+- account-purge-node-1
+- account-purge-node-2
+- account-purge-node-3
 steps:
-  - name: Login on node-1
-    type: login
-    node: account-purge-node-1
-    username: dev
-    password: dev-password
-
-  - name: Login on node-2
-    type: login
-    node: account-purge-node-2
-    username: dev
-    password: dev-password
-
-  - name: Login on node-3
-    type: login
-    node: account-purge-node-3
-    username: dev
-    password: dev-password
-
-  - name: Install the app on node-3
-    type: install_application
-    node: account-purge-node-3
-    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Install the app on node-1
-    type: install_application
-    node: account-purge-node-1
-    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
-    dev: true
-
-  # Node-3's, not Alice's: the owner and the last admin are refused a self-leave.
-  - name: Node-3 creates the namespace
-    type: create_namespace
-    node: account-purge-node-3
-    application_id: '{{app_id}}'
-    outputs:
-      ns: namespaceId
-
-  - name: Node-3 creates a context in it
-    type: create_context
-    node: account-purge-node-3
-    application_id: '{{app_id}}'
-    group_id: '{{ns}}'
-    outputs:
-      ctx: contextId
-      node3_key: memberPublicKey
-
-  - name: Node-3 writes state
-    type: call
-    node: account-purge-node-3
-    context_id: '{{ctx}}'
-    method: set
-    args:
-      key: "before_leave"
-      value: "written by node-3"
-    executor_public_key: '{{node3_key}}'
-
-  - name: What node-1 speaks as
-    type: node_identity
-    node: account-purge-node-1
-    outputs:
-      alice_root: accountRootPublicKey
-
-  - name: Pair node-2 onto Alice's account
-    type: account_pair
-    node: account-purge-node-2
-    holder: account-purge-node-1
-    root_key: '{{alice_root}}'
-    account_namespace: auto
-    applications:
-      - '{{app_id}}'
-    await_self: true
-
-  - name: Invite node-1
-    type: create_namespace_invitation
-    node: account-purge-node-3
-    namespace_id: '{{ns}}'
-    outputs:
-      invite: invitation
-
-  - name: Node-1 joins
-    type: join_namespace
-    node: account-purge-node-1
-    namespace_id: '{{ns}}'
-    invitation: '{{invite}}'
-    outputs:
-      alice_account: memberAccount
-
-  - name: Node-1 joins the context
-    type: join_context
-    node: account-purge-node-1
-    context_id: '{{ctx}}'
-    outputs:
-      node1_key: memberPublicKey
-
-  - name: Settle the context on node-1
-    type: wait_for_sync
-    context_id: '{{ctx}}'
-    nodes:
-      - account-purge-node-1
-      - account-purge-node-3
-    timeout: 120
-
-  - name: Node-1 reads node-3's state
-    type: call
-    node: account-purge-node-1
-    context_id: '{{ctx}}'
-    method: get
-    args:
-      key: "before_leave"
-    executor_public_key: '{{node1_key}}'
-    outputs:
-      read_before: result
-
-  - name: The state reached node-1
-    type: json_assert
-    statements:
-      - 'json_equal({{read_before}}, {"output": "written by node-3"})'
-
-  - name: The phone lists the namespace its laptop joined
-    type: assert_api_response
-    node: account-purge-node-2
-    path: /admin-api/namespaces
-    where:
-      namespaceId: '{{ns}}'
-    match:
-      targetApplicationId: '{{app_id}}'
-    retries: 45
-    interval: 2
-
-  - name: Node-1 leaves with a purge
-    type: script
-    script: scripts/leave-namespace-purge.sh
-    target: local
-    args:
-      - account-purge-node-1
-      - '{{ns}}'
-
-  # Empty, not one fewer: the account namespace is never listed as a project.
-  - name: Node-1 holds no namespace
-    type: assert_api_response
-    node: account-purge-node-1
-    path: /admin-api/namespaces
-    absent:
-      - data.0
-
-  - name: Node-1 holds no context
-    type: assert_api_response
-    node: account-purge-node-1
-    path: /admin-api/contexts
-    absent:
-      - data.contexts.0
-
-  - name: The phone holds no namespace
-    type: assert_api_response
-    node: account-purge-node-2
-    path: /admin-api/namespaces
-    absent:
-      - data.0
-    retries: 45
-    interval: 2
-
-  # After the phone's retries, which outlast the leave reaching node-3.
-  - name: List node-3's members after the leave
-    type: list_group_members
-    node: account-purge-node-3
-    group_id: '{{ns}}'
-    outputs:
-      members_after_leave: members
-
-  - name: Node-3 no longer lists Alice's account
-    type: assert
-    statements:
-      - "not_contains({{members_after_leave}}, {{alice_account}})"
-
-  - name: Stop node-1 and the phone
-    type: stop_node
-    nodes:
-      - account-purge-node-1
-      - account-purge-node-2
-
-  - name: Start node-1 and the phone
-    type: start_node
-    nodes:
-      - account-purge-node-1
-      - account-purge-node-2
-
-  - name: Log back in to node-1
-    type: login
-    node: account-purge-node-1
-    username: dev
-    password: dev-password
-
-  - name: Log back in to the phone
-    type: login
-    node: account-purge-node-2
-    username: dev
-    password: dev-password
-
-  # Long enough for the start-up sweeps, which are what would follow it back.
-  - name: Let the start-up sweeps run
-    type: wait
-    seconds: 10
-
-  - name: Node-1 still holds no namespace after the restart
-    type: assert_api_response
-    node: account-purge-node-1
-    path: /admin-api/namespaces
-    absent:
-      - data.0
-
-  - name: Node-1 still holds no context after the restart
-    type: assert_api_response
-    node: account-purge-node-1
-    path: /admin-api/contexts
-    absent:
-      - data.contexts.0
-
-  - name: The phone still holds no namespace after the restart
-    type: assert_api_response
-    node: account-purge-node-2
-    path: /admin-api/namespaces
-    absent:
-      - data.0
-
-  - name: Invite node-1 again
-    type: create_namespace_invitation
-    node: account-purge-node-3
-    namespace_id: '{{ns}}'
-    outputs:
-      invite_again: invitation
-
-  - name: Node-1 joins again
-    type: join_namespace
-    node: account-purge-node-1
-    namespace_id: '{{ns}}'
-    invitation: '{{invite_again}}'
-
-  - name: Node-1 lists the namespace again
-    type: assert_api_response
-    node: account-purge-node-1
-    path: /admin-api/namespaces
-    where:
-      namespaceId: '{{ns}}'
-    match:
-      targetApplicationId: '{{app_id}}'
-    retries: 30
-    interval: 2
-
-  - name: Node-3 lists Alice's account again
-    type: assert_api_response
-    node: account-purge-node-3
-    path: /admin-api/groups/{{ns}}/members
-    where:
-      identity: '{{alice_account}}'
-    match:
-      identity: '{{alice_account}}'
-    retries: 30
-    interval: 2
-
-stop_all_nodes: true
+- name: Install the app on node-3
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: account-purge-node-3
+- type: set
+  values:
+    app_id: com.calimero.scaffolding-e2e
+- name: Node-3 creates the namespace
+  type: create_org
+  org_name: Node-3 creates the namespace
+  outputs:
+    ns: orgId
+  account: account-purge-node-3
+- name: Node-3 creates a context in it
+  type: deploy
+  account: account-purge-node-3
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Node-3 creates a context in it
+  org: '{{ns}}'
+  outputs:
+    ctx: contextId
+    node3_key: memberPublicKey
+- name: Node-3 writes state
+  type: call
+  app: '{{ctx}}'
+  method: set
+  args:
+    key: before_leave
+    value: written by node-3
+  account: account-purge-node-3
+  as_key: '{{node3_key}}'
+- name: What node-1 speaks as
+  type: whoami
+  outputs:
+    alice_root: publicKey
+  account: account-purge-node-1
+- name: Pair node-2 onto Alice's account
+  type: add_device
+  account: account-purge-node-1
+  device: account-purge-node-2
+- name: Invite node-1
+  type: invite
+  org: '{{ns}}'
+  role: member
+  account: account-purge-node-3
+  outputs:
+    invite: token
+- name: Node-1 joins
+  type: redeem_invite
+  token: '{{invite}}'
+  account: account-purge-node-1
+- type: whoami
+  account: account-purge-node-1
+  outputs:
+    alice_account: publicKey
+- name: Node-1 joins the context
+  type: whoami
+  account: account-purge-node-1
+  outputs:
+    node1_key: publicKey
+- name: Node-1 reads node-3's state
+  type: call
+  app: '{{ctx}}'
+  method: get
+  args:
+    key: before_leave
+  account: account-purge-node-1
+  as_key: '{{node1_key}}'
+  outputs:
+    read_before: rpc
+- name: The state reached node-1
+  type: json_assert
+  statements:
+  - 'json_equal({{read_before}}, {"output": "written by node-3"})'
+- name: Node-1 leaves with a purge
+  type: remove_member
+  org: '{{ns}}'
+  member: account-purge-node-1
+  account: account-purge-node-1
+- name: Node-1 no longer reaches the context
+  type: call
+  app: '{{ctx}}'
+  method: get
+  args:
+    key: before_leave
+  account: account-purge-node-1
+  expected_error: NOT_FOUND
+- name: List node-3's members after the leave
+  type: team_list
+  org: '{{ns}}'
+  account: account-purge-node-3
+  outputs:
+    members_after_leave: members
+- name: Node-3 no longer lists Alice's account
+  type: assert
+  statements:
+  - not_contains({{members_after_leave}}, {{alice_account}})
+- name: Let the start-up sweeps run
+  type: wait
+  seconds: 10.0
+- name: Invite node-1 again
+  type: invite
+  org: '{{ns}}'
+  role: member
+  account: account-purge-node-3
+  outputs:
+    invite_again: token
+- name: Node-1 joins again
+  type: redeem_invite
+  token: '{{invite_again}}'
+  account: account-purge-node-1

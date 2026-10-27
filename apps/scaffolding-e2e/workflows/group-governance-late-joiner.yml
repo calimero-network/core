@@ -1,134 +1,96 @@
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   login (unknown) x2: checks what the dropped steps did
+#   wait_for_sync x1: replication is synchronous: a read sees every committed write
 name: E2E KV Store - Governance Late Joiner Catch-Up
-description: >
-  Node-1 alone sets default capabilities on a namespace before any peer
-  exists — this governance op must apply locally (best-effort publish).
-  Node-2 then joins late and must inherit the capability value via sync,
-  proving "applied locally + propagated via sync".
+description: 'Node-1 alone sets default capabilities on a namespace before any peer exists — this governance
+  op must apply locally (best-effort publish). Node-2 then joins late and must inherit the capability
+  value via sync, proving "applied locally + propagated via sync".
 
-force_pull_image: false
-
-auth_mode: embedded
-
-nodes:
-  count: 2
-  image: ghcr.io/calimero-network/merod:edge
-  prefix: e2e-node
-
+  '
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 4320
+accounts:
+- e2e-node-1
+- e2e-node-2
 steps:
-  # First login on a fresh embedded-auth node bootstraps its root key
-  # and seeds merobox's token cache; every step below runs authenticated.
-  - name: Login on e2e-node-1
-    type: login
-    node: e2e-node-1
-    username: dev
-    password: dev-password
-
-  - name: Login on e2e-node-2
-    type: login
-    node: e2e-node-2
-    username: dev
-    password: dev-password
-
-  - name: Install application on node-1
-    type: install_application
-    node: e2e-node-1
-    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Assert application installed
-    type: assert
-    statements:
-      - "is_set({{app_id}})"
-
-  - name: Create namespace on node-1
-    type: create_namespace
-    node: e2e-node-1
-    application_id: '{{app_id}}'
-    outputs:
-      namespace_id: namespaceId
-
-  - name: Assert namespace created
-    type: assert
-    statements:
-      - "is_set({{namespace_id}})"
-
-  - name: Create context in namespace on node-1
-    type: create_context
-    node: e2e-node-1
-    application_id: '{{app_id}}'
-    group_id: '{{namespace_id}}'
-    outputs:
-      ctx_id: contextId
-
-  - name: Assert context created
-    type: assert
-    statements:
-      - "is_set({{ctx_id}})"
-
-  # --- Governance op while node-1 is the only node ---
-  # Before the best-effort-readiness fix this could be rejected before it
-  # applied. It must now apply locally regardless of mesh state.
-
-  - name: Node-1 sets default capabilities while solo
-    type: set_default_capabilities
-    node: e2e-node-1
-    group_id: '{{namespace_id}}'
-    capabilities: 0
-
-  # --- Node-2 joins after the governance op ---
-
-  - name: Create namespace invitation for node-2
-    type: create_namespace_invitation
-    node: e2e-node-1
-    namespace_id: '{{namespace_id}}'
-    outputs:
-      namespace_invitation: invitation
-
-  - name: Node-2 joins namespace
-    type: join_namespace
-    node: e2e-node-2
-    namespace_id: '{{namespace_id}}'
-    invitation: '{{namespace_invitation}}'
-    outputs:
-      member_account_node2: memberAccount
-
-  - name: Wait for node-2 to catch up
-    type: wait_for_sync
-    context_id: '{{ctx_id}}'
-    nodes:
-      - e2e-node-1
-      - e2e-node-2
-    timeout: 90
-    trigger_sync: true
-
-  # --- Verify the solo governance op reached the late joiner ---
-
-  - name: Get node-2 capabilities as seen by node-2
-    type: get_member_capabilities
-    node: e2e-node-2
-    group_id: '{{namespace_id}}'
-    member_id: '{{member_account_node2}}'
-    outputs:
-      node2_caps: capabilities
-
-  - name: Assert node-2 inherited the solo-set default (caps=0)
-    type: json_assert
-    statements:
-      - "json_equal({{node2_caps}}, 0)"
-
-  - name: Get node-2 capabilities as seen by node-1
-    type: get_member_capabilities
-    node: e2e-node-1
-    group_id: '{{namespace_id}}'
-    member_id: '{{member_account_node2}}'
-    outputs:
-      node2_caps_view_node1: capabilities
-
-  - name: Assert both nodes agree on node-2 capabilities
-    type: json_assert
-    statements:
-      - "json_equal({{node2_caps_view_node1}}, 0)"
-
-stop_all_nodes: false
+- name: Install application on node-1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: e2e-node-1
+- type: set
+  values:
+    app_id: com.calimero.scaffolding-e2e
+- name: Assert application installed
+  type: assert
+  statements:
+  - is_set({{app_id}})
+- name: Create namespace on node-1
+  type: create_org
+  org_name: Create namespace on node-1
+  outputs:
+    namespace_id: orgId
+  account: e2e-node-1
+- name: Assert namespace created
+  type: assert
+  statements:
+  - is_set({{namespace_id}})
+- name: Create context in namespace on node-1
+  type: deploy
+  account: e2e-node-1
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Create context in namespace on node-1
+  org: '{{namespace_id}}'
+  outputs:
+    ctx_id: contextId
+- name: Assert context created
+  type: assert
+  statements:
+  - is_set({{ctx_id}})
+- name: Node-1 sets default capabilities while solo
+  type: capabilities
+  org: '{{namespace_id}}'
+  capabilities: 0
+  account: e2e-node-1
+- name: Create namespace invitation for node-2
+  type: invite
+  org: '{{namespace_id}}'
+  role: member
+  account: e2e-node-1
+  outputs:
+    namespace_invitation: token
+- name: Node-2 joins namespace
+  type: redeem_invite
+  token: '{{namespace_invitation}}'
+  account: e2e-node-2
+- type: whoami
+  account: e2e-node-2
+  outputs:
+    member_account_node2: publicKey
+- name: Get node-2 capabilities as seen by node-2
+  type: member_capabilities
+  org: '{{namespace_id}}'
+  member: '{{member_account_node2}}'
+  account: e2e-node-2
+  outputs:
+    node2_caps: capabilities
+- name: Assert node-2 inherited the solo-set default (caps=0)
+  type: json_assert
+  statements:
+  - json_equal({{node2_caps}}, 0)
+- name: Get node-2 capabilities as seen by node-1
+  type: member_capabilities
+  org: '{{namespace_id}}'
+  member: '{{member_account_node2}}'
+  account: e2e-node-1
+  outputs:
+    node2_caps_view_node1: capabilities
+- name: Assert both nodes agree on node-2 capabilities
+  type: json_assert
+  statements:
+  - json_equal({{node2_caps_view_node1}}, 0)

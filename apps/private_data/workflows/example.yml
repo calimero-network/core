@@ -1,154 +1,134 @@
-description: A sample workflow that demonstrates the bootstrap functionality with dynamic value capture
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   wait_for_sync x1: replication is synchronous: a read sees every committed write
 name: Sample Calimero Workflow
-
-# Force pull Docker images even if they exist locally
-force_pull_image: true
-
-nodes:
-  count: 2
-  image: ghcr.io/calimero-network/merod:edge
-  prefix: calimero-node
-
+description: A sample workflow that demonstrates the bootstrap functionality with dynamic value capture
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 3880
+accounts:
+- calimero-node-1
+- calimero-node-2
 steps:
-  # Step 1: Install the application on the first node
-  # This captures the application ID for use in subsequent steps
-  - name: Install Application on Node 1
-    type: install_application
-    node: calimero-node-1
-    path: ../../dist/com.calimero.private-data-0.0.0.mpk
-    dev: true
-    outputs:
-      app_id: applicationId # Export 'applicationId' field as 'app_id'
-
-  # Step 2: Create mesh with both nodes
-  - name: Create Mesh
-    type: create_mesh
-    context_node: calimero-node-1
-    application_id: "{{app_id}}"
-    nodes:
-      - calimero-node-2
-    outputs:
-      context_id: contextId
-      member_public_key: memberPublicKey
-
-  # Step 7: Execute a contract call to set a secret for a game
-  # Uses the member public key from the context as the executor
-  - name: Execute Contract Call - Add Secret
-    type: call
-    node: calimero-node-1
-    context_id: "{{context_id}}"
-    method: add_secret
-    args:
-      game_id: game-1
-      secret: s3cr3t
-    # `add_secret` mints the game's id, `<node 1's account>-game-1`.
-    outputs:
-      add_secret_result: result
-      game_1_id: result.output
-
-  - name: Assert add_secret executed
-    type: assert
-    statements:
-      - "is_set({{add_secret_result}})"
-
-  - name: Capture the games map on calimero-node-1
-    type: call
-    node: calimero-node-1
-    context_id: "{{context_id}}"
-    method: games
-    outputs:
-      games_after_add: result.output
-
-  # Step 8: Wait for the operation to complete and propagate
-  - name: Wait for Add Secret Operation
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - calimero-node-1
-      - calimero-node-2
-    timeout: 60
-    trigger_sync: true
-    expect:
-      method: games
-      equals:
-        output: "{{games_after_add}}"
-
-  - name: Execute View Call - My Secrets (node 1)
-    type: call
-    node: calimero-node-1
-    context_id: "{{context_id}}"
-    method: my_secrets
-    outputs:
-      my_secrets_node1_result: result
-
-  - name: Assert node-1 has private secret for game-1
-    type: json_assert
-    statements:
-      - 'json_subset({{my_secrets_node1_result}}, {"output": {"{{game_1_id}}": "s3cr3t"}})'
-
-  # Step 9: Execute a view call to retrieve the public games map
-  - name: Execute View Call - Games
-    type: call
-    node: calimero-node-2
-    context_id: "{{context_id}}"
-    method: games
-    outputs:
-      games_result: result
-
-  - name: Assert games contains expected hash for game-1
-    type: json_assert
-    statements:
-      - 'json_subset({{games_result}}, {"output": {"{{game_1_id}}": "4e738ca5563c06cfd0018299933d58db1dd8bf97f6973dc99bf6cdc64b5550bd"}})'
-
-  # Step 10: Execute a view call to retrieve caller-local secrets
-  - name: Execute View Call - My Secrets (node-2)
-    type: call
-    node: calimero-node-2
-    context_id: "{{context_id}}"
-    method: my_secrets
-    outputs:
-      my_secrets_result: result
-
-  - name: Assert node-2 has no private secrets
-    type: json_assert
-    statements:
-      - 'json_equal({{my_secrets_result}}, {"output": {}})'
-
-  # Step 11: Positive guess
-  - name: Execute Contract Call - Guess OK
-    type: call
-    node: calimero-node-1
-    context_id: "{{context_id}}"
-    method: add_guess
-    args:
-      game_id: '{{game_1_id}}'
-      guess: s3cr3t
-    outputs:
-      guess_ok_result: result
-
-  - name: Assert guess OK returned true
-    type: json_assert
-    statements:
-      - 'json_equal({{guess_ok_result}}, {"output": true})'
-
-  # Step 12: Negative guess
-  - name: Execute Contract Call - Guess Bad
-    type: call
-    node: calimero-node-2
-    context_id: "{{context_id}}"
-    method: add_guess
-    args:
-      game_id: '{{game_1_id}}'
-      guess: wrong
-    outputs:
-      guess_bad_result: result
-
-  - name: Assert guess Bad returned false
-    type: json_assert
-    statements:
-      - 'json_equal({{guess_bad_result}}, {"output": false})'
-
-# Configuration options
-stop_all_nodes: false # Stop all nodes at the end of workflow
-restart: false # Don't restart nodes at the beginning of workflow
-wait_timeout: 60
+- name: Install Application on Node 1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/private_data.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: calimero-node-1
+- type: set
+  values:
+    app_id: com.calimero.private-data
+- name: Create Mesh
+  type: create_org
+  account: calimero-node-1
+  org_name: mesh
+  outputs:
+    namespace_id: orgId
+- type: invite
+  account: calimero-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: calimero-node-2
+  token: '{{_mesh_invite}}'
+- name: Create Mesh
+  type: deploy
+  account: calimero-node-1
+  org: '{{namespace_id}}'
+  wasm: '{{env.CORE_WASM_DIR}}/private_data.wasm'
+  app_name: Create Mesh
+  outputs:
+    context_id: contextId
+    member_public_key: memberPublicKey
+- name: Execute Contract Call - Add Secret
+  type: call
+  app: '{{context_id}}'
+  method: add_secret
+  args:
+    game_id: game-1
+    secret: s3cr3t
+  account: calimero-node-1
+  outputs:
+    add_secret_result: rpc
+    game_1_id: result
+- name: Assert add_secret executed
+  type: assert
+  statements:
+  - is_set({{add_secret_result}})
+- name: Capture the games map on calimero-node-1
+  type: call
+  app: '{{context_id}}'
+  method: games
+  args: {}
+  account: calimero-node-1
+  outputs:
+    games_after_add: result
+- name: Execute View Call - My Secrets (node 1)
+  type: call
+  app: '{{context_id}}'
+  method: my_secrets
+  args: {}
+  account: calimero-node-1
+  outputs:
+    my_secrets_node1_result: rpc
+- name: Assert node-1 has private secret for game-1
+  type: json_assert
+  statements:
+  - 'json_subset({{my_secrets_node1_result}}, {"output": {"{{game_1_id}}": "s3cr3t"}})'
+- name: Execute View Call - Games
+  type: call
+  app: '{{context_id}}'
+  method: games
+  args: {}
+  account: calimero-node-2
+  outputs:
+    games_result: rpc
+- name: Assert games contains expected hash for game-1
+  type: json_assert
+  statements:
+  - 'json_subset({{games_result}}, {"output": {"{{game_1_id}}": "4e738ca5563c06cfd0018299933d58db1dd8bf97f6973dc99bf6cdc64b5550bd"}})'
+- name: Execute View Call - My Secrets (node-2)
+  type: call
+  app: '{{context_id}}'
+  method: my_secrets
+  args: {}
+  account: calimero-node-2
+  outputs:
+    my_secrets_result: rpc
+- name: Assert node-2 has no private secrets
+  type: json_assert
+  statements:
+  - 'json_equal({{my_secrets_result}}, {"output": {}})'
+- name: Execute Contract Call - Guess OK
+  type: call
+  app: '{{context_id}}'
+  method: add_guess
+  args:
+    game_id: '{{game_1_id}}'
+    guess: s3cr3t
+  account: calimero-node-1
+  outputs:
+    guess_ok_result: rpc
+- name: Assert guess OK returned true
+  type: json_assert
+  statements:
+  - 'json_equal({{guess_ok_result}}, {"output": true})'
+- name: Execute Contract Call - Guess Bad
+  type: call
+  app: '{{context_id}}'
+  method: add_guess
+  args:
+    game_id: '{{game_1_id}}'
+    guess: wrong
+  account: calimero-node-2
+  outputs:
+    guess_bad_result: rpc
+- name: Assert guess Bad returned false
+  type: json_assert
+  statements:
+  - 'json_equal({{guess_bad_result}}, {"output": false})'

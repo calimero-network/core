@@ -1,290 +1,191 @@
-name: "Auto-follow backfill on join (tight-timing variant)"
-description: >
-  Workflow 2 of the #2422 regression test plan.
-
-  What this workflow now exercises (post-#2422):
-
-  With `AutoFollowFlags::default() = { contexts: true, subgroups: false }`
-  and the `emit_auto_follow_set_if_enabled` helper firing from every
-  `MemberAdded` apply path, when `add_group_members`
-  applies on node-2 it ALREADY produces a synthesised
-  `AutoFollowSet { contexts: true }` event. That event runs through
-  `handle_auto_follow_enabled`, which enumerates existing contexts in
-  the subgroup and issues `JoinContext` for each. So this workflow
-  now exercises:
-
-    1. The MemberAdded → synthesised-AutoFollowSet path (Option 2
-       proper, the path #2422 originally asked for).
-    2. The redundant explicit `set_member_auto_follow(contexts: true)`
-       in Phase 3 fires a second AutoFollowSet that is idempotent
-       (handler no-ops on already-joined contexts per
-       `auto_follow.rs:101-107`).
-
-  The cross-reads in Phase 4 (`ctx_a`/`ctx_b`/`ctx_c` from node-2)
-  are the real assertion: they prove node-2 reached every existing
-  context via the backfill cascade, not via a manual join_context
-  call (the workflow has none).
-
-  Pair with workflow 3 (`auto-follow-flag-flipped-late.yml`), which
-  runs the same cascade but with a 15s settle period between
-  MemberAdded and the explicit set-flag. If THIS workflow fails and
-  workflow 3 passes, the gap is the tight-timing race between
-  MemberAdded apply and the synthesised-AutoFollowSet emit; if both
-  fail, the backfill enumeration itself is broken; if both pass, the
-  full AutoFollowSet path is healthy.
-
-  The `wait_for_sync` 60s timeout is the convergence gate, and the
-  per-context `call` reads at the end are the real assertion.
-
-no_docker: false
-nuke_on_start: true
-nuke_on_end: false
-
-auth_mode: embedded
-
-nodes:
-  count: 2
-  image: ghcr.io/calimero-network/merod:edge
-  prefix: af-backfill-node
-
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   login (unknown) x2: checks what the dropped steps did
+#   set_member_auto_follow (unknown) x2: checks what the dropped steps did
+#   wait_for_sync x3: replication is synchronous: a read sees every committed write
+name: Auto-follow backfill on join (tight-timing variant)
+description: "Workflow 2 of the #2422 regression test plan.\nWhat this workflow now exercises (post-#2422):\n\
+  With `AutoFollowFlags::default() = { contexts: true, subgroups: false }` and the `emit_auto_follow_set_if_enabled`\
+  \ helper firing from every `MemberAdded` apply path, when `add_group_members` applies on node-2 it ALREADY\
+  \ produces a synthesised `AutoFollowSet { contexts: true }` event. That event runs through `handle_auto_follow_enabled`,\
+  \ which enumerates existing contexts in the subgroup and issues `JoinContext` for each. So this workflow\
+  \ now exercises:\n\n  1. The MemberAdded → synthesised-AutoFollowSet path (Option 2\n     proper, the\
+  \ path #2422 originally asked for).\n  2. The redundant explicit `set_member_auto_follow(contexts: true)`\n\
+  \     in Phase 3 fires a second AutoFollowSet that is idempotent\n     (handler no-ops on already-joined\
+  \ contexts per\n     `auto_follow.rs:101-107`).\n\nThe cross-reads in Phase 4 (`ctx_a`/`ctx_b`/`ctx_c`\
+  \ from node-2) are the real assertion: they prove node-2 reached every existing context via the backfill\
+  \ cascade, not via a manual join_context call (the workflow has none).\nPair with workflow 3 (`auto-follow-flag-flipped-late.yml`),\
+  \ which runs the same cascade but with a 15s settle period between MemberAdded and the explicit set-flag.\
+  \ If THIS workflow fails and workflow 3 passes, the gap is the tight-timing race between MemberAdded\
+  \ apply and the synthesised-AutoFollowSet emit; if both fail, the backfill enumeration itself is broken;\
+  \ if both pass, the full AutoFollowSet path is healthy.\nThe `wait_for_sync` 60s timeout is the convergence\
+  \ gate, and the per-context `call` reads at the end are the real assertion.\n"
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 4950
+accounts:
+- af-backfill-node-1
+- af-backfill-node-2
 steps:
-  # First login on a fresh embedded-auth node bootstraps its root key
-  # and seeds merobox's token cache; every step below runs authenticated.
-  - name: Login on af-backfill-node-1
-    type: login
-    node: af-backfill-node-1
-    username: dev
-    password: dev-password
-
-  - name: Login on af-backfill-node-2
-    type: login
-    node: af-backfill-node-2
-    username: dev
-    password: dev-password
-
-  # ── Phase 1: Bootstrap with pre-existing contexts BEFORE node-2 joins ─
-  - name: Install application on node-1
-    type: install_application
-    node: af-backfill-node-1
-    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Node-1 creates namespace
-    type: create_namespace
-    node: af-backfill-node-1
-    application_id: "{{app_id}}"
-    outputs:
-      namespace_id: namespaceId
-
-  - name: Node-1 captures its account
-    type: node_identity
-    node: af-backfill-node-1
-    outputs:
-      node1_account: accountId
-
-  - name: Node-1 creates subgroup
-    type: create_group_in_namespace
-    node: af-backfill-node-1
-    namespace_id: "{{namespace_id}}"
-    group_name: "auto-follow-backfill"
-    outputs:
-      group_id: groupId
-
-  # Admin enables auto-follow on itself so it actually materialises the
-  # contexts it's about to create (and so the post-create writes go
-  # through node-1's local store, not just the governance DAG).
-  - name: Enable contexts auto-follow for node-1 (admin self-flip)
-    type: set_member_auto_follow
-    node: af-backfill-node-1
-    group_id: "{{group_id}}"
-    member_id: "{{node1_account}}"
-    auto_follow_contexts: true
-    auto_follow_subgroups: false
-
-  - name: Wait for admin self-flip to apply
-    type: wait
-    seconds: 3
-
-  # Create three contexts BEFORE node-2 is even invited — this is what
-  # the backfill path is supposed to enumerate later.
-  - name: Node-1 creates context-A
-    type: create_context
-    node: af-backfill-node-1
-    application_id: "{{app_id}}"
-    group_id: "{{group_id}}"
-    outputs:
-      ctx_a: contextId
-      node1_key_a: memberPublicKey
-
-  - name: Node-1 writes a key into context-A
-    type: call
-    node: af-backfill-node-1
-    context_id: "{{ctx_a}}"
-    method: set
-    args:
-      key: "alpha"
-      value: "from-A"
-    executor_public_key: "{{node1_key_a}}"
-
-  - name: Node-1 creates context-B
-    type: create_context
-    node: af-backfill-node-1
-    application_id: "{{app_id}}"
-    group_id: "{{group_id}}"
-    outputs:
-      ctx_b: contextId
-      node1_key_b: memberPublicKey
-
-  - name: Node-1 writes a key into context-B
-    type: call
-    node: af-backfill-node-1
-    context_id: "{{ctx_b}}"
-    method: set
-    args:
-      key: "beta"
-      value: "from-B"
-    executor_public_key: "{{node1_key_b}}"
-
-  - name: Node-1 creates context-C
-    type: create_context
-    node: af-backfill-node-1
-    application_id: "{{app_id}}"
-    group_id: "{{group_id}}"
-    outputs:
-      ctx_c: contextId
-      node1_key_c: memberPublicKey
-
-  - name: Node-1 writes a key into context-C
-    type: call
-    node: af-backfill-node-1
-    context_id: "{{ctx_c}}"
-    method: set
-    args:
-      key: "gamma"
-      value: "from-C"
-    executor_public_key: "{{node1_key_c}}"
-
-  # ── Phase 2: Node-2 joins the namespace + subgroup ──────────────────
-  - name: Node-1 invites node-2 to namespace
-    type: create_namespace_invitation
-    node: af-backfill-node-1
-    namespace_id: "{{namespace_id}}"
-    outputs:
-      ns_invite: invitation
-
-  - name: Node-2 joins namespace
-    type: join_namespace
-    node: af-backfill-node-2
-    namespace_id: "{{namespace_id}}"
-    invitation: "{{ns_invite}}"
-    outputs:
-      node2_identity: memberIdentity
-      node2_account: memberAccount
-
-  - name: Node-1 adds node-2 to subgroup
-    type: add_group_members
-    node: af-backfill-node-1
-    group_id: "{{group_id}}"
-    members:
-      - identity: "{{node2_identity}}"
-        role: Member
-
-  - name: Wait for MemberAdded op to apply on node-2
-    type: wait
-    seconds: 5
-
-  # ── Phase 3: Flip the flag on node-2 → backfill should fire ─────────
-  # This is the AutoFollowSet → handle_auto_follow_enabled →
-  # enumerate_group_contexts → JoinContext-per-context cascade.
-  - name: Enable contexts auto-follow for node-2 (post-join flip)
-    type: set_member_auto_follow
-    node: af-backfill-node-1
-    group_id: "{{group_id}}"
-    member_id: "{{node2_account}}"
-    auto_follow_contexts: true
-    auto_follow_subgroups: false
-
-  - name: Wait for AutoFollowSet op to propagate and backfill to start
-    type: wait
-    seconds: 5
-
-  # Rate limiter is 20 tokens/min default — 3 contexts is well within
-  # the immediate burst, so backfill should complete in ~seconds, not
-  # minutes. The 60s timeout per `wait_for_sync` is generous to absorb
-  # gossipsub + sync-session latency on a cold runner.
-  - name: Wait for context-A to converge on both nodes
-    type: wait_for_sync
-    context_id: "{{ctx_a}}"
-    nodes:
-      - af-backfill-node-1
-      - af-backfill-node-2
-    timeout: 60
-    check_interval: 2
-    trigger_sync: true
-
-  - name: Wait for context-B to converge on both nodes
-    type: wait_for_sync
-    context_id: "{{ctx_b}}"
-    nodes:
-      - af-backfill-node-1
-      - af-backfill-node-2
-    timeout: 60
-    check_interval: 2
-    trigger_sync: true
-
-  - name: Wait for context-C to converge on both nodes
-    type: wait_for_sync
-    context_id: "{{ctx_c}}"
-    nodes:
-      - af-backfill-node-1
-      - af-backfill-node-2
-    timeout: 60
-    check_interval: 2
-    trigger_sync: true
-
-  # ── Phase 4: Per-context cross-reads as the real assertion ──────────
-  # Each `call` below fails the workflow if node-2 doesn't have the
-  # context materialised locally — clearer signal than a wait_for_sync
-  # timeout alone. If the backfill silently misses one of A/B/C, the
-  # corresponding read fails with "context not found".
-  - name: Node-2 reads context-A
-    type: call
-    node: af-backfill-node-2
-    context_id: "{{ctx_a}}"
-    method: get
-    args:
-      key: "alpha"
-    outputs:
-      n2_read_a: result
-
-  - name: Node-2 reads context-B
-    type: call
-    node: af-backfill-node-2
-    context_id: "{{ctx_b}}"
-    method: get
-    args:
-      key: "beta"
-    outputs:
-      n2_read_b: result
-
-  - name: Node-2 reads context-C
-    type: call
-    node: af-backfill-node-2
-    context_id: "{{ctx_c}}"
-    method: get
-    args:
-      key: "gamma"
-    outputs:
-      n2_read_c: result
-
-  - name: Assert node-2 backfilled all three pre-existing contexts
-    type: assert
-    statements:
-      - "is_set({{n2_read_a}})"
-      - "is_set({{n2_read_b}})"
-      - "is_set({{n2_read_c}})"
-      - 'contains({{n2_read_a}}, "from-A")'
-      - 'contains({{n2_read_b}}, "from-B")'
-      - 'contains({{n2_read_c}}, "from-C")'
+- name: Install application on node-1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: af-backfill-node-1
+- type: set
+  values:
+    app_id: com.calimero.scaffolding-e2e
+- name: Node-1 creates namespace
+  type: create_org
+  org_name: Node-1 creates namespace
+  outputs:
+    namespace_id: orgId
+  account: af-backfill-node-1
+- name: Node-1 captures its account
+  type: whoami
+  outputs:
+    node1_account: publicKey
+  account: af-backfill-node-1
+- name: Node-1 creates subgroup
+  type: create_team
+  org: '{{namespace_id}}'
+  team_name: auto-follow-backfill
+  join: invite
+  outputs:
+    group_id: teamId
+  account: af-backfill-node-1
+- name: Wait for admin self-flip to apply
+  type: wait
+  seconds: 3.0
+- name: Node-1 creates context-A
+  type: deploy
+  account: af-backfill-node-1
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Node-1 creates context-A
+  org: '{{namespace_id}}'
+  access:
+    kind: team
+    team: '{{group_id}}'
+  outputs:
+    ctx_a: contextId
+    node1_key_a: memberPublicKey
+- name: Node-1 writes a key into context-A
+  type: call
+  app: '{{ctx_a}}'
+  method: set
+  args:
+    key: alpha
+    value: from-A
+  account: af-backfill-node-1
+  as_key: '{{node1_key_a}}'
+- name: Node-1 creates context-B
+  type: deploy
+  account: af-backfill-node-1
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Node-1 creates context-B
+  org: '{{namespace_id}}'
+  access:
+    kind: team
+    team: '{{group_id}}'
+  outputs:
+    ctx_b: contextId
+    node1_key_b: memberPublicKey
+- name: Node-1 writes a key into context-B
+  type: call
+  app: '{{ctx_b}}'
+  method: set
+  args:
+    key: beta
+    value: from-B
+  account: af-backfill-node-1
+  as_key: '{{node1_key_b}}'
+- name: Node-1 creates context-C
+  type: deploy
+  account: af-backfill-node-1
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Node-1 creates context-C
+  org: '{{namespace_id}}'
+  access:
+    kind: team
+    team: '{{group_id}}'
+  outputs:
+    ctx_c: contextId
+    node1_key_c: memberPublicKey
+- name: Node-1 writes a key into context-C
+  type: call
+  app: '{{ctx_c}}'
+  method: set
+  args:
+    key: gamma
+    value: from-C
+  account: af-backfill-node-1
+  as_key: '{{node1_key_c}}'
+- name: Node-1 invites node-2 to namespace
+  type: invite
+  org: '{{namespace_id}}'
+  role: member
+  account: af-backfill-node-1
+  outputs:
+    ns_invite: token
+- name: Node-2 joins namespace
+  type: redeem_invite
+  token: '{{ns_invite}}'
+  account: af-backfill-node-2
+- type: whoami
+  account: af-backfill-node-2
+  outputs:
+    node2_identity: publicKey
+    node2_account: publicKey
+- name: Node-1 adds node-2 to subgroup
+  type: team_add
+  org: '{{namespace_id}}'
+  team: '{{group_id}}'
+  members:
+  - '{{node2_identity}}'
+  role: member
+  account: af-backfill-node-1
+- name: Wait for MemberAdded op to apply on node-2
+  type: wait
+  seconds: 5.0
+- name: Wait for AutoFollowSet op to propagate and backfill to start
+  type: wait
+  seconds: 5.0
+- name: Node-2 reads context-A
+  type: call
+  app: '{{ctx_a}}'
+  method: get
+  args:
+    key: alpha
+  account: af-backfill-node-2
+  outputs:
+    n2_read_a: rpc
+- name: Node-2 reads context-B
+  type: call
+  app: '{{ctx_b}}'
+  method: get
+  args:
+    key: beta
+  account: af-backfill-node-2
+  outputs:
+    n2_read_b: rpc
+- name: Node-2 reads context-C
+  type: call
+  app: '{{ctx_c}}'
+  method: get
+  args:
+    key: gamma
+  account: af-backfill-node-2
+  outputs:
+    n2_read_c: rpc
+- name: Assert node-2 backfilled all three pre-existing contexts
+  type: assert
+  statements:
+  - is_set({{n2_read_a}})
+  - is_set({{n2_read_b}})
+  - is_set({{n2_read_c}})
+  - contains({{n2_read_a}}, "from-A")
+  - contains({{n2_read_b}}, "from-B")
+  - contains({{n2_read_c}}, "from-C")

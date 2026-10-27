@@ -1,184 +1,146 @@
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   delete_context (unknown) x1: checks what the dropped steps did
+#   delete_namespace x1: v1 namespace deletion
+#   uninstall_application (unknown) x1: checks what the dropped steps did
+#   wait_for_sync x1: replication is synchronous: a read sees every committed write
+# Fixed in the migration (converter bugs): a cascade upgrade_group
+# upgrades every app in the namespace's teams; of get_migration_status
+# only the outputs that mean the same here are kept.
 name: 41 - A member's first read after an upgrade sees writes made on the new release (2-node)
-description: >
-  Node 1 cascades the namespace v1 to v2 (code-only, the pure-bugfix pair)
-  and writes on v2. Node 2 has run nothing since the upgrade, so it holds
-  that write back: it was produced by a release node 2 has not switched to.
-  Node 2's first call after the upgrade is a read. The read switches the
-  context to v2, and must also apply the held write before it is served,
-  or the member reads state from before the upgrade.
+description: 'Node 1 cascades the namespace v1 to v2 (code-only, the pure-bugfix pair) and writes on v2.
+  Node 2 has run nothing since the upgrade, so it holds that write back: it was produced by a release
+  node 2 has not switched to. Node 2''s first call after the upgrade is a read. The read switches the
+  context to v2, and must also apply the held write before it is served, or the member reads state from
+  before the upgrade.
 
-  Topology mirrors a chat channel: namespace + one Open subgroup + one
-  context in the subgroup, upgraded with one cascade from the namespace,
-  as the desktop's Upgrade button does.
+  Topology mirrors a chat channel: namespace + one Open subgroup + one context in the subgroup, upgraded
+  with one cascade from the namespace, as the desktop''s Upgrade button does.
 
-no_docker: false
-nuke_on_start: true
-nuke_on_end: false
-
-nodes:
-  count: 2
-  image: merod:local
-  prefix: app-migration-reader
-  base_port: 9300
-  base_rpc_port: 9400
-
+  '
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 3360
+accounts:
+- app-migration-reader-1
+- app-migration-reader-2
 steps:
-  - name: Install scenario-pure-bugfix-v1 on node 1
-    type: install_application
-    node: app-migration-reader-1
-    path: dist/com.calimero.scenario-pure-bugfix-1.0.0.mpk
-    dev: true
-    outputs:
-      app_v1: applicationId
-
-  - name: Create namespace (v1) on node 1
-    type: create_namespace
-    node: app-migration-reader-1
-    application_id: "{{app_v1}}"
-    outputs:
-      namespace_id: namespaceId
-
-  - name: Create Open subgroup under namespace
-    type: create_group_in_namespace
-    node: app-migration-reader-1
-    namespace_id: "{{namespace_id}}"
-    group_name: "reader-scenario-subgroup"
-    outputs:
-      group_id: groupId
-
-  - name: Mark subgroup as Open
-    type: set_subgroup_visibility
-    node: app-migration-reader-1
-    group_id: "{{group_id}}"
-    visibility: open
-
-  - name: Create context in subgroup on node 1 (v1)
-    type: create_context
-    node: app-migration-reader-1
-    application_id: "{{app_v1}}"
-    group_id: "{{group_id}}"
-    outputs:
-      ctx_id: contextId
-
-  - name: Create namespace invitation for node 2
-    type: create_namespace_invitation
-    node: app-migration-reader-1
-    namespace_id: "{{namespace_id}}"
-    outputs:
-      namespace_invitation: invitation
-
-  - name: Node 2 joins namespace
-    type: join_namespace
-    node: app-migration-reader-2
-    namespace_id: "{{namespace_id}}"
-    invitation: "{{namespace_invitation}}"
-
-  - name: Node 2 materialises subgroup membership via inheritance
-    type: join_subgroup_inheritance
-    node: app-migration-reader-2
-    group_id: "{{group_id}}"
-
-  - name: Node 2 joins the context
-    type: join_context
-    node: app-migration-reader-2
-    context_id: "{{ctx_id}}"
-
-  - name: Write v1 item k1=10 on node 1
-    type: call
-    node: app-migration-reader-1
-    context_id: "{{ctx_id}}"
-    method: add_value
-    args:
-      key: "k1"
-      value: 10
-
-  - name: Wait for v1 state to sync to node 2
-    type: wait_for_sync
-    context_id: "{{ctx_id}}"
-    nodes:
-      - app-migration-reader-1
-      - app-migration-reader-2
-    timeout: 90
-    trigger_sync: true
-
-  - name: Install scenario-pure-bugfix-v2 on node 1
-    type: install_application
-    node: app-migration-reader-1
-    path: dist/com.calimero.scenario-pure-bugfix-2.0.0.mpk
-    dev: true
-    outputs:
-      app_v2: applicationId
-
-  - name: Cascade namespace v1 to v2 (initiated by node 1)
-    type: upgrade_group
-    node: app-migration-reader-1
-    group_id: "{{namespace_id}}"
-    target_application_id: "{{app_v2}}"
-    cascade: true
-
-  - name: Write v2 item k2=20 on node 1 (switches node 1's context first)
-    type: call
-    node: app-migration-reader-1
-    context_id: "{{ctx_id}}"
-    method: add_value
-    args:
-      key: "k2"
-      value: 20
-
-  # Fixed wait, not wait_for_sync: node 2 holds the v2 write back, so the two
-  # nodes' state cannot match until node 2 switches.
-  - name: Wait for the cascade and the v2 write to reach node 2
-    type: wait
-    seconds: 15
-
-  - name: Node 2's first call since the upgrade reads k2
-    type: call
-    node: app-migration-reader-2
-    context_id: "{{ctx_id}}"
-    method: get_value
-    args:
-      key: "k2"
-    outputs:
-      first_read_k2: result
-
-  - name: Assert node 2's first read returns node 1's v2 write
-    type: json_assert
-    statements:
-      - 'json_equal({{first_read_k2}}, {"output": 20})'
-
-  - name: Read k1 on node 2 (v1 state survives the switch)
-    type: call
-    node: app-migration-reader-2
-    context_id: "{{ctx_id}}"
-    method: get_value
-    args:
-      key: "k1"
-    outputs:
-      read_k1: result
-
-  - name: Assert k1 = 10 on node 2
-    type: json_assert
-    statements:
-      - 'json_equal({{read_k1}}, {"output": 10})'
-
-  - name: Delete context
-    type: delete_context
-    node: app-migration-reader-1
-    context_id: "{{ctx_id}}"
-
-  - name: Delete subgroup
-    type: delete_group
-    node: app-migration-reader-1
-    group_id: "{{group_id}}"
-
-  - name: Delete namespace
-    type: delete_namespace
-    node: app-migration-reader-1
-    namespace_id: "{{namespace_id}}"
-
-  - name: Uninstall v1 on node 1
-    type: uninstall_application
-    node: app-migration-reader-1
-    application_id: "{{app_v1}}"
-
-stop_all_nodes: false
+- name: Install scenario-pure-bugfix-v1 on node 1
+  type: install_package
+  mpk: '{{env.CORE_WASM_DIR}}/dist/com.calimero.scenario-pure-bugfix-1.0.0.mpk'
+  outputs:
+    app_v1: package
+    app_v1_version: version
+  account: app-migration-reader-1
+- name: Create namespace (v1) on node 1
+  type: create_org
+  org_name: Create namespace (v1) on node 1
+  outputs:
+    namespace_id: orgId
+  account: app-migration-reader-1
+- name: Create Open subgroup under namespace
+  type: create_team
+  org: '{{namespace_id}}'
+  team_name: reader-scenario-subgroup
+  join: invite
+  outputs:
+    group_id: teamId
+  account: app-migration-reader-1
+- name: Mark subgroup as Open
+  type: team_update
+  org: '{{namespace_id}}'
+  team: '{{group_id}}'
+  join: everyone
+  account: app-migration-reader-1
+- name: Create context in subgroup on node 1 (v1)
+  type: deploy
+  account: app-migration-reader-1
+  package: '{{app_v1}}'
+  version: '{{app_v1_version}}'
+  app_name: Create context in subgroup on node 1 (v1)
+  org: '{{namespace_id}}'
+  access:
+    kind: team
+    team: '{{group_id}}'
+  outputs:
+    ctx_id: contextId
+- name: Create namespace invitation for node 2
+  type: invite
+  org: '{{namespace_id}}'
+  role: member
+  account: app-migration-reader-1
+  outputs:
+    namespace_invitation: token
+- name: Node 2 joins namespace
+  type: redeem_invite
+  token: '{{namespace_invitation}}'
+  account: app-migration-reader-2
+- name: Node 2 materialises subgroup membership via inheritance
+  type: team_join
+  org: '{{namespace_id}}'
+  team: '{{group_id}}'
+  account: app-migration-reader-2
+- name: Write v1 item k1=10 on node 1
+  type: call
+  app: '{{ctx_id}}'
+  method: add_value
+  args:
+    key: k1
+    value: 10
+  account: app-migration-reader-1
+- name: Install scenario-pure-bugfix-v2 on node 1
+  type: install_package
+  mpk: '{{env.CORE_WASM_DIR}}/dist/com.calimero.scenario-pure-bugfix-2.0.0.mpk'
+  outputs:
+    app_v2: package
+    app_v2_version: version
+  account: app-migration-reader-1
+- name: Cascade namespace v1 to v2 (initiated by node 1)
+  type: upgrade_app
+  app: '{{ctx_id}}'
+  version: '{{app_v2_version}}'
+  account: app-migration-reader-1
+- name: Write v2 item k2=20 on node 1 (switches node 1's context first)
+  type: call
+  app: '{{ctx_id}}'
+  method: add_value
+  args:
+    key: k2
+    value: 20
+  account: app-migration-reader-1
+- name: Wait for the cascade and the v2 write to reach node 2
+  type: wait
+  seconds: 15.0
+- name: Node 2's first call since the upgrade reads k2
+  type: call
+  app: '{{ctx_id}}'
+  method: get_value
+  args:
+    key: k2
+  account: app-migration-reader-2
+  outputs:
+    first_read_k2: rpc
+- name: Assert node 2's first read returns node 1's v2 write
+  type: json_assert
+  statements:
+  - 'json_equal({{first_read_k2}}, {"output": 20})'
+- name: Read k1 on node 2 (v1 state survives the switch)
+  type: call
+  app: '{{ctx_id}}'
+  method: get_value
+  args:
+    key: k1
+  account: app-migration-reader-2
+  outputs:
+    read_k1: rpc
+- name: Assert k1 = 10 on node 2
+  type: json_assert
+  statements:
+  - 'json_equal({{read_k1}}, {"output": 10})'
+- name: Delete subgroup
+  type: team_delete
+  org: '{{namespace_id}}'
+  team: '{{group_id}}'
+  account: app-migration-reader-1

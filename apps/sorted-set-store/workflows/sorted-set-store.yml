@@ -1,0 +1,143 @@
+# A release-v2 workflow for sorted-set-store (it had no v1 workflow): an
+# organization's set, added to by two members, read back in order.
+name: Sorted set store on release-v2
+description: SortedSet membership and ordered reads across two members' writes
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 6010
+accounts: [alice, bob, carol]
+steps:
+  - name: Alice founds an organization
+    type: create_org
+    account: alice
+    org_name: Sets
+    outputs: { org: orgId }
+  - name: An invite for Bob
+    type: invite
+    account: alice
+    org: "{{org}}"
+    role: member
+    outputs: { token: token }
+  - name: Bob joins
+    type: redeem_invite
+    account: bob
+    token: "{{token}}"
+  - name: Alice deploys sorted-set-store in the organization
+    type: deploy
+    account: alice
+    wasm: "{{env.CORE_WASM_DIR}}/sorted_set_store.wasm"
+    app_name: sorted-set-store
+    org: "{{org}}"
+    outputs: { app: appId }
+  - name: Alice adds pear
+    type: call
+    account: alice
+    app: "{{app}}"
+    method: add
+    args: { value: pear }
+    expect: true
+  - name: Bob adds apple
+    type: call
+    account: bob
+    app: "{{app}}"
+    method: add
+    args: { value: apple }
+    expect: true
+  - name: Bob adds apricot
+    type: call
+    account: bob
+    app: "{{app}}"
+    method: add
+    args: { value: apricot }
+    expect: true
+  - name: Alice adds apple again, which is already there
+    type: call
+    account: alice
+    app: "{{app}}"
+    method: add
+    args: { value: apple }
+    expect: false
+  - name: Three elements, in order
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: elements
+    expect: [apple, apricot, pear]
+  - name: Bob sees Alice's element
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: contains
+    args: { value: pear }
+    expect: true
+  - name: A prefix scan
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: prefix
+    args: { prefix: ap }
+    expect: [apple, apricot]
+  - name: A half-open range
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: range
+    args: { start: apricot, end: pear }
+    expect: [apricot]
+  - name: The second page of two
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: page
+    args: { offset: 2, limit: 2 }
+    expect: [pear]
+  - name: First and last
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: first
+    expect: apple
+  - name: Last
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: last
+    expect: pear
+  - name: Bob removes apple
+    type: call
+    account: bob
+    app: "{{app}}"
+    method: remove
+    args: { value: apple }
+    expect: true
+  - name: Removing it again removes nothing
+    type: call
+    account: alice
+    app: "{{app}}"
+    method: remove
+    args: { value: apple }
+    expect: false
+  - name: Two left
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: len
+    expect: 2
+  - name: Carol is outside the organization
+    type: view
+    account: carol
+    app: "{{app}}"
+    method: len
+    expected_error: NOT_FOUND
+  - name: Alice clears
+    type: call
+    account: alice
+    app: "{{app}}"
+    method: clear
+  - name: Empty
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: is_empty
+    expect: true

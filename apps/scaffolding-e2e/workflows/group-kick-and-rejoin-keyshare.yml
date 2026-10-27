@@ -1,530 +1,313 @@
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   login (unknown) x3: checks what the dropped steps did
+#   wait_for_sync x5: replication is synchronous: a read sees every committed write
 name: E2E KV Store - Kick Sticks, Admin Re-Add Is The Way Back (Open Subgroup)
-description: >
-  A kick must stick. An Open subgroup admits any parent member holding
-  `CAN_JOIN_OPEN_SUBGROUPS` automatically, so inheritance is the back
-  door that would otherwise make a subgroup kick meaningless: the
-  kicked member simply re-inherits and walks straight back in. This
-  flow pins that door shut, and pins the one door that stays open —
-  an admin re-adding them.
-
-  Removing a member now writes a re-entry block alongside the
-  deny-list entry. The two are different things and the distinction is
-  the point of this test: the deny-list *silences* them (their state
-  deltas are dropped at the receive filter) and is retracted the moment
-  any member row is written; the re-entry block *authorizes* and
-  deliberately survives a member-row write, so a re-join attempt fails
-  instead of silently succeeding. Only an admin `MemberAdded` lifts it.
-
-  Scenario (3 nodes, single Open subgroup):
-
-    1. node-2 inherits Open-subgroup membership and self-joins via
-       `join_subgroup_inheritance` so the subgroup key lands locally.
-    2. node-2 writes; node-3 reads — proves the joiner-as-author
-       direction works pre-kick.
-    3. Admin (node-1) removes node-2 from the subgroup.
-    4. node-2's next write is rejected by the local apply path or the
-       peers' deny-list filter. `expected_failure: true` asserts the
-       write does not reach node-3.
-    5. node-2 calls `join_subgroup_inheritance` again — and is now
-       REJECTED. Its `CAN_JOIN_OPEN_SUBGROUPS` cap at the namespace is
-       still intact and its inheritance path is fully resolvable, so
-       the ONLY thing standing in its way is the re-entry block. That
-       makes this step a tight test of the block itself rather than of
-       some incidental loss of authority.
-    6. node-2 stays out: absent from the member list, still unable to
-       write.
-    7. Admin (node-1) re-adds node-2 with `add_group_members`. This is
-       the sole way back for a removed member. The block lifts, a fresh
-       `KeyDelivery` lands, and node-2 writes again; node-3 reads it.
-       Bidirectional convergence is the success signal.
-
-  What this test does NOT cover (intentionally — different test):
-    * The admin re-add cycle on a *Restricted* subgroup (no
-      inheritance path in play) is covered by
-      `group-kick-and-readd-deny-list.yml`.
-    * Voluntary `leave_group` and what it takes to come back from it
-      is covered by `group-leave-then-rejoin-via-inheritance.yml`.
-
-  Mero-chat user-visible failure mode this guards against: "I kicked
-  someone from a public channel and they just walked straight back in."
-
-force_pull_image: false
-
-auth_mode: embedded
-
-nodes:
-  count: 3
-  image: merod:local
-  prefix: kick-rejoin-node
-
+description: "A kick must stick. An Open subgroup admits any parent member holding `CAN_JOIN_OPEN_SUBGROUPS`\
+  \ automatically, so inheritance is the back door that would otherwise make a subgroup kick meaningless:\
+  \ the kicked member simply re-inherits and walks straight back in. This flow pins that door shut, and\
+  \ pins the one door that stays open — an admin re-adding them.\nRemoving a member now writes a re-entry\
+  \ block alongside the deny-list entry. The two are different things and the distinction is the point\
+  \ of this test: the deny-list *silences* them (their state deltas are dropped at the receive filter)\
+  \ and is retracted the moment any member row is written; the re-entry block *authorizes* and deliberately\
+  \ survives a member-row write, so a re-join attempt fails instead of silently succeeding. Only an admin\
+  \ `MemberAdded` lifts it.\nScenario (3 nodes, single Open subgroup):\n\n  1. node-2 inherits Open-subgroup\
+  \ membership and self-joins via\n     `join_subgroup_inheritance` so the subgroup key lands locally.\n\
+  \  2. node-2 writes; node-3 reads — proves the joiner-as-author\n     direction works pre-kick.\n  3.\
+  \ Admin (node-1) removes node-2 from the subgroup.\n  4. node-2's next write is rejected by the local\
+  \ apply path or the\n     peers' deny-list filter. `expected_failure: true` asserts the\n     write\
+  \ does not reach node-3.\n  5. node-2 calls `join_subgroup_inheritance` again — and is now\n     REJECTED.\
+  \ Its `CAN_JOIN_OPEN_SUBGROUPS` cap at the namespace is\n     still intact and its inheritance path\
+  \ is fully resolvable, so\n     the ONLY thing standing in its way is the re-entry block. That\n   \
+  \  makes this step a tight test of the block itself rather than of\n     some incidental loss of authority.\n\
+  \  6. node-2 stays out: absent from the member list, still unable to\n     write.\n  7. Admin (node-1)\
+  \ re-adds node-2 with `add_group_members`. This is\n     the sole way back for a removed member. The\
+  \ block lifts, a fresh\n     `KeyDelivery` lands, and node-2 writes again; node-3 reads it.\n     Bidirectional\
+  \ convergence is the success signal.\n\nWhat this test does NOT cover (intentionally — different test):\n\
+  \  * The admin re-add cycle on a *Restricted* subgroup (no\n    inheritance path in play) is covered\
+  \ by\n    `group-kick-and-readd-deny-list.yml`.\n  * Voluntary `leave_group` and what it takes to come\
+  \ back from it\n    is covered by `group-leave-then-rejoin-via-inheritance.yml`.\n\nMero-chat user-visible\
+  \ failure mode this guards against: \"I kicked someone from a public channel and they just walked straight\
+  \ back in.\"\n"
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 4410
+accounts:
+- kick-rejoin-node-1
+- kick-rejoin-node-2
+- kick-rejoin-node-3
 steps:
-  # First login on a fresh embedded-auth node bootstraps its root key
-  # and seeds merobox's token cache; every step below runs authenticated.
-  - name: Login on kick-rejoin-node-1
-    type: login
-    node: kick-rejoin-node-1
-    username: dev
-    password: dev-password
-
-  - name: Login on kick-rejoin-node-2
-    type: login
-    node: kick-rejoin-node-2
-    username: dev
-    password: dev-password
-
-  - name: Login on kick-rejoin-node-3
-    type: login
-    node: kick-rejoin-node-3
-    username: dev
-    password: dev-password
-
-  # ── Phase 1: Bootstrap namespace + Open subgroup + context ────────
-
-  - name: Install application on node-1
-    type: install_application
-    node: kick-rejoin-node-1
-    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Node-1 creates namespace
-    type: create_namespace
-    node: kick-rejoin-node-1
-    application_id: '{{app_id}}'
-    outputs:
-      namespace_id: namespaceId
-
-  # node-1's namespace identity not captured here — admin doesn't
-  # write to the context in this workflow (only members write +
-  # cross-peer reads), so the executor_public_key for admin would be
-  # unused. Removed to avoid dead output noise flagged in code review.
-
-  - name: Invite node-2 to namespace
-    type: create_namespace_invitation
-    node: kick-rejoin-node-1
-    namespace_id: '{{namespace_id}}'
-    outputs:
-      invite_node2: invitation
-
-  - name: Invite node-3 to namespace
-    type: create_namespace_invitation
-    node: kick-rejoin-node-1
-    namespace_id: '{{namespace_id}}'
-    outputs:
-      invite_node3: invitation
-
-  - name: Node-2 joins namespace
-    # Default member capabilities include CAN_JOIN_OPEN_SUBGROUPS, so
-    # node-2 inherits eligibility for any Open subgroup beneath this
-    # namespace without an explicit add_group_members at the subgroup.
-    type: join_namespace
-    node: kick-rejoin-node-2
-    namespace_id: '{{namespace_id}}'
-    invitation: '{{invite_node2}}'
-    outputs:
-      identity_node2: memberIdentity
-      account_node2: memberAccount
-
-  - name: Node-3 joins namespace
-    type: join_namespace
-    node: kick-rejoin-node-3
-    namespace_id: '{{namespace_id}}'
-    invitation: '{{invite_node3}}'
-    outputs:
-      account_node3: memberAccount
-
-  - name: Node-1 creates Open subgroup inside namespace
-    type: create_group_in_namespace
-    node: kick-rejoin-node-1
-    namespace_id: '{{namespace_id}}'
-    group_name: open-channel
-    outputs:
-      subgroup_id: groupId
-
-  - name: Mark subgroup as Open
-    type: set_subgroup_visibility
-    node: kick-rejoin-node-1
-    group_id: '{{subgroup_id}}'
-    visibility: open
-
-  - name: Node-1 creates context inside Open subgroup
-    type: create_context
-    node: kick-rejoin-node-1
-    application_id: '{{app_id}}'
-    group_id: '{{subgroup_id}}'
-    outputs:
-      ctx_id: contextId
-
-  - name: Wait for subgroup visibility + context-registered ops to propagate
-    # node-2 and node-3 need the Open-visibility row + the context
-    # registration before their inheritance check / join_context can
-    # see the Open subgroup as joinable.
-    type: wait
-    seconds: 10
-
-  # ── Phase 2: node-2 inherits + self-joins, node-3 also joins ──────
-
-  - name: Node-2 self-joins Open subgroup via inheritance endpoint (#2360)
-    # No `outputs` capture — `memberPublicKey` from this step is the
-    # same as the one captured by the subsequent `join_context` into
-    # `node2_key`. Holding only one binding avoids dead-output noise.
-    type: join_subgroup_inheritance
-    node: kick-rejoin-node-2
-    group_id: '{{subgroup_id}}'
-
-  - name: Node-2 joins context (key already local from inheritance)
-    type: join_context
-    node: kick-rejoin-node-2
-    context_id: '{{ctx_id}}'
-    outputs:
-      node2_key: memberPublicKey
-
-  - name: Node-3 self-joins Open subgroup via inheritance endpoint (#2360)
-    # Same dead-output rationale as node-2's inheritance step above.
-    type: join_subgroup_inheritance
-    node: kick-rejoin-node-3
-    group_id: '{{subgroup_id}}'
-
-  - name: Node-3 joins context (key already local from inheritance)
-    type: join_context
-    node: kick-rejoin-node-3
-    context_id: '{{ctx_id}}'
-    outputs:
-      node3_key: memberPublicKey
-
-  - name: Initial sync to settle Root state
-    type: wait_for_sync
-    context_id: '{{ctx_id}}'
-    nodes:
-      - kick-rejoin-node-1
-      - kick-rejoin-node-2
-      - kick-rejoin-node-3
-    timeout: 60
-    check_interval: 2
-
-  # ── Phase 3: Pre-kick — node-2 writes, node-3 reads ───────────────
-  # Establishes the joiner-as-author direction works before the kick,
-  # so a Phase 6 failure is unambiguously caused by the rejoin path
-  # rather than a stale bug from #2351 / #2360.
-
-  - name: Pre-kick — node-2 writes
-    type: call
-    node: kick-rejoin-node-2
-    context_id: '{{ctx_id}}'
-    method: set
-    args:
-      key: "pre_kick"
-      value: "node2_msg_before_kick"
-    executor_public_key: '{{node2_key}}'
-
-  - name: Pre-kick sync
-    type: wait_for_sync
-    context_id: '{{ctx_id}}'
-    nodes:
-      - kick-rejoin-node-1
-      - kick-rejoin-node-2
-      - kick-rejoin-node-3
-    timeout: 30
-    check_interval: 2
-    expect:
-      method: get
-      args:
-        key: "pre_kick"
-      equals:
-        output: "node2_msg_before_kick"
-
-  - name: Pre-kick — node-3 reads node-2's write
-    type: call
-    node: kick-rejoin-node-3
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "pre_kick"
-    executor_public_key: '{{node3_key}}'
-    outputs:
-      pre_kick_read: result
-
-  - name: Assert pre-kick converged
-    type: json_assert
-    statements:
-      - 'json_equal({{pre_kick_read}}, {"output": "node2_msg_before_kick"})'
-
-  # ── Phase 4: Admin kicks node-2 from the subgroup ─────────────────
-  # Signed `MemberRemoved` op against the subgroup id. On every peer
-  # the apply arm at `crates/context/src/group_store/mod.rs:1222`
-  # deletes node-2's direct row and stamps them on the per-subgroup
-  # deny-list (`mark_denied`). State-delta traffic from node-2 on this
-  # subgroup is dropped at the receive entry point until cleared.
-
-  - name: Admin (node-1) removes node-2 from Open subgroup
-    type: remove_group_members
-    node: kick-rejoin-node-1
-    group_id: '{{subgroup_id}}'
-    members:
-      - '{{account_node2}}'
-
-  - name: Wait for MemberRemoved + deny-list to propagate
-    type: wait_for_sync
-    group_id: '{{subgroup_id}}'
-    nodes:
-      - kick-rejoin-node-1
-      - kick-rejoin-node-3
-    timeout: 30
-    check_interval: 2
-
-  - name: Confirm node-2 is gone from subgroup membership on admin
-    type: list_group_members
-    node: kick-rejoin-node-1
-    group_id: '{{subgroup_id}}'
-    outputs:
-      members_after_kick: members
-
-  - name: Assert node-2 absent from subgroup after kick
-    type: assert
-    statements:
-      - "not_contains({{members_after_kick}}, {{account_node2}})"
-
-  # Cross-peer check: node-3 must also see node-2 gone after the kick.
-  # Catches a fan-out bug where MemberRemoved applied locally on the
-  # admin but didn't propagate to the rest of the cluster (mirrors the
-  # pattern in `group-leave-member.yml:122-133`).
-  - name: Cross-peer confirm node-3 also sees node-2 gone
-    type: list_group_members
-    node: kick-rejoin-node-3
-    group_id: '{{subgroup_id}}'
-    outputs:
-      members_after_kick_node3: members
-
-  - name: Assert cross-peer view agrees on the kick
-    type: assert
-    statements:
-      - "not_contains({{members_after_kick_node3}}, {{account_node2}})"
-
-  # ── Phase 5: Kicked node's write must NOT reach the cluster ───────
-  # Two failure modes are acceptable signals here, both surface as
-  # `expected_failure: true`:
-  #   (a) node-2's local apply rejects the write because its direct
-  #       row was deleted (cascade ran on the local peer too), or
-  #   (b) the write reaches peers but is silently dropped at the
-  #       deny-list filter.
-  # The follow-on cross-peer read on node-3 below is the strict
-  # negative-control: a silent local-success-then-gossip-drop must be
-  # caught HERE, not deferred to the end-of-workflow assertion. If we
-  # only checked at the end, a regression that lifted the deny-list
-  # AND retroactively delivered the buffered write during the rejoin
-  # could pass for the wrong reason.
-
-  - name: Post-kick — node-2 attempts to write (must fail or be dropped)
-    type: call
-    node: kick-rejoin-node-2
-    context_id: '{{ctx_id}}'
-    method: set
-    args:
-      key: "post_kick_should_drop"
-      value: "this_must_not_appear"
-    executor_public_key: '{{node2_key}}'
-    expected_failure: true
-
-  # Drain any in-flight gossip from a possible local-success before
-  # the negative-control read. Without this, a write that was rejected
-  # locally produces no traffic to wait on, but a write that succeeded
-  # locally and is racing the deny-list filter at peers would not have
-  # propagated yet — biasing the negative-control toward false-pass.
-  - name: Drain in-flight gossip before negative-control read
-    type: wait
-    seconds: 5
-
-  - name: Negative control — node-3 must NOT see the dropped write
-    type: call
-    node: kick-rejoin-node-3
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "post_kick_should_drop"
-    executor_public_key: '{{node3_key}}'
-    outputs:
-      post_kick_drop_check: result
-
-  - name: Assert dropped value is genuinely absent on node-3 BEFORE rejoin
-    # The KV app returns `{"output": null}` for missing keys.
-    type: json_assert
-    statements:
-      - 'json_equal({{post_kick_drop_check}}, {"output": null})'
-
-  # ── Phase 6: the inheritance back door must be shut ───────────────
-  # The step this whole flow exists for. node-2's
-  # CAN_JOIN_OPEN_SUBGROUPS cap at the namespace is untouched and the
-  # subgroup is still Open, so its inheritance path resolves perfectly
-  # well — `MemberJoinedOpen` would have admitted it before. The ONLY
-  # thing that can reject it now is the re-entry block written by the
-  # `MemberRemoved` apply. That makes this a tight test of the block
-  # itself: a pass here cannot be explained away by node-2 having
-  # incidentally lost some other authority.
-
-  - name: Node-2 attempts to re-inherit into the subgroup (must be rejected)
-    type: join_subgroup_inheritance
-    node: kick-rejoin-node-2
-    group_id: '{{subgroup_id}}'
-    expected_failure: true
-
-  - name: Confirm subgroup membership after the rejected re-inheritance
-    type: list_group_members
-    node: kick-rejoin-node-1
-    group_id: '{{subgroup_id}}'
-    outputs:
-      members_after_failed_rejoin: members
-
-  # A rejected `MemberJoinedOpen` must leave no trace: no direct row,
-  # and no reappearance in the inherited half of the union either
-  # (`enumerate_inherited` still filters them out on the deny-list).
-  - name: Assert the kicked member is still out
-    type: assert
-    statements:
-      - "not_contains({{members_after_failed_rejoin}}, {{account_node2}})"
-      - "contains({{members_after_failed_rejoin}}, {{account_node3}})"
-
-  # Negative control: a rejected re-join must not have quietly restored
-  # write access either. If the block were enforced only in the admin
-  # endpoint and not at op apply, the join would fail here while the
-  # deny-list got cleared underneath — and this write would land.
-  - name: Node-2 still cannot write after the rejected re-inheritance
-    type: call
-    node: kick-rejoin-node-2
-    context_id: '{{ctx_id}}'
-    method: set
-    args:
-      key: "after_failed_rejoin_should_drop"
-      value: "this_must_not_appear_either"
-    executor_public_key: '{{node2_key}}'
-    expected_failure: true
-
-  # ── Phase 7: admin re-add is the way back in ─────────────────────
-  # An admin `MemberAdded` is the only thing that lifts a removal. It
-  # clears the re-entry block AND (via the membership choke point) the
-  # deny-list, and triggers a fresh KeyDelivery.
-
-  - name: Admin (node-1) re-adds node-2 to the subgroup
-    type: add_group_members
-    node: kick-rejoin-node-1
-    group_id: '{{subgroup_id}}'
-    members:
-      - identity: '{{identity_node2}}'
-        role: Member
-
-  - name: Wait for MemberAdded + KeyDelivery to propagate
-    type: wait_for_sync
-    group_id: '{{subgroup_id}}'
-    nodes:
-      - kick-rejoin-node-1
-      - kick-rejoin-node-2
-      - kick-rejoin-node-3
-    timeout: 60
-    check_interval: 2
-
-  - name: Confirm subgroup membership shape after the admin re-add
-    type: list_group_members
-    node: kick-rejoin-node-1
-    group_id: '{{subgroup_id}}'
-    outputs:
-      members_after_rejoin: members
-
-  - name: Assert the re-added member is back in the list
-    type: assert
-    statements:
-      - "contains({{members_after_rejoin}}, {{account_node2}})"
-      - "contains({{members_after_rejoin}}, {{account_node3}})"
-
-  # ── Phase 8: post-re-add write must reach node-3 ──────────────────
-  # The end-to-end signal that the re-add really restored them:
-  #   * re-entry block lifted (otherwise no path back at all),
-  #   * deny-list cleared on node-3 (otherwise drop at filter),
-  #   * fresh KeyDelivery landed on node-2 (otherwise can't sign),
-  #   * node-2's local stale-key short-circuit didn't latch the
-  #     pre-kick key (otherwise node-3 can't decrypt).
-  - name: Post-re-add — node-2 writes
-    type: call
-    node: kick-rejoin-node-2
-    context_id: '{{ctx_id}}'
-    method: set
-    args:
-      key: "post_rejoin"
-      value: "node2_msg_after_rejoin"
-    executor_public_key: '{{node2_key}}'
-
-  - name: Post-rejoin sync
-    type: wait_for_sync
-    context_id: '{{ctx_id}}'
-    nodes:
-      - kick-rejoin-node-1
-      - kick-rejoin-node-2
-      - kick-rejoin-node-3
-    timeout: 60
-    check_interval: 2
-    expect:
-      method: get
-      args:
-        key: "post_rejoin"
-      equals:
-        output: "node2_msg_after_rejoin"
-
-  - name: Post-rejoin — node-3 reads node-2's write
-    type: call
-    node: kick-rejoin-node-3
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "post_rejoin"
-    executor_public_key: '{{node3_key}}'
-    outputs:
-      post_rejoin_read: result
-
-  - name: Assert post-rejoin write reached node-3
-    type: json_assert
-    statements:
-      - 'json_equal({{post_rejoin_read}}, {"output": "node2_msg_after_rejoin"})'
-
-  # Both values written while node-2 was out must still be absent on
-  # node-3, even now that it is back: they were dropped at the receive
-  # filter when they were published, and re-admission does not
-  # retroactively replay them.
-  - name: Confirm dropped-during-kick write was NOT delivered post-re-add
-    type: call
-    node: kick-rejoin-node-3
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "post_kick_should_drop"
-    executor_public_key: '{{node3_key}}'
-    outputs:
-      dropped_lookup: result
-
-  - name: Assert dropped value was indeed dropped
-    # The KV app returns `{"output": null}` for missing keys.
-    type: json_assert
-    statements:
-      - 'json_equal({{dropped_lookup}}, {"output": null})'
-
-  # The write attempted during the REJECTED re-inheritance. If the
-  # re-entry block were enforced only at the admin endpoint and not at
-  # op apply, the rejected join could still have cleared the deny-list
-  # underneath — and this value would now be visible on node-3.
-  - name: Confirm the write attempted during the rejected re-join was NOT delivered
-    type: call
-    node: kick-rejoin-node-3
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "after_failed_rejoin_should_drop"
-    executor_public_key: '{{node3_key}}'
-    outputs:
-      failed_rejoin_drop_lookup: result
-
-  - name: Assert the rejected re-join leaked no write access
-    type: json_assert
-    statements:
-      - 'json_equal({{failed_rejoin_drop_lookup}}, {"output": null})'
-
-stop_all_nodes: false
-restart: false
-wait_timeout: 120
+- name: Install application on node-1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: kick-rejoin-node-1
+- type: set
+  values:
+    app_id: com.calimero.scaffolding-e2e
+- name: Node-1 creates namespace
+  type: create_org
+  org_name: Node-1 creates namespace
+  outputs:
+    namespace_id: orgId
+  account: kick-rejoin-node-1
+- name: Invite node-2 to namespace
+  type: invite
+  org: '{{namespace_id}}'
+  role: member
+  account: kick-rejoin-node-1
+  outputs:
+    invite_node2: token
+- name: Invite node-3 to namespace
+  type: invite
+  org: '{{namespace_id}}'
+  role: member
+  account: kick-rejoin-node-1
+  outputs:
+    invite_node3: token
+- name: Node-2 joins namespace
+  type: redeem_invite
+  token: '{{invite_node2}}'
+  account: kick-rejoin-node-2
+- type: whoami
+  account: kick-rejoin-node-2
+  outputs:
+    identity_node2: publicKey
+    account_node2: publicKey
+- name: Node-3 joins namespace
+  type: redeem_invite
+  token: '{{invite_node3}}'
+  account: kick-rejoin-node-3
+- type: whoami
+  account: kick-rejoin-node-3
+  outputs:
+    account_node3: publicKey
+- name: Node-1 creates Open subgroup inside namespace
+  type: create_team
+  org: '{{namespace_id}}'
+  team_name: open-channel
+  join: invite
+  outputs:
+    subgroup_id: teamId
+  account: kick-rejoin-node-1
+- name: Mark subgroup as Open
+  type: team_update
+  org: '{{namespace_id}}'
+  team: '{{subgroup_id}}'
+  join: everyone
+  account: kick-rejoin-node-1
+- name: Node-1 creates context inside Open subgroup
+  type: deploy
+  account: kick-rejoin-node-1
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Node-1 creates context inside Open subgroup
+  org: '{{namespace_id}}'
+  access:
+    kind: team
+    team: '{{subgroup_id}}'
+  outputs:
+    ctx_id: contextId
+- name: Wait for subgroup visibility + context-registered ops to propagate
+  type: wait
+  seconds: 10.0
+- name: Node-2 self-joins Open subgroup via inheritance endpoint (#2360)
+  type: team_join
+  org: '{{namespace_id}}'
+  team: '{{subgroup_id}}'
+  account: kick-rejoin-node-2
+- name: Node-2 joins context (key already local from inheritance)
+  type: whoami
+  account: kick-rejoin-node-2
+  outputs:
+    node2_key: publicKey
+- name: Node-3 self-joins Open subgroup via inheritance endpoint (#2360)
+  type: team_join
+  org: '{{namespace_id}}'
+  team: '{{subgroup_id}}'
+  account: kick-rejoin-node-3
+- name: Node-3 joins context (key already local from inheritance)
+  type: whoami
+  account: kick-rejoin-node-3
+  outputs:
+    node3_key: publicKey
+- name: Pre-kick — node-2 writes
+  type: call
+  app: '{{ctx_id}}'
+  method: set
+  args:
+    key: pre_kick
+    value: node2_msg_before_kick
+  account: kick-rejoin-node-2
+  as_key: '{{node2_key}}'
+- name: Pre-kick — node-3 reads node-2's write
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: pre_kick
+  account: kick-rejoin-node-3
+  as_key: '{{node3_key}}'
+  outputs:
+    pre_kick_read: rpc
+- name: Assert pre-kick converged
+  type: json_assert
+  statements:
+  - 'json_equal({{pre_kick_read}}, {"output": "node2_msg_before_kick"})'
+- name: Admin (node-1) removes node-2 from Open subgroup
+  type: team_remove
+  org: '{{namespace_id}}'
+  team: '{{subgroup_id}}'
+  members:
+  - '{{account_node2}}'
+  account: kick-rejoin-node-1
+- name: Confirm node-2 is gone from subgroup membership on admin
+  type: team_get
+  org: '{{namespace_id}}'
+  team: '{{subgroup_id}}'
+  account: kick-rejoin-node-1
+  outputs:
+    members_after_kick: members
+- name: Assert node-2 absent from subgroup after kick
+  type: assert
+  statements:
+  - not_contains({{members_after_kick}}, {{account_node2}})
+- name: Cross-peer confirm node-3 also sees node-2 gone
+  type: team_get
+  org: '{{namespace_id}}'
+  team: '{{subgroup_id}}'
+  account: kick-rejoin-node-3
+  outputs:
+    members_after_kick_node3: members
+- name: Assert cross-peer view agrees on the kick
+  type: assert
+  statements:
+  - not_contains({{members_after_kick_node3}}, {{account_node2}})
+- name: Post-kick — node-2 attempts to write (must fail or be dropped)
+  type: call
+  app: '{{ctx_id}}'
+  method: set
+  args:
+    key: post_kick_should_drop
+    value: this_must_not_appear
+  account: kick-rejoin-node-2
+  as_key: '{{node2_key}}'
+  expected_failure: true
+- name: Drain in-flight gossip before negative-control read
+  type: wait
+  seconds: 5.0
+- name: Negative control — node-3 must NOT see the dropped write
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: post_kick_should_drop
+  account: kick-rejoin-node-3
+  as_key: '{{node3_key}}'
+  outputs:
+    post_kick_drop_check: rpc
+- name: Assert dropped value is genuinely absent on node-3 BEFORE rejoin
+  type: json_assert
+  statements:
+  - 'json_equal({{post_kick_drop_check}}, {"output": null})'
+- name: Node-2 attempts to re-inherit into the subgroup (must be rejected)
+  type: team_join
+  org: '{{namespace_id}}'
+  team: '{{subgroup_id}}'
+  account: kick-rejoin-node-2
+  expected_failure: true
+- name: Confirm subgroup membership after the rejected re-inheritance
+  type: team_get
+  org: '{{namespace_id}}'
+  team: '{{subgroup_id}}'
+  account: kick-rejoin-node-1
+  outputs:
+    members_after_failed_rejoin: members
+- name: Assert the kicked member is still out
+  type: assert
+  statements:
+  - not_contains({{members_after_failed_rejoin}}, {{account_node2}})
+  - contains({{members_after_failed_rejoin}}, {{account_node3}})
+- name: Node-2 still cannot write after the rejected re-inheritance
+  type: call
+  app: '{{ctx_id}}'
+  method: set
+  args:
+    key: after_failed_rejoin_should_drop
+    value: this_must_not_appear_either
+  account: kick-rejoin-node-2
+  as_key: '{{node2_key}}'
+  expected_failure: true
+- name: Admin (node-1) re-adds node-2 to the subgroup
+  type: team_add
+  org: '{{namespace_id}}'
+  team: '{{subgroup_id}}'
+  members:
+  - '{{identity_node2}}'
+  role: member
+  account: kick-rejoin-node-1
+- name: Confirm subgroup membership shape after the admin re-add
+  type: team_get
+  org: '{{namespace_id}}'
+  team: '{{subgroup_id}}'
+  account: kick-rejoin-node-1
+  outputs:
+    members_after_rejoin: members
+- name: Assert the re-added member is back in the list
+  type: assert
+  statements:
+  - contains({{members_after_rejoin}}, {{account_node2}})
+  - contains({{members_after_rejoin}}, {{account_node3}})
+- name: Post-re-add — node-2 writes
+  type: call
+  app: '{{ctx_id}}'
+  method: set
+  args:
+    key: post_rejoin
+    value: node2_msg_after_rejoin
+  account: kick-rejoin-node-2
+  as_key: '{{node2_key}}'
+- name: Post-rejoin — node-3 reads node-2's write
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: post_rejoin
+  account: kick-rejoin-node-3
+  as_key: '{{node3_key}}'
+  outputs:
+    post_rejoin_read: rpc
+- name: Assert post-rejoin write reached node-3
+  type: json_assert
+  statements:
+  - 'json_equal({{post_rejoin_read}}, {"output": "node2_msg_after_rejoin"})'
+- name: Confirm dropped-during-kick write was NOT delivered post-re-add
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: post_kick_should_drop
+  account: kick-rejoin-node-3
+  as_key: '{{node3_key}}'
+  outputs:
+    dropped_lookup: rpc
+- name: Assert dropped value was indeed dropped
+  type: json_assert
+  statements:
+  - 'json_equal({{dropped_lookup}}, {"output": null})'
+- name: Confirm the write attempted during the rejected re-join was NOT delivered
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: after_failed_rejoin_should_drop
+  account: kick-rejoin-node-3
+  as_key: '{{node3_key}}'
+  outputs:
+    failed_rejoin_drop_lookup: rpc
+- name: Assert the rejected re-join leaked no write access
+  type: json_assert
+  statements:
+  - 'json_equal({{failed_rejoin_drop_lookup}}, {"output": null})'

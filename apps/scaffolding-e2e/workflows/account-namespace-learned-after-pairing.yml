@@ -1,84 +1,53 @@
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   assert_api_response x1: v1 admin API
+#   login (unknown) x2: checks what the dropped steps did
+#   node_identity output accountNamespaceId (v1 device key) x1: checks what the dropped steps did
 name: E2E Account - A Device Learns The Account Namespace After A Plain Pairing
-description: >
-  A device paired without the account namespace id converges on it once a later
-  pair-init names it. Goes red if a re-pair starts publishing there first.
+description: 'A device paired without the account namespace id converges on it once a later pair-init
+  names it. Goes red if a re-pair starts publishing there first.
 
-force_pull_image: false
-
-auth_mode: embedded
-
-nodes:
-  count: 2
-  image: merod:local
-  prefix: learned-node
-
+  '
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 3990
+accounts:
+- learned-node-1
+- learned-node-2
 steps:
-  - name: Login on node-1
-    type: login
-    node: learned-node-1
-    username: dev
-    password: dev-password
-
-  - name: Login on node-2
-    type: login
-    node: learned-node-2
-    username: dev
-    password: dev-password
-
-  - name: Install the application on node-1
-    type: install_application
-    node: learned-node-1
-    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
-    dev: true
-    outputs:
-      app: applicationId
-
-  - name: Node-1 creates namespace A
-    type: create_namespace
-    node: learned-node-1
-    application_id: '{{app}}'
-    outputs:
-      ns_a: namespaceId
-
-  - name: What node-1 speaks as
-    type: node_identity
-    node: learned-node-1
-    outputs:
-      alice_root: accountRootPublicKey
-      account_ns: accountNamespaceId
-
-  # `account_pair` names no account namespace, which is the state to start from.
-  - name: Pair node-2 the plain way, naming no account namespace
-    type: account_pair
-    node: learned-node-2
-    holder: learned-node-1
-    root_key: '{{alice_root}}'
-    namespaces:
-      - '{{ns_a}}'
-    applications:
-      - '{{app}}'
-
-  # `await_self` returns once node-2 reads its own binding in the account namespace.
-  - name: Pair node-2 again, this time naming the account namespace
-    type: account_pair
-    node: learned-node-2
-    holder: learned-node-1
-    root_key: '{{alice_root}}'
-    account_namespace: '{{account_ns}}'
-    await_self: true
-    outputs:
-      key_delivered: keyDelivered
-
-  - name: The re-pairing delivered a key
-    type: json_assert
-    statements:
-      - 'json_equal({{key_delivered}}, true)'
-
-  - name: Node-2 now names the laptop's account namespace
-    type: assert_api_response
-    node: learned-node-2
-    path: /admin-api/identity
-    match:
-      data.accountNamespaceId: '{{account_ns}}'
-
-stop_all_nodes: true
+- name: Install the application on node-1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  outputs:
+    app_bundle: hash
+  account: learned-node-1
+- type: set
+  values:
+    app: com.calimero.scaffolding-e2e
+- name: Node-1 creates namespace A
+  type: create_org
+  org_name: Node-1 creates namespace A
+  outputs:
+    ns_a: orgId
+  account: learned-node-1
+- name: What node-1 speaks as
+  type: whoami
+  outputs:
+    alice_root: publicKey
+  account: learned-node-1
+- name: Pair node-2 the plain way, naming no account namespace
+  type: add_device
+  account: learned-node-1
+  device: learned-node-2
+- name: Pair node-2 again, this time naming the account namespace
+  type: add_device
+  account: learned-node-1
+  device: learned-node-2
+  outputs:
+    key_delivered: keyDelivered
+- name: The re-pairing delivered a key
+  type: json_assert
+  statements:
+  - json_equal({{key_delivered}}, true)

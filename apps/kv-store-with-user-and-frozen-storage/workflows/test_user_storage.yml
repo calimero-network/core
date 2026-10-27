@@ -1,206 +1,160 @@
-description: KV-Store user storage workflow test
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   wait_for_sync x2: replication is synchronous: a read sees every committed write
 name: KV-store user storage workflow
-
-# Configuration options
-stop_all_nodes: false
-restart: false  
-wait_timeout: 120
-
-nodes:
-  count: 2
-  image: ghcr.io/calimero-network/merod:edge
-  prefix: new-calimero-node
-
+description: KV-Store user storage workflow test
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 3810
+accounts:
+- new-calimero-node-1
+- new-calimero-node-2
 steps:
-  # Step 1: Install the application on the first node
-  - name: Install Application on Node 1
-    type: install_application
-    node: new-calimero-node-1
-    path: "../../dist/com.calimero.kv-store-with-user-and-frozen-storage-0.0.0.mpk"
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  # Step 2: Create mesh with both nodes
-  - name: Create Mesh
-    type: create_mesh
-    context_node: new-calimero-node-1
-    application_id: '{{app_id}}'
-    nodes:
-      - new-calimero-node-2
-    outputs:
-      context_id: contextId
-      member_public_key: memberPublicKey
-
-  # ============================================
-  # Testing Phase: User Storage Simple
-  # ============================================
-
-  # Step 7: simple user storage set
-  - name: Simple user storage set test
-    type: call
-    node: new-calimero-node-1
-    context_id: '{{context_id}}'
-    method: set_user_simple
-    args:
-      value: "SomeSimpleUserString"
-
-  # Step 8: simple user storage get
-  - name: Simple user storage get test
-    type: call
-    node: new-calimero-node-1
-    context_id: '{{context_id}}'
-    method: get_user_simple
-    outputs:
-      simple_value_res: result
-
-  - name: Assert simple user storage value got is expected
-    type: json_assert
-    statements:
-      - 'json_equal({{simple_value_res}}, {"output": "SomeSimpleUserString"})'
-
-  # Step 9: nested user storage set
-  - name: Nested user storage set test
-    type: call
-    node: new-calimero-node-1
-    context_id: '{{context_id}}'
-    method: set_user_nested
-    args:
-      key: "UserNestedKey1"
-      value: "UserNestedValue1"
-
-  - name: Nested user storage get test
-    type: call
-    node: new-calimero-node-1
-    context_id: '{{context_id}}'
-    method: get_user_nested
-    args:
-      key: "UserNestedKey1"
-    outputs:
-      nested_value_res: result
-
-  - name: Assert nested user storage value got is expected
-    type: json_assert
-    statements:
-      - 'json_equal({{nested_value_res}}, {"output": "UserNestedValue1"})'
-
-  # Step 10: get simple user storage on Node 1
-  - name: Simple user storage get test for a specific user
-    type: call
-    node: new-calimero-node-1
-    context_id: '{{context_id}}'
-    method: get_user_simple
-    outputs:
-      simple_value_res_specific_user: result
-
-  - name: Assert simple user storage value got is expected
-    type: json_assert
-    statements:
-      - 'json_equal({{simple_value_res_specific_user}}, {"output": "SomeSimpleUserString"})'
-
-  # User storage is keyed by ACCOUNT, and an account is derived from a node's
-  # root rather than carried on the wire — a member public key is a different id
-  # space and the app refuses it. So each account is read off the node that owns
-  # it, before the other node reads that user's slot.
-  - name: Read node-1's account
-    type: call
-    node: new-calimero-node-1
-    context_id: '{{context_id}}'
-    method: my_account
-    outputs:
-      node1_account: result.output
-
-  # Wait after Node 1 messages
-  - name: Wait after Node 1 Messages
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - new-calimero-node-1
-      - new-calimero-node-2
-    timeout: 60
-    trigger_sync: true
-    expect:
-      method: get_user_simple_for
-      args:
-        user_key: "{{node1_account}}"
-      equals:
-        output: SomeSimpleUserString
-
-  # Step 11: Node2: get simple user storage for a specific user
-  - name: Node 2 - Simple user storage get test for a specific user
-    type: call
-    node: new-calimero-node-2
-    context_id: '{{context_id}}'
-    method: get_user_simple_for
-    args:
-      user_key: "{{node1_account}}"
-    outputs:
-      node2_simple_value_res_specific_user: result
-
-  - name: Assert simple user storage value got is expected
-    type: json_assert
-    statements:
-      - 'json_equal({{node2_simple_value_res_specific_user}}, {"output": "SomeSimpleUserString"})'
-
-  # Step 12: Node2: set simple user storage
-  - name: Node 2 - Simple user storage get test for a specific user
-    type: call
-    node: new-calimero-node-2
-    context_id: '{{context_id}}'
-    method: set_user_simple
-    args:
-      value: "SimpleUserStringFromNode2"
-
-  # Step 13: Node2: get simple user storage (belongs to Node2 PublicKey)
-  - name: Simple user storage get test for a specific user
-    type: call
-    node: new-calimero-node-2
-    context_id: '{{context_id}}'
-    method: get_user_simple
-    outputs:
-      node2_simple_value_res: result
-
-  - name: Assert simple user storage on Node 2 value got is expected
-    type: json_assert
-    statements:
-      - 'json_equal({{node2_simple_value_res}}, {"output": "SimpleUserStringFromNode2"})'
-
-  - name: Read node-2's account
-    type: call
-    node: new-calimero-node-2
-    context_id: '{{context_id}}'
-    method: my_account
-    outputs:
-      node2_account: result.output
-
-  # Wait after Node 2 messages
-  - name: Wait after Node 2 Messages
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - new-calimero-node-1
-      - new-calimero-node-2
-    timeout: 60
-    trigger_sync: true
-    expect:
-      method: get_user_simple_for
-      args:
-        user_key: "{{node2_account}}"
-      equals:
-        output: SimpleUserStringFromNode2
-
-  # Step 14: Node1: get simple user storage for Node 2 user
-  - name: Node 1 - Simple user storage get test for a specific user (from Node2)
-    type: call
-    node: new-calimero-node-1
-    context_id: '{{context_id}}'
-    method: get_user_simple_for
-    args:
-      user_key: "{{node2_account}}"
-    outputs:
-      node1_simple_value_res_from_node2: result
-
-  - name: Assert simple user storage value got is expected
-    type: json_assert
-    statements:
-      - 'json_equal({{node1_simple_value_res_from_node2}}, {"output": "SimpleUserStringFromNode2"})'
+- name: Install Application on Node 1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/kv_store_with_user_and_frozen_storage.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: new-calimero-node-1
+- type: set
+  values:
+    app_id: com.calimero.kv-store-with-user-and-frozen-storage
+- name: Create Mesh
+  type: create_org
+  account: new-calimero-node-1
+  org_name: mesh
+  outputs:
+    namespace_id: orgId
+- type: invite
+  account: new-calimero-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: new-calimero-node-2
+  token: '{{_mesh_invite}}'
+- name: Create Mesh
+  type: deploy
+  account: new-calimero-node-1
+  org: '{{namespace_id}}'
+  wasm: '{{env.CORE_WASM_DIR}}/kv_store_with_user_and_frozen_storage.wasm'
+  app_name: Create Mesh
+  outputs:
+    context_id: contextId
+    member_public_key: memberPublicKey
+- name: Simple user storage set test
+  type: call
+  app: '{{context_id}}'
+  method: set_user_simple
+  args:
+    value: SomeSimpleUserString
+  account: new-calimero-node-1
+- name: Simple user storage get test
+  type: call
+  app: '{{context_id}}'
+  method: get_user_simple
+  args: {}
+  account: new-calimero-node-1
+  outputs:
+    simple_value_res: rpc
+- name: Assert simple user storage value got is expected
+  type: json_assert
+  statements:
+  - 'json_equal({{simple_value_res}}, {"output": "SomeSimpleUserString"})'
+- name: Nested user storage set test
+  type: call
+  app: '{{context_id}}'
+  method: set_user_nested
+  args:
+    key: UserNestedKey1
+    value: UserNestedValue1
+  account: new-calimero-node-1
+- name: Nested user storage get test
+  type: call
+  app: '{{context_id}}'
+  method: get_user_nested
+  args:
+    key: UserNestedKey1
+  account: new-calimero-node-1
+  outputs:
+    nested_value_res: rpc
+- name: Assert nested user storage value got is expected
+  type: json_assert
+  statements:
+  - 'json_equal({{nested_value_res}}, {"output": "UserNestedValue1"})'
+- name: Simple user storage get test for a specific user
+  type: call
+  app: '{{context_id}}'
+  method: get_user_simple
+  args: {}
+  account: new-calimero-node-1
+  outputs:
+    simple_value_res_specific_user: rpc
+- name: Assert simple user storage value got is expected
+  type: json_assert
+  statements:
+  - 'json_equal({{simple_value_res_specific_user}}, {"output": "SomeSimpleUserString"})'
+- name: Read node-1's account
+  type: call
+  app: '{{context_id}}'
+  method: my_account
+  args: {}
+  account: new-calimero-node-1
+  outputs:
+    node1_account: result
+- name: Node 2 - Simple user storage get test for a specific user
+  type: call
+  app: '{{context_id}}'
+  method: get_user_simple_for
+  args:
+    user_key: '{{node1_account}}'
+  account: new-calimero-node-2
+  outputs:
+    node2_simple_value_res_specific_user: rpc
+- name: Assert simple user storage value got is expected
+  type: json_assert
+  statements:
+  - 'json_equal({{node2_simple_value_res_specific_user}}, {"output": "SomeSimpleUserString"})'
+- name: Node 2 - Simple user storage get test for a specific user
+  type: call
+  app: '{{context_id}}'
+  method: set_user_simple
+  args:
+    value: SimpleUserStringFromNode2
+  account: new-calimero-node-2
+- name: Simple user storage get test for a specific user
+  type: call
+  app: '{{context_id}}'
+  method: get_user_simple
+  args: {}
+  account: new-calimero-node-2
+  outputs:
+    node2_simple_value_res: rpc
+- name: Assert simple user storage on Node 2 value got is expected
+  type: json_assert
+  statements:
+  - 'json_equal({{node2_simple_value_res}}, {"output": "SimpleUserStringFromNode2"})'
+- name: Read node-2's account
+  type: call
+  app: '{{context_id}}'
+  method: my_account
+  args: {}
+  account: new-calimero-node-2
+  outputs:
+    node2_account: result
+- name: Node 1 - Simple user storage get test for a specific user (from Node2)
+  type: call
+  app: '{{context_id}}'
+  method: get_user_simple_for
+  args:
+    user_key: '{{node2_account}}'
+  account: new-calimero-node-1
+  outputs:
+    node1_simple_value_res_from_node2: rpc
+- name: Assert simple user storage value got is expected
+  type: json_assert
+  statements:
+  - 'json_equal({{node1_simple_value_res_from_node2}}, {"output": "SimpleUserStringFromNode2"})'

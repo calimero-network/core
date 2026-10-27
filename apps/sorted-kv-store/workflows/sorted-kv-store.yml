@@ -1,0 +1,156 @@
+# A release-v2 workflow for sorted-kv-store (it had no v1 workflow): an
+# organization's app, written by two members, read back in key order.
+name: Sorted KV store on release-v2
+description: SortedMap reads (range, prefix, page, first, last) across two members' writes
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 6000
+accounts: [alice, bob, carol]
+steps:
+  - name: Alice founds an organization
+    type: create_org
+    account: alice
+    org_name: Sorted
+    outputs: { org: orgId }
+  - name: An invite for Bob
+    type: invite
+    account: alice
+    org: "{{org}}"
+    role: member
+    outputs: { token: token }
+  - name: Bob joins
+    type: redeem_invite
+    account: bob
+    token: "{{token}}"
+  - name: Alice deploys the store in the organization
+    type: deploy
+    account: alice
+    wasm: "{{env.CORE_WASM_DIR}}/sorted_kv_store.wasm"
+    app_name: sorted
+    org: "{{org}}"
+    outputs: { app: appId }
+  - name: Empty at first
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: is_empty
+    expect: true
+  - name: Alice writes c
+    type: call
+    account: alice
+    app: "{{app}}"
+    method: set
+    args: { key: "user:c", value: "3" }
+  - name: Bob writes a
+    type: call
+    account: bob
+    app: "{{app}}"
+    method: set
+    args: { key: "user:a", value: "1" }
+  - name: Bob writes b
+    type: call
+    account: bob
+    app: "{{app}}"
+    method: set
+    args: { key: "user:b", value: "2" }
+  - name: Alice writes an item outside the prefix
+    type: call
+    account: alice
+    app: "{{app}}"
+    method: set
+    args: { key: "zeta", value: "26" }
+  - name: Alice overwrites Bob's b
+    type: call
+    account: alice
+    app: "{{app}}"
+    method: set
+    args: { key: "user:b", value: "two" }
+  - name: Four entries
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: len
+    expect: 4
+  - name: Bob reads Alice's overwrite
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: get
+    args: { key: "user:b" }
+    expect: two
+  - name: The smallest key first
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: first
+    expect: { key: "user:a", value: "1" }
+  - name: The largest key last
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: last
+    expect: { key: zeta, value: "26" }
+  - name: A prefix scan holds only the prefix
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: prefix
+    args: { prefix: "user:" }
+    expect: { "user:a": "1", "user:b": "two", "user:c": "3" }
+  - name: A half-open range
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: range
+    args: { start: "user:b", end: "zeta" }
+    expect: { "user:b": "two", "user:c": "3" }
+  - name: The second page of two, in key order
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: page
+    args: { offset: 2, limit: 2 }
+    expect: { "user:c": "3", "zeta": "26" }
+  - name: A missing key is an error from get_result
+    type: call
+    account: bob
+    app: "{{app}}"
+    method: get_result
+    args: { key: nope }
+    expected_failure: true
+    outputs: { missing: error }
+  - name: The error names the key
+    type: assert
+    statements:
+      - contains("{{missing}}", "nope")
+  - name: Bob removes a
+    type: call
+    account: bob
+    app: "{{app}}"
+    method: remove
+    args: { key: "user:a" }
+    expect: "1"
+  - name: b is first once a is gone
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: first
+    expect: { key: "user:b", value: two }
+  - name: Carol is outside the organization
+    type: view
+    account: carol
+    app: "{{app}}"
+    method: len
+    expected_error: NOT_FOUND
+  - name: Alice clears
+    type: call
+    account: alice
+    app: "{{app}}"
+    method: clear
+  - name: Nothing left
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: len
+    expect: 0

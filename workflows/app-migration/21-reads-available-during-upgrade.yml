@@ -1,171 +1,130 @@
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   delete_context (unknown) x1: checks what the dropped steps did
+#   delete_namespace x1: v1 namespace deletion
+#   uninstall_application (unknown) x1: checks what the dropped steps did
+# Fixed in the migration (converter bugs): a cascade upgrade_group
+# upgrades every app in the namespace's teams; of get_migration_status
+# only the outputs that mean the same here are kept.
 name: 21 — Reads available during an in-progress upgrade (#2539 step 1)
-description: >
-  Single-node cascade upgrade with reads issued during the InProgress window.
+description: 'Single-node cascade upgrade with reads issued during the InProgress window.
 
-  After `upgrade_group(cascade=true)` returns, the cascade op is published and
-  the per-descendant status is `InProgress`; the migration propagator runs
-  asynchronously. A burst of `get_description` reads fired immediately after
-  must all SUCCEED — proving reads are served from the committed pre-migration
-  root while the upgrade is in progress. Under the old block-everything gate
-  those reads returned `UpgradeInProgress` and the burst would fail, so this is
-  a regression guard for the relaxed gate.
+  After `upgrade_group(cascade=true)` returns, the cascade op is published and the per-descendant status
+  is `InProgress`; the migration propagator runs asynchronously. A burst of `get_description` reads fired
+  immediately after must all SUCCEED — proving reads are served from the committed pre-migration root
+  while the upgrade is in progress. Under the old block-everything gate those reads returned `UpgradeInProgress`
+  and the burst would fail, so this is a regression guard for the relaxed gate.
 
-  Determinism note: a read only catches the old-gate regression if it lands in
-  the (short) InProgress window. The burst fires right after the upgrade RPC
-  returns — when `InProgress` is already set and the async propagator has not
-  yet finished the local migration — so overlap is very likely, but not
-  guaranteed; under the fixed code every read is served regardless, so this
-  never false-fails. The deterministic guarantee lives in the Rust tests
-  (`upgrade_rejects_committed_write` unit + `cascade_dispatch_e2e_write_gate_blocks_state_ops`).
+  Determinism note: a read only catches the old-gate regression if it lands in the (short) InProgress
+  window. The burst fires right after the upgrade RPC returns — when `InProgress` is already set and the
+  async propagator has not yet finished the local migration — so overlap is very likely, but not guaranteed;
+  under the fixed code every read is served regardless, so this never false-fails. The deterministic guarantee
+  lives in the Rust tests (`upgrade_rejects_committed_write` unit + `cascade_dispatch_e2e_write_gate_blocks_state_ops`).
 
-no_docker: false
-nuke_on_start: true
-nuke_on_end: false
-
-nodes:
-  count: 1
-  image: merod:local
-  prefix: app-migration-reads
-  base_port: 9250
-  base_rpc_port: 9350
-
+  '
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 3210
+accounts:
+- app-migration-reads-1
 steps:
-  # Install v1 + v2 on the single node.
-  - name: Install migration-suite-v1
-    type: install_application
-    node: app-migration-reads-1
-    path: dist/com.calimero.migration-suite-1.0.0.mpk
-    dev: true
-    outputs:
-      app_v1: applicationId
-
-  # Namespace (anchors v1) + descendant subgroup + context, all local.
-  - name: Create namespace (anchors app_v1)
-    type: create_namespace
-    node: app-migration-reads-1
-    application_id: "{{app_v1}}"
-    outputs:
-      namespace_id: namespaceId
-
-  - name: Create descendant subgroup
-    type: create_group_in_namespace
-    node: app-migration-reads-1
-    namespace_id: "{{namespace_id}}"
-    group_name: "reads-target-subgroup"
-    outputs:
-      group_id: groupId
-
-  - name: Create context in subgroup (v1)
-    type: create_context
-    node: app-migration-reads-1
-    application_id: "{{app_v1}}"
-    group_id: "{{group_id}}"
-    outputs:
-      ctx_id: contextId
-
-  # Seed v1 state and sanity-check it reads back.
-  - name: Write v1 description
+- name: Install migration-suite-v1
+  type: install_package
+  mpk: '{{env.CORE_WASM_DIR}}/dist/com.calimero.migration-suite-1.0.0.mpk'
+  outputs:
+    app_v1: package
+    app_v1_version: version
+  account: app-migration-reads-1
+- name: Create namespace (anchors app_v1)
+  type: create_org
+  org_name: Create namespace (anchors app_v1)
+  outputs:
+    namespace_id: orgId
+  account: app-migration-reads-1
+- name: Create descendant subgroup
+  type: create_team
+  org: '{{namespace_id}}'
+  team_name: reads-target-subgroup
+  join: invite
+  outputs:
+    group_id: teamId
+  account: app-migration-reads-1
+- name: Create context in subgroup (v1)
+  type: deploy
+  account: app-migration-reads-1
+  package: '{{app_v1}}'
+  version: '{{app_v1_version}}'
+  app_name: Create context in subgroup (v1)
+  org: '{{namespace_id}}'
+  access:
+    kind: team
+    team: '{{group_id}}'
+  outputs:
+    ctx_id: contextId
+- name: Write v1 description
+  type: call
+  app: '{{ctx_id}}'
+  method: set_description
+  args:
+    description: set-before-upgrade
+  account: app-migration-reads-1
+- name: Sanity — read v1 description before upgrade
+  type: call
+  app: '{{ctx_id}}'
+  method: get_description
+  args: {}
+  account: app-migration-reads-1
+  outputs:
+    desc_before: rpc
+- name: Assert v1 description readable pre-upgrade
+  type: json_assert
+  statements:
+  - 'json_equal({{desc_before}}, {"output": "set-before-upgrade"})'
+- name: Install migration-suite-v2-add-field
+  type: install_package
+  mpk: '{{env.CORE_WASM_DIR}}/dist/com.calimero.migration-suite-2.0.0.mpk'
+  outputs:
+    app_v2: package
+    app_v2_version: version
+  account: app-migration-reads-1
+- name: Assert both versions share one application id (bundle same-id)
+  type: json_assert
+  statements:
+  - equal("{{app_v1}}", "{{app_v2}}")
+- name: Cascade namespace v1 → v2
+  type: upgrade_app
+  app: '{{ctx_id}}'
+  version: '{{app_v2_version}}'
+  account: app-migration-reads-1
+- name: Reads during the in-progress upgrade must all succeed
+  type: repeat
+  count: 12
+  steps:
+  - name: get_description during InProgress
     type: call
-    node: app-migration-reads-1
-    context_id: "{{ctx_id}}"
-    method: set_description
-    args:
-      description: "set-before-upgrade"
-
-  - name: Sanity — read v1 description before upgrade
-    type: call
-    node: app-migration-reads-1
-    context_id: "{{ctx_id}}"
+    app: '{{ctx_id}}'
     method: get_description
-    outputs:
-      desc_before: result
-
-  - name: Assert v1 description readable pre-upgrade
-    type: json_assert
-    statements:
-      - 'json_equal({{desc_before}}, {"output": "set-before-upgrade"})'
-
-  # Fire the cascade. This RPC returns after publishing the op (status is
-  # InProgress, propagator runs async) — it does NOT wait for completion.
-  - name: Install migration-suite-v2-add-field
-    type: install_application
-    node: app-migration-reads-1
-    path: dist/com.calimero.migration-suite-2.0.0.mpk
-    dev: true
-    outputs:
-      app_v2: applicationId
-
-
-  - name: Assert both versions share one application id (bundle same-id)
-    # Same-package bundles derive ApplicationId = hash(package, signer),
-    # so the second install MUST dedup onto the first id — the upgrade
-    # below then exercises the same-id (blob-only) propagation path.
-    type: json_assert
-    statements:
-      - 'equal("{{app_v1}}", "{{app_v2}}")'
-
-  - name: Cascade namespace v1 → v2
-    type: upgrade_group
-    node: app-migration-reads-1
-    group_id: "{{namespace_id}}"
-    target_application_id: "{{app_v2}}"
-    # The node resolves the migration from the target bundle's embedded ABI.
-    cascade: true
-
-  # Immediately read in a tight burst — these land while the group is
-  # InProgress. Each must succeed (expected_failure: false); a single refused
-  # read fails the workflow. This is the read-availability assertion.
-  - name: Reads during the in-progress upgrade must all succeed
-    type: repeat
-    count: 12
-    steps:
-      - name: get_description during InProgress
-        type: call
-        node: app-migration-reads-1
-        context_id: "{{ctx_id}}"
-        method: get_description
-        expected_failure: false
-
-  # Let the cascade + migration settle, then prove the upgrade was REAL (the
-  # node reached v2 with v1 data preserved) so the reads overlapped an actual
-  # in-progress upgrade rather than a no-op.
-  - name: Wait for cascade + migration to apply
-    type: wait
-    seconds: 15
-
-  - name: Read post-upgrade schema_info
-    type: call
-    node: app-migration-reads-1
-    context_id: "{{ctx_id}}"
-    method: schema_info
-    outputs:
-      v2_schema: result
-
-  - name: Assert node reached v2 with v1 data preserved
-    type: json_assert
-    statements:
-      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0", "description": "set-before-upgrade"}})'
-
-  # Teardown.
-  - name: Delete context
-    type: delete_context
-    node: app-migration-reads-1
-    context_id: "{{ctx_id}}"
-
-  - name: Delete subgroup
-    type: delete_group
-    node: app-migration-reads-1
-    group_id: "{{group_id}}"
-
-  - name: Delete namespace
-    type: delete_namespace
-    node: app-migration-reads-1
-    namespace_id: "{{namespace_id}}"
-
-  - name: Uninstall v1
-    type: uninstall_application
-    node: app-migration-reads-1
-    application_id: "{{app_v1}}"
-
-
-stop_all_nodes: false
+    args: {}
+    account: app-migration-reads-1
+- name: Wait for cascade + migration to apply
+  type: wait
+  seconds: 15.0
+- name: Read post-upgrade schema_info
+  type: call
+  app: '{{ctx_id}}'
+  method: schema_info
+  args: {}
+  account: app-migration-reads-1
+  outputs:
+    v2_schema: rpc
+- name: Assert node reached v2 with v1 data preserved
+  type: json_assert
+  statements:
+  - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0", "description": "set-before-upgrade"}})'
+- name: Delete subgroup
+  type: team_delete
+  org: '{{namespace_id}}'
+  team: '{{group_id}}'
+  account: app-migration-reads-1

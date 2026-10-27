@@ -1,291 +1,185 @@
-description: KV-Store shared storage workflow test
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   login (unknown) x2: checks what the dropped steps did
+#   wait_for_sync x4: replication is synchronous: a read sees every committed write
 name: KV-store shared storage workflow
-
-# Configuration
-stop_all_nodes: false
-restart: false
-wait_timeout: 120
-
-auth_mode: embedded
-
-nodes:
-  count: 2
-  image: ghcr.io/calimero-network/merod:edge
-  prefix: new-calimero-node
-
+description: KV-Store shared storage workflow test
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 3790
+accounts:
+- new-calimero-node-1
+- new-calimero-node-2
 steps:
-  # First login on a fresh embedded-auth node bootstraps its root key
-  # and seeds merobox's token cache; every step below runs authenticated.
-  - name: Login on new-calimero-node-1
-    type: login
-    node: new-calimero-node-1
-    username: dev
-    password: dev-password
-
-  - name: Login on new-calimero-node-2
-    type: login
-    node: new-calimero-node-2
-    username: dev
-    password: dev-password
-
-  # Step 1: Install on node 1. Installer becomes the sole initial writer.
-  - name: Install Application on Node 1
-    type: install_application
-    node: new-calimero-node-1
-    path: "../../dist/com.calimero.kv-store-with-shared-storage-0.0.0.mpk"
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  # Step 2: Create mesh with node 2.
-  - name: Create Mesh
-    type: create_mesh
-    context_node: new-calimero-node-1
-    application_id: '{{app_id}}'
-    nodes:
-      - new-calimero-node-2
-    outputs:
-      context_id: contextId
-      member_public_key: memberPublicKey
-
-  # ============================================
-  # Happy path: writer sets and reads
-  # ============================================
-
-  - name: Node 1 (initial writer) sets value
-    type: call
-    node: new-calimero-node-1
-    context_id: '{{context_id}}'
-    method: set_shared
-    args:
-      value: "initial-from-node1"
-
-  - name: Node 1 reads its own write
-    type: call
-    node: new-calimero-node-1
-    context_id: '{{context_id}}'
-    method: get_shared
-    outputs:
-      node1_read: result
-
-  - name: Assert node 1 read matches
-    type: json_assert
-    statements:
-      - 'json_equal({{node1_read}}, {"output": "initial-from-node1"})'
-
-  - name: Wait for sync to node 2
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - new-calimero-node-1
-      - new-calimero-node-2
-    timeout: 60
-    trigger_sync: true
-    expect:
-      method: get_shared
-      equals:
-        output: "initial-from-node1"
-
-  - name: Node 2 reads the synced value
-    type: call
-    node: new-calimero-node-2
-    context_id: '{{context_id}}'
-    method: get_shared
-    outputs:
-      node2_read: result
-
-  - name: Assert node 2 read matches
-    type: json_assert
-    statements:
-      - 'json_equal({{node2_read}}, {"output": "initial-from-node1"})'
-
-  # ============================================
-  # Guarded collection: a whole map guarded by the writer set.
-  # Every entry is stamped Shared{writers}, so a writer's entry converges and a
-  # non-writer's entry is rejected at merge.
-  # ============================================
-
-  - name: Node 1 (writer) sets a map entry
-    type: call
-    node: new-calimero-node-1
-    context_id: '{{context_id}}'
-    method: map_set
-    args:
-      key: "greeting"
-      value: "hello"
-
-  - name: Wait for map entry to sync to node 2
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - new-calimero-node-1
-      - new-calimero-node-2
-    timeout: 60
-    trigger_sync: true
-    expect:
-      method: map_get
-      args:
-        key: "greeting"
-      equals:
-        output: "hello"
-
-  - name: Node 2 reads the writer's map entry
-    type: call
-    node: new-calimero-node-2
-    context_id: '{{context_id}}'
-    method: map_get
-    args:
-      key: "greeting"
-    outputs:
-      node2_map_read: result
-
-  - name: Assert the writer's guarded map entry converged to node 2
-    type: json_assert
-    statements:
-      - 'json_equal({{node2_map_read}}, {"output": "hello"})'
-
-  # ============================================
-  # Adversarial rotation (pre-rotation): node 2 is NOT yet a writer of the
-  # shared register, so its attempt to rotate the writer set to itself must be
-  # refused. This proves writer-set rotation is gated to current writers — the
-  # authenticated-rotation guarantee of this change. (The merge-time rejection
-  # of a forged rotation *delta* that bypasses the local gate is covered by the
-  # storage test `forged_shared_rotation_rejected_at_merge`.)
-  # ============================================
-
-  # Node 2's ACCOUNT — what a writer set names. Its public key is what it signs
-  # with; a grant names the person, so one grant covers every device they hold.
-  # An account is derived and therefore has to be asked for.
-  - name: Account of node 2
-    type: call
-    node: new-calimero-node-2
-    context_id: '{{context_id}}'
-    method: my_account
-    outputs:
-      acct_node2: result.output
-
-  - name: Node 2 (non-writer) attempts to rotate the writer set to itself
-    type: call
-    node: new-calimero-node-2
-    context_id: '{{context_id}}'
-    method: try_rotate_writers
-    args:
-      new_writers:
-        - "{{acct_node2}}"
-    outputs:
-      node2_rotate_accepted: result
-
-  - name: Assert node 2's non-writer rotation was refused
-    type: json_assert
-    statements:
-      - 'json_equal({{node2_rotate_accepted}}, {"output": false})'
-
-  - name: Node 1 reads the writer count after the refused rotation
-    type: call
-    node: new-calimero-node-1
-    context_id: '{{context_id}}'
-    method: writer_count
-    outputs:
-      node1_writer_count: result
-
-  - name: Assert the writer set is unchanged on the honest node (still 1)
-    type: json_assert
-    statements:
-      - 'json_equal({{node1_writer_count}}, {"output": 1})'
-
-  # ============================================
-  # Rotation: node 1 hands the writer set to node 2
-  # ============================================
-
-  - name: Node 1 rotates writer set to node 2
-    type: call
-    node: new-calimero-node-1
-    context_id: '{{context_id}}'
-    method: rotate_writers
-    args:
-      new_writers:
-        - "{{acct_node2}}"
-
-  - name: Wait for rotation to sync
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - new-calimero-node-1
-      - new-calimero-node-2
-    timeout: 60
-    trigger_sync: true
-
-  # ============================================
-  # Post-rotation: node 2 (new writer) writes, node 1 reads
-  # ============================================
-
-  - name: Node 2 (new writer) sets value after rotation
-    type: call
-    node: new-calimero-node-2
-    context_id: '{{context_id}}'
-    method: set_shared
-    args:
-      value: "post-rotation-from-node2"
-
-  - name: Wait for post-rotation value to sync
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - new-calimero-node-1
-      - new-calimero-node-2
-    timeout: 60
-    trigger_sync: true
-    expect:
-      method: get_shared
-      equals:
-        output: "post-rotation-from-node2"
-
-  - name: Node 1 reads the post-rotation value
-    type: call
-    node: new-calimero-node-1
-    context_id: '{{context_id}}'
-    method: get_shared
-    outputs:
-      node1_read_after_rotation: result
-
-  - name: Assert node 1 sees post-rotation value
-    type: json_assert
-    statements:
-      - 'json_equal({{node1_read_after_rotation}}, {"output": "post-rotation-from-node2"})'
-
-  # ============================================
-  # Adversarial (last — it deliberately diverges node 2, so nothing convergent
-  # may follow). The map's writer set is still {node 1}: `rotate_writers` only
-  # rotated the scalar register, not the map. So node 2 is a non-writer for the
-  # map. Its forged map write is applied locally but rejected by node 1 at merge,
-  # so node 1 never sees it (the nodes do NOT converge — that is the point, hence
-  # a fixed `wait` rather than `wait_for_sync`).
-  # ============================================
-
-  - name: Node 2 (non-writer for the map) forges a map write
-    type: call
-    node: new-calimero-node-2
-    context_id: '{{context_id}}'
-    method: map_set
-    args:
-      key: "evil"
-      value: "forged"
-
-  - name: Let the forged delta attempt (and fail) to propagate
-    type: wait
-    seconds: 20
-
-  - name: Node 1 reads the entry the non-writer tried to set
-    type: call
-    node: new-calimero-node-1
-    context_id: '{{context_id}}'
-    method: map_get
-    args:
-      key: "evil"
-    outputs:
-      node1_evil_read: result
-
-  - name: Assert the non-writer's forged write did NOT reach node 1
-    type: json_assert
-    statements:
-      - 'json_equal({{node1_evil_read}}, {"output": null})'
+- name: Install Application on Node 1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/kv_store_with_shared_storage.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: new-calimero-node-1
+- type: set
+  values:
+    app_id: com.calimero.kv-store-with-shared-storage
+- name: Create Mesh
+  type: create_org
+  account: new-calimero-node-1
+  org_name: mesh
+  outputs:
+    namespace_id: orgId
+- type: invite
+  account: new-calimero-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: new-calimero-node-2
+  token: '{{_mesh_invite}}'
+- name: Create Mesh
+  type: deploy
+  account: new-calimero-node-1
+  org: '{{namespace_id}}'
+  wasm: '{{env.CORE_WASM_DIR}}/kv_store_with_shared_storage.wasm'
+  app_name: Create Mesh
+  outputs:
+    context_id: contextId
+    member_public_key: memberPublicKey
+- name: Node 1 (initial writer) sets value
+  type: call
+  app: '{{context_id}}'
+  method: set_shared
+  args:
+    value: initial-from-node1
+  account: new-calimero-node-1
+- name: Node 1 reads its own write
+  type: call
+  app: '{{context_id}}'
+  method: get_shared
+  args: {}
+  account: new-calimero-node-1
+  outputs:
+    node1_read: rpc
+- name: Assert node 1 read matches
+  type: json_assert
+  statements:
+  - 'json_equal({{node1_read}}, {"output": "initial-from-node1"})'
+- name: Node 2 reads the synced value
+  type: call
+  app: '{{context_id}}'
+  method: get_shared
+  args: {}
+  account: new-calimero-node-2
+  outputs:
+    node2_read: rpc
+- name: Assert node 2 read matches
+  type: json_assert
+  statements:
+  - 'json_equal({{node2_read}}, {"output": "initial-from-node1"})'
+- name: Node 1 (writer) sets a map entry
+  type: call
+  app: '{{context_id}}'
+  method: map_set
+  args:
+    key: greeting
+    value: hello
+  account: new-calimero-node-1
+- name: Node 2 reads the writer's map entry
+  type: call
+  app: '{{context_id}}'
+  method: map_get
+  args:
+    key: greeting
+  account: new-calimero-node-2
+  outputs:
+    node2_map_read: rpc
+- name: Assert the writer's guarded map entry converged to node 2
+  type: json_assert
+  statements:
+  - 'json_equal({{node2_map_read}}, {"output": "hello"})'
+- name: Account of node 2
+  type: call
+  app: '{{context_id}}'
+  method: my_account
+  args: {}
+  account: new-calimero-node-2
+  outputs:
+    acct_node2: result
+- name: Node 2 (non-writer) attempts to rotate the writer set to itself
+  type: call
+  app: '{{context_id}}'
+  method: try_rotate_writers
+  args:
+    new_writers:
+    - '{{acct_node2}}'
+  account: new-calimero-node-2
+  outputs:
+    node2_rotate_accepted: rpc
+- name: Assert node 2's non-writer rotation was refused
+  type: json_assert
+  statements:
+  - 'json_equal({{node2_rotate_accepted}}, {"output": false})'
+- name: Node 1 reads the writer count after the refused rotation
+  type: call
+  app: '{{context_id}}'
+  method: writer_count
+  args: {}
+  account: new-calimero-node-1
+  outputs:
+    node1_writer_count: rpc
+- name: Assert the writer set is unchanged on the honest node (still 1)
+  type: json_assert
+  statements:
+  - 'json_equal({{node1_writer_count}}, {"output": 1})'
+- name: Node 1 rotates writer set to node 2
+  type: call
+  app: '{{context_id}}'
+  method: rotate_writers
+  args:
+    new_writers:
+    - '{{acct_node2}}'
+  account: new-calimero-node-1
+- name: Node 2 (new writer) sets value after rotation
+  type: call
+  app: '{{context_id}}'
+  method: set_shared
+  args:
+    value: post-rotation-from-node2
+  account: new-calimero-node-2
+- name: Node 1 reads the post-rotation value
+  type: call
+  app: '{{context_id}}'
+  method: get_shared
+  args: {}
+  account: new-calimero-node-1
+  outputs:
+    node1_read_after_rotation: rpc
+- name: Assert node 1 sees post-rotation value
+  type: json_assert
+  statements:
+  - 'json_equal({{node1_read_after_rotation}}, {"output": "post-rotation-from-node2"})'
+- name: Node 2 (non-writer for the map) forges a map write
+  type: call
+  app: '{{context_id}}'
+  method: map_set
+  args:
+    key: evil
+    value: forged
+  account: new-calimero-node-2
+- name: Let the forged delta attempt (and fail) to propagate
+  type: wait
+  seconds: 20.0
+- name: Node 1 reads the entry the non-writer tried to set
+  type: call
+  app: '{{context_id}}'
+  method: map_get
+  args:
+    key: evil
+  account: new-calimero-node-1
+  outputs:
+    node1_evil_read: rpc
+- name: Assert the non-writer's forged write did NOT reach node 1
+  type: json_assert
+  statements:
+  - 'json_equal({{node1_evil_read}}, {"output": null})'

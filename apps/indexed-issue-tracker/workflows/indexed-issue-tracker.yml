@@ -1,266 +1,204 @@
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   login (unknown) x2: checks what the dropped steps did
+#   wait_for_sync x2: replication is synchronous: a read sees every committed write
 name: IndexedMap across two nodes
-description: >
-  Two nodes, one issue tracker. The indexes are node-local and never synced,
-  so the property only a real network can show is that each node's queries
-  agree with the entries it holds, however those entries arrived.
-
-  1. A NODE THAT RECEIVED EVERYTHING BY SYNC CAN QUERY IT. Node 2 never ran
-     `open`, so its IndexedMap maintained nothing: its first query must notice
-     there is no valid index and build one from the synced entries, rather
-     than answer from an empty one.
-
-  2. A CHANGE FROM A PEER MOVES THE ANSWER. Node 2 closes and reassigns an
-     issue. On node 1 those writes land through sync, behind its index's back;
-     the collection's hash moves, and node 1's next query rebuilds and agrees.
-
-  3. LOCAL WRITES KEEP A WARM INDEX CURRENT. Node 1 then files one more issue
-     and queries at once: the write maintained the index it had just rebuilt.
-
-stop_all_nodes: false
-restart: false
-wait_timeout: 180
-
-auth_mode: embedded
-
-nodes:
-  count: 2
-  image: ghcr.io/calimero-network/merod:edge
-  prefix: indexed-node
-
+description: "Two nodes, one issue tracker. The indexes are node-local and never synced, so the property\
+  \ only a real network can show is that each node's queries agree with the entries it holds, however\
+  \ those entries arrived.\n1. A NODE THAT RECEIVED EVERYTHING BY SYNC CAN QUERY IT. Node 2 never ran\n\
+  \   `open`, so its IndexedMap maintained nothing: its first query must notice\n   there is no valid\
+  \ index and build one from the synced entries, rather\n   than answer from an empty one.\n\n2. A CHANGE\
+  \ FROM A PEER MOVES THE ANSWER. Node 2 closes and reassigns an\n   issue. On node 1 those writes land\
+  \ through sync, behind its index's back;\n   the collection's hash moves, and node 1's next query rebuilds\
+  \ and agrees.\n\n3. LOCAL WRITES KEEP A WARM INDEX CURRENT. Node 1 then files one more issue\n   and\
+  \ queries at once: the write maintained the index it had just rebuilt.\n"
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 3710
+accounts:
+- indexed-node-1
+- indexed-node-2
 steps:
-  - name: Login on indexed-node-1
-    type: login
-    node: indexed-node-1
-    username: dev
-    password: dev-password
-
-  - name: Login on indexed-node-2
-    type: login
-    node: indexed-node-2
-    username: dev
-    password: dev-password
-
-  - name: Install application on indexed-node-1
-    type: install_application
-    node: indexed-node-1
-    path: "../../dist/com.calimero.indexed-issue-tracker-0.0.0.mpk"
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Create mesh with indexed-node-2
-    type: create_mesh
-    context_node: indexed-node-1
-    application_id: '{{app_id}}'
-    nodes:
-      - indexed-node-2
-    outputs:
-      context_id: contextId
-
-  - name: Assert the mesh came up
-    type: assert
-    statements:
-      - "is_set({{context_id}})"
-
-  # ── 1. a node that received everything by sync can query it ────────────
-
-  - name: Node 1 files the first issue
-    type: call
-    node: indexed-node-1
-    context_id: '{{context_id}}'
-    method: open
-    args:
-      id: "t1"
-      title: "login button misaligned"
-      labels: ["bug", "ui"]
-      created_at: 10
-
-  - name: Node 1 files the second issue
-    type: call
-    node: indexed-node-1
-    context_id: '{{context_id}}'
-    method: open
-    args:
-      id: "t2"
-      title: "crash on empty search"
-      labels: ["bug"]
-      created_at: 20
-
-  - name: Node 1 files the third issue
-    type: call
-    node: indexed-node-1
-    context_id: '{{context_id}}'
-    method: open
-    args:
-      id: "t3"
-      title: "dark mode"
-      labels: ["feature"]
-      created_at: 30
-
-  - name: Wait for the issues to reach node 2
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - indexed-node-1
-      - indexed-node-2
-    timeout: 60
-    trigger_sync: true
-    expect:
-      method: status_counts
-      equals:
-        output:
-          - status: "open"
-            count: 3
-          - status: "in_progress"
-            count: 0
-          - status: "closed"
-            count: 0
-
-  - name: Node 2 lists the open column, newest first
-    type: call
-    node: indexed-node-2
-    context_id: '{{context_id}}'
-    method: list_by_status
-    args:
-      status: "open"
-      offset: 0
-      limit: 2
-    outputs:
-      n2_open_page: result
-
-  # Newest first, one page: t3 then t2, and t1 is on the next page. Node 2
-  # built this index itself, from entries it only ever received by sync.
-  - name: Assert node 2's first page is t3, t2
-    type: assert
-    statements:
-      - 'contains({{n2_open_page}}, "dark mode")'
-      - 'contains({{n2_open_page}}, "crash on empty search")'
-      - 'not_contains({{n2_open_page}}, "login button misaligned")'
-
-  - name: Node 2 counts the columns
-    type: call
-    node: indexed-node-2
-    context_id: '{{context_id}}'
-    method: status_counts
-    outputs:
-      n2_counts: result
-
-  - name: Assert node 2 counts three open issues
-    type: json_assert
-    statements:
-      - 'json_equal({{n2_counts}}, {"output": [{"status": "open", "count": 3}, {"status": "in_progress", "count": 0}, {"status": "closed", "count": 0}]})'
-
-  # ── 2. a change from a peer moves the answer ────────────────────────────
-
-  - name: Node 1 warms its own index
-    type: call
-    node: indexed-node-1
-    context_id: '{{context_id}}'
-    method: status_counts
-    outputs:
-      n1_counts_before: result
-
-  - name: Assert node 1 also counts three open issues
-    type: json_assert
-    statements:
-      - 'json_equal({{n1_counts_before}}, {"output": [{"status": "open", "count": 3}, {"status": "in_progress", "count": 0}, {"status": "closed", "count": 0}]})'
-
-  - name: Node 2 closes t2
-    type: call
-    node: indexed-node-2
-    context_id: '{{context_id}}'
-    method: set_status
-    args:
-      id: "t2"
-      status: "closed"
-
-  - name: Node 2 assigns t1
-    type: call
-    node: indexed-node-2
-    context_id: '{{context_id}}'
-    method: assign
-    args:
-      id: "t1"
-      assignee: "alice"
-
-  - name: Wait for node 2's changes to reach node 1
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - indexed-node-1
-      - indexed-node-2
-    timeout: 60
-    trigger_sync: true
-    expect:
-      method: get
-      args:
-        id: "t1"
-      equals:
-        output:
-          id: "t1"
-          title: "login button misaligned"
-          status: "open"
-          assignee: "alice"
-          labels: ["bug", "ui"]
-          created_at: 10
-
-  # Node 1's index was current a moment ago; sync then changed two issues
-  # without telling it. If node 1 trusted its index, t2 would still count as
-  # open here.
-  - name: Node 1 counts the columns again
-    type: call
-    node: indexed-node-1
-    context_id: '{{context_id}}'
-    method: status_counts
-    outputs:
-      n1_counts_after: result
-
-  - name: Assert node 1 sees t2 closed
-    type: json_assert
-    statements:
-      - 'json_equal({{n1_counts_after}}, {"output": [{"status": "open", "count": 2}, {"status": "in_progress", "count": 0}, {"status": "closed", "count": 1}]})'
-
-  - name: Node 1 lists alice's issues
-    type: call
-    node: indexed-node-1
-    context_id: '{{context_id}}'
-    method: list_by_assignee
-    args:
-      assignee: "alice"
-    outputs:
-      n1_alice: result
-
-  - name: Assert node 1 sees node 2's assignment
-    type: assert
-    statements:
-      - 'contains({{n1_alice}}, "login button misaligned")'
-      - 'not_contains({{n1_alice}}, "dark mode")'
-
-  # ── 3. local writes keep a warm index current ──────────────────────────
-
-  - name: Node 1 files a fourth issue
-    type: call
-    node: indexed-node-1
-    context_id: '{{context_id}}'
-    method: open
-    args:
-      id: "t4"
-      title: "export to csv"
-      labels: ["feature"]
-      created_at: 40
-
-  - name: Node 1 lists feature requests
-    type: call
-    node: indexed-node-1
-    context_id: '{{context_id}}'
-    method: list_by_label
-    args:
-      label: "feature"
-    outputs:
-      n1_features: result
-
-  - name: Assert node 1 sees both feature requests
-    type: assert
-    statements:
-      - 'contains({{n1_features}}, "dark mode")'
-      - 'contains({{n1_features}}, "export to csv")'
+- name: Install application on indexed-node-1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/indexed_issue_tracker.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: indexed-node-1
+- type: set
+  values:
+    app_id: com.calimero.indexed-issue-tracker
+- name: Create mesh with indexed-node-2
+  type: create_org
+  account: indexed-node-1
+  org_name: mesh
+  outputs:
+    namespace_id: orgId
+- type: invite
+  account: indexed-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: indexed-node-2
+  token: '{{_mesh_invite}}'
+- name: Create mesh with indexed-node-2
+  type: deploy
+  account: indexed-node-1
+  org: '{{namespace_id}}'
+  wasm: '{{env.CORE_WASM_DIR}}/indexed_issue_tracker.wasm'
+  app_name: Create mesh with indexed-node-2
+  outputs:
+    context_id: contextId
+- name: Assert the mesh came up
+  type: assert
+  statements:
+  - is_set({{context_id}})
+- name: Node 1 files the first issue
+  type: call
+  app: '{{context_id}}'
+  method: open
+  args:
+    id: t1
+    title: login button misaligned
+    labels:
+    - bug
+    - ui
+    created_at: 10
+  account: indexed-node-1
+- name: Node 1 files the second issue
+  type: call
+  app: '{{context_id}}'
+  method: open
+  args:
+    id: t2
+    title: crash on empty search
+    labels:
+    - bug
+    created_at: 20
+  account: indexed-node-1
+- name: Node 1 files the third issue
+  type: call
+  app: '{{context_id}}'
+  method: open
+  args:
+    id: t3
+    title: dark mode
+    labels:
+    - feature
+    created_at: 30
+  account: indexed-node-1
+- name: Node 2 lists the open column, newest first
+  type: call
+  app: '{{context_id}}'
+  method: list_by_status
+  args:
+    status: open
+    offset: 0
+    limit: 2
+  account: indexed-node-2
+  outputs:
+    n2_open_page: rpc
+- name: Assert node 2's first page is t3, t2
+  type: assert
+  statements:
+  - contains({{n2_open_page}}, "dark mode")
+  - contains({{n2_open_page}}, "crash on empty search")
+  - not_contains({{n2_open_page}}, "login button misaligned")
+- name: Node 2 counts the columns
+  type: call
+  app: '{{context_id}}'
+  method: status_counts
+  args: {}
+  account: indexed-node-2
+  outputs:
+    n2_counts: rpc
+- name: Assert node 2 counts three open issues
+  type: json_assert
+  statements:
+  - 'json_equal({{n2_counts}}, {"output": [{"status": "open", "count": 3}, {"status": "in_progress", "count":
+    0}, {"status": "closed", "count": 0}]})'
+- name: Node 1 warms its own index
+  type: call
+  app: '{{context_id}}'
+  method: status_counts
+  args: {}
+  account: indexed-node-1
+  outputs:
+    n1_counts_before: rpc
+- name: Assert node 1 also counts three open issues
+  type: json_assert
+  statements:
+  - 'json_equal({{n1_counts_before}}, {"output": [{"status": "open", "count": 3}, {"status": "in_progress",
+    "count": 0}, {"status": "closed", "count": 0}]})'
+- name: Node 2 closes t2
+  type: call
+  app: '{{context_id}}'
+  method: set_status
+  args:
+    id: t2
+    status: closed
+  account: indexed-node-2
+- name: Node 2 assigns t1
+  type: call
+  app: '{{context_id}}'
+  method: assign
+  args:
+    id: t1
+    assignee: alice
+  account: indexed-node-2
+- name: Node 1 counts the columns again
+  type: call
+  app: '{{context_id}}'
+  method: status_counts
+  args: {}
+  account: indexed-node-1
+  outputs:
+    n1_counts_after: rpc
+- name: Assert node 1 sees t2 closed
+  type: json_assert
+  statements:
+  - 'json_equal({{n1_counts_after}}, {"output": [{"status": "open", "count": 2}, {"status": "in_progress",
+    "count": 0}, {"status": "closed", "count": 1}]})'
+- name: Node 1 lists alice's issues
+  type: call
+  app: '{{context_id}}'
+  method: list_by_assignee
+  args:
+    assignee: alice
+  account: indexed-node-1
+  outputs:
+    n1_alice: rpc
+- name: Assert node 1 sees node 2's assignment
+  type: assert
+  statements:
+  - contains({{n1_alice}}, "login button misaligned")
+  - not_contains({{n1_alice}}, "dark mode")
+- name: Node 1 files a fourth issue
+  type: call
+  app: '{{context_id}}'
+  method: open
+  args:
+    id: t4
+    title: export to csv
+    labels:
+    - feature
+    created_at: 40
+  account: indexed-node-1
+- name: Node 1 lists feature requests
+  type: call
+  app: '{{context_id}}'
+  method: list_by_label
+  args:
+    label: feature
+  account: indexed-node-1
+  outputs:
+    n1_features: rpc
+- name: Assert node 1 sees both feature requests
+  type: assert
+  statements:
+  - contains({{n1_features}}, "dark mode")
+  - contains({{n1_features}}, "export to csv")

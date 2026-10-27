@@ -1,334 +1,209 @@
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   assert_log_absent x3: v1 node logs
+#   assert_log_present x2: v1 node logs
+#   script x3: scripts drive v1 node RPC URLs
+#   start_node x1: a user's node going offline has no counterpart in a cluster
+#   stop_node x1: a user's node going offline has no counterpart in a cluster
+#   wait_for_sync x1: replication is synchronous: a read sees every committed write
 name: Outbound Requests — Every Gate, End To End
-description: >
-  An app method asks its node for one HTTPS request (`env::http_request`). The
-  node makes it only when its operator turned outbound requests on for the
-  host, the app's signed manifest declares a URL prefix covering it, the
-  app's namespace approved that prefix for the app's publisher, and the run
-  writes state on this node. A secret the request names is filled in by
-  the node and removed from the answer.
-
-  The probe's node (outbound-a) starts with outbound off, then its operator
-  turns it on. Its peer (outbound-b) never does. `.test` hosts are answered
-  in-process by the test build's echo (`[context.outbound.testing]`), which
-  sees exactly what the node would have sent, after every gate.
-
-  WHAT GOES RED, AND WHY:
-    * Off by default: before the operator's config, `probe` traps.
-    * The namespace approves: with the operator's config but no approval, a
-      declared URL is refused `NotApproved`; after an admin approves the
-      manifest's prefixes it goes through, and after they revoke them it is
-      refused `NotApproved` again.
-    * The request carries the secret and the app never sees it: the echo
-      reports two secrets substituted (header and body), and the answer the
-      app stores shows `[redacted]` where they were, never the value.
-    * Gates: a path outside the declared prefix and a host the operator did
-      not allow come back as reasons, not requests.
-    * One request per run: a second request traps the run, and the write made
-      before it is not committed.
-    * Views never reach the network: `probe_in_view` traps.
-    * The request runs once, on the executing node: outbound-b holds the same
-      stored outcome after sync, logs no request of its own, and its own
-      `probe` traps because its operator never turned outbound on.
-
-  NODES MUST BE BUILT WITH `--features mock-attestation` (the test image),
-  which compiles `[context.outbound.testing]`. No `login` steps: the script
-  talks to the admin API with no Authorization header.
-
-  Run locally, with a mock-attestation merod:
-    cargo build -p merod --release --features mock-attestation
-    cd apps/outbound-probe
-    merobox bootstrap run workflows/outbound.yml \
-      --image merod:local-mock-tee --e2e-mode
-
-force_pull_image: false
-
-log_level: "info"
-
-nodes:
-  outbound-a:
-    port: 2462
-    rpc_port: 2562
-  outbound-b:
-    port: 2463
-    rpc_port: 2563
-
+description: "An app method asks its node for one HTTPS request (`env::http_request`). The node makes\
+  \ it only when its operator turned outbound requests on for the host, the app's signed manifest declares\
+  \ a URL prefix covering it, the app's namespace approved that prefix for the app's publisher, and the\
+  \ run writes state on this node. A secret the request names is filled in by the node and removed from\
+  \ the answer.\nThe probe's node (outbound-a) starts with outbound off, then its operator turns it on.\
+  \ Its peer (outbound-b) never does. `.test` hosts are answered in-process by the test build's echo (`[context.outbound.testing]`),\
+  \ which sees exactly what the node would have sent, after every gate.\nWHAT GOES RED, AND WHY:\n  *\
+  \ Off by default: before the operator's config, `probe` traps.\n  * The namespace approves: with the\
+  \ operator's config but no approval, a\n    declared URL is refused `NotApproved`; after an admin approves\
+  \ the\n    manifest's prefixes it goes through, and after they revoke them it is\n    refused `NotApproved`\
+  \ again.\n  * The request carries the secret and the app never sees it: the echo\n    reports two secrets\
+  \ substituted (header and body), and the answer the\n    app stores shows `[redacted]` where they were,\
+  \ never the value.\n  * Gates: a path outside the declared prefix and a host the operator did\n    not\
+  \ allow come back as reasons, not requests.\n  * One request per run: a second request traps the run,\
+  \ and the write made\n    before it is not committed.\n  * Views never reach the network: `probe_in_view`\
+  \ traps.\n  * The request runs once, on the executing node: outbound-b holds the same\n    stored outcome\
+  \ after sync, logs no request of its own, and its own\n    `probe` traps because its operator never\
+  \ turned outbound on.\n\nNODES MUST BE BUILT WITH `--features mock-attestation` (the test image), which\
+  \ compiles `[context.outbound.testing]`. No `login` steps: the script talks to the admin API with no\
+  \ Authorization header.\nRun locally, with a mock-attestation merod:\n  cargo build -p merod --release\
+  \ --features mock-attestation\n  cd apps/outbound-probe\n  merobox bootstrap run workflows/outbound.yml\
+  \ \\\n    --image merod:local-mock-tee --e2e-mode\n"
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 3860
+accounts:
+- outbound-a
+- outbound-b
 steps:
-  - name: Install the probe on outbound-a
-    type: install_application
-    node: outbound-a
-    path: "../../dist/com.calimero.outbound-probe-0.0.0.mpk"
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Create Mesh
-    type: create_mesh
-    context_node: outbound-a
-    application_id: "{{app_id}}"
-    nodes:
-      - outbound-b
-    outputs:
-      context_id: contextId
-
-  - name: Assert the mesh came up
-    type: assert
-    statements:
-      - "is_set({{context_id}})"
-
-  # ---------- Off by default ----------
-
-  - name: Before the operator turns it on, a request traps the run
-    type: call
-    node: outbound-a
-    context_id: "{{context_id}}"
-    method: probe
-    args:
-      path: "check"
-      body: "n=0"
-    expected_failure: true
-
-  # ---------- The operator turns it on, for outbound-a only ----------
-
-  - name: Turn outbound requests on in outbound-a's config
-    type: script
-    script: scripts/enable-outbound.sh
-    target: local
-    args:
-      - "outbound-a"
-      - "http://localhost:2562"
-      - "{{app_id}}"
-
-  - name: Stop outbound-a so it reads the new config
-    type: stop_node
-    nodes: outbound-a
-
-  - name: Start outbound-a again
-    type: start_node
-    nodes: outbound-a
-
-  - name: outbound-a started with outbound requests on
-    type: assert_log_present
-    nodes:
-      - outbound-a
-    patterns:
-      - "outbound requests enabled"
-    tail_lines: 20000
-    timeout: 60
-    check_interval: 2
-
-  # ---------- The namespace has not approved anything yet ----------
-
-  - name: A declared URL the namespace has not approved
-    type: call
-    node: outbound-a
-    context_id: "{{context_id}}"
-    method: probe_url
-    args:
-      url: "https://echo.outbound.test/v1/check"
-    outputs:
-      unapproved: result
-
-  - name: Assert it was refused NotApproved, with no request made
-    type: assert
-    statements:
-      - "contains({{unapproved}}, refused:)"
-      - "contains({{unapproved}}, [NotApproved])"
-      - "not_contains({{unapproved}}, 200 {)"
-
-  - name: An admin approves the prefixes the probe's manifest declares
-    type: script
-    script: scripts/approve-outbound.sh
-    target: local
-    args:
-      - "http://localhost:2562"
-      - "{{context_id}}"
-      - "{{app_id}}"
-      - "manifest"
-
-  # ---------- A declared request, with a secret ----------
-
-  - name: Probe the declared prefix, naming the secret in a header and the body
-    type: call
-    node: outbound-a
-    context_id: "{{context_id}}"
-    method: probe
-    args:
-      path: "check?n=1"
-      body: "n=1"
-    outputs:
-      probed: result
-
-  - name: The echo saw the request the node sent, with both secrets filled in
-    type: assert
-    statements:
-      - "regex({{probed}}, 200 \\{)"
-      - "contains({{probed}}, /v1/check)"
-      - "regex({{probed}}, .secrets.:2)"
-      - "contains({{probed}}, n=1&key=[redacted])"
-      - "not_contains({{probed}}, s3cr3t-e2e)"
-
-  - name: The node logged the request, never the secret
-    type: assert_log_present
-    nodes:
-      - outbound-a
-    patterns:
-      - "outbound request"
-    tail_lines: 20000
-    timeout: 30
-    check_interval: 2
-
-  - name: No log line carries the secret
-    type: assert_log_absent
-    nodes:
-      - outbound-a
-    patterns:
-      - "s3cr3t-e2e"
-    tail_lines: 20000
-
-  # ---------- The gates, as reasons ----------
-
-  - name: A path outside the declared prefix
-    type: call
-    node: outbound-a
-    context_id: "{{context_id}}"
-    method: probe_url
-    args:
-      url: "https://echo.outbound.test/v2/check"
-    outputs:
-      outside: result
-
-  - name: Assert it was refused for its prefix
-    type: assert
-    statements:
-      - "contains({{outside}}, refused:)"
-      - "contains({{outside}}, no URL prefix)"
-
-  - name: A host the operator did not allow
-    type: call
-    node: outbound-a
-    context_id: "{{context_id}}"
-    method: probe_url
-    args:
-      url: "https://elsewhere.outbound.test/v1/check"
-    outputs:
-      elsewhere: result
-
-  - name: Assert it was refused for its host
-    type: assert
-    statements:
-      - "contains({{elsewhere}}, refused:)"
-      - "contains({{elsewhere}}, not a host this node's operator allows)"
-
-  # ---------- One request per run, writes only ----------
-
-  - name: A second request in one run traps it
-    type: call
-    node: outbound-a
-    context_id: "{{context_id}}"
-    method: probe_twice
-    expected_failure: true
-
-  - name: A view asking for a request traps
-    type: call
-    node: outbound-a
-    context_id: "{{context_id}}"
-    method: probe_in_view
-    expected_failure: true
-
-  - name: What outbound-a stored last
-    type: call
-    node: outbound-a
-    context_id: "{{context_id}}"
-    method: last
-    outputs:
-      a_last: result
-      a_last_text: result.output
-
-  - name: The trapped run's write was not committed
-    type: assert
-    statements:
-      - "contains({{a_last}}, not a host this node's operator allows)"
-      - "not_contains({{a_last}}, written before the second request)"
-
-  # ---------- The request ran once, on outbound-a ----------
-
-  - name: Wait for the outcome to reach outbound-b
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - outbound-a
-      - outbound-b
-    timeout: 60
-    check_interval: 2
-    expect:
-      method: last
-      equals:
-        output: "{{a_last_text}}"
-
-  - name: What outbound-b holds
-    type: call
-    node: outbound-b
-    context_id: "{{context_id}}"
-    method: last
-    outputs:
-      b_last: result
-
-  - name: outbound-b holds the same outcome
-    type: json_assert
-    statements:
-      - "json_equal({{a_last}}, {{b_last}})"
-
-  - name: outbound-b made no request while applying outbound-a's writes
-    type: assert_log_absent
-    nodes:
-      - outbound-b
-    patterns:
-      - "outbound request"
-    tail_lines: 20000
-
-  - name: outbound-b's operator never turned outbound on, so its own probe traps
-    type: call
-    node: outbound-b
-    context_id: "{{context_id}}"
-    method: probe
-    args:
-      path: "check"
-      body: "n=2"
-    expected_failure: true
-
-  # ---------- Revoking the approval ----------
-
-  - name: An admin revokes every prefix they approved for the probe's publisher
-    type: script
-    script: scripts/approve-outbound.sh
-    target: local
-    args:
-      - "http://localhost:2562"
-      - "{{context_id}}"
-      - "{{app_id}}"
-      - "none"
-
-  - name: The same declared URL, after the revocation
-    type: call
-    node: outbound-a
-    context_id: "{{context_id}}"
-    method: probe_url
-    args:
-      url: "https://echo.outbound.test/v1/check"
-    outputs:
-      revoked: result
-
-  - name: Assert it is refused NotApproved again
-    type: assert
-    statements:
-      - "contains({{revoked}}, refused:)"
-      - "contains({{revoked}}, [NotApproved])"
-
-  - name: No panics
-    type: assert_log_absent
-    nodes:
-      - outbound-a
-      - outbound-b
-    patterns:
-      - "panicked at"
-    tail_lines: 20000
+- name: Install the probe on outbound-a
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/outbound_probe.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: outbound-a
+- type: set
+  values:
+    app_id: com.calimero.outbound-probe
+- name: Create Mesh
+  type: create_org
+  account: outbound-a
+  org_name: mesh
+  outputs:
+    namespace_id: orgId
+- type: invite
+  account: outbound-a
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: outbound-b
+  token: '{{_mesh_invite}}'
+- name: Create Mesh
+  type: deploy
+  account: outbound-a
+  org: '{{namespace_id}}'
+  wasm: '{{env.CORE_WASM_DIR}}/outbound_probe.wasm'
+  app_name: Create Mesh
+  outputs:
+    context_id: contextId
+- name: Assert the mesh came up
+  type: assert
+  statements:
+  - is_set({{context_id}})
+- name: Before the operator turns it on, a request traps the run
+  type: call
+  app: '{{context_id}}'
+  method: probe
+  args:
+    path: check
+    body: n=0
+  account: outbound-a
+  expected_failure: true
+- name: A declared URL the namespace has not approved
+  type: call
+  app: '{{context_id}}'
+  method: probe_url
+  args:
+    url: https://echo.outbound.test/v1/check
+  account: outbound-a
+  outputs:
+    unapproved: rpc
+- name: Assert it was refused NotApproved, with no request made
+  type: assert
+  statements:
+  - contains({{unapproved}}, refused:)
+  - contains({{unapproved}}, [NotApproved])
+  - not_contains({{unapproved}}, 200 {)
+- name: Probe the declared prefix, naming the secret in a header and the body
+  type: call
+  app: '{{context_id}}'
+  method: probe
+  args:
+    path: check?n=1
+    body: n=1
+  account: outbound-a
+  outputs:
+    probed: rpc
+- name: The echo saw the request the node sent, with both secrets filled in
+  type: assert
+  statements:
+  - regex({{probed}}, 200 \{)
+  - contains({{probed}}, /v1/check)
+  - regex({{probed}}, .secrets.:2)
+  - contains({{probed}}, n=1&key=[redacted])
+  - not_contains({{probed}}, s3cr3t-e2e)
+- name: A path outside the declared prefix
+  type: call
+  app: '{{context_id}}'
+  method: probe_url
+  args:
+    url: https://echo.outbound.test/v2/check
+  account: outbound-a
+  outputs:
+    outside: rpc
+- name: Assert it was refused for its prefix
+  type: assert
+  statements:
+  - contains({{outside}}, refused:)
+  - contains({{outside}}, no URL prefix)
+- name: A host the operator did not allow
+  type: call
+  app: '{{context_id}}'
+  method: probe_url
+  args:
+    url: https://elsewhere.outbound.test/v1/check
+  account: outbound-a
+  outputs:
+    elsewhere: rpc
+- name: Assert it was refused for its host
+  type: assert
+  statements:
+  - contains({{elsewhere}}, refused:)
+  - contains({{elsewhere}}, not a host this node's operator allows)
+- name: A second request in one run traps it
+  type: call
+  app: '{{context_id}}'
+  method: probe_twice
+  args: {}
+  account: outbound-a
+  expected_failure: true
+- name: A view asking for a request traps
+  type: call
+  app: '{{context_id}}'
+  method: probe_in_view
+  args: {}
+  account: outbound-a
+  expected_failure: true
+- name: What outbound-a stored last
+  type: call
+  app: '{{context_id}}'
+  method: last
+  args: {}
+  account: outbound-a
+  outputs:
+    a_last: rpc
+    a_last_text: result
+- name: The trapped run's write was not committed
+  type: assert
+  statements:
+  - contains({{a_last}}, not a host this node's operator allows)
+  - not_contains({{a_last}}, written before the second request)
+- name: What outbound-b holds
+  type: call
+  app: '{{context_id}}'
+  method: last
+  args: {}
+  account: outbound-b
+  outputs:
+    b_last: rpc
+- name: outbound-b holds the same outcome
+  type: json_assert
+  statements:
+  - json_equal({{a_last}}, {{b_last}})
+- name: outbound-b's operator never turned outbound on, so its own probe traps
+  type: call
+  app: '{{context_id}}'
+  method: probe
+  args:
+    path: check
+    body: n=2
+  account: outbound-b
+  expected_failure: true
+- name: The same declared URL, after the revocation
+  type: call
+  app: '{{context_id}}'
+  method: probe_url
+  args:
+    url: https://echo.outbound.test/v1/check
+  account: outbound-a
+  outputs:
+    revoked: rpc
+- name: Assert it is refused NotApproved again
+  type: assert
+  statements:
+  - contains({{revoked}}, refused:)
+  - contains({{revoked}}, [NotApproved])

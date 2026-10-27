@@ -1,0 +1,113 @@
+# A release-v2 workflow for bulk-write-bench (it had no v1 workflow; its
+# benchmark is crates/runtime/tests/bulk_write_wall.rs): one call writes
+# hundreds of entries into each collection, committed by the app's Raft log, and
+# a second member's bulk write merges by each collection's rules.
+name: Bulk write bench on release-v2
+description: Single-call bulk inserts into a map, a vector and a set, by two members
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 6030
+accounts: [alice, bob, carol]
+steps:
+  - name: Alice founds an organization
+    type: create_org
+    account: alice
+    org_name: Bench
+    outputs: { org: orgId }
+  - name: An invite for Bob
+    type: invite
+    account: alice
+    org: "{{org}}"
+    role: member
+    outputs: { token: token }
+  - name: Bob joins
+    type: redeem_invite
+    account: bob
+    token: "{{token}}"
+  - name: Alice deploys bulk-write-bench in the organization
+    type: deploy
+    account: alice
+    wasm: "{{env.CORE_WASM_DIR}}/bulk_write_bench.wasm"
+    app_name: bulk-write-bench
+    org: "{{org}}"
+    outputs: { app: appId }
+  - name: Alice inserts 500 map entries in one call
+    type: call
+    account: alice
+    app: "{{app}}"
+    method: insert_n_map
+    args: { n: 500 }
+  - name: Alice pushes 500 vector items in one call
+    type: call
+    account: alice
+    app: "{{app}}"
+    method: insert_n_vec
+    args: { n: 500 }
+  - name: Alice inserts 500 set values in one call
+    type: call
+    account: alice
+    app: "{{app}}"
+    method: insert_n_set
+    args: { n: 500 }
+  - name: Bob reads 500 map entries
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: map_len
+    expect: 500
+  - name: Bob reads 500 vector items
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: vec_len
+    expect: 500
+  - name: Bob reads 500 set values
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: set_len
+    expect: 500
+  - name: Bob rewrites the same 500 keys
+    type: call
+    account: bob
+    app: "{{app}}"
+    method: insert_n_map
+    args: { n: 500 }
+  - name: Bob pushes 500 more vector items
+    type: call
+    account: bob
+    app: "{{app}}"
+    method: insert_n_vec
+    args: { n: 500 }
+  - name: Bob inserts the same 500 set values
+    type: call
+    account: bob
+    app: "{{app}}"
+    method: insert_n_set
+    args: { n: 500 }
+  - name: The same keys are still 500 entries
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: map_len
+    expect: 500
+  - name: The vector appended
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: vec_len
+    expect: 1000
+  - name: The set holds each value once
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: set_len
+    expect: 500
+  - name: Carol is outside the organization
+    type: call
+    account: carol
+    app: "{{app}}"
+    method: insert_n_map
+    args: { n: 1 }
+    expected_error: NOT_FOUND

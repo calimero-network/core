@@ -1,321 +1,208 @@
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   login (unknown) x2: checks what the dropped steps did
+#   wait_for_sync x3: replication is synchronous: a read sees every committed write
 name: E2E KV Store - Subgroup Lifecycle
-description: >
-  Tests subgroup creation, listing, and context operations within
-  subgroups. Verifies that:
-    1. Subgroups can be created inside a namespace
-    2. Subgroups appear in the list_subgroups listing
-    3. Namespace-root context operations are unaffected by subgroups
-    4. Contexts can be created and used within subgroups
-    5. Subgroup and root contexts are fully isolated
-
-force_pull_image: false
-
-auth_mode: embedded
-
-nodes:
-  count: 2
-  image: ghcr.io/calimero-network/merod:edge
-  prefix: e2e-node
-
+description: "Tests subgroup creation, listing, and context operations within subgroups. Verifies that:\n\
+  \  1. Subgroups can be created inside a namespace\n  2. Subgroups appear in the list_subgroups listing\n\
+  \  3. Namespace-root context operations are unaffected by subgroups\n  4. Contexts can be created and\
+  \ used within subgroups\n  5. Subgroup and root contexts are fully isolated\n"
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 4620
+accounts:
+- e2e-node-1
+- e2e-node-2
 steps:
-  # First login on a fresh embedded-auth node bootstraps its root key
-  # and seeds merobox's token cache; every step below runs authenticated.
-  - name: Login on e2e-node-1
-    type: login
-    node: e2e-node-1
-    username: dev
-    password: dev-password
-
-  - name: Login on e2e-node-2
-    type: login
-    node: e2e-node-2
-    username: dev
-    password: dev-password
-
-  # --- Setup ---
-
-  - name: Install application on node-1
-    type: install_application
-    node: e2e-node-1
-    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Assert application installed
-    type: assert
-    statements:
-      - "is_set({{app_id}})"
-
-  - name: Create namespace on node-1
-    type: create_namespace
-    node: e2e-node-1
-    application_id: '{{app_id}}'
-    outputs:
-      namespace_id: namespaceId
-
-  - name: Assert namespace created
-    type: assert
-    statements:
-      - "is_set({{namespace_id}})"
-
-  # --- Create context in namespace root ---
-
-  - name: Create context in namespace root on node-1
-    type: create_context
-    node: e2e-node-1
-    application_id: '{{app_id}}'
-    group_id: '{{namespace_id}}'
-    outputs:
-      root_ctx_id: contextId
-      ctx_key_node1: memberPublicKey
-
-  - name: Assert context created
-    type: assert
-    statements:
-      - "is_set({{root_ctx_id}})"
-
-  # --- Node-2 joins namespace and root context ---
-
-  - name: Create namespace invitation for node-2
-    type: create_namespace_invitation
-    node: e2e-node-1
-    namespace_id: '{{namespace_id}}'
-    outputs:
-      namespace_invitation: invitation
-
-  - name: Node-2 joins namespace
-    type: join_namespace
-    node: e2e-node-2
-    namespace_id: '{{namespace_id}}'
-    invitation: '{{namespace_invitation}}'
-    outputs:
-      member_identity_node2: memberIdentity
-
-  - name: Node-2 joins root context
-    type: join_context
-    node: e2e-node-2
-    context_id: '{{root_ctx_id}}'
-    outputs:
-      ctx_key_node2: memberPublicKey
-
-  # --- SCENARIO 1: Verify namespace-root context sync works ---
-
-  - name: Node-1 writes to root context
-    type: call
-    node: e2e-node-1
-    context_id: '{{root_ctx_id}}'
-    method: set
-    args:
-      key: "ns_root_key"
-      value: "from_node1"
-
-  - name: Wait for root context sync
-    type: wait_for_sync
-    context_id: '{{root_ctx_id}}'
-    nodes:
-      - e2e-node-1
-      - e2e-node-2
-    timeout: 60
-    trigger_sync: true
-    # `expect` is what makes this a barrier. Converging on a state hash only
-    # proves the nodes agree on a claim about state: a hash can be published
-    # ahead of the state behind it (calimero-network/core#3595, #3596), and
-    # even truthful hashes can agree a few milliseconds before a pending delta
-    # finishes applying — which is how this scenario failed, reading null 4ms
-    # before the apply committed while the wait had already reported
-    # convergence in 0.00s. Waiting on the read itself cannot pass early.
-    #
-    # The read + json_assert below are kept deliberately: they remain the
-    # scenario's statement of intent, and they now assert something that has
-    # already been observed rather than racing it.
-    expect:
-      method: get
-      args:
-        key: "ns_root_key"
-      equals:
-        output: "from_node1"
-
-  - name: Node-2 reads root context value
-    type: call
-    node: e2e-node-2
-    context_id: '{{root_ctx_id}}'
-    method: get
-    args:
-      key: "ns_root_key"
-    outputs:
-      ns_root_read: result
-
-  - name: Assert root context synced
-    type: json_assert
-    statements:
-      - 'json_equal({{ns_root_read}}, {"output": "from_node1"})'
-
-  # --- SCENARIO 2: Create subgroup and verify listing ---
-
-  - name: Create subgroup inside namespace on node-1
-    type: create_group_in_namespace
-    node: e2e-node-1
-    namespace_id: '{{namespace_id}}'
-    group_name: match-subgroup
-    outputs:
-      subgroup_id: groupId
-
-  - name: Assert subgroup created
-    type: assert
-    statements:
-      - "is_set({{subgroup_id}})"
-
-  - name: List subgroups of namespace on node-1
-    type: list_subgroups
-    node: e2e-node-1
-    group_id: '{{namespace_id}}'
-    outputs:
-      subgroups_node1: subgroups
-
-  - name: Assert subgroup is present in listing
-    type: assert
-    statements:
-      - "is_set({{subgroups_node1}})"
-
-  # --- SCENARIO 3: Add member to subgroup and create context in it ---
-
-  - name: Add node-2 to subgroup
-    type: add_group_members
-    node: e2e-node-1
-    group_id: '{{subgroup_id}}'
-    members:
-      - identity: '{{member_identity_node2}}'
-        role: Member
-
-  - name: Create context in subgroup
-    type: create_context
-    node: e2e-node-1
-    application_id: '{{app_id}}'
-    group_id: '{{subgroup_id}}'
-    outputs:
-      sub_ctx_id: contextId
-
-  - name: Assert subgroup context created
-    type: assert
-    statements:
-      - "is_set({{sub_ctx_id}})"
-
-  - name: Node-2 joins subgroup context
-    type: join_context
-    node: e2e-node-2
-    context_id: '{{sub_ctx_id}}'
-
-  - name: Node-1 writes to subgroup context
-    type: call
-    node: e2e-node-1
-    context_id: '{{sub_ctx_id}}'
-    method: set
-    args:
-      key: "sub_key"
-      value: "from_subgroup"
-
-  - name: Wait for subgroup context sync
-    type: wait_for_sync
-    context_id: '{{sub_ctx_id}}'
-    nodes:
-      - e2e-node-1
-      - e2e-node-2
-    timeout: 60
-    trigger_sync: true
-    expect:
-      method: get
-      args:
-        key: "sub_key"
-      equals:
-        output: "from_subgroup"
-
-  - name: Node-2 reads subgroup context value
-    type: call
-    node: e2e-node-2
-    context_id: '{{sub_ctx_id}}'
-    method: get
-    args:
-      key: "sub_key"
-    outputs:
-      sub_read: result
-
-  - name: Assert subgroup context synced
-    type: json_assert
-    statements:
-      - 'json_equal({{sub_read}}, {"output": "from_subgroup"})'
-
-  # --- SCENARIO 4: Root and subgroup contexts are isolated ---
-
-  - name: Check subgroup key NOT in root context
-    type: call
-    node: e2e-node-1
-    context_id: '{{root_ctx_id}}'
-    method: get
-    args:
-      key: "sub_key"
-    outputs:
-      root_cross_read: result
-
-  - name: Assert root context does not have subgroup key
-    type: json_assert
-    statements:
-      - 'json_equal({{root_cross_read}}, {"output": null})'
-
-  - name: Check root key NOT in subgroup context
-    type: call
-    node: e2e-node-1
-    context_id: '{{sub_ctx_id}}'
-    method: get
-    args:
-      key: "ns_root_key"
-    outputs:
-      sub_cross_read: result
-
-  - name: Assert subgroup context does not have root key
-    type: json_assert
-    statements:
-      - 'json_equal({{sub_cross_read}}, {"output": null})'
-
-  # --- SCENARIO 5: Root context still works after subgroup operations ---
-
-  - name: Node-2 writes to root context after subgroup ops
-    type: call
-    node: e2e-node-2
-    context_id: '{{root_ctx_id}}'
-    method: set
-    args:
-      key: "post_subgroup_key"
-      value: "still_works"
-
-  - name: Wait for root sync after subgroup ops
-    type: wait_for_sync
-    context_id: '{{root_ctx_id}}'
-    nodes:
-      - e2e-node-1
-      - e2e-node-2
-    timeout: 60
-    trigger_sync: true
-    expect:
-      method: get
-      args:
-        key: "post_subgroup_key"
-      equals:
-        output: "still_works"
-
-  - name: Node-1 reads post-subgroup key
-    type: call
-    node: e2e-node-1
-    context_id: '{{root_ctx_id}}'
-    method: get
-    args:
-      key: "post_subgroup_key"
-    outputs:
-      post_subgroup_read: result
-
-  - name: Assert root context unaffected
-    type: json_assert
-    statements:
-      - 'json_equal({{post_subgroup_read}}, {"output": "still_works"})'
-
-stop_all_nodes: false
+- name: Install application on node-1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: e2e-node-1
+- type: set
+  values:
+    app_id: com.calimero.scaffolding-e2e
+- name: Assert application installed
+  type: assert
+  statements:
+  - is_set({{app_id}})
+- name: Create namespace on node-1
+  type: create_org
+  org_name: Create namespace on node-1
+  outputs:
+    namespace_id: orgId
+  account: e2e-node-1
+- name: Assert namespace created
+  type: assert
+  statements:
+  - is_set({{namespace_id}})
+- name: Create context in namespace root on node-1
+  type: deploy
+  account: e2e-node-1
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Create context in namespace root on node-1
+  org: '{{namespace_id}}'
+  outputs:
+    root_ctx_id: contextId
+    ctx_key_node1: memberPublicKey
+- name: Assert context created
+  type: assert
+  statements:
+  - is_set({{root_ctx_id}})
+- name: Create namespace invitation for node-2
+  type: invite
+  org: '{{namespace_id}}'
+  role: member
+  account: e2e-node-1
+  outputs:
+    namespace_invitation: token
+- name: Node-2 joins namespace
+  type: redeem_invite
+  token: '{{namespace_invitation}}'
+  account: e2e-node-2
+- type: whoami
+  account: e2e-node-2
+  outputs:
+    member_identity_node2: publicKey
+- name: Node-2 joins root context
+  type: whoami
+  account: e2e-node-2
+  outputs:
+    ctx_key_node2: publicKey
+- name: Node-1 writes to root context
+  type: call
+  app: '{{root_ctx_id}}'
+  method: set
+  args:
+    key: ns_root_key
+    value: from_node1
+  account: e2e-node-1
+- name: Node-2 reads root context value
+  type: call
+  app: '{{root_ctx_id}}'
+  method: get
+  args:
+    key: ns_root_key
+  account: e2e-node-2
+  outputs:
+    ns_root_read: rpc
+- name: Assert root context synced
+  type: json_assert
+  statements:
+  - 'json_equal({{ns_root_read}}, {"output": "from_node1"})'
+- name: Create subgroup inside namespace on node-1
+  type: create_team
+  org: '{{namespace_id}}'
+  team_name: match-subgroup
+  join: invite
+  outputs:
+    subgroup_id: teamId
+  account: e2e-node-1
+- name: Assert subgroup created
+  type: assert
+  statements:
+  - is_set({{subgroup_id}})
+- name: List subgroups of namespace on node-1
+  type: team_list
+  org: '{{namespace_id}}'
+  account: e2e-node-1
+  outputs:
+    subgroups_node1: subgroups
+- name: Assert subgroup is present in listing
+  type: assert
+  statements:
+  - is_set({{subgroups_node1}})
+- name: Add node-2 to subgroup
+  type: team_add
+  org: '{{namespace_id}}'
+  team: '{{subgroup_id}}'
+  members:
+  - '{{member_identity_node2}}'
+  role: member
+  account: e2e-node-1
+- name: Create context in subgroup
+  type: deploy
+  account: e2e-node-1
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Create context in subgroup
+  org: '{{namespace_id}}'
+  access:
+    kind: team
+    team: '{{subgroup_id}}'
+  outputs:
+    sub_ctx_id: contextId
+- name: Assert subgroup context created
+  type: assert
+  statements:
+  - is_set({{sub_ctx_id}})
+- name: Node-1 writes to subgroup context
+  type: call
+  app: '{{sub_ctx_id}}'
+  method: set
+  args:
+    key: sub_key
+    value: from_subgroup
+  account: e2e-node-1
+- name: Node-2 reads subgroup context value
+  type: call
+  app: '{{sub_ctx_id}}'
+  method: get
+  args:
+    key: sub_key
+  account: e2e-node-2
+  outputs:
+    sub_read: rpc
+- name: Assert subgroup context synced
+  type: json_assert
+  statements:
+  - 'json_equal({{sub_read}}, {"output": "from_subgroup"})'
+- name: Check subgroup key NOT in root context
+  type: call
+  app: '{{root_ctx_id}}'
+  method: get
+  args:
+    key: sub_key
+  account: e2e-node-1
+  outputs:
+    root_cross_read: rpc
+- name: Assert root context does not have subgroup key
+  type: json_assert
+  statements:
+  - 'json_equal({{root_cross_read}}, {"output": null})'
+- name: Check root key NOT in subgroup context
+  type: call
+  app: '{{sub_ctx_id}}'
+  method: get
+  args:
+    key: ns_root_key
+  account: e2e-node-1
+  outputs:
+    sub_cross_read: rpc
+- name: Assert subgroup context does not have root key
+  type: json_assert
+  statements:
+  - 'json_equal({{sub_cross_read}}, {"output": null})'
+- name: Node-2 writes to root context after subgroup ops
+  type: call
+  app: '{{root_ctx_id}}'
+  method: set
+  args:
+    key: post_subgroup_key
+    value: still_works
+  account: e2e-node-2
+- name: Node-1 reads post-subgroup key
+  type: call
+  app: '{{root_ctx_id}}'
+  method: get
+  args:
+    key: post_subgroup_key
+  account: e2e-node-1
+  outputs:
+    post_subgroup_read: rpc
+- name: Assert root context unaffected
+  type: json_assert
+  statements:
+  - 'json_equal({{post_subgroup_read}}, {"output": "still_works"})'

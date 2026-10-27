@@ -1,280 +1,204 @@
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   login (unknown) x3: checks what the dropped steps did
+#   wait_for_sync x3: replication is synchronous: a read sees every committed write
 name: E2E KV Store - Group 3-Node Convergence
-description: >
-  Tests that three nodes can all join the same namespace and converge on shared
-  state. Each node writes a distinct key and all three verify they see every
-  write — covering the multi-party sync path that the 2-node test misses.
+description: 'Tests that three nodes can all join the same namespace and converge on shared state. Each
+  node writes a distinct key and all three verify they see every write — covering the multi-party sync
+  path that the 2-node test misses.
 
-force_pull_image: false
-
-auth_mode: embedded
-
-nodes:
-  count: 3
-  image: ghcr.io/calimero-network/merod:edge
-  prefix: e2e-node
-
+  '
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 4270
+accounts:
+- e2e-node-1
+- e2e-node-2
+- e2e-node-3
 steps:
-  # First login on a fresh embedded-auth node bootstraps its root key
-  # and seeds merobox's token cache; every step below runs authenticated.
-  - name: Login on e2e-node-1
-    type: login
-    node: e2e-node-1
-    username: dev
-    password: dev-password
-
-  - name: Login on e2e-node-2
-    type: login
-    node: e2e-node-2
-    username: dev
-    password: dev-password
-
-  - name: Login on e2e-node-3
-    type: login
-    node: e2e-node-3
-    username: dev
-    password: dev-password
-
-  # --- Setup ---
-
-  - name: Install application on node-1
-    type: install_application
-    node: e2e-node-1
-    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Assert application installed
-    type: assert
-    statements:
-      - "is_set({{app_id}})"
-
-  - name: Create the mesh - namespace, context and every joiner
-    type: create_mesh
-    context_node: e2e-node-1
-    application_id: '{{app_id}}'
-    nodes:
-      - e2e-node-2
-      - e2e-node-3
-    outputs:
-      namespace_id: namespaceId
-      ctx_id: contextId
-
-  - name: Assert namespace created
-    type: assert
-    statements:
-      - "is_set({{namespace_id}})"
-
-  - name: Assert context created
-    type: assert
-    statements:
-      - "is_set({{ctx_id}})"
-
-  # --- Node-2 joins ---
-
-  # --- Node-3 joins ---
-
-  # --- SCENARIO 1: node-1 writes, all three converge ---
-
-  - name: Node-1 writes key-A
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx_id}}'
-    method: set
-    args:
-      key: "key_a"
-      value: "from_node1"
-
-  - name: Wait for sync after node-1 write
-    type: wait_for_sync
-    context_id: '{{ctx_id}}'
-    nodes:
-      - e2e-node-1
-      - e2e-node-2
-      - e2e-node-3
-    timeout: 60
-    trigger_sync: true
-    expect:
-      method: get
-      args:
-        key: "key_a"
-      equals:
-        output: "from_node1"
-
-  - name: Node-2 reads key-A
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "key_a"
-    outputs:
-      key_a_node2: result
-
-  - name: Assert key-A on node-2
-    type: json_assert
-    statements:
-      - 'json_equal({{key_a_node2}}, {"output": "from_node1"})'
-
-  - name: Node-3 reads key-A
-    type: call
-    node: e2e-node-3
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "key_a"
-    outputs:
-      key_a_node3: result
-
-  - name: Assert key-A on node-3
-    type: json_assert
-    statements:
-      - 'json_equal({{key_a_node3}}, {"output": "from_node1"})'
-
-  # --- SCENARIO 2: node-2 writes, node-1 and node-3 converge ---
-
-  - name: Node-2 writes key-B
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx_id}}'
-    method: set
-    args:
-      key: "key_b"
-      value: "from_node2"
-
-  - name: Wait for sync after node-2 write
-    type: wait_for_sync
-    context_id: '{{ctx_id}}'
-    nodes:
-      - e2e-node-1
-      - e2e-node-2
-      - e2e-node-3
-    timeout: 60
-    trigger_sync: true
-    expect:
-      method: get
-      args:
-        key: "key_b"
-      equals:
-        output: "from_node2"
-
-  - name: Node-1 reads key-B
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "key_b"
-    outputs:
-      key_b_node1: result
-
-  - name: Assert key-B on node-1
-    type: json_assert
-    statements:
-      - 'json_equal({{key_b_node1}}, {"output": "from_node2"})'
-
-  - name: Node-3 reads key-B
-    type: call
-    node: e2e-node-3
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "key_b"
-    outputs:
-      key_b_node3: result
-
-  - name: Assert key-B on node-3
-    type: json_assert
-    statements:
-      - 'json_equal({{key_b_node3}}, {"output": "from_node2"})'
-
-  # --- SCENARIO 3: node-3 writes, node-1 and node-2 converge ---
-
-  - name: Node-3 writes key-C
-    type: call
-    node: e2e-node-3
-    context_id: '{{ctx_id}}'
-    method: set
-    args:
-      key: "key_c"
-      value: "from_node3"
-
-  - name: Wait for sync after node-3 write
-    type: wait_for_sync
-    context_id: '{{ctx_id}}'
-    nodes:
-      - e2e-node-1
-      - e2e-node-2
-      - e2e-node-3
-    timeout: 60
-    trigger_sync: true
-    expect:
-      method: get
-      args:
-        key: "key_c"
-      equals:
-        output: "from_node3"
-
-  - name: Node-1 reads key-C
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "key_c"
-    outputs:
-      key_c_node1: result
-
-  - name: Assert key-C on node-1
-    type: json_assert
-    statements:
-      - 'json_equal({{key_c_node1}}, {"output": "from_node3"})'
-
-  - name: Node-2 reads key-C
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "key_c"
-    outputs:
-      key_c_node2: result
-
-  - name: Assert key-C on node-2
-    type: json_assert
-    statements:
-      - 'json_equal({{key_c_node2}}, {"output": "from_node3"})'
-
-  # --- SCENARIO 4: verify full state visibility on all nodes ---
-
-  - name: Node-1 reads all entries
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx_id}}'
-    method: entries
-    outputs:
-      entries_node1: result
-
-  - name: Node-2 reads all entries
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx_id}}'
-    method: entries
-    outputs:
-      entries_node2: result
-
-  - name: Node-3 reads all entries
-    type: call
-    node: e2e-node-3
-    context_id: '{{ctx_id}}'
-    method: entries
-    outputs:
-      entries_node3: result
-
-  - name: Assert all nodes see same entry count
-    type: json_assert
-    statements:
-      - 'json_equal({{entries_node1}}, {{entries_node2}})'
-      - 'json_equal({{entries_node2}}, {{entries_node3}})'
-
-stop_all_nodes: false
+- name: Install application on node-1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: e2e-node-1
+- type: set
+  values:
+    app_id: com.calimero.scaffolding-e2e
+- name: Assert application installed
+  type: assert
+  statements:
+  - is_set({{app_id}})
+- name: Create the mesh - namespace, context and every joiner
+  type: create_org
+  account: e2e-node-1
+  org_name: mesh
+  outputs:
+    namespace_id: orgId
+- type: invite
+  account: e2e-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: e2e-node-2
+  token: '{{_mesh_invite}}'
+- type: invite
+  account: e2e-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: e2e-node-3
+  token: '{{_mesh_invite}}'
+- name: Create the mesh - namespace, context and every joiner
+  type: deploy
+  account: e2e-node-1
+  org: '{{namespace_id}}'
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Create the mesh - namespace, context and every joiner
+  outputs:
+    ctx_id: contextId
+- name: Assert namespace created
+  type: assert
+  statements:
+  - is_set({{namespace_id}})
+- name: Assert context created
+  type: assert
+  statements:
+  - is_set({{ctx_id}})
+- name: Node-1 writes key-A
+  type: call
+  app: '{{ctx_id}}'
+  method: set
+  args:
+    key: key_a
+    value: from_node1
+  account: e2e-node-1
+- name: Node-2 reads key-A
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: key_a
+  account: e2e-node-2
+  outputs:
+    key_a_node2: rpc
+- name: Assert key-A on node-2
+  type: json_assert
+  statements:
+  - 'json_equal({{key_a_node2}}, {"output": "from_node1"})'
+- name: Node-3 reads key-A
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: key_a
+  account: e2e-node-3
+  outputs:
+    key_a_node3: rpc
+- name: Assert key-A on node-3
+  type: json_assert
+  statements:
+  - 'json_equal({{key_a_node3}}, {"output": "from_node1"})'
+- name: Node-2 writes key-B
+  type: call
+  app: '{{ctx_id}}'
+  method: set
+  args:
+    key: key_b
+    value: from_node2
+  account: e2e-node-2
+- name: Node-1 reads key-B
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: key_b
+  account: e2e-node-1
+  outputs:
+    key_b_node1: rpc
+- name: Assert key-B on node-1
+  type: json_assert
+  statements:
+  - 'json_equal({{key_b_node1}}, {"output": "from_node2"})'
+- name: Node-3 reads key-B
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: key_b
+  account: e2e-node-3
+  outputs:
+    key_b_node3: rpc
+- name: Assert key-B on node-3
+  type: json_assert
+  statements:
+  - 'json_equal({{key_b_node3}}, {"output": "from_node2"})'
+- name: Node-3 writes key-C
+  type: call
+  app: '{{ctx_id}}'
+  method: set
+  args:
+    key: key_c
+    value: from_node3
+  account: e2e-node-3
+- name: Node-1 reads key-C
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: key_c
+  account: e2e-node-1
+  outputs:
+    key_c_node1: rpc
+- name: Assert key-C on node-1
+  type: json_assert
+  statements:
+  - 'json_equal({{key_c_node1}}, {"output": "from_node3"})'
+- name: Node-2 reads key-C
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: key_c
+  account: e2e-node-2
+  outputs:
+    key_c_node2: rpc
+- name: Assert key-C on node-2
+  type: json_assert
+  statements:
+  - 'json_equal({{key_c_node2}}, {"output": "from_node3"})'
+- name: Node-1 reads all entries
+  type: call
+  app: '{{ctx_id}}'
+  method: entries
+  args: {}
+  account: e2e-node-1
+  outputs:
+    entries_node1: rpc
+- name: Node-2 reads all entries
+  type: call
+  app: '{{ctx_id}}'
+  method: entries
+  args: {}
+  account: e2e-node-2
+  outputs:
+    entries_node2: rpc
+- name: Node-3 reads all entries
+  type: call
+  app: '{{ctx_id}}'
+  method: entries
+  args: {}
+  account: e2e-node-3
+  outputs:
+    entries_node3: rpc
+- name: Assert all nodes see same entry count
+  type: json_assert
+  statements:
+  - json_equal({{entries_node1}}, {{entries_node2}})
+  - json_equal({{entries_node2}}, {{entries_node3}})
