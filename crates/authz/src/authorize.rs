@@ -177,9 +177,18 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
                 Err(Rejected::NotOwner)
             }
         }
-        OpPayload::MemberAdded { group, .. }
-        | OpPayload::MemberRemoved { group, .. }
-        | OpPayload::MemberLeft { group, .. } => {
+        OpPayload::MemberAdded { group, member, .. } => {
+            if !acl_at_cut.is_group_admin(&op.author(), *group) {
+                Err(Rejected::NotGroupAdmin)
+            } else if acl_at_cut.is_leaderless(*group)
+                && !acl_at_cut.holds_direct_row(member, *group)
+            {
+                Err(Rejected::GroupHasNoAdmin)
+            } else {
+                Ok(())
+            }
+        }
+        OpPayload::MemberRemoved { group, .. } | OpPayload::MemberLeft { group, .. } => {
             if acl_at_cut.is_group_admin(&op.author(), *group) {
                 Ok(())
             } else {
@@ -203,10 +212,14 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
             check_op_is_the_certified_device(op, &verified)?;
             // `is_scope_member(verified.account)` still cannot be required — the
             // whole point of a join is that the account is not a member yet.
-            if acl_at_cut.is_group_admin(&op.author(), *group) {
-                Ok(())
-            } else {
+            if !acl_at_cut.is_group_admin(&op.author(), *group) {
                 Err(Rejected::NotGroupAdmin)
+            } else if acl_at_cut.is_leaderless(*group)
+                && !acl_at_cut.holds_direct_row(&verified.account, *group)
+            {
+                Err(Rejected::GroupHasNoAdmin)
+            } else {
+                Ok(())
             }
         }
         OpPayload::SubgroupVisibilitySet { scope, restricted } => {

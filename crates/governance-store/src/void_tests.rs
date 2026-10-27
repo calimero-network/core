@@ -315,6 +315,13 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
         Some(self.view(parents).group_creator.get(group).copied())
     }
 
+    fn is_leaderless_at_cut(&self, group: &ContextGroupId, parents: &[[u8; 32]]) -> Option<bool> {
+        if parents.is_empty() || !self.can_resolve_cut(group, parents) {
+            return None;
+        }
+        Some(self.view(parents).is_leaderless(*group))
+    }
+
     fn at_cut(&self) -> Option<&dyn AtCutAuthorizer> {
         Some(self)
     }

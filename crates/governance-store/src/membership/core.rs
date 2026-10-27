@@ -708,34 +708,45 @@ impl<'a> MembershipRepository<'a> {
     }
 
     /// Whether `identity` is an admin of `group_id`: an `Admin` row, the creator slot
-    /// unless the creator has left or been removed from the workspace, or - for a folder with neither - the
-    /// lowest-account `Member` or `Admin` row.
+    /// unless the creator has left or been removed from the workspace, or - for a folder
+    /// with neither - its [successor](Self::is_leaderless). The successor acts as admin
+    /// over the folder's Open children like an explicit one.
     pub fn is_admin(&self, group_id: &ContextGroupId, identity: &AccountId) -> EyreResult<bool> {
         if self.is_explicit_admin(group_id, identity)? {
             return Ok(true);
         }
-        let root = NamespaceRepository::new(self.store).resolve(group_id)?;
-        if root == *group_id {
-            return Ok(false);
+        Ok(self.successor(group_id)? == Some(*identity))
+    }
+
+    /// The lowest-account `Member` of a non-root `group_id` that has no `Admin` row and no
+    /// creator slot in force: the account that runs it, read from state alone.
+    fn successor(&self, group_id: &ContextGroupId) -> EyreResult<Option<AccountId>> {
+        if NamespaceRepository::new(self.store).resolve(group_id)? == *group_id {
+            return Ok(None);
         }
         let members = self.list(group_id, 0, usize::MAX)?;
         if members
             .iter()
             .any(|(_, role)| *role == GroupMemberRole::Admin)
         {
-            return Ok(false);
+            return Ok(None);
         }
         if let Some(meta) = MetaRepository::new(self.store).load(group_id)? {
             if self.is_explicit_admin(group_id, &meta.admin_identity)? {
-                return Ok(false);
+                return Ok(None);
             }
         }
-        let lowest = members
+        Ok(members
             .iter()
-            .filter(|(_, role)| matches!(role, GroupMemberRole::Member | GroupMemberRole::Admin))
-            .map(|(account, _)| account)
-            .min();
-        Ok(lowest == Some(identity))
+            .filter(|(_, role)| *role == GroupMemberRole::Member)
+            .map(|(account, _)| *account)
+            .min())
+    }
+
+    /// Does `group_id` have no admin of its own, so its successor runs it? Such a folder
+    /// takes no new member until an admin is promoted.
+    pub fn is_leaderless(&self, group_id: &ContextGroupId) -> EyreResult<bool> {
+        Ok(self.successor(group_id)?.is_some())
     }
 
     /// An `Admin` row, or the creator slot unless the creator has left or been removed from the workspace.

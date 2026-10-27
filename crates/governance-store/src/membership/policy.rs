@@ -1,5 +1,5 @@
 use crate::authorizer::ensure_cut_resolvable;
-use crate::MembershipRepository;
+use crate::{MembershipRepository, NamespaceRepository};
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
@@ -81,6 +81,31 @@ impl<'a> MembershipPolicy<'a> {
         }
         ensure_cut_resolvable(self.authorizer, &self.group_id, self.parents, member)?;
         Ok(self.membership.is_admin(member)? && !self.membership.has_another_admin(member)?)
+    }
+
+    /// Refuse adding a new member to a leaderless folder, judged at the op's cut.
+    pub fn ensure_group_takes_members(&self) -> EyreResult<()> {
+        // A namespace root has no successor rule, whatever the cut says.
+        if NamespaceRepository::new(self.store)
+            .parent(&self.group_id)?
+            .is_none()
+        {
+            return Ok(());
+        }
+        let leaderless = match self
+            .authorizer
+            .is_leaderless_at_cut(&self.group_id, self.parents)
+        {
+            Some(leaderless) => leaderless,
+            None => {
+                ensure_cut_resolvable(self.authorizer, &self.group_id, self.parents, "add member")?;
+                MembershipRepository::new(self.store).is_leaderless(&self.group_id)?
+            }
+        };
+        if leaderless {
+            bail!(MembershipError::GroupHasNoAdmin(self.group_id.to_string()));
+        }
+        Ok(())
     }
 
     pub fn ensure_not_last_admin_removal(&self, member: &AccountId) -> EyreResult<()> {

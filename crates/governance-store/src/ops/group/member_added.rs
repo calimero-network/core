@@ -30,6 +30,8 @@ pub(crate) fn apply(
     // The row is read at the op's cut, as `MemberRoleSet` reads it.
     if let Some(current) = ctx.direct_role(member)? {
         MembershipPolicy::require_tee_row_keeps_tee_role(member, &current, role)?;
+    } else {
+        ctx.membership_policy().ensure_group_takes_members()?;
     }
     ctx.permissions()
         .require_admin_to_remove_admin(signer, member)?;

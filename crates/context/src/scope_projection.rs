@@ -2417,6 +2417,19 @@ impl ScopeProjections {
         Some(!has_other)
     }
 
+    /// Is `group` leaderless at the cut: no admin of its own, so its lowest member runs it?
+    /// Same authoritative `None`-on-incomplete-ancestry contract as the other at-cut reads.
+    #[must_use]
+    pub fn is_leaderless_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> Option<bool> {
+        let (view, _, _) = self.auth_cut_context(store, group, heads)?;
+        Some(view.is_leaderless(group))
+    }
+
     /// Shared setup for the at-cut admin/capability reads: resolve the namespace,
     /// gate on COMPLETE cited ancestry (so the verdict is authoritative — `None`
     /// otherwise, defer to live), build the folded view + the genesis root tuple

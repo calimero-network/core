@@ -240,34 +240,54 @@ impl AclView {
     }
 
     /// Is `author` an `Admin` of `group` at the cut? An `Admin` row, the creator slot
-    /// unless the creator left the workspace, or - for a folder with neither - the
-    /// lowest-account `Member` or `Admin` row.
+    /// unless the creator left the workspace, or - for a folder with neither - its
+    /// [successor](Self::is_leaderless). The successor acts as admin over the folder's
+    /// Open children like an explicit one.
     #[must_use]
     pub fn is_group_admin(&self, author: &AccountId, group: ContextGroupId) -> bool {
         if self.holds_creator_slot(author, group) {
             return true;
         }
-        let Some(members) = self.groups.get(&group) else {
-            return false;
-        };
-        if members.values().any(|role| *role == GroupMemberRole::Admin) {
-            return members.get(author) == Some(&GroupMemberRole::Admin);
+        if let Some(members) = self.groups.get(&group) {
+            if members.values().any(|role| *role == GroupMemberRole::Admin) {
+                return members.get(author) == Some(&GroupMemberRole::Admin);
+            }
         }
+        self.successor(group) == Some(*author)
+    }
+
+    /// The lowest-account `Member` of a non-root `group` that has no `Admin` row and no
+    /// creator slot in force: the account that runs it, read from state alone.
+    fn successor(&self, group: ContextGroupId) -> Option<AccountId> {
+        let members = self.groups.get(&group)?;
         let creator_serves = self
             .group_admin
             .get(&group)
             .is_some_and(|creator| self.holds_creator_slot(creator, group));
         let is_root = self.group_and_ancestors(group).last().unwrap_or(group) == group;
-        !is_root
-            && !creator_serves
-            && members
-                .iter()
-                .filter(|(_, role)| {
-                    matches!(role, GroupMemberRole::Member | GroupMemberRole::Admin)
-                })
-                .map(|(account, _)| account)
-                .min()
-                == Some(author)
+        if is_root || creator_serves || members.values().any(|r| *r == GroupMemberRole::Admin) {
+            return None;
+        }
+        members
+            .iter()
+            .filter(|(_, role)| **role == GroupMemberRole::Member)
+            .map(|(account, _)| *account)
+            .min()
+    }
+
+    /// Does `group` have no admin of its own, so its [successor](Self::is_group_admin)
+    /// runs it? Such a folder takes no new member until an admin is promoted.
+    #[must_use]
+    pub fn is_leaderless(&self, group: ContextGroupId) -> bool {
+        self.successor(group).is_some()
+    }
+
+    /// Does `account` hold a direct row in `group` at the cut?
+    #[must_use]
+    pub fn holds_direct_row(&self, account: &AccountId, group: ContextGroupId) -> bool {
+        self.groups
+            .get(&group)
+            .is_some_and(|members| members.contains_key(account))
     }
 
     /// Does `author` hold `group`'s creator admin slot? Outside the root group the slot

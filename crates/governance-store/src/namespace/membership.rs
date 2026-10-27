@@ -1,5 +1,8 @@
 use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer, ReentryAtCut};
-use crate::{MembershipRepository, NamespaceRepository, PermissionChecker, ReentryRepository};
+use crate::{
+    MembershipPolicy, MembershipRepository, NamespaceRepository, PermissionChecker,
+    ReentryRepository,
+};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::JoinAccountCredential;
 use calimero_context_config::types::ContextGroupId;
@@ -177,6 +180,9 @@ impl<'a> NamespaceMembershipService<'a> {
         if self.has_direct_row_at_cut(&group_id, member)? {
             return Ok(Vec::new());
         }
+        MembershipPolicy::new(self.store, group_id)
+            .with_apply_auth(self.parents, self.authorizer)
+            .ensure_group_takes_members()?;
 
         // Re-entry gate. Rejects two cases: an identity an admin REMOVED (no
         // invitation readmits them — only an admin `MemberAdded` does), and an

@@ -125,6 +125,12 @@ pub trait AtCutAuthorizer: Send + Sync {
         parents: &[[u8; 32]],
     ) -> Option<bool>;
 
+    /// Is `group` leaderless at the cut - no admin of its own, so its lowest member runs it
+    /// and it takes no new member? `None` = defer to live.
+    fn is_leaderless_at_cut(&self, _group: &ContextGroupId, _parents: &[[u8; 32]]) -> Option<bool> {
+        None
+    }
+
     /// How `member` reaches membership of `group` at the cut — the at-cut analogue of
     /// the live `check_path`. Backs `MemberJoinedOpen` apply (an open-subgroup
     /// inheritance join is valid only from an `Inherited` path; a `Direct` member
