@@ -22,7 +22,7 @@ use calimero_identity::{
     verify_registration, verify_session, Assertion, Registration, RelyingParty, SessionClaims,
 };
 use futures_util::{Stream, StreamExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::app::{Applied, Status};
@@ -40,8 +40,10 @@ const CHALLENGE_TTL: u64 = 5 * 60;
 
 type ApiResult<T = Json<Value>> = Result<T, ApiError>;
 
-/// A ceremony this node started and will finish.
-#[derive(Clone, Debug)]
+/// A ceremony a node started. Its id names that node (`{node}.{random}`): the
+/// ceremony may finish on any node, which takes the challenge from the one that
+/// holds it (`internal/challenge/take`), so a challenge is still used once.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Pending {
     Register {
         challenge: [u8; 32],
@@ -84,7 +86,7 @@ impl Pending {
 pub const MAX_PENDING_CHALLENGES: usize = 10_000;
 
 fn put_pending(node: &Node, pending: Pending) -> Result<String, ApiError> {
-    let id = b64url(&random::<16>());
+    let id = format!("{}.{}", node.config.node_id, b64url(&random::<16>()));
     let mut c = node
         .challenges
         .lock()
@@ -102,18 +104,36 @@ fn put_pending(node: &Node, pending: Pending) -> Result<String, ApiError> {
     Ok(id)
 }
 
-fn take_pending(node: &Node, id: &str) -> Result<Pending, ApiError> {
-    let p = node
-        .challenges
-        .lock()
-        .ok()
-        .and_then(|mut c| c.remove(id))
-        .ok_or_else(|| {
-            ApiError::bad_request(
-                "UNKNOWN_CHALLENGE",
-                "unknown or used challenge; start again on this node",
-            )
-        })?;
+fn unknown_challenge() -> ApiError {
+    ApiError::bad_request(
+        "UNKNOWN_CHALLENGE",
+        "unknown or used challenge; start the ceremony again",
+    )
+}
+
+/// The ceremony `id` names, taken from this node or the node that began it.
+async fn take_pending(node: &Node, id: &str) -> Result<Pending, ApiError> {
+    let holder = id
+        .split_once('.')
+        .and_then(|(n, _)| n.parse::<u64>().ok())
+        .ok_or_else(unknown_challenge)?;
+    let p = if holder == node.config.node_id {
+        take_local(node, id)?
+    } else {
+        let addr = node
+            .sys(|s| s.nodes.get(&holder).map(|n| n.addr.clone()))
+            .ok_or_else(unknown_challenge)?;
+        let v = node
+            .peer_post(&addr, "internal/challenge/take", &json!({ "id": id }))
+            .await
+            .map_err(|e| match e.downcast::<ApiError>() {
+                Ok(api) => api,
+                Err(e) => ApiError::unavailable(&format!(
+                    "the node that began this ceremony did not answer: {e}"
+                )),
+            })?;
+        serde_json::from_value(v).map_err(|e| ApiError::internal(&e.to_string()))?
+    };
     if p.expires() <= now_secs() {
         return Err(ApiError::bad_request(
             "EXPIRED_CHALLENGE",
@@ -121,6 +141,32 @@ fn take_pending(node: &Node, id: &str) -> Result<Pending, ApiError> {
         ));
     }
     Ok(p)
+}
+
+fn take_local(node: &Node, id: &str) -> Result<Pending, ApiError> {
+    node.challenges
+        .lock()
+        .ok()
+        .and_then(|mut c| c.remove(id))
+        .ok_or_else(unknown_challenge)
+}
+
+#[derive(Deserialize)]
+struct TakeChallengeBody {
+    id: String,
+}
+
+/// A peer finishes a ceremony this node began: hand it the challenge, once.
+async fn internal_challenge_take(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<TakeChallengeBody>,
+) -> ApiResult {
+    peer_only(&node, &headers)?;
+    let p = take_local(&node, &body.id)?;
+    Ok(Json(
+        serde_json::to_value(p).map_err(|e| ApiError::internal(&e.to_string()))?,
+    ))
 }
 
 /// The package whose frontend origin a ceremony claims (unverified: the
@@ -525,7 +571,7 @@ async fn register_finish(
 ) -> ApiResult {
     let Pending::Register {
         challenge, name, ..
-    } = take_pending(&node, &body.challenge_id)?
+    } = take_pending(&node, &body.challenge_id).await?
     else {
         return Err(ApiError::bad_request(
             "WRONG_CHALLENGE",
@@ -634,7 +680,7 @@ async fn check_assertion(
 }
 
 async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionBody>) -> ApiResult {
-    let Pending::Login { challenge, .. } = take_pending(&node, &body.challenge_id)? else {
+    let Pending::Login { challenge, .. } = take_pending(&node, &body.challenge_id).await? else {
         return Err(ApiError::bad_request(
             "WRONG_CHALLENGE",
             "not a login challenge",
@@ -689,7 +735,7 @@ async fn passkey_add_finish(
     let p = holder(&node, &headers).await?;
     let Pending::AddPasskey {
         challenge, account, ..
-    } = take_pending(&node, &body.challenge_id)?
+    } = take_pending(&node, &body.challenge_id).await?
     else {
         return Err(ApiError::bad_request(
             "WRONG_CHALLENGE",
@@ -1723,7 +1769,7 @@ async fn consent(
         args: a,
         account: acc,
         ..
-    } = take_pending(node, &confirm.challenge_id)?
+    } = take_pending(node, &confirm.challenge_id).await?
     else {
         return Err(ApiError::bad_request(
             "WRONG_CHALLENGE",
@@ -4299,6 +4345,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/system/index", post(internal_system_index))
         .route("/internal/call", post(internal_call))
         .route("/internal/blob", post(internal_blob_put))
+        .route("/internal/challenge/take", post(internal_challenge_take))
         .route("/internal/blob/get", post(internal_blob_get))
         .route("/internal/blob/held", post(internal_blob_held))
         .route("/internal/blob/delete", post(internal_blob_delete))

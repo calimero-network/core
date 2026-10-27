@@ -216,6 +216,41 @@ async fn signed_up(c: &Cluster, i: usize, name: &str) -> (Client, SoftAuthentica
     (client, pk)
 }
 
+/// A passkey ceremony begun on one node finishes on another (a load balancer
+/// in front of the cluster may send the two requests anywhere), and a
+/// challenge is still used once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_sign_in_begun_on_one_node_finishes_on_another() {
+    use calimero_cloud_client::Passkey;
+    let c = Cluster::start(3).await;
+    let (_alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let begin = c
+        .client(0)
+        .post("auth/passkey/login/begin", json!({}))
+        .await
+        .unwrap();
+    let challenge =
+        calimero_identity::from_b64url(begin["options"]["challenge"].as_str().unwrap()).unwrap();
+    let finish = json!({
+        "challengeId": begin["challengeId"],
+        "assertion": pk.get(&challenge),
+    });
+    let s = c
+        .client(1)
+        .post("auth/passkey/login/finish", finish.clone())
+        .await
+        .unwrap();
+    assert!(s["sessionToken"].is_string(), "{s}");
+    for i in [0, 2] {
+        let e = c
+            .client(i)
+            .post("auth/passkey/login/finish", finish.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("UNKNOWN_CHALLENGE"), "{e}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn end_to_end() {
     let mut c = Cluster::start(3).await;
