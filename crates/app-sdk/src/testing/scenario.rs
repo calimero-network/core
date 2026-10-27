@@ -10,9 +10,14 @@
 //! `expect` may also be `{ "confirmRequired": true }` or `{ "error": code, "fields": {..} }` (fields compared exactly).
 //! A `tick` always runs as the system: `as` on a tick is refused.
 //! `op` is `call`, `view`, `tick` (`method` names the timer), `advance` (`args` is the ms)
-//! or `removeMember` (`args` is the account). After a step, `events` lists for each account
+//! or `removeMember` (`args` is the account).
+//!
+//! Variables: `"save": "name"` on a call or view stores its ok result; later, any string
+//! that is exactly `"$name"` inside `args` or `expect` is replaced by the stored value
+//! (ids an app mints are not known to the scenario author). After a step, `events` lists for each account
 //! the names of all events it receives so far, in order.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use eyre::{bail, eyre, Result, WrapErr};
@@ -29,15 +34,43 @@ pub fn run_scenario(t: &mut TestApp, path: &Path) -> Result<()> {
     let text =
         std::fs::read_to_string(path).wrap_err_with(|| format!("read {}", path.display()))?;
     let steps: Vec<Value> = serde_json::from_str(&text).wrap_err("scenario is not a JSON array")?;
+    let mut vars = HashMap::new();
     for (n, step) in steps.iter().enumerate() {
-        run_step(t, step).wrap_err_with(|| format!("step {n}: {step}"))?;
+        run_step(t, step, &mut vars).wrap_err_with(|| format!("step {n}: {step}"))?;
     }
     Ok(())
 }
 
-fn run_step(t: &mut TestApp, step: &Value) -> Result<()> {
+type Vars = HashMap<String, Value>;
+
+/// Replaces every string that is exactly `$name` by the saved value of `name`.
+fn substitute(value: &Value, vars: &Vars) -> Result<Value> {
+    Ok(match value {
+        Value::String(s) => match s.strip_prefix('$') {
+            Some(name) => vars
+                .get(name)
+                .cloned()
+                .ok_or_else(|| eyre!("unknown variable ${name}"))?,
+            None => value.clone(),
+        },
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|v| substitute(v, vars))
+                .collect::<Result<_>>()?,
+        ),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| Ok((k.clone(), substitute(v, vars)?)))
+                .collect::<Result<_>>()?,
+        ),
+        other => other.clone(),
+    })
+}
+
+fn run_step(t: &mut TestApp, step: &Value, vars: &mut Vars) -> Result<()> {
     let op = str_of(step, "op")?;
-    let args = step.get("args").cloned().unwrap_or(Value::Null);
+    let args = substitute(step.get("args").unwrap_or(&Value::Null), vars)?;
     let result = match op {
         "call" | "view" => {
             let method = str_of(step, "method")?;
@@ -78,7 +111,14 @@ fn run_step(t: &mut TestApp, step: &Value) -> Result<()> {
         }
         other => bail!("unknown op {other:?}"),
     };
-    check_expect(step.get("expect"), &result)?;
+    let expect = step
+        .get("expect")
+        .map(|e| substitute(e, vars))
+        .transpose()?;
+    check_expect(expect.as_ref(), &result)?;
+    if let (Some(name), Ok(saved)) = (step.get("save").and_then(Value::as_str), &result) {
+        vars.insert(name.to_owned(), saved.clone());
+    }
     if let Some(Value::Object(per_account)) = step.get("events") {
         for (account, names) in per_account {
             let want: Vec<&str> = names

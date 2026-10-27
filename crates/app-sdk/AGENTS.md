@@ -55,7 +55,7 @@ The macros convert exactly these types, at the top level of a parameter, a resul
 - `export_state()` is deterministic CBOR (RFC 8949 4.2.1): a map of stored key (generation prefix included) to value, byte strings, ordered by encoded key bytes. The TypeScript harness must produce the same bytes.
 - What the harness org supports: one org (`ORG_ID`) with the owner (`"owner"`, role Owner), `admins`, `members`, `guests` (role checks, `org_role`, `orgs_of`), and `Org::teams([("id", ["acct", ..])])` (`in_team`, `team_exists`, `Team` audiences; a team needs no org role). `Org` audiences reach members, admins and the owner, not guests; `OrgAdmins` reaches admins and the owner. No partner orgs, no second org.
 - Timeouts are not logged (D23): they consume no `id_seq` and do not move the last entry time. A result or event payload that is not JSON gives `Failure::BadOutput` and applies nothing.
-- `run_scenario(t, path)` runs the neutral JSON scenario (format in `testing/scenario.rs`; `expect` takes `ok`, `error` (+ exact `fields`), `trap` or `confirmRequired`; a tick always runs as System and refuses `as`).
+- `run_scenario(t, path)` runs the neutral JSON scenario (format in `testing/scenario.rs`; `expect` takes `ok`, `error` (+ exact `fields`), `trap` or `confirmRequired`; a tick always runs as System and refuses `as`; `"save": "name"` stores a step's ok result and an exact `"$name"` string in later `args`/`expect` is replaced by it, so scenarios can name ids an app mints).
 - Not yet: actions, `mock_http`, migrations (`upgrade_to`).
 
 ## Verify

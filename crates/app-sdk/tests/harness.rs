@@ -157,6 +157,27 @@ fn scenario_file_runs() {
     run_scenario(&mut t, &path).unwrap();
 }
 
+#[test]
+fn scenario_variables_carry_minted_ids() {
+    let mut t = app();
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("scenario-vars.json");
+    let steps = json!([
+        { "as": "bob", "op": "call", "method": "book", "save": "id",
+          "args": { "roomId": "r1", "start": "10", "title": "t" } },
+        { "as": "bob", "op": "view", "method": "booking", "args": { "id": "$id" },
+          "expect": { "ok": { "id": "$id", "roomId": "r1", "start": "10", "title": "t", "checkedIn": false } } },
+    ]);
+    std::fs::write(&path, steps.to_string()).unwrap();
+    run_scenario(&mut t, &path).unwrap();
+
+    let steps = json!([
+        { "as": "bob", "op": "view", "method": "booking", "args": { "id": "$nope" } },
+    ]);
+    std::fs::write(&path, steps.to_string()).unwrap();
+    let err = run_scenario(&mut t, &path).unwrap_err();
+    assert!(format!("{err:#}").contains("unknown variable $nope"));
+}
+
 fn roll(seed: u64) -> Value {
     let mut t = app();
     t.seed(seed);
