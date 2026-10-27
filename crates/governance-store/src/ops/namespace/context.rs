@@ -227,6 +227,16 @@ impl<'a> NamespaceApplyCtx<'a> {
         }
         if let Some(destination) = destination {
             match tree.space_of(destination)? {
+                // A folder entering a space is seen by the whole workspace, which cannot read the
+                // space's admins: the space's owner, read from cleartext, lets it in.
+                Some(space) if tree.space_of(moved)? != Some(space) => {
+                    if self.standing_owner(signer, &space)?.is_none() {
+                        bail!(MembershipError::NotAdmin {
+                            group_id: space.to_string(),
+                            identity: format!("{signer}"),
+                        });
+                    }
+                }
                 Some(space) => spaces.push(space),
                 None if creates_at_destination => {
                     let permissions = self.permissions_for(ns_gid);

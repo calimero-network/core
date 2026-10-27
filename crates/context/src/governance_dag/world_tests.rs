@@ -1077,6 +1077,63 @@ mod held_ops {
         );
     }
 
+    /// An open folder moved into a space is a move every member of the workspace sees leave the
+    /// open space, so the node outside the space applies it as the one inside does.
+    #[actix::test]
+    async fn a_node_outside_a_space_applies_an_open_folders_move_into_it() {
+        let f = unauthorized_op_under_the_namespace_key().await;
+        let owner = f.world.actor(ActorState::Owner);
+        let create = sign_next(
+            &f.inside,
+            &f.world.namespace,
+            &f.world.owner_sk,
+            seal_for_test(
+                &f.inside,
+                f.world.namespace,
+                group_created(owner.account, f.world.namespace.to_bytes(), false, 0x7A),
+            ),
+        );
+        for store in [&f.inside, &f.outside] {
+            apply(store, &create)
+                .await
+                .expect("the owner makes an open folder");
+        }
+        let folder = ContextGroupId::from(derived_group_id(
+            &owner.account,
+            f.world.namespace.to_bytes(),
+            false,
+            0x7A,
+        ));
+        let enter = sign_next(
+            &f.inside,
+            &f.world.namespace,
+            &f.world.owner_sk,
+            seal_for_test(
+                &f.inside,
+                f.world.namespace,
+                calimero_governance_types::RootOp::GroupReparented {
+                    child_group_id: folder.to_bytes().into(),
+                    new_parent_id: f.subgroup.to_bytes().into(),
+                },
+            ),
+        );
+
+        for (node, store) in [("inside", &f.inside), ("outside", &f.outside)] {
+            let applied = apply(store, &enter).await;
+            assert!(
+                applied.is_ok(),
+                "{node} did not apply the move: {applied:?}"
+            );
+            assert_eq!(
+                calimero_governance_store::NamespaceRepository::new(store)
+                    .parent(&folder)
+                    .expect("read the parent"),
+                Some(f.subgroup),
+                "{node} left the folder in the open space"
+            );
+        }
+    }
+
     #[actix::test]
     async fn a_node_that_gets_the_key_later_reaches_the_inside_verdict() {
         let f = unauthorized_op_under_the_namespace_key().await;
