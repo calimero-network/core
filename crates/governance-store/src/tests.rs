@@ -12860,6 +12860,42 @@ mod self_leave_rotation {
             "the creator slot counts only while the creator is in the workspace"
         );
     }
+
+    #[test]
+    fn removing_the_only_admin_of_a_subgroup_succeeds_and_the_lowest_member_takes_over() {
+        let f = fixture();
+        let low = AccountId::from([0x01; 32]);
+        let high = AccountId::from([0xF0; 32]);
+        let repo = MembershipRepository::new(&f.store);
+        repo.remove_member(&f.sub_gid, &f.admin).unwrap();
+        repo.add_member(&f.sub_gid, &f.leaver, GroupMemberRole::Admin)
+            .unwrap();
+        repo.add_member(&f.sub_gid, &high, GroupMemberRole::Member)
+            .unwrap();
+        repo.add_member(&f.sub_gid, &low, GroupMemberRole::ReadOnly)
+            .unwrap();
+        let mid = AccountId::from([0x80; 32]);
+        repo.add_member(&f.sub_gid, &mid, GroupMemberRole::Member)
+            .unwrap();
+        let mut meta = sample_meta_with_admin(f.leaver);
+        meta.admin_identity = f.leaver;
+        MetaRepository::new(&f.store)
+            .save(&f.sub_gid, &meta)
+            .unwrap();
+        apply_root_removal(&f);
+
+        let repo = MembershipRepository::new(&f.store);
+        assert!(!repo.is_admin(&f.sub_gid, &f.leaver).unwrap());
+        assert!(
+            repo.is_admin(&f.sub_gid, &mid).unwrap(),
+            "the lowest Member or Admin account runs a folder left without an admin"
+        );
+        assert!(!repo.is_admin(&f.sub_gid, &high).unwrap());
+        assert!(
+            !repo.is_admin(&f.sub_gid, &low).unwrap(),
+            "a read-only member is never promoted"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------

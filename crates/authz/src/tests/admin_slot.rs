@@ -1,5 +1,5 @@
 //! Who is an admin of a group: an `Admin` row, the creator slot while the creator is
-//! still in the workspace.
+//! still in the workspace, and for a folder with neither its lowest member.
 
 use std::collections::BTreeMap;
 
@@ -67,4 +67,58 @@ fn the_root_creator_slot_needs_no_row() {
     let _ = v.group_admin.insert(root(), founder);
 
     assert!(v.is_group_admin(&founder, root()));
+}
+
+#[test]
+fn a_folder_left_without_an_admin_is_run_by_its_lowest_account() {
+    let creator = account(0x10);
+    let rows = [
+        (account(0x90), GroupMemberRole::Member),
+        (account(0x40), GroupMemberRole::Member),
+        (account(0x05), GroupMemberRole::ReadOnly),
+        (account(0x06), GroupMemberRole::ReadOnlyTee),
+    ];
+    let v = view(creator, &[], &rows);
+
+    assert!(v.is_group_admin(&account(0x40), folder()));
+    assert!(!v.is_group_admin(&account(0x90), folder()));
+    assert!(!v.is_group_admin(&account(0x05), folder()));
+    assert!(!v.is_group_admin(&account(0x06), folder()));
+}
+
+#[test]
+fn a_folder_with_an_admin_has_no_stand_in() {
+    let creator = account(0x10);
+    let rows = [
+        (account(0x90), GroupMemberRole::Admin),
+        (account(0x40), GroupMemberRole::Member),
+    ];
+    let v = view(creator, &[], &rows);
+
+    assert!(v.is_group_admin(&account(0x90), folder()));
+    assert!(!v.is_group_admin(&account(0x40), folder()));
+}
+
+#[test]
+fn a_folder_whose_creator_is_still_in_the_workspace_has_no_stand_in() {
+    let creator = account(0x90);
+    let v = view(
+        creator,
+        &[(creator, GroupMemberRole::Member)],
+        &[(account(0x40), GroupMemberRole::Member)],
+    );
+
+    assert!(v.is_group_admin(&creator, folder()));
+    assert!(!v.is_group_admin(&account(0x40), folder()));
+}
+
+#[test]
+fn the_root_has_no_stand_in() {
+    let mut v = AclView::default();
+    let _ = v.groups.insert(
+        root(),
+        BTreeMap::from([(account(0x40), GroupMemberRole::Member)]),
+    );
+
+    assert!(!v.is_group_admin(&account(0x40), root()));
 }
