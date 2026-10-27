@@ -122,3 +122,19 @@ fn clear_and_wipe_need_a_confirmation() {
         );
     }
 }
+
+#[test]
+fn stamp_time_now_and_new_id_follow_the_entry() {
+    let mut t = app();
+    t.set_time(1_700_000_005_000);
+    let at = t.as_("owner").call("stamp", json!({})).unwrap();
+    assert_eq!(at, json!("1700000005000"));
+    t.advance(1_000);
+    // A view sees the last logged entry's time, not the clock (D19).
+    let seen = t.as_("owner").view("timeNow", json!({})).unwrap();
+    assert_eq!(seen, json!("1700000005000"));
+    let a = t.as_("owner").call("newId", json!({})).unwrap();
+    let b = t.as_("owner").call("newId", json!({})).unwrap();
+    assert_ne!(a, b);
+    assert!(a.as_str().unwrap().ends_with(".0"), "{a}");
+}

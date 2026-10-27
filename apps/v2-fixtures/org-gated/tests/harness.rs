@@ -113,3 +113,15 @@ fn a_teams_members_write_that_teams_note() {
         "TeamOnly"
     );
 }
+
+#[test]
+fn announcements_reach_the_orgs_members_only() {
+    let mut t = app();
+    t.as_("bob")
+        .call("announce", json!({ "text": "hi" }))
+        .unwrap();
+    assert_eq!(t.events_for("cy").len(), 1);
+    assert_eq!(t.events_for("ada").len(), 1);
+    assert!(t.events_for("gus").is_empty());
+    assert_eq!(code(t.as_("gus").call("announce", json!({ "text": "x" }))), "MembersOnly");
+}

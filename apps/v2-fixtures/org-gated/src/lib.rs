@@ -32,6 +32,11 @@ pub enum Error {
     TeamOnly,
 }
 
+#[app::event]
+pub enum Event {
+    Announced { text: String },
+}
+
 /// What the node told the app about the caller.
 #[derive(serde::Serialize)]
 pub struct Standing {
@@ -109,6 +114,15 @@ impl OrgNotes {
             id: PIN.to_owned(),
             text,
         })?;
+        Ok(())
+    }
+
+    /// Tells the organization's members `text` (an `Org` audience event). Members and above.
+    pub fn announce(&mut self, text: String) -> app::Result<()> {
+        if !role().is_some_and(|r| r >= OrgRole::Member) {
+            return Err(Error::MembersOnly.into());
+        }
+        env::emit(Event::Announced { text }, Audience::Org)?;
         Ok(())
     }
 

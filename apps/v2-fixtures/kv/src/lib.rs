@@ -57,6 +57,30 @@ impl Kv {
         Ok(())
     }
 
+    /// Never returns: runs until the node's fuel or wall-clock budget stops it.
+    pub fn spin(&mut self) -> app::Result<()> {
+        let mut n: u64 = 0;
+        loop {
+            n = std::hint::black_box(n.wrapping_add(1));
+        }
+    }
+
+    /// The entry timestamp this call ran at (D19); writes nothing.
+    pub fn stamp(&mut self) -> app::Result<u64> {
+        Ok(env::time_now())
+    }
+
+    /// The time a view sees: the last applied entry's timestamp (D19).
+    #[app::view]
+    pub fn time_now(&self) -> app::Result<u64> {
+        Ok(env::time_now())
+    }
+
+    /// A fresh unique id (D52); writes nothing.
+    pub fn new_id(&mut self) -> app::Result<String> {
+        Ok(env::unique_id())
+    }
+
     /// The value of `key`, or `null`.
     #[app::view]
     pub fn get(&self, key: String) -> app::Result<Option<String>> {
