@@ -54,7 +54,8 @@ after proving its own image.
 The previous design ran a node per user and kept replicas convergent with
 signed operations in a causal DAG, CRDT merges and a sync protocol that
 repaired divergence after the fact. It worked without coordination, at the
-price of every replica re-executing or merging every change, and of
+price of every replica merging every change through the app's own merge code
+(state had to be mergeable, in any order), and of
 authorization that had to be judged "at the author's causal cut" because no
 two nodes saw changes in the same order.
 

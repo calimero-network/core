@@ -83,9 +83,12 @@ and record the idempotency answer, all in one RocksDB batch together with the
 new applied index. The leader's run is the only run.
 
 :::note[Why not re-execute?]
-Re-executing on every replica (v1's model, and most blockchains') needs every
-replica to reach the same answer, so the runtime must be deterministic and the
-inputs identical. Applying a diff needs neither. The leader may read the clock
+Re-executing on every replica (most blockchains' model) needs every replica to
+reach the same answer, so the runtime must be deterministic and the inputs
+identical. v1 did not re-execute either: the author's node ran the method, and
+every peer merge-applied the resulting delta through the app's own merge code
+(`__calimero_sync_next`), which works only for state whose every change
+merges. Applying a diff in log order needs neither. The leader may read the clock
 (`time_now`), draw randomness (`random_bytes`), [call out over
 HTTPS](/protocol/execution/#outbound-https) or open a blob, and the followers
 still end in the same state, because they copy the result rather than
