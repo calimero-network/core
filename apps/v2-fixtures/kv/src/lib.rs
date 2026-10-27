@@ -10,15 +10,41 @@ pub struct Entry {
     pub value: String,
 }
 
+/// One tick of `beat`, in the order the ticks were applied.
+#[derive(Record)]
+#[table(key = "n")]
+pub struct Beat {
+    /// The tick's position, zero-padded so a scan returns ticks in order.
+    pub n: String,
+    pub scheduled: u64,
+    /// `0`: the timer's first tick.
+    pub previous: u64,
+    /// The entry timestamp the tick ran at.
+    pub at: u64,
+}
+
+/// A `beat` tick as `beats` lists it (D20: 64-bit integers are decimal strings).
+#[derive(serde::Serialize)]
+pub struct BeatOut {
+    pub scheduled: String,
+    pub previous: Option<String>,
+    pub at: String,
+}
+
 #[app::state(version = 1)]
 pub struct Kv {
     entries: Table<Entry>,
     size: Counter,
+    beats: Table<Beat>,
+    beat_count: Counter,
+    /// `failUntil` and `stallUntil`, app times in ms as decimal strings.
+    beat_faults: UnorderedMap<String, String>,
 }
 
 #[app::error]
 pub enum Error {
     NotFound { key: String },
+    BeatFailed,
 }
 
 #[app::event]
@@ -31,6 +57,9 @@ pub enum Event {
 
 /// The most entries one `entries` call lists.
 const LIST_LIMIT: u32 = 1000;
+/// `beat`'s interval: long, so the other cluster tests see no ticks; timer tests move
+/// the nodes' app clocks forward instead.
+const BEAT_MS: u64 = 3_600_000;
 
 #[app::logic]
 #[allow(clippy::len_without_is_empty)]
@@ -85,6 +114,66 @@ impl Kv {
     /// A fresh unique id (D52); writes nothing.
     pub fn new_id(&mut self) -> app::Result<String> {
         Ok(env::unique_id())
+    }
+
+    /// A timer (D34): records the tick's slot and the previous one. A tick fails while
+    /// its slot is within a `failBeats` window, and spins (until the node's deadline)
+    /// while its entry time is within a `stallBeats` window.
+    #[app::every("1h")]
+    pub fn beat(&mut self) -> app::Result<()> {
+        let Some(tick) = env::timer() else {
+            app::bail!(Error::BeatFailed);
+        };
+        let now = env::time_now();
+        if now < self.fault("stallUntil")? {
+            let mut n: u64 = 0;
+            loop {
+                n = std::hint::black_box(n.wrapping_add(1));
+            }
+        }
+        if tick.scheduled <= self.fault("failUntil")? {
+            app::bail!(Error::BeatFailed);
+        }
+        let n = self.beat_count.increment()?;
+        self.beats.upsert(Beat {
+            n: format!("{n:020}"),
+            scheduled: tick.scheduled,
+            previous: tick.previous.unwrap_or(0),
+            at: now,
+        })?;
+        Ok(())
+    }
+
+    /// Every `beat` tick applied, oldest first (up to 1000).
+    #[app::view]
+    pub fn beats(&self) -> app::Result<Vec<BeatOut>> {
+        let page = self.beats.scan(FindOpts::default().limit(LIST_LIMIT))?;
+        Ok(page
+            .items
+            .into_iter()
+            .map(|b| BeatOut {
+                scheduled: b.scheduled.to_string(),
+                previous: (b.previous != 0).then(|| b.previous.to_string()),
+                at: b.at.to_string(),
+            })
+            .collect())
+    }
+
+    /// Makes the `beat` ticks of the next `n` slots (from this call's time) fail.
+    pub fn fail_beats(&mut self, n: u32) -> app::Result<()> {
+        let until = env::time_now() + u64::from(n) * BEAT_MS;
+        self.beat_faults
+            .insert(&"failUntil".to_owned(), &until.to_string())?;
+        Ok(())
+    }
+
+    /// Makes `beat` ticks that run within `ms` of this call's time spin until they time
+    /// out; returns the app time the window ends at.
+    pub fn stall_beats(&mut self, ms: u64) -> app::Result<u64> {
+        let until = env::time_now() + ms;
+        self.beat_faults
+            .insert(&"stallUntil".to_owned(), &until.to_string())?;
+        Ok(until)
     }
 
     /// The value of `key`, or `null`.
@@ -156,6 +245,14 @@ impl Kv {
                 value: value.to_owned(),
             })
         }
+    }
+
+    fn fault(&self, name: &str) -> app::Result<u64> {
+        Ok(self
+            .beat_faults
+            .get(&name.to_owned())?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0))
     }
 
     fn remove_all(&mut self) -> app::Result<()> {

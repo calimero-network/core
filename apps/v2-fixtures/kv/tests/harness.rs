@@ -149,3 +149,29 @@ fn put_writes_without_an_event() {
     let v = t.as_("owner").view("get", json!({ "key": "a" })).unwrap();
     assert_eq!(v.as_str().unwrap().len(), 20_000);
 }
+
+#[test]
+fn beat_records_its_slot_and_fails_inside_a_fail_window() {
+    const HOUR: u64 = 3_600_000;
+    let mut t = app();
+    t.advance(HOUR);
+    t.tick("beat").unwrap();
+    t.as_("owner").call("failBeats", json!({ "n": 1 })).unwrap();
+    t.advance(HOUR);
+    assert!(matches!(t.tick("beat"), Err(Failure::App { .. })));
+    t.advance(HOUR);
+    t.tick("beat").unwrap();
+    let beats = t.as_("owner").view("beats", json!({})).unwrap();
+    let start = 1_700_000_000_000 + HOUR;
+    assert_eq!(
+        beats,
+        json!([
+            { "scheduled": start.to_string(), "previous": null, "at": start.to_string() },
+            {
+                "scheduled": (start + 2 * HOUR).to_string(),
+                "previous": (start + HOUR).to_string(),
+                "at": (start + 2 * HOUR).to_string(),
+            },
+        ])
+    );
+}
