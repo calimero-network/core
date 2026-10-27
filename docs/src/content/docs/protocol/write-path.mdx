@@ -1,111 +1,157 @@
 ---
-title: The Write Path
-description: From a request to a broadcast operation, end to end.
+title: The write path
+description: From a client's sealed request to a committed entry and a signed answer — authentication, access, routing to the leader, idempotency, confirmations and errors.
 sidebar:
-  order: 9
+  order: 6
 ---
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
-import { Steps } from '@astrojs/starlight/components';
 
-## The left half of the operation's life
+A write is a **call**: `POST /apps/{app}/intents { method, args, idempotencyKey?, confirm? }`.
+This page follows one from the moment a node opens it to the answer the client
+gets back.
 
-The landing page promised to follow one operation from birth to convergence. This chapter is its birth: a request arrives, an application runs, and a signed operation is persisted and broadcast. Every step here was introduced earlier — this is where they connect into a single flow.
+## Any node takes any request
 
-<SeqDiagram
-  id="d-write"
-  title="The write path"
-  lanes={[
-    { label: 'Caller', color: '#f0883e' },
-    { label: 'Context', color: '#3fb950' },
-    { label: 'Store', color: '#39d0d8' },
-    { label: 'Network', color: '#a371f7' },
-  ]}
-  steps={[
-    { from: 0, to: 1, label: 'request(context, method, args)' },
-    { from: 1, to: 1, label: 'take execution lock' },
-    { from: 1, to: 1, label: 'execute WASM → outcome (artifact, root)' },
-    { from: 1, to: 1, label: 'build op: parents=heads, hlc, author' },
-    { from: 1, to: 1, label: 'sign id with member key', color: '#a5ff11' },
-    { from: 1, to: 2, label: 'atomic write: op + meta(root,heads) + state', color: '#a5ff11' },
-    { from: 1, to: 3, label: 'broadcast op (encrypted) on context topic' },
-    { from: 1, to: 0, label: 'response { returns }', dashed: true },
-  ]}
-/>
+A client may talk to any node of the cluster. Every node holds the system
+group, so it can authenticate the caller and find the app; if it is not the
+app's leader, it forwards the call to a node that is. Clients reach a node in
+one of three ways, and all three end up in the same handlers:
+
+- **A program** (`calimero-cloud-client`, mero-js, calimero-client-py,
+  `meroctl`) verifies the node's attestation and seals every request
+  ([Networking & sealed channels](/protocol/networking/)).
+- **A browser page on a configured origin** (`--origins`) does the same through
+  mero-js; those origins are both the passkey origins and the CORS origins.
+- **A package's own frontend** at `{label}.{apps-domain}` signs in there and
+  gets a session bound to that package ([Packages &
+  frontends](/protocol/applications/#frontends)).
+
+:::note[v1 comparison]
+v1 had four write paths: a member's own node, a relay executing under a
+warrant, a TEE relay sealed end to end, and the TEE authority. They existed
+because a write had to be signed by a member key on some node. Here the node
+runs the call for an authenticated caller and the log records who that was, so
+there is one path.
+:::
 
 ## Step by step
 
-<Steps>
+<SeqDiagram
+  id="d-write"
+  title="A call, end to end"
+  lanes={[
+    { label: 'Client', color: '#f0883e' },
+    { label: 'Entry node', color: '#3fb950' },
+    { label: 'App leader', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'sealed POST /apps/{app}/intents' },
+    { from: 1, to: 1, label: 'open the envelope; route the inner request' },
+    { from: 1, to: 1, label: 'credential → principal (fresh system state)' },
+    { from: 1, to: 1, label: 'gate: reach the app? API-key scope?' },
+    { from: 1, to: 1, label: 'confirm method? → 412 or check assertion' },
+    { from: 1, to: 2, label: 'internal/call (5 s bound, retried)' },
+    { from: 2, to: 2, label: 'replay idempotency key, or run and append' },
+    { from: 2, to: 1, label: 'Applied { index, status, result, events }', dashed: true },
+    { from: 1, to: 0, label: '{ index, result, events, receipt }', dashed: true },
+  ]}
+/>
 
-1. **Request and lock.** — A request (HTTP/RPC) names a context and a method. The node takes an execution lock on that context so concurrent writes don't interleave. Read-only calls take a shared lock and skip everything below — they produce no operation.
+1. **Open.** The sealed envelope wraps the whole router: the node opens the
+   request and routes the inner one afresh, so a sealed request meets exactly
+   the handlers and limits a direct one would.
+2. **Name the app.** `{app}` may be the app id or its context id
+   (`hex(SHA-256(app_id))`); the node maps one to the other. The app record is
+   read from the system state, waiting briefly if it was just created through
+   another node.
+3. **Authenticate.** The `Authorization` header holds a session token or an API
+   key (`cal_…`). Either is judged on fresh system state: the node first catches
+   its system replica up to the leader's applied index, so a session revoked or
+   a key deleted through another node is refused here at once.
+4. **Gate.** The caller must reach the app under its access rule
+   ([Organizations, teams & access](/protocol/organizations/#app-access)); a
+   caller who does not gets `404` (or `401` if they sent no credential), so the
+   app's existence is not disclosed. An API key must not be read-only for a
+   write, and must be scoped to this app and method if it is scoped at all. A
+   session opened on a package's frontend reaches only that package's apps.
+5. **Views called as calls.** If the bundle's ABI declares the method
+   `#[app::view]`, the call runs as a strong view instead: it reads the latest
+   state, writes nothing, and may search (v1's rule).
+6. **Confirm methods.** If the app lists the method in `confirmMethods`, the
+   call needs the account holder's consent (below).
+7. **Route.** `Node::call` gives the call an idempotency key if it has none,
+   then runs it locally if this node leads the app's group, or forwards it to
+   the leader over the peer sealed channel. A forward waits at most 5 seconds,
+   then tries whoever leads now; the loop rides out elections for a few
+   seconds before answering `503`.
+8. **Run and append** on the leader ([Application execution](/protocol/execution/),
+   [Replication](/protocol/replication/#proposing-the-leader-runs-everyone-applies)).
+   For a client's call the leader reads the caller's organization standing on
+   fresh system state first.
+9. **Answer.** The node that took the request returns the result with a
+   [receipt](/protocol/tee-attestation/#receipts) signed by its attested receipt key.
 
-2. **Execute.** — The WASM application runs the method against current state ([execution](/protocol/execution/)). It produces an **outcome**: a new root hash and an artifact of committed writes, plus events and any queued cross-calls. If it traps, the lock releases and nothing is written. If the run asked to rotate a shared cell's writers, the node publishes each rotation as a governance op now, before anything below, so the operation's governance position includes it ([governance](/protocol/governance/)).
+## Idempotency
 
-3. **Build the operation.** — The committed writes become data-plane operations in the context scope. Each takes the scope's **current heads as parents**, a fresh **hybrid timestamp**, the executor's **member identity** as author, and a content-addressed **id**, all as defined by the [operations](/protocol/operations/) model.
+An idempotency key makes a call safe to retry. The leader checks it inside the
+proposal, against the app's applied state: if the same caller already ran a
+call with that key, the stored answer is replayed and nothing is appended.
 
-4. **Sign.** — The author signs the id with their member key. The signature binds authorship to content so a peer can verify it before trusting the operation — and so the operation can't be relabelled in flight.
+- Keys are scoped to the caller: `account|key`, `app:{id}|key` for an app's own
+  calls, `public|key` otherwise.
+- A client key is remembered for 24 hours by the log's own clock (the leader's
+  timestamp in the entry). The newest 10 000 client records are kept whatever
+  the clock says, so a leader whose clock jumps ahead cannot forget acknowledged
+  calls; at most 1 000 000 are kept at all.
+- A call without a key gets a node key (`node:…`) before routing, remembered
+  10 minutes (the newest 1 000 always), so a retried forward of a call that
+  did commit replays instead of running twice.
+- A call that hit a [conflict](/protocol/replication/#proposing-the-leader-runs-everyone-applies)
+  records no key, so its rerun is a real run.
 
-5. **Persist atomically.** — In one atomic write the node stores the operation, the updated context metadata (new root hash and heads), and the materialized state. Atomicity matters: a node must never advance its heads without also holding the operation that produced them, or a crash could strand the two out of step.
+## Confirm methods
 
-6. **Broadcast.** — The signed operation is published to the `context/<id>` gossip topic, encrypted under the scope key. Broadcast is fire-and-forget and runs off the request's critical path — the writer has already durably committed; gossip is how everyone else finds out.
+A method listed in the app's `confirmMethods` (`#[app::confirm]`) runs only
+with a fresh passkey assertion over that exact call:
 
-</Steps>
+1. The first `intents` request answers `412 CONFIRM_REQUIRED` with a challenge
+   id, the challenge, the relying party id and the account's credential ids.
+   The challenge is
+   `SHA-256("calimero.confirm.v1" | app | 0 | method | 0 | SHA-256(args) | nonce)`.
+2. The client has the person approve it with a passkey, and sends the same call
+   again with `confirm { challengeId, assertion }`.
+3. The node checks the challenge was issued for this app, method, arguments and
+   account, that it has not expired (5 minutes) or been used, and that the
+   assertion is valid **with user verification** (a PIN or biometric, not just a
+   touch).
+4. The assertion travels in the entry as `consent`, so the log records what was
+   approved and by whom.
 
-## A worked example: `send_message("hi")`
+Challenges are held in the memory of the node that issued them; the retry must
+reach the same node. An API key can carry a person's assertion only if it was
+created with `allowConfirm`; it cannot produce one. A confirm method called
+through `/views` is refused with `412`: as a view its writes would be dropped,
+but its answer would have been handed back unconfirmed.
 
-Follow one real chat write through the six steps. The context's current head is `0x11aa…02`, the executing member's key is `0x9f4b…21`, and the group key hashes to `key_id = 0x4d90…7c`. (Hashes are abbreviated and illustrative.)
+## Answers and errors
 
-```text
-1. execute  — WASM appends to the messages collection.
-              outcome.artifact = [ Put(entity=messages["m17"], value=borsh("hi")) ]
-              outcome.events   = [ { kind: "MessageSent", data: { len: 2 } } ]
-              outcome.root     = 0x6e72…ff       (new scope_root after the put)
+| Outcome | HTTP |
+| --- | --- |
+| The app returned | `200 { index, result, events, receipt }` |
+| The app returned an error | `422 APP_ERROR` with `details.error` |
+| The run trapped (panic, out of gas, unknown method) | `422 TRAP` |
+| A read-only team member's call would write | `403` |
+| The call kept racing leader changes | `503`; retry with the same idempotency key |
+| No leader could be reached | `503 UNAVAILABLE` |
+| The caller does not reach the app | `404` (or `401` without a credential) |
 
-2. build    — parents = [ 0x11aa…02 ]            (the current head)
-              hlc     = 1750.000123:#0
-              author  = 0x9f4b…21
-              delta_id = hash(parents ‖ artifact) = 0x3c08…9d
+The `index` is the entry's log index. A client that then reads from a replica
+can pass it as `minIndex` to read its own write ([Reads](/protocol/reads/)).
 
-3. sign     — delta_signature = Ed25519_sign(author_sk, payload of
-                 (SignatureDomain::Delta, context_id, delta_id, author_id,
-                  governance_position, hlc))
-              The chat entry is Public, so the action carries no per-action signature.
+## Governance writes take a different log
 
-4. persist  — one atomic write: { delta, meta(root=0x6e72…ff, heads=[0x3c08…9d]), state }
-
-5. broadcast — seal { root_hash=0x6e72…ff, artifact, events } into SealedDeltaPayload;
-               SharedKey::from_sk(group_key).encrypt(borsh(payload), nonce) → ciphertext
-               publish BroadcastMessage::StateDelta { author_id, delta_id, parent_ids,
-                 hlc, key_id=0x4d90…7c, nonce, artifact=ciphertext, delta_signature }
-                 on TopicHash(context_id)
-```
-
-After step 4 the writer's own state already shows `"hi"` and its head has advanced to `delta_id`. The new head **is** the `delta_id` — the next op the same node authors will list `0x3c08…9d` as its parent. Step 5 is how everyone else finds out; the [receive path](/protocol/receive-path/) picks up this exact message from here.
-
-## What gets committed before the broadcast
-
-The ordering is deliberate: **persist, then broadcast**. By the time a single byte leaves the node, the operation is already durable locally and the author's own state already reflects it. If the network is down, or no peer is listening, nothing is lost — the operation sits in the local DAG and will be served to peers later through the [sync channel](/protocol/sync/). Convergence never depends on a broadcast being received; it only depends on the operation eventually being _available_.
-
-### Search-enabled apps add one row to the same write
-
-If the application opted into [full-text search](/build/guides/search/) (it
-exports `__calimero_search_extract`), step 5's atomic write carries one more
-record: a **dirty row** in the node-local `SearchDirty` column holding the
-state root before and after the write and the ids of the entities it touched,
-with every entity above them. The node's indexer reads it after the commit and
-updates the search index. The row and the index are node-local derived data:
-neither is part of the operation, the broadcast or the root hash, so a peer
-without search sees exactly the same operation. An app that did not opt in
-writes no row.
-
-## The author is normally the signer — but need not be
-
-Step 4 above signs with the author's own key, and steps 3 and 4 quietly assume the same node does both jobs. A device that holds only a signing key can do neither: it cannot run the application and cannot decrypt the state. [Delegated authorship](/protocol/delegated-authorship/) is the variant that lets such a member still own its writes — the method runs on a relay, and the author's signed consent travels inside the envelope so every peer can check it. The path below is otherwise unchanged.
-
-## Governance writes take the same path
-
-A membership change, a capability grant, or an admin action is built and broadcast exactly like a data write — the only differences are that the payload is a [governance](/protocol/governance/) variant and the topic is the governance scope's (`group/` or `ns/`) rather than the context's. One write path serves all four planes, because they are all just operations.
-
-## Where this leads
-
-The operation is now in flight. **[The Receive & Apply Path](/protocol/receive-path/)** is the right half of its life: what a receiving node does to verify, decrypt, order, and apply it.
+Creating an organization, adding a member, installing a package or changing an
+app's access are not app calls: the API builds a `SystemCmd` and appends it to
+the [system group](/protocol/system-group/), whose state machine checks the
+actor's authority when it applies.

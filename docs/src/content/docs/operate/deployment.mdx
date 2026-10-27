@@ -1,404 +1,190 @@
 ---
 title: Production Deployment
-description: Run merod as a long-lived service with persistent storage, exposed swarm/server ports, a private admin API, and TLS at the edge.
+description: Deploying a merod cluster on TDX — the storage key from mero-kms, forming the cluster, choosing governance, TLS and load balancers in front, and a checklist.
 sidebar:
   order: 10
 ---
 
-import { Steps, Aside, Tabs, TabItem, LinkCard, CardGrid } from '@astrojs/starlight/components';
+import { Aside, Steps } from '@astrojs/starlight/components';
 
-This page covers running `merod` as a long-lived service: process supervision,
-which ports to publish, persisting the home directory, backups, and terminating
-TLS in front of the HTTP server. It builds on
-[Install & first run](/operate/install/), the
-[configuration reference](/operate/config/), and the
-[merod reference](/operate/merod/) — it does not repeat them.
-
-<Aside type="caution" title="Pre-1.0">
-Calimero is pre-1.0. The ports, on-disk layout, and flags below are grounded in
-the current `Dockerfile` and config structs, but can change between releases.
-Confirm against `merod --help` and your build before standardising a deployment.
-</Aside>
+A production cluster is three or more `merod` nodes, each in an Intel TDX VM
+booted from a signed mero-tee image. Nodes run on Linux only. This page is what
+you decide and configure; the flags are in the [merod reference](/operate/merod/)
+and the file in [Configuration](/operate/config/).
 
 ## The shape of a deployment
 
-One `merod` process owns one **home directory** — `config.toml`, the identity
-keypair, the RocksDB **datastore**, and the **blob store** — and opens two
-listeners:
+| Piece | What it is |
+| --- | --- |
+| Nodes | `merod run` in TDX mode (no `--dev`), one per TD. Each serves the node API on `--listen` and is reached at its `--public-url`. |
+| mero-kms | Releases each node's storage key after verifying its quote against the signed release policy. |
+| Package registry | Where nodes fetch signed `.mpk` releases (`--registry-url`). Optional if every release is uploaded. |
+| Backup storage | A directory (`--backup-dir`) that receives sealed app snapshots. |
+| TLS front | Whatever terminates HTTPS for browsers in front of each node. |
+| DNS | A name per node, and a wildcard name for `--apps-domain` if you serve app frontends. |
 
-| Listener | Default port | Bind default | Audience |
-| --- | --- | --- | --- |
-| libp2p **swarm** | `2428` (TCP + QUIC) | `0.0.0.0` / `::` (all interfaces) | Other nodes — must be reachable by peers |
-| HTTP **server** | `2528` (TCP) | `127.0.0.1` / `::1` (loopback) | `meroctl`, apps, the admin API — keep private |
+The image provides `MERO_TEE_VERSION` (the mero-tee release it is) and
+`MERO_TEE_PROFILE` (its profile). A TDX node refuses to start without them,
+because its attestation names them and it judges its peers by them.
 
-The swarm listens on all interfaces by default because peers must dial it. The
-server listens on loopback only, so nothing reaches the admin/JSON-RPC surface
-off-host until you deliberately widen it or front it with a proxy.
-
-<Aside type="caution" title="Do not blindly expose 2528">
-The server port carries the admin API (`/admin-api`), JSON-RPC (`/jsonrpc`),
-WebSocket (`/ws`), and SSE (`/sse`). Binding it to a public interface with no
-auth in front exposes node administration. Keep it on loopback and reach it
-through a [reverse proxy with TLS and auth](#put-the-server-behind-a-reverse-proxy),
-or over a private network only.
+<Aside type="caution" title="Not confirmed here">
+  How a mero-tee image launches `merod` (its boot script, where configuration
+  and the disk identity live, which environment it sets) is defined in the
+  mero-tee repository, not in core. Check the image's documentation for the
+  paths it expects.
 </Aside>
 
-## Run merod as a service
+## Storage key
 
-`merod run` is a foreground process — it does not daemonise. Put it under a
-supervisor (Docker or systemd) that restarts it on crash and on reboot, and
-point it at a **persistent** home directory.
+Each node seals everything on disk under a storage key K_r =
+HKDF-SHA256(KMS key, salt `calimero.cloud.storage.v1`, info = `--cluster`).
+In TDX mode the KMS key comes from mero-kms only:
 
-<Tabs>
-  <TabItem label="Docker">
+```bash
+merod --node n1 init ... --kms-url https://kms.internal.example.com/ \
+  --kms-identity /data/disk-identity --cluster eu1
+```
 
-The root `Dockerfile` produces a runtime image whose entrypoint is `merod`. It
-sets `CALIMERO_HOME=/data`, declares `/data` as a `VOLUME`, exposes `2428` and
-`2528`, and runs as a non-root user (uid `10001`). Append a node name and
-subcommand after the image.
+- mero-kms is trusted only if its own quote matches the signed release the
+  environment names (`MERO_KMS_RELEASE_TAG`, else `MERO_KMS_VERSION`, else
+  `MERO_TEE_VERSION`); the key is sealed to this TD.
+- The KMS derives one key per identity. All nodes of a cluster must present the
+  **same disk identity file** and the same `--cluster`, so they derive the same
+  K_r: a follower opens the leader's snapshots with it, and the cluster secret
+  peers present is derived from it. `merod` creates the identity file if it is
+  missing; create it once and give every node a copy.
+- `--storage-key` and `--storage-key-file` are refused without `--dev`: a key
+  the host could hand the node would let whoever runs the host read the disks.
+
+`merod kms disk-key` is the same client as a command, for a boot script that
+needs a disk-unlock key before `merod` starts; it writes the key to tmpfs or
+ramfs only.
+
+## Form the cluster
 
 <Steps>
 
-1. **Build (or pull) the image.**
+1. **Give every founding node the same cluster settings**: the same
+   `--cluster`, KMS identity, `--peers` list (every founding node, as
+   `id=url`), `--rp-id`, `--origins` and governance flags, and a unique
+   `--node-id` and `--public-url`.
 
-   ```sh
-   docker build -t calimero-node .
+   ```bash
+   merod --node n1 init --node-id 1 --public-url https://n1.eu1.example.com/ \
+     --cluster eu1 \
+     --peers 1=https://n1.eu1.example.com/,2=https://n2.eu1.example.com/,3=https://n3.eu1.example.com/ \
+     --kms-url https://kms.internal.example.com/ --kms-identity /data/disk-identity \
+     --rp-id example.com --origins https://app.example.com \
+     --ops-token-sha256 "$OPS_TOKEN_SHA256" --backup-dir /backups \
+     --registry-url https://registry.example.com/
    ```
 
-2. **Create a named volume** so the home directory survives container
-   replacement, and initialise the node into it once.
+2. **Bootstrap on one node.** Add `--bootstrap` to exactly one founding node's
+   first start. It forms the system group with `--peers` as voters; the others
+   wait to be contacted. A restart with `--bootstrap` still set does nothing.
 
-   ```sh
-   docker volume create calimero-data
+3. **Start them all** with `merod --node nX run`. The first leader writes the
+   genesis (the governance below), registers the `--peers` in the fleet
+   directory and adds the first session-signing key. Nobody can sign up before
+   genesis.
 
-   docker run --rm \
-     -v calimero-data:/data \
-     calimero-node --node node1 init
+4. **Check it formed:**
+
+   ```bash
+   meroctl --api https://n1.eu1.example.com/ --tee-profiles "$PROFILE" network status
+   meroctl --api https://n1.eu1.example.com/ --tee-profiles "$PROFILE" \
+     --ops-token "$OPS_TOKEN" ops status
    ```
 
-   The image's `CALIMERO_HOME=/data` means the node home is `/data/node1`.
-
-3. **Run it as a long-lived, restarting service.** Publish the swarm port to the
-   world; keep the server port on loopback so it is only reachable through a
-   proxy on the same host (drop the `127.0.0.1:` prefix only if you front it).
-
-   ```sh
-   docker run -d --name node1 \
-     --restart unless-stopped \
-     -v calimero-data:/data \
-     -p 2428:2428 \
-     -p 2428:2428/udp \
-     -p 127.0.0.1:2528:2528 \
-     calimero-node --node node1 run
-   ```
-
-   :::note
-   The swarm uses both TCP and QUIC, so publish `2428/tcp` **and** `2428/udp`.
-   QUIC runs over UDP — omitting the UDP mapping silently disables QUIC dials
-   inbound.
-   :::
-
-4. **Check health** from the host (the server is on loopback):
-
-   ```sh
-   curl -s http://127.0.0.1:2528/admin-api/health
-   ```
-
-   A healthy node returns a status of `alive`.
+   `ops status` shows the system group's voters and leader and the fleet.
 
 </Steps>
 
-<Aside type="caution" title="Server bind vs. published port">
-By default the server binds loopback *inside* the container. To reach it from
-another host, you must both widen the in-container bind (`--server-host`, or
-`server.listen` in `config.toml`) **and** publish the port — and only behind a
-proxy. Publishing alone is not enough if the process is still bound to `::1`.
-</Aside>
+Nodes added later are not in `--peers`: see
+[Add a node](/operate/runbooks/#add-a-node).
 
-  </TabItem>
-  <TabItem label="systemd">
+## Governance
 
-For a host install of the `merod` binary, supervise it with a systemd unit. This
-is a **sketch** — adjust user, paths, and the binary location to your host.
+Three decisions are each given, when the cluster is formed, to either each
+app's **owner** (the default; an organization's owner for its apps, approving
+with a passkey) or the **operator** (for every app, with the ops token):
 
-```ini
-# /etc/systemd/system/merod@.service
-[Unit]
-Description=Calimero node (%i)
-After=network-online.target
-Wants=network-online.target
+| Flag | The decision |
+| --- | --- |
+| `--release-approvals` | Which mero-tee releases may hold apps' data (cluster upgrades). |
+| `--app-upgrades` | Which bundle an app runs. |
+| `--outbound-approvals` | Which URL prefixes apps may call out to. |
 
-[Service]
-Type=simple
-User=calimero
-Group=calimero
-Environment=CALIMERO_HOME=/var/lib/calimero
-ExecStart=/usr/local/bin/merod --home /var/lib/calimero --node %i run
-Restart=on-failure
-RestartSec=5
-# Stop cleanly so RocksDB flushes and releases its lock
-KillSignal=SIGINT
-TimeoutStopSec=60
+They are fixed at genesis, attested with every node's receipt key, and
+reported to users (`meroctl attest --context`), so a user can check them before
+trusting the cluster. Give the operator a decision only where users trust it
+with code, or destinations, that can read their data. See
+[Security](/operate/security/#governance).
 
-# Hardening (the home dir must stay writable)
-NoNewPrivileges=true
-ProtectSystem=strict
-ReadWritePaths=/var/lib/calimero
+## Run it in a container
 
-[Install]
-WantedBy=multi-user.target
+The repository's `Dockerfile` builds an image whose entrypoint is `merod`, with
+`CALIMERO_HOME=/data` and `/data` a volume. Every key can be an environment
+variable, so a container needs no `init`:
+
+```bash
+docker run -d --name n1 -p 2528:2528 -v n1-data:/data \
+  -e MEROD_NODE_ID=1 -e MEROD_PUBLIC_URL=https://n1.eu1.example.com/ \
+  -e MEROD_DATA_DIR=/data/n1 -e MEROD_CLUSTER=eu1 \
+  -e MEROD_PEERS=1=https://n1.eu1.example.com/,2=https://n2.eu1.example.com/,3=https://n3.eu1.example.com/ \
+  -e MEROD_KMS_URL=https://kms.internal.example.com/ -e MEROD_KMS_IDENTITY=/data/disk-identity \
+  -e MEROD_OPS_TOKEN_SHA256="$OPS_TOKEN_SHA256" \
+  -e MERO_TEE_VERSION="$RELEASE" -e MERO_TEE_PROFILE="$PROFILE" \
+  merod run
 ```
 
-<Steps>
+`merod` here is the image tag (`docker build -t merod .`); the arguments after
+it go to the `merod` binary.
 
-1. **Create the service user and home**, then initialise the node once:
+The image `EXPOSE`s `2428` and `2528`; only `2528` (the default `--listen`
+port) is used.
 
-   ```sh
-   sudo useradd --system --home /var/lib/calimero --shell /sbin/nologin calimero
-   sudo -u calimero merod --home /var/lib/calimero --node node1 init
-   ```
+## TLS and load balancers
 
-2. **Enable and start** the instance (`%i` is the node name):
+`merod` serves plain HTTP. What it serves is already sealed end to end to the
+attested node, so a TLS terminator in front of it sees only sealed bytes, plus
+`/health` and `/attestation`, which are public. You still need HTTPS in front:
 
-   ```sh
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now merod@node1
-   ```
+- Passkeys work only in a secure context, and a page on `https://` cannot call
+  an `http://` API. Serve each node's `--public-url` over HTTPS.
+- `--public-url` must be the URL clients and peers actually use, and it must
+  reach that node, not any node: peers send Raft traffic to it, and the system
+  directory records it.
+- If one name balances across nodes, give `/auth/passkey/*`,
+  `/auth/passkeys/add/*` and calls that answer `412 CONFIRM_REQUIRED` session
+  affinity: a ceremony's challenge lives on the node that issued it.
+- `/apps/{app}/events` and `/apps/{app}/presence/stream` are server-sent event
+  streams; turn off response buffering for them. Each node serves at most 4096
+  open streams.
+- Requests up to 64 MiB must pass (bundle and package uploads).
 
-3. **Check it is up** and tail logs:
+## App frontends
 
-   ```sh
-   systemctl status merod@node1
-   journalctl -u merod@node1 -f
-   curl -s http://127.0.0.1:2528/admin-api/health
-   ```
+With `--apps-domain apps.example.com` and a wildcard DNS name
+`*.apps.example.com` pointing at the cluster, each installed package's frontend
+is served from its signed release at `{label}.apps.example.com`. TLS for the
+wildcard name is the front's job. See
+[Networking](/operate/networking/#app-frontends).
 
-</Steps>
+## Checklist
 
-<Aside type="caution" title="Stop with SIGINT/SIGTERM, not SIGKILL">
-`KillSignal=SIGINT` lets RocksDB flush and release its lock on stop. An abrupt
-`SIGKILL` (the default after `TimeoutStopSec`) can leave the datastore to
-recover on next start. Keep `TimeoutStopSec` generous enough for a clean exit.
-</Aside>
-
-  </TabItem>
-</Tabs>
-
-## Persist the home directory
-
-Everything stateful lives under the node home. Losing it loses the node's
-identity and replicated state.
-
-| Sub-path | Section in `config.toml` | What it holds |
-| --- | --- | --- |
-| `config.toml` | — | Config **and** the identity keypair (`[identity]`) |
-| `data/` | `[datastore] path = "data"` | RocksDB datastore (groups, contexts, governance DAG) |
-| `blobs/` | `[blobstore] path = "blobs"` | On-disk blob storage |
-
-The `datastore` and `blobstore` paths are **relative to the node home**, so a
-single persistent volume mounted at the home directory captures all three.
-
-<Aside type="caution" title="The identity keypair is in config.toml">
-The node's `peer_id` is derived from the keypair stored in `config.toml`
-(`[identity]`). Persist `config.toml` together with the datastore — restoring the
-datastore while regenerating identity makes the node a *different* peer that must
-re-join from scratch. See the
-[backup/restore runbook](/operate/runbooks/#back-up--restore-the-datastore).
-</Aside>
-
-### Backups
-
-A consistent backup is a **cold copy** of the whole home directory taken while
-the node is stopped (or an atomic filesystem/volume snapshot). There is no
-dedicated `merod` backup subcommand. The full, ordered procedure — stop, copy
-config + datastore + blobs as one set, restart, let it re-converge — lives in
-the runbooks.
-
-<CardGrid>
-  <LinkCard
-    title="Back up & restore"
-    href="/operate/runbooks/#back-up--restore-the-datastore"
-    description="Cold-copy the node home; restore and let it re-converge from peers." />
-  <LinkCard
-    title="Upgrade a node binary"
-    href="/operate/runbooks/#upgrade-a-node-binary"
-    description="Quiesce, stop, replace the binary, restart with the same home." />
-</CardGrid>
-
-## Put the server behind a reverse proxy
-
-The HTTP server speaks plain HTTP and has no built-in TLS. For any access beyond
-loopback, terminate TLS at a reverse proxy (nginx, Caddy, Traefik, …) and forward
-to the loopback bind. The proxy is also where you enforce authentication when
-running the default `auth_mode = "proxy"`.
-
-```ini
-# nginx sketch — TLS at the edge, forward to the loopback server bind
-server {
-    listen 443 ssl;
-    server_name node1.example.com;
-
-    ssl_certificate     /etc/letsencrypt/live/node1.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/node1.example.com/privkey.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:2528;
-
-        # WebSocket (/ws) and SSE (/sse) need upgrade + unbuffered streaming
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade    $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host       $host;
-        proxy_buffering off;
-    }
-}
-```
-
-<Aside type="caution" title="Auth lives at the proxy in proxy mode">
-With the default `auth_mode = "proxy"`, the node expects an external auth proxy
-in front of it — the protected admin routes are guarded on that assumption.
-Exposing `2528` without that proxy leaves administration unauthenticated. If you
-want the node to enforce auth itself, run `auth_mode = "embedded"` (see the
-[admin API reference](/operate/admin-api/#authentication) and
-[config reference](/operate/config/)).
-</Aside>
-
-<Aside type="caution" title="A forward-auth proxy must send the original URI and method">
-If the proxy authorizes each request by calling the auth service's
-`GET /auth/validate` (Traefik `forwardAuth`, nginx `auth_request`), it must send
-`X-Forwarded-Uri` (the original path and query) and `X-Forwarded-Method` (the
-original method) on every call. Both must come from the real request and replace
-any value the client sent, since a client that can choose them can choose which
-route is checked. With them, `/auth/validate` checks the token against the
-permissions that route needs; a URI with no usable method is refused with `403`.
-Without them it only answers whether the token is valid, so any valid token is
-let through to every route the proxy protects, and a proxy that omits them by
-mistake fails silently.
-A token in the URI's query (`?token=`) counts only on `/ws`, `/sse` and `/sse/...`,
-judged on the path as forwarded, and only when the request has no `Authorization`
-header; behind a path prefix, send the token in the header.
-
-Traefik sets both headers from the real request. With `trustForwardHeader` on it
-keeps a client-sent value instead, so leave it off (the default). nginx must be
-told, in the `auth_request` location, with `proxy_set_header` (which replaces
-whatever the client sent): `proxy_set_header X-Forwarded-Uri $request_uri;` and
-`proxy_set_header X-Forwarded-Method $request_method;`. The relay ingress the
-end-to-end tests use (`apps/scaffolding-e2e/relay-ingress/routing.yml`) is a
-working Traefik shape.
-
-A call without the headers is also what a client checking its own session makes
-(it sends only an `Authorization` header), so the service answers it with `200`
-for a valid token. A proxy must not forward a request because such a call
-returned `200`.
-</Aside>
-
-### App hosts behind the proxy
-
-A proxy-mode node serves an app's API on the app's own host (`{label}.{base_domain}`) only with `[server.apps] trust_proxy = true`.
-merod then mounts no token guard on that host: it acts on the `X-Auth-Permissions` header as the proxy sends it, and nothing in merod can tell a value mero-auth issued from one the client wrote.
-The proxy alone keeps a client from naming its own permissions, so it must replace `X-Auth-Permissions`, `X-Auth-Account` and `X-Auth-Device` on every request to an app host.
-`base_domain` must be the node's own host, and the certificate must cover `*.{base_domain}`.
-
-```nginx
-# App hosts behind nginx: `[server.apps] base_domain = "node1.example.com"`, `trust_proxy = true`
-map $http_upgrade $connection_upgrade { default upgrade; "" close; }
-
-server {
-    listen 443 ssl;
-    server_name "~^[a-z2-7]{52}\.node1\.example\.com$";
-
-    # The certificate must cover *.node1.example.com.
-    ssl_certificate     /etc/letsencrypt/live/node1.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/node1.example.com/privkey.pem;
-
-    # The app's files: no token, and never a client's identity or permissions.
-    location / {
-        proxy_pass http://127.0.0.1:2528;
-        proxy_set_header Host               $host;
-        proxy_set_header X-Auth-Permissions "";
-        proxy_set_header X-Auth-Account     "";
-        proxy_set_header X-Auth-Device      "";
-    }
-
-    # The app API: every request validated, merod gets only mero-auth's permissions.
-    location ~ ^/(jsonrpc|ws|sse|admin-api/) {
-        auth_request     /_validate;
-        auth_request_set $permissions $upstream_http_x_auth_permissions;
-
-        proxy_pass http://127.0.0.1:2528;
-        proxy_set_header Host               $host;
-        proxy_set_header X-Auth-Permissions $permissions;
-        proxy_set_header X-Auth-Account     "";
-        proxy_set_header X-Auth-Device      "";
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade    $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_buffering off;
-    }
-
-    location = /_validate {
-        internal;
-        proxy_pass http://127.0.0.1:3001/auth/validate;
-        proxy_method GET;
-        proxy_pass_request_body off;
-        proxy_set_header Content-Length     "";
-        proxy_set_header Host               $host;
-        proxy_set_header X-Forwarded-Host   $host;
-        proxy_set_header X-Forwarded-Uri    $request_uri;
-        proxy_set_header X-Forwarded-Method $request_method;
-    }
-
-    # Only refresh and validate reach mero-auth; login goes to merod, which redirects to the node.
-    location = /auth/refresh {
-        limit_except POST { deny all; }
-        proxy_pass http://127.0.0.1:3001;
-        proxy_set_header Host $host;
-    }
-    location = /auth/validate {
-        limit_except GET { deny all; }
-        proxy_pass http://127.0.0.1:3001;
-        proxy_set_header Host $host;
-    }
-    location = /auth/login {
-        proxy_pass http://127.0.0.1:2528;
-        proxy_set_header Host               $host;
-        proxy_set_header X-Auth-Permissions "";
-        proxy_set_header X-Auth-Account     "";
-        proxy_set_header X-Auth-Device      "";
-    }
-    location /auth/ {
-        return 403;
-    }
-}
-```
-
-nginx drops every `proxy_set_header` a `server` block sets once a `location` sets one of its own, so each location above clears the three headers itself; a location added later must too.
-Files take no token, the app API is validated by mero-auth with the original URI and method, only `/auth/refresh` and `/auth/validate` reach mero-auth, and `/auth/login` goes to merod, which redirects to the node's own login page.
-A host that is not a 52-character app label falls to the node's own `server` block.
-mero-tee's relay ingress is the same shape in Traefik: `HostRegexp` routers, `forwardAuth` with `authResponseHeaders`, and a middleware that deletes the client's headers on the entrypoint.
-
-:::tip
-WebSocket (`/ws`) and Server-Sent Events (`/sse`) are long-lived streams. Set
-your proxy's read timeouts high and disable response buffering for those paths,
-or clients will see periodic disconnects.
-:::
-
-:::note
-You can prefix every server base path by setting the `NODE_PATH_PREFIX`
-environment variable (e.g. `NODE_PATH_PREFIX=/node1` moves the admin API to
-`/node1/admin-api`). Useful when fronting several nodes behind one hostname.
-Prefer it to a proxy that strips the prefix: a request proof signs the path and query the node receives, so the proxy must forward both unchanged.
-:::
-
-## Next
-
-<CardGrid>
-  <LinkCard
-    title="Networking & discovery"
-    href="/operate/networking/"
-    description="Swarm transport, peer discovery, and NAT traversal for a reachable node." />
-  <LinkCard
-    title="Observability"
-    href="/operate/observability/"
-    description="Scrape /metrics and watch the counters that matter in production." />
-</CardGrid>
+- [ ] No node runs with `--dev`, `--storage-key`, `--storage-key-file` or
+      `--allow-unsigned-bundles`.
+- [ ] `MERO_TEE_VERSION` and `MERO_TEE_PROFILE` come from the image;
+      `--peer-profiles` lists only the profiles you run.
+- [ ] Every node has the same `--cluster`, disk identity, `--rp-id`,
+      `--origins` and governance flags.
+- [ ] Exactly one founding node had `--bootstrap` on its first start.
+- [ ] The ops token is configured as `--ops-token-sha256`, and the token
+      itself is kept outside the machines.
+- [ ] `--backup-dir` is set and its contents leave the machine.
+- [ ] `--rp-id` is the domain users sign in on; `--origins` lists the HTTPS
+      origins of your frontends.
+- [ ] Quotas are set for your cluster (`meroctl ops set-quotas`).
+- [ ] Something collects `/ops/metrics` from every node through the sealed
+      channel; see [Observability](/operate/observability/#collecting-metrics).

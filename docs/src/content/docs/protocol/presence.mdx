@@ -1,0 +1,43 @@
+---
+title: Presence
+description: Ephemeral "who is here and what are they doing" for app frontends — kept in every node's memory, never in a log, with v1's rules for ordering, heartbeats and expiry.
+sidebar:
+  order: 22
+---
+
+**Presence** is what each person's device says about itself right now: online,
+a cursor, a selection. It changes many times a second and is worthless a few
+seconds later, so it never goes into a log (`crates/cloud-node/src/presence.rs`,
+v1's awareness channel).
+
+## How it moves
+
+- `POST /apps/{app}/presence { seq, state }` — `state` is hex (at most 4 KiB of
+  bytes), `null` to retract. Anyone who reaches the app may publish, and the
+  author is the caller the node authenticated: their account, and as the
+  device, the session's passkey (or the API key).
+- The node that takes the update applies it to its own in-memory table and
+  passes it to every other node (`internal/presence`), without waiting for
+  them. A client on any node therefore sees the whole cluster.
+- `GET /apps/{app}/presence` returns who is present now.
+  `GET /apps/{app}/presence/stream` is a server-sent event stream: a `snapshot`
+  event, then a `presence` event per change (`state: null` when someone left).
+  It counts against the node's stream limit.
+
+## v1's rules
+
+| Rule | Why |
+| --- | --- |
+| One entry per (account, device) | A person on two devices is two cursors |
+| The highest `seq` wins; an older update is ignored | Updates may cross between nodes in any order |
+| A retract is an entry with no state | An older "set" arriving late cannot bring someone back |
+| The same `seq` and state again is a heartbeat: it refreshes the entry and is passed on too | Staying present costs one small message |
+| An entry not refreshed within `PRESENCE_TTL_MS` (7 s) is swept, checked every second | A closed tab leaves without saying goodbye |
+| At most `MAX_AUTHORS_PER_APP` (512) per app; a new author evicts the stalest | Bounded memory per app |
+
+## What it is not
+
+Presence is best effort. It is not replicated by Raft, not sealed to disk, and
+not part of any receipt; a node that restarts starts with an empty table and
+fills up within one heartbeat. Anything that must survive belongs in the app's
+state, through a call.

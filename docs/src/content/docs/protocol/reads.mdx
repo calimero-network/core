@@ -1,0 +1,100 @@
+---
+title: Reads, views & events
+description: How an app is read — strong and stale views, reading your own write, search, the event stream, and what a read may and may not see.
+sidebar:
+  order: 7
+---
+
+Reading an app never changes it. There are three ways to read: run a **view**,
+subscribe to the app's **events**, and call the **inspection** routes that
+describe the app without running it.
+
+## Views
+
+`POST /apps/{app}/views { method, args, consistency?, minIndex? }` runs a
+method against a replica's applied state. The run gets the same host as a call
+— the caller's account and organization standing, private space, blobs — plus
+[search](#search), and whatever it writes is discarded.
+
+| `consistency` | Where it runs | What it sees |
+| --- | --- | --- |
+| omitted (strong) | The app group's leader, after confirming it still leads | Every write committed before the view started |
+| `"stale"` | Any replica; this node if it is one | That replica's applied state, at least `minIndex` if given |
+
+A strong view is linearizable: it is answered by a node that has just
+confirmed leadership with a quorum, so a write acknowledged anywhere is
+visible. A stale view saves that round trip and spreads load across replicas.
+With `minIndex` (the `index` a call answered), a stale view waits up to 2
+seconds for the replica to apply that entry and answers `503 NOT_CAUGHT_UP`
+otherwise: read-your-writes without going through the leader.
+
+A node that holds no replica of the app forwards a view to one that does, with
+the same 5-second bound as calls.
+
+The answer is `{ index, result, receipt }`: the applied index the view ran at,
+the result, and a [receipt](/protocol/tee-attestation/#receipts).
+
+Any method may be called as a view, and its writes are dropped, with one
+exception: a method the app lists as a **confirm method** answers `412`, because
+it must be called through `/intents` with a passkey assertion. The reverse also
+holds: a method the ABI declares `#[app::view]` runs as a strong view even when
+called through `/intents` (v1's rule).
+
+## Search
+
+Apps that derive `#[derive(app::Searchable)]` and declare
+`app::search_indexes!` get full-text search in views (`search_query`). The
+indexes are v1's per-context tantivy indexes (`calimero-search`), kept in each
+node's memory per app and built from the app's own `__calimero_search_*`
+exports:
+
+- Before a view runs, the node brings the app's indexes up to the very state
+  the view reads. If it knows which storage entities the entries since its last
+  build touched (each outcome lists them; the last `TOUCHED_RING` = 4096
+  entries are kept in memory), it re-extracts just those; otherwise it rebuilds
+  from a full scan.
+- Indexes are derived data. They are never replicated, never written to disk,
+  and rebuilt after a restart or when the app moves to this node. Indexes that
+  survive a restart are not done yet.
+- Only views search. A call cannot, so node-local derived data never steers a
+  write.
+
+## Events
+
+A run may emit events (`app::emit!`). They are part of the outcome, so they are
+committed with the entry and applied on every replica: each replica appends
+them to the app's event ring (`EVENT_RING`, the last 10 000 events) as
+`{ index, seq, kind, data }`.
+
+`GET /apps/{app}/events?from=N` is a server-sent event stream: first the
+ring's events from entry `N` on, then live ones as entries apply. Each event's
+SSE id is `index:seq`, so a client that reconnects passes the last index it saw
+and misses nothing the ring still holds. A node that hosts no replica proxies
+the stream from one. Inside the sealed channel the stream is sealed frame by
+frame like any other response.
+
+- Anyone who reaches the app receives all of its events. Event audiences
+  (events addressed to some members only) are not done yet.
+- A node serves at most 4096 event and presence streams at once
+  (`MAX_EVENT_STREAMS`); past that it answers `429`.
+- Events are not the place for secrets: they are returned in call answers and
+  stored in the ring.
+
+## Inspection
+
+These describe an app without running it:
+
+| Route | What it returns |
+| --- | --- |
+| `GET /apps/{app}` | The directory record: bundle, owner, organization, access, replicas, metadata, last upgrade |
+| `GET /apps/{app}/storage` | Keys, bytes and blobs the app's state holds, from a replica |
+| `GET /apps/{app}/abi` | The bundle's embedded ABI |
+| `GET /apps/{app}/attestation?nonce=` | Every replica's receipt-key attestation ([`verify_app_cluster`](/protocol/tee-attestation/#verifying-the-whole-app-cluster)) |
+| `GET /apps/{app}/presence` | Who is present now ([Presence](/protocol/presence/)) |
+
+Each goes through the same gate as a view: the caller must reach the app.
+
+## What the operator can read
+
+Nothing on this page. The [Ops API](/protocol/operator/) has no view, event or
+storage route; its status and metrics report counts and Raft positions only.

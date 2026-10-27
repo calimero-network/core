@@ -24,10 +24,12 @@ To accept a change, regenerate the snapshot and commit it so the delta shows up 
 Ordinary `#[test]`s that time one operation at a small and a large input and assert the *ratio*, never an absolute time.
 The ratio is what a complexity bug changes and what a slower machine does not: growing the input 8x grows a linear path ~8x and a quadratic one ~64x, so a bound between the two (24x, keeping the fastest of three runs) fails a quadratic regression on any runner and passes a linear path even in a debug build under `nextest`.
 
-- `crates/dag/tests/complexity.rs`: the pending-set paths a peer drives (many waiters on one missing parent, inserts into a full map, an origin flooding at its quota, reverse-chain and fan-in cascades).
-  It caught `cleanup_stale` and per-origin eviction going quadratic: 44x and 64x growth on the old code, 8-10x after the fix.
+- `tools/storage-cost/tests/flat_curve.rs` (rows and hashes counted, not timed): the shape of each storage workload's cost curve, in both directions (a cost marked linear that stops being linear fails too); `cargo test -p storage-cost --release --test flat_curve -- --include-ignored`.
+- `crates/runtime/tests/cost_is_flat.rs` (gas, not time): whether a guest doing a fixed number of host calls is charged more gas as the store grows. It exists because an append whose cost grew with the collection made a collection unwritable while every correctness test stayed green.
 
-Write one when a path's cost depends on state a peer can grow (a pending set, a queue, a bucket of waiters) and the right answer is "linear" or "flat".
+(v1's pending-set guard, `crates/dag/tests/complexity.rs`, went with the DAG crate.)
+
+Write one when a path's cost depends on state a caller can grow (a collection, a queue, a ring of records) and the right answer is "linear" or "flat".
 Build the fixture outside the timed region, size it so the large run is a few tens of milliseconds, and also assert the result (counts, order), so the test is a correctness check as well as a timing one.
 Pair it with a Criterion sweep over the same shape in Tier 2, which shows the trend the guard only bounds.
 

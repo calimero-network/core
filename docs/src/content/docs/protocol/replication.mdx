@@ -1,0 +1,215 @@
+---
+title: Replication
+description: One Raft log per app and one for the cluster — how entries are proposed, applied, snapshotted and caught up, and why replicas cannot diverge.
+sidebar:
+  order: 4
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
+Every group — the system group and each app instance's group — is a Raft log
+on [openraft](https://docs.rs/openraft) 0.9, run by `calimero-log`. One
+`Engine` per node hosts all of that node's groups over one RocksDB database;
+a `Group<M>` is one log with its state machine `M`.
+
+## What a log entry is
+
+The engine orders opaque command bytes. The node gives them meaning:
+
+- A **system** entry is one `SystemCmd` ([The system group](/protocol/system-group/)).
+- An **app** entry is one `AppCmd` (`crates/cloud-node/src/app.rs`):
+
+| `AppCmd` | Written when | What applying it does |
+| --- | --- | --- |
+| `Init { bundle, base_index, outcome }` | The instance's first leader runs `init` | Applies the outcome; records the bundle; marks the app initialized or records why `init` failed |
+| `Call(CallEntry)` | A call, a follow-up or a timer ran | Applies the outcome; consumes the follow-up or records the timer tick; remembers the idempotency key |
+| `Upgrade { bundle, base_index, outcome }` | An upgrade ran its migration | Applies the outcome and, if it succeeded, switches the bundle |
+| `Blob { id, size }` | A blob was uploaded for the app | Marks the blob as the app's |
+| `BlobForget { id }` | The app's owner deleted a blob | Removes the mark |
+| `Done { seqs }` | The leader delivered an xcall | Drops those follow-ups |
+
+A `CallEntry` records the method, arguments, caller, idempotency key, the
+passkey consent for a confirm method, the leader's timestamp, the trigger (for
+a follow-up or timer), the **base index** it ran against, and the **outcome**:
+status, result or error, the storage **diff** (each write as `key → value` or a
+delete, in the order they last happened), the events, the follow-ups it asked
+for, and the storage entities it touched.
+
+Entries are capped at `MAX_ENTRY_BYTES`, 1 MiB. openraft gives each append RPC
+one heartbeat interval, so a much larger entry would never reach a follower and
+would stall everything behind it. Large content goes to the
+[blob store](/protocol/blobs/) and the entry carries its hash. `Group::write`
+refuses a larger command (`WriteError::TooLarge`) before anything is appended.
+
+## Proposing: the leader runs, everyone applies
+
+<SeqDiagram
+  id="d-propose"
+  title="One proposal on an app group"
+  lanes={[
+    { label: 'Leader', color: '#58a6ff' },
+    { label: 'Follower A', color: '#a371f7' },
+    { label: 'Follower B', color: '#a371f7' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'take the group\'s propose lock' },
+    { from: 0, to: 1, label: 'confirm leadership (heartbeat quorum)' },
+    { from: 0, to: 0, label: 'read applied state at index n; run the call' },
+    { from: 0, to: 1, label: 'append entry n+1 { base_index: n, outcome }', color: '#a5ff11' },
+    { from: 0, to: 2, label: 'append entry n+1', color: '#a5ff11' },
+    { from: 1, to: 0, label: 'ack', dashed: true },
+    { from: 0, to: 0, label: 'commit; apply diff; answer the caller' },
+    { from: 1, to: 1, label: 'apply the same diff' },
+    { from: 2, to: 2, label: 'apply the same diff (catching up later is fine)' },
+  ]}
+/>
+
+`Group::propose` serializes proposals on a group behind one lock and confirms
+the node still leads (openraft's `ensure_linearizable`) before it hands the
+builder the applied state. So the state a call runs against is exactly the
+state its entry will apply to — unless leadership changed in between.
+
+That is what `base_index` guards. `apply` compares the entry's `base_index`
+with the last index the machine applied. If they differ, a new leader's entries
+came in between and the diff was computed against replaced state: the entry
+applies as a no-op with `conflict: true`, records no idempotency key, and the
+node that proposed it runs the call again (`Node::call` loops). A client that
+gets `503` for a conflict that could not be resolved retries with the same
+idempotency key.
+
+Followers never run WASM for an entry. They write the diff's keys into the
+app's state, append the events to the app's event ring, queue the follow-ups,
+and record the idempotency answer, all in one RocksDB batch together with the
+new applied index. The leader's run is the only run.
+
+:::note[Why not re-execute?]
+Re-executing on every replica (v1's model, and most blockchains') needs every
+replica to reach the same answer, so the runtime must be deterministic and the
+inputs identical. Applying a diff needs neither. The leader may read the clock
+(`time_now`), draw randomness (`random_bytes`), [call out over
+HTTPS](/protocol/execution/#outbound-https) or open a blob, and the followers
+still end in the same state, because they copy the result rather than
+recompute it.
+:::
+
+## Why replicas cannot diverge
+
+In v1, two members could write concurrently, so replicas held different sets
+of operations until sync repaired them, and divergence had to be detected
+(scope roots) and healed (sync protocols, absorb buffers, reconciliation). In a
+Raft group:
+
+- **There is one order.** An entry is committed only once a majority has it,
+  and every replica applies committed entries in index order.
+- **A replica that is behind is only behind.** It holds a prefix of the same
+  log. The leader sends it the entries it lacks, or a snapshot if they were
+  compacted.
+- **A minority cannot write.** A node cut off from the majority cannot commit,
+  so it refuses writes (`503`) instead of accepting ones the rest of the group
+  would later have to reconcile. Strong reads go through the leader for the
+  same reason ([Reads](/protocol/reads/)).
+
+There is therefore no divergence report, no sync handshake, no verdict and no
+merge on the replication path.
+
+## Timing
+
+| Setting (`calimero_log::Config`) | Default |
+| --- | --- |
+| Heartbeat | 200 ms |
+| Election timeout | 1.2–2.4 s |
+| Snapshot after | 1000 applied entries |
+| Log entries kept behind a snapshot | 100 |
+| Snapshot chunk on the wire | 1 MiB (`SNAPSHOT_CHUNK_BYTES`) |
+| Snapshot install timeout | 10 s per chunk RPC |
+
+A frozen or partitioned leader is replaced after an election timeout. A call
+forwarded to an app's leader waits at most `FORWARD_TIMEOUT` (5 s) before the
+forwarding node retries at whoever leads now; calls without a client
+idempotency key get a node key first (`node:…`, remembered 10 minutes), so the
+retry replays a call that did commit instead of running it twice. merobox's
+`workflow-examples/cloud-v2/frozen-leader.yml` is the regression scenario.
+
+## State, restarts and snapshots
+
+An app group's state lives on disk, in its group's rows of the `state` column
+([Storage schema](/protocol/storage/)); the machine keeps only a small `Head`
+in memory (bundle, pending follow-ups, timer ticks, ring bounds). Each applied
+batch commits its writes and the applied index together, so a restarted node
+resumes from where it stopped instead of replaying the log.
+
+The system group's machine keeps its state in memory and is checkpointed with
+every snapshot; a restart restores the checkpoint and replays the log after it.
+
+A **snapshot** is a file of sealed frames under `<data-dir>/snapshots`, written
+from a consistent RocksDB view of the group's rows, never the whole state in
+memory. A follower that needs one receives the file in chunks. Every node of
+a cluster holds the same storage key, so a follower opens the leader's frames
+as they are. Installing writes the group's rows under the next **generation**
+(`group ‖ generation ‖ key`) and switches generations in one batch, so a crash
+mid-install leaves the previous state intact. `calimero-log`'s tests stream a
+~6 MiB state to a new node this way.
+
+## Groups come and go with the directory
+
+The system group's app directory decides which nodes host which app groups.
+The reconcile loop on every node starts the groups listed for it and stops the
+rest, deleting their data from that node.
+
+- **Creation.** `CreateApp` assigns the next group number. The first replica in
+  the instance's replica list initializes the group with all replicas as
+  voters; whichever replica becomes leader runs `init` and appends the `Init`
+  entry.
+- **Late start.** A Raft RPC for a group a node does not run yet goes through
+  the engine's group factory: the node starts it if the directory lists it as a
+  replica, and answers "not hosted here" otherwise.
+- **Release gate.** Before any Raft RPC (entries or snapshot) leaves for a
+  peer, `Node::may_send` checks that the peer's attested mero-tee release is
+  one approved to hold that app's data ([Deployment
+  governance](/protocol/governance/#release-approvals)). The system group goes
+  to every attested peer.
+
+## Replica moves
+
+`POST /ops/apps/{app}/replicas { replicas }` moves an app to a new replica set
+(at least three when the cluster has three nodes). It runs on the app group's
+leader; any other replica answers `421 NOT_LEADER` with `details.leaderUrl`
+before writing anything. The leader:
+
+1. refuses any target node whose attested release the app's owner has not
+   approved;
+2. records the union of old and new replicas in the directory, so every node
+   involved starts the group;
+3. adds each new node as a learner and waits for it to catch up;
+4. changes the voter set to the new replicas (joint consensus);
+5. records the new replica list, after which reconcile stops the group on
+   nodes that left.
+
+## Joining nodes
+
+A node started without `--bootstrap` waits. Once the operator registers it
+(`POST /ops/nodes`), the system leader adds it to the system group as a
+**learner**; it catches up from the log or a snapshot, learns the directory,
+and from then on [placement](/protocol/context-lifecycle/#create) and replica
+moves can put apps on it. The system group's voters are the nodes it was
+bootstrapped with; the node does not promote learners to system voters.
+
+## Upgrading the on-disk format
+
+A data directory that still holds the previous single-file store (`log.redb`)
+is migrated when the engine opens it: entries, vote, commit and purge marks,
+blobs, and each machine's old whole-state snapshot (imported through
+`Machine::import`). The old file is kept beside, renamed `log.redb.migrated`.
+merobox runs one build on fresh state, so this path has its own tests
+(`crates/log/src/migration_tests.rs`).
+
+## What replaced v1's sync
+
+| v1 | Now |
+| --- | --- |
+| Gossip broadcast of each signed delta | Raft `AppendEntries` from the leader, over the peer sealed channel |
+| Receive path: verify, authorize at the cut, decrypt, buffer, fold | Apply the committed diff in index order |
+| Heartbeats advertising DAG heads and roots | Raft heartbeats; a follower's lag is its applied index |
+| Sync handshake, verdict, HashComparison / LevelWise / snapshot transfer | Missing entries, or a snapshot when they were compacted |
+| Divergence detection and partition recovery | Not needed: a minority cannot commit |
+| Hybrid logical clock ordering | The log index; registers still carry their storage timestamps ([CRDT collections](/protocol/crdt-internals/)) |

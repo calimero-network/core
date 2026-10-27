@@ -15,50 +15,49 @@ Follow one top to bottom.
 
 <Steps>
 
-1. [Quickstart](/build/quickstart/) — get a node and an app running.
+1. [Quickstart](/cloud/quickstart/) — a local cluster, an app, a call from the CLI and from code.
 2. [Build your first app](/build/tutorial/) — state, methods, build, call.
-3. [Collections](/build/collections/) — pick the right CRDT types for your data.
-4. [Emit &amp; handle events](/build/guides/events/) and [call another context](/build/guides/cross-context/).
-5. [Access-controlled storage](/build/permissioned-storage/) — lock down what shouldn't be world-writable.
-6. [Example apps](/build/examples/) — study real ones; [test](/build/testing/) yours.
+3. [Writing apps for release-v2](/cloud/apps/) — what a cluster changes: identity, organizations, teams, handlers, timers, outbound.
+4. [Collections](/build/collections/) — the state types your app is built from.
+5. [Emit &amp; handle events](/build/guides/events/) and [call another app](/build/guides/cross-context/).
+6. [Packaging &amp; signing](/build/packaging-signing/) — ship a signed release; [migrations](/build/migrations/) for the next one.
 
 </Steps>
 
-## Run a production fleet
+## Run a production cluster
 
 <Steps>
 
-1. [Install &amp; first run](/operate/install/).
-2. [Production deployment](/operate/deployment/) — long-lived service, volumes, ports.
-3. [Networking &amp; discovery](/operate/networking/) — bootstrap, relays, NAT.
-4. [Security hardening](/operate/security/) and the [auth service](/operate/auth/).
-5. [Observability](/operate/observability/) — metrics and what divergence looks like.
-6. [Runbooks](/operate/runbooks/) and [troubleshooting](/operate/troubleshooting/) for day-2.
+1. [Calimero Cloud](/cloud/overview/) — what runs where, and the trust model in one page.
+2. [Operating a cluster](/operate/deployment/) — the storage key, peers, governance, the Ops API.
+3. [Deployment governance](/protocol/governance/) — decide who approves images, app upgrades and outbound hosts before the first start.
+4. [The operator &amp; the Ops API](/protocol/operator/) — what you can do, and what you deliberately cannot.
+5. [Replication](/protocol/replication/) — joining nodes, replica moves, snapshots, failover.
+6. The [`merod`](/operate/merod/) and [`meroctl`](/operate/meroctl/) references.
 
 </Steps>
 
-## Reimplement a node from scratch
+## Understand how a cluster works
 
 <Steps>
 
 1. [Protocol overview](/protocol/overview/) — the one idea everything hangs on.
-2. The core model, in order: [Concepts](/protocol/concepts/) → [Identities](/protocol/identities/) → [Operations](/protocol/operations/) → [Projection](/protocol/projection/).
-3. The planes: [Execution](/protocol/execution/) and [Governance](/protocol/governance/).
-4. The paths: [Networking](/protocol/networking/) → [Write](/protocol/write-path/) → [Receive](/protocol/receive-path/) → [Sync](/protocol/sync/).
-5. Subsystems: [Blobs](/protocol/blobs/), [TEE](/protocol/tee-attestation/), [xcall](/protocol/xcall/), [Upgrades](/protocol/upgrades/).
-6. The on-disk [Storage Schema](/protocol/storage/) and the [Glossary](/protocol/glossary/).
+2. The model: [Concepts](/protocol/concepts/) → [The system group](/protocol/system-group/) → [Replication](/protocol/replication/).
+3. The call path: [Execution](/protocol/execution/) → [The write path](/protocol/write-path/) → [Reads, views &amp; events](/protocol/reads/).
+4. Trust: [Networking &amp; sealed channels](/protocol/networking/) → [Attestation &amp; receipts](/protocol/tee-attestation/) → [Encryption](/protocol/encryption/) → [Security &amp; threat model](/protocol/security-model/).
+5. People: [Accounts &amp; sessions](/protocol/identities/) → [Who a run acts as](/protocol/authorship/) → [Organizations &amp; teams](/protocol/organizations/).
+6. Look things up: [Storage schema](/protocol/storage/), [Limits](/protocol/limits/), [Glossary](/protocol/glossary/).
 
 </Steps>
 
-## Understand the data model deeply
+## Prove to a user where their data lives
 
 <Steps>
 
-1. [Collections](/build/collections/) — the types and their semantics.
-2. [CRDTs — how they work](/protocol/crdt-internals/) — the actual merge algorithms.
-3. [Projection &amp; the root hash](/protocol/projection/) — how state and convergence are computed.
-4. [Storage performance](/build/storage-complexity/) — what operations really cost.
-5. [Access-controlled storage](/build/permissioned-storage/) — the enforcement model.
+1. [Attestation &amp; receipts](/protocol/tee-attestation/) — the quote, the measurement policy, `verify_app_cluster`.
+2. [Deployment governance](/protocol/governance/) — what the attested governance tells a user.
+3. [Encryption](/protocol/encryption/) — the storage key from mero-kms and what an observer still sees.
+4. [Security &amp; threat model](/protocol/security-model/) — including what is not protected yet.
 
 </Steps>
 

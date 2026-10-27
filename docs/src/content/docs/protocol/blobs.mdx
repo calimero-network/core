@@ -1,547 +1,87 @@
 ---
-title: Blob Transport
-description: Content-addressed binaries that live outside the state tree, and how nodes announce and transfer them.
+title: Blobs
+description: Large content kept outside the logs — the cluster's sealed blob store, how an app's state marks the blobs that are its own, uploads, runs that write blobs, downloads, and deletion.
 sidebar:
-  order: 13
+  order: 21
 ---
 
-import SeqDiagram from '../../../components/SeqDiagram.astro';
-import { Steps } from '@astrojs/starlight/components';
-
-## What a blob is
-
-A **blob** is an opaque, content-addressed byte string. It is identified by a
-`BlobId` — a 32-byte hash derived from the blob's content — and it is displayed
-as a hex string. Because the identifier _is_ a hash of the bytes, a `BlobId`
-both names a blob and lets any holder verify that the bytes it received are the
-bytes that were asked for.
-
-Blobs are the protocol's mechanism for moving payloads that are too large, too
-binary, or too rarely-read to belong inside replicated state: WASM application
-bundles, file attachments, media, and similar. The state tree carries the small,
-hot, causally-ordered data; blobs carry the bulk, referenced by id.
-
-```rust
-// crates/primitives/src/blobs.rs
-pub struct BlobId(Hash);   // 32-byte digest, hex on display
-```
-
-:::note
-A blob is immutable. "Editing" a blob produces different bytes, hence a
-different `BlobId`. There is no in-place mutation and no version chain at this
-layer — references in state simply point at the new id.
-:::
-
-## Where blobs sit relative to state
-
-Blobs are **not** folded into a scope's Merkle root. The convergence machinery
-described in [Storage](/protocol/storage/) and [Sync](/protocol/sync/) compares
-`scope_root` over state entities; blob bytes never enter that hash. State
-references a blob only by storing its `BlobId` as a value. Two consequences
-follow:
-
-- Announcing, transferring, or garbage-collecting a blob does not change any
-  scope root and cannot, by itself, cause or repair state divergence.
-- A node can hold a `BlobId` in state without holding the bytes. The bytes are
-  fetched lazily, on demand, over the transfer paths below — and a peer that
-  serves them is checked against the referencing context, not against the state
-  root.
-
-Blob bytes live in their own storage, separate from the replicated entity tree:
-metadata in the `Blobs` column and the raw chunk files on disk.
-
-```rust
-// crates/store/src/types/blobs.rs — value stored in the `Blobs` column
-pub struct BlobMeta {
-    pub size: u64,                     // total size in bytes
-    pub content_hash: ContentHash,     // SHA-256 over the whole file content
-    pub links: Box<[key::BlobMeta]>,   // chunk blobs, in order (empty for a leaf chunk)
-}
-```
-
-### Chunked storage layout
-
-On write, the blob store reads the input stream in fixed `CHUNK_SIZE = 1 MiB`
-pieces. Each chunk is persisted as its own blob whose `BlobId` is the hash of
-that chunk's bytes. The **root** blob is then the ordered list of those chunk
-ids: its `BlobId` is the hash of the concatenated chunk ids, and its `BlobMeta`
-carries the total `size`, the whole-content `content_hash`, and the `links` to the
-chunk blobs. A blob that fits in a single chunk still gets a root whose id is
-derived from its one chunk id.
-
-```text
-root BlobId  = hash( chunk_id[0] ‖ chunk_id[1] ‖ … )   // BlobMeta.links
-chunk BlobId = hash( chunk_bytes )                       // 1 MiB each, last may be short
-BlobMeta.content_hash = hash( whole file content )      // distinct from BlobId
-```
-
-:::caution
-`BlobId` and `BlobMeta.content_hash` are different values. `BlobId` addresses the
-blob through its chunk-id list; `content_hash` is the digest of the raw content.
-They are distinct types (`BlobId`, `ContentHash`) with no implicit conversion
-between them: assigning one to the other does not compile. Converting requires
-going through raw bytes explicitly, so a swap has to be written on purpose
-rather than happening by accident.
-:::
-
-Because a chunk's id is the hash of its bytes, two blobs that share identical
-1 MiB chunks resolve to the **same chunk `BlobId`** and are stored once —
-deduplication falls out of content addressing with no extra bookkeeping. A
-`delete(blob_id)` path exists to drop a blob's stored bytes
-(`crates/store/blobs/src/lib.rs`), but content-addressed **garbage collection** of
-chunks no longer referenced from state is **not yet implemented**: removing a state
-reference does not by itself reclaim the bytes.
-
-## The guest blob API
-
-Applications never touch storage or the network directly. They use host
-functions exposed to the WASM guest. Writing is a streaming
-`create → write* → close` sequence that yields a `BlobId`; reading is
-`open → read*`. A blob can be published to a context for discovery with
-`announce_to_context`.
-
-```text
-blob_create() -> fd
-blob_write(fd, src: Buffer)                 -> bytes_written
-blob_close(fd, dst: BufferMut[32]) -> 1     // writes the final BlobId into dst[0..32]
-blob_open(blob_id: Buffer[32])              -> fd   // traps unless held for the context
-blob_open_in_context(blob_id: Buffer[32], context_id: Buffer[32]) -> fd  // 0 if unavailable
-blob_read(fd, dst: BufferMut)               -> bytes_read   // 0 at end of blob
-blob_announce_to_context(blob_id: Buffer[32], context_id: Buffer[32]) -> 1  // 0 if not held for the context
-```
-
-<Steps>
-
-1. **`blob_create()`** opens a write handle and returns an integer file
-   descriptor (`fd`). Internally this spins up a background task that consumes
-   written chunks and feeds them into the blob store.
-
-2. **`blob_write(fd, src)`** appends one chunk. The number of bytes written
-   equals the source buffer length. Each call's buffer must not exceed
-   `max_blob_chunk_size`.
-
-3. **`blob_close(fd, dst)`** finalises the upload, computes the `BlobId`, and
-   writes those 32 bytes into the guest buffer `dst`. The handle is consumed.
-   For a read handle, `close` simply releases it.
-
-4. **`blob_open(blob_id)`** opens a read handle for an existing blob and returns
-   an `fd`. The bytes are streamed lazily — opening does not yet fetch anything.
-   Local-only, and only for a blob held for the executing context (the same
-   `Column::BlobOwner` index that decides what its peers are served): any
-   other blob traps with `BlobNotHeldForContext`, because the blob store is
-   node-wide and a blob id is no secret. A blob uploaded before this node joined
-   the context is held for none; `blob_open_in_context` is the portable read.
-
-5. **`blob_open_in_context(blob_id, context_id)`** is `blob_open`'s
-   network-aware sibling: if the blob is not held for the context, it consults
-   the context's peers before giving up, and returns an `fd` for the same
-   streaming read once bytes are available. It returns `0` only when the blob
-   is neither held for the context nor served by any of its peers. A copy this
-   node holds for another context counts for nothing: only a peer of this
-   context serving the bytes makes them this context's. `context_id` must be
-   the executing context; any other traps with `BlobContextMismatch`.
-
-6. **`blob_read(fd, dst)`** copies the next bytes into `dst` and returns the
-   count, which may be less than the buffer (a partial chunk is buffered
-   internally and carried to the next call). A return of `0` means end of blob.
-   The read position only advances after the copy into guest memory succeeds, so
-   a failed copy can be retried without losing data.
-
-</Steps>
-
-### Limits and errors
-
-| Limit | Default | Enforced by |
-| --- | --- | --- |
-| `max_blob_handles` | `100` | `blob_create` / `blob_open` (open handles per execution) |
-| `max_blob_chunk_size` | `10 MiB` | `blob_write` (per-write) and `blob_read` (per-read buffer) |
-
-The host functions surface these errors:
-
-- `BlobsNotSupported` — the node is configured without a blob/network client
-  (the API is unavailable, e.g. in a bare VM).
-- `TooManyBlobHandles` — opening would exceed `max_blob_handles`.
-- `BlobContextMismatch`: `blob_open_in_context` or `blob_announce_to_context`
-  named a context other than the executing one.
-- `BlobNotHeldForContext`: `blob_open` named a blob not held for the
-  executing context.
-- `InvalidBlobHandle` — unknown `fd`, or using a write handle where a read
-  handle is required (or vice versa).
-- `BlobWriteTooLarge` / `BlobBufferTooLarge` — the write chunk or the read
-  buffer exceeds `max_blob_chunk_size`.
-- `InvalidMemoryAccess` — a descriptor buffer is out of bounds, or the `BlobId`
-  destination for `blob_close` is not exactly 32 bytes.
-
-:::note
-These per-call limits (`max_blob_chunk_size`) are independent of the on-disk
-`CHUNK_SIZE` (1 MiB). The guest may write in any chunk size up to the limit; the
-blob store re-chunks the resulting byte stream into 1 MiB storage chunks itself.
-:::
-
-## Announce and discover
-
-A blob is **announced** so the context's availability nodes can prefetch the
-bytes. `blob_announce_to_context(blob_id, context_id)` looks up the blob's size
-from local metadata and sends a one-message notice, `{ blob_id, context_id,
-size, auth }`, over a dedicated stream protocol,
-`/calimero/blob-announce/2.0.0` ([Networking](/protocol/networking/)), to each
-of the context's TEE members (`ReadOnlyTee` or `RelayTee`) and to nobody else.
-`context_id` must be the executing context; any other traps with
-`BlobContextMismatch`.
-Only a blob already held for the context is announced; any other returns `0`
-and announces nothing, because announcing never makes a blob held for a context.
-`auth` is signed the way a private blob read is: the producer's identity in the
-context signs the blob, the context, a timestamp and the producer's peer id.
-
-Direct streams to a chosen set, never a topic publish: gossipsub `flood_publish`
-fans every publish to every subscriber, so broadcasting would tell the whole
-context about every blob. And the announce is the ONLY place the blob→context
-association exists — `BlobMeta` is keyed by blob id alone, and state deltas
-carry opaque values — which is why prefetch hangs off it rather than off an
-enumeration of the context's state.
-
-A receiver prefetches only if `auth` proves the sending peer speaks for a member
-of the context (the check a signed blob read gets), if it is itself a TEE member of that
-context — directly, or by inheritance from any ancestor group up to the
-namespace root, which is how a root-admitted fleet node covers the contexts of
-the subgroups it follows; read from its own governance state, never taken from
-the announcement — does not already hold the blob for that context, and the advertised size is within the 500 MiB
-transfer cap. At most 2 prefetches run at once, and at most one per announcing
-account; announcements arriving while a slot is busy are dropped rather than
-queued.
-Each announcing account is charged its advertised size, at least 1 MiB, against a budget of 4 GiB per 24-hour window kept in memory; past the budget its announcements are dropped until the window ends.
-The charge, plus 64 KiB for headers and framing, is also what the prefetch may read off its transfer streams from every holder it tries together; the read that passes it fails, and the search ends.
-The account is then charged everything that arrived: a success at least 64 KiB, a failure at least 1 MiB, and a timed-out prefetch at least its whole claim, since its transfer may still be running.
-What the connection buffered for a stream but nothing read is not counted, so each probe or transfer stream can add up to one transport flow-control window.
-Bytes any holder sends count against the announcer, so a peer serving junk, or any partial transfer, ahead of the real holder can make the prefetch fail; the blob is still fetchable from its uploader.
-An announcement dropped because both slots are busy costs nothing.
-A dropped prefetch costs availability for one blob, never correctness.
-A prefetch records the one reference it took, as a `PrefetchedBlob` row.
-That reference is released when the context is deleted.
-It is also released by a sweep that runs hourly, once two sweeps in a row (an hour apart) find this node no longer serves the context (deleted, left, or no longer a TEE member).
-A blob a served context holds is never released, and other owners' references keep the bytes.
-
-Announcing is best-effort in the same spirit, and **the producer does not wait
-for it**: the notices are sent detached, so `blob_announce_to_context` returns
-once the work is scheduled, not once it is delivered. A refused, failed or
-undelivered announce never fails — nor delays — the write that produced the
-blob. Anything that needs to know an availability node actually holds the bytes
-must observe that on the availability node.
-
-**Known gap:** an availability node that is offline when a blob is announced
-never learns about it and has no catch-up path. The blob stays findable by
-probing its original holder, so correctness is unaffected, but availability for
-that blob degrades until something announces it again.
-
-Discovery is a separate mechanism, and does not read any announcement. A node
-that holds a `BlobId` in state but not the bytes **asks the context's peers
-directly**: it takes the subscribers of
-the context's gossipsub topic as candidates and sends each one a *probe* — a
-`BlobRequest` whose response header is read and whose chunks never are, so the
-peer answers `found` without transferring anything.
-
-Probes go out in **batches of 8**, concurrently within a batch and sequentially
-between batches, stopping at the first peer that answers `found: true`. The
-winner is then asked for the bytes over the transfer protocol below.
-
-Candidates are ordered **before** they are batched: availability nodes first,
-then peers that recently served this node a blob in the same context, then the
-rest in whatever order the subscriber set gave them. On a context large enough
-that the sweep runs out of time or hits its ceiling (below), that ordering
-decides which peers are asked at all, not merely in what order: an availability
-node listed last by the subscriber set might never be probed, while first it
-answers in one round trip.
-
-The recent-provider tier is a hint, not state. It is **memory-only** — nothing
-is persisted and nothing is replicated — and bounded both per context and in how
-many contexts it tracks, so it cannot grow with network activity. A node that
-has just started has an empty one and orders candidates exactly as it would
-without it. It records a **successful fetch**, not a probe that answered `found:
-true`: a probe says a peer claims custody, whereas a completed fetch says it
-served bytes that hashed to the id asked for, which is the only one of the two a
-lying or unreachable peer cannot manufacture.
-
-The search is bounded three ways, and all three are load-bearing:
-
-| Bound | Value | What it stops |
-| --- | --- | --- |
-| Width | 8 probes outstanding | Fanning a miss out to the whole subscriber set at once |
-| Duration | 30 s over the whole path | A search outliving the HTTP request that asked for it |
-| Ceiling | 256 candidates per sweep | An instantly-answering 10 000-peer context turning one miss into 10 000 probes |
-
-**The duration is the bound that normally ends a sweep.** Batches run until the
-30 s budget is gone or the candidates are exhausted; how far that gets depends
-entirely on how fast peers answer. On a healthy network a probe answers in a few
-milliseconds, so the budget comfortably walks a whole context; against peers
-that stall to the 5 s probe timeout it manages about six batches.
-
-The ceiling is a safety valve, not the normal stop. It is also where the
-**deliberate incompleteness** now lives: a blob held only by a peer beyond
-candidate 256 still reads as absent. That remains the escalation trigger for
-this design — a context that big needs real provider state (an anchor, a
-rendezvous, a sharded index), not a longer linear scan.
-
-The cost of that incompleteness is asymmetric on purpose. A miss on a large
-context can now cost up to 256 probes instead of 32, but a miss is latency and
-the deadline already caps it, whereas a wrong "nobody has it" is a 404 for a
-blob that exists on a peer the node simply never asked.
-
-A winner that then fails to deliver — a dropped connection, a timeout, or bytes
-whose recomputed id does not match — is not evidence that the blob is gone, so
-the search resumes at the next candidate instead of reporting absence. And an
-empty candidate list is not evidence either: a node that has just joined may
-simply not have been grafted onto the context topic yet. An **empty** sweep is
-therefore retried up to **6 times**, re-resolving the subscriber set each time,
-with the gap starting at **100 ms** and doubling to a **2 s** cap. A sweep that
-had candidates and still found nothing is not repeated — re-asking peers that
-already said no is repeating work, not making progress.
-
-Asking is authoritative in a way a record is not: custody is a property of a
-peer's own blob store, so the answer cannot be stale, cannot expire, and is not
-limited to whichever single peer happened to announce. Any node that has the
-bytes — including one that only ever downloaded them — is discoverable, and a
-holder that restarts stays discoverable. A probe deliberately does not
-distinguish "not authorised" from "not held": both answer `found: false`, which
-costs a wasted candidate and never a wrong fetch.
-
-### The Kademlia record, and why it is still written
-
-The Kademlia provider-record API (`announce_blob_to_kad` / `find_blob_providers`)
-is **deprecated**, and nothing in the tree reads it — discovery is probing, and
-only probing.
-
-The **write** survives anyway, and `announce_blob_to_network` performs it
-alongside the availability-node notice. A peer still running the pre-probe code
-discovers blobs by DHT lookup and by nothing else, so an upgraded node that
-stopped writing the record would become invisible to it. The reverse direction
-needs no such help: an un-upgraded peer answers an ordinary blob request, so a
-probing node still finds it. Only the write is load-bearing for mixed versions,
-which is why only the write was kept. Both routes sit behind the same
-withholding gate, so an http-mode node advertises application bytecode by
-neither.
-
-The record is opportunistic in a way probing is not — only some paths publish
-one, and a restart drops what a node held — which is exactly why nothing reads
-it any more. It goes once no un-upgraded peer remains.
-
-:::note
-Global (context-less) blob queries are not supported — discovery always names a
-context. New nodes that cannot yet sign requests are still bootstrapped because
-a context's application-bundle blobs are served as public (see authorization
-below).
-:::
-
-## Point-to-point transfer over the dedicated stream
-
-Once a provider peer is known, the bytes move over a **dedicated libp2p stream
-protocol**, separate from the sync stream:
-
-```rust
-// crates/network/primitives/src/stream.rs
-pub const CALIMERO_BLOB_PROTOCOL: StreamProtocol =
-    StreamProtocol::new("/calimero/blob/0.0.3");
-pub const MAX_MESSAGE_SIZE: usize = 8 * 1_024 * 1_024;  // 8 MiB framed-message cap
-```
-
-The requester opens a stream on `CALIMERO_BLOB_PROTOCOL`, sends a single
-`BlobRequest`, and reads a `BlobResponse` header followed by a sequence of
-`BlobChunk` frames terminated by an **empty** chunk.
-
-```rust
-// crates/network/primitives/src/blob_types.rs
-struct BlobRequest  { blob_id: BlobId, context_id: ContextId, auth: Option<BlobAuth> } // JSON
-struct BlobResponse { found: bool, size: Option<u64> }                                  // JSON
-struct BlobChunk    { data: Vec<u8> }                                                   // Borsh
-```
-
-<SeqDiagram
-  id="d-blob-xfer"
-  title="Dedicated blob transfer (/calimero/blob/0.0.3)"
-  lanes={[
-    { label: 'Requester', color: '#3fb950' },
-    { label: 'Provider', color: '#58a6ff' },
-  ]}
-  steps={[
-    { from: 0, to: 1, label: 'open stream on /calimero/blob/0.0.3' },
-    { from: 0, to: 1, label: 'BlobRequest { blob_id, context_id, auth? }' },
-    { from: 1, to: 1, label: 'authorize: public bundle or signed member', color: '#a5ff11' },
-    { from: 1, to: 0, label: 'BlobResponse { found, size }' },
-    { from: 1, to: 0, label: 'BlobChunk { data } …', dashed: true },
-    { from: 1, to: 0, label: 'BlobChunk { data: [] }  (end of stream)' },
-    { type: 'divider', label: 'requester recomputes id, stores bytes locally' },
-  ]}
-/>
-
-The provider streams its stored chunks straight from the blob store, one
-`BlobChunk` per stored chunk, then sends an empty `BlobChunk` to mark the end.
-If the provider does not hold the blob it replies `BlobResponse { found: false }`
-and sends no chunks.
-
-### Authorization
-
-Blob bytes are not served to anyone who asks.
-
-Application bytecode has a gate ahead of authorization: a node whose
-[`[registry] mode`](/operate/config/#registry) is `http` resolves applications from its
-own registry and is therefore not a source of their bytes, so it neither announces nor
-serves them and the request reads as "not held" (`NodeClient::may_share_blob`). Only
-`dht`-mode nodes serve application bytecode. User-data blobs are unaffected in both
-modes, and everything below applies to them either way.
-
-For the blobs a node will serve, the provider authorizes each `BlobRequest` before
-streaming:
-
-- **Public bundles.** If the requested `blob_id` is the context's application
-  bytecode or compiled artifact (per the authoritative context config), access
-  is granted with no signature. This is what lets a joining node fetch the code
-  it needs before it has an identity in the context.
-- **Signed member requests.** Otherwise the request must carry a `BlobAuth`: the
-  requester's `public_key`, a Unix `timestamp`, and an Ed25519 `signature` over
-  the `BlobAuthPayload { blob_id, context_id, timestamp, requester }`, where
-  `requester` is the transport `PeerId` the request arrives from. The provider
-  checks the signature against the peer that sent it, checks that the timestamp
-  falls inside the replay window (**30 s** in the past, **10 s** in the future),
-  and checks that the public key is a current member of the context. Any failure
-  denies access.
-- **Held for that context.** A signed member is served a blob only if the
-  provider holds it for the context the request names: the context's app wrote
-  it, it was uploaded with that `context_id`, or the provider fetched it under
-  that context. The provider records this in a node-local index
-  (`Column::BlobOwner`, keyed `context_id ‖ blob_id`). A blob uploaded without a
-  context is in no context and is never served to peers; announcing it does not
-  change that. Freeing a blob's last reference drops its rows. The same bytes held
-  for two contexts are served to members of either.
-
-```rust
-// crates/network/primitives/src/blob_types.rs
-struct BlobAuth        { public_key: PublicKey, signature: [u8; 64], timestamp: u64 }
-struct BlobAuthPayload { blob_id: [u8; 32], context_id: [u8; 32], timestamp: u64, requester: Vec<u8> }
-```
-
-:::caution[Normative]
-A provider MUST deny a non-public blob request that lacks a valid `BlobAuth`,
-whose signature does not verify for the peer that sent it, whose timestamp is
-outside the replay window, whose signer is not a current member of
-`context_id`, or whose blob the provider does not hold for `context_id`. A
-requester SHOULD attach `BlobAuth` for any blob that is not the context's
-application bundle; a node that owns no identity in the context can only fetch
-public bundles.
-:::
-
-### Timeouts and framing
-
-Both ends bound the transfer so a stalled peer cannot pin resources:
-
-| Side | Bound | Value |
-| --- | --- | --- |
-| Requester | whole transfer | 60 s |
-| Requester | per chunk received | 30 s |
-| Provider | whole serve | 300 s |
-
-Every frame is length-delimited and capped at `MAX_MESSAGE_SIZE` (8 MiB) by the
-stream codec. Since stored chunks are 1 MiB, a `BlobChunk` frame stays well
-under that cap.
-
-## Worked example: a 5 MB image
-
-To see the pieces fit together, follow a 5 MB image from the app that stores it
-to a peer that fetches it.
-
-<Steps>
-
-1. **Store it.** The producing app calls `blob_create()`, streams the image in
-   with repeated `blob_write(fd, …)`, and calls `blob_close(fd, dst)`. The blob
-   store re-chunks the byte stream into roughly five 1 MiB storage chunks (the
-   last one short), and `close` writes back the root `BlobId` — the hash of the
-   ordered chunk-id list. The app keeps that id (typically by storing it in
-   state).
-
-2. **Announce it.** `blob_announce_to_context(blob_id, context_id)` looks up the
-   blob's size locally and sends `{ blob_id, context_id, size, auth }` over
-   `/calimero/blob-announce/2.0.0` to each of the context's availability nodes.
-   Each one that is online, does not already hold the image for the context, and has a free
-   prefetch slot fetches it, so the image ends up on an always-on node as well
-   as the producer.
-
-3. **Discover it.** A second node holds the `BlobId` in state (it synced the
-   reference) but not the bytes. It takes the context topic's subscribers as
-   candidates and probes them 8 at a time — a `BlobRequest` whose `found` answer
-   it reads and whose chunks it does not — until one says yes. Any node holding
-   the bytes qualifies, not just the announcer.
-
-4. **Fetch it.** The fetcher opens `/calimero/blob/0.0.3` to that peer and sends a
-   `BlobRequest { blob_id, context_id, auth? }`. The provider authorizes the
-   request, replies `BlobResponse { found: true, size }`, then streams its stored
-   chunks as `BlobChunk` frames — one per 1 MiB chunk — and a final empty
-   `BlobChunk` to mark the end.
-
-5. **Verify it.** The fetcher concatenates the chunks, recomputes the `BlobId`,
-   and accepts the bytes only if it matches the id it asked for. It stores the
-   image locally and can now serve (and announce) it itself.
-
-</Steps>
-
-## Blob transfer during sync
-
-Blobs can also move **inside** a sync session over the sync stream
-(`/calimero/stream/0.0.4`), rather than the dedicated blob protocol. This path
-is used when a sync needs a blob it does not yet hold — for example staging an
-application upgrade. It rides the same encrypted, sequenced envelope as every
-other sync exchange ([Sync](/protocol/sync/)), so the wire messages differ from
-the dedicated protocol:
-
-```rust
-// crates/node/primitives/src/sync/wire.rs
-InitPayload::BlobShare    { blob_id: BlobId }        // request (and the responder's ack)
-MessagePayload::BlobShare { chunk: Cow<'a, [u8]> }   // each chunk; empty chunk ends the stream
-```
-
-The initiator sends an `Init` carrying `BlobShare { blob_id }`; the responder
-acks with the same `blob_id`, then streams `Message` frames each carrying a
-`BlobShare` chunk, ending with an empty chunk. Unlike the dedicated protocol,
-these frames are encrypted under the per-session shared key and ordered by the
-sync sequencer, and the chunk payload is raw bytes (not a Borsh `BlobChunk`). A
-responder that does not hold the blob for the session's context (recorded for it,
-or the application the context runs) replies with an opaque error so the
-initiator fails fast and retries after its backoff rather than blocking. A
-completed share records the blob for that context on the initiator.
-
-<SeqDiagram
-  id="d-blob-share"
-  title="Blob share inside a sync session (/calimero/stream/0.0.4)"
-  lanes={[
-    { label: 'Initiator', color: '#3fb950' },
-    { label: 'Responder', color: '#58a6ff' },
-  ]}
-  steps={[
-    { from: 0, to: 1, label: 'Init: BlobShare { blob_id }' },
-    { from: 1, to: 0, label: 'Init ack: BlobShare { blob_id }  (+ nonce)' },
-    { from: 1, to: 0, label: 'Message: BlobShare { chunk } … (encrypted, sequenced)', dashed: true },
-    { from: 1, to: 0, label: 'Message: BlobShare { chunk: [] }  (end)' },
-    { type: 'divider', label: 'initiator stores blob; id must match request' },
-  ]}
-/>
-
-:::note
-Both transfer paths converge on the same guarantee: the receiver recomputes the
-`BlobId` from the bytes it assembled and rejects the result if it does not match
-the id it asked for. Content addressing makes the transfer self-verifying — a
-wrong or tampered payload cannot masquerade as the requested blob.
-:::
-
-## Summary
-
-- A blob is content-addressed immutable bytes named by `BlobId`, stored outside
-  the state tree in the `Blobs` column plus on-disk chunk files, and re-chunked
-  to 1 MiB internally.
-- Blobs are referenced from state by id only; they are never folded into
-  `scope_root`, so blob movement neither creates nor repairs state divergence.
-- Guests use `create → write → close` (yields a `BlobId`), `open → read`, and
-  `announce_to_context`, bounded by `max_blob_handles` and `max_blob_chunk_size`.
-- Discovery is a bounded probe of the context's peers, availability nodes first;
-  producers announce new blobs to those availability nodes over
-  `/calimero/blob-announce/2.0.0` so they prefetch. Transfer runs either over the
-  dedicated `/calimero/blob/0.0.3` stream (`BlobRequest` → `BlobResponse` →
-  `BlobChunk*`) or, during sync, as encrypted `BlobShare` frames — both gated by
-  context-membership authorization and by the blob being held for that context,
-  and both self-verifying by content address.
+A **blob** is immutable, content-addressed bytes kept outside every log: an
+attachment, an image, a model. Log entries are capped at 1 MiB and should stay
+small, so anything large goes to the **blob store** and the log carries only
+its id. The same store holds bundles and uploaded `.mpk` releases.
+
+## The store
+
+Each node keeps blobs in its own RocksDB `blobs` column, sealed under the
+cluster's storage key like everything else ([Storage schema](/protocol/storage/)).
+A blob's id is `hex(SHA-256(bytes))`; the API also accepts the base58 form apps
+print (v1's `BlobId`).
+
+- **Writes reach a majority.** Storing a blob writes it locally and pushes it to
+  every other node (`internal/blob`); the write succeeds once a majority of the
+  cluster's nodes hold it.
+- **A node that missed one fetches it.** A node asked for a blob it does not
+  hold — it was down when the blob was stored — fetches it from a peer
+  (`internal/blob/get`), checks the hash, and keeps it.
+
+Every node holds every blob it was reachable for, so there is nothing to
+announce or discover: v1's blob announcements, DHT records and transfer
+streams are gone.
+
+## Which blobs are an app's
+
+Bytes in the store belong to no one. What makes a blob an app's is a **mark**
+in the app's state, under the host's key space (`\0calimero.blobs\0 ‖ id` →
+size). Marks are written only by the node, as part of an entry, so they
+replicate with the app and are ordered with its calls.
+
+A run opens only blobs its app's state marks (`services::AppBlobs`). A run on a
+node that misses the bytes fetches them from a peer, waiting at most 5 seconds.
+
+## Getting a blob in
+
+- **Upload.** `POST /apps/{app}/blobs` (raw bytes) by a signed-in caller who
+  reaches the app and may write it — not a read-only API key and not a
+  read-only team member. The node stores the bytes on a majority, then commits
+  `AppCmd::Blob { id, size }` to the app's log. The answer names the blob and
+  the entry's index.
+- **From a run.** `env::blob_create` / `blob_write` / `blob_close` in a call
+  produce blobs on the run's outcome, never through the store directly. The
+  leader stores them locally before proposing the entry, the entry's diff marks
+  them as the app's, and after the entry commits the leader spreads them to the
+  other nodes. Bytes are never part of the log entry.
+
+## Reading and listing
+
+- `GET /apps/{app}/blobs/{id}` downloads a blob the app marks, by anyone who
+  reaches the app. A blob the app does not mark is `404`, whether or not the
+  bytes exist.
+- `GET /apps/{app}/blobs` and `/blobs/{id}/info` list the app's blobs and their
+  sizes, from a scan of a replica's state.
+- Inside the sealed channel, a download is sealed frame by frame like any
+  response.
+
+## Deleting
+
+`DELETE /apps/{app}/blobs/{id}`, by the app's owner or an admin of its
+organization, commits `AppCmd::BlobForget`: the app no longer has the blob, its
+runs cannot open it, and the API answers `404`. Then the node collects the
+bytes (`Node::collect_blob`): it deletes them on every node unless
+
+- another app still marks the same content — asked of each app's **leader**
+  (`blob_held_strong`), because a lagging replica could miss a mark committed a
+  moment ago, and an app whose leader does not answer counts as holding it; or
+- the content is a bundle or a release `.mpk`.
+
+Known window: if the same content is uploaded to another app between that check
+and the deletion, the other app's mark survives but its bytes are gone.
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| A sealed request (and so an upload) | 64 MiB |
+| Open blob handles per run | 100 |
+| One read or write chunk | 10 MiB |
+| All blobs one run writes | 512 MiB |
+| A run waiting for a missing blob | 5 s |

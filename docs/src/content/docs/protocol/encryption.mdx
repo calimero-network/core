@@ -1,251 +1,102 @@
 ---
-title: Encryption & Confidentiality
-description: What Calimero encrypts, with which key, and what an observer can still see.
+title: Encryption
+description: What is encrypted, under which key, where the keys come from — and what someone holding the host, the disks or the network can still see.
 sidebar:
-  order: 22
+  order: 10
 ---
 
-import SeqDiagram from '../../../components/SeqDiagram.astro';
+There are two encryption boundaries, and between them nothing is in the clear:
+**in transit**, every request and response travels in a sealed session bound
+to an attested key; **at rest**, every value a node writes is sealed under the
+cluster's storage key. In between, data exists in plaintext only inside the
+TD's memory.
 
-Confidentiality in Calimero is not a single switch. It is three independent layers, and a byte is only as private as the weakest layer that carries it:
+## In transit
 
-- **Transport** — the libp2p connection between two nodes (Noise/TLS on TCP, TLS 1.3 on QUIC). Protects everything in flight against a network eavesdropper, but terminates at each peer.
-- **Payload** — application-layer encryption applied to specific fields *before* they are gossiped, so that even a peer subscribed to the topic cannot read them without the right key.
-- **At-rest** — encryption of values written to local storage, gated on an optional KMS-backed wrapper.
+| Hop | Protection |
+| --- | --- |
+| Client → node | Sealed session (Noise NK to the attested transport key, AES-256-GCM per request and per response frame) |
+| Node → node | The same sealed session, to the peer's attested transport key, plus the cluster secret on every internal route |
+| Anything unsealed | Only `/attestation` and `/health` |
 
-The headline question this page answers is: for any given piece of data, *which* of these layers actually covers it. The short version is that payload-layer encryption is selective — it protects the state-change artifact, the post-apply `root_hash`, and the execution events (all sealed together in one ciphertext), plus group governance mutations, but a large amount of routing metadata rides in cleartext on the gossip topic.
+The session keys come from ephemeral keys on both sides, so a session that has
+ended (after an hour at most) cannot be opened later, not even with the node's
+transport key. See [Networking & sealed channels](/protocol/networking/).
 
-This page cross-links [Identities & Keys](/protocol/identities/) (which key is which), [Key Rotation](/protocol/key-rotation/) (how group keys turn over), [Networking](/protocol/networking/) (the transport and gossip layers), and the operator-facing [Security](/operate/security/) guide.
+## At rest: the storage key K_r
 
-## The two primitives
-
-All payload-layer encryption goes through a single type, `calimero_crypto::SharedKey` (`crates/crypto/src/lib.rs`). It is always AES-256-GCM (via `ring`), always a 12-byte nonce, and, for the group-bulk and device-KEM paths, **empty AAD**. There are two ways to construct the group-bulk and delivery keys, and conflating them is the most common source of confusion:
-
-| Constructor | Key material | Used for |
-| --- | --- | --- |
-| `SharedKey::from_sk(sk)` | The 32 bytes *are* the symmetric key, used directly. | Bulk data encrypted under a **group key**: state-delta artifacts and group governance ops. |
-| `SharedKey::new(sk, pk, purpose)` | ECDH on the Ed25519 identity keys (`sk` × `pk`), producing a shared secret; the `Purpose` selects the HKDF label and binds its identifiers as AAD. | **Key delivery** and sealing: wrapping a group key or the namespace TEE key for a recipient, app `seal_to`, account seals, blob stream keys. |
-
-So the symmetric variant moves *data* under a key the whole group already shares, and the ECDH variant moves *the key itself* to one recipient. Both call the identical `encrypt`/`decrypt` methods underneath.
-
-:::note
-The group key is itself a 32-byte value handled as a `PrivateKey`, but it is **not** anyone's identity key — it is a shared symmetric secret for the group. A delta's key is identified on the wire by `key_id = SHA-256(group_key)` (`crates/governance-store/src/group_keys.rs`), so receivers can pick the right key from their keyring without the key ever appearing in cleartext.
-:::
-
-## What is encrypted, and with what
-
-This is the master map. "Encrypted?" refers to **payload-layer** encryption; everything additionally gets transport encryption on the wire (and may get at-rest encryption on disk, see below).
-
-| Data | Encrypted? | Key | Algorithm / notes |
-| --- | --- | --- | --- |
-| State-delta `artifact` (the CRDT actions) | **Yes** | Group/scope key (`from_sk`) | AES-256-GCM. Encrypted at `crates/node/primitives/src/client.rs:557`; decrypted at `crates/node/src/handlers/state_delta/crypto.rs:113`. |
-| State-delta `events` (execution events) | **Yes** | Group/scope key (`from_sk`) | Sealed with the artifact inside `SealedDeltaPayload`, then AES-256-GCM (`client.rs`). Readable only by group-key holders. |
-| State-delta `root_hash` (post-apply state fingerprint) | **Yes** | Group/scope key (`from_sk`) | Also sealed inside `SealedDeltaPayload` — never a cleartext wire field. |
-| Ephemeral presence (`BroadcastMessage::Ephemeral.ciphertext`): one `PresenceUpdate`, whose statement (context, author, seq, time, state hash) its author signed, plus a device certificate when an account published it through a relay | **Yes** | Current key of the keyring covering the context's group (`from_sk`) | AES-256-GCM with a fresh nonce per publish; the envelope is signed by its author. The keyring comes from `key_covering_group`, as for the state delta, so presence is readable by exactly the readers of the context's state. Only that keyring's current key is accepted on receipt, so a rotation is what evicts a departed member. |
-| Delta envelope: `parent_ids`, `hlc`, `author_id`, `delta_id`, `key_id`, `governance_position`, `delta_signature`, `nonce` | **No** | — | Plaintext routing/causality metadata. |
-| `key_id` | n/a (it is a tag) | — | `SHA-256(group_key)`; cleartext so receivers can resolve the key. |
-| Governance **Root** ops, sealed set (`GroupCreated`, `GroupReparented`, `GroupDeleted`, `AdminChanged`, `PolicyUpdated`, `KeyDelivery`, `MemberJoinedOpen`, `MemberJoinedViaTeeAttestation`) | **Yes** | Namespace key | AES-256-GCM over `borsh(RootOp)`, carried as `NamespaceOp::RootSealed { key_id, encrypted }`. Published by a principal that already holds the namespace key, so nothing is lost by sealing. `root_op_is_sealable` (`crates/governance-types/src/lib.rs`) is the single place the split is decided. |
-| Governance **Root** ops, cleartext set (`NamespaceCreatedV2`) | **No** | — | Genesis, published before any key exists. `MemberJoined` / `MemberJoinedAt` still answer `false` to `root_op_is_sealable`, but that is now a statement about the CLEARTEXT form of the variant and not about how a join travels: every join is published sealed, either by a joiner that holds the covering key (`RootSealed` / `RootSealedForGroup`) or by an admitter wrapping the joiner's signed op (`RootRelaySealed`). The arm must stay `false` because the joiner's inner op *is* a cleartext `Root(..)` — the seal is the admitter's envelope around it — and flipping it would make the publish-side guard refuse the joiner's own local apply. |
-| A **relayed** invitation join (`NamespaceOp::RootRelaySealed`) | **Yes** | Namespace key | The way an invitation join *can* be sealed. When an admitter relays a join for a keyholder with no node of its own (`POST /admin-api/namespaces/:id/admit`), it seals the joiner's **whole signed op** — `AES-256-GCM(borsh(SignedNamespaceOp))` — and signs the envelope itself. Receivers decrypt, verify the JOINER'S inner signature, and apply, so `join_op_proves_ownership` still decides who joined and a hostile admitter still cannot substitute an account. Nesting the signed op rather than moving the signature inside the seal is what preserves keyless verification: the outer envelope is admitter-signed, so a peer with no namespace key authenticates what it stores exactly as for `RootSealed`. It is also how a joiner *with* a node publishes a join it cannot seal: it holds the covering key on the ordinary path (the join bundle delivers it before the publish) and seals for itself, and when it does not it hands the signed op to the admitter over the namespace-join stream (`InitPayload::RelaySealedJoinRequest`) rather than publishing in the clear. That costs no availability — since [direct admission](/protocol/direct-admission/) a join with no admitter endorsement fails outright, so the first peer asked is one the joiner has already completed an exchange with, and a refusal falls through to the rest of the namespace topic (an admitter awaiting its own key delivery endorses and serves no envelope, which is one of the ways a joiner ends up unkeyed) — and a relay that finds no keyholder **fails the join**, because a fallback to cleartext would make "sealed" and "leaked" the same silence. |
-| Governance **Group** ops (`EncryptedGroupOp.ciphertext`) | **Yes** | Group key (`from_sk`) | AES-256-GCM over `borsh(GroupOp)`. `group_id` / `key_id` / `signer` stay cleartext as routing tags; non-members store an `OpaqueSkeleton` (`crates/governance-types/src/lib.rs`). A context registration also names its context in the clear (`registers`), so every namespace member sees which group registered which context: a context belongs to the first group that registers it, and a node without that group's key must be able to tell. |
-| Key delivery (`KeyEnvelope.ciphertext`) | **Yes** | ECDH from a per-envelope ephemeral: `new(ephemeral_sk, identity_pk)` to a member, `from_x25519(ephemeral_sk, device_kem_pk)` to a device | AES-256-GCM over the 32-byte group key, plus an Ed25519 signature by `sender` bound to the `group_id`. On member removal the new key is re-wrapped once per *remaining* recipient; the removed member — and every device speaking for them — gets no envelope and is cryptographically locked out (`KeyRotation`). |
-| Store **values** at rest | **Only if** `EncryptedDatabase` is enabled | DEK from `HKDF-SHA256(KMS master, "calimero-dek-v{n}")` | AES-256-GCM, 12-byte nonce, versioned DEKs for rotation (`crates/store/encryption/`). Off by default. |
-| Store **keys** at rest | **No** | — | Plaintext even with the wrapper on, so range scans / prefix seeks still work. |
-| Blobs | **No** | — | Not encrypted at rest or at the app layer. `BlobId = SHA-256(plaintext)`; only the transport protects them in flight (`crates/node/.../blobs`). |
-| libp2p transport | **Yes** | Noise / TLS session keys | Noise *or* TLS on TCP, TLS 1.3 on QUIC (`crates/network/src/behaviour.rs`). |
-| Gossipsub messages | **Signed, not encrypted** | Ed25519 node key | `MessageAuthenticity::Signed` (`behaviour.rs:113`) — authenticity, not confidentiality. |
-
-The pattern: **bulk payloads that should be group-private are encrypted under the group key; the metadata that makes routing, causal ordering, and authorization work is cleartext.** Confidentiality protects *what changed*, not *that something changed, by whom, and in what shape*.
-
-### Which group's key covers a group
-
-"The group key" above is not always the key of the group whose data it is. One predicate decides, `CapabilitiesRepository::is_open_chain_to_namespace` (`crates/governance-store/src/capabilities.rs`), and `calimero_governance_store::key_covering_group` is the single helper that applies it:
-
-- **Every ancestor up to the namespace is `Open`** → the **namespace key**. An Open subgroup's contents are namespace-scoped by construction: parent-group members holding `CAN_JOIN_OPEN_SUBGROUPS` are inherited into it, so there is no boundary for a separate key to enforce. Its governance ops, its state deltas and its contexts' ephemeral presence are all encrypted under the namespace key.
-- **Anything else** → the **group's own key**. That includes a `Restricted` subgroup, an `Open` subgroup sitting behind a `Restricted` ancestor (the wall breaks the chain — a one-hop visibility check gets this case wrong), and the namespace root, which the predicate answers `false` for against itself. A namespace is, in this respect, a Restricted group in its own right.
-
-Two consequences worth stating, because both have bitten:
-
-**A subgroup's key row exists even when nothing uses it.** `create_group` mints a key for every subgroup at birth regardless of visibility, since an Open subgroup behind a Restricted ancestor is covered by it. So for an Open chain the row is a key **nothing is encrypted under**, and a later `SubgroupVisibilitySet -> Restricted` mints a fresh key with the flip rather than adopting it (see [key rotation](/protocol/key-rotation/)). Serving or adopting it is worse than serving nothing: the recipient records "key present" and then decrypts nothing, with no error on either side. Every site that reads a keyring for a group must go through `key_covering_group`, not the group's own id.
-
-**The namespace key is not a subgroup member's to hold.** It reads all namespace-level governance and every Open-chain subgroup's application state, and it is retained after leaving unless rotated. So a member admitted to a subgroup alone may not be given it — which means an invitation targeting an Open-chain subgroup cannot be satisfied at all, and is refused rather than answered with a key. Such a member is invited into the namespace root instead, after which inheritance carries them into the Open subgroup (`MemberJoinedOpen`).
-
-### A subgroup join seals under the subgroup key
-
-A join whose invitation targets a **subgroup** is published sealed under the key covering that subgroup, as `NamespaceOp::RootSealedForGroup { group_id, key_id, encrypted }`.
-
-The reason it can be sealed at all is which key the joiner ends up holding. A subgroup-targeted invitation's join bundle delivers *that group's* key — `join_group` keeps it before publishing, unless nothing vouches for its sender — so on a Restricted chain the joiner holds the subgroup key at publish time. It never holds the namespace key, which is why `RootSealed` cannot carry this op and why `root_op_is_sealable` answers `false` for the `MemberJoined` / `MemberJoinedAt` variants.
-
-`group_id` travels in the clear, and it is load-bearing rather than a leak: the receiver has to know which keyring to resolve `key_id` in. `RootSealed` can omit it because the namespace is implied by the topic; here the encrypting group is one of many beneath that namespace, and trying each keyring in turn is the guessing the `key_id` fields exist to prevent.
-
-The encrypting group is chosen by `key_covering_group`, so a Restricted chain seals under the subgroup and an Open chain under the namespace — never under a key row nothing encrypts to.
-
-**Who may read it, and why that set suffices.** The readers are the subgroup's own members: its admins and any admitted TEE node, both of which already hold its key (TEE admission writes a normal member row, so `current_key_recipients` reaches it). No namespace admin outside the subgroup reads the join, and none needs to, because every invariant a subgroup join touches is already written by ops sealed to that same set:
-
-- the **deny-list** row a join clears is only ever written by `MemberRemoved` / `MemberLeft`, which are `GroupOp`s — so only subgroup members ever hold one;
-- **re-entry blocks** and invitation-consumption records are per-`(group_id, identity)` and written by those same exits; both columns are hash-neutral, so a non-member not deriving them cannot surface as divergence;
-- **`count_admins`** is per-group and consulted only from those ops, and a join only ever adds a member.
-
-State deltas are unaffected for an independent reason: they travel a **per-context** topic, so a peer outside the subgroup is not subscribed to its contexts and never resolves an at-cut membership verdict for one. Governance ops travel the namespace topic, which is where the sealed join lands and where it is opaque by design — the same standing an encrypted `GroupOp` for a foreign group already has.
-
-**The envelope carries a join and nothing else.** Every path that opens it checks that, because the variant otherwise becomes a general-purpose envelope for any root op that opens with a *subgroup* key — a privilege widening rather than a looser type. `RootOp::KeyDelivery` was the concrete case: its side effect stores the delivered key without binding it to any signed op, so carried here it let a plain member of one Restricted subgroup write a key of its own choosing into a co-member's keyring for an unrelated group, and then read that group's traffic. Carried only by `RootSealed` it required the namespace key. That particular escalation is now blocked independently, by the trusted-anchor gate on delivery described below — but the join-only restriction is not therefore redundant: it is a property of *this carrier*, which should not be a general-purpose envelope for root ops, while the anchor gate is a property of *one op*. Either alone would leave the next sealable root op to be argued about individually. The same check pins the envelope's `group_id` to one of the two values `key_covering_group` can emit for that invitation — the target subgroup, or the namespace root that covers an Open chain — since the sealing group decides which peers authorize the join and is therefore not the joiner's to pick. It is compared against those two values rather than re-derived at the receiver: re-deriving reads local visibility rows, and two peers mid-flip would then disagree about whether an op is admissible.
-
-A cleartext subgroup-targeted join is **refused at apply**, so sealing is a rule rather than a convention. The decision lives there and not in `root_op_is_sealable` because that function is `const` and sees only the op, which cannot tell whether the invitation's `group_id` is the namespace root.
-
-A namespace-root joiner genuinely holds no key — its key arrives only in answer to the join it is publishing — so it cannot seal for itself, and the cleartext form of that join is still what the apply path accepts. What changed is that nobody publishes it: instead of falling back to a cleartext broadcast, such a joiner hands its signed op to the admitter that endorsed it and the admitter publishes it as `RootRelaySealed` (see the table row above). The cleartext acceptance therefore remains for the inner op a receiver reads *after* decrypting, and for a joiner speaking to a pre-relay peer, which fails the join rather than leaking it.
-
-
-### A key delivery is accepted only from a trusted anchor
-
-`RootOp::KeyDelivery` is how an admin hands a group key to a member that cannot yet decrypt the group (`add_group_members`, `admit_tee_node`). Its apply handler is a deliberate no-op: the whole effect runs in `root_op_side_effects`, which unwraps the envelope and stores the key. That side effect *is* the op, and it is where the op is authorized.
-
-**Who delivered it, and what was delivered, are separate powers.** Being an admin of a group is authority to hand out its key; it is not authority to choose which key the group uses. So the gate has two halves.
-
-The envelope apply rejects a key whose `SHA256` matches none of the ids it is given, which is what makes a deliverer untrusted for *content* rather than merely less-preferred. A `KeyDelivery` names no `key_id` of its own — and one added to it would be signed by the deliverer alongside the key it chose, matching by construction and checking nothing, which is why closing this needed no wire change. The id has to come from a **different** signed op, and one is usually to hand: a buffered `NamespaceOp::Group` or sealed root envelope, authored by a namespace member, names the `key_id` its ciphertext was encrypted under. `awaited_key_ids_for` collects those, the same source `apply_received_group_key` is handed on the pull path, and any of them is accepted — a group stranded across a rotation awaits two, and both are legitimately deliverable.
-
-Where nothing signed names a key yet — the ordinary first delivery — the bytes genuinely cannot be checked, and then the anchor half below is the only check.
-
-The direct-pull path had already decided what may be accepted on that basis. `key_server_accepted` (`crates/node/src/sync/peers.rs`) takes an unverifiable key **from a trusted anchor**, and otherwise only from a peer that proved it is a device of this node's own account — trading a liveness risk for a confidentiality one, deliberately. A responder counts as an anchor when the envelope it served is signed by an anchor's key, and by nothing else: a peer identity recorded for a responder is filled by gossip the peer relayed, which any peer can re-publish, so it orders who is asked first and never who is believed. Reading the signature also serves a joiner that bootstrapped by pull and never saw the anchor's gossip, which is how a TEE admitted by another TEE was once refused the owner's key. A responder that only *claims* an anchor's identity is still refused ([pull-based key recovery](/protocol/key-rotation/#pull-based-key-recovery)). The DAG path applied that rule to nobody: its only check was `check_sender`, which pins `envelope.sender` to `op.signer` and so is satisfied by construction for a self-signed op. Provenance stood in for authority.
-
-So the gate is now the same on both paths: the signer must be a device key of a **trusted anchor** of the group being delivered for — `MembershipRepository::anchor_device_keys`, which expands `trusted_anchors` (the group's owner, its legacy admin marker, and every `Admin`, `ReadOnlyTee` or `RelayTee` member) to the live device bindings that speak for those accounts. `ReadOnlyTee` is included because an admitted TEE node legitimately holds and hands out group keys.
-
-Without it, any holder of the namespace key could name any group in the namespace and have a key of its own choosing adopted by a co-member. Minting the wrap needs no secret — `wrap_for_member` takes the attacker's own key and the victim's **public** identity key — and the injected key does not merely sit unused: `store_key` writes at epoch `0` and `key_rank` breaks epoch-`0` ties on local `insertion_seq`, so it outranks the key already held and becomes the one the victim encrypts under. A poisoned node then serves it onward as that group's covering key, so the poison outlives the node first attacked. A group that has ever rotated carries a non-zero epoch and was immune; the namespace root, which every node holds a key for, was the most valuable target rather than the least.
-
-**One group's anchors, or its namespace's while that group is still unfolded.** A delivery legitimately arrives *before* the `GroupCreated` that establishes its group — `add_group_members` publishes the key alongside the creation, and the key can land first — and until that op folds there is no meta, no parent edge and no member row, so the group's own anchor set is empty. Refusing on an empty set would refuse precisely the deliveries the op exists for, so authority falls back to the namespace the op arrived on: known even when the named group is not, since the op came in on that namespace's topic sealed under its key. The relaxation is narrow in the way that matters — a plain member is not an anchor of the namespace either, so it buys an attacker nothing, and an attacker always picks the group id and could otherwise simply name one the receiver has not folded. Once `GroupCreated` folds, the group's own anchors decide and a namespace admin no longer qualifies on that basis alone.
-
-**A delivery may seed a key, never replace one** — whether or not an op names the key. If this node already holds a key for the group and a delivery carries a different one, it is refused. Re-delivering the key already held is not a replacement and stays allowed, so a retry is idempotent.
-
-That is unconditional on purpose, and the reason matters more than the rule. `expected_key_ids` is read from the cleartext `key_id` of buffered `NamespaceOp::Group` and sealed root envelopes, and **nothing checks that field**: the receive path verifies only the topic and the signature, an unresolvable `key_id` decrypts nothing and raises nothing, and the op is written to the log regardless. So the id is chosen by whoever signs the op, and the "different signed op" the content binding is described on can be minted by the same principal that then satisfies it. An earlier form of this rule exempted a *bound* delivery, which made being bound strictly **more** powerful than being unbound: it turned "may seed" into "may replace". Treat a `key_id` on a buffered envelope as a decryption hint, never as authority over what a group's key is.
-
-That matters because of how `key_rank` orders keys. Equal non-zero epochs fall through to a `key_id` tie-break, so concurrent rotations converge across nodes — but epoch-`0` keys carry no DAG ordering at all and are ranked by `insertion_seq`, meaning *when this node happened to learn them*. `store_key` writes at epoch `0`, so a second epoch-`0` key is simply newer here and becomes current, and two nodes that learned the same pair in opposite orders disagree about which key the group uses. That is a convergence bug as much as a disclosure one.
-
-Fixing it in `key_rank` was the tempting shape and the wrong one: that ordering also decides which key is current for rows **already on disk**, so changing it would change what an upgraded node encrypts under while its peers still hold the old answer — a mixed-version break of exactly the kind merobox cannot see. Every legitimate delivery seeds rather than replaces, by construction: the pull path asks with no expected id only for groups from `groups_member_but_keyless`, `add_group_members` and `admit_tee_node` deliver to a member that cannot yet decrypt the group, and `device_link`'s op is sealed under a key the new device does not hold. **A real switch does not come through here at all.** `apply_key_rotation` requires admin authority at the op's causal cut, binds content to `rotation.new_key_id`, and stores at a real DAG epoch that outranks every epoch-`0` key monotonically — so a node holding the old key decrypts the rotation and takes that path, while a node holding none is seeding. The rotation op is also causally ahead of every op encrypted under the new key, so a node that has those has the rotation too.
-
-**A refusal is a skipped effect, never a DAG failure.** The delivery is best-effort by design — an error here must not orphan every op causally after it — and `recover_missing_group_keys` is its durable retry, enforcing this same anchor rule through peer selection. The lookup itself has three outcomes rather than two — authorized, refused, and "could not tell" — because a store error is not a verdict about the signer the way "not an anchor" is. It is logged as itself and left to the pull: neither propagated (which would orphan every op causally after this one) nor reported as a denial (which would send an operator hunting a permissions problem that does not exist).
-
-`device_link` also publishes a `KeyDelivery`, for the namespace root, and is unaffected for a reason worth stating: that op is sealed under the namespace key, which the newly linked device does not hold, so it is a causal record rather than the delivery mechanism — the device pulls the key instead. On every other node the envelope is addressed to a device that is not theirs, so the side effect was already inert.
-
-The asymmetry that made this a defect rather than a trade-off: `apply_key_rotation`, in the same file and doing the same job, gates on `is_admin` at the op's causal cut **and** binds the content to the advertised `new_key_id`. Delivery did neither.
-
-## What an observer on the gossip topic can see
-
-The gossip topic for a context is `TopicHash::from_raw(context_id)`, and gossipsub messages are signed but not encrypted. So any node subscribed to the topic — including one that holds no group key and can decrypt nothing — can still read the full delta envelope and reconstruct a surprising amount:
-
-<SeqDiagram
-  id="d-enc-privacy-boundary"
-  title="The privacy boundary: one gossip message, two readers"
-  lanes={[
-    { label: 'Author', color: '#3fb950' },
-    { label: 'Member peer (holds scope key)', color: '#58a6ff' },
-    { label: 'Non-member observer (no key)', color: '#f0883e' },
-  ]}
-  steps={[
-    { from: 0, to: 0, label: 'SharedKey::from_sk(group_key).encrypt(borsh(artifact)) → ciphertext' },
-    { from: 0, to: 0, label: 'cleartext envelope: parent_ids · hlc · author_id · key_id — seal payload: artifact + root_hash + events' },
-    { from: 0, to: 1, label: 'gossip delta on TopicHash(context_id) — signed, not encrypted', color: '#58a6ff' },
-    { from: 0, to: 2, label: 'same message reaches every topic subscriber', color: '#f0883e' },
-    { type: 'divider', label: 'identical bytes on the wire — the key is what differs' },
-    { from: 1, to: 1, label: 'key_id = sha256(group_key) → pick key from keyring → decrypt → fold artifact' },
-    { from: 2, to: 2, label: 'no key for key_id → artifact stays opaque ciphertext' },
-    { from: 2, to: 2, label: 'reads cleartext envelope metadata only; artifact, root_hash and events stay sealed' },
-  ]}
-/>
-
-:::caution[Normative]
-Payload encryption seals the `artifact`, the `root_hash`, and the `events` together in one ciphertext (`SealedDeltaPayload`). The delta envelope (`parent_ids`, `hlc`, `author_id`, `delta_id`, `key_id`, `governance_position`) travels in cleartext and MUST be treated as visible to any topic subscriber, member or not.
-:::
-
-
-- **The context itself** — the topic hash *is* the `context_id`.
-- **Who is active** — `author_id` on every delta, `signer` on every governance op.
-- **The causal graph** — `parent_ids` and `hlc` reveal the DAG shape and write cadence, even though the payloads are opaque. (The `root_hash` convergence fingerprint is *not* exposed — it is sealed inside the ciphertext.)
-- **Group structure and membership churn** — `group_id` and `key_id` tags on governance ops expose that a namespace gained a member and when. The joins themselves no longer do: a joiner holding the covering key seals its own (`RootSealed` / `RootSealedForGroup`) and one that does not routes it through an admitter (`RootRelaySealed`), so neither form names the account or the group on the wire. The rest no longer adds to this: `KeyDelivery`, `MemberJoinedOpen` and `MemberJoinedViaTeeAttestation` are sealed, so which subgroup an inherited member reached, which fleet replica was admitted with what attestation measurements, and who was handed a key at which causal position all stay inside the namespace. Removals are `GroupOp`s and were never cleartext.
-
-In other words, payload encryption gives you **content confidentiality**, but **not metadata privacy or membership privacy**. An observer who cannot read a single byte of your application state can still map your group's membership, activity, and topology.
-
-### One real message: what each reader gets
-
-Take a chat app where a member runs `send_message("hi")`. The node encrypts the artifact under the group key (`SharedKey::from_sk`) and publishes one `BroadcastMessage::StateDelta` on `TopicHash(context_id)` (`crates/node/primitives/src/client.rs`). Identical bytes reach every subscriber; only the key differs. (Hashes below are abbreviated and illustrative.)
+Each node's data — every Raft entry, vote, state row, snapshot frame and blob —
+is sealed under one 32-byte **storage key**, K_r.
 
 ```text
-BroadcastMessage::StateDelta {
-  context_id:    0x7a1c…e0        // = the gossip topic itself
-  author_id:     0x9f4b…21        // the sending member's public key
-  delta_id:      0x3c08…9d        // hash(parents ‖ actions)
-  parent_ids:    [ 0x11aa…02 ]    // previous head(s)
-  hlc:           1750.000123:#0   // (seconds.fraction, logical counter)
-  key_id:        0x4d90…7c        // = SHA-256(group_key) — which key decrypts
-  nonce:         0x1b…(12 bytes)  // AES-GCM nonce
-  artifact:      0xa3f1…(opaque)  // CIPHERTEXT — encrypt(borsh(SealedDeltaPayload))
-                                  //   sealed inside: { root_hash, actions, events }
-  delta_signature: Some(0x82c5…)  // author's envelope signature
-}
+K_r = HKDF-SHA256(ikm = KMS key, salt = "calimero.cloud.storage.v1", info = cluster name)
 ```
 
-| Field group | Non-member observer (no key) | Member peer (holds `group_key` where `SHA-256 == key_id`) |
+- **From mero-kms, after attestation.** A TDX node fetches the KMS key itself
+  (`--kms-url` with `--kms-identity`) through `calimero-kms-client`. The client
+  trusts the KMS only if the KMS's own quote matches the signed mero-tee
+  release the environment names (`MERO_TEE_VERSION`, `MERO_KMS_VERSION`,
+  `MERO_KMS_RELEASE_TAG`); its request carries this TD's quote over the KMS's
+  challenge, and the key comes back sealed to that request.
+- **Never from the host.** Without `--dev`, `--storage-key` and
+  `--storage-key-file` are refused (`kms::key_source`): a key the host could
+  hand the node would let whoever runs the host read the disks.
+  `merod kms disk-key` fetches the same key for a boot script and writes it only to tmpfs
+  or ramfs; `merod run` accepts such a file only with `--dev` today. A `--dev`
+  node without a key derives a development key from the cluster name.
+- **Shared by the cluster.** mero-kms derives a key per identity, and the
+  nodes of one cluster share one disk identity, so they derive the same K_r.
+  That is what lets a follower open a leader's snapshot frames as they are, and
+  what makes the cluster secret computable by members only.
+- **Bound to the cluster.** The cluster name is the HKDF info, so the same KMS
+  key gives another cluster a different K_r.
+
+### How a value is sealed
+
+`calimero-log`'s store seals every value with AES-256-GCM under K_r, with a
+fresh random nonce, and binds it (as associated data) to its column, its group
+and its key. A value moved to another row, group or column fails to open. A
+state machine can also **hide** a key: the row is then keyed by an HMAC of the
+key and the key itself travels inside the sealed value, so the disk does not
+even show which keys an app uses. App state rows and idempotency records are
+hidden this way. See [Storage schema](/protocol/storage/).
+
+Snapshots are files of sealed frames, each frame's associated data naming its
+group, snapshot, position and whether it is the last, so frames cannot be
+reordered or truncated unnoticed. Backups are copies of those files.
+
+## Keys derived from K_r
+
+| Key | Derivation | Used for |
 | --- | --- | --- |
-| `artifact` (sealed payload) | Opaque ciphertext — no key for `key_id`, stays unreadable | `SharedKey::from_sk(group_key).decrypt(artifact, nonce)` → the `SealedDeltaPayload`: the CRDT action(s) (a `Put` with value `borsh("hi")`), the expected `root_hash`, and the `events` |
-| `root_hash` & `events` | **Not visible** — sealed inside the ciphertext | Recovered on decrypt: confirms the recomputed root matches `root_hash`; replays the `MessageSent` event |
-| Envelope (`author_id`, `delta_id`, `parent_ids`, `hlc`, `key_id`) | Fully readable — reconstructs who wrote, when, and on top of what | Same cleartext, plus the decrypted payload now *means* something |
+| Cluster secret | `HMAC-SHA256(K_r, "calimero.cluster.v1\|" ‖ cluster)` | `x-cluster-auth` on internal routes |
+| App TEE key | `HMAC-SHA256(K_r, "calimero.tee.v1\|" ‖ app)` | Values sealed to the app's TEE (`TeeSecret`, a timer's own state) |
+| Member key | `HMAC-SHA256(K_r, "calimero.member.v1\|" ‖ app ‖ "\|" ‖ account)` | A member's sealed share, opened only in that member's own runs |
+| Hidden-key HMAC key | `HMAC-SHA256(K_r, "calimero.log.hidden-keys.v1")` | Hiding row keys in the store |
+| Snapshot key | `HMAC-SHA256(K_r, "calimero.log.snapshot.v1")` | Sealing snapshot frames |
 
-So the observer learns *that* member `0x9f4b…21` wrote some delta at a known time, building on a known parent — but never the **content** `"hi"`, the event it fired, or the resulting convergence state. The member learns everything.
+Every node derives the same keys, and nothing outside the cluster can. Per-app
+keys from mero-kms, which would let an app's data be opened only where that
+app is placed, are not done yet: today one K_r covers every app on the cluster.
 
-## How at-rest encryption works
+## What an observer can still see
 
-When the `EncryptedDatabase` wrapper is enabled, its mechanics are worth
-understanding because they make key rotation a non-event (`crates/store/encryption/src/lib.rs`,
-`key_manager.rs`):
+| Position | Sees | Does not see |
+| --- | --- | --- |
+| The network or a TLS-terminating proxy | That a client talks to a node; request sizes and timing; unsealed attestation documents | Paths, tokens, arguments, results, events |
+| The host, reading the disks | Sizes of sealed values, row counts per column; which groups exist | Keys of hidden rows, values, entries, snapshots, blobs |
+| The operator, through the Ops API | Counts, Raft status, node list, governance, quotas, Prometheus metrics | App names, state, events, accounts' details, credentials |
 
-- **A key hierarchy.** The KMS hands the wrapper a single master key. That master
-  never encrypts values directly — it feeds `HKDF-SHA256` (salt
-  `calimero-dek-v{n}`) to derive a **versioned data-encryption key (DEK)**. Values
-  are encrypted under the current DEK with AES-256-GCM and a fresh 12-byte nonce.
-- **A 1-byte version prefix.** Each ciphertext is laid out as
-  `version ‖ nonce ‖ ciphertext+tag`. On read, the wrapper reads byte zero and
-  **auto-selects the matching DEK**, deriving it from the master if it isn't
-  cached. Rotating the key just bumps the current version for new writes; old
-  values keep decrypting under their own prefix, so rotation needs **no migration
-  pass** over existing data.
-- **Transparent reads.** Iteration returns a `DecryptingIter` that decrypts each
-  value as it is yielded, so callers above the store never see ciphertext — the
-  wrapper is a drop-in around any `Database`.
-- **Keys stay plaintext.** Only values are encrypted; record keys are written in
-  the clear so range scans and prefix seeks still work (the column-family layout in
-  [Anatomy of state](/protocol/data-anatomy/) depends on this).
+The host also controls availability: it can stop, freeze or restart a node, or
+withhold the network. Raft keeps an app available while a majority of its
+replicas run. A restored older copy of a node's disk is not detected yet: the
+proposed rollback counter (a mero-kms epoch, with restored nodes rejoining as
+learners) is not done.
 
-## Gotchas & boundaries
-
-These are the sharp edges. Read them before reasoning about what is and isn't private.
-
-:::note[Events and root_hash are sealed, not cleartext]
-The broadcast path wraps the storage delta, the post-apply `root_hash`, and the execution `events` in a single `SealedDeltaPayload` and passes the whole thing through `SharedKey::encrypt` before publishing (`crates/node/primitives/src/client.rs`). None of the three is a cleartext wire field — event kinds, their data, handler names, and the convergence fingerprint are readable only by group-key holders, recovered on decrypt (`crates/node/src/handlers/state_delta/crypto.rs`). (Earlier builds did ship `events`/`root_hash` in the clear; that gap is closed.)
+:::note[v1 comparison]
+v1 encrypted each scope's operations under a symmetric scope key delivered to
+each member by ECDH, rotated it when a member was removed, and encrypted a
+node's store at rest under a key of its own. Here members never hold keys to
+app data: they read through the node, which checks their access on every
+request, so removing a member needs no rotation and no re-delivery.
 :::
-
-:::caution[Empty AAD — envelope fields are not cipher-bound]
-Every `SharedKey` call except `SharedKey::new` uses `aead::Aad::empty()`; `SharedKey::new` binds its purpose's identifiers (see `Purpose` in `crates/crypto`). Nothing in the cleartext envelope (`author_id`, `key_id`, `parent_ids`, `governance_position`) is bound into the AES-GCM tag. The ciphertext authenticates *only itself*. Integrity of the envelope-to-payload binding rests on the separate `delta_signature`, which covers `(context_id, delta_id, author_id, governance_position)`. The field is still typed `Option` on the wire for the roll-out transition, but the receive path now **rejects a delta whose signature is missing** (`crates/node/src/handlers/state_delta/mod.rs` - "a missing signature cannot prove authorship"), so a group-key holder can no longer re-label a foreign delta's author or DAG position and have it accepted.
-:::
-
-:::caution[Metadata leaks even when payloads are confidential]
-Because the whole envelope is cleartext (see the observer section above), confidential payloads do **not** buy you membership or activity privacy. `context_id` (= topic), `author`, DAG shape, `group_id`, `key_id`, and `signer` are all observable to any topic subscriber. If your threat model includes "who is in this group and how busy are they," payload encryption alone does not cover it.
-:::
-
-:::caution[The two `SharedKey` semantics are easy to conflate]
-`from_sk` (symmetric, group key) and `new` (ECDH, purpose-bound key delivery and sealing) are different trust models that share one API, so read which one a call site uses before assuming its trust model. The broadcast path used to make this harder than it needed to be by calling its group key `sender_key`; it is `encryption_key` now, and nothing on that path implies an ECDH agreement with a "sender".
-:::
-
-:::caution[At-rest encryption is off unless KMS is wired up]
-Store-value encryption only happens when the `EncryptedDatabase` wrapper (backed by a KMS master key) is enabled. With it off — the default — group keys, DEKs, and all stored values sit in plaintext on disk. Even with it on, store **keys** remain plaintext so range scans work, and **blobs are never** encrypted at rest. Disk-level confidentiality is an operator decision, not an automatic guarantee. See [Security](/operate/security/).
-:::
-
-## Summary
-
-- Two crypto modes, one API: `from_sk` (symmetric, group key, bulk data) and `new` (ECDH, key delivery and sealing). Both AES-256-GCM with a 12-byte nonce; `new` also binds its purpose's identifiers as AAD.
-- Encrypted: state-delta artifacts, the post-apply `root_hash`, and execution events (all sealed together in `SealedDeltaPayload`), group governance ops, key envelopes; optionally store values (KMS); always the transport.
-- **Not** encrypted: the delta/governance envelope routing metadata (`parent_ids`, `hlc`, `author_id`, `key_id`, `governance_position`, …), store keys, blobs. Gossip is signed, not encrypted.
-- Confidentiality covers *content*, not *metadata or membership*. Plan your threat model around the cleartext envelope and the off-by-default at-rest layer.
-
-For how group keys are created and turned over, see [Key Rotation](/protocol/key-rotation/); for the keys themselves, [Identities & Keys](/protocol/identities/).
-
----
-
-Next: **[Key Rotation](/protocol/key-rotation/)** — how a scope's symmetric key turns over when a member is removed.

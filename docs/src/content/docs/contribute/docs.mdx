@@ -41,13 +41,15 @@ reference / explanation):
 
 | Track | Directory | For |
 | --- | --- | --- |
+| Cloud | `cloud/` | Everyone new to release-v2: overview, quickstart, writing apps |
 | Build | `build/` | App developers |
-| Operate | `operate/` | Node operators |
+| Operate | `operate/` | Cluster operators: deployment, references for `merod`, `meroctl`, configuration and the node API |
 | Protocol | `protocol/` | Reimplementers (concepts + normative spec) |
 | Contribute | `contribute/` | Core developers |
 
-The sidebar is generated from these directories (`astro.config.mjs`), ordered by
-each page's `sidebar.order` frontmatter.
+The sidebar is listed explicitly in `astro.config.mjs`, grouped and ordered by
+hand; a new page appears in it only once it is added there. Keep each page's
+`sidebar.order` frontmatter in step with that order.
 
 ## Conventions
 
@@ -56,11 +58,14 @@ each page's `sidebar.order` frontmatter.
 - **One mode per page.** A tutorial promises an outcome and doesn't branch; a
   reference is exhaustive and doesn't editorialize. Don't mix them.
 - **Ground claims in code.** CLI flags, endpoints, config keys, macros, and byte
-  layouts must match the source. If you can't confirm something, flag it with a
+  layouts must match the source: `merod`'s flags are `NodeArgs` in
+  `crates/merod/src/node_config.rs`, `meroctl`'s commands are the clap
+  definitions in `crates/meroctl/src/`, and the node's routes are `router` in
+  `crates/cloud-node/src/api.rs`. If you can't confirm something, flag it with a
   `:::caution` saying exactly what to check rather than guessing.
 - **Normative requirements** (protocol spec) go in a `:::caution[Normative]`
   callout using RFC 2119 wording (MUST / SHOULD / MAY).
-- **Internal links** are root-absolute without the base, e.g. `/protocol/sync/`
+- **Internal links** are root-absolute without the base, e.g. `/operate/merod/`
   (Starlight adds the `/core` base). The link checker enforces this.
 
 ## Diagrams

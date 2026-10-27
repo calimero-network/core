@@ -1,78 +1,119 @@
 ---
-title: Identities & Keys
-description: The three kinds of key, and what each one is for.
+title: Accounts, passkeys & sessions
+description: Who a request comes from — accounts, passkeys as devices, short session tokens any node verifies, API keys for machines, and which credential may do what.
 sidebar:
-  order: 3
+  order: 12
 ---
 
-import Figure from '../../../components/Figure.astro';
-import KeyLayers from '../../../components/diagrams/KeyLayers.astro';
+A **person** is an **account**. They prove it with a WebAuthn **passkey**, and
+each passkey on the account is one of their **devices**. Signing in gives them
+a short **session token** that every node of the cluster verifies on its own. A
+**machine** acting for an account uses an **API key**. `calimero-identity`
+holds the logic (WebAuthn, tokens, challenges) with no storage of its own; the
+records live in the [system group](/protocol/system-group/).
 
-## Three keys, three jobs
+## Accounts
 
-It is easy to conflate "who a node is on the network" with "who authored an operation" — they are different keys with different lifetimes. Calimero uses three distinct kinds of key, and keeping them separate makes the rest of the protocol clear.
+An account id is 32 random bytes in base64url, made when someone signs up. The
+account record holds a display name, its passkeys (at most 10) and their
+labels, the account's aliases for apps, and the approvals it makes for apps it
+owns outside any organization (mero-tee releases and outbound prefixes; see
+[Deployment governance](/protocol/governance/)). Sign-up is open; the
+operator's `maxAccounts` quota bounds how many accounts a cluster takes.
 
-<KeyLayers />
+The release of the node an account signed up through is approved for that
+account's own apps from the start, so its apps can run where it began.
 
-## Transport identity — naming a node
+## Passkeys
 
-Every node has an Ed25519 keypair used only by the network layer. Its public key is the node's **peer id**: the address other nodes dial, the identity the encrypted transport authenticates. It says nothing about _authority_ — it answers "which box am I talking to," not "who wrote this." A node can serve many namespaces over one transport identity.
+`calimero-identity::webauthn` verifies registrations and assertions itself
+(ES256 and EdDSA, via `ring`). Attestation statements are not checked
+(passkeys register with `attestation: none`); the relying party id is `--rp-id`
+and the accepted origins are `--origins`, plus a package's frontend origin for a
+ceremony that comes from it.
 
-## Member identity — authoring operations
+| Ceremony | Routes | Result |
+| --- | --- | --- |
+| Sign up | `/auth/passkey/register/{begin,finish}` | A new account with this passkey, and a session |
+| Sign in | `/auth/passkey/login/{begin,finish}` | A session for the passkey's account |
+| Add a device | `/auth/passkeys/add/{begin,finish}` (signed in) | Another passkey on the account |
+| Label or remove a device | `POST` / `DELETE /auth/passkeys/{cred}` | A label; or the passkey gone and its sessions revoked (the last passkey cannot be removed) |
 
-Authority lives in the **member identity**: a single Ed25519 keypair per node, provisioned at `merod init` and persisted. (A node initialised before that was the case mints it on its first namespace join instead — the key is the same either way, only the moment differs.) It is the `author` on every operation and the key that signs an operation's `id` (see [Operations & the DAG](/protocol/operations/)). Membership, roles, and capabilities (defined in [Governance](/protocol/governance/)) are expressed in terms of the **account** this key writes as, not the key itself.
+A ceremony's challenge lives in the memory of the node that issued it, for 5
+minutes, and must be finished on that node. A node holds at most 10 000 open
+ceremonies; past that it answers `429`.
 
-One key, not one per namespace. It is recorded as the node's device signing key, and a device is one installation rather than one installation per scope. A key that varied by namespace would also have bought nothing: it is published in every namespace's device binding, so it correlates a node across namespaces exactly as a shared one does.
+Sign-in and sign-up need the user present. A **step-up** — approving a confirm
+method, an upgrade, an approval or an organization's deletion — needs the user
+**verified** too (PIN or biometric): a touch alone is not consent.
 
-:::note[One key, or one person?]
-A member identity is one key on one node. That is enough to answer "who authored this", but not "which person is this" — a second device of the same user is, at this layer, an unrelated member. [Accounts & Devices](/protocol/accounts/) adds the identity above this one: a person or agent whose current key set is projected state, so several devices can be the same *someone* and any one of them can be revoked without touching the others.
+## Sessions
+
+A session token is `v1.<claims>.<HMAC-SHA256>` under the cluster's
+session-signing key K_s. The claims are the account, a session id, the expiry
+(15 minutes), the K_s version, the passkey the session was opened with, and,
+for a session opened on a package's frontend, that package. Signing in also
+returns a refresh token (`rt_…`, 30 days, single use): `POST /auth/refresh`
+exchanges it for a new token and a new refresh token, and a refresh token
+presented a second time revokes its session.
+
+Any node verifies a token without asking anyone: it reads K_s from the system
+state, checks the MAC and expiry, then checks — on fresh system state — that the
+session is not revoked and that its passkey still belongs to the account. See
+[Keys & their lifetimes](/protocol/key-rotation/) for rotation and revocation.
+
+## Devices
+
+There are no device keys. A device is a passkey; `/auth/me` reports which one
+the current session was opened with (`passkeyId`), and removing a passkey ends
+that device's sessions. Inside an app, `env::account_id()` and
+`env::executor_id()` are both the caller's account ([Who a run acts
+as](/protocol/authorship/)). Presence keeps one entry per device: the session's
+passkey, or the API key.
+
+## API keys
+
+`POST /auth/apikeys { label, apps?, methods?, readOnly?, allowConfirm?, ttlSecs? }`
+creates a key `cal_…` for the signed-in account; only its hash is stored and
+the key is shown once. A key may be scoped:
+
+- `apps`: only these app instances (default: every app the account reaches);
+- `methods`: only these methods (`*` for any);
+- `readOnly`: views, events and reads only;
+- `allowConfirm`: may carry the account holder's passkey assertion for a confirm
+  method (it can never produce one);
+- `ttlSecs`: lifetime, at most and by default one year.
+
+## Which credential may do what
+
+| Action | Passkey session | Package-bound session | Unscoped API key | Scoped API key |
+| --- | --- | --- | --- | --- |
+| Call and read apps it reaches | ✓ | that package's apps only | ✓ | within scope |
+| Install packages, create apps | ✓ | instances of its own package only | ✓ | — |
+| Manage passkeys, API keys, approvals, upgrades, uninstalls | ✓ | — | — | — |
+| Approve a confirm method | ✓ (with step-up) | from its own origin | only with `allowConfirm`, relaying an assertion | same |
+
+Deleting an app, changing its access, creating organizations and issuing
+invites also need a passkey session: an API key cannot do them.
+
+A session opened on a package's frontend is bound to that package
+(`SessionClaims::app`, carried through refresh): it reaches only apps running a
+release of that package, and the node refuses it credential management, API
+keys, approvals, upgrades, uninstalls and uploads. An app's page is third-party
+code; this keeps it from acting as the whole account.
+
+## Development passkeys
+
+`meroctl login --dev-passkey FILE` keeps a software passkey in a file
+(`SoftAuthenticator`, feature `testing`). It is a real WebAuthn credential, so
+only a development cluster whose relying party accepts it can use it. Against
+a real cluster, people use their own authenticators in a browser and give
+programs API keys.
+
+:::note[v1 comparison]
+v1 gave each person an account root and per-device keys, endorsed devices with
+certificate chains, paired new devices, and backed up and recovered the root.
+Its devices signed operations, so they needed keys. A cloud device signs only
+passkey assertions to the node; the account's recovery is whatever its
+authenticators provide (a synced passkey, or a second device added in time).
 :::
-
-### The executor
-
-A node owns exactly one member identity per context, so the **executor** — the
-key that authors and signs the resulting operation — is resolved, never named.
-`execute_request` (`crates/server/src/execute.rs`) looks up the node's owned
-identity for the target context and passes it to the runtime; callers cannot
-supply one.
-
-Authentication and attribution are therefore separate. When a request arrives
-with a verified key, that key gates access via the context-membership check, but
-the identity handed to the WASM guest is the node's own. An application that
-inspects `executor` sees the node, not the caller — a deliberate design, and one
-with a known consequence: a context member whose in-application permissions are
-lower than the node owner's can still execute at the higher privilege level.
-
-## Scope key — reading a scope
-
-A scope's operations are encrypted at rest and on the wire under a **symmetric scope key** (every [scope owns a key](/protocol/concepts/)). Holding the key is what lets a member _read_ a scope; lacking it, a node sees only opaque ciphertext.
-
-Scope keys are never sent in the clear. They are delivered **wrapped** to a specific member's public key using an ECDH exchange between that member key and the sender's — the `KeyDelivery` step in [Governance](/protocol/governance/)'s join flow. Removing a member rotates the scope key and re-wraps the fresh one to everyone who remains, which is how forward secrecy is enforced.
-
-## How they compose
-
-Put together, a single received operation touches all three: it arrives over a connection authenticated by **transport** identities, its ciphertext is decrypted with the **scope** key, and its authorship is verified against the author's **member** key before anything trusts it. The [Receive & Apply Path](/protocol/receive-path/) and [Sync](/protocol/sync/) show that sequence on the wire.
-
-## A fourth role: the bundle signing key
-
-The three keys above are all **node-side** — they live on a node and act inside a
-namespace. There is one more key role that belongs to a different actor entirely:
-the **bundle signing key**, an Ed25519 key held by whoever *publishes* an
-application.
-
-When an application bundle is built, its manifest is signed with this key, and the
-public half is rendered as a `did:key` `signerId` — the bundle's **update
-authority** (`crates/node/primitives/src/bundle/signature.rs`). That `signerId` is
-what anchors an [application's](/protocol/applications/) id across releases: a new
-version signed by the same key keeps the same application identity, and only the
-holder of that key can publish an update under it.
-
-It is **not** a node or member key. It identifies an app publisher, not a box on the
-network or an author inside a context, and it never participates in the transport /
-member / scope sequence that processes an operation. Keep it separate when reasoning
-about authority: the first three say "who may write into a context"; the bundle key
-says "who may ship the code that context runs."
-
----
-
-Next: **[Encryption](/protocol/encryption/)** — which key encrypts what, and what an observer can still see.

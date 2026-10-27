@@ -1,317 +1,124 @@
 ---
-title: Applications, Bundles & Services
-description: The unit of code a context runs — what an application is, how a bundle distributes it, and how named services let one application carry many WASM modules.
+title: Packages & frontends
+description: The unit of code an app instance runs — signed .mpk releases, how a cluster installs and verifies them, where the bytes live, services, development bundles, and how a package's frontend is served from its own origin.
 sidebar:
-  label: Applications & services
+  order: 17
 ---
 
-A **context** is a shared, replicated state machine. The code it runs is an
-**application**. This page explains that code-side model top-down: what an
-application *is*, how a **bundle** packages and distributes one, how those bytes
-reach a node, how **services** let a single application carry several WASM modules,
-and how a context picks the exact bytecode it executes.
+An app instance runs one **bundle**: a WASM module named by
+`hex(SHA-256(wasm))`. In production a bundle always comes out of a **package
+release**: a signed `.mpk` (`calimero-bundle`) built with `cargo mero build`
+and signed by its publisher with `mero-sign`. See
+[Packaging & signing](/build/packaging-signing/) for building one.
 
-Throughout, the running example is a notes app, `notes-app`, that ships two
-modules: an `api` service that handles user requests and a `worker` service that
-runs background compaction.
+## What a release carries
 
-## What an application is
+The `.mpk` manifest names the package, its version, its services (each a WASM
+module; a single-service package has one unnamed service), a frontend, display
+metadata, the `minRuntimeVersion` it needs, and the outbound URL prefixes it
+declares. The manifest is signed by the publisher's key, and every artifact in
+the archive is listed with its digest.
 
-An application is the unit of executable code a context targets: content-addressed
-WASM bytecode plus its embedded ABI. It is identified by an **application id** — a
-32-byte hash, shown hex — and stored on a node as an `ApplicationMeta` record
-(`crates/store/src/types/application.rs`). The in-memory view handed to callers is
-`Application` (`crates/primitives/src/application.rs`):
+## Installing a release
 
-```rust
-pub struct Application {
-    pub id: ApplicationId,        // 32-byte hash, hex
-    pub blob: ApplicationBlob,    // { bytecode: BlobId, compiled: BlobId }
-    pub size: u64,
-    pub source: ApplicationSource,
-    pub metadata: Vec<u8>,
-    pub signer_id: String,        // did:key of the update authority (bundles)
-    pub package: String,          // package id from the manifest
-    pub version: String,
-    pub services: BTreeMap<String, ApplicationBlob>, // named modules
-}
-```
+There are two ways in:
 
-`ApplicationBlob` is a pair of content-addressed blob ids: `bytecode` (the WASM) and
-`compiled` (an optional ahead-of-time-compiled cache; the all-zero blob id when
-absent). Because blobs are content-addressed, the same bytes always resolve to the
-same blob — see [Blobs](/protocol/blobs/).
+- `POST /packages/install { package, version }` fetches `package@version` from
+  the operator's registry (`--registry-url`, `calimero-app-downloader`'s
+  `HttpRegistry`), the way v1 installs.
+- `POST /packages` takes an uploaded `.mpk`.
 
-There is exactly one way an application id is derived, because there is exactly one
-kind of application: `ApplicationId::for_bundle` = `hash_borsh(package, signer_id)`,
-read off the bundle's signed manifest
-(`crates/primitives/src/application.rs`). It is therefore **version-stable**: the
-same `package` from the same signer keeps one id across every release.
+Before the system log records anything (`InstallPackage`), the node that took
+the request verifies the release (`Node::verify_release`):
 
-That id is about **which application**. The exact build a context executes is tracked
-separately, as a group's **`bytecode_id`** (a `BlobId` over the bytecode, changing on
-every release; see [Upgrades](/protocol/upgrades/)), and a signed bundle's
-**`ContentHash`** (a digest of a file's raw bytes, computed on every blob write; the
-only externally supplied one is the expected-hash check input, e.g. a CLI flag).
-`BlobId` and `ContentHash` are distinct types with no implicit conversion between
-them: assigning one to the other does not compile. Converting requires going through
-raw bytes explicitly, so a swap has to be written on purpose rather than happening by
-accident.
+1. The publisher's signature over the manifest and every artifact's digest
+   (`calimero_bundle::VerifiedBundle`), and that it ships WASM at all.
+2. `minRuntimeVersion` is not newer than this node's release
+   (`CALIMERO_RELEASE_VERSION`).
+3. The package's **pinned signer**: the first release of a package pins its
+   publisher key (`did:key`); a release signed by any other key is refused.
+4. Each service's WASM compiles.
+5. A registry install got the package and version it asked for.
 
-The id deliberately leaves out the bytecode: a new version of the same package from
-the same signer produces the **same** application id and overwrites the stored row in
-place. That version-stability is what lets an [upgrade](/protocol/upgrades/) move a
-context to new code without changing the id its members agree on. It is also what
-makes the id independently re-derivable: every node that verifies the same bundle
-computes the same id, so an id named on the wire is a claim any receiver can check
-against the bytes it fetched, rather than a label it has to trust.
+`apply` checks the signer pin again, refuses a version already installed with
+other contents (the same release again is a no-op), and charges the `.mpk`'s
+size to the installer's bundle quota (the operator's installs count against no
+account). The log keeps, per release, the `.mpk`'s hash and size, where it came
+from (`registry` or `upload`), each service's bundle hash, the metadata, and the
+declared outbound prefixes.
 
-The stored `ApplicationMeta` carries the same shape with the package fields and a
-`services: Vec<ServiceMeta>` list. The `services` field was added after the initial
-schema, so `ApplicationMeta`'s Borsh decoder treats an old row that ends right after
-`signer_id` as having no services — older records keep deserializing without a
-migration.
+:::note[Why a pinned signer]
+A package's name is the identity apps, approvals and frontends refer to. Pinning
+the first release's key means nobody but that publisher can ship a later
+"version" of it into the cluster, and it is what outbound approvals are granted
+to: `(package, signer)`, as in v1.
+:::
 
-## A bundle is how an application is distributed
+## Where the bytes live
 
-An application is published as an **`.mpk` bundle** (Mero Package Kit): a
-gzip-compressed tar of a `manifest.json`, the WASM / ABI / migration artifacts it
-references, and a required Ed25519 signature. Installing a bundle is what *produces*
-an application — the manifest's `package` and `signerId` fix the application id, and
-the artifacts become the stored bytecode and service blobs.
+- A **registry** release is never passed between nodes. Each node that needs
+  to run it fetches it from the registry itself (`Node::release_wasm`), refuses
+  bytes whose hash differs from the one the log recorded, and verifies the
+  release again before using its WASM. That is v1's one-source rule: the
+  registry is the only place a registry release comes from.
+- An **uploaded** release has no registry. The `.mpk` is stored on a majority
+  of nodes before the log records it; a node that lacks it fetches it from a
+  peer, checks the recorded hash and verifies it again.
+- Each service's WASM is also kept in the installing node's blob store under
+  its bundle hash; other nodes extract it from the `.mpk` on first use.
 
-The manifest format, the signing payload (RFC 8785 canonicalization + SHA-256), and
-the verification rules on install - a valid signature on every path, plus a SHA-256
-check of each wasm artifact against the signed manifest - are documented in full under
-[Application Upgrades & Migration → Bundles, signing & install](/protocol/upgrades/).
-This page does not repeat that detail; it picks up at what the bundle *contains*.
+## Creating, upgrading and removing
 
-There are two ways to install one, and no third:
+- `POST /apps { package, version?, service?, … }` creates an instance from a
+  release; without a version, the newest installed one. If the release is not
+  installed yet, it is installed from the registry first. A package with
+  several services needs `service`.
+- `POST /apps/{app}/upgrade { version }` moves an instance to another release
+  of its package ([Upgrades](/protocol/upgrades/)).
+- `DELETE /packages/{p}[/{v}]` removes a release, or all of them, and is
+  refused while any app still runs one of its bundles. A bundle another
+  release also ships stays, recorded under that release. Only whoever installed
+  the package's first release (an account, or the operator) may uninstall.
 
-| Admin API | `meroctl` | What it takes |
-| --- | --- | --- |
-| `install-application` | `app install PACKAGE@VERSION` | `{ "package", "version" }` - coordinates the node resolves against its own source |
-| `install-dev-application` | `app install --path app.mpk` | a local filesystem path to a signed `.mpk` |
+## Development bundles
 
-Neither request names a location on the network.
-The caller says *which* application; the node's own `[registry]` config says *where from*.
-Like every admin request body, the coordinate request refuses unknown fields, so a body
-carrying a `url` field is a 400 rather than an install of something the caller did not name.
+`POST /bundles` takes raw WASM (at most 16 MiB) with no publisher signature. It
+is refused unless the node allows unsigned bundles (`--dev`, or
+`allow_unsigned_bundles`). The node checks the WASM compiles, stores it on a
+majority of nodes, then records `PutBundle { hash, size }`. Raw bundles have no
+package, so they cannot be served as a frontend, cannot declare outbound
+prefixes, and have no pinned signer.
 
-## How bytecode reaches a node
+## ABI facts
 
-Installing a bundle is one way an application enters a node.
-The other is that a group names the bytecode its members must run and each member acquires
-those bytes for itself - the code never rides along with the governance op that names it.
+The node reads a bundle's embedded ABI (`services::BundleFacts`) for what it
+acts on: which methods are `#[app::view]`, `#[app::handler]` and
+`#[app::xcall]` entry points (and whom an entry point admits), which
+`#[app::tee(every)]` timers to fire, and the state version and migrations an
+upgrade plans from. Bundles built without `cargo mero build` embed no ABI and
+get none of these.
 
-A node has **exactly one** application source, chosen by
-[`[registry] mode`](/operate/config/#registry), and there is nothing behind it:
+## Frontends
 
-| `mode` | Applications come from | This node serves application bytecode to peers |
-| --- | --- | --- |
-| `http` (default) | the node's own configured `base_url`, addressed by `package`/`version` | no |
-| `dht` | context members, over blob share | yes |
+With `--apps-domain D`, each package's frontend is served at its own origin,
+`{label}.D`, where the label is 52 lowercase base32 characters of
+`SHA-256("calimero.app-host.v1\0" ‖ package)` (`app_host::label`). `merod local`
+uses `localhost`.
 
-`app_source` (`crates/app-downloader/src/source.rs`) picks that source once, from the
-mode, and hands back the only thing that can be asked for bytes.
-An `http` node holds no peer handle at all, and a `dht` node dials no registry, so
-neither mode can reach the other's transport even by accident.
+- The files are the release's own `.mpk` frontend, fetched like its WASM and
+  verified against the publisher's signature before a byte is served.
+- `GET /` redirects to the newest release's entry; `/{version}/{path}` serves a
+  file, falling back to the entry for client-side routes. `/.well-known/calimero.json`
+  names the package, its releases and the cluster's API URLs.
+- Only `GET` and `HEAD` of files. An unknown label under D is a `404`, never a
+  node route. Responses carry v1's content security policy with the cluster's
+  API origins added to `connect-src`.
 
-The serving side is symmetric with the fetching side: an `http` node is not a source of
-application bytecode, so it neither announces nor serves it
-(`NodeClient::may_share_blob`).
-User-data blobs are shared in both modes - only application artifacts are withheld.
-
-### One acquisition, four outcomes
-
-Every acquisition goes through one resolver, `acquire_bytecode`
-(`crates/node/primitives/src/client/application/acquire.rs`), which wraps
-`ApplicationDownloader::download`:
-
-| Step | What happens |
-| --- | --- |
-| 1 | The node already holds `bytecode_id` - nothing is fetched, and it is installed from local bytes if no row names it yet |
-| 2 | Otherwise the one configured source is asked for the bytes |
-| 3 | What arrives is stored, its blob id compared against `bytecode_id`, and installed - or released and refused |
-| 4 | The source had nothing: the node keeps running the version it has and retries on next access |
-
-Any group can name any application id, so an install a remote party triggers never rolls the row back.
-That covers this resolver, the blob-share install, the join bootstrap and a relay resolving a member's target.
-On those paths a signed bundle must derive the id it is installed under, and replaces the row only when its version equals, or is semver-newer than, the signed release the row names.
-Any other release, older or not orderable because either version is not semver, stays a local blob for the contexts bound to it, and the row is left as it was.
-Raw wasm is refused on all of them: it derives no id, so a group naming it could bind it under any id.
-Raw wasm never runs at all, since a group target, activation marker or stub can name any blob a node holds: the execution read (`application_bytes_from_blob`) refuses anything that is not a signed bundle.
-An operator install through the admin API may still set the row to any release, including an older one, which is how a missing intermediate version is reinstalled.
-
-Step 4 is `Outcome::Unavailable`, and it is not a failure.
-Nothing escalates it into one, and no second route is tried, because there is no second
-route to try.
-
-The join bootstrap (`sync_context_config`) resolves through this path, reading the
-coordinates off the target's stored application row - the row `GroupOp::ContextRegistered`
-seeds from the pair it carries.
-Sync resolves through the same path when a context's bytecode is missing
-(`sync/manager/blob_fetch.rs`), so a `dht` node acquires it the way a joiner does rather
-than opening a blob-share leg of its own.
-An upgrade reads the coordinates off the group's
-[upgrade ladder](/protocol/upgrades/#lazy-upgrades-replaying-the-ladder-hop-by-hop) instead,
-because a bundle's `ApplicationId` is version-stable: the row describes the version this
-node installed, while each ladder rung names the release it moves to.
-
-### Each node resolves against its own registry
-
-The op carries **coordinates, not a URL**.
-No remote party names an address this node fetches from; each receiver appends the
-coordinates it was given to its own configured base:
-
-```text
-{base_url}/artifacts/{package}/{version}/{package}-{version}.mpk
-```
-
-So the publisher's registry is not a dependency of every member.
-A mirror, or a registry inside an air-gapped deployment, works by pointing each node's
-[`[registry]` section](/operate/config/) somewhere else.
-
-Coordinates are mandatory on the wire: an application is a signed bundle, whose manifest
-carries both halves, so an application without them cannot exist.
-The emitting node refuses rather than signs an op no receiver could resolve - see
-[behaviour that fails loudly](#a-node-that-cannot-address-an-application-says-so) below.
-Each coordinate must be a single safe path segment (non-empty, at most 128 bytes,
-`[A-Za-z0-9._-]` only, never `.` or `..` and never containing `..`), so a coordinate
-cannot walk out of the configured base; anything else yields no URL, and the fetch is
-refused rather than attempted.
-
-### `bytecode_id` is the only byte authority
-
-`bytecode_id` names the bytecode blob, and it alone decides which bytes are acceptable: the
-download is stored, its blob id is compared against `bytecode_id`, and a mismatch deletes
-the stored blob and fails the leg.
-It is a `BlobId` - a hash over chunk ids - never a `ContentHash`, and the two do not
-convert implicitly, so the wrong one cannot be threaded in by mistake.
-A wrong, stale, or hostile registry can therefore only cause a **failure**, never a code
-substitution - the node keeps the version it runs and retries on next access.
-A bundle is checked twice over: its blob id must equal `bytecode_id`, and the
-`ApplicationId` re-derived from its verified manifest must equal the one governance named
-(`bind_application_row`).
-
-That is what lets the operator's own `base_url` be fetched with no host guard at all, which
-is what makes a private or air-gapped registry usable. Nothing remote-chosen ever names a
-URL, so there is no remote-chosen fetch left to guard.
-
-The corollary is a requirement on whoever runs the registry: **serve the `.mpk` byte for byte.**
-`bytecode_id` covers the whole envelope, so re-gzipping the tar, reordering its entries, or
-restamping mtimes yields a different blob id.
-Every registry fetch then fails the comparison, leaving every node on the version it
-already runs, with a `blob id mismatch` failure to show for it.
-
-### A node that cannot address an application says so
-
-Because there is no fallback, a node that cannot address an application fails where the
-mistake was made rather than degrading quietly later:
-
-| Situation | What happens |
-| --- | --- |
-| Creating a context, or emitting an upgrade, against an application row that carries no coordinates | both fail with the same error, from the shared `registry_coords` check: `application <pkg>@<version> has no registry coordinates` |
-| `mode = "http"` with no `base_url`, installing by coordinates | the install fails: `[registry] mode = "http" needs a base_url to fetch from` |
-| `mode = "http"` with no `base_url`, acquiring a group's bytecode | logged (`no application source is configured`) and reported as `Unavailable`; the context keeps its current version and retries |
-| `mode = "dht"`, installing `package@version` by name | nothing to ask - the peer route needs a context and a `bytecode_id`, so the install reports the coordinates as unpublished |
-
-The last row is the shape of `dht` mode generally: a `dht` node joins contexts and follows
-upgrades normally, but it cannot bare-install an application by name.
-It gets applications from governance, or from a local `.mpk` path.
-
-## Services: one application, many modules
-
-A bundle is usually a single WASM module: the manifest's top-level `wasm` (plus an
-optional `abi`). It can instead declare a `services` array of named modules, each a
-`{name, wasm, abi?}` record. The rule is in
-`crates/bundle/src/lib.rs`:
-
-> If `services` is present and non-empty, it takes priority over `wasm` / `abi`.
-
-So `notes-app`'s manifest carries:
-
-```text
-services: [
-  { name: "api",    wasm: { path: "api.wasm",    hash, size } },
-  { name: "worker", wasm: { path: "worker.wasm", hash, size } },
-]
-```
-
-On install the node ignores the top-level `wasm`/`abi`, adds one blob per service,
-and records them in `ApplicationMeta.services` (as `ServiceMeta { name, bytecode,
-compiled }`) — surfaced on `Application` as the `services` map keyed by name. A
-single-service bundle leaves `services` empty and uses the top-level `blob` instead.
-
-### Resolving which blob to run
-
-One application, many modules — so something has to pick the module. That is
-`Application::resolve_service_blob(service_name)`
-(`crates/primitives/src/application.rs`); the stored side mirrors it as
-`ApplicationMeta::resolve_service`. The rule:
-
-| `service_name` | `services` map | Resolved blob |
-| --- | --- | --- |
-| `None` | empty | the default `blob` (single-service app) |
-| `None` | exactly one entry | that one service's blob |
-| `None` | two or more entries | `None` — ambiguous, a name is required |
-| `Some("api")` | contains `api` | the `api` service's blob |
-| `Some("api")` | no such entry | `None` — service not found |
-
-```rust
-pub fn resolve_service_blob(&self, service_name: Option<&str>) -> Option<ApplicationBlob> {
-    match service_name {
-        None if self.services.is_empty() => Some(self.blob),       // single-service default
-        None if self.services.len() == 1 => /* the only service */,
-        None => None,                                              // multi-service needs a name
-        Some(name) => self.services.get(name).copied(),
-    }
-}
-```
-
-The practical consequence: a single-service application is always runnable with no
-name, but for `notes-app` a context **must** declare whether it is the `api` or the
-`worker` — `None` does not resolve.
-
-## How a context runs one
-
-A context binds to exactly one application and one service. Both live on its stored
-`ContextMeta` (`crates/store/src/types/context.rs`):
-
-```rust
-pub struct ContextMeta {
-    pub application: key::ApplicationMeta, // keyed by application id
-    pub root_hash: Hash,
-    pub dag_heads: Vec<[u8; 32]>,
-    pub service_name: Option<Box<str>>,    // which service this context runs
-}
-```
-
-`service_name` is chosen when the context is created (`meroctl context create
-<app_id> --service <name>`) and never changes for the life of the context. At
-execution time the node:
-
-1. looks up the application row for `ContextMeta.application` and takes its bytecode
-   blob;
-2. passes that blob together with the context's `service_name` to module loading
-   (`get_module` → `get_module_for_blob` →
-   `application_bytes_from_blob(blob, service_name)`), which, for a bundle blob,
-   extracts and compiles the selected service's WASM;
-3. runs the resolved module against the context's state.
-
-What actually *runs* once the blob is resolved — the host ABI boundary, the storage
-layers, the determinism contract — is [Application Execution](/protocol/execution/).
-
-An [upgrade](/protocol/upgrades/) swaps the executed **bytecode** while the
-**application id stays stable** (that is exactly the version-stable bundle id above).
-The context keeps targeting the same application id and the same
-service name; only the blob behind it advances, version by version.
-
-## Where this leads
-
-Next, the **[Context Lifecycle](/protocol/context-lifecycle/)** — how a context that
-runs this application is created, joined, left, and deleted.
-
-An application's bundle id is anchored on its `signerId` — the `did:key` that holds
-update authority. That signing key is one of the [distinct key roles](/protocol/identities/)
-in Calimero (an app-publisher key, separate from a node's transport, member, and scope keys).
+**Why its own origin.** An app's page is third-party code. Served from the
+cluster's own origin, it could reach anything the signed-in account can. On its
+own origin it is a separate site to the browser, and a passkey ceremony from it
+opens a session **bound to its package**: that session reaches only instances
+of that package, creates only instances of it, and is refused credentials, API
+keys, approvals, upgrades, uninstalls and uploads ([Accounts, passkeys &
+sessions](/protocol/identities/#which-credential-may-do-what)). Its step-ups
+come only from its own origin.

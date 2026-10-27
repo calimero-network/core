@@ -38,8 +38,8 @@ An anchor is something outside the code that can pull it into execution:
 
 | Anchor | Where to check |
 | --- | --- |
-| an HTTP route | `crates/server/endpoints.json`, `crates/server/src/admin/service.rs` |
-| a CLI subcommand a user can type | `crates/meroctl/src/cli/**`, `crates/merod/src/cli/**` |
+| an HTTP route | `router` in `crates/cloud-node/src/api.rs` (every `.route(`) |
+| a CLI subcommand a user can type | the clap enums in `crates/meroctl/src/*.rs`, `crates/merod/src/main.rs` and `crates/merod/src/node_config.rs` |
 | a merobox step or scenario | `apps/*/workflows/*.yml`, `workflows/**`, and the step's existence in the merobox package |
 | a CI job | `.github/workflows/*.yml` — a scenario file that exists but is registered nowhere never runs |
 | a test | any `#[test]` / `#[tokio::test]` that actually asserts on it |
@@ -50,6 +50,9 @@ If a chain ends anywhere else — including at another item in the same island �
 keep walking. Do not stop at the first reference you find.
 
 ## Worked example — the one that prompted this
+
+(From v1: the crates it names, `calimero-server`, `calimero-client` and v1's
+`meroctl`, were deleted with the v1 node. The method is what carries over.)
 
 `crates/primitives/src/identity.rs` held `Did`, `RootKey`, `ClientKey` and
 `ContextUser`. `RootKey` carried a `wallet_address`, dating it to wallet-login,
@@ -88,16 +91,23 @@ shared fate.
 
 Places where this class accumulates:
 
-1. **Response/request types** in `crates/server/primitives/src/admin/mod.rs` with
-   no route in `endpoints.json`.
-2. **`calimero-client` methods** whose URL string does not appear server-side.
-3. **`meroctl`/`merod` subcommands** whose client call is one of the above.
-4. **merobox scenario files** not registered in any `.github/workflows/*.yml`
-   matrix — they exist, look maintained, and never run.
-5. **Types superseded by a newer model** where the old one was left in place:
+1. **`calimero-cloud-client` methods** whose path does not appear in
+   `router` (`crates/cloud-node/src/api.rs`).
+2. **`meroctl` subcommands** whose client call is one of the above, or whose
+   request body names fields the handler's `Deserialize` struct does not have.
+3. **Routes with no caller**: a route in `router` that no client, no
+   `meroctl` command, mero-js nor calimero-client-py calls may be dead, or a
+   missing command.
+4. **v1 crates kept for the runtime** (`node/primitives`, `context/config`,
+   `network/primitives`, `governance-types`, `store`, `store/blobs`,
+   `utils/actix`, `crypto`): items in them only the deleted v1 node used.
+5. **merobox scenario files** not registered in any `.github/workflows/*.yml`
+   matrix — they exist, look maintained, and never run. The v1 scenarios under
+   `apps/*/workflows/` and `workflows/` are the first place to look.
+6. **Types superseded by a newer model** where the old one was left in place:
    grep for concepts the docs describe in the past tense, or fields naming
    abandoned integrations (`wallet_`, `near_`, `did_`).
-6. **Feature-gated code** where the feature is enabled nowhere.
+7. **Feature-gated code** where the feature is enabled nowhere.
 
 ## Verify before you report — the traps
 
@@ -112,8 +122,9 @@ Do **not** report something as dead until you have ruled out:
   `X`, but if nothing constructs `X`, both are dead.
 - **Test-only survival.** Used only by tests that test *it* is dead; used by
   tests that test *something else* may be a real fixture.
-- **Feature-gated builds.** Check `--features mock-attestation` and
-  `calimero-storage/testing` before saying nothing compiles against it.
+- **Feature-gated builds.** Check `--features mock-attestation`,
+  `outbound-testing` and `calimero-storage/testing` before saying nothing
+  compiles against it.
 - **The `AGENTS.md` echo.** Docs mentioning a type are not a consumer, and a
   reference count that includes them will mislead you. Filter them out.
 - **String false positives.** `"Did not dial"` matched `\bDid\b`. Read every hit;
@@ -142,11 +153,11 @@ Rank by whether removal fixes something a user could hit, then by size.
 
 - **Read every hit.** Counts lie; `"Did not dial"` is why.
 - **Prove the anchor is absent**, do not infer it from silence. "I could not find
-  a route" is weaker than "`endpoints.json` has no entry and `service.rs` has no
+  a route" is weaker than "`router` in `crates/cloud-node/src/api.rs` has no
   `.route(` for that path".
 - **One island per report.** Do not bundle unrelated removals.
 - **Do not remove anything in this pass.** Report first; removal is a separate,
-  reviewed change with `cargo fmt --check`, `clippy -D warnings`, `cargo test`,
-  and `--test route_manifest` where routes move.
+  reviewed change with `cargo fmt --check`, `clippy -D warnings` and
+  `cargo test`.
 - If a chain is ambiguous, say so and state what would settle it. A confident
   wrong removal costs more than an honest maybe.
