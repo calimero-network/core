@@ -268,6 +268,8 @@ is its command line.
 - **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
   its applied index, `internal/system/index`; this replica waits for it). Org
   and team reads use it, and so does an access check before it refuses.
+  Concurrent callers share a round (`ReadRounds`): one that arrives while a
+  round runs waits for the next one, never takes the one already under way.
 - **Declared views**: a call (`/intents`) of a method the ABI declares `#[app::view]`
   runs as a strong view: it writes nothing and may search (v1's rule).
 - **Browsers**: `config.origins` are the CORS origins too (`lib.rs`, outermost layer).

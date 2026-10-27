@@ -371,6 +371,26 @@ was shared with other work, so treat rows as ±25%):
 One synced RocksDB write (`rocksdb_write/synced` in `calimero-log`'s bench, and
 timed again by this bench) took 0.16 to 0.19 ms on this disk; unsynced, 2 µs.
 
+**Appends without a leadership round.** `Group::propose` used to confirm
+leadership with a majority (`ensure_linearizable`) before every build; it now
+does so only for a proposal that answers without appending, and concurrent
+`sys_fresh` callers share one read-index round. Before and after on the same
+machine, two runs each, `--secs 10` (other work shared the machine, so ±25%
+still holds):
+
+| Scenario | Calls/s before → after | p50 before → after | p99 before → after |
+| --- | --- | --- | --- |
+| (a) 1 app, 1 in flight | 219 / 191 → 205 / 233 | 4.5 / 5.1 → 4.8 / 4.2 ms | 6.6 / 7.2 → 7.9 / 6.3 ms |
+| (b) 1 app, 64 in flight | 238 / 233 → 293 / 298 | 270 / 273 → 216 / 212 ms | 337 / 301 → 259 / 247 ms |
+| (c) 2 apps, 64 each, one leader node | 368 / 415 → 497 / 465 | 343 / 305 → 252 / 277 ms | 453 / 382 → 327 / 365 ms |
+| (c') 2 apps, 64 each, two leader nodes | 452 / 460 → 481 / 471 | 286 / 274 → 259 / 259 ms | 2273 / 2322 → 368 / 362 ms |
+
+`calimero-log`'s bench on a 3-node group: one proposal in flight 689 / 633 →
+573 / 528 µs, 64 in flight 36.8 / 38.1 → 33.4 / 31.8 ms (1 node: unchanged, it
+had no round to save). A single caller (a) gains nothing measurable; the
+queue behind the propose lock (b, c) moves about a fifth faster, and the
+seconds-long p99 with two leader nodes (c') is gone.
+
 - **The limit is per app, not per node.** A group proposes one call at a time
   (`propose_lock` in `Group::propose` is held while the leader runs the WASM
   and until the entry commits), so 64 calls in flight on one app only queue:
@@ -381,9 +401,9 @@ timed again by this bench) took 0.16 to 0.19 ms on this disk; unsynced, 2 µs.
   was seconds: 4 cores ran all three nodes and 128 callers.
 - **The disk is not the limit.** A call needs the leader's synced append and a
   follower's (in parallel), so about 2 syncs: 1 ÷ (2 × 0.17 ms) is about 3,000
-  calls/s per app, against the 150 to 250 measured. A call's 5 to 7 ms is the
+  calls/s per app, against the 150 to 300 measured. A call's 4 to 7 ms is the
   sealed HTTP round trip, the fresh system read, the WASM run and the Raft
-  round trips, all inside the propose lock. On a disk whose sync takes 10 to
+  round trip of its append, the last two inside the propose lock. On a disk whose sync takes 10 to
   25 ms (macOS, where Rust's `sync_data` is `F_FULLFSYNC`, which redb ran on
   every commit), the same formula gives 20 to 50 writes/s per app, the range
   of the ~38/s a macOS build on redb reported.

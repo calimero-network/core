@@ -255,6 +255,22 @@ pub struct Node {
     pub kick: tokio::sync::Notify,
     /// This node, for what a run is handed (its blob host).
     this: Mutex<Weak<Node>>,
+    /// The system group's read-index rounds, shared by concurrent `sys_fresh`.
+    sys_reads: ReadRounds,
+}
+
+/// One read-index round on the system group at a time. A caller may take the
+/// answer of a round that began after it arrived, never of one already under
+/// way (that round could predate a write the caller must see), so callers
+/// that arrive together share the next round instead of each running one.
+#[derive(Default)]
+struct ReadRounds {
+    /// Rounds begun so far.
+    begun: std::sync::atomic::AtomicU64,
+    /// The last round that finished, and the index it named.
+    finished: Mutex<(u64, Option<u64>)>,
+    /// Held for the length of a round.
+    turn: tokio::sync::Mutex<()>,
 }
 
 /// Raft RPCs to peers, over their sealed channels.
@@ -362,6 +378,7 @@ impl Node {
             frontends: crate::app_host::FrontendCache::default(),
             joining: Mutex::default(),
             peer_releases: Mutex::new(HashMap::new()),
+            sys_reads: ReadRounds::default(),
             starting: tokio::sync::Mutex::new(()),
             search: Search::default(),
             facts: Mutex::new(HashMap::new()),
@@ -547,8 +564,39 @@ impl Node {
     /// so a read here sees every write acknowledged anywhere (a read index:
     /// the leader confirms it leads and names its applied index, this node
     /// waits to apply it). Best effort: on no answer the read goes ahead.
+    /// Callers that wait at the same moment share one round (`ReadRounds`).
     pub async fn sys_fresh(&self) {
-        let index = match self.system.read_strong(|_, applied| applied).await {
+        use std::sync::atomic::Ordering;
+
+        let rounds = &self.sys_reads;
+        let arrived = rounds.begun.load(Ordering::SeqCst);
+        let index = {
+            let _turn = rounds.turn.lock().await;
+            let (round, index) = *rounds
+                .finished
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if round > arrived {
+                index
+            } else {
+                let round = rounds.begun.fetch_add(1, Ordering::SeqCst) + 1;
+                let index = self.sys_read_index().await;
+                *rounds
+                    .finished
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = (round, index);
+                index
+            }
+        };
+        if let Some(i) = index {
+            let _caught_up = self.system.wait_applied(i, Duration::from_secs(2)).await;
+        }
+    }
+
+    /// One read-index round: the system leader's applied index, once it has
+    /// confirmed it leads. `None` when no leader answers.
+    async fn sys_read_index(&self) -> Option<u64> {
+        match self.system.read_strong(|_, applied| applied).await {
             Ok(i) => Some(i),
             Err(WriteError::NotLeader {
                 leader: Some((id, addr)),
@@ -558,9 +606,6 @@ impl Node {
                 .ok()
                 .and_then(|v| v["index"].as_u64()),
             Err(_) => None,
-        };
-        if let Some(i) = index {
-            let _caught_up = self.system.wait_applied(i, Duration::from_secs(2)).await;
         }
     }
 
