@@ -13,8 +13,8 @@ use crate::overlay::{Cursor, Overlay};
 use crate::state::{app_key, KeyValue, StateView, GENERATION};
 use crate::time;
 use crate::types::{
-    BlobInfo, Caller, Directory, Event, HostDenied, InvalidInvocation, Invocation, InvocationKind,
-    OrgRole, Outcome, Status, Usage,
+    Audience, BlobInfo, Caller, Directory, Event, HostDenied, InvalidInvocation, Invocation,
+    InvocationKind, OrgRole, Outcome, Status, Usage,
 };
 
 /// Writes per run: `put`, `delete` and `add` count one each; the next one is refused.
@@ -25,6 +25,22 @@ pub const MAX_RANGE_BATCH: u32 = 1_000;
 pub const MAX_OPEN_CURSORS: usize = 1_024;
 /// Bytes of app log one run keeps; later lines are dropped after one marker line.
 pub const MAX_LOG_BYTES: usize = 64 * 1024;
+
+/// Events one run may emit (Rooms emits up to 500 per timer tick).
+pub const MAX_EVENTS: usize = 1_000;
+/// Bytes of an event name.
+pub const MAX_EVENT_NAME_BYTES: usize = 100;
+/// Bytes of an event's data.
+pub const MAX_EVENT_DATA_BYTES: usize = 16 * 1024;
+
+/// `emit`'s soft errors (the WIT `result<_, string>`), fixed so every engine and SDK
+/// returns and matches the same strings.
+pub const EMIT_TOO_MANY: &str = "too many events";
+pub const EMIT_NAME_TOO_LONG: &str = "event name too long";
+pub const EMIT_DATA_TOO_LARGE: &str = "event data too large";
+pub const EMIT_BAD_AUDIENCE: &str = "malformed audience";
+pub const EMIT_UNKNOWN_TEAM: &str = "unknown team";
+pub const EMIT_FOREIGN_ORG: &str = "audience names another org";
 
 const ACTIONS_DISABLED: &str = "actions are not enabled";
 const XCALL_DISABLED: &str = "xcall is not enabled";
@@ -166,7 +182,9 @@ impl HostCore {
             .next_cursor
             .checked_add(1)
             .ok_or_else(|| HostDenied::new("cursor ids exhausted"))?;
-        let _ = self.cursors.insert(id, Cursor::new(start, end, reverse));
+        let _ = self
+            .cursors
+            .insert(id, Cursor::new(start, end, reverse, self.overlay.seq()));
         Ok(CursorId(id))
     }
 
@@ -293,14 +311,57 @@ impl HostCore {
 
     // --- events, xcall, blobs, action ------------------------------------------------
 
-    /// Queues an event, delivered only if the run ends `Ok`. The inner result is the WIT
-    /// `result<_, string>`; a policy refusal is the outer `HostDenied`.
+    /// Queues an event, delivered only if the run ends `Ok`. A policy refusal is the
+    /// outer `HostDenied`; the inner result is the WIT `result<_, string>`, one of the
+    /// `EMIT_*` strings, and a refused event is not recorded.
     pub fn emit(&mut self, event: Event) -> Result<Result<(), String>, HostDenied> {
         if !self.is_logged_write() {
             return Err(self.denied("emit"));
         }
+        if let Err(reason) = self.check_event(&event) {
+            return Ok(Err(reason.to_owned()));
+        }
         self.events.push(event);
         Ok(Ok(()))
+    }
+
+    fn check_event(&self, event: &Event) -> Result<(), &'static str> {
+        if self.events.len() >= MAX_EVENTS {
+            return Err(EMIT_TOO_MANY);
+        }
+        if event.name.len() > MAX_EVENT_NAME_BYTES {
+            return Err(EMIT_NAME_TOO_LONG);
+        }
+        if event.data.len() > MAX_EVENT_DATA_BYTES {
+            return Err(EMIT_DATA_TOO_LARGE);
+        }
+        match &event.audience {
+            Audience::All | Audience::Caller => Ok(()),
+            Audience::Accounts(accounts) => {
+                if accounts.is_empty() || accounts.iter().any(String::is_empty) {
+                    return Err(EMIT_BAD_AUDIENCE);
+                }
+                Ok(())
+            }
+            Audience::Team(team) => {
+                if team.is_empty() {
+                    return Err(EMIT_BAD_AUDIENCE);
+                }
+                if !self.dir.team_exists(team) {
+                    return Err(EMIT_UNKNOWN_TEAM);
+                }
+                Ok(())
+            }
+            Audience::OrgMembers(org) | Audience::OrgAdmins(org) => {
+                if org.is_empty() {
+                    return Err(EMIT_BAD_AUDIENCE);
+                }
+                if self.dir.org().as_deref() != Some(org.as_str()) {
+                    return Err(EMIT_FOREIGN_ORG);
+                }
+                Ok(())
+            }
+        }
     }
 
     pub fn xcall_send(

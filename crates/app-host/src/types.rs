@@ -170,6 +170,8 @@ pub trait Directory: Send + Sync {
     fn org_role(&self, account: &str) -> Option<OrgRole>;
     /// Whether the account belongs to the team.
     fn in_team(&self, account: &str, team: &str) -> bool;
+    /// Whether the team exists, for checking event audiences.
+    fn team_exists(&self, team: &str) -> bool;
     /// Every org the account belongs to, with its role (requirement R1).
     fn orgs_of(&self, account: &str) -> Vec<(String, OrgRole)>;
 }

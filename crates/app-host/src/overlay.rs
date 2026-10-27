@@ -7,53 +7,87 @@ use std::ops::Bound;
 use crate::state::{bounds, KeyBounds, KeyValue, StateView};
 use crate::types::Write;
 
-/// Ordered writes of one run, keyed by stored key; `None` is a tombstone.
+/// One write to a key: the run's write sequence number and the value (`None` deletes).
+type Version = (u64, Option<Vec<u8>>);
+
+/// Ordered writes of one run, keyed by stored key. Every write is stamped with the run's
+/// next sequence number and kept, oldest first, so a cursor can read the writes as they
+/// were when it was opened. Versions are bounded by `MAX_WRITES` per run.
 #[derive(Debug, Default)]
 pub(crate) struct Overlay {
-    slots: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+    slots: BTreeMap<Vec<u8>, Vec<Version>>,
+    seq: u64,
 }
 
 impl Overlay {
-    /// `Some(None)` when the run deleted the key, `None` when it never touched it.
+    /// The sequence number of the latest write; a cursor opened now sees writes up to it.
+    pub(crate) fn seq(&self) -> u64 {
+        self.seq
+    }
+
+    /// The newest write: `Some(None)` when the run deleted the key, `None` when it never
+    /// touched it.
     pub(crate) fn get(&self, key: &[u8]) -> Option<Option<&[u8]>> {
-        self.slots.get(key).map(Option::as_deref)
+        self.slots
+            .get(key)
+            .and_then(|versions| versions.last())
+            .map(|(_, value)| value.as_deref())
     }
 
     pub(crate) fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        let _ = self.slots.insert(key, Some(value));
+        self.write(key, Some(value));
     }
 
     pub(crate) fn delete(&mut self, key: Vec<u8>) {
-        let _ = self.slots.insert(key, None);
+        self.write(key, None);
     }
 
-    /// The writes in key order.
+    fn write(&mut self, key: Vec<u8>, value: Option<Vec<u8>>) {
+        self.seq += 1;
+        self.slots.entry(key).or_default().push((self.seq, value));
+    }
+
+    /// The newest write per key, in key order.
     pub(crate) fn into_diff(self) -> Vec<Write> {
         self.slots
             .into_iter()
-            .map(|(key, value)| Write { key, value })
+            .filter_map(|(key, mut versions)| versions.pop().map(|(_, value)| Write { key, value }))
             .collect()
     }
 }
 
+/// The newest version written at or before `seq`, if any.
+fn as_of(versions: &[Version], seq: u64) -> Option<&Option<Vec<u8>>> {
+    versions
+        .iter()
+        .rev()
+        .find(|(written, _)| *written <= seq)
+        .map(|(_, value)| value)
+}
+
 /// A range over the overlay merged with the committed state, resumed from the last key
-/// it returned. A cursor holds no iterator between batches: every batch re-ranges the
-/// `StateView` and the overlay from the last returned key, so writes made between batches
-/// are seen and the cursor (and the `HostCore` holding it) stays `Send + 'static`.
+/// it returned. It reads the state as of its opening: the committed state (fixed for the
+/// run) plus the writes made before `range_open`, never later ones, so a scan that moves
+/// records ahead of itself does not meet them again. It holds no iterator between batches:
+/// every batch re-ranges the `StateView` and the overlay from the last returned key, so
+/// the cursor (and the `HostCore` holding it) stays `Send + 'static`.
 pub(crate) struct Cursor {
     start: Vec<u8>,
     end: Vec<u8>,
     reverse: bool,
+    /// The overlay sequence at opening; later writes are invisible to this cursor.
+    seq: u64,
     last: Option<Vec<u8>>,
 }
 
 impl Cursor {
     /// `start` and `end` are stored keys; an empty `end` is unbounded.
-    pub(crate) fn new(start: Vec<u8>, end: Vec<u8>, reverse: bool) -> Self {
+    pub(crate) fn new(start: Vec<u8>, end: Vec<u8>, reverse: bool, seq: u64) -> Self {
         Self {
             start,
             end,
             reverse,
+            seq,
             last: None,
         }
     }
@@ -75,12 +109,16 @@ impl Cursor {
         let Some(window) = self.remaining() else {
             return out;
         };
+        let seq = self.seq;
         let overlay_side = overlay.slots.range::<[u8], _>(window);
-        let mut overlay_side: Box<dyn Iterator<Item = _>> = if self.reverse {
+        let overlay_side: Box<dyn Iterator<Item = _>> = if self.reverse {
             Box::new(overlay_side.rev())
         } else {
             Box::new(overlay_side)
         };
+        // Keys with no write before opening fall through to the committed state.
+        let mut overlay_side = overlay_side
+            .filter_map(|(key, versions)| as_of(versions, seq).map(|value| (key, value)));
         let mut overlay_head = overlay_side.next();
         let (base_start, base_end) = self.committed_window();
         let mut base = state.range(&base_start, &base_end, self.reverse);
@@ -123,6 +161,7 @@ impl Cursor {
                 }
             }
         }
+        *buffered = (*buffered).max(out.len() + usize::from(pending.is_some()));
         out
     }
 

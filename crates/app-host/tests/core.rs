@@ -7,7 +7,9 @@ use std::time::Instant;
 
 use calimero_app_host::{
     app_key, Abi, Audience, Caller, Directory, Event, HostCore, HostDenied, InvalidInvocation,
-    Invocation, InvocationKind, KeyValue, MethodKind, OrgRole, Status, TimerCtx, Usage, GENERATION,
+    Invocation, InvocationKind, KeyValue, MethodKind, OrgRole, Status, TimerCtx, Usage,
+    EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE, EMIT_FOREIGN_ORG, EMIT_NAME_TOO_LONG, EMIT_TOO_MANY,
+    EMIT_UNKNOWN_TEAM, GENERATION, MAX_EVENTS, MAX_EVENT_DATA_BYTES, MAX_EVENT_NAME_BYTES,
     MAX_WRITES,
 };
 use serde_json::json;
@@ -25,6 +27,9 @@ impl Directory for NoDirectory {
         None
     }
     fn in_team(&self, _account: &str, _team: &str) -> bool {
+        false
+    }
+    fn team_exists(&self, _team: &str) -> bool {
         false
     }
     fn orgs_of(&self, _account: &str) -> Vec<(String, OrgRole)> {
@@ -174,7 +179,7 @@ fn range_sees_overlay_writes_and_deletes() {
 }
 
 #[test]
-fn range_sees_writes_made_between_batches() {
+fn range_ignores_writes_made_between_batches() {
     let state = base(&[(b"a", b"1"), (b"c", b"3"), (b"e", b"5")]);
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
@@ -188,7 +193,9 @@ fn range_sees_writes_made_between_batches() {
         .into_iter()
         .map(|(k, _)| k)
         .collect();
-    assert_eq!(keys, vec![b"b".to_vec(), b"e".to_vec()]);
+    // The cursor reads the state as of its opening.
+    assert_eq!(keys, vec![b"c".to_vec(), b"e".to_vec()]);
+    assert_eq!(host.storage_get(b"c"), Ok(None));
 }
 
 #[test]
@@ -426,7 +433,7 @@ fn timer_slot_must_match_the_kind() {
 }
 
 #[test]
-fn reverse_range_sees_writes_between_batches() {
+fn reverse_range_ignores_writes_between_batches() {
     let state = base(&[(b"a", b"a"), (b"c", b"c"), (b"e", b"e"), (b"g", b"g")]);
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
@@ -438,23 +445,20 @@ fn reverse_range_sees_writes_between_batches() {
     host.storage_delete(b"e").unwrap();
     host.storage_put(b"f", b"F").unwrap();
     host.storage_put(b"d", b"D").unwrap();
-    host.storage_put(b"h", b"H").unwrap(); // behind the cursor: not returned
+    host.storage_put(b"h", b"H").unwrap();
     assert_eq!(
         keys(host.range_next(cursor, 2).unwrap()),
-        vec![b"f".to_vec(), b"d".to_vec()]
+        vec![b"e".to_vec(), b"c".to_vec()]
     );
-    host.storage_put(b"c", b"C2").unwrap();
+    host.storage_put(b"a", b"A2").unwrap();
     assert_eq!(
         host.range_next(cursor, 10).unwrap(),
-        vec![
-            (b"c".to_vec(), b"C2".to_vec()),
-            (b"a".to_vec(), b"a".to_vec())
-        ]
+        vec![(b"a".to_vec(), b"a".to_vec())]
     );
 }
 
 #[test]
-fn forward_range_skips_a_key_deleted_between_batches() {
+fn forward_range_keeps_a_key_deleted_after_opening() {
     let state = base(&[(b"a", b"a"), (b"b", b"b"), (b"c", b"c")]);
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
@@ -464,6 +468,10 @@ fn forward_range_skips_a_key_deleted_between_batches() {
         vec![b"a".to_vec()]
     );
     host.storage_delete(b"b").unwrap();
+    assert_eq!(
+        keys(host.range_next(cursor, 1).unwrap()),
+        vec![b"b".to_vec()]
+    );
     assert_eq!(
         keys(host.range_next(cursor, 1).unwrap()),
         vec![b"c".to_vec()]
@@ -588,4 +596,272 @@ fn add_refuses_overflow_and_non_integers() {
         "bignum tag"
     );
     assert!(added(Some(vec![0x05, 0x00]), 1).is_err(), "trailing bytes");
+}
+
+/// The index key of record `id` at position `pos`: `"i" ‖ pos (u32 BE)`; the value is `id`.
+fn index_key(pos: u32) -> Vec<u8> {
+    let mut key = b"i".to_vec();
+    key.extend(pos.to_be_bytes());
+    key
+}
+
+fn position(key: &[u8]) -> u32 {
+    u32::from_be_bytes(key[1..5].try_into().unwrap())
+}
+
+/// Scans the index in batches of 7, moving every yielded record by `shift` positions (an
+/// update that moves its index key) and returns how often each record id was yielded.
+fn scan_and_move(host: &mut HostCore, reverse: bool, shift: i64) -> BTreeMap<Vec<u8>, u32> {
+    let cursor = host.range_open(b"i", b"j", reverse).unwrap();
+    let mut seen = BTreeMap::new();
+    for _ in 0..1_000 {
+        let batch = host.range_next(cursor, 7).unwrap();
+        if batch.is_empty() {
+            return seen;
+        }
+        for (key, id) in batch {
+            *seen.entry(id.clone()).or_insert(0) += 1;
+            let moved = u32::try_from(i64::from(position(&key)) + shift).unwrap();
+            host.storage_delete(&key).unwrap();
+            host.storage_put(&index_key(moved), &id).unwrap();
+        }
+    }
+    panic!("the scan did not end");
+}
+
+fn index(positions: std::ops::Range<u32>) -> BTreeMap<Vec<u8>, Vec<u8>> {
+    positions
+        .map(|pos| {
+            (
+                app_key(GENERATION, &index_key(pos)),
+                pos.to_be_bytes().to_vec(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn scan_does_not_see_its_own_forward_moves() {
+    let state = index(0..50);
+    let inv = inv(InvocationKind::Call);
+    let mut host = core_for(&state, &inv);
+    let seen = scan_and_move(&mut host, false, 1_000);
+    assert_eq!(seen.len(), 50);
+    assert!(seen.values().all(|&n| n == 1), "{seen:?}");
+}
+
+#[test]
+fn reverse_scan_does_not_see_its_own_backward_moves() {
+    let state = index(1_000..1_050);
+    let inv = inv(InvocationKind::Call);
+    let mut host = core_for(&state, &inv);
+    let seen = scan_and_move(&mut host, true, -1_000);
+    assert_eq!(seen.len(), 50);
+    assert!(seen.values().all(|&n| n == 1), "{seen:?}");
+}
+
+#[test]
+fn reads_after_a_scan_see_its_writes() {
+    let state = index(0..50);
+    let inv = inv(InvocationKind::Call);
+    let mut host = core_for(&state, &inv);
+    let _ = scan_and_move(&mut host, false, 1_000);
+    assert_eq!(host.storage_get(&index_key(0)), Ok(None));
+    assert_eq!(
+        host.storage_get(&index_key(1_000)),
+        Ok(Some(0u32.to_be_bytes().to_vec()))
+    );
+    let after = host.range_open(b"i", b"j", false).unwrap();
+    let positions: Vec<u32> = keys(host.range_next(after, 100).unwrap())
+        .iter()
+        .map(|key| position(key))
+        .collect();
+    assert_eq!(positions, (1_000..1_050).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_cursor_sees_writes_made_before_it_opened() {
+    let state = base(&[(b"b", b"1")]);
+    let inv = inv(InvocationKind::Call);
+    let mut host = core_for(&state, &inv);
+    host.storage_put(b"a", b"0").unwrap();
+    host.storage_delete(b"b").unwrap();
+    let cursor = host.range_open(b"", b"", false).unwrap();
+    host.storage_put(b"c", b"2").unwrap();
+    host.storage_put(b"a", b"9").unwrap();
+    assert_eq!(
+        host.range_next(cursor, 10).unwrap(),
+        vec![(b"a".to_vec(), b"0".to_vec())]
+    );
+}
+
+struct OrgDirectory;
+
+impl Directory for OrgDirectory {
+    fn org(&self) -> Option<String> {
+        Some("acme".to_owned())
+    }
+    fn app_owner(&self) -> String {
+        "owner".to_owned()
+    }
+    fn org_role(&self, _account: &str) -> Option<OrgRole> {
+        None
+    }
+    fn in_team(&self, _account: &str, _team: &str) -> bool {
+        false
+    }
+    fn team_exists(&self, team: &str) -> bool {
+        team == "ops"
+    }
+    fn orgs_of(&self, _account: &str) -> Vec<(String, OrgRole)> {
+        Vec::new()
+    }
+}
+
+fn org_core() -> HostCore {
+    HostCore::new(
+        "app",
+        Arc::new(base(&[])),
+        0,
+        inv(InvocationKind::Call),
+        Arc::new(OrgDirectory),
+    )
+    .unwrap()
+}
+
+fn emitted(audience: Audience) -> Result<(), String> {
+    let mut host = org_core();
+    let result = host
+        .emit(Event {
+            name: "e".to_owned(),
+            data: Vec::new(),
+            audience,
+        })
+        .unwrap();
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    assert_eq!(
+        out.events.len(),
+        usize::from(result.is_ok()),
+        "a refused event is not recorded"
+    );
+    result
+}
+
+#[test]
+fn emit_checks_the_audience() {
+    let refused = |reason: &str| Err(reason.to_owned());
+    assert_eq!(emitted(Audience::All), Ok(()));
+    assert_eq!(emitted(Audience::Caller), Ok(()));
+    assert_eq!(emitted(Audience::Accounts(vec!["ada".to_owned()])), Ok(()));
+    assert_eq!(emitted(Audience::Team("ops".to_owned())), Ok(()));
+    assert_eq!(emitted(Audience::OrgMembers("acme".to_owned())), Ok(()));
+    assert_eq!(emitted(Audience::OrgAdmins("acme".to_owned())), Ok(()));
+
+    assert_eq!(
+        emitted(Audience::Accounts(Vec::new())),
+        refused(EMIT_BAD_AUDIENCE)
+    );
+    assert_eq!(
+        emitted(Audience::Accounts(vec![String::new()])),
+        refused(EMIT_BAD_AUDIENCE)
+    );
+    assert_eq!(
+        emitted(Audience::Team(String::new())),
+        refused(EMIT_BAD_AUDIENCE)
+    );
+    assert_eq!(
+        emitted(Audience::OrgMembers(String::new())),
+        refused(EMIT_BAD_AUDIENCE)
+    );
+    assert_eq!(
+        emitted(Audience::OrgAdmins(String::new())),
+        refused(EMIT_BAD_AUDIENCE)
+    );
+    assert_eq!(
+        emitted(Audience::Team("devs".to_owned())),
+        refused(EMIT_UNKNOWN_TEAM)
+    );
+    assert_eq!(
+        emitted(Audience::OrgMembers("other".to_owned())),
+        refused(EMIT_FOREIGN_ORG)
+    );
+    assert_eq!(
+        emitted(Audience::OrgAdmins("other".to_owned())),
+        refused(EMIT_FOREIGN_ORG)
+    );
+}
+
+#[test]
+fn emit_bounds_names_data_and_count() {
+    let mut host = org_core();
+    let sized = |name: usize, data: usize| Event {
+        name: "n".repeat(name),
+        data: vec![0; data],
+        audience: Audience::All,
+    };
+    assert_eq!(host.emit(sized(MAX_EVENT_NAME_BYTES, 0)), Ok(Ok(())));
+    assert_eq!(
+        host.emit(sized(MAX_EVENT_NAME_BYTES + 1, 0)),
+        Ok(Err(EMIT_NAME_TOO_LONG.to_owned()))
+    );
+    assert_eq!(host.emit(sized(1, MAX_EVENT_DATA_BYTES)), Ok(Ok(())));
+    assert_eq!(
+        host.emit(sized(1, MAX_EVENT_DATA_BYTES + 1)),
+        Ok(Err(EMIT_DATA_TOO_LARGE.to_owned()))
+    );
+    for _ in 2..MAX_EVENTS {
+        assert_eq!(host.emit(sized(1, 0)), Ok(Ok(())));
+    }
+    assert_eq!(MAX_EVENTS, 1_000);
+    assert_eq!(
+        host.emit(sized(1, 0)),
+        Ok(Err(EMIT_TOO_MANY.to_owned())),
+        "the 1,001st event"
+    );
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    assert_eq!(out.events.len(), MAX_EVENTS);
+}
+
+#[test]
+fn cursor_sees_value_as_of_open_after_overwrite() {
+    let state = base(&[]);
+    let inv = inv(InvocationKind::Call);
+    let mut host = core_for(&state, &inv);
+    host.storage_put(b"k", b"1").unwrap();
+    let cursor = host.range_open(b"", b"", false).unwrap();
+    host.storage_put(b"k", b"2").unwrap();
+    assert_eq!(
+        host.range_next(cursor, 10).unwrap(),
+        vec![(b"k".to_vec(), b"1".to_vec())]
+    );
+    assert_eq!(host.storage_get(b"k"), Ok(Some(b"2".to_vec())));
+}
+
+#[test]
+fn cursor_sees_key_as_of_open_after_delete() {
+    let state = base(&[]);
+    let inv = inv(InvocationKind::Call);
+    let mut host = core_for(&state, &inv);
+    host.storage_put(b"k", b"1").unwrap();
+    let cursor = host.range_open(b"", b"", false).unwrap();
+    host.storage_delete(b"k").unwrap();
+    assert_eq!(
+        host.range_next(cursor, 10).unwrap(),
+        vec![(b"k".to_vec(), b"1".to_vec())]
+    );
+    assert_eq!(host.storage_get(b"k"), Ok(None));
+}
+
+#[test]
+fn cursor_sees_committed_value_overwritten_after_open() {
+    let state = base(&[(b"k", b"committed")]);
+    let inv = inv(InvocationKind::Call);
+    let mut host = core_for(&state, &inv);
+    let cursor = host.range_open(b"", b"", false).unwrap();
+    host.storage_put(b"k", b"new").unwrap();
+    host.storage_put(b"k", b"newer").unwrap();
+    assert_eq!(
+        host.range_next(cursor, 10).unwrap(),
+        vec![(b"k".to_vec(), b"committed".to_vec())]
+    );
 }
