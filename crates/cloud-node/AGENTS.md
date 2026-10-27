@@ -238,7 +238,7 @@ is its command line.
   the organization keeps a default). An app deployed with `access: team` is
   reached by the team's members; a member whose direct row there is read-only
   runs calls, but one that would write is refused (`403`, `node::READ_ONLY`;
-  v1 discarded the writes). A team's creator leads it. A member a manager
+  v1 discarded the writes). A team's creator leads it. Below admin, creating an app in the organization needs `caps::CREATE_APP` (on its team, or org-wide) and minting an invite `caps::INVITE_MEMBERS` (org-wide, or on each team it names); neither is in `caps::DEFAULT`, as in v1, and a team's leads hold both there. `MANAGE_APPLICATION` grants nothing: upgrades and outbound approvals stay the owner's (regression: `a_member_needs_the_capability_to_create_apps_or_invite`). A member a manager
   removed does not come back by inheritance until added again (`Team::removed`). Reads are filtered: a
   team one neither reaches nor manages is not listed (`GET /orgs/{org}`) and
   answers `404` (`GET /orgs/{org}/teams/{team}`). `DeleteTeam` takes the teams

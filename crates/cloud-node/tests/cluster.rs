@@ -1281,6 +1281,94 @@ async fn set(cl: &Client, app: &str, v: &str) -> Result<(), Box<calimero_cloud_c
         .map_err(Box::new)
 }
 
+/// v1's member capabilities: a member who is not an admin creates apps in the
+/// organization only with `CREATE_APP` and invites only with `INVITE_MEMBERS`
+/// (neither by default, as in v1). No capability lets a member upgrade
+/// another's app: that stays its owner's (or the org owner's) decision.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_member_needs_the_capability_to_create_apps_or_invite() {
+    const CREATE_APP: u32 = 1 << 0;
+    const INVITE_MEMBERS: u32 = 1 << 1;
+    const MANAGE_APPLICATION: u32 = 1 << 4;
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let org = alice.post("orgs", json!({ "name": "Docs" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = alice
+        .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = bob
+        .post(&format!("invites/{token}/redeem"), json!({}))
+        .await
+        .unwrap();
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refused = |e: calimero_cloud_client::Error, why: &str| {
+        let e = e.to_string();
+        assert!(e.contains(why), "{e}");
+    };
+    let bundle = bob.upload_bundle(kv_wasm()).await.unwrap();
+
+    let in_org = json!({ "org": org });
+    refused(
+        bob.create_app("b", &bundle, in_org.clone())
+            .await
+            .unwrap_err(),
+        "CREATE_APP",
+    );
+    refused(
+        bob.post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+            .await
+            .unwrap_err(),
+        "INVITE_MEMBERS",
+    );
+
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/capabilities"),
+            json!({
+                "account": bob_id,
+                "capabilities": CREATE_APP | INVITE_MEMBERS | MANAGE_APPLICATION,
+            }),
+        )
+        .await
+        .unwrap();
+    let _bobs = bob.create_app("b", &bundle, in_org.clone()).await.unwrap();
+    let _invite = bob
+        .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+        .await
+        .unwrap();
+    // Never above the member's own role.
+    refused(
+        bob.post(&format!("orgs/{org}/invites"), json!({ "role": "admin" }))
+            .await
+            .unwrap_err(),
+        "above your own role",
+    );
+    // Nor another's app's code.
+    let alices = alice.create_app("a", &bundle, in_org).await.unwrap();
+    let next = bob.upload_bundle(variant(&kv_wasm(), "v2")).await.unwrap();
+    refused(
+        bob.post_confirmed(
+            &format!("apps/{alices}/upgrade"),
+            json!({ "bundle": next }),
+            &mut bob_pk,
+        )
+        .await
+        .unwrap_err(),
+        "403",
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn teams_work_like_v1_subgroups() {
     let c = Cluster::start(3).await;

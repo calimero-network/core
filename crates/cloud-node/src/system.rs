@@ -928,9 +928,19 @@ impl SystemMachine {
                     return Err("app exists");
                 }
                 if let Some(org) = &app.org {
-                    let member = s.orgs.get(org).and_then(|o| o.role(&app.owner));
+                    let o = s.orgs.get(org);
+                    let member = o.and_then(|o| o.role(&app.owner));
                     if !member.is_some_and(|r| r >= OrgRole::Member) {
                         return Err("owner is not a member of the organization");
+                    }
+                    // v1's CAN_CREATE_CONTEXT: admins and the team's leads hold it,
+                    // a member only when granted (not by default).
+                    let team = match &app.access {
+                        Access::Team { team } => Some(team.as_str()),
+                        _ => None,
+                    };
+                    if !o.is_some_and(|o| o.may(&app.owner, team, crate::types::caps::CREATE_APP)) {
+                        return Err("creating apps here needs the CREATE_APP capability");
                     }
                 }
                 if let Access::Team { team } = &app.access {
@@ -1903,9 +1913,19 @@ impl SystemMachine {
             } => {
                 let o = s.orgs.get(&invite.org).ok_or("no such organization")?;
                 let role = o.role(&actor).ok_or("not a member")?;
-                if role < OrgRole::Admin && !invite.teams.iter().all(|t| o.manages_team(&actor, t))
-                {
-                    return Err("not allowed to invite");
+                // v1's CAN_INVITE_MEMBERS: below admin, the capability for the
+                // organization (an invite naming no team) or for each team named
+                // (a team's leads hold it there).
+                let may_invite = if invite.teams.is_empty() {
+                    o.may(&actor, None, crate::types::caps::INVITE_MEMBERS)
+                } else {
+                    invite
+                        .teams
+                        .iter()
+                        .all(|t| o.may(&actor, Some(t), crate::types::caps::INVITE_MEMBERS))
+                };
+                if role < OrgRole::Admin && !may_invite {
+                    return Err("inviting here needs the INVITE_MEMBERS capability");
                 }
                 if invite.role > role || (invite.role == OrgRole::Owner) {
                     return Err("cannot invite above your own role");
