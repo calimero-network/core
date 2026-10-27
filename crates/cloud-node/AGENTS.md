@@ -33,7 +33,8 @@ architecture spec.
   (Ruling 30), so that replacement always fits; a `TooLarge` from the log is a `500`,
   never retried.
 - **ABI checks in the host** (`Node::abi_gate`, from `Prepared.abi`, S5), default-deny
-  (Ruling 31): a method the ABI does not name is `UnknownMethod`, `init` and timers
+  (Ruling 31): a method the ABI does not name, and every name starting with `__` (reserved
+  for the platform, Ruling 36), is `UnknownMethod`, `init` and timers
   are never reached through `/intents` or `/views` (`WrongKind`); a `confirm` method
   is never a view (`ConfirmNotAView`) and a call of one needs a
   consent; only views run as views (`NotAView`); `Caller::System` reaches
@@ -114,9 +115,15 @@ architecture spec.
   are not idempotent yet. Regression: merobox `workflow-examples/cloud-v2/frozen-leader.yml`.
 - **Leader races**: a call whose diff was built on replaced state applies as a no-op
   (`conflict`, no idempotency record); `Node::call` re-runs it instead of failing.
-- **Upgrades** (`POST /apps/{app}/upgrade`) switch the bundle, code only; a named
-  `migrate` is refused (`MigrationsNotSupported`): migrations are rebuilds (D38), not
-  in this milestone. The directory records the new bundle once the switch committed.
+- **Upgrades** (`POST /apps/{app}/upgrade`, or `__upgrade` with `{bundle, migrate}` as args
+  through `/intents`: one path, `api::upgrade`, Ruling 36) switch the bundle, code only. Only
+  a passkey session of the owner or an org admin may (`Node::may_upgrade`, the system log's
+  `UpgradeApp` rule); anyone else, anonymous included, is `403 FORBIDDEN`. The upgrade never
+  travels as a `CallRequest`: `Node::upgrade` routes an `UpgradeRequest` to the app's leader
+  (`internal/upgrade`), which checks the authority again on its replica. A named `migrate` is
+  refused (`MigrationsNotSupported`): migrations are rebuilds (D38), not in this milestone.
+  The directory records the new bundle once the switch committed. Test:
+  `upgrades_through_intents_need_the_owner_or_an_org_admin`.
 - **Events and audiences** (R9): each `EventRecord` keeps the run's `Audience` (all,
   caller, accounts, team, org members, org admins) and calling account. The SSE
   stream (`local_events`; a forwarded stream names its `subscriber` to the peer)

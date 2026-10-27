@@ -149,6 +149,32 @@ fn args_bytes(args: &Value) -> Vec<u8> {
     }
 }
 
+/// Request to switch an app to another bundle (`POST /apps/{app}/upgrade`, or
+/// `__upgrade` through `/intents`), by `account`, whom the leader checks again.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeRequest {
+    pub app_id: String,
+    pub account: String,
+    pub bundle: String,
+    /// The bundle's migration export: refused (`MigrationsNotSupported`, D38).
+    #[serde(default)]
+    pub migrate: Option<String>,
+}
+
+/// Why a run on this replica did not happen: the log's answer, or a refusal the
+/// replica made before running (its own checks, against its own state).
+enum LocalError {
+    Write(WriteError),
+    Refused(ApiError),
+}
+
+impl From<WriteError> for LocalError {
+    fn from(e: WriteError) -> Self {
+        Self::Write(e)
+    }
+}
+
 /// Request to run a read-only method.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -270,8 +296,19 @@ fn entry_refused(e: &WriteError) -> ApiError {
     ApiError::internal(&format!("the log refused the entry: {e}"))
 }
 
-/// The method name `POST /apps/{app}/upgrade` travels under.
+/// The method name `/intents` reserves for an upgrade (Ruling 36): the same request as
+/// `POST /apps/{app}/upgrade`, with the same authority. Every other name starting with
+/// [`RESERVED_PREFIX`] is `UnknownMethod`; none ever reaches an app.
 pub const UPGRADE: &str = "__upgrade";
+
+/// Method names the platform keeps for itself.
+pub const RESERVED_PREFIX: &str = "__";
+
+/// `403 FORBIDDEN`: the caller may not upgrade the app.
+#[must_use]
+pub fn upgrade_forbidden() -> ApiError {
+    ApiError::forbidden("only the owner or an org admin may upgrade")
+}
 
 /// A refusal the host makes for the app, before running it (`422 APP_ERROR`).
 #[must_use]
@@ -1099,9 +1136,6 @@ impl Node {
         g: &Group<AppMachine>,
         req: &CallRequest,
     ) -> Result<Applied, WriteError> {
-        if req.method == UPGRADE {
-            return self.upgrade_local(g, req).await;
-        }
         let bundle = g
             .read_local(|m, _| m.state.bundle.clone())
             .ok_or_else(|| WriteError::Unavailable("the app is not initialized yet".into()))?;
@@ -1196,13 +1230,89 @@ impl Node {
         serde_json::from_slice(&p.output).map_err(|e| WriteError::Unavailable(e.to_string()))
     }
 
-    /// Switch an app to a new bundle, code only. A named migration is refused:
-    /// migrations are rebuilds (D38), not in this milestone.
+    /// Whether `account` may switch `app`'s bundle: its owner or an admin of its org,
+    /// the system log's `UpgradeApp` rule. A refusal is checked again against a fresh
+    /// system state (a role granted through another node may not be here yet).
+    pub async fn may_upgrade(&self, app: &AppRecord, account: &str) -> bool {
+        let check = || {
+            app.owner == account
+                || self.sys(|s| {
+                    app.org
+                        .as_ref()
+                        .and_then(|o| s.orgs.get(o))
+                        .and_then(|o| o.role(account))
+                        .is_some_and(|r| r >= crate::types::OrgRole::Admin)
+                })
+        };
+        check() || {
+            self.sys_fresh().await;
+            check()
+        }
+    }
+
+    /// Switch an app to a new bundle wherever the app's leader is. The leader checks
+    /// the account's authority again on its own replica before writing.
+    pub async fn upgrade(&self, req: &UpgradeRequest) -> Result<Applied, ApiError> {
+        let app = self.app(&req.app_id).await?;
+        let body = serde_json::to_value(req).map_err(|e| ApiError::internal(&e.to_string()))?;
+        for _attempt in 0..30 {
+            let target = if let Some(g) = self.replica_group(&app) {
+                match self.upgrade_local(&g, &app, req).await {
+                    Ok(a) => return Ok(a),
+                    Err(LocalError::Refused(e)) => return Err(e),
+                    Err(LocalError::Write(WriteError::NotLeader {
+                        leader: Some((id, addr)),
+                    })) if id != self.config.node_id && !addr.is_empty() => Some(addr),
+                    Err(LocalError::Write(e)) => {
+                        debug!(error = %e, "upgrade not yet possible here");
+                        None
+                    }
+                }
+            } else {
+                self.other_replica(&app)
+            };
+            if let Some(addr) = target {
+                match self.peer_forward(&addr, "internal/upgrade", &body).await {
+                    Ok(v) => {
+                        return serde_json::from_value(v)
+                            .map_err(|e| ApiError::internal(&e.to_string()))
+                    }
+                    Err(e) => match e.downcast::<ApiError>() {
+                        Ok(api) if api.code != "UNAVAILABLE" => return Err(api),
+                        _ => {}
+                    },
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+        Err(ApiError::unavailable("the app has no leader"))
+    }
+
+    /// Answer an internal upgrade (from a peer): run it here, without forwarding further.
+    pub async fn upgrade_here(&self, req: &UpgradeRequest) -> Result<Applied, ApiError> {
+        let app = self.app(&req.app_id).await?;
+        let g = self
+            .app_group(app.group)
+            .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
+        match self.upgrade_local(&g, &app, req).await {
+            Ok(a) => Ok(a),
+            Err(LocalError::Refused(e)) => Err(e),
+            Err(LocalError::Write(e)) => Err(status_of(&e)),
+        }
+    }
+
+    /// Switch an app to a new bundle, code only, on this node, which must be the app
+    /// group's leader. A named migration is refused: migrations are rebuilds (D38), not
+    /// in this milestone.
     async fn upgrade_local(
         &self,
         g: &Group<AppMachine>,
-        req: &CallRequest,
-    ) -> Result<Applied, WriteError> {
+        app: &AppRecord,
+        req: &UpgradeRequest,
+    ) -> Result<Applied, LocalError> {
+        if !self.may_upgrade(app, &req.account).await {
+            return Err(LocalError::Refused(upgrade_forbidden()));
+        }
         let refuse = |code: &str, message: &str| Applied {
             index: g.applied(),
             status: Status::AppError,
@@ -1212,33 +1322,28 @@ impl Node {
             conflict: false,
             timeout: false,
         };
-        if req.args.get("migrate").is_some_and(|m| !m.is_null()) {
+        if req.migrate.is_some() {
             return Ok(refuse(
                 "MigrationsNotSupported",
                 "migrations are rebuilds (D38), not in this milestone",
             ));
         }
-        let bundle = req
-            .args
-            .get("bundle")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        match self.prepared_for(&bundle).await {
+        match self.prepared_for(&req.bundle).await {
             Ok(_) => {}
             Err(e) if e.code == BAD_BUNDLE => return Ok(refuse(BAD_BUNDLE, &e.message)),
-            Err(e) => return Err(WriteError::Unavailable(e.message)),
+            Err(e) => return Err(LocalError::Write(WriteError::Unavailable(e.message))),
         }
         let p = g
             .propose(|_, applied| {
                 let cmd = AppCmd::Upgrade {
-                    bundle: bundle.clone(),
+                    bundle: req.bundle.clone(),
                     base_index: applied,
                 };
                 Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
             })
             .await?;
-        serde_json::from_slice(&p.output).map_err(|e| WriteError::Unavailable(e.to_string()))
+        serde_json::from_slice(&p.output)
+            .map_err(|e| LocalError::Write(WriteError::Unavailable(e.to_string())))
     }
 
     /// The ABI checks the host makes before invoking (S5, D13), from the bundle's
@@ -1258,8 +1363,8 @@ impl Node {
         view: bool,
         consented: bool,
     ) -> Result<(), ApiError> {
-        if method == UPGRADE {
-            return Ok(());
+        if method.starts_with(RESERVED_PREFIX) {
+            return Err(app_refusal("UnknownMethod"));
         }
         let prepared = self.prepared_for(&app.bundle).await?;
         let Some(m) = prepared.abi.methods.get(method) else {

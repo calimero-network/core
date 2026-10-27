@@ -28,7 +28,7 @@ use serde_json::{json, Value};
 use crate::app::{Applied, Status};
 use crate::attest::{quote, report_data, AttestationDoc, Release};
 use crate::error::ApiError;
-use crate::node::{CallRequest, Node, ViewRequest};
+use crate::node::{CallRequest, Node, UpgradeRequest, ViewRequest};
 use crate::system::SystemCmd;
 use crate::types::{
     now_secs, Access, Account, ApiKeyRecord, Caller, EventRecord, Invite, OrgRole, RefreshRecord,
@@ -1090,6 +1090,19 @@ async fn intents(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, &body.method, true).await?;
+    // An upgrade sent as a method takes the upgrade route's path and authority
+    // (Ruling 36): a passkey session of the owner or an org admin, else `403`.
+    if body.method == crate::node::UPGRADE {
+        let account = match (&p.session, p.caller.account()) {
+            (Some(_), Some(account)) => account.to_owned(),
+            _ => return Err(crate::node::upgrade_forbidden()),
+        };
+        let upgrade_body: UpgradeBody = serde_json::from_value(body.args)
+            .map_err(|e| ApiError::bad_request("BAD_ARGS", &e.to_string()))?;
+        let caller = p.caller.clone();
+        let applied = upgrade(&node, &app, account, upgrade_body).await?;
+        return Ok(answer(&node, &app_id, &caller, applied));
+    }
     let method = node
         .prepared_for(&app.bundle)
         .await?
@@ -1302,48 +1315,48 @@ async fn app_upgrade(
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     let account = person(&node, &headers).await?.account()?;
-    // Who may upgrade is the system log's rule (`UpgradeApp`); asked first, so
-    // a refused or failed upgrade records nothing.
     let app = node.app(&app_id).await?;
-    let may = app.owner == account
-        || node.sys(|s| {
-            app.org
-                .as_ref()
-                .and_then(|o| s.orgs.get(o))
-                .and_then(|o| o.role(&account))
-                .is_some_and(|r| r >= OrgRole::Admin)
-        });
-    if !may {
-        return Err(crate::node::rejected(
-            "only the owner or an org admin may upgrade",
-        ));
+    let applied = upgrade(&node, &app, account, body).await?;
+    Ok(Json(
+        json!({ "index": applied.index, "status": applied.status, "error": applied.error }),
+    ))
+}
+
+/// Switch `app` to `body.bundle` for `account` (Ruling 36): the one path both
+/// `POST /apps/{app}/upgrade` and `__upgrade` through `/intents` take. Who may is the
+/// system log's rule (`UpgradeApp`: the owner or an org admin), asked first, so a
+/// refused or failed upgrade records nothing; the app's leader asks again.
+async fn upgrade(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    account: String,
+    body: UpgradeBody,
+) -> Result<Applied, ApiError> {
+    if !node.may_upgrade(app, &account).await {
+        return Err(crate::node::upgrade_forbidden());
     }
     if !node.sys(|s| s.bundles.contains_key(&body.bundle)) {
         return Err(crate::node::rejected("unknown bundle"));
     }
     let applied = node
-        .call(&CallRequest::new(
-            app_id.clone(),
-            crate::node::UPGRADE.into(),
-            json!({ "bundle": body.bundle, "migrate": body.migrate }),
-            Caller::Account {
-                account: account.clone(),
-            },
-        ))
+        .upgrade(&UpgradeRequest {
+            app_id: app.app_id.clone(),
+            account: account.clone(),
+            bundle: body.bundle.clone(),
+            migrate: body.migrate,
+        })
         .await?;
     // The app now runs the new bundle: the directory says so too.
     if applied.status == Status::Ok {
         let _ok = node
             .sys_write(&SystemCmd::UpgradeApp {
-                app_id,
+                app_id: app.app_id.clone(),
                 bundle: body.bundle,
                 actor: account,
             })
             .await?;
     }
-    Ok(Json(
-        json!({ "index": applied.index, "status": applied.status, "error": applied.error }),
-    ))
+    Ok(applied)
 }
 
 #[derive(Deserialize)]
@@ -1853,6 +1866,16 @@ async fn internal_call(
     Ok(Json(serde_json::to_value(a).unwrap_or_default()))
 }
 
+async fn internal_upgrade(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(req): Json<UpgradeRequest>,
+) -> ApiResult {
+    peer_only(&node, &headers)?;
+    let a = node.upgrade_here(&req).await?;
+    Ok(Json(serde_json::to_value(a).unwrap_or_default()))
+}
+
 async fn internal_view(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -2141,6 +2164,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/system", post(internal_system))
         .route("/internal/system/index", post(internal_system_index))
         .route("/internal/call", post(internal_call))
+        .route("/internal/upgrade", post(internal_upgrade))
         .route("/internal/blob", post(internal_blob_put))
         .route("/internal/blob/get", post(internal_blob_get))
         .route("/internal/view", post(internal_view))

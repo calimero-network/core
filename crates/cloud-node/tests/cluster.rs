@@ -2380,3 +2380,102 @@ async fn a_timed_out_tick_is_not_logged_and_its_slot_runs_again() {
     assert!(scheduled < until, "{rows:?} until {until}");
     assert!(ran_at >= until, "{rows:?} until {until}");
 }
+
+// ---- Final-review fixes (C1, I1, I2, I3).
+
+/// The bundle the app group of `app` runs on node `i`.
+fn running_bundle(c: &Cluster, i: usize, app: &str) -> Option<String> {
+    c.nodes[i]
+        .as_ref()
+        .unwrap()
+        .node
+        .hosted(app)
+        .unwrap()
+        .read_local(|m, _| m.state.bundle.clone())
+}
+
+/// C1 (Ruling 36): `__upgrade` sent as a method through `/intents` needs the owner or an
+/// org admin, like `POST /apps/{app}/upgrade`; anyone else is refused `403` and the app
+/// keeps its bundle, in the app group and in the directory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upgrades_through_intents_need_the_owner_or_an_org_admin() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let v1 = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let mut other = kv_wasm();
+    other.extend_from_slice(&[0, 4, 3, b'b', b'o', b'b']);
+    let bobs = bob.upload_bundle(other).await.unwrap();
+    assert_ne!(v1, bobs);
+
+    // A public app: anonymous callers and other accounts reach it.
+    let public = alice
+        .create_app("kv", &v1, json!({ "access": { "kind": "public" } }))
+        .await
+        .unwrap();
+    // An org app: Bob is a member, not an admin.
+    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = alice
+        .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = bob
+        .post(&format!("invites/{token}/redeem"), json!({}))
+        .await
+        .unwrap();
+    let in_org = alice
+        .create_app("kv-org", &v1, json!({ "org": org }))
+        .await
+        .unwrap();
+
+    let anonymous = c.client(2);
+    let upgrade = json!({ "bundle": bobs });
+    let e = anonymous
+        .call(&public, "__upgrade", upgrade.clone(), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "anonymous: {e}");
+    let e = bob
+        .call(&public, "__upgrade", upgrade.clone(), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "another account: {e}");
+    let e = bob
+        .call(&in_org, "__upgrade", upgrade.clone(), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "an org member: {e}");
+    // A reserved name is never a view either.
+    let e = anonymous
+        .view(&public, "__upgrade", upgrade.clone(), Consistency::Strong)
+        .await
+        .unwrap_err();
+    assert_eq!(e.details().unwrap()["code"], "UnknownMethod", "{e}");
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for app in [&public, &in_org] {
+        for i in 0..3 {
+            assert_eq!(running_bundle(&c, i, app), Some(v1.clone()), "node {i}");
+        }
+        assert_eq!(
+            alice.get(&format!("apps/{app}")).await.unwrap()["bundle"],
+            json!(v1)
+        );
+    }
+
+    // The owner may, and the directory follows, as on the upgrade route.
+    let _r = alice
+        .call(&public, "__upgrade", upgrade, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        alice.get(&format!("apps/{public}")).await.unwrap()["bundle"],
+        json!(bobs)
+    );
+}
