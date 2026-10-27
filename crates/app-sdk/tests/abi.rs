@@ -62,7 +62,7 @@ struct App {
 impl App {
     fn new() -> Self {
         let cache = tempfile::tempdir().expect("tempdir");
-        let engine = WasmtimeEngine::new(cache.path().to_path_buf()).expect("engine");
+        let engine = WasmtimeEngine::new(cache.path().to_path_buf(), &[1; 32]).expect("engine");
         let prepared = engine
             .prepare("sample-hash", &built().component)
             .unwrap_or_else(|e| panic!("prepare sample: {e}"));

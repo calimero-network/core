@@ -9,7 +9,8 @@ architecture spec.
 - **One Raft log per app** (`calimero-log`). The leader runs the call as a
   `calimero:app` component on the wasmtime engine (`calimero-app-engine-wasmtime`,
   one `WasmtimeEngine` per node, `Node::app_engine`; compiled artifacts cached under
-  `<data_dir>/components`, S8) through the host core (`calimero-app-host`), and
+  `<data_dir>/components`, each with a MAC under a key derived from K_r, so a host that
+  writes the directory cannot plant code, S8) through the host core (`calimero-app-host`), and
   appends `{ call, outcome { status, result, error, diff, events, logs } }`.
   Followers apply the diff; nothing is re-executed. `base_index` guards against
   applying a stale diff. There is no v1/wasmer path (D15).

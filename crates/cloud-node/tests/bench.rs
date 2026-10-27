@@ -288,11 +288,11 @@ async fn g1_measurements() {
     // 6. Rooms cold compile (a fresh engine and cache dir each time) and a cache hit.
     for _ in 0..3 {
         let dir = tempfile::tempdir().unwrap();
-        let engine = WasmtimeEngine::new(dir.path().to_owned()).unwrap();
+        let engine = WasmtimeEngine::new(dir.path().to_owned(), &[1; 32]).unwrap();
         let t = Instant::now();
         let _p = engine.prepare("rooms", &rooms).unwrap();
         let cold = t.elapsed();
-        let again = WasmtimeEngine::new(dir.path().to_owned()).unwrap();
+        let again = WasmtimeEngine::new(dir.path().to_owned(), &[1; 32]).unwrap();
         let t = Instant::now();
         let _p = again.prepare("rooms", &rooms).unwrap();
         let warm = t.elapsed();

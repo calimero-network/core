@@ -13,6 +13,8 @@ use calimero_app_host::{
 };
 
 const ENTRY_TS_MS: u64 = 1_700_000_000_123;
+/// The key the tests' engines authenticate their cache with.
+const CACHE_KEY: [u8; 32] = [5; 32];
 
 fn guest(name: &str) -> Vec<u8> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -85,7 +87,7 @@ struct Fixture {
 
 fn fixture() -> Fixture {
     let cache = tempfile::tempdir().expect("tempdir");
-    let engine = WasmtimeEngine::new(cache.path().to_path_buf()).expect("engine");
+    let engine = WasmtimeEngine::new(cache.path().to_path_buf(), &CACHE_KEY).expect("engine");
     Fixture { engine, cache }
 }
 
@@ -411,7 +413,7 @@ fn tampered_cache_is_recompiled() {
         .filter(|p| p.extension().is_some_and(|x| x == "cwasm"))
         .collect();
     assert_eq!(artifacts.len(), 1, "{artifacts:?}");
-    let sidecar = artifacts[0].with_extension("cwasm.sha256");
+    let sidecar = artifacts[0].with_extension("cwasm.mac");
     assert!(sidecar.exists(), "{sidecar:?}");
 
     let mut bytes = std::fs::read(&artifacts[0]).unwrap();
@@ -427,6 +429,77 @@ fn tampered_cache_is_recompiled() {
     );
     assert_eq!(out.status, Status::Ok);
     assert_ne!(std::fs::read(&artifacts[0]).unwrap(), bytes, "rewritten");
+}
+
+/// The cache files of `component`: its artifact and the files beside it.
+fn cache_files(dir: &Path, component: &[u8]) -> Vec<PathBuf> {
+    use sha2::Digest;
+    let key = hex::encode(sha2::Sha256::digest(component));
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(&key) && !n.contains(".tmp-"))
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// C3 (S8, Ruling 38): a party that can write the cache directory rewrites both the
+/// artifact and the file beside it, putting another component's compiled code (with its
+/// own, valid check file) under this component's name. The node must not load it.
+#[test]
+fn an_artifact_rewritten_with_its_check_file_is_not_loaded() {
+    let fx = fixture();
+    let (counter, writer) = (guest("global_counter"), guest("view_writer"));
+    let _ = fx.engine.prepare("gc", &counter).expect("prepare gc");
+    let _ = fx.engine.prepare("vw", &writer).expect("prepare vw");
+    let (from, to) = (
+        cache_files(fx.cache.path(), &counter),
+        cache_files(fx.cache.path(), &writer),
+    );
+    assert_eq!(from.len(), 2, "{from:?}");
+    assert_eq!(to.len(), 2, "{to:?}");
+    for (f, t) in from.iter().zip(&to) {
+        std::fs::copy(f, t).unwrap();
+    }
+    let planted = std::fs::read(&to[0]).unwrap();
+
+    let app = fx.engine.prepare("vw", &writer).expect("prepare vw again");
+    let out = fx
+        .engine
+        .invoke(&app, host(InvocationKind::Call, "put", b""), Budget::call());
+    assert_eq!(out.status, Status::Ok);
+    assert_eq!(out.diff.len(), 1, "ran the planted component's code");
+    assert_ne!(
+        std::fs::read(&to[0]).unwrap(),
+        planted,
+        "recompiled and rewritten"
+    );
+}
+
+/// An artifact authenticated under one key is not loaded under another: a node never
+/// runs code compiled (or planted) without its storage key.
+#[test]
+fn artifacts_are_only_loaded_under_the_key_they_were_written_with() {
+    let fx = fixture();
+    let component = guest("global_counter");
+    let _ = fx.engine.prepare("gc", &component).expect("prepare");
+    let files = cache_files(fx.cache.path(), &component);
+    let mac = std::fs::read(&files[1]).unwrap();
+
+    let other = WasmtimeEngine::new(fx.cache.path().to_path_buf(), &[6; 32]).expect("engine");
+    let _ = other
+        .prepare("gc", &component)
+        .expect("prepare under another key");
+    assert_ne!(
+        std::fs::read(&files[1]).unwrap(),
+        mac,
+        "recompiled and re-signed"
+    );
 }
 
 #[test]
@@ -604,7 +677,8 @@ fn an_extra_memory_is_refused_at_prepare() {
 #[test]
 fn an_exhausted_instance_pool_is_a_retryable_timeout() {
     let cache = tempfile::tempdir().expect("tempdir");
-    let engine = WasmtimeEngine::with_pool_size(cache.path().to_path_buf(), 1).expect("engine");
+    let engine =
+        WasmtimeEngine::with_pool_size(cache.path().to_path_buf(), &CACHE_KEY, 1).expect("engine");
     let spin = engine.prepare("spin", &guest("spin")).expect("spin");
     let counter = engine
         .prepare("gc", &guest("global_counter"))

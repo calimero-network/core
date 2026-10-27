@@ -79,8 +79,11 @@ fn shared_engine() -> &'static WasmtimeEngine {
         .get_or_init(|| {
             // SAFETY: a test harness cannot continue without its engine; panicking fails the test.
             let dir = tempfile::tempdir().expect("harness cache dir");
+            // The cache lives in a directory this process just created and owns, so a
+            // fixed key is enough to authenticate its artifacts (S8 binds nodes, not tests).
             // SAFETY: as above.
-            let engine = WasmtimeEngine::new(dir.path().to_path_buf()).expect("wasmtime engine");
+            let engine =
+                WasmtimeEngine::new(dir.path().to_path_buf(), &[0; 32]).expect("wasmtime engine");
             (engine, dir)
         })
         .0

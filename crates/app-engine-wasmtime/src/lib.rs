@@ -117,18 +117,24 @@ pub struct WasmtimeEngine {
 impl WasmtimeEngine {
     /// One engine for every app, caching compiled components under `cache_dir`, with a
     /// ticker thread advancing the epoch every `EPOCH_TICK`.
-    pub fn new(cache_dir: PathBuf) -> EyreResult<Self> {
-        Self::build(cache_dir, POOL_COMPONENT_INSTANCES)
+    /// `cache_key` authenticates the cached artifacts (S8): derive it from the node's
+    /// storage key, so only this node's own compilations are ever loaded.
+    pub fn new(cache_dir: PathBuf, cache_key: &[u8; 32]) -> EyreResult<Self> {
+        Self::build(cache_dir, cache_key, POOL_COMPONENT_INSTANCES)
     }
 
     /// An engine whose pool holds only `instances` component instances, so tests can
     /// exhaust it.
     #[cfg(feature = "testing")]
-    pub fn with_pool_size(cache_dir: PathBuf, instances: u32) -> EyreResult<Self> {
-        Self::build(cache_dir, instances)
+    pub fn with_pool_size(
+        cache_dir: PathBuf,
+        cache_key: &[u8; 32],
+        instances: u32,
+    ) -> EyreResult<Self> {
+        Self::build(cache_dir, cache_key, instances)
     }
 
-    fn build(cache_dir: PathBuf, instances: u32) -> EyreResult<Self> {
+    fn build(cache_dir: PathBuf, cache_key: &[u8; 32], instances: u32) -> EyreResult<Self> {
         let mut pool = PoolingAllocationConfig::default();
         let _ = pool
             .total_component_instances(instances)
@@ -155,7 +161,7 @@ impl WasmtimeEngine {
         bindings::add_to_linker(&mut linker).map_err(report)?;
         wasi::add_to_linker(&mut linker).map_err(report)?;
 
-        let cache = Cache::new(cache_dir, &engine)?;
+        let cache = Cache::new(cache_dir, &engine, cache_key)?;
         let ticker_stop = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&ticker_stop);
         let ticking = engine.clone();

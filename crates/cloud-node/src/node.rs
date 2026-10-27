@@ -323,8 +323,13 @@ impl Node {
                 unsealed_paths: vec!["/attestation".into(), "/health".into()],
             },
         ));
-        // Compiled components live in the node's own data directory (S8).
-        let wasm = Arc::new(WasmtimeEngine::new(config.data_dir.join("components"))?);
+        // Compiled components live in the node's data directory, which the host can
+        // write: each artifact carries a MAC under a key derived from K_r, so only this
+        // cluster's own compilations are ever loaded (S8, Ruling 38).
+        let wasm = Arc::new(WasmtimeEngine::new(
+            config.data_dir.join("components"),
+            &component_cache_key(&config.storage_key),
+        )?);
         let clock = Clock::new(config.clock_offset_ms);
         let secret = hmac::sign(
             &hmac::Key::new(hmac::HMAC_SHA256, &config.storage_key),
@@ -1549,6 +1554,18 @@ impl Node {
         }
         Ok(written)
     }
+}
+
+/// The key the compiled-component cache authenticates its artifacts with (S8): HMAC of
+/// K_r over a fixed label, so it changes with the storage key and nothing else.
+fn component_cache_key(storage_key: &[u8; 32]) -> [u8; 32] {
+    let tag = hmac::sign(
+        &hmac::Key::new(hmac::HMAC_SHA256, storage_key),
+        b"calimero.components.v1",
+    );
+    let mut key = [0; 32];
+    key.copy_from_slice(tag.as_ref());
+    key
 }
 
 /// How often an app group's leader looks for due timer ticks (D34).
