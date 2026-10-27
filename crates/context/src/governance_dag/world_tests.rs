@@ -969,6 +969,114 @@ mod held_ops {
         );
     }
 
+    /// The exact sequence of `group-held-flip-nonmember-keeps-up`: the owner creates an Open
+    /// `before`, makes it Restricted, names it under the space key, then deletes it. The node
+    /// outside, which holds no space key, applies the deletion and its head keeps up.
+    #[actix::test]
+    async fn an_outsider_applies_a_deletion_that_follows_a_flip_and_a_sealed_name() {
+        let world = World::shared();
+        let (inside, outside) = (world.fork(), world.fork());
+        let namespace = world.namespace;
+        let owner = world.actor(ActorState::Owner);
+        let before = ContextGroupId::from(derived_group_id(
+            &owner.account,
+            namespace.to_bytes(),
+            false,
+            0x73,
+        ));
+        let create = sign_next(
+            &inside,
+            &namespace,
+            &world.owner_sk,
+            seal_for_test(
+                &inside,
+                namespace,
+                group_created(owner.account, namespace.to_bytes(), false, 0x73),
+            ),
+        );
+        for store in [&inside, &outside] {
+            apply(store, &create)
+                .await
+                .expect("the owner creates `before`");
+        }
+        let flip = sign_next(
+            &inside,
+            &namespace,
+            &world.owner_sk,
+            under_namespace_key(
+                &inside,
+                &namespace,
+                &before,
+                &GroupOp::SubgroupVisibilitySet {
+                    mode: calimero_context_config::VisibilityMode::Restricted,
+                },
+            ),
+        );
+        for (node, store) in [("inside", &inside), ("outside", &outside)] {
+            let applied = apply(store, &flip).await;
+            assert!(applied.is_ok(), "{node} refused the flip: {applied:?}");
+        }
+        let key_id = GroupKeyring::new(&inside, before)
+            .store_key(&SUBGROUP_KEY)
+            .expect("only the inside node holds the space's key");
+        let name = sign_next(
+            &inside,
+            &namespace,
+            &world.owner_sk,
+            NamespaceOp::Group {
+                group_id: before.to_bytes().into(),
+                key_id: key_id.into(),
+                encrypted: GroupKeyring::encrypt_op(
+                    &SUBGROUP_KEY,
+                    &GroupOp::GroupMetadataSet {
+                        name: Some("Before".to_owned()),
+                        data: BTreeMap::new(),
+                    },
+                )
+                .expect("seal under the space's key"),
+                key_rotation: None,
+                registers: None,
+            },
+        );
+        for store in [&inside, &outside] {
+            apply(store, &name)
+                .await
+                .expect("the sealed name applies or is logged unreadable");
+        }
+        let delete = sign_next(
+            &inside,
+            &namespace,
+            &world.owner_sk,
+            seal_for_test(
+                &inside,
+                namespace,
+                calimero_governance_types::RootOp::GroupDeleted {
+                    root_group_id: before.to_bytes().into(),
+                    cascade_group_ids: vec![before.to_bytes().into()],
+                    cascade_context_ids: Vec::new(),
+                },
+            ),
+        );
+        for (node, store) in [("inside", &inside), ("outside", &outside)] {
+            let applied = apply(store, &delete).await;
+            assert!(
+                applied.is_ok(),
+                "{node} did not apply the deletion: {applied:?}"
+            );
+            assert!(
+                calimero_governance_store::MetaRepository::new(store)
+                    .load(&before)
+                    .expect("read the meta")
+                    .is_none(),
+                "{node} kept `before`"
+            );
+        }
+        assert_eq!(
+            SealedSubgroup::heads(&inside, world),
+            SealedSubgroup::heads(&outside, world)
+        );
+    }
+
     #[actix::test]
     async fn a_node_that_gets_the_key_later_reaches_the_inside_verdict() {
         let f = unauthorized_op_under_the_namespace_key().await;
