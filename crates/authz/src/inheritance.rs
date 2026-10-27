@@ -308,8 +308,22 @@ impl AclView {
         // The members of a folder are the members of its space root, the last Open
         // ancestor: the namespace root, or a private space's root.
         let chain: Vec<ContextGroupId> = self.open_ancestors(group).collect();
+        // Inside a space the seat is a row of the space root: the admin pin outlives it.
+        let in_space = chain.last().is_some_and(|space_root| {
+            self.subgroups
+                .get(&ScopeId::from(space_root.to_bytes()))
+                .is_some_and(|edge| edge.restricted)
+        });
         for parent in &chain {
-            if self.is_membership_admin(*parent, author, root) {
+            let admin = if in_space {
+                matches!(
+                    self.groups.get(parent).and_then(|m| m.get(author)),
+                    Some(GroupMemberRole::Admin)
+                )
+            } else {
+                self.is_membership_admin(*parent, author, root)
+            };
+            if admin {
                 return MemberPathAtCut::Inherited {
                     anchor: *parent,
                     via_admin: true,

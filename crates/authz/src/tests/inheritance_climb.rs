@@ -47,7 +47,7 @@ fn reference_is_member_at_cut(
     }
 
     // The members of a folder are the members of its space root: the last Open ancestor.
-    let mut space_root = None;
+    let mut chain = Vec::new();
     let mut current = group;
     for _ in 0..=MAX_NAMESPACE_DEPTH {
         let Some(edge) = view.subgroups.get(&ScopeId::from(current.to_bytes())) else {
@@ -57,15 +57,31 @@ fn reference_is_member_at_cut(
             break;
         }
         let parent = ContextGroupId::from(*edge.parent.as_bytes());
-        if is_admin(parent) {
-            return true;
-        }
-        space_root = Some(parent);
+        chain.push(parent);
         current = parent;
     }
-    space_root.is_some_and(|space_root| {
+    // Inside a space the seat is a row of the space root: the admin pin outlives it.
+    let in_space = chain.last().is_some_and(|space_root| {
+        view.subgroups
+            .get(&ScopeId::from(space_root.to_bytes()))
+            .is_some_and(|edge| edge.restricted)
+    });
+    for parent in &chain {
+        let admin = if in_space {
+            view.groups
+                .get(parent)
+                .and_then(|m| m.get(author))
+                .is_some_and(|role| *role == GroupMemberRole::Admin)
+        } else {
+            is_admin(*parent)
+        };
+        if admin {
+            return true;
+        }
+    }
+    chain.last().is_some_and(|space_root| {
         view.groups
-            .get(&space_root)
+            .get(space_root)
             .is_some_and(|m| m.contains_key(author))
     })
 }

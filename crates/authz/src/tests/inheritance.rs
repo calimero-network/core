@@ -95,3 +95,32 @@ fn an_explicit_revoke_to_nothing_does_not_end_membership_of_a_folder() {
     let revoked = inheritance_view(parent, child, member, 0, false, true);
     assert!(revoked.is_member_at_cut(child, &member, None, 0));
 }
+
+#[test]
+fn an_admin_pin_on_a_space_root_is_no_seat_in_its_folders_without_a_row() {
+    let root = ContextGroupId::from([9u8; 32]);
+    let space = ContextGroupId::from([1u8; 32]);
+    let folder = ContextGroupId::from([2u8; 32]);
+    let creator = AccountId::from([0xAA; 32]);
+    let edge = |parent: ContextGroupId, restricted| SubgroupEdge {
+        parent: ScopeId::from(parent.to_bytes()),
+        restricted,
+    };
+    let mut v = AclView {
+        subgroups: BTreeMap::from([
+            (ScopeId::from(space.to_bytes()), edge(root, true)),
+            (ScopeId::from(folder.to_bytes()), edge(space, false)),
+        ]),
+        ..Default::default()
+    };
+    v.group_admin.insert(space, creator);
+
+    assert!(!v.is_member_at_cut(folder, &creator, None, 0));
+
+    // With its Admin row in the space it is a member, as before.
+    v.groups.entry(space).or_default().insert(
+        creator,
+        calimero_primitives::context::GroupMemberRole::Admin,
+    );
+    assert!(v.is_member_at_cut(folder, &creator, None, 0));
+}
