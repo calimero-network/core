@@ -1356,7 +1356,8 @@ pub fn parse_api_error(err: Report) -> ApiError {
                 | PrivateSpaceError::LeavesSpace(_)
                 | PrivateSpaceError::HoldsSpace(_) => StatusCode::CONFLICT,
                 PrivateSpaceError::InvitationTargetNotRoot(_)
-                | PrivateSpaceError::MemberRowOutsideSpaceRoot(_) => StatusCode::BAD_REQUEST,
+                | PrivateSpaceError::MemberRowOutsideSpaceRoot(_)
+                | PrivateSpaceError::InheritedJoinInsideSpace(_) => StatusCode::BAD_REQUEST,
             },
             message: format!("{err:#}"),
         };

@@ -6703,6 +6703,40 @@ fn group_settings_subgroup_visibility_opens_for_its_creator_and_closes_for_its_m
         .expect("a namespace root's admin may open it");
 }
 
+/// After a transfer the creator opens nothing on a local preflight with no cut: the live owner answers.
+#[test]
+fn a_creator_who_transferred_the_group_opens_nothing_on_an_empty_cut() {
+    use calimero_context_config::VisibilityMode;
+
+    use super::group_settings::GroupSettingsService;
+
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x9C; 32]);
+    let subgroup = ContextGroupId::from([0x9D; 32]);
+    crate::test_fixtures::nest_for_test(&store, &namespace, &subgroup);
+    let alice_pk = PublicKey::from([0x01; 32]);
+    let bob_pk = PublicKey::from([0x02; 32]);
+    let alice = enrol_member(&store, &namespace, &alice_pk);
+    let bob = enrol_member(&store, &namespace, &bob_pk);
+    for who in [alice, bob] {
+        MembershipRepository::new(&store)
+            .add_member(&namespace, &who, GroupMemberRole::Member)
+            .unwrap();
+    }
+    crate::group_creator::GroupCreatorRepository::new(&store)
+        .record(&subgroup, &alice)
+        .unwrap();
+    // Bob owns it now: the transfer moved the live meta off the creator.
+    MetaRepository::new(&store)
+        .save(&subgroup, &sample_meta_with_admin(bob))
+        .unwrap();
+
+    let live = GroupSettingsService::new(&store, subgroup);
+    assert!(live
+        .set_subgroup_visibility(&alice_pk, VisibilityMode::Open)
+        .is_err());
+}
+
 /// Opening rests on facts a namespace member outside the subgroup holds - the
 /// creator from the subgroup's `GroupCreated`, the signer's account at the
 /// namespace - so it is decided even where the subgroup's own history is sealed,

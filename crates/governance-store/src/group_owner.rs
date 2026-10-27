@@ -34,7 +34,7 @@ pub(crate) fn owner_at_cut(
     authorizer: &dyn AtCutAuthorizer,
 ) -> EyreResult<Option<AccountId>> {
     if !parents.is_empty() {
-        match owner_in_log(store, group, parents)? {
+        match owner_in_log(store, group, parents, true)? {
             Logged::Owner(owner) => return Ok(Some(owner)),
             // No transfer moved the live row, whatever the cut lacks.
             Logged::NeverTransferred => {}
@@ -54,28 +54,23 @@ pub(crate) fn owner_at_cut(
         .map(|meta| meta.owner_identity))
 }
 
-/// The owner a transfer in the log moved `group` to at `parents`, and `None` where none did: the
-/// creator then owns it. Never reads the live meta; undecidable where the cut cannot say.
+/// The owner a transfer in the log moved `group` to at `parents`; `None` only where the log
+/// proves none ever happened, so the creator owns it. With no cut (a local preflight) the live
+/// meta owner answers; where the cut cannot say, it parks.
 pub(crate) fn transferred_owner_at_cut(
     store: &Store,
     group: &ContextGroupId,
     parents: &[[u8; 32]],
-    authorizer: &dyn AtCutAuthorizer,
 ) -> EyreResult<Option<AccountId>> {
     if parents.is_empty() {
-        return Ok(None);
+        return Ok(MetaRepository::new(store)
+            .load(group)?
+            .map(|meta| meta.owner_identity));
     }
-    match owner_in_log(store, group, parents)? {
+    match owner_in_log(store, group, parents, false)? {
         Logged::Owner(owner) => Ok(Some(owner)),
         Logged::NeverTransferred => Ok(None),
-        Logged::Unknown => {
-            if !authorizer.can_resolve_cut(group, parents)
-                && !authorizer.history_sealed_in_group(group, parents)
-            {
-                bail!(undecidable(group));
-            }
-            Ok(None)
-        }
+        Logged::Unknown => bail!(undecidable(group)),
     }
 }
 
@@ -113,7 +108,12 @@ fn undecidable(group: &ContextGroupId) -> crate::ApplyError {
 
 /// [`owner_at_cut`] from `group`'s applied transfers; undecidable when transfers exist,
 /// none is in the cut and the cut does not read the account its creation names.
-fn owner_in_log(store: &Store, group: &ContextGroupId, parents: &[[u8; 32]]) -> EyreResult<Logged> {
+fn owner_in_log(
+    store: &Store,
+    group: &ContextGroupId,
+    parents: &[[u8; 32]],
+    unreadable_is_unknown: bool,
+) -> EyreResult<Logged> {
     let namespace = NamespaceId::from(NamespaceRepository::new(store).resolve(group)?.to_bytes());
     let op_log = NamespaceOpLogService::new(store, namespace);
     let voided = VoidLedger::new(store, namespace).voided()?;
@@ -131,7 +131,9 @@ fn owner_in_log(store: &Store, group: &ContextGroupId, parents: &[[u8; 32]]) -> 
             continue;
         }
         let Some(op) = opened.group_op else {
-            if void {
+            // A space root's transfers ride the workspace key, so an op this node cannot read
+            // is none of them.
+            if void || !unreadable_is_unknown {
                 continue;
             }
             return Ok(Logged::Unknown);
