@@ -155,7 +155,7 @@ steps:
 
   - name: Node-1 holds the folder's move into the private space
     type: wait_for_sync
-    group_id: '{{dm_group}}'
+    group_id: '{{namespace_id}}'
     nodes:
       - paired-nested-1
       - paired-nested-2
