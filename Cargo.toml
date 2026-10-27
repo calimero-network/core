@@ -103,6 +103,7 @@ members = [
     "./crates/account",
     "./crates/app-downloader",
     "./crates/app-build",
+    "./crates/app-engine-wasmtime",
     "./crates/app-host",
     "./crates/app-wit",
     "./crates/auth",
@@ -391,6 +392,8 @@ wasmer = "6.1.0"
 wasmer-types = "6.1.0"
 wasmer-middlewares = "6.1.0"
 wasmtime = "50.0.0"
+wasmtime-wasi = { version = "50.0.0", default-features = false }
+wasmtime-wasi-http = { version = "50.0.0", default-features = false }
 wasm-opt = "0.116"
 wasmparser = "0.262"
 wat = "1.243.0"
@@ -407,6 +410,7 @@ pyo3 = "0.20"
 calimero-app-downloader = { path = "./crates/app-downloader" }
 calimero-app-wit = { path = "./crates/app-wit" }
 calimero-app-build = { path = "./crates/app-build" }
+calimero-app-engine-wasmtime = { path = "./crates/app-engine-wasmtime" }
 calimero-app-host = { path = "./crates/app-host" }
 calimero-build-utils = { path = "./crates/build-utils" }
 calimero-bundle = { path = "./crates/bundle" }
