@@ -1913,3 +1913,70 @@ async fn an_uploaded_package_is_verified_and_reaches_the_other_nodes() {
     assert_eq!(p["latest"], json!("0.1.0"));
     assert_eq!(p["versions"][0]["source"], json!("upload"));
 }
+
+/// Xil's review, issues 5, 6 and 7, each reproduced as the review ran it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn sessions_confirmations_and_key_scopes_hold() {
+    let c = Cluster::start(3).await;
+    let (laptop, _pk) = signed_up(&c, 0, "alice").await;
+
+    // 5. Removing a passkey ends the sessions opened with it.
+    let mut phone_key = SoftAuthenticator::new("localhost", ORIGIN);
+    let phone_cred = laptop.add_passkey(&mut phone_key).await.unwrap();
+    let phone = c.client(1);
+    let _s = phone.sign_in(&mut phone_key).await.unwrap();
+    assert!(phone.me().await.is_ok());
+    let _ok = laptop
+        .delete(&format!("auth/passkeys/{phone_cred}"))
+        .await
+        .unwrap();
+    let e = phone.me().await.unwrap_err();
+    assert!(e.to_string().starts_with("401"), "{e}");
+    let e = phone.refresh().await.unwrap_err();
+    assert!(e.to_string().starts_with("401"), "{e}");
+    assert!(
+        laptop.me().await.is_ok(),
+        "the other device stays signed in"
+    );
+
+    // 5. A refresh token used twice is a stolen copy: the session ends.
+    let before = laptop.session().await.unwrap();
+    let _after = laptop.refresh().await.unwrap();
+    let thief = c.client(2);
+    thief.use_session(before).await;
+    let e = thief.refresh().await.unwrap_err();
+    assert!(e.to_string().contains("already used"), "{e}");
+    let e = laptop.me().await.unwrap_err();
+    assert!(e.to_string().starts_with("401"), "{e}");
+
+    // 6. A confirm method does not answer through /views.
+    let (bob, _pk) = signed_up(&c, 0, "bob").await;
+    let (app, _ctx) = deploy(&bob, "kv", kv_wasm(), json!({ "confirmMethods": ["get"] })).await;
+    let e = bob
+        .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+
+    // 7. A read-only key installs nothing; an app-scoped key starts no app.
+    let (_id, read_only) = bob
+        .create_api_key(json!({ "readOnly": true }))
+        .await
+        .unwrap();
+    let svc = c.client(0);
+    svc.use_api_key(&read_only).await;
+    let e = svc.upload_bundle(kv_wasm()).await.unwrap_err();
+    assert!(e.to_string().starts_with("403"), "{e}");
+    let (_id, scoped) = bob
+        .create_api_key(json!({ "apps": [app], "methods": ["set"] }))
+        .await
+        .unwrap();
+    let svc = c.client(0);
+    svc.use_api_key(&scoped).await;
+    let bundle = bob.upload_bundle(kv_wasm()).await.unwrap();
+    let e = svc
+        .post("apps", json!({ "name": "new", "bundle": bundle }))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("403"), "{e}");
+}

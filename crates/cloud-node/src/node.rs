@@ -157,6 +157,8 @@ pub struct Node {
     http: reqwest::Client,
     cluster_secret: String,
     pub challenges: Mutex<HashMap<String, crate::api::Pending>>,
+    /// Event streams this node is serving (`/apps/{app}/events`).
+    pub event_streams: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
     /// Full-text search over the apps hosted here.
@@ -258,6 +260,7 @@ impl Node {
                 .timeout(Duration::from_secs(30))
                 .build()?,
             challenges: Mutex::new(HashMap::new()),
+            event_streams: std::sync::Arc::default(),
             starting: tokio::sync::Mutex::new(()),
             search: Search::default(),
             facts: Mutex::new(HashMap::new()),
@@ -953,6 +956,12 @@ impl Node {
         g: &Group<AppMachine>,
         req: &CallRequest,
     ) -> Result<Applied, WriteError> {
+        // The caller's standing (org role, teams, read-only rows) is read from
+        // the system state below; for a client's call it must include every
+        // change committed before the call, wherever it was committed.
+        if req.trigger.is_none() {
+            self.sys_fresh().await;
+        }
         let bundle = g.read_local(|m, _| m.state.bundle.clone());
         let module = match bundle.as_deref() {
             Some(b) => self.module_for(b).await.ok(),

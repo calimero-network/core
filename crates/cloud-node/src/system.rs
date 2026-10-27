@@ -34,6 +34,9 @@ pub struct Quotas {
     pub max_bundle_bytes_per_account: u64,
     pub max_api_keys_per_account: u32,
     pub max_orgs_per_account: u32,
+    /// Accounts the cluster takes in all: sign-up is open, so this is what
+    /// keeps it from growing without bound (Xil's review, issue 12).
+    pub max_accounts: u32,
 }
 
 impl Default for Quotas {
@@ -43,6 +46,7 @@ impl Default for Quotas {
             max_bundle_bytes_per_account: 1024 * 1024 * 1024,
             max_api_keys_per_account: 50,
             max_orgs_per_account: 20,
+            max_accounts: 100_000,
         }
     }
 }
@@ -163,6 +167,43 @@ pub struct SystemState {
     /// Installed packages by name.
     #[serde(default)]
     pub packages: BTreeMap<String, PackageRecord>,
+    /// When each session in `revoked_sessions` was revoked (Unix seconds), so
+    /// it can be forgotten once no token of it can still be valid.
+    #[serde(default)]
+    pub revoked_at: BTreeMap<String, u64>,
+    /// Refresh tokens already exchanged (hash -> whose session, until when): a
+    /// second use is a stolen token, and revokes the session.
+    #[serde(default)]
+    pub rotated_refresh: BTreeMap<String, RefreshRecord>,
+}
+
+/// How long a revoked session is remembered: past every token it could have
+/// minted (sessions live 15 minutes), with room for clock differences.
+pub const REVOKED_SESSION_KEEP_SECS: u64 = 60 * 60;
+
+impl SystemState {
+    /// Revoke `session`: its refresh tokens go and its tokens stop verifying.
+    fn revoke_session(&mut self, session: &str, now: u64) {
+        self.refresh.retain(|_, r| r.session != session);
+        let _new = self.revoked_sessions.insert(session.to_owned());
+        let _prev = self.revoked_at.insert(session.to_owned(), now);
+    }
+
+    /// Forget revocations no token can outlive, and exchanged refresh tokens
+    /// past their expiry.
+    fn prune_sessions(&mut self, now: u64) {
+        let old: Vec<String> = self
+            .revoked_at
+            .iter()
+            .filter(|(_, at)| **at + REVOKED_SESSION_KEEP_SECS <= now)
+            .map(|(s, _)| s.clone())
+            .collect();
+        for s in old {
+            let _gone = self.revoked_at.remove(&s);
+            let _gone = self.revoked_sessions.remove(&s);
+        }
+        self.rotated_refresh.retain(|_, r| r.expires_at > now);
+    }
 }
 
 impl SystemState {
@@ -281,9 +322,22 @@ pub enum SystemCmd {
         account: AccountId,
         credential: Credential,
     },
+    /// Remove a passkey and revoke every session opened with it.
     RemovePasskey {
         account: AccountId,
         credential_id: String,
+        #[serde(default)]
+        now: u64,
+    },
+    /// Revoke every session of `actor` (sign out everywhere).
+    RevokeAllSessions {
+        actor: AccountId,
+        now: u64,
+    },
+    /// An exchanged refresh token came back: revoke its session.
+    RefreshReused {
+        hash: String,
+        now: u64,
     },
     SetSignCount {
         credential_id: String,
@@ -310,6 +364,8 @@ pub enum SystemCmd {
     RevokeSession {
         session: String,
         actor: AccountId,
+        #[serde(default)]
+        now: u64,
     },
     AddSessionKey {
         version: u32,
@@ -717,6 +773,9 @@ impl SystemMachine {
                 if s.accounts.contains_key(&account.account_id) {
                     return Err("account exists");
                 }
+                if s.accounts.len() >= s.quotas.max_accounts as usize {
+                    return Err("quota exceeded: accounts");
+                }
                 for c in &account.passkeys {
                     if s.credentials.contains_key(&c.id) {
                         return Err("credential already registered");
@@ -749,14 +808,53 @@ impl SystemMachine {
             SystemCmd::RemovePasskey {
                 account,
                 credential_id,
+                now,
             } => {
                 let acc = s.accounts.get_mut(&account).ok_or("unknown account")?;
                 if acc.passkeys.len() <= 1 {
                     return Err("cannot remove the last passkey");
                 }
+                if !acc.passkeys.iter().any(|c| c.id == credential_id) {
+                    return Err("no such passkey");
+                }
                 acc.passkeys.retain(|c| c.id != credential_id);
                 let _prev = s.credentials.remove(&credential_id);
+                // A removed device keeps no session (Xil's review, issue 5).
+                let sessions: BTreeSet<String> = s
+                    .refresh
+                    .values()
+                    .filter(|r| {
+                        r.account == account && r.passkey.as_deref() == Some(&credential_id)
+                    })
+                    .map(|r| r.session.clone())
+                    .collect();
+                for session in sessions {
+                    s.revoke_session(&session, now);
+                }
                 Ok(Value::Null)
+            }
+            SystemCmd::RevokeAllSessions { actor, now } => {
+                let sessions: BTreeSet<String> = s
+                    .refresh
+                    .values()
+                    .filter(|r| r.account == actor)
+                    .map(|r| r.session.clone())
+                    .collect();
+                let n = sessions.len();
+                for session in sessions {
+                    s.revoke_session(&session, now);
+                }
+                s.prune_sessions(now);
+                Ok(json!({ "revoked": n }))
+            }
+            SystemCmd::RefreshReused { hash, now } => {
+                let rec = s
+                    .rotated_refresh
+                    .get(&hash)
+                    .cloned()
+                    .ok_or("unknown refresh token")?;
+                s.revoke_session(&rec.session, now);
+                Ok(json!({ "revoked": rec.session }))
             }
             SystemCmd::SetSignCount {
                 credential_id,
@@ -822,13 +920,25 @@ impl SystemMachine {
                 if s.revoked_sessions.contains(&old.session) {
                     return Err("session revoked");
                 }
+                let _prev = s.rotated_refresh.insert(old_hash, old);
                 let _prev = s.refresh.insert(new_hash, record);
+                s.prune_sessions(now);
                 Ok(Value::Null)
             }
-            SystemCmd::RevokeSession { session, actor } => {
-                s.refresh
-                    .retain(|_, r| !(r.session == session && r.account == actor));
-                let _new = s.revoked_sessions.insert(session);
+            SystemCmd::RevokeSession {
+                session,
+                actor,
+                now,
+            } => {
+                // Only the session's own account revokes it.
+                let theirs = !s
+                    .refresh
+                    .values()
+                    .any(|r| r.session == session && r.account != actor);
+                if theirs {
+                    s.revoke_session(&session, now);
+                }
+                s.prune_sessions(now);
                 Ok(Value::Null)
             }
             SystemCmd::SetQuotas { quotas } => {

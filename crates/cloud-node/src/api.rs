@@ -78,14 +78,28 @@ impl Pending {
     }
 }
 
-fn put_pending(node: &Node, pending: Pending) -> String {
+/// The most passkey ceremonies a node holds open at once. Each lives at most
+/// `CHALLENGE_TTL`; past this the node answers 429 instead of growing without
+/// bound (Xil's review, issue 12).
+pub const MAX_PENDING_CHALLENGES: usize = 10_000;
+
+fn put_pending(node: &Node, pending: Pending) -> Result<String, ApiError> {
     let id = b64url(&random::<16>());
-    if let Ok(mut c) = node.challenges.lock() {
-        let now = now_secs();
-        c.retain(|_, p| p.expires() > now);
-        let _prev = c.insert(id.clone(), pending);
+    let mut c = node
+        .challenges
+        .lock()
+        .map_err(|_| ApiError::internal("challenge store poisoned"))?;
+    let now = now_secs();
+    c.retain(|_, p| p.expires() > now);
+    if c.len() >= MAX_PENDING_CHALLENGES {
+        return Err(ApiError::new(
+            429,
+            "RATE_LIMITED",
+            "too many sign-ins in progress; try again shortly",
+        ));
     }
-    id
+    let _prev = c.insert(id.clone(), pending);
+    Ok(id)
 }
 
 fn take_pending(node: &Node, id: &str) -> Result<Pending, ApiError> {
@@ -114,6 +128,16 @@ fn rp(node: &Node) -> RelyingParty {
         id: node.config.rp_id.clone(),
         origins: node.config.origins.clone(),
         require_uv: false,
+    }
+}
+
+/// A confirmation (step-up) needs the user verified (PIN or biometric), not
+/// just present: a touch alone is not consent to a confirm method (Xil's
+/// review, issue 6).
+fn rp_step_up(node: &Node) -> RelyingParty {
+    RelyingParty {
+        require_uv: true,
+        ..rp(node)
     }
 }
 
@@ -167,6 +191,15 @@ async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>
     if node.sys(|s| s.revoked_sessions.contains(&claims.session)) {
         return Err(ApiError::unauthenticated("session revoked"));
     }
+    // A session opened with a passkey the account no longer has is over.
+    if let Some(passkey) = &claims.passkey {
+        let still = node.sys(|s| s.credentials.get(passkey) == Some(&claims.account));
+        if !still {
+            return Err(ApiError::unauthenticated(
+                "the passkey this session used was removed",
+            ));
+        }
+    }
     Ok(Some(Principal {
         caller: Caller::Account {
             account: claims.account.clone(),
@@ -180,6 +213,22 @@ async fn signed_in(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiErr
     principal(node, headers)
         .await?
         .ok_or_else(|| ApiError::unauthenticated("sign in first"))
+}
+
+/// Who may install code or create apps: a passkey session, or an API key
+/// scoped to no app and no method and not read-only. A key handed to one app
+/// (or read-only) must not install bundles or start new apps (Xil's review,
+/// issue 7).
+async fn installer(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError> {
+    let p = signed_in(node, headers).await?;
+    if let Some(k) = &p.api_key {
+        if k.read_only || k.apps.is_some() || k.methods.is_some() {
+            return Err(ApiError::forbidden(
+                "this API key is scoped; installing code and creating apps needs an unscoped key or a passkey session",
+            ));
+        }
+    }
+    Ok(p)
 }
 
 /// Only a passkey session, not an API key, may manage credentials.
@@ -321,7 +370,7 @@ async fn register_begin(
             name: name.clone(),
             expires: now_secs() + CHALLENGE_TTL,
         },
-    );
+    )?;
     Ok(Json(json!({
         "challengeId": id,
         "options": {
@@ -380,7 +429,7 @@ async fn login_begin(State(node): State<Arc<Node>>) -> ApiResult {
             challenge,
             expires: now_secs() + CHALLENGE_TTL,
         },
-    );
+    )?;
     Ok(Json(json!({
         "challengeId": id,
         "options": { "challenge": b64url(&challenge), "rpId": node.config.rp_id, "userVerification": "preferred", "timeout": 60000 }
@@ -400,6 +449,7 @@ async fn check_assertion(
     challenge: &[u8; 32],
     assertion: &Assertion,
     account: Option<&str>,
+    step_up: bool,
 ) -> Result<String, ApiError> {
     let (owner, cred) = node
         .sys_until(|s| {
@@ -413,7 +463,8 @@ async fn check_assertion(
             "this passkey belongs to another account",
         ));
     }
-    let count = verify_assertion(&rp(node), challenge, &cred, assertion)
+    let rp = if step_up { rp_step_up(node) } else { rp(node) };
+    let count = verify_assertion(&rp, challenge, &cred, assertion)
         .map_err(|e| ApiError::unauthenticated(&e.to_string()))?;
     if count != 0 {
         let _ok = node
@@ -440,7 +491,7 @@ async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionB
             "not a login challenge",
         ));
     };
-    let account = check_assertion(&node, &challenge, &body.assertion, None).await?;
+    let account = check_assertion(&node, &challenge, &body.assertion, None, false).await?;
     new_session(&node, &account, &body.assertion.credential_id).await
 }
 
@@ -455,7 +506,7 @@ async fn passkey_add_begin(State(node): State<Arc<Node>>, headers: HeaderMap) ->
             account: account.clone(),
             expires: now_secs() + CHALLENGE_TTL,
         },
-    );
+    )?;
     let exclude: Vec<Value> = node.sys(|s| {
         s.accounts
             .get(&account)
@@ -520,6 +571,7 @@ async fn passkey_remove(
         .sys_write(&SystemCmd::RemovePasskey {
             account,
             credential_id: cred,
+            now: now_secs(),
         })
         .await?;
     Ok(Json(json!({})))
@@ -533,10 +585,22 @@ struct RefreshBody {
 
 async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -> ApiResult {
     let old_hash = b64url(&sha256(body.refresh_token.as_bytes()));
-    let rec = node
-        .sys_until(|s| s.refresh.get(&old_hash).cloned())
-        .await
-        .ok_or_else(|| ApiError::unauthenticated("unknown refresh token"))?;
+    let Some(rec) = node.sys_until(|s| s.refresh.get(&old_hash).cloned()).await else {
+        // A token already exchanged, presented again: someone else holds a
+        // copy, so the session it belongs to ends here.
+        if node.sys(|s| s.rotated_refresh.contains_key(&old_hash)) {
+            let _ok = node
+                .sys_write(&SystemCmd::RefreshReused {
+                    hash: old_hash,
+                    now: now_secs(),
+                })
+                .await;
+            return Err(ApiError::unauthenticated(
+                "refresh token already used; the session is revoked",
+            ));
+        }
+        return Err(ApiError::unauthenticated("unknown refresh token"));
+    };
     let (version, key) = node
         .sys(|s| s.current_session_key())
         .ok_or_else(|| ApiError::unavailable("no session key"))?;
@@ -579,9 +643,22 @@ async fn logout(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult 
         .sys_write(&SystemCmd::RevokeSession {
             session,
             actor: p.caller.account().unwrap_or_default().to_owned(),
+            now: now_secs(),
         })
         .await?;
     Ok(Json(json!({})))
+}
+
+/// Sign out everywhere: revoke every session of the caller's account.
+async fn logout_all(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    let p = person(&node, &headers).await?;
+    let out = node
+        .sys_write(&SystemCmd::RevokeAllSessions {
+            actor: p.account()?,
+            now: now_secs(),
+        })
+        .await?;
+    Ok(Json(out))
 }
 
 async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
@@ -688,7 +765,7 @@ async fn apikey_revoke(
 // ---------------------------------------------------------------- bundles and apps
 
 async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Body) -> ApiResult {
-    let account = signed_in(&node, &headers).await?.account()?;
+    let account = installer(&node, &headers).await?.account()?;
     if !node.config.allow_unsigned_bundles {
         return Err(ApiError::forbidden(
             "this node takes signed packages only (POST /packages); raw WASM is for development",
@@ -724,7 +801,7 @@ async fn package_upload(
     headers: HeaderMap,
     body: Body,
 ) -> ApiResult {
-    let account = signed_in(&node, &headers).await?.account()?;
+    let account = installer(&node, &headers).await?.account()?;
     Ok(Json(
         node.install_upload(Arc::from(body.to_vec()), &account)
             .await?,
@@ -744,7 +821,7 @@ async fn package_install(
     headers: HeaderMap,
     Json(body): Json<InstallBody>,
 ) -> ApiResult {
-    let account = signed_in(&node, &headers).await?.account()?;
+    let account = installer(&node, &headers).await?.account()?;
     Ok(Json(
         node.install_from_registry(&body.package, &body.version, &account)
             .await?,
@@ -872,7 +949,7 @@ async fn app_create(
     headers: HeaderMap,
     Json(body): Json<CreateAppBody>,
 ) -> ApiResult {
-    let p = signed_in(&node, &headers).await?;
+    let p = installer(&node, &headers).await?;
     if p.api_key.as_ref().is_some_and(|k| k.read_only) {
         return Err(ApiError::forbidden("read-only API key"));
     }
@@ -1090,9 +1167,14 @@ async fn gate(
 ) -> Result<Principal, ApiError> {
     let p = principal(node, headers).await?;
     let account = p.as_ref().and_then(|p| p.caller.account());
-    // A refusal is checked again against the cluster's latest system state:
-    // a membership granted through another node may not have reached this
-    // replica yet.
+    // A write is judged on the cluster's latest system state: a removal or
+    // revocation committed through another node must hold before the call it
+    // precedes (Xil's review: access judged on lagging local state). A read's
+    // refusal is checked again the same way: a membership granted through
+    // another node may not have reached this replica yet.
+    if write {
+        node.sys_fresh().await;
+    }
     let mut reaches = node.sys(|s| s.may_reach(app, account));
     if !reaches {
         node.sys_fresh().await;
@@ -1179,7 +1261,7 @@ async fn consent(
                 account: account.clone(),
                 expires: now_secs() + CHALLENGE_TTL,
             },
-        );
+        )?;
         let creds: Vec<String> = node.sys(|s| {
             s.accounts
                 .get(&account)
@@ -1218,7 +1300,8 @@ async fn consent(
             "the approval was for a different call",
         ));
     }
-    let _owner = check_assertion(node, &challenge, &confirm.assertion, Some(&account)).await?;
+    let _owner =
+        check_assertion(node, &challenge, &confirm.assertion, Some(&account), true).await?;
     Ok(serde_json::to_value(&confirm.assertion).unwrap_or_default())
 }
 
@@ -1310,6 +1393,15 @@ async fn views(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, &body.method, false).await?;
+    // A confirm method runs only as a confirmed call: as a view its writes are
+    // dropped, but its answer was handed back unconfirmed (Xil's review, issue 6).
+    if app.confirm_methods.iter().any(|m| m == &body.method) {
+        return Err(ApiError::new(
+            412,
+            "CONFIRM_REQUIRED",
+            "this method needs a passkey confirmation; call it through /intents",
+        ));
+    }
     let a = node
         .view(&ViewRequest {
             app_id,
@@ -1363,6 +1455,34 @@ fn local_events(
     Some(stream)
 }
 
+/// The most event streams one node serves at once (Xil's review, issue 12).
+pub const MAX_EVENT_STREAMS: usize = 4096;
+
+/// One open event stream, counted until the stream is dropped.
+struct StreamSlot(Arc<std::sync::atomic::AtomicUsize>);
+
+impl StreamSlot {
+    fn take(node: &Node) -> Result<Self, ApiError> {
+        use std::sync::atomic::Ordering;
+        let open = node.event_streams.fetch_add(1, Ordering::SeqCst);
+        let slot = Self(Arc::clone(&node.event_streams));
+        if open >= MAX_EVENT_STREAMS {
+            return Err(ApiError::new(
+                429,
+                "RATE_LIMITED",
+                "this node serves as many event streams as it can; try another node or later",
+            ));
+        }
+        Ok(slot)
+    }
+}
+
+impl Drop for StreamSlot {
+    fn drop(&mut self) {
+        let _was = self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 async fn events(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -1372,7 +1492,12 @@ async fn events(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let _p = gate(&node, &headers, &app, "*", false).await?;
+    let slot = StreamSlot::take(&node)?;
     if let Some(stream) = local_events(&node, &app_id, q.from) {
+        let stream = stream.map(move |e| {
+            let _held = &slot;
+            e
+        });
         return Ok(Sse::new(stream)
             .keep_alive(KeepAlive::default())
             .into_response());
@@ -1391,7 +1516,10 @@ async fn events(
         )
         .await
         .map_err(|e| ApiError::unavailable(&e.to_string()))?;
-    let body = axum::body::Body::from_stream(resp.bytes_stream());
+    let body = axum::body::Body::from_stream(resp.bytes_stream().map(move |b| {
+        let _held = &slot;
+        b
+    }));
     Ok((
         [
             ("content-type", "text/event-stream"),
@@ -2354,6 +2482,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/auth/passkeys/{cred}", delete(passkey_remove))
         .route("/auth/refresh", post(refresh))
         .route("/auth/logout", post(logout))
+        .route("/auth/logout-all", post(logout_all))
         .route("/auth/me", get(me))
         .route("/auth/apikeys", post(apikey_create).get(apikey_list))
         .route("/auth/apikeys/{key}", delete(apikey_revoke))
