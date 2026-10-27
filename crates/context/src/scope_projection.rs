@@ -3308,8 +3308,9 @@ impl ScopeProjections {
         // As for the fold, standing is read at the step's own parents, so the group's
         // ancestors there must be readable too.
         let root_group = ContextGroupId::from(namespace_id);
+        let budget = FoldBudget::for_ops(walked.ops().len());
         let mut relevant = deciding_groups(
-            &at_cut_view(&walked, base)?,
+            &at_cut_view_within(&walked, base, &budget)?,
             &self.whole_tree(&scope),
             group,
             root_group,
@@ -3332,7 +3333,8 @@ impl ScopeProjections {
             {
                 continue;
             }
-            let view = at_cut_view(&self.walk(&scope, log, &op.parents, base), base)?;
+            let view =
+                at_cut_view_within(&self.walk(&scope, log, &op.parents, base), base, &budget)?;
             relevant.extend(deciding_groups(
                 &view,
                 &self.whole_tree(&scope),
@@ -3439,7 +3441,8 @@ impl ScopeProjections {
         let standing = Self::standing_reader(store, group, namespace_id);
         // Standing is read at each step's own parents, where the group's ancestors
         // may differ from the cut's, so every one of them must be readable.
-        let head_view = at_cut_view(&walked, base).ok_or(cut)?;
+        let budget = FoldBudget::for_ops(walked.ops().len());
+        let head_view = at_cut_view_within(&walked, base, &budget).ok_or(cut)?;
         let mut relevant = deciding_groups(&head_view, &self.whole_tree(&scope), group, root_group);
         let mut views: std::collections::HashMap<Vec<[u8; 32]>, calimero_authz::AclView> =
             std::collections::HashMap::new();
@@ -3453,7 +3456,11 @@ impl ScopeProjections {
                 let mut parents = op.parents.clone();
                 parents.sort_unstable();
                 if !views.contains_key(&parents) {
-                    let folded = at_cut_view(&self.walk(&scope, log, &op.parents, base), base)?;
+                    let folded = at_cut_view_within(
+                        &self.walk(&scope, log, &op.parents, base),
+                        base,
+                        &budget,
+                    )?;
                     let _ = views.insert(parents.clone(), folded);
                 }
                 let view = &views[&parents];
@@ -4015,15 +4022,19 @@ fn valid_space_makers(
     }
     let log: Vec<Op> = walked.ops().iter().map(|op| (*op).clone()).collect();
     budget.charge(log.len())?;
-    // Each flip's cut is built once and kept for the verdict pass.
+    // Only sizes are kept across the sort; each cut is rebuilt for its verdict and dropped.
     let mut ordered = Vec::with_capacity(flips.len());
     for (flip, group) in flips {
-        let cut = ScopeState::cut_ancestry_with_void(&log, &flip.parents, walked.void_ids());
-        budget.charge(cut.ops().len() + 1)?;
-        ordered.push((flip, group, cut));
+        let size = ScopeState::cut_ancestry_with_void(&log, &flip.parents, walked.void_ids())
+            .ops()
+            .len();
+        budget.charge(size + 1)?;
+        ordered.push((size, flip, group));
     }
-    ordered.sort_by_key(|(flip, _, cut)| (cut.ops().len(), flip.id()));
-    for (flip, group, cut) in ordered {
+    ordered.sort_by_key(|(size, flip, _)| (*size, flip.id()));
+    for (size, flip, group) in ordered {
+        budget.charge(size + 1)?;
+        let cut = ScopeState::cut_ancestry_with_void(&log, &flip.parents, walked.void_ids());
         let maker = flip.authorship.account;
         let at_flip = fold_view(&cut, base, &makers, budget)?;
         let valid = at_flip.private_space(group).is_none()
@@ -4128,9 +4139,18 @@ fn folded_payload_of(op: &Op) -> &OpPayload {
 /// rejoined, and all of them for an account with no root row, bar a TEE that never
 /// held one. The owner is exempt. `None` when the cut is too large to decide.
 fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero_authz::AclView> {
-    let budget = FoldBudget::for_ops(walked.ops().len());
-    let makers = valid_space_makers(walked, base, &budget)?;
-    fold_view(walked, base, &makers, &budget)
+    at_cut_view_within(walked, base, &FoldBudget::for_ops(walked.ops().len()))
+}
+
+/// [`at_cut_view`] spending from `budget`, so a caller folding many cuts for one verdict is
+/// charged once for all of them.
+fn at_cut_view_within(
+    walked: &CutAncestry<'_>,
+    base: AuthorityBase,
+    budget: &FoldBudget,
+) -> Option<calimero_authz::AclView> {
+    let makers = valid_space_makers(walked, base, budget)?;
+    fold_view(walked, base, &makers, budget)
 }
 
 fn fold_view(
