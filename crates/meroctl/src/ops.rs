@@ -25,6 +25,11 @@ pub enum OpsCmd {
         #[arg(long, default_value = "")]
         zone: String,
     },
+    /// Remove a node from the cluster once no context keeps a replica on it
+    /// (run against the system leader; another node names it).
+    RemoveNode {
+        id: u64,
+    },
     /// Move a context to these replica node ids.
     Move {
         context: String,
@@ -122,6 +127,7 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
                 .post("ops/nodes", json!({ "id": id, "addr": addr, "zone": zone }))
                 .await?
         }
+        OpsCmd::RemoveNode { id } => client.delete(&format!("ops/nodes/{id}")).await?,
         OpsCmd::Move { context, replicas } => {
             let path = format!("ops/apps/{context}/replicas");
             let body = json!({ "replicas": replicas });

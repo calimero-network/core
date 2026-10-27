@@ -53,7 +53,7 @@ What an owner approves takes `--dev-passkey FILE`: a passkey kept in a file,
 which only a development cluster's `localhost` relying party accepts.
 Without it, the command sends the request plainly and the node answers
 `412 CONFIRM_REQUIRED`: on a real cluster the owner approves in a browser.
-That holds for `context update`, `namespace delete`, `namespace outbound`,
+That holds for `context update`, `context transfer`, `namespace delete`, `namespace outbound`,
 `namespace approve-release`, `account outbound`, `account approve-release`,
 `group upgrade trigger` and `group upgrade retry`.
 
@@ -103,6 +103,7 @@ App instances (v1's contexts).
 | `context list [--package P]` (`ls`) | `GET /apps[?package=P]` | Contexts this account reaches. |
 | `context get CONTEXT` | `GET /apps/{app}` | One context. |
 | `context delete CONTEXT` (`del`) | `DELETE /apps/{app}` | Delete a context (its owner or an org admin). |
+| `context transfer CONTEXT ACCOUNT [--dev-passkey F]` | `POST /apps/{app}/transfer` | Hand the context to another account (its owner, with a passkey; an org's context only to a member of the org). |
 | `context update CONTEXT [--version V] [--package P] [--service S] [--bundle HASH] [--migrate EXPORT] [--dev-passkey FILE]` | `POST /apps/{app}/upgrade` | Move to another release or bundle, migrating state where the ABIs say how. `--bundle` conflicts with `--version` and `--package`. The owner approves. |
 | `context watch CONTEXT [--from N] [--limit N]` (`ws`) | `GET /apps/{app}/events` | Print committed events from index `--from` (default `0`), then live ones, as JSON lines; stop after `--limit`. |
 | `context alias add ALIAS CONTEXT` (`new`, `create`) | `PUT /auth/aliases/{alias}` | Name a context for this account. |
@@ -258,6 +259,7 @@ others.
 | `ops status` | `GET /ops/status` | This node, the system group's and hosted groups' Raft status, governance, fleet and counts. |
 | `ops metrics` | `GET /ops/metrics` | Prometheus text. |
 | `ops add-node ID ADDR [--zone Z]` | `POST /ops/nodes` | Register a node so the system group admits it as a learner. `ADDR` is its URL. |
+| `ops remove-node ID` | `DELETE /ops/nodes/{id}` | Remove a node no app keeps a replica on; run against the system leader. |
 | `ops move CONTEXT --replicas ID,...` | `POST /ops/apps/{app}/replicas` | Move a context to these replica node ids. A follower answers `421 NOT_LEADER`; meroctl retries at the leader it names. |
 | `ops backup` | `POST /ops/backup` | Write encrypted snapshots of the contexts this node leads now. |
 | `ops quotas` | `GET /ops/quotas` | The per-account quotas. |

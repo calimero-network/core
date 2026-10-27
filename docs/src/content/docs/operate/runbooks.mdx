@@ -42,8 +42,26 @@ learner of the system group once it is registered.
 </Steps>
 
 A learner holds the directory and can serve and host apps, but does not vote
-in the system group. There is no route yet to promote a learner to a system
-voter or to remove a node from the system group or the directory.
+in the system group. It becomes a voter when a voter is removed (below) and
+fewer than 3 would be left.
+
+## Remove a node
+
+<Steps>
+
+1. Move every app off it: for each app whose `replicas` name the node, `meroctl
+   ops move APP --replicas ...` with a set that leaves it out (run against the
+   app's leader). The node refuses to be removed while an app keeps a replica on it.
+
+2. Remove it, against the system leader (another node answers `421 NOT_LEADER`
+   with `details.leaderUrl`): `meroctl --ops-token T ops remove-node ID`
+   (`DELETE /ops/nodes/{id}`). It leaves the directory and the system group; a
+   registered learner takes its vote while fewer than 3 voters are left.
+
+3. Stop the process and retire its data disk. The other nodes do not register it
+   again from their `--peers`; only `ops add-node` brings it back.
+
+</Steps>
 
 ## Move an app's replicas
 

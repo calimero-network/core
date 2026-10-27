@@ -105,6 +105,8 @@ is its command line.
   learner (`Node::admit_registered_nodes`, from `reconcile`), it catches up and
   learns the directory, and replica moves (`/ops/apps/{app}/replicas`) can put
   apps on it.
+- **Removing nodes**: `DELETE /ops/nodes/{id}` (system leader; `421 NOT_LEADER` elsewhere) writes `RemoveNode` (refused while an app keeps a replica there) and changes the system group's voters, promoting a registered learner while fewer than 3 are left; `SystemState::removed_nodes` keeps `reconcile` from registering it again from `--peers`. Regression: `a_node_is_removed_once_no_app_keeps_a_replica_on_it`.
+- **Transfers**: `POST /apps/{app}/transfer { to }` (owner, passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Ops credentials and metrics**: `--ops-token-sha256` gives the node only the
   token's hash (machine metadata then holds nothing usable); `GET /ops/metrics`
   is Prometheus text (directory counts, this node's groups, streams, system

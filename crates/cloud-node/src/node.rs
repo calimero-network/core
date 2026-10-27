@@ -783,7 +783,7 @@ impl Node {
                 self.config
                     .peers
                     .iter()
-                    .filter(|(id, _)| !s.nodes.contains_key(id))
+                    .filter(|(id, _)| !s.nodes.contains_key(id) && !s.removed_nodes.contains(id))
                     .map(|(id, addr)| NodeRecord {
                         id: *id,
                         addr: addr.clone(),

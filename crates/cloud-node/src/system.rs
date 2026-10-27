@@ -151,6 +151,10 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 #[serde(rename_all = "camelCase")]
 pub struct SystemState {
     pub nodes: BTreeMap<u64, NodeRecord>,
+    /// Nodes the operator removed (`RemoveNode`): never registered again from
+    /// `--peers`, only by `/ops/nodes`.
+    #[serde(default)]
+    pub removed_nodes: std::collections::BTreeSet<u64>,
     pub apps: BTreeMap<AppId, AppRecord>,
     pub next_group: u64,
     pub bundles: BTreeMap<String, BundleRecord>,
@@ -393,6 +397,10 @@ pub enum SystemCmd {
     RegisterNode {
         node: NodeRecord,
     },
+    /// Out of the directory; refused while an app keeps a replica on it.
+    RemoveNode {
+        id: u64,
+    },
     PutBundle {
         hash: String,
         size: u64,
@@ -436,6 +444,9 @@ pub enum SystemCmd {
         app_id: AppId,
         to: AccountId,
         actor: AccountId,
+        /// The owner's passkey assertion over this transfer.
+        #[serde(default)]
+        consent: Value,
     },
     DeleteApp {
         app_id: AppId,
@@ -755,7 +766,16 @@ impl SystemMachine {
         let s = &mut self.state;
         match cmd {
             SystemCmd::RegisterNode { node } => {
+                let _was = s.removed_nodes.remove(&node.id);
                 let _prev = s.nodes.insert(node.id, node);
+                Ok(Value::Null)
+            }
+            SystemCmd::RemoveNode { id } => {
+                if s.apps.values().any(|a| a.replicas.contains(&id)) {
+                    return Err("an app still keeps a replica on that node; move it first");
+                }
+                let _gone = s.nodes.remove(&id).ok_or("no such node")?;
+                let _new = s.removed_nodes.insert(id);
                 Ok(Value::Null)
             }
             SystemCmd::PutBundle { hash, size, actor } => {
@@ -1080,13 +1100,26 @@ impl SystemMachine {
                 }
                 Ok(Value::Null)
             }
-            SystemCmd::TransferApp { app_id, to, actor } => {
+            SystemCmd::TransferApp {
+                app_id,
+                to,
+                actor,
+                consent: _,
+            } => {
+                if !s.accounts.contains_key(&to) {
+                    return Err("unknown account");
+                }
+                let org = s.apps.get(&app_id).ok_or("no such app")?.org.clone();
+                // An org's app stays with a member of the org (as `CreateApp`).
+                if let Some(org) = org {
+                    let role = s.orgs.get(&org).and_then(|o| o.role(&to));
+                    if !role.is_some_and(|r| r >= OrgRole::Member) {
+                        return Err("the new owner is not a member of the app's organization");
+                    }
+                }
                 let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
                 if app.owner != actor {
                     return Err("only the owner may transfer");
-                }
-                if !s.accounts.contains_key(&to) {
-                    return Err("unknown account");
                 }
                 app.owner = to;
                 Ok(Value::Null)

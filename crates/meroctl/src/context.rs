@@ -79,6 +79,14 @@ pub enum ContextCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
+    /// Hand the context to another account (its owner approves with a passkey).
+    Transfer {
+        context: String,
+        /// The new owner's account id.
+        to: String,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
+    },
     /// Print the context's committed events, then live ones, as JSON lines.
     #[command(alias = "ws")]
     Watch {
@@ -249,6 +257,19 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
             });
             env.post_approved(&format!("apps/{app}/upgrade"), body, dev_passkey.as_deref())
                 .await?
+        }
+        ContextCmd::Transfer {
+            context,
+            to,
+            dev_passkey,
+        } => {
+            let app = env.app(&context).await?;
+            env.post_approved(
+                &format!("apps/{app}/transfer"),
+                json!({ "to": to }),
+                dev_passkey.as_deref(),
+            )
+            .await?
         }
         ContextCmd::Watch {
             context,

@@ -536,6 +536,14 @@ fn scenario(root: &Path, url: &str) {
         .unwrap_err();
     assert!(refused.contains("owner"), "{refused}");
     assert!(ops(&["quotas"]).is_object());
+    // A node no context lives on, and one that does not exist.
+    let unknown = alice
+        .try_run(&["--ops-token", "ops-token", "ops", "remove-node", "99"])
+        .unwrap_err();
+    assert!(
+        unknown.contains("no such node") || unknown.contains("NOT_LEADER"),
+        "{unknown}"
+    );
 
     // network, attest.
     assert_eq!(alice.run(&["network", "status"])["ok"], true);
@@ -549,6 +557,14 @@ fn scenario(root: &Path, url: &str) {
     // Clean up: an organization goes with its contexts; logout forgets the session.
     // Without a file passkey the request still goes out: the node asks for the
     // owner's approval, which on a real cluster is given in the console.
+    let me = alice.run(&["whoami"])["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let asked = alice
+        .try_run(&["context", "transfer", "notes", &me])
+        .unwrap_err();
+    assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
     let asked = alice.try_run(&["namespace", "delete", &org]).unwrap_err();
     assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
     let _ = alice.run(&["namespace", "delete", &org, "--dev-passkey", pk]);

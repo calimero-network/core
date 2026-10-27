@@ -3529,6 +3529,136 @@ async fn a_node_added_to_a_running_cluster_hosts_replicas() {
     assert!(c.nodes[new].as_ref().unwrap().node.hosted(&app).is_some());
 }
 
+/// `DELETE /ops/nodes/{id}`: refused while an app keeps a replica on the node;
+/// once the operator moved them, the node leaves the directory and the system
+/// group (a registered learner takes its vote), and is not registered again
+/// from the other nodes' `--peers`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_node_is_removed_once_no_app_keeps_a_replica_on_it() {
+    let mut c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let _ = alice
+        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .await
+        .unwrap();
+    let new = c.join().await;
+    let new_id = new as u64 + 1;
+    let ops = |i: usize| {
+        let cl = c.client(i);
+        async move {
+            cl.use_api_key("ops-secret").await;
+            cl
+        }
+    };
+    let _ = ops(0)
+        .await
+        .post(
+            "ops/nodes",
+            json!({ "id": new_id, "addr": c.urls[new], "zone": "b" }),
+        )
+        .await
+        .unwrap();
+    let sys_leader = || {
+        (0..3)
+            .find(|i| c.nodes[*i].as_ref().unwrap().node.system.status().is_leader)
+            .unwrap()
+    };
+    for _ in 0..200 {
+        let st = c.nodes[sys_leader()].as_ref().unwrap().node.system.status();
+        if st.learners.contains(&new_id) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // A node that is not the system leader, holding one of the app's replicas.
+    let leader = sys_leader();
+    let gone = (0..3).find(|i| *i != leader).unwrap();
+    let gone_id = gone as u64 + 1;
+
+    let e = ops(leader)
+        .await
+        .delete(&format!("ops/nodes/{gone_id}"))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("replica"), "{e}");
+    let e = ops(gone)
+        .await
+        .delete(&format!("ops/nodes/{gone_id}"))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("421"), "{e}");
+
+    // Move the app off it, then remove it.
+    let keep: Vec<u64> = (1..=new_id).filter(|id| *id != gone_id).collect();
+    let app_leader = c.app_leader(&app).unwrap();
+    let _ = ops(app_leader)
+        .await
+        .post(
+            &format!("ops/apps/{app}/replicas"),
+            json!({ "replicas": keep }),
+        )
+        .await
+        .unwrap();
+    let _ = ops(leader)
+        .await
+        .delete(&format!("ops/nodes/{gone_id}"))
+        .await
+        .unwrap();
+    let node = &c.nodes[leader].as_ref().unwrap().node;
+    let st = node.system.status();
+    assert!(!st.voters.contains(&gone_id), "{st:?}");
+    assert!(!st.learners.contains(&gone_id), "{st:?}");
+    assert!(
+        st.voters.contains(&new_id),
+        "the learner takes its vote: {st:?}"
+    );
+    // Reconcile does not register it again from --peers.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(node.sys(|s| !s.nodes.contains_key(&gone_id)));
+    // The app keeps serving.
+    let v = alice
+        .view(&app, "get", json!({ "key": "a" }), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!("1"));
+}
+
+/// v1's context ownership transfer: the owner hands an app to another account
+/// with a passkey assertion; the new owner then decides, the old one no longer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_owner_transfers_an_app_with_their_passkey() {
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let e = alice
+        .post(&format!("apps/{app}/transfer"), json!({ "to": bob_id }))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+    let e = bob
+        .post(&format!("apps/{app}/transfer"), json!({ "to": bob_id }))
+        .await
+        .unwrap_err();
+    assert!(!e.to_string().contains("CONFIRM_REQUIRED"), "{e}");
+    let _ = alice
+        .post_confirmed(
+            &format!("apps/{app}/transfer"),
+            json!({ "to": bob_id }),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
+    let a = bob.get(&format!("apps/{app}")).await.unwrap();
+    assert_eq!(a["owner"], json!(bob_id), "{a}");
+    assert!(alice.delete(&format!("apps/{app}")).await.is_err());
+}
+
 /// `--ops-token-sha256`: the node holds only the token's hash, and the token
 /// (not the hash) opens the Ops API; and its Prometheus metrics.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

@@ -2762,6 +2762,49 @@ struct DeleteOrgBody {
 
 /// Delete an organization, its teams, invites and apps: the owner's, with a
 /// passkey assertion over this exact deletion (a 412 asks for it).
+#[derive(Deserialize)]
+struct TransferBody {
+    to: String,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Hand an app to another account (v1's context ownership transfer): the
+/// owner's, with a passkey assertion over this transfer (412 first). Who then
+/// upgrades the app, and so which code reads its data, is the new owner's.
+async fn app_transfer(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+    Json(body): Json<TransferBody>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    let app = node.app(&app_id).await?;
+    if app.owner != actor {
+        return Err(ApiError::forbidden("only the app's owner transfers it"));
+    }
+    let consent = consent(
+        &node,
+        &p,
+        &app_id,
+        "__transfer",
+        &json!({ "to": body.to }),
+        body.confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::TransferApp {
+            app_id,
+            to: body.to,
+            actor,
+            consent,
+        })
+        .await?,
+    ))
+}
+
 async fn org_delete(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -3843,6 +3886,54 @@ async fn ops_register_node(
     Ok(Json(json!({})))
 }
 
+/// Remove a node: out of the directory and the system group. Refused while an
+/// app keeps a replica on it (move them with `/ops/apps/{app}/replicas`). Runs
+/// on the system leader; any other node answers `421 NOT_LEADER`. A registered
+/// learner takes the removed voter's place while fewer than 3 voters are left.
+async fn ops_remove_node(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    let st = node.system.status();
+    if !st.is_leader {
+        let addr = st
+            .leader
+            .and_then(|l| node.sys(|s| s.nodes.get(&l).map(|n| (l, n.addr.clone()))));
+        return Err(membership_err(&calimero_log::WriteError::NotLeader {
+            leader: addr,
+        }));
+    }
+    let mut voters: std::collections::BTreeSet<u64> =
+        st.voters.iter().copied().filter(|v| *v != id).collect();
+    if voters.is_empty() {
+        return Err(ApiError::bad_request(
+            "LAST_NODE",
+            "the cluster's last voter cannot be removed",
+        ));
+    }
+    let _ok = node.sys_write(&SystemCmd::RemoveNode { id }).await?;
+    let learners: Vec<u64> = node.sys(|s| {
+        st.learners
+            .iter()
+            .copied()
+            .filter(|l| *l != id && s.nodes.contains_key(l))
+            .collect()
+    });
+    for l in learners {
+        if voters.len() >= 3 {
+            break;
+        }
+        let _new = voters.insert(l);
+    }
+    node.system
+        .change_voters(voters)
+        .await
+        .map_err(|e| membership_err(&e))?;
+    Ok(Json(json!({ "status": node.system.status() })))
+}
+
 #[derive(Deserialize)]
 struct ReplicaBody {
     replicas: Vec<u64>,
@@ -4178,6 +4269,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/events", get(events))
         .route("/apps/{app}/upgrade", post(app_upgrade))
         .route("/apps/{app}/access", post(app_access))
+        .route("/apps/{app}/transfer", post(app_transfer))
         .route("/apps/{app}/blobs", post(blob_upload).get(blob_list))
         .route("/apps/{app}/blobs/{id}", get(blob_download).delete(blob_delete))
         .route("/apps/{app}/blobs/{id}/info", get(blob_info))
@@ -4218,6 +4310,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/status", get(ops_status))
         .route("/ops/metrics", get(ops_metrics))
         .route("/ops/nodes", post(ops_register_node))
+        .route("/ops/nodes/{id}", delete(ops_remove_node))
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))
         .route("/ops/backup", post(ops_backup))
         .route("/ops/releases", post(ops_release))
