@@ -96,13 +96,20 @@ class Iteration:
         self.stop = threading.Event()
         self.nemesis_log = []
         self.idem_probe = []
+        self.frozen = False  # set once the checker takes the history: later records are dropped
 
     def now(self):
         return time.time() - self.t0
 
     def record(self, rec):
         with self.lock:
-            self.history.append(rec)
+            if not self.frozen:
+                self.history.append(rec)
+
+    def probe(self, rec):
+        with self.lock:
+            if not self.frozen:
+                self.idem_probe.append(rec)
 
     def take_slot(self):
         with self.lock:
@@ -161,10 +168,10 @@ class Iteration:
                             r2 = self.client.call(n2, "book", self.book_args(n), idem=idem, timeout=20)
                             first = [res.get("index"), res.get("result")]
                             replay = [r2.get("index"), r2.get("result")]
-                            self.idem_probe.append({"idem": idem, "first": first, "replay": replay,
-                                                    "node": n2, "same": first == replay})
+                            self.probe({"idem": idem, "first": first, "replay": replay,
+                                        "node": n2, "same": first == replay})
                         except Exception as e:
-                            self.idem_probe.append({"idem": idem, "error": str(e)[:200], "code": app_code(e)})
+                            self.probe({"idem": idem, "error": str(e)[:200], "code": app_code(e)})
             else:
                 with self.lock:
                     used = self.next_slot
@@ -208,7 +215,14 @@ class Iteration:
                 if self.c.procs.get(i) is None:
                     self.c.start_node(i, wait=False); ev(op="start", node=i)
             time.sleep(1.0)
-            nl = self.c.app_leader(self.app)
+            nl = None
+            deadline = time.time() + 5.0
+            while nl is None and time.time() < deadline:
+                nl = self.c.app_leader(self.app)
+                if nl is None:
+                    time.sleep(0.2)
+            if nl is None:
+                ev(op="no_leader", why="no new leader within 5 s; nothing frozen")
             if nl:
                 self.c.pause(nl); ev(op="pause", node=nl, why="new leader")
         time.sleep(max(0.5, self.duration - self.now() - 1.0))
@@ -270,9 +284,16 @@ class Iteration:
         self.stop.set()
         for t in ths:
             t.join(timeout=120)
+        stuck = [t.name for t in ths if t.is_alive()]
         healed = self.heal_wait()
         finals = self.final_read()
-        return self.check(finals, healed)
+        with self.lock:
+            # A worker still running must not append while the checker reads.
+            self.frozen = True
+        problems, stats, acked = self.check(finals, healed)
+        if stuck:
+            problems.append(f"worker threads still running after 120 s: {stuck}")
+        return problems, stats, acked
 
     def check(self, finals, healed):
         problems = []
@@ -306,6 +327,15 @@ class Iteration:
             problems.append(f"held {len(held)} < acked {len(acked)}")
         if len(held) > len(acked) + len(unknown):
             problems.append(f"DUPLICATED: held {len(held)} > acked {len(acked)} + unknown {len(unknown)}")
+        dup = [h for h in failed if h.get("code") == "Duplicate"]
+        if dup:
+            # A fresh slot's `book` fails `Duplicate` only when the booking id it minted exists:
+            # `unique_id` reissued an id (D52).
+            problems.append(f"booking id REISSUED (D52, Duplicate on a fresh slot): {len(dup)} books, "
+                            f"first answer: {dup[0]['attempts'][-1][2][:160]}")
+        other = [h for h in failed if h.get("code") not in ("Taken", "Duplicate")]
+        if other:
+            problems.append(f"unexpected refusals: {[h['attempts'][-1][2][:160] for h in other][:3]}")
         taken = [h for h in failed if h.get("code") == "Taken"]
         if taken:
             problems.append(f"Taken on a slot only one operation booked (ran twice): {[(h['slot'], h['attempts']) for h in taken][:5]}")
@@ -356,6 +386,7 @@ class Iteration:
             "held": len(held), "registers": len(regs),
             "idem_probes": len(self.idem_probe),
             "idem_probe_errors": sum(1 for p in self.idem_probe if "error" in p),
+            "fail_answers": sorted({h["attempts"][-1][2][:120] for h in failed})[:5],
         }
         return problems, stats, [(h["id"], h["slot"], h["idem"]) for h in acked]
 

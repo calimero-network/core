@@ -11,6 +11,7 @@ workspace's release builds:
 
 from __future__ import annotations
 
+import atexit
 import base64
 import hashlib
 import hmac
@@ -73,6 +74,27 @@ def http(method: str, url: str, body=None, headers=None, timeout=30.0):
         raise HttpError(e.code, b) from None
 
 
+_LIVE: set = set()
+
+
+def stop_all():
+    """Kills every node any Cluster of this process started (also run at exit and on a signal)."""
+    for cluster in list(_LIVE):
+        cluster.stop()
+    _LIVE.clear()
+
+
+def _on_signal(signum, _frame):
+    stop_all()
+    raise SystemExit(128 + signum)
+
+
+atexit.register(stop_all)
+signal.signal(signal.SIGTERM, _on_signal)
+signal.signal(signal.SIGINT, _on_signal)
+signal.signal(signal.SIGHUP, _on_signal)
+
+
 class Cluster:
     def __init__(self, workdir: Path, base_port: int = 3600, n: int = 3, cluster: str = "rv2raft", log=True):
         self.workdir = Path(workdir)
@@ -111,7 +133,11 @@ class Cluster:
         out = open(self.workdir / f"node{i}.log", "ab") if self.log else subprocess.DEVNULL
         env = dict(os.environ)
         env.update(self.node_env.get(i, {}))
-        self.procs[i] = subprocess.Popen(self.args(i), stdout=out, stderr=out, env=env)
+        # Its own session: a signal to the runner's process group does not reach the node, and
+        # stop_all (atexit, SIGINT, SIGTERM) kills every child the runner started.
+        self.procs[i] = subprocess.Popen(self.args(i), stdout=out, stderr=out, env=env,
+                                         start_new_session=True)
+        _LIVE.add(self)
         if wait:
             self.wait_healthy(i)
 
