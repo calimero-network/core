@@ -1149,6 +1149,7 @@ fn membership_refusal_status(err: &MembershipError) -> Option<StatusCode> {
         // member.
         Refusal::LastAdmin
         | Refusal::LastAdminDemotion
+        | Refusal::GroupHasNoAdmin(_)
         | Refusal::RemovedFromGroup { .. }
         | Refusal::ReentryBlocked { .. }
         | Refusal::InvitationAlreadyConsumed { .. }
@@ -1891,6 +1892,12 @@ mod parse_api_error_tests {
     #[test]
     fn last_admin_maps_to_409_not_403() {
         let api = parse_api_error(MembershipError::LastAdmin.into());
+        assert_eq!(api.status_code, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn group_without_admin_maps_to_409() {
+        let api = parse_api_error(MembershipError::GroupHasNoAdmin("g".to_owned()).into());
         assert_eq!(api.status_code, StatusCode::CONFLICT);
     }
 
