@@ -412,6 +412,8 @@ fn abi_ignores_unknown_keys_and_refuses_bad_known_ones() {
         json!({ "abiVersion": 1, "methods": [] }),
         json!({ "abiVersion": "1", "methods": {} }),
         json!({ "abiVersion": 0, "methods": {} }),
+        json!({ "abiVersion": 1, "methods": { "t": { "kind": "timer", "every": 5 } } }),
+        json!({ "abiVersion": 1, "methods": { "x": { "kind": "action" } } }),
     ] {
         assert!(
             matches!(Abi::from_json(&bad), Err(PrepareError::BadAbi(_))),
