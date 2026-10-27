@@ -15,7 +15,10 @@ arguments, in a job whose matrix gives `<k>` every value 1..N. The files those
 shards run are what the runner itself selects (`all_workflows()` and
 `shard()` in scripts/cloud-v2-workflows.py), so a file outside its globs, or a
 shard missing from the matrix, is caught. A path merely named in a comment,
-an `echo` or a step name registers nothing.
+an `echo` or a step name registers nothing, and neither does `--smoke` (a fixed
+list, scripts/cloud-v2-workflows-smoke.json, which release.yml runs against a
+PR's Docker image): every workflow on that list must exist and be on
+scripts/cloud-v2-workflows-baseline.json, so the image is gated on passes.
 
 Usage: check-scenario-coverage.py [--root DIR]
 Exit 0 when every workflow is run or marked not_applicable, 1 otherwise.
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import re
 import sys
 from pathlib import Path
@@ -36,6 +40,8 @@ sys.dont_write_bytecode = True  # imports a sibling script; leave no __pycache__
 
 GLOBS = ("workflows/**/*.y*ml", "apps/*/workflows/**/*.y*ml")
 RUNNER = "scripts/cloud-v2-workflows.py"
+SMOKE = "scripts/cloud-v2-workflows-smoke.json"
+BASELINE = "scripts/cloud-v2-workflows-baseline.json"
 SHARD_CALL = re.compile(
     r"^\s*python3?\s+" + re.escape(RUNNER) + r"\b(?P<args>[^\n]*(?:\\\n[^\n]*)*)", re.M
 )
@@ -69,7 +75,7 @@ def shard_counts(e2e: dict) -> tuple[set[int], list[str]]:
                 text = re.sub(r"\$\{\{\s*(.*?)\s*\}\}", r"${{\1}}", m.group("args"))
                 args = [a for a in text.split() if a != "\\"]  # line continuations
                 shard = next((a for i, a in enumerate(args) if i and args[i - 1] == "--shard"), None)
-                if "--list" in args:
+                if "--list" in args or "--smoke" in args:
                     continue
                 positional = [
                     a for i, a in enumerate(args)
@@ -130,6 +136,24 @@ def check(root: Path) -> list[str]:
             continue
         if f not in run_by_shards:
             problems.append(f"{f}: run by no e2e.yml shard")
+    problems += check_smoke(root)
+    return problems
+
+
+def check_smoke(root: Path) -> list[str]:
+    """Every workflow on the smoke list exists and is on the baseline."""
+    if not (root / SMOKE).exists():
+        return []
+    smoke = json.loads((root / SMOKE).read_text())
+    baseline = set(json.loads((root / BASELINE).read_text())) if (root / BASELINE).exists() else set()
+    problems = []
+    for f in smoke.get("workflows", []):
+        if not (root / f).is_file():
+            problems.append(f"{SMOKE}: {f} does not exist")
+        elif f not in baseline:
+            problems.append(f"{SMOKE}: {f} is not on {BASELINE}, so its failure gates nothing")
+    if not smoke.get("workflows"):
+        problems.append(f"{SMOKE}: lists no workflows")
     return problems
 
 

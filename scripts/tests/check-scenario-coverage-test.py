@@ -119,6 +119,37 @@ jobs:
         ["runs named files only"],
     ),
     (
+        "a --smoke run covers nothing by itself",
+        """
+jobs:
+  scenarios:
+    steps:
+      - run: python3 scripts/cloud-v2-workflows.py --smoke --json out.json
+""",
+        {"workflows/a.yml": wf()},
+        ["in no shard", "workflows/a.yml: run by no e2e.yml shard"],
+    ),
+    (
+        "a smoke list of baseline workflows passes",
+        E2E_SHARDED,
+        {
+            "workflows/a.yml": wf(),
+            "scripts/cloud-v2-workflows-smoke.json": '{"workflows": ["workflows/a.yml"]}',
+            "scripts/cloud-v2-workflows-baseline.json": '["workflows/a.yml"]',
+        },
+        [],
+    ),
+    (
+        "a smoke workflow off the baseline, or missing, is refused",
+        E2E_SHARDED,
+        {
+            "workflows/a.yml": wf(),
+            "scripts/cloud-v2-workflows-smoke.json": '{"workflows": ["workflows/a.yml", "workflows/gone.yml"]}',
+            "scripts/cloud-v2-workflows-baseline.json": "[]",
+        },
+        ["workflows/a.yml is not on", "workflows/gone.yml does not exist"],
+    ),
+    (
         "an unsharded run covers everything",
         """
 jobs:

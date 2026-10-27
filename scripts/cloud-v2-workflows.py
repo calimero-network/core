@@ -10,8 +10,12 @@ defaults to target/cloud-v2-wasm. The blobs size sweep's random fixtures
 (apps/blobs/scripts/gen-blob-fixtures.sh) are made when a workflow that reads
 them is selected.
 
-Usage: scripts/cloud-v2-workflows.py [--shard K/N] [--json out.json] [--verbose]
-                                     [--list] [workflow.yml ...]
+Usage: scripts/cloud-v2-workflows.py [--shard K/N | --smoke] [--json out.json]
+                                     [--verbose] [--list] [workflow.yml ...]
+
+`--smoke` runs the fixed list in cloud-v2-workflows-smoke.json (one workflow
+per area; release.yml runs it against the merod inside a PR's Docker image),
+whose `fixtures` are the build-cloud-v2-fixtures.py filters it needs.
 
 `--shard K/N` runs the K-th of N shards (1-based): the fuzzy loads (the nightly
 soak's long runs) are dealt one per shard, then the rest are packed by their
@@ -40,6 +44,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = Path(__file__).with_name("cloud-v2-workflows-baseline.json")
 DURATIONS = Path(__file__).with_name("cloud-v2-workflows-durations.json")
+SMOKE = Path(__file__).with_name("cloud-v2-workflows-smoke.json")
 #: Seconds assumed for a workflow with no measured duration.
 DEFAULT_SECONDS = 20.0
 BLOB_FIXTURES = "static/generated/"
@@ -76,11 +81,16 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("workflows", nargs="*")
     ap.add_argument("--shard", help="K/N: run the K-th of N shards")
+    ap.add_argument("--smoke", action="store_true", help=f"run {SMOKE.name}'s list")
     ap.add_argument("--json", type=Path)
     ap.add_argument("--list", action="store_true", help="print the selection and exit")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
+    if args.smoke and (args.workflows or args.shard):
+        ap.error("--smoke picks its own workflows: no files, no --shard")
     files = args.workflows or all_workflows()
+    if args.smoke:
+        files = json.loads(SMOKE.read_text())["workflows"]
     if args.shard:
         k, n = (int(x) for x in args.shard.split("/"))
         if not 1 <= k <= n:

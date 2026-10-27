@@ -48,6 +48,8 @@ env:
     cargo-mero
   DOCKER_PLATFORMS: ${{ github.event_name != 'push' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
   INCLUDE_AARCH64: ${{ github.event_name != 'push' && 'false' || 'true' }}
+  # The merobox revision `E2E on the merod image` runs; keep it e2e.yml's MEROBOX_REF.
+  MEROBOX_REF: release-v2-parity
 
 jobs:
   prepare:
@@ -503,12 +505,159 @@ jobs:
           # PRs build the image to prove the Dockerfile still packages the binaries,
           # but push nothing; master pushes the multi-arch (amd64, arm64) image.
           push: ${{ github.event_name == 'push' }}
+          # Everything else saves its amd64 image for `E2E on the merod image`.
+          load-to: ${{ github.event_name != 'push' && 'merod-image.tar' || '' }}
           binaries: ${{ env.BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.Dockerfile
           container_name: merod
           platforms: ${{ env.DOCKER_PLATFORMS }}
           include_aarch64: ${{ env.INCLUDE_AARCH64 }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload the image
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: merod-image
+          path: merod-image.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  # What `E2E on the merod image` installs: the fixtures its smoke list names
+  # (scripts/cloud-v2-workflows-smoke.json), built while the binaries build.
+  image-e2e-fixtures:
+    name: Image E2E fixtures
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true' && github.event_name != 'push'
+    runs-on: big-machine
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          targets: wasm32-unknown-unknown
+          shared-key: wasm-apps
+          save-if: false
+
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
+      - name: Build the smoke list's fixtures
+        run: |
+          set -euo pipefail
+          readarray -t filters < <(jq -r '.fixtures[]' scripts/cloud-v2-workflows-smoke.json)
+          python3 scripts/build-cloud-v2-fixtures.py "${filters[@]}"
+
+      - name: Upload them
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-e2e-fixtures
+          path: target/cloud-v2-wasm
+          if-no-files-found: error
+          retention-days: 1
+
+  # The image this run built is tested, not only built: e2e.yml runs every
+  # workflow against a debug `cargo build`, and this runs the smoke list (one
+  # workflow per area, scripts/cloud-v2-workflows-smoke.json, every one on the
+  # baseline) and two of merobox's fault examples (a crashed node, a frozen
+  # leader) against the release `merod` inside the image. Master pushes its
+  # image instead; e2e.yml's nightly tests the latest release's.
+  image-e2e:
+    name: E2E on the merod image
+    needs: [prepare, release-merod-container, image-e2e-fixtures]
+    runs-on: big-machine
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Checkout merobox
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: calimero-network/merobox
+          ref: ${{ env.MEROBOX_REF }}
+          path: merobox
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install merobox
+        run: pip install ./merobox
+
+      - name: Download the image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: merod-image
+          path: target/image
+
+      - name: Download the fixtures
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image-e2e-fixtures
+          path: target/cloud-v2-wasm
+
+      # merobox runs `merod` processes, not containers: the binary is the
+      # image's own /usr/local/bin/merod, and the image must start it.
+      - name: Take merod out of the image
+        run: |
+          set -euo pipefail
+          image=$(docker load -i target/image/merod-image.tar | sed -n 's/^Loaded image: //p' | head -n1)
+          if [ -z "$image" ]; then
+            echo "::error::merod-image.tar holds no tagged image"
+            exit 1
+          fi
+          echo "testing $image"
+          docker run --rm "$image" --version
+          id=$(docker create "$image")
+          docker cp "$id:/usr/local/bin/merod" target/image/merod
+          docker rm "$id"
+          rm target/image/merod-image.tar
+          echo "MEROD_BINARY=$GITHUB_WORKSPACE/target/image/merod" >> "$GITHUB_ENV"
+
+      - name: Smoke workflows
+        env:
+          MEROBOX_SOAK_REPORT: ${{ github.workspace }}/target/image/soak.json
+        run: python3 scripts/cloud-v2-workflows.py --smoke --json target/image/workflows.json
+
+      - name: merobox's fault examples
+        if: ${{ !cancelled() }}
+        env:
+          KV_STORE_WASM: ${{ github.workspace }}/target/cloud-v2-wasm/kv_store.wasm
+        run: |
+          set -uo pipefail
+          failed=0
+          for wf in kv-store-failover frozen-leader; do
+            echo "::group::$wf"
+            merobox cloud run "merobox/workflow-examples/cloud-v2/$wf.yml" || { echo "::error::$wf failed"; failed=1; }
+            echo "::endgroup::"
+          done
+          exit "$failed"
+
+      - name: Soak latency and throughput
+        if: ${{ !cancelled() }}
+        run: bash scripts/soak-summary.sh target/image/soak.json "Soak on this run's merod image (smoke list, 30s)"
+
+      - name: Upload the results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-e2e-results
+          path: |
+            target/image/workflows.json
+            target/image/soak.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   brew-update:
     name: Update Homebrew Tap
