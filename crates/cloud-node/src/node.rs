@@ -566,9 +566,11 @@ impl Node {
     /// Bring this node's system replica up to what the cluster has committed,
     /// so a read here sees every write acknowledged anywhere (a read index:
     /// the leader confirms it leads and names its applied index, this node
-    /// waits to apply it). Best effort: on no answer the read goes ahead.
+    /// waits to apply it, at most `Config::read_wait`). Best effort: on no
+    /// answer the read goes ahead; the result says whether this replica did
+    /// catch up, for a caller that must not answer from a stale one.
     /// Callers that wait at the same moment share one round (`ReadRounds`).
-    pub async fn sys_fresh(&self) {
+    pub async fn sys_fresh(&self) -> bool {
         use std::sync::atomic::Ordering;
 
         let rounds = &self.sys_reads;
@@ -591,8 +593,9 @@ impl Node {
                 index
             }
         };
-        if let Some(i) = index {
-            let _caught_up = self.system.wait_applied(i, Duration::from_secs(2)).await;
+        match index {
+            Some(i) => self.system.wait_applied(i, self.config.read_wait).await,
+            None => false,
         }
     }
 

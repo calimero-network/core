@@ -782,25 +782,37 @@ struct RefreshBody {
 async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -> ApiResult {
     let old_hash = b64url(&sha256(body.refresh_token.as_bytes()));
     let mut found = node.sys_until(|s| s.refresh.get(&old_hash).cloned()).await;
+    let mut caught_up = true;
     if found.is_none() {
         // Not here yet, or exchanged already: this replica may be behind, so
         // ask the leader how far the log is before telling a reused token
         // (revoke the session) from an unknown one.
-        node.sys_fresh().await;
+        caught_up = node.sys_fresh().await;
         found = node.sys(|s| s.refresh.get(&old_hash).cloned());
     }
     let Some(rec) = found else {
         // A token already exchanged, presented again: someone else holds a
-        // copy, so the session it belongs to ends here.
-        if node.sys(|s| s.rotated_refresh.contains_key(&old_hash)) {
-            let _ok = node
+        // copy, so the session it belongs to ends here. `RefreshReused` is
+        // refused at apply for a token never exchanged, so a replica that
+        // could not catch up lets the system log decide rather than answer
+        // "unknown" to a thief from a stale view.
+        let known_here = node.sys(|s| s.rotated_refresh.contains_key(&old_hash));
+        if known_here || !caught_up {
+            let revoked = node
                 .sys_write(&SystemCmd::RefreshReused {
                     hash: old_hash,
                     now: now_secs(),
                 })
                 .await;
-            return Err(ApiError::unauthenticated(
-                "refresh token already used; the session is revoked",
+            if known_here || revoked.is_ok() {
+                return Err(ApiError::unauthenticated(
+                    "refresh token already used; the session is revoked",
+                ));
+            }
+            // Not exchanged at the leader either: it may be a token issued
+            // after this replica fell behind, so do not call it unknown.
+            return Err(ApiError::unavailable(
+                "this node is behind the cluster; retry the refresh",
             ));
         }
         return Err(ApiError::unauthenticated("unknown refresh token"));
@@ -816,15 +828,31 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
         passkey: rec.passkey.clone(),
         app: rec.app.clone(),
     };
-    let _ok = node
+    let exchanged = node
         .sys_write(&SystemCmd::UseRefresh {
-            old_hash,
+            old_hash: old_hash.clone(),
             new_hash: b64url(&sha256(new_refresh.as_bytes())),
             record,
             now: now_secs(),
         })
-        .await
-        .map_err(|e| ApiError::unauthenticated(&e.message))?;
+        .await;
+    if let Err(e) = exchanged {
+        // This replica still saw the token as live, but the log had exchanged
+        // it already: a copy, decided by the log itself (`RefreshReused` is
+        // refused at apply for a token never exchanged).
+        let revoked = node
+            .sys_write(&SystemCmd::RefreshReused {
+                hash: old_hash,
+                now: now_secs(),
+            })
+            .await;
+        if revoked.is_ok() {
+            return Err(ApiError::unauthenticated(
+                "refresh token already used; the session is revoked",
+            ));
+        }
+        return Err(ApiError::unauthenticated(&e.message));
+    }
     let expires_at = now_secs() + SESSION_TTL;
     let token = mint_session(
         &key,

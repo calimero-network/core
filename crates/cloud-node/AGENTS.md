@@ -288,9 +288,12 @@ is its command line.
   are checked at apply, so every node enforces the same limits; refusals are `429 QUOTA_EXCEEDED`.
 - **Read-your-writes across nodes**: lookups of system objects (`Node::sys_until`) wait
   up to `Config::read_wait` (2 s) for the local replica to apply a write committed
-  elsewhere. A refresh that finds no token then does a read index (`sys_fresh`)
-  before answering, so a replica further behind still tells a reused token (the
-  session is revoked) from an unknown one. Regression:
+  elsewhere (`sys_fresh` waits as long, and says whether it caught up). A
+  refresh is judged by the system log, not by a stale replica: a token this
+  replica cannot find, or whose exchange the log refuses, goes to the log as
+  `RefreshReused`, which revokes the session if the token was exchanged before
+  and is refused if it never was (then a replica that is behind answers 503,
+  never "unknown"). Regression:
   `a_reused_refresh_token_revokes_the_session_on_a_lagging_node`.
 
 ## Not done yet (prototype)
