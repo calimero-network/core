@@ -258,6 +258,10 @@ impl Client {
         self.json(Method::POST, path, Some(body)).await
     }
 
+    pub async fn put(&self, path: &str, body: Value) -> Result<Value> {
+        self.json(Method::PUT, path, Some(body)).await
+    }
+
     pub async fn get(&self, path: &str) -> Result<Value> {
         self.json(Method::GET, path, None).await
     }
@@ -407,6 +411,34 @@ impl Client {
     pub async fn upload_package(&self, mpk: Vec<u8>) -> Result<Value> {
         self.upload("packages", "application/octet-stream", mpk)
             .await
+    }
+
+    /// The operator installs a signed `.mpk` (Ops API, the ops token as the key).
+    pub async fn ops_upload_package(&self, mpk: Vec<u8>) -> Result<Value> {
+        self.upload("ops/packages", "application/octet-stream", mpk)
+            .await
+    }
+
+    /// The operator installs `package@version` from the node's registry.
+    pub async fn ops_install_package(&self, package: &str, version: &str) -> Result<Value> {
+        self.post(
+            "ops/packages/install",
+            json!({ "package": package, "version": version }),
+        )
+        .await
+    }
+
+    /// The operator uninstalls one version of a package it installed, or all of it.
+    pub async fn ops_uninstall_package(
+        &self,
+        package: &str,
+        version: Option<&str>,
+    ) -> Result<Value> {
+        let mut path = format!("ops/packages/{}", path_segment(package));
+        if let Some(v) = version {
+            path = format!("{path}/{}", path_segment(v));
+        }
+        self.delete(&path).await
     }
 
     /// Install `package@version` from the node's registry.

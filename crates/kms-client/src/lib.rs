@@ -6,7 +6,7 @@
 //! - [`kms`]: attestation, key fetch, probe.
 //! - [`policy`]: the signed release policy.
 //! - [`config`]: the `[tee.kms]` settings.
-//! - [`disk_key`]: the data-disk unlock key (`merod-v2 kms disk-key`).
+//! - [`disk_key`]: the data-disk unlock key (`merod kms disk-key`).
 
 pub mod config;
 pub mod disk_key;

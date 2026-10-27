@@ -7,7 +7,7 @@ use calimero_primitives::search::{
 };
 use calimero_search::index::{ContextIndex, SchemaOptions};
 
-/// An index over an in-memory directory, as merod-v2 opens one.
+/// An index over an in-memory directory, as merod opens one.
 fn open_index(schema: &SearchIndexSchema) -> ContextIndex {
     let dir = Box::new(tantivy::directory::RamDirectory::create());
     let (index, _state) = ContextIndex::open(dir, schema, SchemaOptions::default()).unwrap();

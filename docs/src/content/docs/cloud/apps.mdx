@@ -12,8 +12,8 @@ repository builds against the `release-v2` SDK and deploys unchanged
 ## What changes
 
 - **Packages.** Install a signed `.mpk` the way v1 does: by `package@version`
-  from the operator's registry (`POST /packages/install`, `calimero-cloud install
-  PACKAGE --version V`) or as a file (`POST /packages`). Every node that runs a
+  from the operator's registry (`POST /packages/install`, `meroctl app install
+  PACKAGE@VERSION`) or as a file (`POST /packages`). Every node that runs a
   release fetches it and checks the publisher's signature, the artifact digests
   and the hash the fleet recorded; a package keeps the publisher key of its first
   release. Create an instance with `POST /apps { package, version }`, upgrade with

@@ -1,7 +1,7 @@
 # calimero-kms-client
 
 The mero-kms client a TEE node fetches its keys with. It was merod's (`src/kms`,
-`kms_policy.rs`, `kms disk-key`); merod-v2 uses it in process.
+`kms_policy.rs`, `kms disk-key`); merod uses it in process.
 
 - **Release policy** (`policy.rs`): the KMS is trusted only if its `/attest` quote
   matches the signed mero-tee release the environment names (`MERO_TEE_VERSION`,
@@ -12,7 +12,7 @@ The mero-kms client a TEE node fetches its keys with. It was merod's (`src/kms`,
   `{namespace}/{profile}/{peerId}`, sealed to the request (`kms/sealed.rs`).
 - **Disk key** (`disk_key.rs`): `fetch_disk_key(url, identity, create)` returns the key
   for a dedicated disk identity (a protobuf libp2p keypair, created on request).
-  `KmsDiskKeyCommand` (`merod-v2 kms disk-key`) is the boot-script form: it writes
+  `KmsDiskKeyCommand` (`merod kms disk-key`) is the boot-script form: it writes
   the key only to tmpfs/ramfs, never to a device or stdout.
 - **Config** (`config.rs`): `TeeConfig` / `KmsConfig` / `KmsAttestationConfig`, as
   merod's `config.toml` held them.

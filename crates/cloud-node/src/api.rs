@@ -1180,6 +1180,7 @@ fn package_json(p: &crate::system::PackageRecord) -> Value {
 
 async fn package_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let _p = signed_in(&node, &headers).await?;
+    node.sys_fresh().await;
     let packages: Vec<Value> = node.sys(|s| s.packages.values().map(package_json).collect());
     Ok(Json(json!({ "packages": packages })))
 }
@@ -1190,6 +1191,7 @@ async fn package_get(
     Path(package): Path<String>,
 ) -> ApiResult {
     let _p = signed_in(&node, &headers).await?;
+    node.sys_fresh().await;
     node.sys(|s| s.packages.get(&package).map(package_json))
         .map(Json)
         .ok_or_else(|| ApiError::not_found("no such package"))
@@ -1222,6 +1224,75 @@ async fn package_version_uninstall(
             package,
             version: Some(version),
             actor: account,
+        })
+        .await?,
+    ))
+}
+
+/// The operator installs an uploaded, signed `.mpk` (where it upgrades apps,
+/// it needs the releases it upgrades to). Checked as any install is.
+async fn ops_package_upload(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    body: Body,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    Ok(Json(
+        node.install_upload(Arc::from(body.to_vec()), crate::system::OPERATOR)
+            .await?,
+    ))
+}
+
+/// The operator installs `package@version` from the registry.
+async fn ops_package_install(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<InstallBody>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    Ok(Json(
+        node.install_from_registry(&body.package, &body.version, crate::system::OPERATOR)
+            .await?,
+    ))
+}
+
+/// Installed packages, for the operator: publisher metadata, no app data.
+async fn ops_package_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    operator(&node, &headers)?;
+    // An install committed through another node is listed (read index).
+    node.sys_fresh().await;
+    let packages: Vec<Value> = node.sys(|s| s.packages.values().map(package_json).collect());
+    Ok(Json(json!({ "packages": packages })))
+}
+
+/// The operator uninstalls a package it installed.
+async fn ops_package_uninstall(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(package): Path<String>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::UninstallPackage {
+            package,
+            version: None,
+            actor: crate::system::OPERATOR.to_owned(),
+        })
+        .await?,
+    ))
+}
+
+async fn ops_package_version_uninstall(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((package, version)): Path<(String, String)>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::UninstallPackage {
+            package,
+            version: Some(version),
+            actor: crate::system::OPERATOR.to_owned(),
         })
         .await?,
     ))
@@ -2128,7 +2199,7 @@ struct Upgrader {
 impl Upgrader {
     fn by(&self) -> String {
         if self.by_operator {
-            "operator".to_owned()
+            crate::system::OPERATOR.to_owned()
         } else {
             self.actor.clone()
         }
@@ -2480,7 +2551,7 @@ async fn org_upgrade_retry(
         migrate: None,
         confirm: body.and_then(|Json(b)| serde_json::from_value(b["confirm"].clone()).ok()),
     };
-    if prev.by == "operator" {
+    if prev.by == crate::system::OPERATOR {
         operator(&node, &headers)?;
         operator_holds(&node, |g| g.app_upgrades, "app upgrades")?;
         let who = Upgrader {
@@ -3975,7 +4046,7 @@ struct OpsUpgradeBody {
 }
 
 /// Upgrade any app, on a cluster whose operator manages upgrades. The release
-/// must be installed already (the operator holds no account to install as).
+/// must be installed already (`/ops/packages`).
 async fn ops_upgrade(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -4136,6 +4207,13 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/outbound", post(ops_outbound))
         .route("/ops/apps/{app}/upgrade", post(ops_upgrade))
         .route("/ops/orgs/{org}/upgrade", post(ops_org_upgrade))
+        .route("/ops/packages", post(ops_package_upload).get(ops_package_list))
+        .route("/ops/packages/install", post(ops_package_install))
+        .route("/ops/packages/{package}", delete(ops_package_uninstall))
+        .route(
+            "/ops/packages/{package}/{version}",
+            delete(ops_package_version_uninstall),
+        )
         .route("/ops/quotas", get(ops_quotas_get).post(ops_quotas_set))
         // Bundles (peer blob pushes, uploads) exceed axum's 2 MiB default; the sealed envelope caps requests at 64 MiB.
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))

@@ -1,8 +1,11 @@
-# calimero-cloud-node (`merod-v2`)
+# calimero-cloud-node (the inside of `merod`)
 
 The release-v2 cloud node: an attested TEE node that hosts the cluster's system
 group and the app groups placed on it. Design: the "Calimero Confidential Cloud"
-architecture spec.
+architecture spec. This crate is the library; the `merod` binary
+(`crates/merod`: `init`, `run`, `config`, `local`, `inspect`, `kms`) turns its
+configuration into a `Config` and calls `run`, and `meroctl` (`crates/meroctl`)
+is its command line.
 
 ## Mental model
 
@@ -54,7 +57,11 @@ architecture spec.
   side: `POST /ops/releases` (`operator_releases`, which `approved_releases`
   then answers), `POST /ops/apps/{app}/upgrade` (an installed release;
   `UpgradeApp { by_operator }`), `POST /ops/outbound` (`operator_outbound`,
-  `ReleaseScope::Cluster`). Owner side: the passkey routes below. Whichever
+  `ReleaseScope::Cluster`). The operator installs the releases it upgrades
+  to: `POST /ops/packages` (an `.mpk`), `/ops/packages/install` (the
+  registry), `GET /ops/packages`, `DELETE /ops/packages/{p}[/{v}]` (only what
+  it installed), recorded as `system::OPERATOR`, which no account can be and
+  which no account quota counts. Owner side: the passkey routes below. Whichever
   party does not hold a decision gets 403 (API) and a refusal (`apply`).
 - **Owner approvals** (where the owner holds the decision; `system::ReleaseScope`, `Org/Account::approved_releases`): the
   mero-tee releases that may hold an org's (or an account's own) apps; the one it
@@ -166,7 +173,7 @@ architecture spec.
   it) or it is a bundle or a release `.mpk`. Known window: the same content
   uploaded to another app between that check and the deletion loses its bytes.
 - **App frontends** (`app_host.rs`, v1's app hosts): with `--apps-domain D`
-  (`merod-v2 local`: `localhost`), each package's frontend is at
+  (`merod local`: `localhost`), each package's frontend is at
   `{label}.D` (`app_host::label`, 52 base32 characters), from its release's
   `.mpk` (`Node::release_mpk`, verified before a byte is served, opened ones
   cached). Outermost layer: only `GET`/`HEAD` of files, `/` → newest release,
@@ -245,7 +252,7 @@ architecture spec.
 - **Storage key** (`kms.rs`): K_r = HKDF(KMS key, cluster). A TDX node takes it from
   mero-kms only (`kms::key_source`: `--storage-key`/`--storage-key-file` need `--dev`). The KMS key comes from
   merod's own client (`merod kms disk-key`: release-policy-verified KMS, key sealed
-  to the TD), run by merod-v2 (`--kms-url --kms-identity`) or by the boot script
+  to the TD), run by merod (`--kms-url --kms-identity`) or by the boot script
   (`--storage-key-file`). The cluster's nodes share the disk identity, so they share K_r.
 - **Peers' quotes** are judged like a client's (`calimero_cloud_client::Measurements`):
   in TDX mode the signed mero-tee release the peer names, profiles from
@@ -273,7 +280,7 @@ for a in blobs kv-store-with-handlers search-chat xcall-example tee-cards tee-di
   migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2; do
   cargo mero build --manifest-path apps/$a/Cargo.toml; done
 cargo test -p calimero-cloud-node    # 3-node cluster in process, sealed, real WASM
-cargo run -p calimero-cloud-node --bin merod-v2 -- --help
-cargo run -p calimero-cloud-node --bin merod-v2 -- local   # dev cluster: 3 nodes on :2501-2503 (`local.rs`)
-cargo run -p calimero-cloud-node --bin merod-v2 -- inspect --data-dir DIR [--storage-key-file F]   # a stopped node's store (v1's merodb)
+cargo run -p merod -- --help
+cargo run -p merod -- local   # dev cluster: 3 nodes on :2501-2503 (`local.rs`)
+cargo run -p merod -- --node n1 inspect [--storage-key-file F]   # a stopped node's store (v1's merodb; `inspect.rs`)
 ```

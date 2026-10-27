@@ -2,8 +2,8 @@
 //!
 //! The KMS client (`calimero-kms-client`) verifies the KMS against the signed
 //! release policy and receives a key sealed to this TD. Either the image's boot
-//! script fetches the key (`merod-v2 kms disk-key`) and passes the key file
-//! (`--storage-key-file`), or merod-v2 fetches it itself (`--kms-url` with
+//! script fetches the key (`merod kms disk-key`) and passes the key file
+//! (`--storage-key-file`), or merod fetches it itself (`--kms-url` with
 //! `--kms-identity`).
 //!
 //! The KMS derives a key per identity, so the nodes of one cluster share one
@@ -32,7 +32,7 @@ pub fn derive_storage_key(material: &[u8], cluster: &str) -> [u8; 32] {
     out
 }
 
-/// Read the key a boot script fetched with `merod-v2 kms disk-key`.
+/// Read the key a boot script fetched with `merod kms disk-key`.
 pub fn read_key_file(path: &Path) -> eyre::Result<zeroize::Zeroizing<Vec<u8>>> {
     let bytes = zeroize::Zeroizing::new(
         std::fs::read(path).wrap_err_with(|| format!("cannot read {}", path.display()))?,

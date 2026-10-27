@@ -1,6 +1,6 @@
 ---
 title: Operating a cluster (release-v2)
-description: Production flags for merod-v2 — storage key from mero-kms, measurement policy for peers, the Ops API.
+description: Configuring merod in production — storage key from mero-kms, measurement policy for peers, the Ops API and meroctl ops.
 sidebar:
   order: 4
 ---
@@ -8,16 +8,22 @@ sidebar:
 ## Starting a TDX node
 
 ```bash
-MERO_TEE_VERSION=<mero-tee release> MERO_TEE_PROFILE=<profile> \
-merod-v2 --node-id 1 --listen 0.0.0.0:2501 --public-url https://n1.eu1.example/ \
-  --data-dir /data/merod-v2 --cluster eu1 \
+merod --node n1 init --node-id 1 --listen 0.0.0.0:2501 --public-url https://n1.eu1.example/ \
+  --cluster eu1 \
   --peers 1=https://n1.eu1.example/,2=https://n2.eu1.example/,3=https://n3.eu1.example/ \
   --kms-url https://kms.internal/ --kms-identity /data/disk-identity \
   --rp-id example.com --origins https://app.example.com \
-  --ops-token "$OPS_TOKEN" --backup-dir /backups
+  --ops-token-sha256 "$OPS_TOKEN_SHA256" --backup-dir /backups
+MERO_TEE_VERSION=<mero-tee release> MERO_TEE_PROFILE=<profile> merod --node n1 run
 ```
 
-- **Storage key.** merod-v2 runs `merod kms disk-key` (merod's KMS client: the KMS
+`init` writes `~/.calimero/n1/config.toml` (`--home` or `CALIMERO_HOME` moves
+it; data goes to `n1/data` unless `--data-dir` says otherwise); `merod --node
+n1 config --flag value` changes it; flags and `MEROD_*` variables given to
+`run` override it for that run, so a container can also run with flags alone.
+The configuration's `[outbound]` table is the outbound policy below.
+
+- **Storage key.** merod runs its KMS client (`merod kms disk-key` is the same, for a boot script: the KMS
   is verified against the signed release policy and the key is sealed to the TD)
   and derives its storage key as `HKDF(KMS key, cluster)`. The cluster's nodes
   share the disk identity, so they share the key. A boot script that already
@@ -43,9 +49,9 @@ merod-v2 --node-id 1 --listen 0.0.0.0:2501 --public-url https://n1.eu1.example/ 
 - **App frontends.** `--apps-domain apps.example.com` (with a wildcard DNS name
   for it pointing at the cluster) serves each package's frontend, from its
   signed release, at its own origin `{label}.apps.example.com` (the label is in
-  `calimero_cloud_node::app_host::label`; `merod-v2 local` uses `localhost`).
+  `calimero_cloud_node::app_host::label`; `merod local` uses `localhost`).
   Signing in there opens a session that reaches that package's apps only.
-- **Outbound HTTPS.** Off unless `--settings FILE` has an `[outbound]` table
+- **Outbound HTTPS.** Off unless the configuration (or `--settings FILE`) has an `[outbound]` table
   (`enabled`, `hosts`, and `env_secrets` or a loopback `sidecar`), v1's
   `[context.outbound]`. The operator bounds the hosts and holds the secrets;
   which prefixes an app may reach is approved by whoever `--outbound-approvals`
@@ -58,7 +64,10 @@ hash. `GET /ops/metrics` answers Prometheus text. A node started without
 `--bootstrap` joins the running cluster once `POST /ops/nodes` registers it.
 
 Bearer `--ops-token`, inside the sealed channel. mdma's `OpsClient` and
-`calimero-cloud ops` use it.
+`meroctl --ops-token TOKEN ops ...` use it: `status`, `metrics`, `add-node`,
+`move`, `backup`, `quotas`/`set-quotas`, and where the deployment gave the
+operator the decision, `release`, `outbound`, `install`/`uninstall`/`packages`
+(the releases it upgrades to), `upgrade` and `upgrade-namespace`.
 
 | Route | What |
 | --- | --- |

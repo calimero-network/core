@@ -18,6 +18,7 @@ pub mod app_host;
 pub mod attest;
 pub mod backup;
 pub mod error;
+pub mod inspect;
 pub mod kms;
 pub mod local;
 pub mod node;
@@ -167,7 +168,7 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }));
     }
 
-    info!(node = node.config.node_id, %addr, "merod-v2 serving");
+    info!(node = node.config.node_id, %addr, "merod serving");
     Ok(Running {
         node,
         addr,

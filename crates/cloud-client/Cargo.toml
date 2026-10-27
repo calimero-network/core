@@ -23,7 +23,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "rt"] }
 url.workspace = true
-clap = { workspace = true, features = ["derive", "env"], optional = true }
 
 calimero-identity.workspace = true
 calimero-sealed.workspace = true
@@ -37,13 +36,3 @@ tempfile.workspace = true
 
 [features]
 testing = ["calimero-identity/testing"]
-# The `calimero-cloud` command line.
-cli = ["testing", "dep:clap", "tokio/macros", "tokio/rt-multi-thread", "tokio/signal"]
-
-[[bin]]
-name = "calimero-cloud"
-required-features = ["cli"]
-
-[[test]]
-name = "cli"
-required-features = ["cli"]

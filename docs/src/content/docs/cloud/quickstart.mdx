@@ -10,38 +10,41 @@ sidebar:
 ```bash
 # in core, branch release-v2
 cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
-cargo run -p calimero-cloud-node --bin merod-v2 -- local
+cargo run -p merod -- local
 ```
 
-`merod-v2 local` starts three nodes on `http://127.0.0.1:2501-2503/` in one
+`merod local` starts three nodes on `http://127.0.0.1:2501-2503/` in one
 process, with mock attestation and a development storage key, keeping state in
-`.merod-v2-local/` (`--fresh` starts over). It prints an Ops token. Browser apps
+`.merod-local/` (`--fresh` starts over). It prints an Ops token. Browser apps
 on `http://localhost:3000` and `http://localhost:5173` may call it (`--origins`).
 
-## 2. Deploy and call from the terminal
+## 2. Install, create and call from the terminal
 
 ```bash
-cargo install --path crates/cloud-client --features cli   # calimero-cloud
-export CALIMERO_URL=http://127.0.0.1:2501/
-# --allow-mock trusts the local cluster's mock attestation. It is a flag on each
-# command, never an environment variable, so it cannot carry over to a real cluster.
-dev="calimero-cloud --allow-mock"
+cargo install --path crates/meroctl
+# --allow-mock trusts the local cluster's mock attestation; `node add` keeps it
+# for this node only, so it cannot carry over to a real cluster.
+meroctl node add local http://127.0.0.1:2501/ --allow-mock
 
-$dev login --dev-passkey ./dev-passkey.json --name ada
-$dev deploy target/wasm32-unknown-unknown/app-release/kv_store.wasm --name kv
-$dev call <appId> set '{"key":"a","value":"1"}'
-$dev view <appId> get '{"key":"a"}'
-$dev events <appId>
-$dev apikey create --app <appId> --read-only
+meroctl login --dev-passkey ./dev-passkey.json --name ada
+meroctl app install --path target/wasm32-unknown-unknown/app-release/kv_store.wasm   # a dev bundle; a signed .mpk installs a package
+meroctl context create --bundle <hash> --name kv --alias kv
+meroctl call --context kv set --args '{"key":"a","value":"1"}'
+meroctl call --context kv get --args '{"key":"a"}' --view
+meroctl context watch kv
+meroctl account api-key create --context kv --read-only
 ```
 
+`meroctl` keeps v1's commands: `app` is an application (a signed package),
+`context` an instance of one, `namespace` an organization, `group` one of its
+teams, `account` you (passkeys are your devices) and `ops` the operator.
 `--dev-passkey` keeps a passkey in a file, which only a development cluster
-accepts (`--allow-mock`). Against a real cluster, use an API key made in the
-console (`CALIMERO_API_KEY`) and name the images you trust:
+accepts. Against a real cluster, use an API key made in the console
+(`CALIMERO_API_KEY`) and name the images you trust:
 `--tee-profiles <profile> [--min-release <version>]`. The release floor defaults
 to the client's `DEFAULT_MIN_RELEASE`, and debug profiles are refused unless you
 pass `--allow-debug-profiles`. Install apps there as signed packages
-(`calimero-cloud install PACKAGE --version V`); raw `deploy` is for development
+(`meroctl app install PACKAGE@VERSION`); raw bundles are for development
 clusters.
 
 ## 3. From code
@@ -72,12 +75,12 @@ passkey ceremony through Chromium's virtual authenticator.
 ## 4. Scenario tests with merobox
 
 merobox's `cloud-v2` backend (branch `release-v2`) starts a cluster with one
-`merod-v2` process per node and runs YAML scenarios against it: deploy, call and
+`merod` process per node and runs YAML scenarios against it: deploy, call and
 read as several accounts, then crash, freeze, restart or upgrade nodes and check
 the app keeps its data and answers within a time budget.
 
 ```bash
-MEROD_V2_BINARY=target/debug/merod-v2 \
+MEROD_V2_BINARY=target/debug/merod \
 KV_STORE_WASM=target/wasm32-unknown-unknown/app-release/kv_store.wasm \
 merobox cloud run workflow-examples/cloud-v2/frozen-leader.yml
 ```

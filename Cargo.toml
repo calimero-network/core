@@ -125,6 +125,8 @@ members = [
     "./crates/outbound",
     "./crates/kms-client",
     "./crates/cloud-client",
+    "./crates/merod",
+    "./crates/meroctl",
 
     "./crates/store",
     "./crates/store/blobs",

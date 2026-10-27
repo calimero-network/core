@@ -54,6 +54,10 @@ impl Default for Quotas {
 /// The prefix of every apply error that is a quota refusal.
 pub const QUOTA_PREFIX: &str = "quota exceeded";
 
+/// The actor the log records for what the operator does with its ops token
+/// (installs, upgrades): never an account id, so it names no account.
+pub const OPERATOR: &str = "operator";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BundleRecord {
@@ -783,7 +787,8 @@ impl SystemMachine {
                 release,
             } => {
                 let actor = release.installed_by.clone();
-                if !s.accounts.contains_key(&actor) {
+                let by_operator = actor == OPERATOR;
+                if !by_operator && !s.accounts.contains_key(&actor) {
                     return Err("unknown account");
                 }
                 if let Some(p) = s.packages.get(&package) {
@@ -806,7 +811,8 @@ impl SystemMachine {
                     .filter(|b| b.uploaded_by == actor)
                     .map(|b| b.size)
                     .sum();
-                if used + release.mpk_size > s.quotas.max_bundle_bytes_per_account {
+                // The operator's installs count against no account's quota.
+                if !by_operator && used + release.mpk_size > s.quotas.max_bundle_bytes_per_account {
                     return Err("quota exceeded: bundle storage");
                 }
                 for (service, hash) in &release.services {
@@ -847,7 +853,7 @@ impl SystemMachine {
             } => {
                 let p = s.packages.get(&package).ok_or("no such package")?;
                 if p.owner != actor {
-                    return Err("only the account that installed the package may uninstall it");
+                    return Err("only whoever installed the package (an account, or the operator) may uninstall it");
                 }
                 let gone: Vec<String> = match &version {
                     Some(v) if !p.versions.contains_key(v) => return Err("no such version"),
@@ -975,7 +981,7 @@ impl SystemMachine {
                     );
                 }
                 let by = if by_operator {
-                    "operator".to_owned()
+                    OPERATOR.to_owned()
                 } else {
                     actor
                 };

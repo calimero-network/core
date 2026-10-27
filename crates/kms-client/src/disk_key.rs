@@ -1,4 +1,4 @@
-//! `merod-v2 kms disk-key`: fetch the key that unlocks a TEE node's data disk.
+//! `merod kms disk-key`: fetch the key that unlocks a TEE node's data disk.
 //!
 //! merod's own datastore is encrypted from `init --kms-url`, but a data disk
 //! holds more than the datastore — blobs, `config.toml`, the TLS key, the fleet

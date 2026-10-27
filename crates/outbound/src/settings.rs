@@ -1,4 +1,4 @@
-//! The operator's outbound settings (`[outbound]` in merod-v2's settings file).
+//! The operator's outbound settings (`[outbound]` in merod's configuration, or its `--settings` file).
 
 use std::collections::BTreeMap;
 

@@ -8,18 +8,12 @@ repository.workspace = true
 license.workspace = true
 publish = false
 
-[[bin]]
-name = "merod-v2"
-path = "src/main.rs"
-
 [dependencies]
 axum.workspace = true
 base64.workspace = true
 camino.workspace = true
-clap = { workspace = true, features = ["derive", "env"] }
 ed25519-dalek.workspace = true
 eyre.workspace = true
-toml.workspace = true
 futures-util.workspace = true
 hex.workspace = true
 reqwest = { workspace = true, features = ["json", "stream"] }
@@ -38,7 +32,6 @@ zeroize.workspace = true
 tower.workspace = true
 tantivy.workspace = true
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
 
 calimero-account.workspace = true

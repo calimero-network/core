@@ -2361,6 +2361,79 @@ async fn outbound_requests_need_the_owners_approval() {
 /// deployment, each one either the operator's or the owner's, and a user
 /// proves which: every replica binds the governance into its receipt-key
 /// quote, and a replica claiming other rules is refused.
+/// Where the operator upgrades apps, the operator installs the releases it
+/// upgrades to: from an uploaded `.mpk`, with its ops token, no account
+/// needed. It uninstalls only what it installed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_operator_installs_the_releases_it_upgrades_to() {
+    use calimero_cloud_node::system::{Authority, Governance};
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.governance = Governance {
+            app_upgrades: Authority::Operator,
+            ..Governance::default()
+        };
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let kv = kv_wasm();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+    let ops = c.client(1);
+    ops.use_api_key("ops-secret").await;
+
+    let first = ops
+        .ops_upload_package(mpk("com.test.ops", "1.0.0", &kv, &publisher))
+        .await
+        .unwrap_or_else(|e| panic!("the operator installs a release: {e}"));
+    assert_eq!(first["version"], "1.0.0");
+    let created = alice
+        .post("apps", json!({ "name": "kv", "package": "com.test.ops" }))
+        .await
+        .unwrap();
+    let app = created["appId"].as_str().unwrap().to_owned();
+
+    let _ = ops
+        .ops_upload_package(mpk(
+            "com.test.ops",
+            "1.1.0",
+            &variant(&kv, "next"),
+            &publisher,
+        ))
+        .await
+        .unwrap();
+    let listed = ops.get("ops/packages").await.unwrap();
+    assert!(listed.to_string().contains("1.1.0"), "{listed}");
+    let _ = ops
+        .post(
+            &format!("ops/apps/{app}/upgrade"),
+            json!({ "version": "1.1.0" }),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("the operator upgrades to its release: {e}"));
+    let a = alice.get("apps?package=com.test.ops").await.unwrap();
+    assert_eq!(a["apps"][0]["version"], "1.1.0", "{a}");
+
+    // A release an account installed stays that account's.
+    let _ = alice
+        .upload_package(mpk("com.test.mine", "1.0.0", &kv, &publisher))
+        .await
+        .unwrap();
+    assert!(ops
+        .ops_uninstall_package("com.test.mine", None)
+        .await
+        .is_err());
+    // Its own, unused one goes.
+    let _ = ops
+        .ops_uninstall_package("com.test.ops", Some("1.0.0"))
+        .await
+        .unwrap();
+    // Without the token, nothing.
+    assert!(c
+        .client(2)
+        .ops_upload_package(mpk("com.test.ops", "1.2.0", &kv, &publisher))
+        .await
+        .is_err());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
     use calimero_cloud_node::system::{Authority, Governance};
@@ -3278,7 +3351,7 @@ async fn the_ops_token_can_be_given_as_a_hash_and_metrics_count() {
 
 // ---------------------------------------------------------------- inspection
 
-/// `merod-v2 inspect` (v1's `merodb`): a stopped node's data directory, read
+/// `merod inspect` (v1's `merodb`): a stopped node's data directory, read
 /// offline. The raw layout without the key; with it, each group's metadata.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_stopped_nodes_store_can_be_inspected() {
@@ -3291,40 +3364,13 @@ async fn a_stopped_nodes_store_can_be_inspected() {
         .unwrap();
     c.stop(1).await;
     let dir = c._dirs[1].path().to_owned();
-    let key_file = dir.join("k_r.hex");
-    std::fs::write(&key_file, hex::encode([42u8; 32])).unwrap();
-    let run = |args: Vec<String>| {
-        tokio::task::spawn_blocking(move || {
-            let out = std::process::Command::new(env!("CARGO_BIN_EXE_merod-v2"))
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                out.status.success(),
-                "{}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            serde_json::from_slice::<Value>(&out.stdout).unwrap()
-        })
-    };
-    let d = dir.to_string_lossy().into_owned();
-    let raw = run(vec!["inspect".into(), "--data-dir".into(), d.clone()])
-        .await
-        .unwrap();
+    let raw = calimero_cloud_node::inspect::inspect(&dir, None).unwrap();
     let groups = raw["groups"].as_object().unwrap();
     assert!(groups.contains_key("1"), "the system group: {raw}");
     assert!(groups.len() >= 2, "the app's group too: {raw}");
     assert!(raw["blobs"].as_u64().unwrap() >= 1, "the bundle: {raw}");
     assert!(groups["1"]["logEntries"].as_u64().unwrap() > 0);
-    let opened = run(vec![
-        "inspect".into(),
-        "--data-dir".into(),
-        d,
-        "--storage-key-file".into(),
-        key_file.to_string_lossy().into_owned(),
-    ])
-    .await
-    .unwrap();
+    let opened = calimero_cloud_node::inspect::inspect(&dir, Some([42u8; 32])).unwrap();
     assert!(
         opened["groups"]["1"]["values"]
             .as_object()

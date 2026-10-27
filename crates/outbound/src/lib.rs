@@ -810,7 +810,7 @@ fn run_blocking<T: Send>(future: impl core::future::Future<Output = T> + Send) -
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
         return run();
     };
-    // Called from a runtime's thread (merod-v2 runs WASM on its workers): a
+    // Called from a runtime's thread (merod runs WASM on its workers): a
     // runtime cannot start inside another, so the request gets a thread of its
     // own, and a multi-threaded runtime moves its other tasks off this one.
     let on_thread = move || {

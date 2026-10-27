@@ -1,4 +1,4 @@
-//! A development cluster in one process (`merod-v2 local`): N nodes on
+//! A development cluster in one process (`merod local`): N nodes on
 //! consecutive ports, mock attestation, a dev storage key. What merobox was
 //! for v1, without containers: state persists in `dir` across restarts.
 
