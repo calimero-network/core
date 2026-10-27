@@ -70,19 +70,6 @@ impl<'a> NamespaceApplyCtx<'a> {
         self.principal
     }
 
-    /// The account `signer` speaks for in `group`, live — the acting principal's
-    /// account when `signer` is its key.
-    pub(crate) fn signer_account_live(
-        &self,
-        group: &ContextGroupId,
-        signer: &PublicKey,
-    ) -> EyreResult<Option<AccountId>> {
-        match self.principal {
-            Some(principal) if principal.key == *signer => Ok(Some(principal.account)),
-            _ => crate::member_account_in_namespace(self.store, group, signer),
-        }
-    }
-
     /// The op's causal cut and at-cut authority source, handed on to the inner
     /// op of a delegated wrapper so it is judged at the same cut.
     pub(crate) const fn apply_auth(&self) -> (&'a [[u8; 32]], &'a dyn AtCutAuthorizer) {
@@ -164,6 +151,31 @@ impl<'a> NamespaceApplyCtx<'a> {
         Ok(())
     }
 
+    /// Whether `signer` is `group`'s owner at the op's cut and still stands in the namespace
+    /// there: an owner removed from the workspace holds no authority over its space. The signer
+    /// is read at the cut, like the owner.
+    pub(crate) fn standing_owner(
+        &self,
+        signer: &PublicKey,
+        group: &ContextGroupId,
+    ) -> EyreResult<Option<AccountId>> {
+        let ns_gid = ContextGroupId::from(self.namespace_id.to_bytes());
+        let owner =
+            crate::group_owner::owner_at_cut(self.store, group, self.parents, self.authorizer)?;
+        let permissions = self.permissions_for(ns_gid);
+        let account = match self.principal.filter(|p| p.key == *signer) {
+            Some(principal) => Some(principal.account),
+            None => permissions.account_for_signer_at_cut(signer)?,
+        };
+        let Some(owner) = owner.filter(|owner| Some(*owner) == account) else {
+            return Ok(None);
+        };
+        Ok(permissions
+            .effective_role_at_cut(&owner)?
+            .is_some()
+            .then_some(owner))
+    }
+
     /// Refuse a tree op sealed under any key but the one its folder's space picks: an inner
     /// folder's op is read only by the space, so an outsider never has to judge it.
     pub(crate) fn require_sealed_for(
@@ -201,15 +213,7 @@ impl<'a> NamespaceApplyCtx<'a> {
         match tree.space_of(moved)? {
             Some(space) if space == *moved => {
                 // Workspace admins have no authority over a space: its owner moves it.
-                let owner = crate::group_owner::owner_at_cut(
-                    self.store,
-                    moved,
-                    self.parents,
-                    self.authorizer,
-                )?;
-                let owns = self
-                    .signer_account_live(&ns_gid, signer)?
-                    .is_some_and(|account| Some(account) == owner);
+                let owns = self.standing_owner(signer, moved)?.is_some();
                 if !owns {
                     bail!(MembershipError::NotAdmin {
                         group_id: moved.to_string(),

@@ -531,3 +531,26 @@ fn an_inherited_join_into_a_folder_of_a_space_is_refused() {
         "{refused:#}"
     );
 }
+
+/// An owner that no longer belongs to the workspace has no authority over its space.
+#[test]
+fn a_removed_owner_deletes_or_moves_nothing() {
+    let s = Space::new();
+    let space = s.private(NS);
+    let target = s.open(NS);
+    crate::MembershipRepository::new(&s.store)
+        .remove_member(&NS.into(), &s.admin)
+        .unwrap();
+    let delete = RootOp::GroupDeleted {
+        root_group_id: space.into(),
+        cascade_group_ids: vec![space.into()],
+        cascade_context_ids: vec![],
+    };
+    let moves = RootOp::GroupReparented {
+        child_group_id: space.into(),
+        new_parent_id: target.into(),
+    };
+
+    assert!(s.root_op(delete).is_err());
+    assert!(s.root_op(moves).is_err());
+}

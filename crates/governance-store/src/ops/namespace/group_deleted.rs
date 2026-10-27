@@ -77,28 +77,25 @@ pub(crate) fn apply(
         // Ownership names an account, the op carries a key: resolve, then
         // compare. An unresolvable signer is not the owner and falls through to
         // the capability gate below, which refuses it for the same reason.
-        let signer_account = ctx.signer_account_live(&ns_gid, &op.signer)?;
-        let (parents, authorizer) = ctx.apply_auth();
-        let owner = crate::group_owner::owner_at_cut(store, &root_gid, parents, authorizer)?;
-        let owns = signer_account.is_some_and(|signer| Some(signer) == owner);
+        let owner = ctx.standing_owner(&op.signer, &root_gid)?;
         let space = tree.space_of(&root_gid)?;
         if space == Some(root_gid) {
             // Workspace admins and capabilities have no authority over a space: only its owner,
             // read from cleartext, deletes its root.
-            if !owns {
+            if owner.is_none() {
                 bail!(crate::MembershipError::OnlyOwnerCanDelete(hex::encode(
                     root_group_id
                 )));
             }
         } else if let Some(space) = space {
-            // An inner folder: its owner or the space's admin. The namespace's reach stops at the
-            // open space.
-            // Owning a folder is no standing without a seat in the space.
-            let owns = match signer_account {
-                Some(signer) if owns => {
-                    crate::MembershipRepository::new(store).is_member(&space, &signer)?
-                }
-                _ => false,
+            // An inner folder: its owner, if seated in the space at the cut, or the space's
+            // admin. The namespace's reach stops at the open space.
+            let owns = match owner {
+                Some(owner) => ctx
+                    .permissions_for(space)
+                    .effective_role_at_cut(&owner)?
+                    .is_some(),
+                None => false,
             };
             if !owns && !ctx.permissions_for(space).is_admin(&op.signer)? {
                 bail!(crate::MembershipError::NotAdmin {
@@ -106,7 +103,7 @@ pub(crate) fn apply(
                     identity: format!("{}", op.signer),
                 });
             }
-        } else if signer_account.is_none_or(|signer| Some(signer) != owner) {
+        } else if owner.is_none() {
             if let Err(e) = PermissionChecker::new(store, ns_gid)
                 .with_principal(ctx.principal())
                 .require_can_delete_subgroup(&op.signer)
