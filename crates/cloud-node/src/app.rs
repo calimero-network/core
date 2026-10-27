@@ -197,6 +197,11 @@ pub enum AppCmd {
         base_index: u64,
         outcome: Outcome,
     },
+    /// An app no longer has blob `id` (hex): its runs cannot open it and the
+    /// API answers 404. The bytes go once no other app marks them.
+    BlobForget {
+        id: String,
+    },
     /// A blob uploaded for the app (its bytes are in the blob store already).
     Blob {
         id: String,
@@ -489,6 +494,39 @@ impl AppMachine {
         self.state.kv.get(&blob_key(id)).is_some()
     }
 
+    /// The size of one of the app's blobs, if it is one.
+    #[must_use]
+    pub fn blob_size(&self, id: &[u8; 32]) -> Option<u64> {
+        let v = self.state.kv.get(&blob_key(id))?;
+        Some(u64::from_le_bytes(v.get(..8)?.try_into().ok()?))
+    }
+
+    /// The app's blobs (id, size), and what its storage holds besides:
+    /// a scan of its whole state.
+    #[must_use]
+    pub fn storage_stats(&self) -> StorageStats {
+        let prefix = blob_key(&[0; 32]);
+        let prefix = &prefix[..prefix.len() - 32];
+        let mut stats = StorageStats::default();
+        let _r = self.state.kv.for_each(|k, v| {
+            if let Some(id) = k.strip_prefix(prefix) {
+                if let (Ok(id), Some(size)) = (
+                    <[u8; 32]>::try_from(id),
+                    v.get(..8).and_then(|b| b.try_into().ok()),
+                ) {
+                    let size = u64::from_le_bytes(size);
+                    stats.blob_bytes += size;
+                    stats.blobs.push((id, size));
+                    return;
+                }
+            }
+            stats.keys += 1;
+            stats.bytes += (k.len() + v.len()) as u64;
+        });
+        stats.blobs.sort();
+        stats
+    }
+
     /// A previous answer for this idempotency key, if still remembered. Never
     /// judged by a clock: a record that is kept replays.
     #[must_use]
@@ -678,6 +716,21 @@ impl Machine for AppMachine {
                 }
                 a
             }
+            Ok(AppCmd::BlobForget { id }) => {
+                if let Ok(raw) = hex::decode(&id) {
+                    if let Ok(id) = <[u8; 32]>::try_from(raw.as_slice()) {
+                        tx.delete_hidden(rows::KV, &blob_key(&id));
+                    }
+                }
+                Applied {
+                    index,
+                    status: Status::Ok,
+                    result: Value::Null,
+                    error: Value::Null,
+                    events: Vec::new(),
+                    conflict: false,
+                }
+            }
             Ok(AppCmd::Blob { id, size }) => {
                 if let Ok(raw) = hex::decode(&id) {
                     if let Ok(id) = <[u8; 32]>::try_from(raw.as_slice()) {
@@ -839,6 +892,19 @@ pub fn blob_key(id: &[u8; 32]) -> Vec<u8> {
     let mut k = b"\0calimero.blobs\0".to_vec();
     k.extend_from_slice(id);
     k
+}
+
+/// What an app's storage holds (v1's context storage size).
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageStats {
+    /// Keys the app wrote, private spaces and host rows included, but no blob marks.
+    pub keys: u64,
+    /// Their keys' and values' bytes, as the app sees them (before sealing).
+    pub bytes: u64,
+    #[serde(skip)]
+    pub blobs: Vec<([u8; 32], u64)>,
+    pub blob_bytes: u64,
 }
 
 /// Where an account's private storage lives in the app's state.

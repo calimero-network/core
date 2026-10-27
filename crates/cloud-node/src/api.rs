@@ -2626,6 +2626,183 @@ async fn blob_download(
         .into_response())
 }
 
+/// Whether `account` may manage `app`'s data (its owner, or an admin of its
+/// organization): delete its blobs.
+fn manages_app(node: &Node, app: &crate::types::AppRecord, account: Option<&str>) -> bool {
+    let Some(a) = account else {
+        return false;
+    };
+    app.owner == a
+        || app
+            .org
+            .as_deref()
+            .is_some_and(|o| node.sys(|s| s.is_org_admin(o, a)))
+}
+
+/// The app's blobs (v1's blob list).
+async fn blob_list(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let _p = gate(&node, &headers, &app, "__blob", false).await?;
+    let stats = node.storage_stats(&app).await?;
+    Ok(Json(json!({
+        "blobs": stats.blobs.iter().map(|(id, size)| blob_json(id, *size)).collect::<Vec<_>>(),
+    })))
+}
+
+/// One blob's size (v1's blob info); 404 if the app has no such blob.
+async fn blob_info(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, id)): Path<(String, String)>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let _p = gate(&node, &headers, &app, "__blob", false).await?;
+    let raw = parse_blob_id(&id)?;
+    let stats = node.storage_stats(&app).await?;
+    let size = stats
+        .blobs
+        .iter()
+        .find(|(b, _)| *b == raw)
+        .map(|(_, s)| *s)
+        .ok_or_else(|| ApiError::not_found("no such blob in this app"))?;
+    Ok(Json(blob_json(&raw, size)))
+}
+
+/// Delete one of the app's blobs: its owner's or an org admin's. The app
+/// forgets it at once; the bytes leave every node unless another app marks
+/// the same content.
+async fn blob_delete(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, id)): Path<(String, String)>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let p = gate(&node, &headers, &app, "__blob", true).await?;
+    if !manages_app(&node, &app, p.caller.account()) {
+        return Err(ApiError::forbidden(
+            "only the app's owner or an org admin deletes its blobs",
+        ));
+    }
+    let raw = parse_blob_id(&id)?;
+    if !node.blob_held(&app, &raw).await? {
+        return Err(ApiError::not_found("no such blob in this app"));
+    }
+    let a = node
+        .call(&CallRequest::new(
+            app_id,
+            "__blob_forget".into(),
+            json!({ "id": hex::encode(raw) }),
+            p.caller,
+        ))
+        .await?;
+    node.collect_blob(&raw).await;
+    Ok(Json(json!({ "index": a.index })))
+}
+
+/// What the app's storage holds (v1's context storage): keys, bytes, blobs.
+async fn app_storage(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let _p = gate(&node, &headers, &app, "*", false).await?;
+    let stats = node.storage_stats(&app).await?;
+    Ok(Json(json!({
+        "keys": stats.keys,
+        "bytes": stats.bytes,
+        "blobs": stats.blobs.len(),
+        "blobBytes": stats.blob_bytes,
+    })))
+}
+
+/// The ABI the app's bundle embeds (v1's application ABI); `null` for none.
+async fn app_abi(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let _p = gate(&node, &headers, &app, "*", false).await?;
+    let wasm = node.bundle_wasm(&app.bundle).await?;
+    let abi = calimero_wasm_abi::embed::read_embedded_state_schema(&wasm);
+    Ok(Json(json!({ "bundle": app.bundle, "abi": abi })))
+}
+
+/// What the caller's account uses, against the cluster's quotas (v1's usage).
+async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    let account = signed_in(&node, &headers).await?.account()?;
+    Ok(Json(node.sys(|s| {
+        json!({
+            "apps": s.apps.values().filter(|a| a.owner == account).count(),
+            "bundleBytes": s
+                .bundles
+                .values()
+                .filter(|b| b.uploaded_by == account)
+                .map(|b| b.size)
+                .sum::<u64>(),
+            "apiKeys": s.api_keys.values().filter(|k| k.account == account).count(),
+            "orgsOwned": s
+                .orgs
+                .values()
+                .filter(|o| o.role(&account) == Some(OrgRole::Owner))
+                .count(),
+            "quotas": s.quotas,
+        })
+    })))
+}
+
+async fn internal_storage(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    peer_only(&node, &headers)?;
+    let app = body["app"].as_str().unwrap_or_default();
+    let g = node
+        .hosted(app)
+        .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
+    let stats = g.read_local(|m, _| m.storage_stats());
+    Ok(Json(json!({
+        "keys": stats.keys,
+        "bytes": stats.bytes,
+        "blobBytes": stats.blob_bytes,
+        "blobs": stats.blobs.iter().map(|(id, s)| (hex::encode(id), *s)).collect::<Vec<_>>(),
+    })))
+}
+
+/// Delete a blob's bytes here, at the request of the node that collected it.
+/// Code (a bundle, a package release) is never deleted this way.
+async fn internal_blob_delete(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    peer_only(&node, &headers)?;
+    let hash = body["hash"].as_str().unwrap_or_default().to_owned();
+    let code = node.sys(|s| {
+        s.bundles.contains_key(&hash)
+            || s.packages
+                .values()
+                .any(|p| p.versions.values().any(|v| v.mpk == hash))
+    });
+    if !code {
+        node.engine
+            .delete_blob(&hash)
+            .map_err(|e| ApiError::internal(&e.to_string()))?;
+    }
+    Ok(Json(json!({})))
+}
+
 #[derive(Deserialize)]
 struct HeldBody {
     app: String,
@@ -3108,6 +3285,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/auth/releases", post(account_release_approval))
         .route("/auth/outbound", post(account_outbound_approval))
         .route("/auth/me", get(me))
+        .route("/auth/usage", get(usage))
         .route("/auth/apikeys", post(apikey_create).get(apikey_list))
         .route("/auth/apikeys/{key}", delete(apikey_revoke))
         .route("/bundles", post(bundle_put))
@@ -3118,14 +3296,17 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps", post(app_create).get(app_list))
         .route("/apps/{app}", get(app_get).delete(app_delete))
         .route("/apps/{app}/metadata", post(app_metadata))
+        .route("/apps/{app}/storage", get(app_storage))
+        .route("/apps/{app}/abi", get(app_abi))
         .route("/apps/{app}/intents", post(intents))
         .route("/apps/{app}/attestation", get(app_attestation))
         .route("/apps/{app}/views", post(views))
         .route("/apps/{app}/events", get(events))
         .route("/apps/{app}/upgrade", post(app_upgrade))
         .route("/apps/{app}/access", post(app_access))
-        .route("/apps/{app}/blobs", post(blob_upload))
-        .route("/apps/{app}/blobs/{id}", get(blob_download))
+        .route("/apps/{app}/blobs", post(blob_upload).get(blob_list))
+        .route("/apps/{app}/blobs/{id}", get(blob_download).delete(blob_delete))
+        .route("/apps/{app}/blobs/{id}/info", get(blob_info))
         .route("/orgs", post(org_create))
         .route("/orgs/{org}", get(org_get).delete(org_delete))
         .route("/orgs/{org}/metadata", post(org_metadata))
@@ -3151,6 +3332,8 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/blob", post(internal_blob_put))
         .route("/internal/blob/get", post(internal_blob_get))
         .route("/internal/blob/held", post(internal_blob_held))
+        .route("/internal/blob/delete", post(internal_blob_delete))
+        .route("/internal/storage", post(internal_storage))
         .route("/internal/view", post(internal_view))
         .route("/internal/app-ready", post(internal_app_ready))
         .route("/internal/events", get(internal_events))

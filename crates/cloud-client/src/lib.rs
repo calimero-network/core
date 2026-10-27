@@ -469,6 +469,47 @@ impl Client {
     }
 
     /// One of an app's blobs, by id (base58 or hex).
+    /// The app's blobs: `{ blobs: [{ blobId, id, size }] }`.
+    pub async fn list_blobs(&self, app: &str) -> Result<Value> {
+        self.get(&format!("apps/{}/blobs", path_segment(app))).await
+    }
+
+    /// One blob's id and size.
+    pub async fn blob_info(&self, app: &str, id: &str) -> Result<Value> {
+        self.get(&format!(
+            "apps/{}/blobs/{}/info",
+            path_segment(app),
+            path_segment(id)
+        ))
+        .await
+    }
+
+    /// Delete one of the app's blobs (its owner's or an org admin's).
+    pub async fn delete_blob(&self, app: &str, id: &str) -> Result<Value> {
+        self.delete(&format!(
+            "apps/{}/blobs/{}",
+            path_segment(app),
+            path_segment(id)
+        ))
+        .await
+    }
+
+    /// What the app's storage holds: `{ keys, bytes, blobs, blobBytes }`.
+    pub async fn app_storage(&self, app: &str) -> Result<Value> {
+        self.get(&format!("apps/{}/storage", path_segment(app)))
+            .await
+    }
+
+    /// The ABI the app's bundle embeds: `{ bundle, abi }`.
+    pub async fn app_abi(&self, app: &str) -> Result<Value> {
+        self.get(&format!("apps/{}/abi", path_segment(app))).await
+    }
+
+    /// What this account uses, with the cluster's quotas.
+    pub async fn usage(&self) -> Result<Value> {
+        self.get("auth/usage").await
+    }
+
     pub async fn download_blob(&self, app: &str, id: &str) -> Result<Vec<u8>> {
         let resp = self
             .send(Method::GET, &format!("apps/{app}/blobs/{id}"), None)

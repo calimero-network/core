@@ -430,6 +430,13 @@ impl Db {
         self.write(&tx, true)
     }
 
+    /// Delete a blob stored with [`Db::put_blob`]; nothing if there is none.
+    pub fn delete_blob(&self, name: &str) -> eyre::Result<()> {
+        let mut tx = Transaction::default();
+        tx.raw_delete(Column::Blobs, name.as_bytes().to_vec());
+        self.write(&tx, true)
+    }
+
     /// Read a blob stored with [`Db::put_blob`].
     pub fn get_blob(&self, name: &str) -> eyre::Result<Option<Vec<u8>>> {
         let key = name.as_bytes();

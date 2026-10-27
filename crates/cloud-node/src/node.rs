@@ -28,6 +28,34 @@ use crate::types::{now_ms, AppRecord, Caller, NodeRecord};
 /// The system group's id.
 pub const SYSTEM_GROUP: GroupId = 1;
 
+/// [`crate::app::StorageStats`] as a peer sends it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StatsWire {
+    keys: u64,
+    bytes: u64,
+    blob_bytes: u64,
+    blobs: Vec<(String, u64)>,
+}
+
+impl From<StatsWire> for crate::app::StorageStats {
+    fn from(w: StatsWire) -> Self {
+        Self {
+            keys: w.keys,
+            bytes: w.bytes,
+            blob_bytes: w.blob_bytes,
+            blobs: w
+                .blobs
+                .into_iter()
+                .filter_map(|(id, size)| {
+                    let raw: [u8; 32] = hex::decode(id).ok()?.try_into().ok()?;
+                    Some((raw, size))
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Node configuration.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -782,7 +810,7 @@ impl Node {
     }
 
     /// A bundle's WASM: from this node's blob store, else from a peer.
-    async fn bundle_wasm(&self, hash: &str) -> Result<Vec<u8>, ApiError> {
+    pub(crate) async fn bundle_wasm(&self, hash: &str) -> Result<Vec<u8>, ApiError> {
         if let Some(w) = self
             .engine
             .get_blob(hash)
@@ -1024,6 +1052,68 @@ impl Node {
         Err(ApiError::unavailable("no peer holds the blob"))
     }
 
+    /// What `app`'s storage holds, from a replica: this node's if it hosts the
+    /// app, else one that does.
+    pub async fn storage_stats(
+        &self,
+        app: &AppRecord,
+    ) -> Result<crate::app::StorageStats, ApiError> {
+        if let Some(g) = self.hosted(&app.app_id) {
+            return Ok(g.read_local(|m, _| m.storage_stats()));
+        }
+        let body = json!({ "app": app.app_id });
+        for id in &app.replicas {
+            let Some(addr) = self.sys(|s| s.nodes.get(id).map(|n| n.addr.clone())) else {
+                continue;
+            };
+            if let Ok(v) = self.peer_forward(&addr, "internal/storage", &body).await {
+                if let Ok(stats) = serde_json::from_value::<StatsWire>(v) {
+                    return Ok(stats.into());
+                }
+            }
+        }
+        Err(ApiError::unavailable("no replica answered"))
+    }
+
+    /// After an app forgot blob `id`: delete its bytes on every node, unless
+    /// another app still marks it or it is a bundle or a package release.
+    pub async fn collect_blob(&self, id: &[u8; 32]) {
+        let hex_id = hex::encode(id);
+        let (code, apps) = self.sys(|s| {
+            let code = s.bundles.contains_key(&hex_id)
+                || s.packages
+                    .values()
+                    .any(|p| p.versions.values().any(|v| v.mpk == hex_id));
+            (code, s.apps.values().cloned().collect::<Vec<_>>())
+        });
+        if code {
+            return;
+        }
+        for app in &apps {
+            // Unknown counts as held: never delete what an app may need.
+            if self.blob_held(app, id).await.unwrap_or(true) {
+                return;
+            }
+        }
+        if let Err(e) = self.engine.delete_blob(&hex_id) {
+            warn!(blob = %hex_id, error = %e, "blob not deleted");
+        }
+        let peers: Vec<String> = self.sys(|s| {
+            s.nodes
+                .values()
+                .filter(|n| n.id != self.config.node_id)
+                .map(|n| n.addr.clone())
+                .collect()
+        });
+        let body = json!({ "hash": hex_id });
+        let _r = futures_util::future::join_all(
+            peers
+                .iter()
+                .map(|addr| self.peer_post(addr, "internal/blob/delete", &body)),
+        )
+        .await;
+    }
+
     /// Whether `id` is one of `app`'s blobs. A replica that has not applied
     /// the upload yet says no, so the others are asked too.
     pub async fn blob_held(&self, app: &AppRecord, id: &[u8; 32]) -> Result<bool, ApiError> {
@@ -1136,6 +1226,15 @@ impl Node {
         let now = now_ms();
         if req.method == "__upgrade" {
             return self.upgrade_local(g, req).await;
+        }
+        if req.method == "__blob_forget" {
+            let cmd = AppCmd::BlobForget {
+                id: req.args["id"].as_str().unwrap_or_default().to_owned(),
+            };
+            let bytes = serde_json::to_vec(&cmd).unwrap_or_default();
+            let (_index, out) = g.write(bytes).await?;
+            return serde_json::from_slice(&out)
+                .map_err(|e| WriteError::Unavailable(e.to_string()));
         }
         if req.method == "__blob" {
             let cmd = AppCmd::Blob {

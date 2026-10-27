@@ -136,7 +136,17 @@ architecture spec.
   onto its outcome (never through the host), the leader stores them before
   proposing and spreads them after the entry commits; a run opens only blobs its
   app's state marks. An upload commits `AppCmd::Blob`. Ids are base58 (what apps
-  print, v1's `BlobId`) or hex in the API.
+  print, v1's `BlobId`) or hex in the API. `GET /apps/{app}/blobs[/{id}/info]`
+  list them from a scan of the app's state (`AppMachine::storage_stats`, on a
+  replica). `DELETE /apps/{app}/blobs/{id}` (owner or org admin) commits
+  `AppCmd::BlobForget`, then `Node::collect_blob` deletes the bytes on every
+  node (`internal/blob/delete`) unless another app still marks the same content
+  (an app whose answer is unknown counts as holding it) or it is a bundle or a
+  release `.mpk`.
+- **Inspection** (v1's context storage, application ABI, usage):
+  `GET /apps/{app}/storage` (keys, bytes, blobs), `GET /apps/{app}/abi` (the
+  bundle's embedded ABI), `GET /auth/usage` (the account's apps, bundle bytes,
+  API keys, owned orgs, and the quotas).
 - **Search** (`services::Search`): v1's per-context tantivy indexes, in memory per
   app and built from the app's `__calimero_search_*` exports. A view brings them
   up to the very state it reads first: from the entities entries touched
@@ -208,8 +218,7 @@ architecture spec.
 
 rollback counter (proposed: a mero-kms epoch, restored nodes rejoin as learners),
 per-app keys from mero-kms, placement across zones, snapshot restore into a
-running cluster, event audiences, pruning of revoked session ids, blob
-deletion, search indexes that survive a restart (rebuilt from state now).
+running cluster, event audiences, pruning of revoked session ids, search indexes that survive a restart (rebuilt from state now).
 
 ## Commands
 

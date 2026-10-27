@@ -2553,3 +2553,76 @@ async fn org_metadata_labels_and_deletion_work_like_v1() {
         .await
         .is_err());
 }
+
+// ---------------------------------------------------------------- blobs, storage
+
+/// v1's blob list, info and delete, context storage size, application ABI and
+/// usage. A deleted blob is the app's no longer; its bytes leave every node
+/// once no other app holds the same content, and never while one does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn blobs_list_and_delete_and_storage_is_inspectable() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (bob, _bpk) = signed_up(&c, 1, "bob").await;
+    let (a1, _) = deploy(
+        &alice,
+        "one",
+        kv_wasm(),
+        json!({ "access": { "kind": "public" } }),
+    )
+    .await;
+    let (a2, _) = deploy(&alice, "two", kv_wasm(), json!({})).await;
+    let bytes = b"the same picture".to_vec();
+    let up = alice.upload_blob(&a1, bytes.clone()).await.unwrap();
+    let id = up["id"].as_str().unwrap().to_owned();
+    let _ = alice.upload_blob(&a2, bytes.clone()).await.unwrap();
+    let other = alice.upload_blob(&a1, b"another".to_vec()).await.unwrap();
+
+    let listed = alice.list_blobs(&a1).await.unwrap();
+    assert_eq!(listed["blobs"].as_array().unwrap().len(), 2, "{listed}");
+    let info = alice.blob_info(&a1, &id).await.unwrap();
+    assert_eq!(info["size"], json!(bytes.len()));
+    // The base58 id apps print works too.
+    let b58 = up["blobId"].as_str().unwrap();
+    assert_eq!(alice.blob_info(&a1, b58).await.unwrap()["id"], json!(id));
+
+    let _ = alice
+        .call(&a1, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap();
+    let storage = alice.app_storage(&a1).await.unwrap();
+    assert_eq!(storage["blobs"], json!(2), "{storage}");
+    assert_eq!(storage["blobBytes"], json!(bytes.len() + b"another".len()));
+    assert!(storage["keys"].as_u64().unwrap() >= 1, "{storage}");
+    let abi = alice.app_abi(&a1).await.unwrap();
+    assert!(abi.get("bundle").is_some(), "{abi}");
+    let usage = alice.usage().await.unwrap();
+    assert_eq!(usage["apps"], json!(2), "{usage}");
+    assert!(usage["quotas"]["maxAppsPerAccount"].as_u64().is_some());
+
+    // Only the owner (or an org admin) deletes; a caller of a public app cannot.
+    assert!(bob.delete_blob(&a1, &id).await.is_err());
+    let _ = alice.delete_blob(&a1, &id).await.unwrap();
+    assert!(alice.blob_info(&a1, &id).await.is_err());
+    assert!(alice.download_blob(&a1, &id).await.is_err());
+    // The other app holds the same bytes: they stay everywhere they were.
+    assert_eq!(alice.download_blob(&a2, &id).await.unwrap(), bytes);
+    let held_somewhere = |c: &Cluster| {
+        c.nodes
+            .iter()
+            .flatten()
+            .filter(|r| r.node.engine.get_blob(&id).unwrap().is_some())
+            .count()
+    };
+    assert!(held_somewhere(&c) >= 2, "a majority kept the shared bytes");
+
+    // Once the last app lets it go, no node keeps the bytes.
+    let _ = alice.delete_blob(&a2, &id).await.unwrap();
+    assert_eq!(held_somewhere(&c), 0, "the bytes outlived every app");
+    // The app's other blob is untouched.
+    let other_id = other["id"].as_str().unwrap();
+    assert_eq!(
+        alice.download_blob(&a1, other_id).await.unwrap(),
+        b"another".to_vec()
+    );
+}

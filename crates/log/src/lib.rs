@@ -446,6 +446,11 @@ impl Engine {
         self.db.put_blob(name, bytes)
     }
 
+    /// Delete a blob stored on this node.
+    pub fn delete_blob(&self, name: &str) -> eyre::Result<()> {
+        self.db.delete_blob(name)
+    }
+
     /// Read a blob stored on this node.
     pub fn get_blob(&self, name: &str) -> eyre::Result<Option<Vec<u8>>> {
         self.db.get_blob(name)
