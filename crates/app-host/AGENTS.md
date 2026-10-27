@@ -1,0 +1,26 @@
+# calimero-app-host - the host core of `calimero:app`
+
+## Package Identity
+
+- **Crate**: `calimero-app-host` (`publish = false`, prototype); engine-neutral, no wasmtime
+- **Entry**: `src/lib.rs`; `core.rs` (`HostCore`), `engine.rs` (`Engine`, `Prepared`), `abi.rs`, `overlay.rs`, `state.rs` (`StateView`, `app_key`), `time.rs`, `types.rs`
+- **Spec**: `docs/specs/app-runtime-v0.13.md` sections 3-5, D16, D19, D39, D44, D46, D47
+
+## What This Crate Does
+
+`HostCore` is the only code that reads or writes app state, applies policy, or serves time and randomness. An `Engine` maps the WIT world one-to-one onto `HostCore` methods (`storage_*`, `range_open/next/close`, `rebuild_*`, context, `emit`, `xcall_send`, `blobs_*`, `action_*`, `wall_ms`, `monotonic_ns`, `random_fill`, `log`) and returns `HostCore::finish(..)` as the `Outcome`.
+
+## Contract
+
+- Every refusal is `Err(HostDenied)`; the engine turns it into `Trap(HostDenied)`.
+- State writes (`put`, `delete`, `add`), `emit` and `unique_id`: call, timer, init, xcall delivery only. Reads: everything but actions. `start_action`: calls and timers, and returns `Err("actions are not enabled")` in this milestone. xcall, blobs, `action.*` and `rebuild.*` are refused in this milestone.
+- At most `MAX_WRITES` (10,000) writes per run; a refused write is not counted.
+- Keys are stored as `app_key(GENERATION, key)`; `Write.key` in the diff carries the prefix, keys returned to the guest do not.
+- `storage_add` reads the current value host-side; it must be a shortest-form CBOR integer (absent = 0); the sum is stored in the same encoding.
+- Ranges are lazy: the committed side is one `StateView` iterator per cursor, the overlay is re-read from the last returned key on every batch; a batch is capped at `MAX_RANGE_BATCH`.
+- Logged invocations draw randomness from ChaCha20 seeded with `Invocation.seed` and see `entry_ts_ms` on both clocks; views and actions use the node's CSPRNG; actions see the real clock rounded to the second.
+- Any status but `Ok` empties the diff and events; the result and logs stay.
+
+## Verify
+
+`cargo test -p calimero-app-host` and `cargo clippy -p calimero-app-host --all-targets -- -D warnings`

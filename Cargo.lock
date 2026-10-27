@@ -1106,6 +1106,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-app-host"
+version = "0.0.0"
+dependencies = [
+ "calimero-app-host",
+ "ciborium",
+ "rand 0.10.2",
+ "rand_chacha 0.10.0",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "calimero-app-wit"
 version = "0.0.0"
 dependencies = [

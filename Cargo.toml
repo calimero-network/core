@@ -103,6 +103,7 @@ members = [
     "./crates/account",
     "./crates/app-downloader",
     "./crates/app-build",
+    "./crates/app-host",
     "./crates/app-wit",
     "./crates/auth",
     "./crates/build-utils",
@@ -315,6 +316,7 @@ proc-macro2 = "1.0"
 prometheus-client = "0.23"
 quote = "1.0.37"
 rand = "0.10"
+rand_chacha = "0.10.0"
 rcgen = "0.13.2"
 reqwest = { version = "0.12.2", default-features = false, features = ["rustls-tls"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
@@ -405,6 +407,7 @@ pyo3 = "0.20"
 calimero-app-downloader = { path = "./crates/app-downloader" }
 calimero-app-wit = { path = "./crates/app-wit" }
 calimero-app-build = { path = "./crates/app-build" }
+calimero-app-host = { path = "./crates/app-host" }
 calimero-build-utils = { path = "./crates/build-utils" }
 calimero-bundle = { path = "./crates/bundle" }
 calimero-blobstore = { path = "./crates/store/blobs" }

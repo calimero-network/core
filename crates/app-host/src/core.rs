@@ -1,0 +1,464 @@
+//! The host core: the only code that reads or writes app state, applies access policy or
+//! decides what an invocation may do (spec section 3). Engines map WIT calls onto it.
+
+use std::collections::BTreeMap;
+
+use ciborium::value::Integer;
+use ciborium::Value;
+use rand::Rng;
+use rand_chacha::ChaCha20Rng;
+
+use crate::overlay::{Cursor, Overlay};
+use crate::state::{app_key, KeyValue, StateView, GENERATION};
+use crate::time;
+use crate::types::{
+    BlobInfo, Caller, Directory, Event, HostDenied, Invocation, InvocationKind, OrgRole, Outcome,
+    Status, Usage,
+};
+
+/// Writes per run: `put`, `delete` and `add` count one each; the next one is refused.
+pub const MAX_WRITES: u32 = 10_000;
+/// Entries one `range_next` returns at most.
+pub const MAX_RANGE_BATCH: u32 = 1_000;
+/// Range cursors one run may hold open at once.
+pub const MAX_OPEN_CURSORS: usize = 1_024;
+/// Bytes of app log one run keeps; later lines are dropped after one marker line.
+pub const MAX_LOG_BYTES: usize = 64 * 1024;
+
+const ACTIONS_DISABLED: &str = "actions are not enabled";
+const XCALL_DISABLED: &str = "xcall is not enabled";
+const BLOBS_DISABLED: &str = "blobs are not enabled";
+const LOG_TRUNCATED: &str = "[log truncated]";
+
+/// A range cursor handed to the guest; the WIT `cursor` resource maps onto it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CursorId(pub u32);
+
+/// The host side of one invocation. Built per run, consumed by `finish`.
+pub struct HostCore<'a> {
+    app_id: String,
+    state: &'a dyn StateView,
+    applied_index: u64,
+    inv: &'a Invocation,
+    dir: &'a dyn Directory,
+    overlay: Overlay,
+    writes: u32,
+    events: Vec<Event>,
+    logs: Vec<String>,
+    log_bytes: usize,
+    unique_ids: u64,
+    rng: ChaCha20Rng,
+    cursors: BTreeMap<u32, Cursor<'a>>,
+    next_cursor: u32,
+    peak_buffered: usize,
+}
+
+impl<'a> HostCore<'a> {
+    /// `state` is the committed state at `applied_index`: the leader's latest for calls,
+    /// the index the view reads at for views (D46).
+    #[must_use]
+    pub fn new(
+        app_id: &str,
+        state: &'a dyn StateView,
+        applied_index: u64,
+        inv: &'a Invocation,
+        dir: &'a dyn Directory,
+    ) -> Self {
+        Self {
+            app_id: app_id.to_owned(),
+            state,
+            applied_index,
+            inv,
+            dir,
+            overlay: Overlay::default(),
+            writes: 0,
+            events: Vec::new(),
+            logs: Vec::new(),
+            log_bytes: 0,
+            unique_ids: 0,
+            rng: time::entropy(inv),
+            cursors: BTreeMap::new(),
+            next_cursor: 0,
+            peak_buffered: 0,
+        }
+    }
+
+    /// The invocation being run; the engine reads kind, method and args from it.
+    #[must_use]
+    pub fn invocation(&self) -> &Invocation {
+        self.inv
+    }
+
+    // --- storage ---------------------------------------------------------------------
+
+    pub fn storage_get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, HostDenied> {
+        self.may_read()?;
+        Ok(self.current(&app_key(GENERATION, key)))
+    }
+
+    pub fn storage_put(&mut self, key: &[u8], value: &[u8]) -> Result<(), HostDenied> {
+        self.check_write()?;
+        self.overlay.put(app_key(GENERATION, key), value.to_vec());
+        self.writes += 1;
+        Ok(())
+    }
+
+    pub fn storage_delete(&mut self, key: &[u8]) -> Result<(), HostDenied> {
+        self.check_write()?;
+        self.overlay.delete(app_key(GENERATION, key));
+        self.writes += 1;
+        Ok(())
+    }
+
+    /// Adds `delta` to the deterministic CBOR integer at `key` (absent is 0) without the
+    /// guest reading it (D47). One write; a non-integer value or an overflow is refused.
+    pub fn storage_add(&mut self, key: &[u8], delta: i64) -> Result<(), HostDenied> {
+        self.check_write()?;
+        let key = app_key(GENERATION, key);
+        let current = match self.current(&key) {
+            None => 0,
+            Some(bytes) => cbor_integer(&bytes)?,
+        };
+        let sum = current + i128::from(delta);
+        let sum = Integer::try_from(sum)
+            .map_err(|_| HostDenied::new("storage.add overflows a CBOR integer"))?;
+        let mut value = Vec::new();
+        ciborium::into_writer(&Value::Integer(sum), &mut value)
+            .map_err(|e| HostDenied::new(format!("storage.add encode: {e}")))?;
+        self.overlay.put(key, value);
+        self.writes += 1;
+        Ok(())
+    }
+
+    /// Opens a cursor over `[start, end)` (an empty `end` is the end of the keyspace),
+    /// seeing this run's writes.
+    pub fn range_open(
+        &mut self,
+        start: &[u8],
+        end: &[u8],
+        reverse: bool,
+    ) -> Result<CursorId, HostDenied> {
+        self.may_read()?;
+        if self.cursors.len() >= MAX_OPEN_CURSORS {
+            return Err(HostDenied::new("too many open cursors"));
+        }
+        let start = app_key(GENERATION, start);
+        let end = if end.is_empty() {
+            // The generation's own keyspace ends where the next generation starts.
+            GENERATION
+                .checked_add(1)
+                .map_or_else(Vec::new, |next| app_key(next, &[]))
+        } else {
+            app_key(GENERATION, end)
+        };
+        let base = self.state.range(&start, &end, reverse);
+        let id = self.next_cursor;
+        self.next_cursor = self
+            .next_cursor
+            .checked_add(1)
+            .ok_or_else(|| HostDenied::new("cursor ids exhausted"))?;
+        let _ = self
+            .cursors
+            .insert(id, Cursor::new(start, end, reverse, base));
+        Ok(CursorId(id))
+    }
+
+    /// The next entries of a cursor, at most `max` (capped at `MAX_RANGE_BATCH`), with
+    /// keys as the guest wrote them. An exhausted cursor returns an empty list.
+    pub fn range_next(&mut self, id: CursorId, max: u32) -> Result<Vec<KeyValue>, HostDenied> {
+        let Some(cursor) = self.cursors.get_mut(&id.0) else {
+            return Err(HostDenied::new("unknown cursor"));
+        };
+        let max = max.min(MAX_RANGE_BATCH) as usize;
+        let batch = cursor.next_batch(&self.overlay, max, &mut self.peak_buffered);
+        Ok(batch
+            .into_iter()
+            .map(|(key, value)| (key[GENERATION_PREFIX..].to_vec(), value))
+            .collect())
+    }
+
+    /// Drops a cursor (the WIT resource's destructor). Unknown ids are ignored.
+    pub fn range_close(&mut self, id: CursorId) {
+        let _ = self.cursors.remove(&id.0);
+    }
+
+    // --- rebuild (D38): migrations are not in this milestone --------------------------
+
+    pub fn rebuild_get(&self, _key: &[u8]) -> Result<Option<Vec<u8>>, HostDenied> {
+        Err(self.rebuild_denied())
+    }
+
+    pub fn rebuild_put(&mut self, _key: &[u8], _value: &[u8]) -> Result<(), HostDenied> {
+        Err(self.rebuild_denied())
+    }
+
+    pub fn rebuild_delete(&mut self, _key: &[u8]) -> Result<(), HostDenied> {
+        Err(self.rebuild_denied())
+    }
+
+    pub fn rebuild_add(&mut self, _key: &[u8], _delta: i64) -> Result<(), HostDenied> {
+        Err(self.rebuild_denied())
+    }
+
+    pub fn rebuild_range(
+        &mut self,
+        _start: &[u8],
+        _end: &[u8],
+        _reverse: bool,
+    ) -> Result<CursorId, HostDenied> {
+        Err(self.rebuild_denied())
+    }
+
+    // --- context ---------------------------------------------------------------------
+
+    #[must_use]
+    pub fn caller(&self) -> &Caller {
+        &self.inv.caller
+    }
+
+    #[must_use]
+    pub fn app_id(&self) -> &str {
+        &self.app_id
+    }
+
+    #[must_use]
+    pub fn app_owner(&self) -> String {
+        self.dir.app_owner()
+    }
+
+    #[must_use]
+    pub fn org(&self) -> Option<String> {
+        self.dir.org()
+    }
+
+    #[must_use]
+    pub fn org_role(&self, account: &str) -> Option<OrgRole> {
+        self.dir.org_role(account)
+    }
+
+    /// Linearizable role read. The same as `org_role` in this milestone; refused during a
+    /// migration (spec, env API).
+    pub fn org_role_strict(&self, account: &str) -> Result<Option<OrgRole>, HostDenied> {
+        if self.inv.kind == InvocationKind::Migrate {
+            return Err(HostDenied::new("org_role_strict is not allowed in migrate"));
+        }
+        Ok(self.dir.org_role(account))
+    }
+
+    #[must_use]
+    pub fn orgs_of(&self, account: &str) -> Vec<(String, OrgRole)> {
+        self.dir.orgs_of(account)
+    }
+
+    #[must_use]
+    pub fn in_team(&self, account: &str, team: &str) -> bool {
+        self.dir.in_team(account, team)
+    }
+
+    #[must_use]
+    pub fn applied_index(&self) -> u64 {
+        self.applied_index
+    }
+
+    /// `"<entry index>.<n>"`, `n` counting this run's calls from 0 (D47). Only in
+    /// invocations that become log entries with a fixed index.
+    pub fn unique_id(&mut self) -> Result<String, HostDenied> {
+        if !self.is_logged_write() {
+            return Err(self.denied("unique_id"));
+        }
+        let id = format!("{}.{}", self.inv.entry_index, self.unique_ids);
+        self.unique_ids += 1;
+        Ok(id)
+    }
+
+    /// Starts a durable action (D17): allowed in calls and timers; not enabled in this
+    /// milestone, so the guest gets the WIT `result` error.
+    pub fn start_action(
+        &mut self,
+        _method: &str,
+        _args: &[u8],
+    ) -> Result<Result<String, String>, HostDenied> {
+        if !matches!(self.inv.kind, InvocationKind::Call | InvocationKind::Timer) {
+            return Err(self.denied("start_action"));
+        }
+        Ok(Err(ACTIONS_DISABLED.to_owned()))
+    }
+
+    // --- events, xcall, blobs, action ------------------------------------------------
+
+    pub fn emit(&mut self, event: Event) -> Result<(), HostDenied> {
+        if !self.is_logged_write() {
+            return Err(self.denied("emit"));
+        }
+        self.events.push(event);
+        Ok(())
+    }
+
+    pub fn xcall_send(
+        &mut self,
+        _app: &str,
+        _method: &str,
+        _args: &[u8],
+    ) -> Result<(), HostDenied> {
+        Err(HostDenied::new(XCALL_DISABLED))
+    }
+
+    pub fn blobs_info(&self, _id: &str) -> Result<Option<BlobInfo>, HostDenied> {
+        Err(HostDenied::new(BLOBS_DISABLED))
+    }
+
+    pub fn blobs_grant(&mut self, _id: &str, _ttl_seconds: u32) -> Result<String, HostDenied> {
+        Err(HostDenied::new(BLOBS_DISABLED))
+    }
+
+    pub fn action_key(&self) -> Result<String, HostDenied> {
+        Err(HostDenied::new(ACTIONS_DISABLED))
+    }
+
+    pub fn action_view(
+        &mut self,
+        _method: &str,
+        _args: &[u8],
+    ) -> Result<Result<Vec<u8>, String>, HostDenied> {
+        Err(HostDenied::new(ACTIONS_DISABLED))
+    }
+
+    pub fn action_call(
+        &mut self,
+        _method: &str,
+        _args: &[u8],
+    ) -> Result<Result<Vec<u8>, String>, HostDenied> {
+        Err(HostDenied::new(ACTIONS_DISABLED))
+    }
+
+    // --- WASI served by the host (D19) -----------------------------------------------
+
+    #[must_use]
+    pub fn wall_ms(&self) -> u64 {
+        time::wall_ms(self.inv)
+    }
+
+    #[must_use]
+    pub fn monotonic_ns(&self) -> u64 {
+        time::monotonic_ns(self.inv)
+    }
+
+    pub fn random_fill(&mut self, buf: &mut [u8]) {
+        self.rng.fill_bytes(buf);
+    }
+
+    /// One line of the owner-only app log, kept up to `MAX_LOG_BYTES` per run.
+    pub fn log(&mut self, line: String) {
+        if self.log_bytes > MAX_LOG_BYTES {
+            return;
+        }
+        self.log_bytes = self.log_bytes.saturating_add(line.len());
+        if self.log_bytes > MAX_LOG_BYTES {
+            self.logs.push(LOG_TRUNCATED.to_owned());
+            return;
+        }
+        self.logs.push(line);
+    }
+
+    // --- the end of the run ------------------------------------------------------------
+
+    /// The outcome of the run. Anything but `Ok` drops the diff and the events; the
+    /// result and the app log are kept. `usage.writes` is the core's own count.
+    #[must_use]
+    pub fn finish(self, status: Status, result: Vec<u8>, usage: Usage) -> Outcome {
+        let ok = status == Status::Ok;
+        Outcome {
+            status,
+            result,
+            diff: if ok {
+                self.overlay.into_diff()
+            } else {
+                Vec::new()
+            },
+            events: if ok { self.events } else { Vec::new() },
+            logs: self.logs,
+            usage: Usage {
+                writes: self.writes,
+                ..usage
+            },
+        }
+    }
+
+    /// The most range entries held at once by any cursor of this run.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn peak_buffered(&self) -> usize {
+        self.peak_buffered
+    }
+
+    // --- policy ----------------------------------------------------------------------
+
+    /// Invocations that become log entries and may change state (spec, env API).
+    fn is_logged_write(&self) -> bool {
+        matches!(
+            self.inv.kind,
+            InvocationKind::Call
+                | InvocationKind::Timer
+                | InvocationKind::Init
+                | InvocationKind::XcallDeliver
+        )
+    }
+
+    /// State reads: everything but actions, which read through views (D12).
+    fn may_read(&self) -> Result<(), HostDenied> {
+        if self.inv.kind == InvocationKind::Action {
+            return Err(self.denied("storage"));
+        }
+        Ok(())
+    }
+
+    /// The one gate for `put`, `delete` and `add`: the kind may write, and the run is
+    /// under `MAX_WRITES`. The caller counts the write once it is made.
+    fn check_write(&self) -> Result<(), HostDenied> {
+        if !self.is_logged_write() {
+            return Err(self.denied("storage writes"));
+        }
+        if self.writes >= MAX_WRITES {
+            return Err(HostDenied::new("more than 10,000 writes in one run"));
+        }
+        Ok(())
+    }
+
+    /// The current value of a stored key: the overlay, then the committed state.
+    fn current(&self, key: &[u8]) -> Option<Vec<u8>> {
+        match self.overlay.get(key) {
+            Some(slot) => slot.map(<[u8]>::to_vec),
+            None => self.state.get(key),
+        }
+    }
+
+    fn denied(&self, what: &str) -> HostDenied {
+        HostDenied::new(format!("{what} is not allowed in {:?}", self.inv.kind))
+    }
+
+    fn rebuild_denied(&self) -> HostDenied {
+        if self.inv.kind == InvocationKind::Migrate {
+            HostDenied::new("migrations are not enabled")
+        } else {
+            HostDenied::new("rebuild is only available while migrating")
+        }
+    }
+}
+
+/// Bytes of the generation prefix on every stored key.
+const GENERATION_PREFIX: usize = 8;
+
+/// The value of a deterministic (shortest-form, single-item) CBOR integer.
+fn cbor_integer(bytes: &[u8]) -> Result<i128, HostDenied> {
+    let not_integer = || HostDenied::new("storage.add on a value that is not a CBOR integer");
+    let value: Value = ciborium::from_reader(bytes).map_err(|_| not_integer())?;
+    let Value::Integer(int) = value else {
+        return Err(not_integer());
+    };
+    let mut canonical = Vec::new();
+    ciborium::into_writer(&Value::Integer(int), &mut canonical).map_err(|_| not_integer())?;
+    if canonical != bytes {
+        return Err(not_integer());
+    }
+    Ok(i128::from(int))
+}
