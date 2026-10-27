@@ -1764,6 +1764,18 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(false)
     }
 
+    /// Whether an op of `space`, or of a folder it covers, names `key_id` in the clear: history
+    /// a current member may read, so any epoch it was sealed under may be served to one.
+    fn space_ops_cite_key(&self, space: &ContextGroupId, key_id: &[u8; 32]) -> EyreResult<bool> {
+        let cited = NamespaceOpLogService::new(self.store, self.namespace_id)
+            .collect_buffered_group_op_keys()?;
+        Ok(cited.into_iter().any(|(group, cited_key)| {
+            cited_key == *key_id
+                && crate::key_covering_group(self.store, &ContextGroupId::from(group))
+                    .is_ok_and(|covering| covering == *space)
+        }))
+    }
+
     /// Responder side of direct key delivery — the counterpart to
     /// [`apply_received_group_key`](Self::apply_received_group_key). Build
     /// an ECDH-wrapped group key for `requester` when they are a current
@@ -1839,6 +1851,9 @@ impl<'a> NamespaceGovernance<'a> {
         // saw — never the fresh post-removal key, which no op they hold cites.
         let group_key = match requested_key_id {
             Some(key_id) => {
+                if !self.space_ops_cite_key(&group_gid, &key_id)? {
+                    return Ok((Vec::new(), requester.identity));
+                }
                 let Some(group_key) =
                     GroupKeyring::new(self.store, group_gid).load_key_by_id(&key_id)?
                 else {

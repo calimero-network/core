@@ -1335,6 +1335,107 @@ mod held_ops {
         );
     }
 
+    /// `op` in the sealed subgroup under `key`, which rotation has since replaced.
+    fn under_epoch(f: &SealedSubgroup, key: &[u8; 32], op: &GroupOp) -> NamespaceOp {
+        NamespaceOp::Group {
+            group_id: f.subgroup.to_bytes().into(),
+            key_id: GroupKeyring::key_id_for(key).into(),
+            encrypted: GroupKeyring::encrypt_op(key, op).expect("seal a group op"),
+            key_rotation: None,
+            registers: op.registered_context(),
+        }
+    }
+
+    /// A member added after several rotations holds only the current key. A registration in the
+    /// space is held until it pulls the earlier epochs, then applies.
+    #[actix::test]
+    async fn a_late_member_applies_a_registration_once_it_pulls_the_earlier_epochs() {
+        let f = unauthorized_op_under_the_namespace_key().await;
+        let admin = f.world.actor(ActorState::NamespaceAdmin);
+        let namespace = f.world.namespace;
+        let carol = [0xCA; 32];
+        calimero_governance_store::NamespaceRepository::new(&f.outside)
+            .replace_identity(&namespace, &PrivateKey::from(carol).public_key(), &carol)
+            .expect("the outside node is Carol's, not the owner's");
+        let _ = on_both(
+            &f,
+            &f.world.owner_sk,
+            in_subgroup(
+                &f,
+                &GroupOp::MemberAdded {
+                    member: admin.account,
+                    role: GroupMemberRole::Admin,
+                },
+                None,
+            ),
+        )
+        .await;
+        let (epoch2, epoch3) = ([0x79; 32], [0x7A; 32]);
+        for key in [&epoch2, &epoch3] {
+            let _ = GroupKeyring::new(&f.inside, f.subgroup)
+                .store_key(key)
+                .expect("the inside node rotates");
+            let named = sign_next(
+                &f.inside,
+                &namespace,
+                &admin.sign_sk,
+                under_epoch(
+                    &f,
+                    key,
+                    &GroupOp::GroupMetadataSet {
+                        name: Some("rotated".to_owned()),
+                        data: BTreeMap::new(),
+                    },
+                ),
+            );
+            for store in [&f.inside, &f.outside] {
+                apply(store, &named).await.expect("a sealed op is logged");
+            }
+        }
+        let _ = crate::group_key_pull::adopt_pulled_group_key(
+            &f.outside,
+            namespace.to_bytes().into(),
+            f.subgroup,
+            &epoch3,
+        )
+        .expect("the member is delivered the current key");
+
+        let context = ContextId::from([0xA7; 32]);
+        let register = sign_next(
+            &f.inside,
+            &namespace,
+            &admin.sign_sk,
+            under_epoch(&f, &epoch3, &registration(context)),
+        );
+        for store in [&f.inside, &f.outside] {
+            apply(store, &register)
+                .await
+                .expect("the op applies or is held");
+        }
+        assert_eq!(group_of(&f.inside, &context), Some(f.subgroup), "setup");
+        assert_eq!(
+            group_of(&f.outside, &context),
+            None,
+            "the registration is held while earlier epochs are unread"
+        );
+
+        for key in [&SUBGROUP_KEY, &epoch2] {
+            let _ = crate::group_key_pull::adopt_pulled_group_key(
+                &f.outside,
+                namespace.to_bytes().into(),
+                f.subgroup,
+                key,
+            )
+            .expect("the earlier epoch is pulled");
+        }
+
+        assert_eq!(
+            group_of(&f.outside, &context),
+            Some(f.subgroup),
+            "the held registration did not apply once the earlier epochs arrived"
+        );
+    }
+
     #[actix::test]
     async fn a_cleartext_claim_that_does_not_match_the_sealed_op_is_refused() {
         let f = unauthorized_op_under_the_namespace_key().await;

@@ -8671,6 +8671,14 @@ fn a_folders_key_request_is_judged_and_served_from_its_space() {
         .store_key(&[0x6Du8; 32])
         .unwrap();
 
+    log_op_sealed_under(
+        &store,
+        namespace_id,
+        &responder_sk,
+        folder_id,
+        &[0x6Cu8; 32],
+        1,
+    );
     let serve = |key_id: Option<[u8; 32]>| {
         build_group_key_delivery(
             &store,
@@ -8704,6 +8712,214 @@ fn a_folders_key_request_is_judged_and_served_from_its_space() {
     assert!(
         serve(Some(folder_key_id)).is_empty(),
         "the folder's own key row is never served"
+    );
+}
+
+/// Log an op of `group` sealed under `key`: what a key request is judged against.
+fn log_op_sealed_under(
+    store: &Store,
+    namespace_id: [u8; 32],
+    signer: &PrivateKey,
+    group: [u8; 32],
+    key: &[u8; 32],
+    nonce: u64,
+) {
+    use crate::group_keys::GroupKeyring;
+    use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
+
+    let op = SignedNamespaceOp::sign(
+        signer,
+        namespace_id.into(),
+        vec![],
+        nonce,
+        NamespaceOp::Group {
+            group_id: group.into(),
+            key_id: GroupKeyring::key_id_for(key).into(),
+            encrypted: GroupKeyring::encrypt_op(key, &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+            registers: None,
+        },
+    )
+    .unwrap();
+    NamespaceOpLogService::new(store, namespace_id.into())
+        .store_signed_operation(&op)
+        .unwrap();
+}
+
+/// A space that rotated twice before `joiner` was added: its keys, the epochs its ops cite, and a
+/// responder that serves by key id.
+struct RotatedSpace {
+    store: Store,
+    namespace_id: [u8; 32],
+    space: ContextGroupId,
+    joiner_account: calimero_account::AccountId,
+    joiner_pk: PublicKey,
+    joiner_device: calimero_account::DeviceId,
+    epochs: [[u8; 32]; 3],
+}
+
+impl RotatedSpace {
+    fn new() -> Self {
+        use crate::group_keys::GroupKeyring;
+        use rand::rand_core::UnwrapErr;
+        use rand::rngs::SysRng;
+
+        let mut rng = UnwrapErr(SysRng);
+        let namespace_id = [0xE8u8; 32];
+        let ns_gid = ContextGroupId::from(namespace_id);
+        let space = ContextGroupId::from([0xE9u8; 32]);
+        let responder_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+        let responder_sk = PrivateKey::from(responder_sk_bytes);
+        let responder_account = crate::test_fixtures::account_for(&responder_sk.public_key());
+        let joiner_pk = PrivateKey::from([0x5Au8; 32]).public_key();
+
+        let store = test_store();
+        let (joiner_account, joiner_device, credential) =
+            crate::test_fixtures::enrol_local_device(&store, &ns_gid, &joiner_pk);
+        crate::test_fixtures::record_credential(&store, &ns_gid, &credential);
+        let _ = enrol_member(&store, &ns_gid, &responder_sk.public_key());
+        NamespaceRepository::new(&store)
+            .store_identity(&ns_gid, &responder_sk.public_key(), &responder_sk_bytes)
+            .unwrap();
+        for group in [&ns_gid, &space] {
+            MetaRepository::new(&store)
+                .save(group, &sample_meta_with_admin(responder_account))
+                .unwrap();
+        }
+        NamespaceRepository::new(&store)
+            .nest(&ns_gid, &space)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&space, calimero_context_config::VisibilityMode::Restricted)
+            .unwrap();
+        let epochs = [[0x61u8; 32], [0x62u8; 32], [0x63u8; 32]];
+        for (nonce, key) in (1u64..).zip(&epochs) {
+            let _ = GroupKeyring::new(&store, space).store_key(key).unwrap();
+            log_op_sealed_under(
+                &store,
+                namespace_id,
+                &responder_sk,
+                space.to_bytes(),
+                key,
+                nonce,
+            );
+        }
+        Self {
+            store,
+            namespace_id,
+            space,
+            joiner_account,
+            joiner_pk,
+            joiner_device,
+            epochs,
+        }
+    }
+
+    fn admit_joiner(&self) {
+        for group in [ContextGroupId::from(self.namespace_id), self.space] {
+            MembershipRepository::new(&self.store)
+                .add_member(&group, &self.joiner_account, GroupMemberRole::Member)
+                .unwrap();
+        }
+    }
+
+    fn serve(&self, key: &[u8; 32]) -> Vec<u8> {
+        crate::build_group_key_delivery(
+            &self.store,
+            self.namespace_id.into(),
+            self.space.to_bytes(),
+            crate::KeyRequester {
+                identity: self.joiner_pk,
+                device: Some(self.joiner_device),
+            },
+            Some(crate::group_keys::GroupKeyring::key_id_for(key)),
+        )
+        .unwrap()
+        .0
+    }
+}
+
+/// A member added after the space rotated is served every epoch its ops cite, not only the
+/// current one, and no key its ops never cite.
+#[test]
+fn a_late_member_is_served_each_earlier_epoch_the_spaces_ops_cite() {
+    let space = RotatedSpace::new();
+    space.admit_joiner();
+    for epoch in &space.epochs {
+        assert!(
+            !space.serve(epoch).is_empty(),
+            "a current member is served an epoch the space's history cites"
+        );
+    }
+
+    let uncited = [0x6Fu8; 32];
+    let _ = crate::group_keys::GroupKeyring::new(&space.store, space.space)
+        .store_key(&uncited)
+        .unwrap();
+    assert!(
+        space.serve(&uncited).is_empty(),
+        "a key no op of the space cites is not history to serve"
+    );
+}
+
+/// A member removed from the space is served no epoch, old or new.
+#[test]
+fn a_removed_member_is_served_no_earlier_epoch() {
+    let space = RotatedSpace::new();
+    space.admit_joiner();
+    assert!(!space.serve(&space.epochs[0]).is_empty(), "control");
+
+    MembershipRepository::new(&space.store)
+        .remove_member(&space.space, &space.joiner_account)
+        .unwrap();
+    for epoch in &space.epochs {
+        assert!(
+            space.serve(epoch).is_empty(),
+            "a removed member is refused every epoch"
+        );
+    }
+}
+
+/// A node holding only the space's current key awaits exactly the earlier epochs its ops cite.
+#[test]
+fn a_late_member_awaits_the_earlier_epochs_its_space_cites() {
+    use crate::group_keys::GroupKeyring;
+
+    let namespace_id = [0xE8u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let space = ContextGroupId::from([0xE9u8; 32]);
+    let author = PrivateKey::from([0x33u8; 32]);
+    let store = test_store();
+    for group in [&ns_gid, &space] {
+        MetaRepository::new(&store)
+            .save(
+                group,
+                &sample_meta_with_admin(crate::test_fixtures::account_for(&author.public_key())),
+            )
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &space)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&space, calimero_context_config::VisibilityMode::Restricted)
+        .unwrap();
+    let epochs = [[0x61u8; 32], [0x62u8; 32], [0x63u8; 32]];
+    for (nonce, key) in (1u64..).zip(&epochs) {
+        log_op_sealed_under(&store, namespace_id, &author, space.to_bytes(), key, nonce);
+    }
+    let _ = GroupKeyring::new(&store, space)
+        .store_key(&epochs[2])
+        .unwrap();
+
+    let mut expected: Vec<_> = epochs[..2]
+        .iter()
+        .map(|key| (space.to_bytes(), GroupKeyring::key_id_for(key)))
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(
+        crate::namespace_group_keys_awaiting(&store, namespace_id.into()).unwrap(),
+        expected
     );
 }
 
