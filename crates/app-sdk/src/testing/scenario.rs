@@ -7,7 +7,10 @@
 //! ```
 //!
 //! `as` is an account, `"@anonymous"` or `"@system"`; `"confirmed": true` adds the step-up.
-//! `expect` may also be `{ "confirmRequired": true }` or `{ "error": code, "fields": {..} }` (fields compared exactly).
+//! `expect` may also be `{ "confirmRequired": true }`, `{ "error": code, "fields": {..} }` (fields compared exactly)
+//! or `{ "refused": "<API code>" }`: the platform refused before the app ran, with the node's code
+//! (`UNAUTHENTICATED` for an anonymous caller of a non-public method, `NOT_FOUND` for an account the
+//! app's org does not hold; Ruling 32).
 //! A `tick` always runs as the system: `as` on a tick is refused.
 //! `op` is `call`, `view`, `tick` (`method` names the timer), `advance` (`args` is the ms)
 //! or `removeMember` (`args` is the account).
@@ -16,6 +19,9 @@
 //! that is exactly `"$"` plus a name (`[A-Za-z_][A-Za-z0-9_]*`) inside `args` or `expect` is replaced by the stored value
 //! (ids an app mints are not known to the scenario author). Any other string, such as
 //! `"$5 lunch"`, is literal; there is no escape, so a literal that looks like `$name` is not expressible.
+//! Accounts: a string that is exactly `"@"` plus a name (same pattern) inside `args` or `expect` is that
+//! account as the app sees it: here its name (`"@bob"` is `"bob"`); on a cluster, its account id.
+//! A substituted value is not substituted again.
 //! `save` on `tick`, `advance` or `removeMember` is an error. After a step, `events` lists for each account
 //! the names of all events it receives so far, in order.
 
@@ -54,16 +60,21 @@ fn is_var_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Replaces every string that is exactly `$name` by the saved value of `name`.
+/// Replaces every string that is exactly `$name` by the saved value of `name`, and every
+/// string that is exactly `@name` by the account `name` (in the harness, the name itself).
 fn substitute(value: &Value, vars: &Vars) -> Result<Value> {
     Ok(match value {
-        Value::String(s) => match s.strip_prefix('$').filter(|n| is_var_name(n)) {
-            Some(name) => vars
-                .get(name)
-                .cloned()
-                .ok_or_else(|| eyre!("unknown variable ${name}"))?,
-            None => value.clone(),
-        },
+        Value::String(s) => {
+            if let Some(name) = s.strip_prefix('$').filter(|n| is_var_name(n)) {
+                vars.get(name)
+                    .cloned()
+                    .ok_or_else(|| eyre!("unknown variable ${name}"))?
+            } else if let Some(account) = s.strip_prefix('@').filter(|n| is_var_name(n)) {
+                Value::String(account.to_owned())
+            } else {
+                value.clone()
+            }
+        }
         Value::Array(items) => Value::Array(
             items
                 .iter()
@@ -181,13 +192,19 @@ fn check_expect(expect: Option<&Value>, result: &Result<Value, Failure>) -> Resu
             other => bail!("expected error {code}, got {other:?}"),
         };
     }
+    if let Some(code) = expect.get("refused").and_then(Value::as_str) {
+        return match result {
+            Err(Failure::Refused { code: got, .. }) if got == code => Ok(()),
+            other => bail!("expected refused {code}, got {other:?}"),
+        };
+    }
     if let Some(kind) = expect.get("trap").and_then(Value::as_str) {
         return match result {
             Err(Failure::Trap(got)) if format!("{got:?}") == kind => Ok(()),
             other => bail!("expected trap {kind}, got {other:?}"),
         };
     }
-    bail!("expect needs ok, error or trap")
+    bail!("expect needs ok, error, trap, refused or confirmRequired")
 }
 
 fn str_of<'v>(step: &'v Value, key: &str) -> Result<&'v str> {

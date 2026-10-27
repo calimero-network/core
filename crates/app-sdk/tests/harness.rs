@@ -83,13 +83,12 @@ fn confirm_needs_confirmed() {
     };
     assert_eq!(code, "NotAView");
     // Host-side ABI checks: public and allowSystem.
-    let Err(Failure::App { code, .. }) = t
-        .anonymous()
-        .view("availability", json!({ "roomId": "r", "start": "1" }))
-    else {
-        panic!("anonymous reached a non-public view");
-    };
-    assert_eq!(code, "LoginRequired");
+    assert_eq!(
+        t.anonymous()
+            .view("availability", json!({ "roomId": "r", "start": "1" })),
+        Err(unauthenticated()),
+        "anonymous reached a non-public view"
+    );
     let Err(Failure::App { code, .. }) = t.system().call("bump", json!({})) else {
         panic!("system reached a method without allow(system)");
     };
@@ -327,7 +326,58 @@ fn team_events_reach_team_members() {
 fn caller_checks_come_before_confirmation() {
     let mut t = app();
     let r = t.anonymous().call("adminRelease", json!({ "id": "x" }));
-    assert_eq!(app_code(r), "LoginRequired");
+    assert_eq!(r, Err(unauthenticated()));
+}
+
+fn unauthenticated() -> Failure {
+    Failure::Refused {
+        status: 401,
+        code: "UNAUTHENTICATED".into(),
+    }
+}
+
+fn not_found() -> Failure {
+    Failure::Refused {
+        status: 404,
+        code: "NOT_FOUND".into(),
+    }
+}
+
+/// The platform's refusals come before the app runs, with the node's codes (Ruling 32):
+/// anonymous on a non-public method is `401 UNAUTHENTICATED`; an account the app's org does
+/// not hold (never in it, or removed) is `404 NOT_FOUND`. A public method stays open to
+/// anonymous callers, and a guest still reaches the app, whose own guard decides.
+#[test]
+fn the_platform_refuses_before_the_app_with_the_nodes_codes() {
+    let mut t = TestApp::new(
+        component(),
+        Org::new().admins(["ada"]).members(["bob"]).guests(["gus"]),
+        T0,
+    );
+    let args = json!({ "roomId": "r1", "start": "1", "title": "t" });
+    assert_eq!(
+        t.anonymous().call("book", args.clone()),
+        Err(unauthenticated())
+    );
+    assert_eq!(
+        t.anonymous().view("roomCount", json!({ "roomId": "r1" })),
+        Ok(json!("0"))
+    );
+    assert_eq!(
+        t.as_("stranger").call("book", args.clone()),
+        Err(not_found())
+    );
+    assert_eq!(
+        t.api_key("k1", "stranger").call("book", args.clone()),
+        Err(not_found())
+    );
+    t.remove_member("bob");
+    assert_eq!(
+        t.as_("bob").view("roomCount", json!({ "roomId": "r1" })),
+        Err(not_found())
+    );
+    // A system run is the platform's own; the ABI decides it.
+    assert_eq!(app_code(t.system().call("bump", json!({}))), "Forbidden");
 }
 
 #[test]
@@ -348,6 +398,22 @@ fn scenario_expectations() {
     let wrong = json!([{ "as": "ada", "confirmed": true, "op": "call", "method": "adminRelease",
         "args": { "id": "x" }, "expect": { "error": "NotFound", "fields": { "a": 1 } } }]);
     assert!(run(wrong).is_err());
+    let refused = json!([{ "as": "@anonymous", "op": "call", "method": "book",
+        "args": { "roomId": "r1", "start": "1", "title": "t" },
+        "expect": { "refused": "UNAUTHENTICATED" } }]);
+    run(refused).unwrap();
+    let not_refused = json!([{ "as": "bob", "op": "view", "method": "roomCount",
+        "args": { "roomId": "r1" }, "expect": { "refused": "NOT_FOUND" } }]);
+    assert!(run(not_refused).is_err());
+    // `@name` in args and expect is that account (in the harness, its name: the title is "bob").
+    let marker = json!([
+        { "as": "bob", "op": "call", "method": "book",
+          "args": { "roomId": "r1", "start": "10", "title": "@bob" }, "save": "b" },
+        { "as": "bob", "op": "view", "method": "booking", "args": { "id": "$b" },
+          "expect": { "ok": { "id": "$b", "roomId": "r1", "start": "10", "title": "@bob",
+                              "checkedIn": false } } },
+    ]);
+    run(marker).unwrap();
     let tick_as = json!([{ "as": "bob", "op": "tick", "method": "tickInfo" }]);
     assert!(format!("{:#}", run(tick_as).unwrap_err()).contains("always runs as the system"));
 }

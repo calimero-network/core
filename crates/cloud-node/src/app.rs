@@ -334,6 +334,21 @@ pub struct AppMachine {
     pub app_id: AppId,
     pub state: AppState,
     pub events_tx: broadcast::Sender<EventRecord>,
+    /// The last [`TICK_RING`] ticks this replica applied, with their outcome (D34: a
+    /// failing tick shows). Not part of the state: a replica rebuilt from a snapshot
+    /// starts it empty.
+    pub ticks: VecDeque<TickApplied>,
+}
+
+/// How many applied ticks [`AppMachine::ticks`] keeps.
+pub const TICK_RING: usize = 64;
+
+/// One applied tick: its timer, slot and outcome.
+#[derive(Clone, Debug)]
+pub struct TickApplied {
+    pub timer: String,
+    pub scheduled_ms: u64,
+    pub applied: Applied,
 }
 
 impl AppMachine {
@@ -344,6 +359,7 @@ impl AppMachine {
             app_id,
             state: AppState::default(),
             events_tx,
+            ticks: VecDeque::new(),
         }
     }
 
@@ -475,6 +491,14 @@ impl AppMachine {
                 .state
                 .timers
                 .insert(tick.timer.clone(), tick.scheduled_ms);
+            self.ticks.push_back(TickApplied {
+                timer: tick.timer.clone(),
+                scheduled_ms: tick.scheduled_ms,
+                applied: a.clone(),
+            });
+            if self.ticks.len() > TICK_RING {
+                let _old = self.ticks.pop_front();
+            }
         }
         a
     }
@@ -744,6 +768,13 @@ mod tests {
         // Built on a state that is no longer current: not applied, the slot stays due.
         assert!(applied(&m.apply(2, &tick(0, 2000, Status::Ok, Vec::new()))).conflict);
         assert_eq!(m.state.timers["beat"], 1000);
+        // The applied tick's outcome is kept for its slot; the conflicted one is not.
+        let kept: Vec<_> = m
+            .ticks
+            .iter()
+            .map(|t| (t.timer.as_str(), t.scheduled_ms, t.applied.status.clone()))
+            .collect();
+        assert_eq!(kept, vec![("beat", 1000, Status::AppError)]);
     }
 
     #[test]

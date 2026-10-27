@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use calimero_cloud_client::{Client, Consistency, Error as ClientError};
+use calimero_cloud_node::app::Status as AppStatus;
 use calimero_cloud_node::node::due_slot;
 use calimero_identity::testing::SoftAuthenticator;
 use common::{Cluster, ORIGIN};
@@ -117,9 +118,18 @@ fn str_of(v: &Value, k: &str) -> String {
 
 /// How a step ended, in the harness's terms (`calimero_app_sdk::testing::Failure`).
 enum Failure {
-    App { code: String, fields: Value },
+    App {
+        code: String,
+        fields: Value,
+    },
     Trap(String),
     ConfirmRequired,
+    /// The platform refused before the app ran (Ruling 32): the HTTP status and API code.
+    Refused {
+        status: u16,
+        code: String,
+    },
+    /// No answer from the API (transport).
     Other(String),
 }
 
@@ -129,6 +139,7 @@ impl std::fmt::Display for Failure {
             Self::App { code, fields } => write!(f, "app error {code} {fields}"),
             Self::Trap(kind) => write!(f, "trap {kind}"),
             Self::ConfirmRequired => write!(f, "confirm required"),
+            Self::Refused { status, code } => write!(f, "refused {status} {code}"),
             Self::Other(e) => write!(f, "{e}"),
         }
     }
@@ -142,30 +153,24 @@ fn show(r: &Result<Value, Failure>) -> String {
     }
 }
 
-/// Maps the node's answer to the harness's. Two refusals the node makes before the app runs
-/// stand for the app's own guard: an anonymous caller of an org app is `401 UNAUTHENTICATED`
-/// (the harness: `LoginRequired`), and an account outside the org is `404 NOT_FOUND`
-/// "no such app" (the harness: `Forbidden`).
+/// The node's answer in the harness's terms, as it is: the app's error, a trap, a confirm
+/// challenge, or any other API refusal with its status and code.
 fn failure(e: &ClientError) -> Failure {
     let details = e.details().cloned().unwrap_or(Value::Null);
-    match (e.code(), e) {
-        (Some("APP_ERROR"), _) => Failure::App {
+    match e {
+        ClientError::Api { code, .. } if code == "APP_ERROR" => Failure::App {
             code: details["code"].as_str().unwrap_or_default().to_owned(),
             fields: details["fields"].clone(),
         },
-        (Some("TRAP"), _) => Failure::Trap(details["kind"].as_str().unwrap_or_default().to_owned()),
-        (Some("CONFIRM_REQUIRED"), _) => Failure::ConfirmRequired,
-        (Some("UNAUTHENTICATED"), _) => Failure::App {
-            code: "LoginRequired".into(),
-            fields: json!({}),
-        },
-        (Some("NOT_FOUND"), ClientError::Api { message, .. }) if message == "no such app" => {
-            Failure::App {
-                code: "Forbidden".into(),
-                fields: json!({}),
-            }
+        ClientError::Api { code, .. } if code == "TRAP" => {
+            Failure::Trap(details["kind"].as_str().unwrap_or_default().to_owned())
         }
-        _ => Failure::Other(e.to_string()),
+        ClientError::Api { code, .. } if code == "CONFIRM_REQUIRED" => Failure::ConfirmRequired,
+        ClientError::Api { status, code, .. } => Failure::Refused {
+            status: *status,
+            code: code.clone(),
+        },
+        ClientError::Transport(e) => Failure::Other(e.to_string()),
     }
 }
 
@@ -229,7 +234,7 @@ impl<'a> Runner<'a> {
         if step.get("save").is_some() && !matches!(op, "call" | "view") {
             return Err(format!("`save` only applies to a call or view, not {op:?}"));
         }
-        let args = substitute(step.get("args").unwrap_or(&Value::Null), &self.vars)?;
+        let args = self.substitute(step.get("args").unwrap_or(&Value::Null))?;
         let result = match op {
             "call" | "view" => self.invoke(step, node, op, args).await?,
             "tick" => {
@@ -237,8 +242,7 @@ impl<'a> Runner<'a> {
                     return Err("a tick always runs as the system; drop `as`".into());
                 }
                 self.tick(step["method"].as_str().ok_or("tick needs a method")?)
-                    .await?;
-                Ok(Value::Null)
+                    .await?
             }
             "advance" => {
                 let ms = args.as_u64().ok_or("advance needs ms in args")?;
@@ -253,10 +257,7 @@ impl<'a> Runner<'a> {
             }
             other => return Err(format!("unknown op {other:?}")),
         };
-        let expect = step
-            .get("expect")
-            .map(|e| substitute(e, &self.vars).map(|e| self.names_to_ids(&e)))
-            .transpose()?;
+        let expect = step.get("expect").map(|e| self.substitute(e)).transpose()?;
         check_expect(expect.as_ref(), &result)?;
         if let (Some(name), Ok(saved)) = (step.get("save").and_then(Value::as_str), &result) {
             let _prev = self.vars.insert(name.to_owned(), saved.clone());
@@ -326,8 +327,9 @@ impl<'a> Runner<'a> {
     }
 
     /// Waits until the timer's latest due slot is applied on every node (the leader's
-    /// 100 ms poll proposes it once app time passes it).
-    async fn tick(&self, timer: &str) -> Result<(), String> {
+    /// 100 ms poll proposes it once app time passes it), and answers with the logged tick's
+    /// outcome for that slot.
+    async fn tick(&self, timer: &str) -> Result<Result<Value, Failure>, String> {
         let node = &self.c.nodes[0].as_ref().unwrap().node;
         let g = node.hosted(&self.org.app).ok_or("app not hosted")?;
         let (bundle, install) =
@@ -352,7 +354,23 @@ impl<'a> Runner<'a> {
                     .is_some_and(|g| g.read_local(|m, _| m.tick_applied(timer, slot)))
             });
             if applied {
-                return Ok(());
+                let logged = g.read_local(|m, _| {
+                    m.ticks
+                        .iter()
+                        .find(|t| t.timer == timer && t.scheduled_ms == slot)
+                        .map(|t| t.applied.clone())
+                });
+                let a = logged.ok_or_else(|| format!("no logged tick for slot {slot}"))?;
+                return Ok(match a.status {
+                    AppStatus::Ok => Ok(a.result),
+                    AppStatus::AppError => Err(Failure::App {
+                        code: a.error["code"].as_str().unwrap_or_default().to_owned(),
+                        fields: a.error["fields"].clone(),
+                    }),
+                    AppStatus::Trap => Err(Failure::Trap(
+                        a.error["kind"].as_str().unwrap_or_default().to_owned(),
+                    )),
+                });
             }
             if Instant::now() > deadline {
                 return Err(format!("slot {slot} of {timer} never applied everywhere"));
@@ -445,25 +463,40 @@ impl<'a> Runner<'a> {
         }
     }
 
-    /// The harness names accounts by name; the cluster by account id. A string in `expect`
-    /// that is exactly an account's name stands for its id.
-    fn names_to_ids(&self, v: &Value) -> Value {
-        match v {
-            Value::String(s) => self
-                .org
-                .people
-                .get(s)
-                .map_or_else(|| v.clone(), |p| Value::String(p.id.clone())),
-            Value::Array(items) => {
-                Value::Array(items.iter().map(|i| self.names_to_ids(i)).collect())
+    /// Replaces every string that is exactly `$name` by the saved value of `name`, and every
+    /// string that is exactly `@name` by the account id of `name` (the harness: its name).
+    fn substitute(&self, value: &Value) -> Result<Value, String> {
+        Ok(match value {
+            Value::String(s) => {
+                if let Some(name) = s.strip_prefix('$').filter(|n| is_var_name(n)) {
+                    self.vars
+                        .get(name)
+                        .cloned()
+                        .ok_or_else(|| format!("unknown variable ${name}"))?
+                } else if let Some(account) = s.strip_prefix('@').filter(|n| is_var_name(n)) {
+                    let p = self
+                        .org
+                        .people
+                        .get(account)
+                        .ok_or_else(|| format!("unknown account @{account}"))?;
+                    Value::String(p.id.clone())
+                } else {
+                    value.clone()
+                }
             }
+            Value::Array(items) => Value::Array(
+                items
+                    .iter()
+                    .map(|v| self.substitute(v))
+                    .collect::<Result<_, _>>()?,
+            ),
             Value::Object(map) => Value::Object(
                 map.iter()
-                    .map(|(k, i)| (k.clone(), self.names_to_ids(i)))
-                    .collect(),
+                    .map(|(k, v)| Ok((k.clone(), self.substitute(v)?)))
+                    .collect::<Result<_, String>>()?,
             ),
             other => other.clone(),
-        }
+        })
     }
 }
 
@@ -474,31 +507,6 @@ fn is_var_name(name: &str) -> bool {
         .next()
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-/// Replaces every string that is exactly `$name` by the saved value of `name`.
-fn substitute(value: &Value, vars: &HashMap<String, Value>) -> Result<Value, String> {
-    Ok(match value {
-        Value::String(s) => match s.strip_prefix('$').filter(|n| is_var_name(n)) {
-            Some(name) => vars
-                .get(name)
-                .cloned()
-                .ok_or_else(|| format!("unknown variable ${name}"))?,
-            None => value.clone(),
-        },
-        Value::Array(items) => Value::Array(
-            items
-                .iter()
-                .map(|v| substitute(v, vars))
-                .collect::<Result<_, _>>()?,
-        ),
-        Value::Object(map) => Value::Object(
-            map.iter()
-                .map(|(k, v)| Ok((k.clone(), substitute(v, vars)?)))
-                .collect::<Result<_, String>>()?,
-        ),
-        other => other.clone(),
-    })
 }
 
 fn check_expect(expect: Option<&Value>, result: &Result<Value, Failure>) -> Result<(), String> {
@@ -531,13 +539,19 @@ fn check_expect(expect: Option<&Value>, result: &Result<Value, Failure>) -> Resu
             other => Err(format!("expected error {code}, got {}", show(other))),
         };
     }
+    if let Some(code) = expect.get("refused").and_then(Value::as_str) {
+        return match result {
+            Err(Failure::Refused { code: got, .. }) if got == code => Ok(()),
+            other => Err(format!("expected refused {code}, got {}", show(other))),
+        };
+    }
     if let Some(kind) = expect.get("trap").and_then(Value::as_str) {
         return match result {
             Err(Failure::Trap(got)) if got == kind => Ok(()),
             other => Err(format!("expected trap {kind}, got {}", show(other))),
         };
     }
-    Err("expect needs ok, error or trap".into())
+    Err("expect needs ok, error, trap, refused or confirmRequired".into())
 }
 
 const SCENARIO_ROLES: [(&str, &str); 4] = [
@@ -763,6 +777,22 @@ async fn followers_honour_min_index_and_hide_titles() {
     };
     let day = json!({ "roomId": "r1", "dayStart": start });
     c.restart(lagging, |_| {}).await;
+    // The precondition: the restarted follower has not applied the booking yet, so the reads
+    // below prove that `minIndex` made it wait.
+    let restarted = &c.nodes[lagging].as_ref().unwrap().node;
+    let group = loop {
+        if let Some(g) = restarted.hosted(app) {
+            break g;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    };
+    let behind = group.applied();
+    assert!(
+        behind < booked.index,
+        "node {lagging} already applied {behind} >= the booking's {} right after its restart; \
+         the test no longer proves minIndex",
+        booked.index
+    );
 
     let order = std::iter::once(lagging).chain((0..3).filter(|i| *i != lagging));
     for node in order {

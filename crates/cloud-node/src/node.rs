@@ -1237,7 +1237,8 @@ impl Node {
     /// `UnknownMethod`; `init` and timers are never reached this way (`WrongKind`);
     /// a `confirm` method never runs as a view (`ConfirmNotAView`) and a call to
     /// one needs a consent; only views run as views (`NotAView`); anonymous
-    /// callers reach only `public` methods (`LoginRequired`) and the System caller
+    /// callers reach only `public` methods (`401 UNAUTHENTICATED`, Ruling 32: the
+    /// platform's refusal, like the access gate's) and the System caller
     /// only `allowSystem` ones (`Forbidden`). `kind = action` never reaches here:
     /// `prepare` refuses it.
     pub async fn abi_gate(
@@ -1265,7 +1266,9 @@ impl Node {
             return Err(app_refusal("NotAView"));
         }
         match caller {
-            Caller::Public if !m.public => Err(app_refusal("LoginRequired")),
+            Caller::Public if !m.public => {
+                Err(ApiError::unauthenticated("sign in to call this method"))
+            }
             Caller::System if !m.allow_system => Err(app_refusal("Forbidden")),
             _ if m.confirm && !view && !consented => Err(app_refusal("ConfirmRequired")),
             _ => Ok(()),

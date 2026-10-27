@@ -184,7 +184,7 @@
    "title": "x"
   },
   "expect": {
-   "error": "LoginRequired"
+   "refused": "UNAUTHENTICATED"
   }
  },
  {
@@ -377,7 +377,7 @@
     {
      "id": "$b1",
      "roomId": "r1",
-     "holder": "bob",
+     "holder": "@bob",
      "start": "1700000100000",
      "end": "1700001900000",
      "title": "standup",
@@ -386,7 +386,7 @@
     {
      "id": "$b4",
      "roomId": "r1",
-     "holder": "bob",
+     "holder": "@bob",
      "start": "1700002800000",
      "end": "1700003700000",
      "title": "later",
@@ -417,7 +417,7 @@
    "ok": {
     "id": "$b1",
     "roomId": "r1",
-    "holder": "bob",
+    "holder": "@bob",
     "start": "1700000100000",
     "end": "1700001900000",
     "title": "standup",
@@ -532,7 +532,7 @@
    "dayStart": "1700000100000"
   },
   "expect": {
-   "error": "Forbidden"
+   "refused": "NOT_FOUND"
   }
  },
  {

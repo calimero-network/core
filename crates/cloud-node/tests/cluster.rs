@@ -5,6 +5,7 @@
 mod common;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use calimero_cloud_client::{Client, Consistency, Policy};
@@ -1710,6 +1711,39 @@ async fn a_system_caller_is_refused_where_the_abi_does_not_allow_it() {
     assert_eq!(v.result, json!(0));
 }
 
+/// Refusals before the app runs carry the platform's codes (Ruling 32): an anonymous
+/// caller of a method that is not public is `401 UNAUTHENTICATED`, also on a public app
+/// (where the caller reaches the app and the ABI refuses), and an account the app does not
+/// let in is `404 NOT_FOUND`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refusals_before_the_app_carry_the_platforms_codes() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (bob, _bpk) = signed_up(&c, 1, "bob").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let open = alice
+        .create_app("kv", &bundle, json!({ "access": { "kind": "public" } }))
+        .await
+        .unwrap();
+    let closed = alice.create_app("kv2", &bundle, json!({})).await.unwrap();
+    let anonymous = c.client(2);
+    let set = json!({ "key": "a", "value": "1" });
+    for app in [&open, &closed] {
+        let e = anonymous
+            .call(app, "set", set.clone(), None)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("UNAUTHENTICATED"), "{app}: {e}");
+        let e = anonymous
+            .view(app, "len", json!({}), Consistency::Strong)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("UNAUTHENTICATED"), "{app}: {e}");
+    }
+    let e = bob.call(&closed, "set", set, None).await.unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+}
+
 /// `(id_term, id_seq, n)` of a `unique_id` (D52).
 fn id_parts(v: &Value) -> (u64, u64, u64) {
     let parts: Vec<u64> = v
@@ -1765,6 +1799,140 @@ async fn unique_ids_survive_a_restart_into_the_same_term() {
         after.iter().all(|a| a.0 == term),
         "{before:?} then {after:?}"
     );
+    for a in &after {
+        assert!(!before.contains(a), "id reused: {before:?} then {after:?}");
+    }
+}
+
+/// D52 in a three-replica group (Ruling 34): the app's leader restarts before any
+/// follower's election timer fires, so openraft restores it as leader of its committed term
+/// without an election (openraft 0.9.25 `Engine::startup`, "Previously it is a leader.
+/// restore it as leader at once"). Preconditions, asserted: the term is the same on every
+/// node before and after, and no other node reported itself leader, or any later term, at
+/// any point of the window (each follower's group status sampled every 2 ms). Then the next
+/// ids are in the same term and continue strictly after the last committed one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn unique_ids_continue_when_a_leader_restarts_into_its_term_in_a_three_replica_group() {
+    // Election timers long enough that a restart always beats them.
+    let mut c = Cluster::start_with(3, |cfg| {
+        cfg.raft.election_min_ms = 6_000;
+        cfg.raft.election_max_ms = 8_000;
+    })
+    .await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let mut before = Vec::new();
+    for _ in 0..3 {
+        let r = alice.call(&app, "newId", json!({}), None).await.unwrap();
+        before.push(id_parts(&r.result));
+    }
+    let leader = c.app_leader(&app).expect("an app leader");
+    let status = |c: &Cluster, i: usize| {
+        c.nodes[i]
+            .as_ref()
+            .unwrap()
+            .node
+            .hosted(&app)
+            .unwrap()
+            .status()
+    };
+    let term = status(&c, leader).term;
+    assert!(
+        before.iter().all(|b| b.0 == term),
+        "{before:?} in term {term}"
+    );
+    let followers: Vec<usize> = (0..3).filter(|i| *i != leader).collect();
+    for f in &followers {
+        let s = status(&c, *f);
+        assert_eq!(
+            (s.term, s.leader),
+            (term, Some(leader as u64 + 1)),
+            "node {f}"
+        );
+    }
+
+    // Sample the followers' view of the group for the whole restart window.
+    let watched: Vec<_> = followers
+        .iter()
+        .map(|f| (*f, c.nodes[*f].as_ref().unwrap().node.hosted(&app).unwrap()))
+        .collect();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sampler = {
+        let stop = Arc::clone(&stop);
+        tokio::spawn(async move {
+            let mut seen = Vec::new();
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                for (f, g) in &watched {
+                    let s = g.status();
+                    seen.push((*f, s.term, s.is_leader, s.leader));
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            seen
+        })
+    };
+
+    let started = std::time::Instant::now();
+    c.restart(leader, |_| {}).await;
+    let restored = loop {
+        let s = c.nodes[leader]
+            .as_ref()
+            .unwrap()
+            .node
+            .hosted(&app)
+            .map(|g| g.status());
+        if let Some(s) = s.filter(|s| s.is_leader) {
+            break s;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "node {leader} did not resume leadership"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    assert_eq!(restored.term, term, "the restart kept the term");
+    println!(
+        "node {leader} resumed leading term {term} {:?} after the restart began",
+        started.elapsed()
+    );
+
+    let other = followers[0];
+    let cl = c.client(other);
+    let _s = cl.sign_in(&mut pk).await.unwrap();
+    let mut after = Vec::new();
+    for _ in 0..3 {
+        let r = cl.call(&app, "newId", json!({}), None).await.unwrap();
+        after.push(id_parts(&r.result));
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let seen = sampler.await.unwrap();
+
+    // Preconditions: nobody else led, no election started (a candidate's term would rise).
+    assert!(seen.len() > 100, "{} samples", seen.len());
+    for (f, t, is_leader, l) in &seen {
+        assert!(!is_leader, "node {f} led during the window: {seen:?}");
+        assert_eq!(*t, term, "node {f} saw term {t} during the window");
+        assert!(
+            l.is_none() || *l == Some(leader as u64 + 1),
+            "node {f} followed {l:?}"
+        );
+    }
+    for i in 0..3 {
+        assert_eq!(status(&c, i).term, term, "node {i} after");
+    }
+    assert_eq!(c.app_leader(&app), Some(leader));
+
+    // The outcome: same term, ids strictly after the last committed one, none reused.
+    let last = *before.iter().max().unwrap();
+    assert!(
+        after.iter().all(|a| a.0 == term),
+        "{before:?} then {after:?}"
+    );
+    assert!(after[0] > last, "{before:?} then {after:?}");
+    for w in after.windows(2) {
+        assert!(w[1] > w[0], "{after:?}");
+    }
     for a in &after {
         assert!(!before.contains(a), "id reused: {before:?} then {after:?}");
     }

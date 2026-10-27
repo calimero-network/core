@@ -37,6 +37,10 @@ pub enum Failure {
     BadOutput(String),
     /// A `confirm` method was called without `.confirmed()`.
     ConfirmRequired,
+    /// The platform refused before the app ran, with the node's HTTP status and API code
+    /// (Ruling 32): `401 UNAUTHENTICATED` for an anonymous caller of a non-public method,
+    /// `404 NOT_FOUND` for an account the app's org does not hold.
+    Refused { status: u16, code: String },
 }
 
 const APP_ID: &str = "test-app";
@@ -412,7 +416,10 @@ impl TestApp {
         }
     }
 
-    /// The host-side ABI checks (confirm, public, allowSystem) a node makes before `handle`.
+    /// The checks a node makes before `handle`, with its codes (Ruling 32). First the
+    /// platform's: the harness app is an org app, so an account the org does not hold (never in
+    /// it, or removed) is `404 NOT_FOUND`, and an anonymous caller of a method that is not
+    /// public is `401 UNAUTHENTICATED`. Then the ABI's (confirm, allowSystem).
     fn gate(
         &self,
         method: &str,
@@ -420,7 +427,21 @@ impl TestApp {
         confirmed: bool,
         view: bool,
     ) -> Option<Failure> {
+        if let HostCaller::Account(a) | HostCaller::ApiKey { account: a, .. } = caller {
+            if self.org.role(a).is_none() {
+                return Some(Failure::Refused {
+                    status: 404,
+                    code: "NOT_FOUND".to_owned(),
+                });
+            }
+        }
         let m = self.prepared.abi.methods.get(method)?;
+        if matches!(caller, HostCaller::Public) && !m.public {
+            return Some(Failure::Refused {
+                status: 401,
+                code: "UNAUTHENTICATED".to_owned(),
+            });
+        }
         let refuse = |code: &str| {
             Some(Failure::App {
                 code: code.to_owned(),
@@ -435,7 +456,6 @@ impl TestApp {
             return None;
         }
         match caller {
-            HostCaller::Public if !m.public => refuse("LoginRequired"),
             HostCaller::System if !m.allow_system => refuse("Forbidden"),
             _ if m.confirm && !confirmed => Some(Failure::ConfirmRequired),
             _ => None,

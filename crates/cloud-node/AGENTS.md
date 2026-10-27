@@ -35,9 +35,14 @@ architecture spec.
   (Ruling 31): a method the ABI does not name is `UnknownMethod`, `init` and timers
   are never reached through `/intents` or `/views` (`WrongKind`); a `confirm` method
   is never a view (`ConfirmNotAView`) and a call of one needs a
-  consent; only views run as views (`NotAView`); anonymous callers reach `public`
-  methods only (`LoginRequired`), `Caller::System` `allowSystem` ones only
-  (`Forbidden`); all `422 APP_ERROR` before anything runs. `kind = action` is refused
+  consent; only views run as views (`NotAView`); `Caller::System` reaches
+  `allowSystem` methods only (`Forbidden`); all `422 APP_ERROR` before anything runs.
+  Anonymous callers reach `public` methods only: otherwise `401 UNAUTHENTICATED`, the
+  platform's refusal (Ruling 32), like the access gate's (`401` anonymous, `404
+  NOT_FOUND` for an account the app does not let in, which does not confirm it exists).
+  The node is the reference for these; the harness returns the same
+  (`Failure::Refused`). Typed client errors such as `LoginRequired` belong in the client
+  SDK, mapped from the HTTP status in one place (not this milestone). `kind = action` is refused
   by `prepare`. `confirmMethods` on `POST /apps` is ignored.
 - **Time** (`Node::app_clock`, D16, D19): app time is the host clock plus a shared
   offset (`Config.clock_offset_ms`; `Node::advance_clock` under feature `testing`).
@@ -52,8 +57,10 @@ architecture spec.
   and `AppState::last_id` keeps the highest pair applied (conflicted entries included).
   `propose_led` applies the leader's whole log before building, and the counter
   continues from `max(memory, last_id)`: a node restored as leader of the same term
-  (openraft does this without an election, e.g. a one-replica group) never reissues
-  an id.
+  (openraft does this without an election, `Engine::startup`, in a one-replica group and
+  in a three-replica group restarted within the election timeout) never reissues an id.
+  Tests: `unique_ids_survive_a_restart_into_the_same_term` (one replica),
+  `unique_ids_continue_when_a_leader_restarts_into_its_term_in_a_three_replica_group`.
 - **Timers** (D34): `lib.rs` polls every `node::TIMER_POLL` (100 ms);
   `Node::tick_timers` spawns one round per app group this node leads (at most one
   at a time per app). A round reads the ABI's `every` methods and, for each,
@@ -68,7 +75,8 @@ architecture spec.
   is not logged, so the next poll proposes the same slot (or a later one, if one is
   due by then). Missed slots (no leader, a frozen clock) collapse into one tick for
   the latest; the app sees the gap through `previous`. Nothing ticks before `init`
-  succeeded. Tests move app time with `Node::advance_clock` (feature `testing`,
+  succeeded. Each replica keeps its last `TICK_RING` (64) applied ticks with their
+  outcome (`AppMachine::ticks`, not persisted; a snapshot restore starts it empty). Tests move app time with `Node::advance_clock` (feature `testing`,
   enabled for the crate's own tests through its dev-dependency on itself); the kv
   fixture's `beat` ticks hourly so other tests see no ticks.
 - **Idempotency** (D16): records live for the last `IDEMPOTENCY_ENTRIES` (100,000)
