@@ -36,6 +36,7 @@ mod member_metadata_set;
 mod member_removed;
 mod member_role_set;
 mod member_set_auto_follow;
+mod namespace_departure;
 mod noop;
 mod on_behalf;
 mod outbound_approval_set;

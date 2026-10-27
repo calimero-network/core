@@ -11186,14 +11186,11 @@ mod tee_member_removed_event_tests {
         );
     }
 
-    /// The mirror-image guard: a namespace-root `MemberRemoved` of a
-    /// regular `Member` must NOT cascade. The root row is removed
-    /// (today's behavior) but the `Restricted` subgroup row is
-    /// PRESERVED — the #2256 Restricted-subgroup membership wall holds
-    /// for non-TEE members.
+    /// A namespace-root `MemberRemoved` of a regular `Member` cascades too:
+    /// the `Restricted` subgroup row goes with the root row.
     #[test]
     #[serial_test::serial]
-    fn member_removed_root_regular_member_does_not_cascade() {
+    fn member_removed_root_regular_member_cascades() {
         use calimero_context_config::VisibilityMode;
 
         let store = test_store();
@@ -11251,21 +11248,21 @@ mod tee_member_removed_event_tests {
             None,
             "root row must be removed"
         );
-        // … but the Restricted subgroup row is PRESERVED — no cascade.
+        // … and the Restricted subgroup row goes with it.
         assert_eq!(
             MembershipRepository::new(&store)
                 .role_of(&subgroup, &member)
                 .unwrap(),
-            Some(GroupMemberRole::Member),
-            "regular-member root removal MUST NOT cascade — Restricted wall holds (#2256)"
+            None,
+            "a root removal of any role cascades to the subgroup"
         );
 
         let (root_pair, sub_pair) =
             count_removed_events_for_two(&mut rx, ns_gid.to_bytes(), subgroup.to_bytes(), member);
         assert_eq!(
             sub_pair,
-            (0, 0),
-            "no cascade events for a non-TEE root removal"
+            (1, 0),
+            "the cascade queues MemberRemoved, and no TEE event for a regular member"
         );
         assert_eq!(
             root_pair,
