@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use calimero_cloud_client::{Client, Consistency, Policy};
+use calimero_cloud_client::{Client, Consistency, Error, Policy};
 use calimero_cloud_node::run;
 use calimero_identity::testing::SoftAuthenticator;
 use futures_util::StreamExt;
@@ -926,6 +926,31 @@ async fn a_blob_too_large_to_reach_the_other_nodes_is_refused_up_front() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("TOO_LARGE"), "{e}");
+    let listed = alice.get(&format!("apps/{files}/blobs")).await.unwrap();
+    assert_eq!(listed["blobs"], json!([]), "{listed}");
+}
+
+/// An upload past the sealed channel's own cap is answered `413 TOO_LARGE`
+/// naming the cap, not dropped mid-upload: merobox's 100 and 250 MiB blob
+/// sweep saw the connection closed with no answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_upload_past_the_sealed_cap_is_answered_413() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (files, _) = deploy(&alice, "files", mero_wasm("blobs", "blobs"), json!({})).await;
+    let cap = calimero_sealed::server::MAX_SEALED_BYTES;
+    for size in [cap + 1, 100 << 20] {
+        let e = alice.upload_blob(&files, vec![7u8; size]).await.unwrap_err();
+        let Error::Api {
+            status, message, ..
+        } = &e
+        else {
+            panic!("{size} bytes: not an answer from the node: {e:#}");
+        };
+        assert_eq!((*status, e.code()), (413, Some("TOO_LARGE")), "{e}");
+        assert!(message.contains("64 MiB"), "{e}");
+    }
+    // The session still works after a refusal.
     let listed = alice.get(&format!("apps/{files}/blobs")).await.unwrap();
     assert_eq!(listed["blobs"], json!([]), "{listed}");
 }

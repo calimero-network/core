@@ -189,3 +189,80 @@ async fn a_relay_cannot_choose_the_origin_the_node_reads() {
     assert_eq!(v["origin"], serde_json::Value::Null, "{v}");
     assert_eq!(v["forwardedHost"], serde_json::Value::Null, "{v}");
 }
+
+/// POST `len` bytes to the envelope over a raw connection the way many clients
+/// do (Python's, curl without `Expect`): the whole body first, and only then
+/// read the answer. Answers the status line and the body, or the error that
+/// sending or reading met.
+async fn post_whole_then_read(url: &Url, len: usize, chunked: bool) -> std::io::Result<String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream =
+        tokio::net::TcpStream::connect((url.host_str().unwrap(), url.port().unwrap())).await?;
+    let framing = if chunked {
+        "transfer-encoding: chunked".to_owned()
+    } else {
+        format!("content-length: {len}")
+    };
+    let head = format!(
+        "POST /sealed/v2 HTTP/1.1\r\nhost: node\r\n\
+         content-type: application/vnd.calimero.sealed\r\n{framing}\r\n\r\n"
+    );
+    stream.write_all(head.as_bytes()).await?;
+    // A version byte, then zeros: an envelope naming a session no node holds.
+    let mut piece = vec![0u8; 1 << 20];
+    piece[0] = 2;
+    let mut sent = 0;
+    while sent < len {
+        let n = piece.len().min(len - sent);
+        if chunked {
+            stream.write_all(format!("{n:x}\r\n").as_bytes()).await?;
+        }
+        stream.write_all(&piece[..n]).await?;
+        if chunked {
+            stream.write_all(b"\r\n").await?;
+        }
+        piece[0] = 0;
+        sent += n;
+    }
+    if chunked {
+        stream.write_all(b"0\r\n\r\n").await?;
+    }
+    let mut answer = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = stream.read(&mut buf).await?;
+        answer.extend_from_slice(&buf[..n]);
+        let text = String::from_utf8_lossy(&answer);
+        // One small JSON refusal: the answer is complete once its body closes.
+        if n == 0 || text.contains("\r\n\r\n") && text.trim_end().ends_with('}') {
+            return Ok(text.into_owned());
+        }
+    }
+}
+
+/// merobox's 100 and 250 MiB blob uploads met a closed connection instead of
+/// the 413 the node had sent: it answered at once and closed with the body
+/// unread, and that reset threw the answer away before the client, still
+/// sending, read it.
+#[tokio::test]
+async fn a_request_past_the_cap_is_answered_after_it_is_sent() {
+    let (url, _transport, _h) = serve(SealedOptions::default()).await;
+    let cap = calimero_sealed::server::MAX_SEALED_BYTES;
+    for len in [cap + 1, 100 << 20] {
+        let answer = post_whole_then_read(&url, len, false)
+            .await
+            .unwrap_or_else(|e| panic!("{len} bytes declared: no answer: {e}"));
+        assert!(answer.starts_with("HTTP/1.1 413"), "{answer}");
+        assert!(
+            answer.contains(r#""code":"too_large""#) && answer.contains("64 MiB"),
+            "{answer}"
+        );
+    }
+    // Chunked, the length is unknown up front; the session is refused at its
+    // first bytes and the rest read past the cap all the same.
+    let answer = post_whole_then_read(&url, 100 << 20, true)
+        .await
+        .unwrap_or_else(|e| panic!("chunked: no answer: {e}"));
+    assert!(answer.starts_with("HTTP/1.1 4"), "{answer}");
+}

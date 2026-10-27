@@ -68,8 +68,8 @@ use std::time::Instant;
 use axum::body::{to_bytes, Body, BodyDataStream, Bytes};
 use axum::extract::{Request, State};
 use axum::http::header::{
-    CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, RETRY_AFTER, TRANSFER_ENCODING,
-    UPGRADE,
+    CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, EXPECT, HOST, RETRY_AFTER,
+    TRANSFER_ENCODING, UPGRADE,
 };
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::Next;
@@ -107,6 +107,14 @@ const TAG_LEN: usize = 16;
 
 /// Largest sealed request accepted.
 pub const MAX_SEALED_BYTES: usize = 64 * 1024 * 1024;
+const _: () = assert!(
+    MAX_SEALED_BYTES == 64 << 20,
+    "the too_large refusal names 64 MiB"
+);
+/// Most of a refused request's body read and dropped before the refusal is sent,
+/// so a client that sends its whole body before it reads gets the answer, not a
+/// reset. Past it, or [`SEALED_READ_TIME`], the connection is closed instead.
+const MAX_DISCARDED_BYTES: usize = 16 * MAX_SEALED_BYTES;
 const MAX_SEALED_IN_FLIGHT: usize = 4 * MAX_SEALED_BYTES; // sealed bytes held at once, node-wide
 const SEALED_READ_TIME: Duration = Duration::from_secs(120); // a 64 MiB body at 4.5 Mbit/s
 const MAX_GROWTH: usize = 4 * 1024 * 1024; // unused capacity a request's buffer is charged for
@@ -492,17 +500,27 @@ async fn read_envelope(
     let too_large = || Refusal {
         status: StatusCode::PAYLOAD_TOO_LARGE,
         code: "too_large",
-        message: "the sealed request is too large",
+        message: "a sealed request is limited to 64 MiB",
     };
     let declared = headers
         .get(CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<usize>().ok());
+    let mut chunks = body.into_data_stream();
+    // A body that stops arriving would otherwise hold its share of the budget forever.
+    let deadline = tokio::time::Instant::now() + SEALED_READ_TIME;
     if declared.is_some_and(|len| len > MAX_SEALED_BYTES) {
+        // A client waiting for `100 Continue` has sent nothing yet: reading would
+        // only ask it for the body this refuses.
+        let waiting = headers
+            .get(EXPECT)
+            .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"100-continue"));
+        if !waiting {
+            discard(&mut chunks, 0, declared, deadline).await;
+        }
         return Err(too_large());
     }
 
-    let mut chunks = body.into_data_stream();
     let mut sealed = Vec::new();
     let mut start = Vec::with_capacity(HEADER_LEN + TAG_LEN); // checked before anything is charged
     let mut held = Arc::clone(&transport.in_flight)
@@ -510,8 +528,6 @@ async fn read_envelope(
         // SAFETY: the budget is never closed, and taking nothing always succeeds.
         .expect("an empty permit");
     let mut seen = 0;
-    // A body that stops arriving would otherwise hold its share of the budget forever.
-    let deadline = tokio::time::Instant::now() + SEALED_READ_TIME;
     loop {
         let chunk = match tokio::time::timeout_at(deadline, chunks.next()).await {
             Ok(Some(chunk)) => chunk.map_err(|_| malformed())?,
@@ -526,6 +542,8 @@ async fn read_envelope(
         };
         seen += chunk.len();
         if seen > MAX_SEALED_BYTES {
+            drop((sealed, held, chunk));
+            discard(&mut chunks, seen, declared, deadline).await;
             return Err(too_large());
         }
         let admitted = admit_start(transport, &mut start, &chunk).and_then(|taken| {
@@ -544,19 +562,36 @@ async fn read_envelope(
                 })
         });
         if let Err(refusal) = admitted {
-            // Read the rest, within the read deadline, without keeping it, so a client
-            // mid-upload gets the refusal it acts on instead of a reset.
             drop((sealed, held, chunk));
-            while let Ok(Some(Ok(chunk))) = tokio::time::timeout_at(deadline, chunks.next()).await {
-                seen += chunk.len();
-                if seen > MAX_SEALED_BYTES {
-                    break;
-                }
-            }
+            discard(&mut chunks, seen, declared, deadline).await;
             return Err(refusal);
         }
     }
     Ok((sealed, held))
+}
+
+/// Read the rest of a refused request's body without keeping any of it, so a
+/// client mid-upload gets the refusal it acts on instead of a reset: a client
+/// that sends its whole body before it reads, as many do, never sees an answer
+/// sent early, since closing a connection with its body unread resets it and the
+/// reset throws away what the client had yet to read. `seen` bytes are already
+/// read; past [`MAX_DISCARDED_BYTES`] or `deadline` this gives up, and the
+/// connection closes under the refusal.
+async fn discard(
+    chunks: &mut BodyDataStream,
+    mut seen: usize,
+    declared: Option<usize>,
+    deadline: tokio::time::Instant,
+) {
+    if declared.is_some_and(|len| len > MAX_DISCARDED_BYTES) {
+        return;
+    }
+    while seen <= MAX_DISCARDED_BYTES {
+        let Ok(Some(Ok(chunk))) = tokio::time::timeout_at(deadline, chunks.next()).await else {
+            return;
+        };
+        seen += chunk.len();
+    }
 }
 
 /// Take a request's first bytes and check the session they name before anything is

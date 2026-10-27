@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use calimero_identity::{Assertion, Registration};
-use calimero_sealed::client::SealedTransport;
+use calimero_sealed::client::{SealedRefusal, SealedTransport};
 use futures_util::{Stream, StreamExt};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,23 @@ pub enum Error {
     /// The node could not be reached, attested or understood.
     #[error(transparent)]
     Transport(#[from] eyre::Report),
+}
+
+/// What a request sealed and sent became: a refusal of its envelope as too
+/// large (`413`) is the answer a caller acts on, the same `TOO_LARGE` the node
+/// gives a body past its own limits, so it is an [`Error::Api`]. It comes back
+/// in the clear, as every refusal of an envelope does: the node refuses it
+/// before the request can be opened, so there is no request to seal it to.
+fn sealed_error(e: eyre::Report) -> Error {
+    match e.downcast_ref::<SealedRefusal>() {
+        Some(refusal) if refusal.status == 413 => Error::Api {
+            status: 413,
+            code: "TOO_LARGE".to_owned(),
+            message: refusal.message.clone(),
+            details: Value::Null,
+        },
+        _ => Error::Transport(e),
+    }
 }
 
 impl Error {
@@ -236,7 +253,11 @@ impl Client {
             req = req.json(&b);
         }
         let req = req.build().map_err(eyre::Report::from)?;
-        Ok(self.sealed.execute(req).await?)
+        self.execute(req).await
+    }
+
+    async fn execute(&self, req: reqwest::Request) -> Result<reqwest::Response> {
+        self.sealed.execute(req).await.map_err(sealed_error)
     }
 
     async fn json(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
@@ -385,7 +406,6 @@ impl Client {
             req = req.bearer_auth(token);
         }
         let resp = self
-            .sealed
             .execute(req.build().map_err(eyre::Report::from)?)
             .await?;
         let status = resp.status().as_u16();
@@ -500,7 +520,6 @@ impl Client {
             req = req.bearer_auth(token);
         }
         let resp = self
-            .sealed
             .execute(req.build().map_err(eyre::Report::from)?)
             .await?;
         let status = resp.status().as_u16();

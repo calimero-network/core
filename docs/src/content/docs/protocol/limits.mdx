@@ -60,6 +60,19 @@ events — must stay under **1 MiB**.
 | Forward to an app's leader | 5 s, then retry | `FORWARD_TIMEOUT` |
 | Replicas per app | `--replicas`, 3 by default; moves keep at least 3 | |
 
+A body past a limit is answered `413`, error code `TOO_LARGE`, with the limit
+in the message. Under 64 MiB the node's own check answers, sealed like any
+answer. Past 64 MiB the sealed envelope is refused before it can be opened, so
+its `413` (`{"error":{"code":"too_large",...}}`, which `calimero-cloud-client`
+reports as `TOO_LARGE`) comes back in the clear: sealing it would mean spending
+the request id on bytes nobody has authenticated, letting a relay make the node
+vouch for a refusal of a request the client never sent. The node reads and drops
+the rest of such a body before it answers, up to 1 GiB and 120 s
+(`MAX_DISCARDED_BYTES`, `SEALED_READ_TIME`), because a client that sends its
+whole body before reading would otherwise meet a reset, not the answer; past
+that, or for a declared length past 1 GiB or a client waiting on
+`Expect: 100-continue`, it answers at once and closes.
+
 ## Time limits
 
 | What | Lifetime |

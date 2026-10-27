@@ -14,6 +14,11 @@ Sigstore-verified `published-mrtds.json` of the release the node names and requi
 matching allowed profile; then `policy_valid` (TCB status, debug TD, app-hash binding).
 mero-js `src/cloud-v2/attestation.ts` implements the same check; change both or neither.
 
+Errors: `Error::Api` is the node's answer (`{ error, message, details }`);
+`Error::Transport` is not reaching, attesting or understanding it. One envelope
+refusal is an answer too: a sealed request past `MAX_SEALED_BYTES` comes back
+`413` in the clear, and `sealed_error` makes it `Error::Api { 413, TOO_LARGE }`.
+
 The command line over this client is `meroctl` (`crates/meroctl`).
 
 ```bash

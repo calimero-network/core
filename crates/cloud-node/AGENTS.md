@@ -186,6 +186,11 @@ is its command line.
   a mark just committed; an app whose leader does not answer counts as holding
   it) or it is a bundle or a release `.mpk`. Known window: the same content
   uploaded to another app between that check and the deletion loses its bytes.
+  A blob past `MAX_BLOB_BYTES` (47 MiB) is refused `413 TOO_LARGE` by the node,
+  one past the sealed cap (64 MiB) by the envelope, in the clear; the client
+  reports both as `TOO_LARGE`. Regressions:
+  `a_blob_too_large_to_reach_the_other_nodes_is_refused_up_front`,
+  `an_upload_past_the_sealed_cap_is_answered_413`.
 - **App frontends** (`app_host.rs`, v1's app hosts): with `--apps-domain D`
   (`merod local`: `localhost`), each package's frontend is at
   `{label}.D` (`app_host::label`, 52 base32 characters), from its release's
