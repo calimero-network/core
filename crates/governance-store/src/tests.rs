@@ -2399,6 +2399,69 @@ fn transfer_ownership_rejects_new_owner_not_member() {
     );
 }
 
+/// A space root's transfer is judged on board facts: its target need only be a workspace member,
+/// and becomes the space's admin by the transfer; a non-member is refused.
+#[test]
+fn a_space_roots_transfer_needs_a_workspace_member_and_seats_it() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_context_config::VisibilityMode;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let store = test_store();
+    let ns = test_group_id();
+    let space = ContextGroupId::from([0x7C; 32]);
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner = enrol_member(&store, &ns, &owner_sk.public_key());
+    let heir = enrol_member(&store, &ns, &PrivateKey::random(&mut rng).public_key());
+    let stranger = enrol_member(&store, &ns, &PrivateKey::random(&mut rng).public_key());
+    for who in [owner, heir] {
+        MembershipRepository::new(&store)
+            .add_member(&ns, &who, GroupMemberRole::Member)
+            .unwrap();
+    }
+    MetaRepository::new(&store)
+        .save(&ns, &sample_meta_with_admin(owner))
+        .unwrap();
+    NamespaceRepository::new(&store).nest(&ns, &space).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&space, VisibilityMode::Restricted)
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&space, &sample_meta_with_admin(owner))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&space, &owner, GroupMemberRole::Admin)
+        .unwrap();
+    let transfer = |nonce: u64, to: AccountId| {
+        SignedGroupOp::sign(
+            &owner_sk,
+            space.to_bytes().into(),
+            vec![],
+            nonce,
+            crate::test_fixtures::guarded_group_op(
+                &store,
+                &space,
+                &owner_sk.public_key(),
+                GroupOp::TransferOwnership { new_owner: to },
+            ),
+        )
+        .unwrap()
+    };
+
+    assert!(apply_local_signed_group_op(&store, &transfer(1, stranger)).is_err());
+    apply_local_signed_group_op(&store, &transfer(2, heir))
+        .expect("a workspace member who is not yet in the space may inherit it");
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&space, &heir)
+            .unwrap(),
+        Some(GroupMemberRole::Admin),
+    );
+}
+
 /// `TransferOwnership` must move the meta `admin_identity` pin to the
 /// successor, not just `owner_identity`. `is_admin` honors
 /// `meta.admin_identity` as an always-admin that no member-row change can

@@ -576,14 +576,12 @@ impl<'a> PermissionChecker<'a> {
             }
         };
         // A transfer moves the owner off the creator; where the cut cannot say, the creator is it.
-        let owner = crate::group_owner::owner_at_cut(
+        let owner = crate::group_owner::transferred_owner_at_cut(
             self.store,
             &self.group_id,
             self.parents,
             self.authorizer,
-        )
-        .ok()
-        .flatten()
+        )?
         .or(creator);
         if let Some(owner) = owner.filter(|_| creator.is_some()) {
             let signer = match self.principal_account(identity) {

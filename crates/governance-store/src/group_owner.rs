@@ -54,6 +54,31 @@ pub(crate) fn owner_at_cut(
         .map(|meta| meta.owner_identity))
 }
 
+/// The owner a transfer in the log moved `group` to at `parents`, and `None` where none did: the
+/// creator then owns it. Never reads the live meta; undecidable where the cut cannot say.
+pub(crate) fn transferred_owner_at_cut(
+    store: &Store,
+    group: &ContextGroupId,
+    parents: &[[u8; 32]],
+    authorizer: &dyn AtCutAuthorizer,
+) -> EyreResult<Option<AccountId>> {
+    if parents.is_empty() {
+        return Ok(None);
+    }
+    match owner_in_log(store, group, parents)? {
+        Logged::Owner(owner) => Ok(Some(owner)),
+        Logged::NeverTransferred => Ok(None),
+        Logged::Unknown => {
+            if !authorizer.can_resolve_cut(group, parents)
+                && !authorizer.history_sealed_in_group(group, parents)
+            {
+                bail!(undecidable(group));
+            }
+            Ok(None)
+        }
+    }
+}
+
 /// The account that founded `namespace`: what its founding row or its logged genesis names,
 /// else the live meta of a store holding neither. A transfer never moves it.
 pub fn namespace_founder(

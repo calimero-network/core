@@ -40,15 +40,48 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, new_owner: &AccountId) -> EyreR
     //     a plain-Member owner would have a confusing "owner with
     //     reduced capabilities" status. Require Admin first;
     //     promote then transfer if needed.
-    match ctx.direct_role(new_owner)? {
-        Some(GroupMemberRole::Admin) => {}
-        Some(other) => bail!(MembershipError::TransferTargetNotAdmin {
-            group: hex::encode(group_id.to_bytes()),
-            role: other,
-        }),
-        None => bail!(MembershipError::TransferTargetNotMember(hex::encode(
-            group_id.to_bytes()
-        ))),
+    // A space root's ownership is a board fact, decided where the space's rows cannot be read:
+    // its heir need only stand in the workspace, and becomes the space's admin by the transfer.
+    let ns_gid = crate::NamespaceRepository::new(store).resolve(group_id)?;
+    let space_root = crate::private_space::Tree::at_cut(
+        store,
+        ctx.authorizer(),
+        group_id,
+        ctx.cut(),
+        crate::TreeReads {
+            chains: &[*group_id],
+            subtrees: &[],
+        },
+    )?
+    .space_of(group_id)?
+        == Some(*group_id);
+    if space_root {
+        if crate::PermissionChecker::new(store, ns_gid)
+            .with_apply_auth(ctx.cut(), ctx.authorizer())
+            .effective_role_at_cut(new_owner)?
+            .is_none()
+        {
+            bail!(MembershipError::TransferTargetNotMember(hex::encode(
+                group_id.to_bytes()
+            )));
+        }
+        crate::MembershipRepository::new(store).add_member(
+            group_id,
+            new_owner,
+            GroupMemberRole::Admin,
+        )?;
+    }
+    if !space_root {
+        match ctx.direct_role(new_owner)? {
+            Some(GroupMemberRole::Admin) => {}
+            Some(other) => bail!(MembershipError::TransferTargetNotAdmin {
+                group: hex::encode(group_id.to_bytes()),
+                role: other,
+            }),
+            None => bail!(MembershipError::TransferTargetNotMember(hex::encode(
+                group_id.to_bytes()
+            ))),
+        }
     }
 
     // Move BOTH the owner pin and the meta admin pin to the successor.
