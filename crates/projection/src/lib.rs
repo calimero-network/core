@@ -678,17 +678,6 @@ impl ScopeState {
                 // it's a mutation of a live subgroup, so it must not leave the
                 // slot non-existent when it folds before the create.
                 lww_set(&mut slot.exists, stamp, true);
-                // A flip to Restricted founds a space whose maker is its first admin.
-                if *restricted
-                    && op.authorship.account != calimero_op::Authorship::UNATTRIBUTED_ACCOUNT
-                {
-                    self.fold_member_added(
-                        ContextGroupId::from(*scope.as_bytes()),
-                        op.authorship.account,
-                        &GroupMemberRole::Admin,
-                        stamp,
-                    );
-                }
             }
             OpPayload::DefaultCapabilitiesSet {
                 group,

@@ -610,3 +610,33 @@ fn the_flips_key_rotation_reaches_the_space_maker() {
         "the maker is entitled to the space's key"
     );
 }
+
+/// A flip its signer may not make seats nobody: it is refused before anything is written.
+#[test]
+fn an_unauthorized_flip_seats_nobody() {
+    let s = Space::new();
+    let folder = s.open(NS);
+    let sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+    let who = enrol_member(&s.store, &ContextGroupId::from(NS), &sk.public_key());
+    crate::MembershipRepository::new(&s.store)
+        .add_member(&NS.into(), &who, GroupMemberRole::Member)
+        .unwrap();
+    let flip = SignedGroupOp::sign(
+        &sk,
+        folder.into(),
+        vec![],
+        1,
+        GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Restricted,
+        },
+    )
+    .unwrap();
+
+    assert!(apply_local_signed_group_op(&s.store, &flip).is_err());
+    assert_eq!(
+        crate::MembershipRepository::new(&s.store)
+            .role_of(&folder.into(), &who)
+            .unwrap(),
+        None,
+    );
+}

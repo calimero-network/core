@@ -3967,6 +3967,53 @@ fn loss_order(walked: &CutAncestry<'_>, root: ContextGroupId) -> Option<LossOrde
     Some(LossOrder { before, after })
 }
 
+/// Seats, as its first admin, whoever made a group private by a flip that was valid at its own cut:
+/// not void, the group open then, and its maker an admin or a holder of `CAN_MANAGE_VISIBILITY`.
+/// A row the maker already holds is kept.
+fn seat_space_makers(
+    walked: &CutAncestry<'_>,
+    live: &[&Op],
+    base: AuthorityBase,
+    view: &mut calimero_authz::AclView,
+) {
+    let flips: Vec<(&Op, ContextGroupId)> = live
+        .iter()
+        .filter_map(|op| match folded_payload_of(op) {
+            OpPayload::SubgroupVisibilitySet {
+                scope,
+                restricted: true,
+            } if op.authorship.account != calimero_op::Authorship::UNATTRIBUTED_ACCOUNT => {
+                Some((*op, ContextGroupId::from(*scope.as_bytes())))
+            }
+            _ => None,
+        })
+        .collect();
+    if flips.is_empty() {
+        return;
+    }
+    let log: Vec<Op> = walked.ops().iter().map(|op| (*op).clone()).collect();
+    for (flip, group) in flips {
+        let maker = flip.authorship.account;
+        let Ok(at_flip) = ScopeState::acl_view_at_with_base(&log, &flip.parents, base) else {
+            continue;
+        };
+        let valid = at_flip.private_space(group).is_none()
+            && admin_or_capability_in_view(
+                &at_flip,
+                group,
+                &maker,
+                calimero_context_config::MemberCapabilities::CAN_MANAGE_VISIBILITY.bits(),
+                base.root,
+                base.default_cap_base,
+                true,
+            );
+        if valid {
+            let rows = view.groups.entry(group).or_default();
+            let _ = rows.entry(maker).or_insert(GroupMemberRole::Admin);
+        }
+    }
+}
+
 /// Drops the admin seat of a creator who left or was removed from the group after it was
 /// seated, unless a seat was written again beyond that exit. `None` past the fold budget.
 fn end_seats_after_exits(
@@ -4101,6 +4148,7 @@ fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero
         }
     }
     end_seats_after_exits(walked, &live, root, &mut view)?;
+    seat_space_makers(walked, &live, base, &mut view);
     let in_root: BTreeSet<AccountId> = view
         .groups
         .get(&root)
@@ -5792,6 +5840,71 @@ mod tests {
             default_cap_base: 0,
         };
         at_cut_view(&ScopeState::cut_ancestry(&log, &head), base).expect("decided")
+    }
+
+    /// [`chain_view`] with each op signed by the account `[who; 32]`.
+    fn authored_view(root: ContextGroupId, steps: Vec<(u8, OpPayload)>) -> calimero_authz::AclView {
+        let mut log: Vec<Op> = Vec::new();
+        for (who, payload) in steps {
+            let parents = log.last().map(Op::id).into_iter().collect();
+            log.push(Op::new(
+                ScopeId::from(root.to_bytes()),
+                parents,
+                calimero_op::Authorship {
+                    account: AccountId::from([who; 32]),
+                    device: calimero_account::DeviceId::from([who; 32]),
+                    device_key: PublicKey::from([who; 32]),
+                },
+                hlc(log.len() as u64),
+                payload,
+                [0u8; 32],
+                [0u8; 64],
+            ));
+        }
+        let head = log.last().map(Op::id).into_iter().collect::<Vec<_>>();
+        let base = AuthorityBase {
+            root: Some((root, AccountId::from([1u8; 32]))),
+            default_cap_base: 0,
+        };
+        at_cut_view(&ScopeState::cut_ancestry(&log, &head), base).expect("decided")
+    }
+
+    #[test]
+    fn a_valid_flip_seats_its_maker_as_the_spaces_admin_and_an_unauthorized_one_seats_nobody() {
+        let (root, space) = (ContextGroupId::from([3; 32]), ContextGroupId::from([4; 32]));
+        let flip = |who: u8| {
+            authored_view(
+                root,
+                vec![
+                    (
+                        1,
+                        OpPayload::SubgroupCreated {
+                            child: ScopeId::from(space.to_bytes()),
+                            parent: ScopeId::from(root.to_bytes()),
+                            restricted: false,
+                            admin: AccountId::from([1; 32]),
+                        },
+                    ),
+                    (who, member_op(root, who, GroupMemberRole::Member)),
+                    (
+                        who,
+                        OpPayload::SubgroupVisibilitySet {
+                            scope: ScopeId::from(space.to_bytes()),
+                            restricted: true,
+                        },
+                    ),
+                ],
+            )
+        };
+
+        assert_eq!(
+            flip(1)
+                .groups
+                .get(&space)
+                .and_then(|rows| rows.get(&AccountId::from([1; 32]))),
+            Some(&GroupMemberRole::Admin),
+        );
+        assert!(!holds_row(&flip(7), space, 7));
     }
 
     fn member_op(group: ContextGroupId, who: u8, role: GroupMemberRole) -> OpPayload {
