@@ -32,7 +32,11 @@ architecture spec.
   over `MAX_ARGS_BYTES` (512 KiB) are refused first, `413 ARGS_TOO_LARGE`, not run
   (Ruling 30), so that replacement always fits; a `TooLarge` from the log is a `500`,
   never retried.
-- **ABI checks in the host** (`Node::abi_gate`, from `Prepared.abi`, S5), default-deny
+- **ABI checks in the host** (`Node::abi_gate`, from `Prepared.abi` of the bundle the app
+  group runs, `Node::running_bundle`, not the directory's record, which an upgrade writes
+  second; the replica that runs a call or view checks again against exactly its bundle,
+  `node::abi_check`, and a call built after an upgrade landed re-runs; Ruling 40;
+  test `the_abi_gate_reads_the_bundle_the_app_runs`; S5), default-deny
   (Ruling 31): a method the ABI does not name, and every name starting with `__` (reserved
   for the platform, Ruling 36), is `UnknownMethod`, `init` and timers
   are never reached through `/intents` or `/views` (`WrongKind`); a `confirm` method

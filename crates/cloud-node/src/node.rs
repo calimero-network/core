@@ -1076,7 +1076,11 @@ impl Node {
     ) -> Result<(), WriteError> {
         let _p = g
             .propose_led(|m, applied, leadership| {
-                if m.tick_applied(timer, slot) {
+                // An upgrade applied since the round read the ABI: the next poll
+                // reads the new one.
+                if m.tick_applied(timer, slot)
+                    || m.state.bundle.as_deref() != Some(prepared.hash.as_str())
+                {
                     return Proposal::Reply(Vec::new());
                 }
                 let previous_ms = m.state.timers.get(timer).copied();
@@ -1135,7 +1139,7 @@ impl Node {
         &self,
         g: &Group<AppMachine>,
         req: &CallRequest,
-    ) -> Result<Applied, WriteError> {
+    ) -> Result<Applied, LocalError> {
         let bundle = g
             .read_local(|m, _| m.state.bundle.clone())
             .ok_or_else(|| WriteError::Unavailable("the app is not initialized yet".into()))?;
@@ -1143,6 +1147,16 @@ impl Node {
             .prepared_for(&bundle)
             .await
             .map_err(|e| WriteError::Unavailable(e.message))?;
+        // The ABI checks again, against the bundle this replica runs (Ruling 40); the
+        // proposal below re-runs the call if an upgrade lands before it is built.
+        abi_check(
+            &prepared,
+            &req.method,
+            &req.caller,
+            false,
+            req.consent.is_some(),
+        )
+        .map_err(LocalError::Refused)?;
         let app = self.sys(|s| s.apps.get(&req.app_id).cloned());
         // The node that took the request checked the caller reaches the app on its
         // own replica, which may not have applied a removal yet: the leader checks
@@ -1176,6 +1190,14 @@ impl Node {
                     if let Some(prev) = m.replay(&req.caller, key) {
                         return Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default());
                     }
+                }
+                // An upgrade applied since the checks: run it again on the new bundle.
+                if m.state.bundle.as_deref() != Some(bundle.as_str()) {
+                    let again = Applied {
+                        conflict: true,
+                        ..Applied::unlogged(applied, Outcome::default())
+                    };
+                    return Proposal::Reply(serde_json::to_vec(&again).unwrap_or_default());
                 }
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) = self.next_id(g.id(), leadership.term, m.state.last_id);
@@ -1227,7 +1249,8 @@ impl Node {
                 }))
             })
             .await?;
-        serde_json::from_slice(&p.output).map_err(|e| WriteError::Unavailable(e.to_string()))
+        serde_json::from_slice(&p.output)
+            .map_err(|e| LocalError::Write(WriteError::Unavailable(e.to_string())))
     }
 
     /// Whether `account` may switch `app`'s bundle: its owner or an admin of its org,
@@ -1355,6 +1378,11 @@ impl Node {
     /// platform's refusal, like the access gate's) and the System caller
     /// only `allowSystem` ones (`Forbidden`). `kind = action` never reaches here:
     /// `prepare` refuses it.
+    ///
+    /// The ABI is the one of the bundle the app group runs (Ruling 40,
+    /// [`Self::running_bundle`]), not the directory's record of it, which an
+    /// upgrade writes second. The replica that runs the call or view makes the same
+    /// checks again against exactly the bundle it runs ([`abi_check`]).
     pub async fn abi_gate(
         &self,
         app: &AppRecord,
@@ -1363,30 +1391,18 @@ impl Node {
         view: bool,
         consented: bool,
     ) -> Result<(), ApiError> {
-        if method.starts_with(RESERVED_PREFIX) {
-            return Err(app_refusal("UnknownMethod"));
-        }
-        let prepared = self.prepared_for(&app.bundle).await?;
-        let Some(m) = prepared.abi.methods.get(method) else {
-            return Err(app_refusal("UnknownMethod"));
-        };
-        if !matches!(m.kind, MethodKind::Call | MethodKind::View) {
-            return Err(app_refusal("WrongKind"));
-        }
-        if view && m.confirm {
-            return Err(app_refusal("ConfirmNotAView"));
-        }
-        if view && m.kind != MethodKind::View {
-            return Err(app_refusal("NotAView"));
-        }
-        match caller {
-            Caller::Public if !m.public => {
-                Err(ApiError::unauthenticated("sign in to call this method"))
-            }
-            Caller::System if !m.allow_system => Err(app_refusal("Forbidden")),
-            _ if m.confirm && !view && !consented => Err(app_refusal("ConfirmRequired")),
-            _ => Ok(()),
-        }
+        let prepared = self.prepared_for(&self.running_bundle(app)).await?;
+        abi_check(&prepared, method, caller, view, consented)
+    }
+
+    /// The bundle `app` runs: the app group's own record on this replica, else (this
+    /// node does not host the app, or it is not initialized here yet) the directory's.
+    /// Only a hint off the replica that runs: that one checks against its own state.
+    #[must_use]
+    pub fn running_bundle(&self, app: &AppRecord) -> String {
+        self.app_group(app.group)
+            .and_then(|g| g.read_local(|m, _| m.state.bundle.clone()))
+            .unwrap_or_else(|| app.bundle.clone())
     }
 
     /// Run a call wherever the app's leader is.
@@ -1420,11 +1436,14 @@ impl Node {
                 match self.call_local(&g, req).await {
                     Ok(a) if a.conflict => None,
                     Ok(a) => return Ok(a),
-                    Err(e @ WriteError::TooLarge { .. }) => return Err(entry_refused(&e)),
-                    Err(WriteError::NotLeader {
+                    Err(LocalError::Refused(e)) => return Err(e),
+                    Err(LocalError::Write(e @ WriteError::TooLarge { .. })) => {
+                        return Err(entry_refused(&e))
+                    }
+                    Err(LocalError::Write(WriteError::NotLeader {
                         leader: Some((id, addr)),
-                    }) if id != self.config.node_id && !addr.is_empty() => Some(addr),
-                    Err(e) => {
+                    })) if id != self.config.node_id && !addr.is_empty() => Some(addr),
+                    Err(LocalError::Write(e)) => {
                         debug!(error = %e, "call not yet possible here");
                         None
                     }
@@ -1465,9 +1484,10 @@ impl Node {
             .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
         match self.call_local(&g, req).await {
             Ok(a) => Ok(a),
-            Err(WriteError::NotLeader {
+            Err(LocalError::Refused(e)) => Err(e),
+            Err(LocalError::Write(WriteError::NotLeader {
                 leader: Some((id, addr)),
-            }) if id != self.config.node_id && !addr.is_empty() => {
+            })) if id != self.config.node_id && !addr.is_empty() => {
                 let body =
                     serde_json::to_value(req).map_err(|e| ApiError::internal(&e.to_string()))?;
                 let v = self
@@ -1476,8 +1496,8 @@ impl Node {
                     .map_err(|e| ApiError::unavailable(&e.to_string()))?;
                 serde_json::from_value(v).map_err(|e| ApiError::internal(&e.to_string()))
             }
-            Err(e @ WriteError::TooLarge { .. }) => Err(entry_refused(&e)),
-            Err(e) => Err(status_of(&e)),
+            Err(LocalError::Write(e @ WriteError::TooLarge { .. })) => Err(entry_refused(&e)),
+            Err(LocalError::Write(e)) => Err(status_of(&e)),
         }
     }
 
@@ -1486,14 +1506,21 @@ impl Node {
         g: &Group<AppMachine>,
         req: &ViewRequest,
     ) -> Result<ViewAnswer, ApiError> {
-        let bundle = g
-            .read_local(|m, _| m.state.bundle.clone())
-            .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
-        let prepared = self.prepared_for(&bundle).await?;
         // The view holds its version of the state (D46) and runs outside the
-        // machine's lock; it sees the last applied entry's time (D19).
-        let (state, applied, ts_ms) =
-            g.read_local(|m, applied| (m.view(), applied, m.state.last_ts_ms));
+        // machine's lock; it sees the last applied entry's time (D19), and runs the
+        // bundle that state belongs to, whose ABI it is checked against (Ruling 40).
+        let (bundle, state, applied, ts_ms) = g.read_local(|m, applied| {
+            (
+                m.state.bundle.clone(),
+                m.view(),
+                applied,
+                m.state.last_ts_ms,
+            )
+        });
+        let bundle =
+            bundle.ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
+        let prepared = self.prepared_for(&bundle).await?;
+        abi_check(&prepared, &req.method, &req.caller, true, false)?;
         let node = self
             .this
             .lock()
@@ -1658,6 +1685,39 @@ impl Node {
             }
         }
         Ok(written)
+    }
+}
+
+/// The ABI checks of [`Node::abi_gate`] against `prepared`, the bundle that runs.
+fn abi_check(
+    prepared: &Prepared,
+    method: &str,
+    caller: &Caller,
+    view: bool,
+    consented: bool,
+) -> Result<(), ApiError> {
+    if method.starts_with(RESERVED_PREFIX) {
+        return Err(app_refusal("UnknownMethod"));
+    }
+    let Some(m) = prepared.abi.methods.get(method) else {
+        return Err(app_refusal("UnknownMethod"));
+    };
+    if !matches!(m.kind, MethodKind::Call | MethodKind::View) {
+        return Err(app_refusal("WrongKind"));
+    }
+    if view && m.confirm {
+        return Err(app_refusal("ConfirmNotAView"));
+    }
+    if view && m.kind != MethodKind::View {
+        return Err(app_refusal("NotAView"));
+    }
+    match caller {
+        Caller::Public if !m.public => {
+            Err(ApiError::unauthenticated("sign in to call this method"))
+        }
+        Caller::System if !m.allow_system => Err(app_refusal("Forbidden")),
+        _ if m.confirm && !view && !consented => Err(app_refusal("ConfirmRequired")),
+        _ => Ok(()),
     }
 }
 

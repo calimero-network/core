@@ -2479,3 +2479,73 @@ async fn upgrades_through_intents_need_the_owner_or_an_org_admin() {
         json!(bobs)
     );
 }
+
+/// I2 (Ruling 40): the ABI checks read the bundle the app group runs, not the directory's
+/// record of it. Here the two disagree (the directory's second write of an upgrade has
+/// not happened): the directory says org-gated, the group runs kv.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_abi_gate_reads_the_bundle_the_app_runs() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let gated = alice.upload_bundle(wasm("org-gated")).await.unwrap();
+    let kv = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("app", &gated, json!({})).await.unwrap();
+    let leader = c.app_leader(&app).unwrap();
+    let g = c.nodes[leader].as_ref().unwrap().node.hosted(&app).unwrap();
+    let _p = g
+        .propose(|_, applied| {
+            calimero_log::Proposal::Append(
+                serde_json::to_vec(&calimero_cloud_node::app::AppCmd::Upgrade {
+                    bundle: kv.clone(),
+                    base_index: applied,
+                })
+                .unwrap(),
+            )
+        })
+        .await
+        .unwrap();
+    for i in 0..3 {
+        for _ in 0..100 {
+            if running_bundle(&c, i, &app).as_deref() == Some(kv.as_str()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(running_bundle(&c, i, &app), Some(kv.clone()), "node {i}");
+    }
+    assert_eq!(
+        alice.get(&format!("apps/{app}")).await.unwrap()["bundle"],
+        json!(gated)
+    );
+
+    // `wipe` is a confirm method of the running bundle: it needs a consent.
+    let e = alice.call(&app, "wipe", json!({}), None).await.unwrap_err();
+    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+    // Straight to the node (no challenge flow): the leader refuses it too.
+    let account = alice.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let e = c.nodes[2]
+        .as_ref()
+        .unwrap()
+        .node
+        .call(&calimero_cloud_node::node::CallRequest::new(
+            app.clone(),
+            "wipe".into(),
+            json!({}),
+            calimero_cloud_node::types::Caller::Account { account },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.details["code"], "ConfirmRequired", "{e:?}");
+    // Methods only the running bundle has are reached.
+    let _r = alice
+        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        strong_view(&alice, &app, "get", json!({ "key": "a" })).await,
+        json!("1")
+    );
+}

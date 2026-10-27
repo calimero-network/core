@@ -1103,8 +1103,9 @@ async fn intents(
         let applied = upgrade(&node, &app, account, upgrade_body).await?;
         return Ok(answer(&node, &app_id, &caller, applied));
     }
+    // The ABI of the bundle the app group runs (Ruling 40), not the directory's record.
     let method = node
-        .prepared_for(&app.bundle)
+        .prepared_for(&node.running_bundle(&app))
         .await?
         .abi
         .methods
@@ -1143,7 +1144,7 @@ async fn intents(
             },
         ));
     }
-    // Confirm flags come from the bundle's ABI (S5), never from the app record.
+    // Confirm flags come from the running bundle's ABI (S5), never from the app record.
     let consent_value = if method.as_ref().is_some_and(|m| m.confirm) {
         Some(consent(&node, &p, &app_id, &body.method, &body.args, body.confirm).await?)
     } else {
