@@ -84,6 +84,9 @@ pub struct Config {
     /// Hex SHA-256 of the ops token, when only that is given
     /// (`--ops-token-sha256`); ignored when `ops_token` is set.
     pub ops_token_sha256: Option<String>,
+    /// A plain-HTTP listener serving only `GET /metrics` (what `/ops/metrics`
+    /// answers), for a scraper that cannot open the sealed channel. Off by default.
+    pub metrics_listen: Option<std::net::SocketAddr>,
     /// Replicas per app.
     pub replicas: usize,
     /// Where encrypted snapshots go (object storage stand-in), if anywhere.

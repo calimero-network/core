@@ -3767,8 +3767,19 @@ async fn ops_metrics(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    use std::fmt::Write as _;
     operator(&node, &headers)?;
+    Ok(metrics_response(&node))
+}
+
+/// `GET /metrics` on `--metrics-listen`: the same text, in plain HTTP.
+pub async fn plain_metrics(State(node): State<Arc<Node>>) -> Response {
+    metrics_response(&node)
+}
+
+/// Prometheus text: directory counts, this node's groups and streams, system
+/// membership, the build's release; never names or state.
+fn metrics_response(node: &Node) -> Response {
+    use std::fmt::Write as _;
     let (nodes, apps, accounts, orgs, packages, bundle_bytes) = node.sys(|s| {
         (
             s.nodes.len(),
@@ -3862,14 +3873,14 @@ async fn ops_metrics(
         "# HELP calimero_build_info This node's release.\n# TYPE calimero_build_info gauge\ncalimero_build_info{{release=\"{}\"}} 1",
         node.own_release().replace('"', "")
     );
-    Ok((
+    (
         [(
             axum::http::header::CONTENT_TYPE,
             "text/plain; version=0.0.4",
         )],
         out,
     )
-        .into_response())
+        .into_response()
 }
 
 async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
@@ -4024,14 +4035,19 @@ async fn ops_set_replicas(
             )));
         }
     }
-    // Only the leader changes membership; others redirect before writing anything.
-    if let Some(st) = node.hosted(&app_id).map(|g| g.status()) {
-        if let (false, Some(id)) = (st.is_leader, st.leader) {
-            let addr = node.sys(|s| s.nodes.get(&id).map(|n| n.addr.clone()));
-            return Err(membership_err(&calimero_log::WriteError::NotLeader {
-                leader: addr.map(|a| (id, a)),
-            }));
-        }
+    // Only the leader changes membership; others redirect before writing
+    // anything. A node holding no replica names a current replica, which
+    // redirects again if it does not lead.
+    let to = match node.hosted(&app_id).map(|g| g.status()) {
+        Some(st) if st.is_leader => None,
+        Some(st) => Some(st.leader),
+        None => Some(app.replicas.first().copied()),
+    };
+    if let Some(id) = to {
+        let addr = id.and_then(|id| node.sys(|s| s.nodes.get(&id).map(|n| (id, n.addr.clone()))));
+        return Err(membership_err(&calimero_log::WriteError::NotLeader {
+            leader: addr,
+        }));
     }
     let union: Vec<u64> = app
         .replicas
@@ -4084,12 +4100,31 @@ async fn ops_quotas_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> Ap
     ))
 }
 
+/// Change the limits the body names; the others stay as they are. A key that
+/// names no limit is refused (a typo would otherwise change nothing silently).
 async fn ops_quotas_set(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
-    Json(quotas): Json<crate::system::Quotas>,
+    Json(changes): Json<serde_json::Map<String, Value>>,
 ) -> ApiResult {
     operator(&node, &headers)?;
+    node.sys_fresh().await;
+    let mut merged = serde_json::to_value(node.sys(|s| s.quotas.clone()))
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    let limits = merged
+        .as_object_mut()
+        .ok_or_else(|| ApiError::internal("quotas are not an object"))?;
+    for (k, v) in changes {
+        if !limits.contains_key(&k) {
+            return Err(ApiError::bad_request(
+                "UNKNOWN_QUOTA",
+                &format!("no quota named {k}"),
+            ));
+        }
+        let _prev = limits.insert(k, v);
+    }
+    let quotas: crate::system::Quotas = serde_json::from_value(merged)
+        .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
     let _ok = node.sys_write(&SystemCmd::SetQuotas { quotas }).await?;
     Ok(Json(json!({})))
 }

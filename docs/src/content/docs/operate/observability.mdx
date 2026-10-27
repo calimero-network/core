@@ -1,6 +1,6 @@
 ---
 title: Observability
-description: What a merod node reports — the /ops/metrics Prometheus gauges, /ops/status, /health, logs and RUST_LOG — and what to watch.
+description: What a merod node reports — the Prometheus gauges (/ops/metrics, or --metrics-listen for a scraper), /ops/status, /health, logs and RUST_LOG — and what to watch.
 sidebar:
   order: 8
 ---
@@ -16,6 +16,7 @@ status only.
 | `GET /health` | public, in the clear | `{ ok, node, systemLeader, release }` |
 | `GET /ops/status` | ops token, sealed | Raft status of the system group and of every app group this node hosts, governance, the fleet directory, counts |
 | `GET /ops/metrics` | ops token, sealed | Prometheus text (`text/plain; version=0.0.4`) |
+| `GET /metrics` on `--metrics-listen` | plain HTTP, no credential, off by default | The same Prometheus text |
 | stdout | the host | `tracing` log lines |
 
 ## Metrics
@@ -43,22 +44,17 @@ are the same on every node once it has caught up.
 
 ## Collecting metrics
 
-`/ops/metrics` is inside the sealed channel, and a TDX node refuses plain
-requests, so Prometheus cannot scrape it directly. Collect it with a client
-that seals:
+`/ops/metrics` is inside the sealed channel, which Prometheus cannot open. Give
+the node `--metrics-listen ADDR` (`metrics-listen` in `config.toml`) and it
+serves the same text at `http://ADDR/metrics`, in plain HTTP, with no other
+route. It asks for no credential (sending the ops token in the clear would
+leak the Ops API's credential), so bind it to an address only your collector
+reaches, such as the host's private interface. The text holds counts and this
+node's group indexes, never names or state.
 
-- `meroctl --api URL --tee-profiles PROFILE --ops-token TOKEN ops metrics`
-  prints the text; run it per node on a schedule and hand the output to your
-  collector (for example node_exporter's textfile collector);
-- mdma's `OpsClient` (`mdma_common.cloud_v2`) speaks the same API.
-
-On a `--dev` node plain requests are accepted, so a scraper with
-`Authorization: Bearer TOKEN` works there.
-
-<Aside type="caution" title="Not confirmed here">
-  Whether mdma ships a ready-made exporter for these metrics is defined in the
-  mdma repository; check it before building your own.
-</Aside>
+Without it, collect through a client that seals:
+`meroctl --api URL --tee-profiles PROFILE --ops-token TOKEN ops metrics`
+prints the text, or mdma's `OpsClient` (`mdma_common.cloud_v2`).
 
 ## What to watch
 

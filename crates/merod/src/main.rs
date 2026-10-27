@@ -289,6 +289,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
         release: env!("CARGO_PKG_VERSION").to_owned(),
         ops_token: args.ops_token.clone(),
         ops_token_sha256: args.ops_token_sha256.clone(),
+        metrics_listen: args.metrics_listen,
         replicas: args.replicas.unwrap_or(3),
         backup_dir: args.backup_dir.clone(),
         raft: calimero_log::Config::default(),

@@ -34,6 +34,8 @@ pub use node::{Config, Node};
 pub struct Running {
     pub node: Arc<Node>,
     pub addr: std::net::SocketAddr,
+    /// Where `--metrics-listen` serves `GET /metrics`, when configured.
+    pub metrics_addr: Option<std::net::SocketAddr>,
     shutdown: CancellationToken,
     server: tokio::task::JoinHandle<()>,
 }
@@ -114,6 +116,28 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
     });
 
+    // Metrics for a scraper, in plain HTTP on their own address (opt-in).
+    let metrics_addr = match node.config.metrics_listen {
+        Some(at) => {
+            let listener = TcpListener::bind(at).await?;
+            let bound = listener.local_addr()?;
+            let router = axum::Router::new()
+                .route("/metrics", axum::routing::get(api::plain_metrics))
+                .with_state(Arc::clone(&node));
+            let stop = shutdown.clone();
+            drop(tokio::spawn(async move {
+                if let Err(e) = axum::serve(listener, router)
+                    .with_graceful_shutdown(async move { stop.cancelled().await })
+                    .await
+                {
+                    warn!(error = %e, "metrics listener stopped");
+                }
+            }));
+            Some(bound)
+        }
+        None => None,
+    };
+
     drop(tokio::spawn(calimero_sealed::expire_sessions(
         Arc::downgrade(&node.transport),
         shutdown.clone(),
@@ -172,6 +196,7 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
     Ok(Running {
         node,
         addr,
+        metrics_addr,
         shutdown,
         server,
     })

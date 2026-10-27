@@ -102,6 +102,12 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_OPS_TOKEN_SHA256", conflicts_with = "ops_token")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ops_token_sha256: Option<String>,
+    /// A plain-HTTP address serving only `GET /metrics` (Prometheus text, the
+    /// counts `/ops/metrics` answers), for a scraper that cannot open the sealed
+    /// channel; bind it to a private address. Off by default.
+    #[arg(long, env = "MEROD_METRICS_LISTEN")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics_listen: Option<std::net::SocketAddr>,
     /// How many nodes hold each app [default: 3].
     #[arg(long, env = "MEROD_REPLICAS")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -207,6 +213,7 @@ impl NodeArgs {
             origins: list(self.origins, base.origins),
             ops_token: self.ops_token.or(base.ops_token),
             ops_token_sha256: self.ops_token_sha256.or(base.ops_token_sha256),
+            metrics_listen: self.metrics_listen.or(base.metrics_listen),
             replicas: self.replicas.or(base.replicas),
             backup_dir: self.backup_dir.or(base.backup_dir),
             session_key_rotation_secs: self

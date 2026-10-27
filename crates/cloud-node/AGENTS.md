@@ -111,7 +111,8 @@ is its command line.
 - **Ops credentials and metrics**: `--ops-token-sha256` gives the node only the
   token's hash (machine metadata then holds nothing usable); `GET /ops/metrics`
   is Prometheus text (directory counts, this node's groups, streams, system
-  membership, build release), never names or state.
+  membership, build release), never names or state. `--metrics-listen` (`Config::metrics_listen`) serves the same text
+  at plain-HTTP `GET /metrics` for a scraper, nothing else (`api::plain_metrics`).
 - **Ops replica moves** run on the app group's leader; any other replica answers
   `421 NOT_LEADER` with `details.leaderUrl` before writing anything.
 - **Forwards are bounded**: a call or read forwarded to an app's leader waits at most

@@ -66,6 +66,7 @@ fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path) ->
         release: "test".into(),
         ops_token: Some("ops-secret".into()),
         ops_token_sha256: None,
+        metrics_listen: None,
         replicas: 3,
         backup_dir: Some(dir.join("backups")),
         raft: calimero_log::Config {
@@ -775,6 +776,33 @@ async fn a_failed_init_is_reported_not_hidden() {
         .unwrap_err();
     assert_eq!(err.code(), Some("INIT_FAILED"), "{err}");
     assert!(err.details().unwrap()["appId"].is_string());
+}
+
+/// A quota post changes the limits it names and keeps the others; a key that
+/// names no limit is refused instead of ignored (mdma reset `maxAccounts` on
+/// every save by posting the four it knew).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_quota_post_changes_only_what_it_names() {
+    let c = Cluster::start(3).await;
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ok = ops
+        .post("ops/quotas", json!({ "maxAccounts": 7 }))
+        .await
+        .unwrap();
+    let _ok = ops
+        .post("ops/quotas", json!({ "maxOrgsPerAccount": 3 }))
+        .await
+        .unwrap();
+    let q = ops.get("ops/quotas").await.unwrap();
+    assert_eq!(q["maxAccounts"], json!(7), "{q}");
+    assert_eq!(q["maxOrgsPerAccount"], json!(3), "{q}");
+    let e = ops
+        .post("ops/quotas", json!({ "maxAcounts": 1 }))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("maxAcounts"), "{e}");
+    assert_eq!(ops.get("ops/quotas").await.unwrap(), q);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -3581,6 +3609,50 @@ async fn a_node_added_to_a_running_cluster_hosts_replicas() {
     assert!(c.nodes[new].as_ref().unwrap().node.hosted(&app).is_some());
 }
 
+/// A replica move sent to a node that holds no replica of the app is redirected
+/// before anything is written (it used to record the new replica set, then
+/// answer 503, and the node started an empty group).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_replica_move_sent_to_a_node_without_the_app_writes_nothing() {
+    let mut c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let new = c.join().await;
+    let new_id = new as u64 + 1;
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ = ops
+        .post(
+            "ops/nodes",
+            json!({ "id": new_id, "addr": c.urls[new], "zone": "b" }),
+        )
+        .await
+        .unwrap();
+    let joined = &c.nodes[new].as_ref().unwrap().node;
+    for _ in 0..200 {
+        if joined.sys(|s| s.apps.contains_key(&app)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let before = alice.get(&format!("apps/{app}")).await.unwrap()["replicas"].clone();
+    let outside = c.client(new);
+    outside.use_api_key("ops-secret").await;
+    let e = outside
+        .post(
+            &format!("ops/apps/{app}/replicas"),
+            json!({ "replicas": [2, 3, new_id] }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_LEADER"), "{e}");
+    assert!(e.details().unwrap()["leaderUrl"].is_string(), "{e}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let after = alice.get(&format!("apps/{app}")).await.unwrap()["replicas"].clone();
+    assert_eq!(before, after, "nothing was written");
+    assert!(joined.hosted(&app).is_none(), "no empty group was started");
+}
+
 /// `DELETE /ops/nodes/{id}`: refused while an app keeps a replica on the node;
 /// once the operator moved them, the node leaves the directory and the system
 /// group (a registered learner takes its vote), and is not registered again
@@ -3748,6 +3820,38 @@ async fn the_ops_token_can_be_given_as_a_hash_and_metrics_count() {
         alice.get_text("ops/metrics").await.is_err(),
         "operators only"
     );
+}
+
+/// `--metrics-listen`: the same counts as `/ops/metrics`, in plain HTTP on an
+/// address of the operator's choosing, for a Prometheus scraper (which cannot
+/// open the sealed channel). Off unless configured; it serves nothing else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn metrics_can_be_scraped_on_their_own_listener() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.metrics_listen = Some("127.0.0.1:0".parse().unwrap());
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (_app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let addr = c.nodes[0].as_ref().unwrap().metrics_addr.unwrap();
+    let http = reqwest::Client::new();
+    let r = http
+        .get(format!("http://{addr}/metrics"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let text = r.text().await.unwrap();
+    assert!(text.contains("calimero_apps 1"), "{text}");
+    assert!(text.contains("calimero_system_voters 3"), "{text}");
+    let other = http
+        .get(format!("http://{addr}/ops/status"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(other.status(), 404, "only /metrics");
+    let default = Cluster::start(3).await;
+    assert!(default.nodes[0].as_ref().unwrap().metrics_addr.is_none());
 }
 
 // ---------------------------------------------------------------- inspection
