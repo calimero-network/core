@@ -194,11 +194,13 @@ impl<'a> NamespaceApplyCtx<'a> {
         moved: &ContextGroupId,
         destination: Option<&ContextGroupId>,
     ) -> EyreResult<()> {
+        let ns_gid = ContextGroupId::from(self.namespace_id.to_bytes());
         let mut namespace_admin = false;
         let mut spaces = Vec::new();
+        let mut creates_at_destination = false;
         match tree.space_of(moved)? {
             Some(space) if space == *moved => {
-                let ns_gid = ContextGroupId::from(self.namespace_id.to_bytes());
+                // Workspace admins have no authority over a space: its owner moves it.
                 let owner = crate::group_owner::owner_at_cut(
                     self.store,
                     moved,
@@ -208,7 +210,13 @@ impl<'a> NamespaceApplyCtx<'a> {
                 let owns = self
                     .signer_account_live(&ns_gid, signer)?
                     .is_some_and(|account| Some(account) == owner);
-                namespace_admin |= !owns;
+                if !owns {
+                    bail!(MembershipError::NotAdmin {
+                        group_id: moved.to_string(),
+                        identity: format!("{signer}"),
+                    });
+                }
+                creates_at_destination = true;
             }
             Some(space) => spaces.push(space),
             None => namespace_admin = true,
@@ -216,6 +224,17 @@ impl<'a> NamespaceApplyCtx<'a> {
         if let Some(destination) = destination {
             match tree.space_of(destination)? {
                 Some(space) => spaces.push(space),
+                None if creates_at_destination => {
+                    let permissions = self.permissions_for(ns_gid);
+                    let may_create = permissions.is_admin(signer)?
+                        || (*destination == ns_gid && permissions.can_create_subgroup(signer)?);
+                    if !may_create {
+                        bail!(MembershipError::NotAdmin {
+                            group_id: destination.to_string(),
+                            identity: format!("{signer}"),
+                        });
+                    }
+                }
                 None => namespace_admin = true,
             }
         }

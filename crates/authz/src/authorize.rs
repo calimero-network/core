@@ -242,8 +242,8 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
             }
         }
         // The structure rules the live gates apply: an inner folder's create, move and delete
-        // take an admin of its space, a space root's own move and delete its creator or the
-        // root admin, and the open space the root admin; a move may not leave or nest spaces.
+        // take an admin of its space, a space root's own move and delete its creator alone, and
+        // the open space the root admin; a move may not leave or nest spaces.
         OpPayload::SubgroupCreated { parent, .. } => {
             let parent = ContextGroupId::from(*parent.as_bytes());
             match acl_at_cut.private_space(parent) {
@@ -261,12 +261,21 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
             reparent_refusal(&acl_at_cut.space_edges(), &child, &new_parent)
                 .map_err(|_| Rejected::MoveRefused)?;
             moves_or_deletes(acl_at_cut, &op.author(), child)?;
+            let creates_here = acl_at_cut.private_space(child) == Some(child);
             match acl_at_cut.private_space(new_parent) {
                 Some(space) if acl_at_cut.administers_within(&op.author(), new_parent, space) => {
                     Ok(())
                 }
                 Some(_) => Err(Rejected::NotGroupAdmin),
                 None if acl_at_cut.is_authorized_admin(new_parent, &op.author(), None) => Ok(()),
+                // A space's owner moves it where it may create folders: the root grants the bit.
+                None if creates_here
+                    && acl_at_cut.capability(&new_parent, &op.author(), 0)
+                        & MemberCapabilities::CAN_CREATE_SUBGROUP.bits()
+                        != 0 =>
+                {
+                    Ok(())
+                }
                 None => Err(Rejected::NotGroupAdmin),
             }
         }
@@ -550,7 +559,7 @@ fn check_device_speaks_for_author(op: &Op, acl_at_cut: &AclView) -> Result<(), R
 }
 
 /// Authority over a folder to move or delete it: an inner folder's space admin, a space root's
-/// creator or the root admin, the root admin in the open space.
+/// creator alone, the root admin in the open space.
 fn moves_or_deletes(
     acl: &AclView,
     author: &AccountId,
@@ -558,7 +567,7 @@ fn moves_or_deletes(
 ) -> Result<(), Rejected> {
     match acl.private_space(group) {
         Some(space) if space == group => {
-            if acl.is_group_creator(author, group) || acl.is_root_admin(author) {
+            if acl.is_group_creator(author, group) {
                 Ok(())
             } else {
                 Err(Rejected::NotGroupAdmin)

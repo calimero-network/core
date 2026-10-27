@@ -484,3 +484,25 @@ fn a_stale_folder_below_a_space_root_does_not_split_a_board_delete() {
         .expect("the stale folder is the space's to keep current");
     assert!(!s.exists(space));
 }
+
+/// A space root is moved by its owner alone: a namespace admin who does not own it has no
+/// authority over it.
+#[test]
+fn a_namespace_admin_who_is_not_the_owner_cannot_move_a_space_root() {
+    let s = Space::new();
+    let space = s.private(NS);
+    let target = s.open(NS);
+    let sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+    let who = enrol_member(&s.store, &ContextGroupId::from(NS), &sk.public_key());
+    crate::MembershipRepository::new(&s.store)
+        .add_member(&NS.into(), &who, GroupMemberRole::Admin)
+        .unwrap();
+    let moves = RootOp::GroupReparented {
+        child_group_id: space.into(),
+        new_parent_id: target.into(),
+    };
+
+    assert!(s.root_op_as(&sk, moves.clone()).is_err());
+    s.root_op(moves).expect("its owner moves it");
+    assert_eq!(s.parent(space), Some(target));
+}
