@@ -9,8 +9,14 @@ description = "The Rust app SDK for calimero:app: app attributes, encoding, tabl
 publish = false
 
 [features]
-# The test harness (a later task) lives behind this feature.
-testing = []
+# The test harness: the real component on the real engine with an in-memory host.
+# Host target only; the module is compiled out on wasm32.
+testing = [
+    "dep:calimero-app-host",
+    "dep:calimero-app-engine-wasmtime",
+    "dep:eyre",
+    "dep:tempfile",
+]
 
 [dependencies]
 base64.workspace = true
@@ -22,6 +28,10 @@ thiserror.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rand.workspace = true
+calimero-app-host = { workspace = true, optional = true }
+calimero-app-engine-wasmtime = { workspace = true, optional = true }
+eyre = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wit-bindgen.workspace = true
@@ -31,6 +41,7 @@ proptest.workspace = true
 serde = { workspace = true, features = ["derive"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-app-sdk = { path = ".", features = ["testing"] }
 calimero-app-build.workspace = true
 calimero-app-engine-wasmtime.workspace = true
 calimero-app-host.workspace = true

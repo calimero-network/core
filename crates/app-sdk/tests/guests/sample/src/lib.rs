@@ -170,6 +170,24 @@ impl Rooms {
         Ok(data)
     }
 
+    /// Tells the org that `id` was released.
+    pub fn announce(&mut self, id: String) -> app::Result<()> {
+        env::emit(Event::Released { id }, Audience::Org)?;
+        Ok(())
+    }
+
+    /// Reports the tick it ran for as `<scheduled>/<previous or ->`.
+    #[app::every("1m")]
+    pub fn tick_info(&mut self) -> app::Result<String> {
+        let Some(tick) = env::timer() else {
+            app::bail!(Error::NotFound);
+        };
+        Ok(match tick.previous {
+            Some(p) => format!("{}/{p}", tick.scheduled),
+            None => format!("{}/-", tick.scheduled),
+        })
+    }
+
     /// A timer without `allow(system)`: `every` implies it (Ruling 26).
     #[app::every("30s")]
     pub fn heartbeat(&mut self) -> app::Result<()> {

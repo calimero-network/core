@@ -24,6 +24,9 @@ pub mod json;
 pub mod store;
 pub mod table;
 
+#[cfg(all(feature = "testing", not(target_arch = "wasm32")))]
+pub mod testing;
+
 #[doc(hidden)]
 #[path = "private.rs"]
 pub mod __private;

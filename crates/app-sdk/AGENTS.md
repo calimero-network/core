@@ -3,12 +3,12 @@
 ## Package Identity
 
 - **Crate**: `calimero-app-sdk` (`publish = false`, prototype); builds for the host (tests) and `wasm32-wasip2` (apps)
-- **Entry**: `src/lib.rs` (+ `prelude`); `app.rs` (the `app` attributes from `calimero-app-sdk-macros`, `AppState`, `AppEvent`, `bail!`), `private.rs` (`__private`: the generated `handle`, argument decoding, the ABI assembly; not an API), `encoding/{key,value}.rs`, `store.rs` (+ `store/{mem,host}.rs`), `table.rs`, `collections/{map,counter}.rs`, `env.rs` (+ `env/{wasm,mock}.rs`), `guards.rs`, `error.rs`, `json.rs`, `bindings.rs` (wasm32 only)
+- **Entry**: `src/lib.rs` (+ `prelude`); `app.rs` (the `app` attributes from `calimero-app-sdk-macros`, `AppState`, `AppEvent`, `bail!`), `private.rs` (`__private`: the generated `handle`, argument decoding, the ABI assembly; not an API), `encoding/{key,value}.rs`, `store.rs` (+ `store/{mem,host}.rs`), `table.rs`, `collections/{map,counter}.rs`, `env.rs` (+ `env/{wasm,mock}.rs`), `guards.rs`, `error.rs`, `json.rs`, `bindings.rs` (wasm32 only), `testing/{mod,directory,scenario}.rs` (feature `testing`, host only)
 - **Spec**: `docs/specs/app-runtime-v0.14.md` section 7, the SDK reference, D9, D10, D20, D47, D48, D50, D52
 
 ## What This Crate Does
 
-The shared storage encoding (order-preserving tuple keys, deterministic CBOR values), the `Store` trait over the host's ordered key-value storage, tables with indexes, unique constraints and counts, `UnorderedMap`, `Counter`, `env` and the member/admin guards. It re-exports the `app` attributes and `#[derive(Record)]` (see `crates/app-sdk-macros/AGENTS.md`); apps write `use calimero_app_sdk::prelude::*;`. The test harness is a separate task.
+The shared storage encoding (order-preserving tuple keys, deterministic CBOR values), the `Store` trait over the host's ordered key-value storage, tables with indexes, unique constraints and counts, `UnorderedMap`, `Counter`, `env` and the member/admin guards. It re-exports the `app` attributes and `#[derive(Record)]` (see `crates/app-sdk-macros/AGENTS.md`); apps write `use calimero_app_sdk::prelude::*;`. The `testing` feature adds the test harness (host target only).
 
 ## The generated `handle` (`__private::handle`)
 
@@ -46,6 +46,16 @@ The macros convert exactly these types, at the top level of a parameter, a resul
 - **Cursors** are the base64url of the last storage key, bound to the index and prefix, not signed.
 - **Prefixes** longer than the index or count fields are refused (`PrefixTooLong`); `limit: 0` is an empty page.
 
+## Test harness (`testing` feature, spec section 10)
+
+- `TestApp::new(component, Org, now_ms)` prepares the component on the real `WasmtimeEngine` (one engine and compile cache per test process) and runs `init` as `"owner"`. `t.as_(a)` / `anonymous()` / `system()` / `api_key(id, account)` give an `As` with `call`, `view`, `confirmed()`; `Failure` is `App { code, fields }`, `Trap(TrapKind)` or `ConfirmRequired`.
+- It plays the executor: the diff is applied only on `Ok`; each logged invocation gets a fresh `id_seq` (`id_term` 1) and a seed derived from `t.seed(n)`; views see the last logged entry's timestamp (D19). Before running it applies the ABI checks a node makes: a `confirm` method needs `.confirmed()` (else `ConfirmRequired`) and is never a view (`NotAView`); a non-`public` method refuses anonymous (`LoginRequired`), a method without `allowSystem` refuses `system()` (`Forbidden`).
+- `t.tick(method)` runs the timer as `System` for the slot at the current time; `previous` is the last tick of the same method. A tick that does not time out counts as applied (D34).
+- Events: `events_for(account)` resolves audiences when asked (R9); `remove_member` first fixes who org events so far reached, so earlier events stay with the leaver and later ones do not reach it. Team audiences reach nobody (no teams in the harness).
+- `export_state()` is deterministic CBOR (RFC 8949 4.2.1): a map of stored key (generation prefix included) to value, byte strings, ordered by encoded key bytes. The TypeScript harness must produce the same bytes.
+- `run_scenario(t, path)` runs the neutral JSON scenario (format in `testing/scenario.rs`).
+- Not yet: actions, `mock_http`, migrations (`upgrade_to`).
+
 ## Verify
 
-`cargo test -p calimero-app-sdk` (`tests/abi.rs` builds `tests/guests/sample`, a standalone crate with its own `[workspace]`, once per run and runs it on the wasmtime engine; `tests/compile_fail.rs` is trybuild over `tests/ui/`), `cargo build -p calimero-app-sdk --target wasm32-wasip2`, `cargo clippy -p calimero-app-sdk --all-targets -- -D warnings` and `cargo clippy -p calimero-app-sdk --target wasm32-wasip2 -- -D warnings`
+`cargo test -p calimero-app-sdk` (`tests/harness.rs` runs the harness on the sample guest, `tests/abi.rs` builds `tests/guests/sample`, a standalone crate with its own `[workspace]`, once per run and runs it on the wasmtime engine; `tests/compile_fail.rs` is trybuild over `tests/ui/`), `cargo build -p calimero-app-sdk --target wasm32-wasip2`, `cargo clippy -p calimero-app-sdk --all-targets -- -D warnings` and `cargo clippy -p calimero-app-sdk --target wasm32-wasip2 -- -D warnings`
