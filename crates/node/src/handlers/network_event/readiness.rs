@@ -21,7 +21,9 @@ use std::time::{Duration, Instant};
 use calimero_context_client::local_governance::{ReadinessProbe, SignedReadinessBeacon};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::governance_broadcast::verify_readiness_beacon;
-use calimero_governance_store::{now_millis, MetaRepository, NamespaceRepository};
+use calimero_governance_store::{
+    now_millis, MetaRepository, NamespaceRepository, NodeDeviceRepository,
+};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use libp2p::PeerId;
@@ -123,6 +125,19 @@ fn namespace_has_governance_state(store: &Store, namespace_id: [u8; 32]) -> Eyre
     )
 }
 
+/// Whether `namespace_id` is the account namespace this node follows. Every member of it is a
+/// device of this node's own account, so a restored holder that has recreated its copy must
+/// still pull from a surviving device whose key it has not yet learned.
+fn is_own_account_namespace(store: &Store, namespace_id: [u8; 32]) -> bool {
+    NodeDeviceRepository::new(store)
+        .account_namespace()
+        .map(|own| own == Some(ContextGroupId::from(namespace_id)))
+        .unwrap_or_else(|err| {
+            warn!(?err, "account namespace read failed");
+            false
+        })
+}
+
 /// A participant with no metadata row and no applied op: a paired device that
 /// missed its publish. A joiner seeds a metadata row first, so it never matches.
 fn participant_without_governance_state(store: &Store, namespace_id: [u8; 32]) -> bool {
@@ -180,7 +195,8 @@ pub(super) fn handle_readiness_beacon(
                 stranded_ns.into(),
             ),
             Ok(ref groups) if !groups.is_empty()
-        ) || participant_without_governance_state(&manager.datastore, stranded_ns);
+        ) || participant_without_governance_state(&manager.datastore, stranded_ns)
+            || is_own_account_namespace(&manager.datastore, stranded_ns);
         if stranded && beacon_ts_within_drift(beacon.ts_millis, now_millis()) {
             let allowed = {
                 let mut guard = manager
@@ -406,6 +422,21 @@ mod tests {
 
     fn test_store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    /// A beacon on the account namespace this node follows cues a pull; one on any other
+    /// namespace this node merely holds does not.
+    #[test]
+    fn only_the_followed_account_namespace_is_its_own() {
+        let store = test_store();
+        let own = ContextGroupId::from([0xA5; 32]);
+        NodeDeviceRepository::new(&store)
+            .store_account_namespace(&own)
+            .expect("name the account namespace");
+
+        assert!(is_own_account_namespace(&store, [0xA5; 32]));
+        assert!(!is_own_account_namespace(&store, [0xA6; 32]));
+        assert!(!is_own_account_namespace(&test_store(), [0xA5; 32]));
     }
 
     fn put_gov_head(store: &Store, namespace_id: [u8; 32], dag_heads: Vec<[u8; 32]>) {
