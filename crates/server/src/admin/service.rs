@@ -1354,6 +1354,7 @@ pub fn parse_api_error(err: Report) -> ApiError {
             status_code: match refusal {
                 PrivateSpaceError::Nested(_)
                 | PrivateSpaceError::ReopenRefused(_)
+                | PrivateSpaceError::AlreadyPrivate(_)
                 | PrivateSpaceError::LeavesSpace(_)
                 | PrivateSpaceError::HoldsSpace(_) => StatusCode::CONFLICT,
                 PrivateSpaceError::InvitationTargetNotRoot(_)

@@ -240,7 +240,8 @@ impl ScopeState {
 }
 
 /// The fold work a void judgement over `ops` ops may spend: linear in the log, so honest
-/// growth never wedges it and only a superlinear pattern trips it.
+/// growth never wedges it and only a superlinear pattern trips it. A fixed ceiling would wedge
+/// large honest namespaces, so a pathological log may spend more before it is cut off.
 pub fn fold_budget_for(ops: usize) -> usize {
     MAX_FOLD_WORK.max(ops.saturating_mul(FOLD_WORK_PER_OP))
 }
