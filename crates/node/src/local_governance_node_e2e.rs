@@ -2607,8 +2607,8 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     // Note on the non-TEE control: the mirror-image guard — a root removal of a
     // regular `Member` does NOT cascade into a Restricted subgroup — is covered
     // exhaustively by the gov-store unit test
-    // `member_removed_root_regular_member_does_not_cascade`, which seeds the same
-    // topology and asserts the subgroup row survives. It is deliberately NOT
+    // `member_removed_root_regular_member_cascades`, which seeds the same
+    // topology and asserts the subgroup row goes too. It is deliberately NOT
     // re-driven here: this node fixture keeps process-global background workers
     // (`auto_follow`'s `join_context` bootstrap) alive after the Fix-B join, and
     // a SECOND root apply in the same test races their in-flight namespace work
