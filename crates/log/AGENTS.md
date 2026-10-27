@@ -7,8 +7,9 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
 - `Group::propose` serializes proposals per group and builds on the applied state
   without a majority round first (its metrics say it leads, or openraft's core
   refuses a follower at once). The machine must refuse at apply a command built
-  on other state (the node's `AppMachine` checks `base_index` and answers
-  `conflict`), so a deposed leader's stale build commits as a no-op or not at all. A `Reply` is a read: it is confirmed with
+  on other state (the node's `AppMachine` records its own last entry as
+  `base_index`, checks it at apply and answers `conflict`; the builder's
+  `u64` is the log's applied index, which counts blank and membership entries), so a deposed leader's stale build commits as a no-op or not at all. A `Reply` is a read: it is confirmed with
   `ensure_linearizable` and built again if entries committed meanwhile, so the
   builder may run twice (`FnMut`). Regression:
   `a_stale_build_by_a_deposed_leader_never_applies`.

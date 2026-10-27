@@ -69,8 +69,14 @@ say so; otherwise openraft's core answers, refusing a follower at once). It
 does not first confirm leadership with a majority: the entry's own replication
 does that, and `base_index` makes a stale build harmless.
 
-`apply` compares the entry's `base_index` with the index of the last entry the
-machine applied. If they differ, other entries came in between (a new leader's,
+The builder records as `base_index` the index of the app's last entry
+(`AppState::last_index`), and `apply` compares it with the index of the last
+entry the machine applied. Blank entries (a new leader's first) and membership
+changes do not count: they change no app state, and counting them on one side
+only made the first call after every election conflict once. Regression:
+`the_first_call_after_a_leader_change_commits_without_a_rerun` in
+`crates/cloud-node/tests/cluster.rs`; `calimero_build_conflicts_total` in
+`/ops/metrics` counts the conflicts a node's entries met. If they differ, other entries came in between (a new leader's,
 or a write that was not yet applied when the call ran) and the diff was computed
 against replaced state: the entry applies as a no-op with `conflict: true`,
 records no idempotency key, and the node that proposed it runs the call again

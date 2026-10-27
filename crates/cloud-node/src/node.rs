@@ -260,6 +260,9 @@ pub struct Node {
     this: Mutex<Weak<Node>>,
     /// The system group's read-index rounds, shared by concurrent `sys_fresh`.
     sys_reads: ReadRounds,
+    /// Entries this node appended that applied as conflicts (built on state
+    /// that changed before they applied) and were run again.
+    pub conflicts: std::sync::atomic::AtomicU64,
 }
 
 /// One read-index round on the system group at a time. A caller may take the
@@ -382,6 +385,7 @@ impl Node {
             joining: Mutex::default(),
             peer_releases: Mutex::new(HashMap::new()),
             sys_reads: ReadRounds::default(),
+            conflicts: std::sync::atomic::AtomicU64::new(0),
             starting: tokio::sync::Mutex::new(()),
             search: Search::default(),
             facts: Mutex::new(HashMap::new()),
@@ -1345,7 +1349,7 @@ impl Node {
         let init_args = app.init_args.clone();
         let env = self.env(&app.app_id, &owner);
         let p = g
-            .propose(|m, applied| {
+            .propose(|m, _| {
                 if m.state.initialized || m.state.bundle.is_some() {
                     return Proposal::Reply(Vec::new());
                 }
@@ -1361,7 +1365,7 @@ impl Node {
                 self.keep_blobs(&outcome);
                 let cmd = AppCmd::Init {
                     bundle: bundle.clone(),
-                    base_index: applied,
+                    base_index: m.state.last_index,
                     outcome,
                 };
                 Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
@@ -1372,7 +1376,19 @@ impl Node {
             return Err(ApiError::conflict("already initialized"));
         }
         self.kick.notify_one();
-        serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))
+        let applied: Applied =
+            serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))?;
+        self.count_conflict(&applied);
+        Ok(applied)
+    }
+
+    /// Count an appended entry that applied as a conflict.
+    fn count_conflict(&self, applied: &Applied) {
+        if applied.conflict {
+            let _prev = self
+                .conflicts
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// Keep the blobs a run wrote here, before its entry is proposed; the
@@ -1570,7 +1586,10 @@ impl Node {
                     idempotency_key: req.idempotency_key.clone(),
                     consent: req.consent.clone(),
                     ts_ms: now,
-                    base_index: applied,
+                    // The app's last entry, not the log's applied index: blank and
+                    // membership entries change no app state, and `apply` compares
+                    // with the last entry the app applied (`AppState::last_index`).
+                    base_index: m.state.last_index,
                     outcome,
                     trigger: req.trigger.clone(),
                 }));
@@ -1590,6 +1609,9 @@ impl Node {
         }
         let applied: Applied = serde_json::from_slice(&p.output)
             .map_err(|e| WriteError::Unavailable(e.to_string()))?;
+        if p.appended {
+            self.count_conflict(&applied);
+        }
         if p.appended && !applied.conflict {
             self.kick.notify_one();
             self.spread_blobs(fresh_blobs).await;
@@ -1647,7 +1669,7 @@ impl Node {
         }
         let env = self.env(&req.app_id, &req.caller);
         let p = g
-            .propose(|m, applied| {
+            .propose(|m, _| {
                 if let Some(stale) = m.stale_module(current.as_deref()) {
                     return Proposal::Reply(serde_json::to_vec(&stale).unwrap_or_default());
                 }
@@ -1668,13 +1690,18 @@ impl Node {
                 };
                 let cmd = AppCmd::Upgrade {
                     bundle: bundle.clone(),
-                    base_index: applied,
+                    base_index: m.state.last_index,
                     outcome,
                 };
                 Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
             })
             .await?;
-        serde_json::from_slice(&p.output).map_err(|e| WriteError::Unavailable(e.to_string()))
+        let applied: Applied = serde_json::from_slice(&p.output)
+            .map_err(|e| WriteError::Unavailable(e.to_string()))?;
+        if p.appended {
+            self.count_conflict(&applied);
+        }
+        Ok(applied)
     }
 
     /// Why an `xcall` from app `origin` may not run `method` of app `target`,

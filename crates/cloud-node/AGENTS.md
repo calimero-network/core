@@ -125,9 +125,13 @@ is its command line.
   are not idempotent yet. Regression: merobox `workflow-examples/cloud-v2/frozen-leader.yml`.
 - **Leader races**: `Group::propose` takes no leadership round before a call's
   append, so a deposed leader may run a call on stale state; its entry never
-  commits, or commits as a no-op (`base_index` ≠ the last applied entry:
-  `conflict`, no idempotency record), and `Node::call` re-runs it instead of
-  failing. Replies without an append (idempotent replays) are confirmed first.
+  commits, or commits as a no-op (`base_index` ≠ the app's last entry,
+  `AppState::last_index`: `conflict`, no idempotency record), and `Node::call`
+  re-runs it instead of failing. The base is the app's last entry, never the
+  log's applied index, which counts blank and membership entries too: with it
+  the first call after every election conflicted once (regression:
+  `the_first_call_after_a_leader_change_commits_without_a_rerun`;
+  `calimero_build_conflicts_total` in `/ops/metrics` counts conflicts). Replies without an append (idempotent replays) are confirmed first.
   The module is compiled from the bundle read before the lock, so the build
   also answers a conflict when the state names another bundle by then (an
   upgrade applied in between; `AppMachine::stale_module`, also checked by

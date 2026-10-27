@@ -161,7 +161,8 @@ pub struct CallEntry {
     #[serde(default)]
     pub consent: Option<Value>,
     pub ts_ms: u64,
-    /// The applied index the leader executed against.
+    /// The index of the app's last entry when the leader ran the call
+    /// (`AppState::last_index`); `apply` refuses it on any other state.
     pub base_index: u64,
     pub outcome: Outcome,
     /// Set when the node ran it itself rather than for a request.

@@ -876,6 +876,61 @@ fn mero_wasm(app: &str, name: &str) -> Vec<u8> {
 }
 
 /// Deploy `wasm` as a new app owned by `cl`; answers (app id, context id).
+/// Entries the running nodes appended that applied as conflicts.
+fn conflicts(c: &Cluster) -> u64 {
+    c.nodes
+        .iter()
+        .flatten()
+        .map(|r| r.node.conflicts.load(std::sync::atomic::Ordering::Relaxed))
+        .sum()
+}
+
+/// A new leader's blank entry, like a membership entry, changes no app
+/// state. A build's base counted them while `apply` compared it with the last
+/// app entry, so the first call after every leader change (and the init after
+/// the group formed) applied as a conflict and ran again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_first_call_after_a_leader_change_commits_without_a_rerun() {
+    let mut c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let _r = alice
+        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .await
+        .unwrap();
+    let after_init = conflicts(&c);
+
+    let leader = c.app_leader(&app).unwrap();
+    c.stop(leader).await;
+    let before = conflicts(&c);
+    let other = (0..3).find(|i| *i != leader).unwrap();
+    let alice_other = c.client(other);
+    let _s = alice_other.sign_in(&mut alice_pk).await.unwrap();
+    let mut done = false;
+    for _ in 0..40 {
+        if alice_other
+            .call(&app, "set", json!({ "key": "a", "value": "2" }), None)
+            .await
+            .is_ok()
+        {
+            done = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(done, "no write after the leader change");
+    assert_eq!(
+        conflicts(&c),
+        before,
+        "the first call after the leader change applied as a conflict"
+    );
+    assert_eq!(
+        after_init, 0,
+        "the init or the first call applied as a conflict"
+    );
+}
+
 async fn deploy(cl: &Client, name: &str, wasm: Vec<u8>, options: Value) -> (String, String) {
     let bundle = cl.upload_bundle(wasm).await.unwrap();
     let mut body = json!({ "name": name, "bundle": bundle });

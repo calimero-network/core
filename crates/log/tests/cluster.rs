@@ -240,7 +240,10 @@ async fn proposals_see_previous_writes() {
 /// A counter that refuses, at apply, a value built on other state than the
 /// one it applies to, as the cloud node's `AppMachine` does with its
 /// `base_index`: `set:{base}:{value}` sets only when the last entry it applied
-/// is `base`; `add:{n}` adds unconditionally (a write built on no state).
+/// is `base`; `add:{n}` adds unconditionally (a write built on no state). Like
+/// `AppMachine`, a build names the machine's own last entry, not the log's
+/// applied index, which counts blank and membership entries the machine
+/// never sees.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Ledger {
     value: u64,
@@ -297,8 +300,8 @@ async fn increment(groups: &HashMap<NodeId, Arc<Group<Ledger>>>, down: &BTreeSet
             continue;
         };
         let built = g
-            .propose(|m, applied| {
-                Proposal::Append(format!("set:{applied}:{}", m.value + 1).into_bytes())
+            .propose(|m, _| {
+                Proposal::Append(format!("set:{}:{}", m.last, m.value + 1).into_bytes())
             })
             .await;
         match built {
@@ -381,9 +384,9 @@ async fn a_stale_build_by_a_deposed_leader_never_applies() {
     let saw = Arc::clone(&built);
     let stale = tokio::spawn(async move {
         leader
-            .propose(|m, applied| {
+            .propose(|m, _| {
                 saw.store(true, std::sync::atomic::Ordering::SeqCst);
-                Proposal::Append(format!("set:{applied}:{}", m.value + 1).into_bytes())
+                Proposal::Append(format!("set:{}:{}", m.last, m.value + 1).into_bytes())
             })
             .await
     });

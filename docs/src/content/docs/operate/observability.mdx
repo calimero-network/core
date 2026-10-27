@@ -21,8 +21,9 @@ status only.
 
 ## Metrics
 
-Every metric is a gauge. "Here" means as this node sees it; directory counts
-are the same on every node once it has caught up.
+Every metric is a gauge but `calimero_build_conflicts_total`, a counter.
+"Here" means as this node sees it; directory counts are the same on every
+node once it has caught up.
 
 | Metric | Labels | Meaning |
 | --- | --- | --- |
@@ -39,6 +40,7 @@ are the same on every node once it has caught up.
 | `calimero_system_leader` | | `1` when this node leads the system group. |
 | `calimero_system_voters` | | System group voters. |
 | `calimero_system_learners` | | System group learners. |
+| `calimero_build_conflicts_total` | | Counter: entries this node appended as leader that applied as conflicts (built on state that changed first) and ran again. |
 | `calimero_group_applied` | `group` | An app group's applied index here, per hosted group (the label is the group number, not the app's name). |
 | `calimero_build_info` | `release` | Always `1`; `release` is this node's release. |
 
@@ -65,6 +67,7 @@ prints the text, or mdma's `OpsClient` (`mdma_common.cloud_v2`).
 | `calimero_group_applied{group}` across an app's replicas | close together | a replica not moving: the app runs on the others, with less margin |
 | `calimero_system_voters` | the founding set | fewer than expected |
 | `calimero_cluster_nodes` vs `voters + learners` | equal once registered nodes joined | a registered node that never joined |
+| `calimero_build_conflicts_total` rate | near zero | a steady rise: leaders keep losing their builds to leader changes or to concurrent writes |
 | `calimero_event_streams` | well under 4096 | near the limit: new streams answer `429` |
 | `calimero_build_info{release}` | the release you deployed, on every node | a node on a release you did not expect |
 

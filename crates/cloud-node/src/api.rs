@@ -3898,6 +3898,11 @@ fn metrics_response(node: &Node) -> Response {
     );
     let _r = writeln!(
         out,
+        "# HELP calimero_build_conflicts_total Entries this node appended that applied as conflicts and ran again.\n# TYPE calimero_build_conflicts_total counter\ncalimero_build_conflicts_total {}",
+        node.conflicts.load(std::sync::atomic::Ordering::Relaxed)
+    );
+    let _r = writeln!(
+        out,
         "# HELP calimero_group_applied An app group's applied index here.\n# TYPE calimero_group_applied gauge"
     );
     for (_app, s) in &hosted {

@@ -217,9 +217,11 @@ impl<M: Machine> Group<M> {
     ///
     /// An append is not preceded by a leadership round: the machine must
     /// refuse, at apply, a command built on any state other than the one it
-    /// applies to (the cloud node's `AppMachine` checks the `base_index` it
-    /// is handed, the `u64` here, against its last applied entry, and answers
-    /// `conflict`). A command built by a deposed or lagging leader then either
+    /// applies to (the cloud node's `AppMachine` records the index of its own
+    /// last entry as the command's `base_index`, checks it against its last
+    /// entry at apply, and answers `conflict`). The `u64` handed to the
+    /// builder is the log's applied index, which counts blank and membership
+    /// entries too; a machine that compares with it must count them as well. A command built by a deposed or lagging leader then either
     /// never commits (`client_write` answers `NotLeader`, or a new leader
     /// truncates it) or commits as that no-op, and the caller builds again.
     /// A machine without such a check must not use `propose`.
