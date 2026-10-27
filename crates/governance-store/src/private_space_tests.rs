@@ -592,3 +592,21 @@ fn making_a_folder_private_seats_its_signer_as_the_spaces_admin() {
     )
     .expect("the signer stays, so the guard does not trip");
 }
+
+/// The flip's rotation is addressed to the space's direct members, built after the flip applied:
+/// its maker, seated by the flip, is among them, so it holds the key it minted.
+#[test]
+fn the_flips_key_rotation_reaches_the_space_maker() {
+    let s = Space::new();
+    let folder = s.open(NS);
+    s.set_visibility(folder, VisibilityMode::Restricted)
+        .expect("make the folder private");
+
+    let recipients = crate::GroupKeyring::new(&s.store, folder.into())
+        .current_key_recipients()
+        .expect("list the recipients");
+    assert!(
+        recipients.iter().any(|entitled| entitled.member == s.admin),
+        "the maker is entitled to the space's key"
+    );
+}
