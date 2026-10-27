@@ -237,6 +237,8 @@ async fn main() -> eyre::Result<()> {
         tee_release: args.tee_release,
         tee_profile: args.tee_profile,
         peer_measurements,
+        clock_offset_ms: 0,
+        budget: None,
     };
     let running = run(config).await?;
     tokio::signal::ctrl_c().await?;

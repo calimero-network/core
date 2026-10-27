@@ -27,27 +27,24 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true, features = ["sync"] }
 tokio-util.workspace = true
-borsh.workspace = true
-calimero-storage.workspace = true
 tower-http = { workspace = true, features = ["cors"] }
 zeroize.workspace = true
 tower.workspace = true
-tantivy.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
 
-calimero-account.workspace = true
+calimero-app-engine-wasmtime.workspace = true
+calimero-app-host.workspace = true
 calimero-cloud-client.workspace = true
 calimero-identity.workspace = true
 calimero-log.workspace = true
-calimero-prelude.workspace = true
-calimero-primitives.workspace = true
-calimero-runtime.workspace = true
-calimero-search.workspace = true
-calimero-wasm-abi.workspace = true
 calimero-sealed.workspace = true
 calimero-tee-attestation.workspace = true
+
+[features]
+# `Node::advance_clock`, for tests that move app time.
+testing = []
 
 [dev-dependencies]
 calimero-app-build.workspace = true

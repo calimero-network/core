@@ -1,33 +1,30 @@
 //! An app group: the app's state, its idempotency table and recent events.
 //!
-//! The leader executes a call against the applied state and appends the
-//! result as one entry: `{ call, outcome { result, diff, events } }`. Every
-//! replica applies the diff; none re-executes.
+//! The leader runs a call on the engine (`calimero:app`, wasmtime) against the
+//! applied state and appends the result as one entry: `{ call, outcome { result,
+//! diff, events } }`. Every replica applies the diff; none re-executes.
 
-use calimero_storage::shared_writers::CellWriters;
-use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Arc, Weak};
 
+use calimero_app_host as host;
 use calimero_log::{Bytes, Machine};
-use calimero_runtime::store::{Key, Storage, Value as StoreValue};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
-use crate::types::{now_ms, AppId, Caller, EventRecord};
-
-/// How long an idempotency key is remembered.
-pub const IDEMPOTENCY_TTL_MS: u64 = 24 * 60 * 60 * 1000;
+use crate::node::Node;
+use crate::types::{AppId, Audience, Caller, EventRecord};
 
 /// Keys the node itself gives a call that came without one, so a retried
-/// forward replays instead of running twice. They only need to outlive the
-/// retries, so they are kept briefly.
+/// forward replays instead of running twice.
 pub const NODE_KEY_PREFIX: &str = "node:";
-const NODE_KEY_TTL_MS: u64 = 10 * 60 * 1000;
 /// Events kept for resuming subscriptions.
 pub const EVENT_RING: usize = 10_000;
+/// Idempotency records are kept for this many log entries of the app (D16).
+pub const IDEMPOTENCY_ENTRIES: u64 = 100_000;
 
-/// One storage write.
+/// One storage write; `key` is the stored key, generation prefix included (D39).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Write {
     pub key: Bytes,
@@ -40,101 +37,127 @@ pub struct Write {
 pub enum Status {
     #[default]
     Ok,
-    /// The app refused the call; `error` holds its error value.
+    /// The app refused the call; `error` is `{ code, fields }`.
     AppError,
-    /// The call trapped (out of gas, panic, unknown method).
+    /// The run trapped; `error` is `{ kind, detail }` (spec section 5).
     Trap,
 }
 
-/// What executing a call produced.
+/// An event a run emitted, with its audience (R9).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EventOut {
+    pub kind: String,
+    pub data: Value,
+    pub audience: Audience,
+}
+
+/// What running an invocation produced, as the log stores it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Outcome {
     pub status: Status,
     #[serde(default)]
     pub result: Value,
+    /// `AppError`: `{ code, fields }`; `Trap`: `{ kind, detail }`; else `null`.
     #[serde(default)]
     pub error: Value,
     #[serde(default)]
     pub diff: Vec<Write>,
     #[serde(default)]
-    pub events: Vec<(String, Value)>,
+    pub events: Vec<EventOut>,
+    /// The owner-only app log (spec section 5); kept whatever the status.
     #[serde(default)]
     pub logs: Vec<String>,
-    /// Runs this one asked for: its events' handlers and its `xcall`s. They
-    /// are queued in the app's state when the entry applies, and the leader
-    /// runs them after (see [`AppState::pending`]).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub followups: Vec<FollowUp>,
-    /// The storage entities the run touched (hex), and every entry above
-    /// them: what search re-extracts.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub touched: Vec<String>,
-    /// Blobs the run wrote, `(hex id, bytes)`. Never logged: the leader stores
-    /// the bytes in the cluster's blob store, and `diff` marks them as the
-    /// app's ([`blob_key`]).
-    #[serde(skip)]
-    pub new_blobs: Vec<(String, Vec<u8>)>,
 }
 
-impl Outcome {
-    /// A run that did not happen, for `why`.
-    #[must_use]
-    pub fn trap(why: &str) -> Self {
-        Self {
-            status: Status::Trap,
-            error: Value::String(why.to_owned()),
-            ..Self::default()
-        }
+/// The name a trap kind has on the wire (the spec's names).
+#[must_use]
+pub fn trap_name(kind: host::TrapKind) -> &'static str {
+    match kind {
+        host::TrapKind::OutOfFuel => "OutOfFuel",
+        host::TrapKind::Timeout => "Timeout",
+        host::TrapKind::OutOfMemory => "OutOfMemory",
+        host::TrapKind::StackOverflow => "StackOverflow",
+        host::TrapKind::Fault => "Fault",
+        host::TrapKind::HostDenied => "HostDenied",
     }
 }
 
-/// A run another run asked for.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum FollowUp {
-    /// An event's handler (`app::emit!((event, "handler"))`), with the event's
-    /// data as its input. `tee` for a `tee:<method>` handler, which runs as the
-    /// app's TEE authority.
-    Handler {
-        method: String,
-        input: Bytes,
-        #[serde(default)]
-        tee: bool,
-    },
-    /// A call into another app (`env::xcall`), by its context id (hex).
-    XCall {
-        context: String,
-        method: String,
-        input: Bytes,
-    },
-}
+impl Outcome {
+    /// A trap of `kind`: no diff, no events.
+    #[must_use]
+    pub fn trap(kind: host::TrapKind, detail: &str) -> Self {
+        Self {
+            status: Status::Trap,
+            error: json!({ "kind": trap_name(kind), "detail": detail }),
+            ..Self::default()
+        }
+    }
 
-/// A follow-up waiting for the leader to run it.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Pending {
-    pub followup: FollowUp,
-    /// The entry that asked for it.
-    pub from_index: u64,
-    /// Hops from the call a person made; see [`MAX_FOLLOWUP_DEPTH`].
-    pub depth: u32,
-}
+    /// The engine's outcome in the log's shape. Any status but `Ok` drops the diff
+    /// and the events (the host core already did); a result or event that is not
+    /// JSON is a `Fault`, and nothing of it is applied.
+    #[must_use]
+    pub fn from_host(out: host::Outcome) -> Self {
+        let logs = out.logs;
+        let mut outcome = match out.status {
+            host::Status::Ok => Self::ok(out.result, out.diff, out.events),
+            host::Status::AppError { code, message } => Self {
+                status: Status::AppError,
+                error: json!({
+                    "code": code,
+                    "fields": serde_json::from_str::<Value>(&message).unwrap_or(Value::String(message)),
+                }),
+                ..Self::default()
+            },
+            host::Status::Trap { kind, detail } => Self::trap(kind, &detail),
+        };
+        outcome.logs = logs;
+        outcome
+    }
 
-/// How deep a cascade of handlers and xcalls may go (v1's `MAX_XCALL_DEPTH`):
-/// a run at this depth still runs, but asks for nothing more.
-pub const MAX_FOLLOWUP_DEPTH: u32 = 3;
+    fn ok(result: Vec<u8>, diff: Vec<host::Write>, events: Vec<host::Event>) -> Self {
+        let result = if result.is_empty() {
+            Value::Null
+        } else {
+            match serde_json::from_slice(&result) {
+                Ok(v) => v,
+                Err(_) => return Self::trap(host::TrapKind::Fault, "result is not JSON"),
+            }
+        };
+        let mut out = Vec::with_capacity(events.len());
+        for e in events {
+            let Ok(data) = serde_json::from_slice(&e.data) else {
+                return Self::trap(host::TrapKind::Fault, "event data is not JSON");
+            };
+            out.push(EventOut {
+                kind: e.name,
+                data,
+                audience: e.audience.into(),
+            });
+        }
+        Self {
+            status: Status::Ok,
+            result,
+            error: Value::Null,
+            diff: diff
+                .into_iter()
+                .map(|w| Write {
+                    key: Bytes(w.key),
+                    value: w.value.map(Bytes),
+                })
+                .collect(),
+            events: out,
+            logs: Vec::new(),
+        }
+    }
 
-/// Why the node ran a call itself.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum Trigger {
-    /// The pending follow-up `seq`, which the entry consumes.
-    FollowUp { seq: u64 },
-    /// The `tick`th period of an `#[app::tee(every = "..")]` method.
-    Timer { method: String, tick: u64 },
-    /// An `xcall` from another app.
-    XCall { origin: String, depth: u32 },
+    /// Whether the run hit its wall-clock deadline (or found no instance): never
+    /// logged, the idempotency key not spent (D23).
+    #[must_use]
+    pub fn is_timeout(&self) -> bool {
+        self.status == Status::Trap && self.error["kind"] == trap_name(host::TrapKind::Timeout)
+    }
 }
 
 /// A call as recorded in the log.
@@ -149,51 +172,33 @@ pub struct CallEntry {
     /// The passkey assertion that approved this call, for confirm methods.
     #[serde(default)]
     pub consent: Option<Value>,
+    /// The entry timestamp the run saw (D16, D19).
     pub ts_ms: u64,
     /// The applied index the leader executed against.
     pub base_index: u64,
+    /// The leader's term and per-term execution counter the run's unique ids
+    /// were made from (D52).
+    pub id_term: u64,
+    pub id_seq: u64,
     pub outcome: Outcome,
-    /// Set when the node ran it itself rather than for a request.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger: Option<Trigger>,
-}
-
-impl CallEntry {
-    /// Hops from the call a person made.
-    #[must_use]
-    pub fn depth(&self, pending: &BTreeMap<u64, Pending>) -> u32 {
-        match &self.trigger {
-            None | Some(Trigger::Timer { .. }) => 0,
-            Some(Trigger::XCall { depth, .. }) => *depth,
-            Some(Trigger::FollowUp { seq }) => pending.get(seq).map_or(0, |p| p.depth + 1),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum AppCmd {
-    /// The first entry: run `init`.
+    /// The first entry: `init` ran.
     Init {
         bundle: String,
         base_index: u64,
-        outcome: Outcome,
+        ts_ms: u64,
+        outcome: Box<Outcome>,
     },
     Call(Box<CallEntry>),
-    /// Switch to a new bundle and run its migration.
+    /// Switch to a new bundle, code only (migrations are rebuilds, D38, not in
+    /// this milestone).
     Upgrade {
         bundle: String,
         base_index: u64,
-        outcome: Outcome,
-    },
-    /// A blob uploaded for the app (its bytes are in the blob store already).
-    Blob {
-        id: String,
-        size: u64,
-    },
-    /// Follow-ups the leader handed to other apps; they are done here.
-    Done {
-        seqs: Vec<u64>,
     },
 }
 
@@ -205,53 +210,91 @@ pub struct Applied {
     pub status: Status,
     pub result: Value,
     pub error: Value,
-    pub events: Vec<(String, Value)>,
+    pub events: Vec<EventOut>,
     /// The entry was built on a state that was no longer current; nothing changed.
     #[serde(default)]
     pub conflict: bool,
+    /// The run timed out: nothing was logged (D23); answered `503 TIMEOUT`.
+    #[serde(default)]
+    pub timeout: bool,
+}
+
+impl Applied {
+    /// An answer for a run that was not logged.
+    #[must_use]
+    pub fn unlogged(index: u64, outcome: Outcome) -> Self {
+        Self {
+            index,
+            timeout: outcome.is_timeout(),
+            status: outcome.status,
+            result: outcome.result,
+            error: outcome.error,
+            events: Vec::new(),
+            conflict: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct IdemRecord {
     applied: Applied,
-    expires_ms: u64,
+}
+
+/// An app's stored keys and values, shared between the machine and the runs reading it.
+pub type Kv = Arc<BTreeMap<Vec<u8>, Vec<u8>>>;
+
+/// The app's key-value state in the snapshot: base64 keys and values.
+mod kv_serde {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use calimero_log::Bytes;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::Kv;
+
+    pub fn serialize<S: Serializer>(kv: &Kv, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_map(kv.iter().map(|(k, v)| (Bytes(k.clone()), Bytes(v.clone()))))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Kv, D::Error> {
+        let m = BTreeMap::<Bytes, Bytes>::deserialize(d)?;
+        Ok(Arc::new(m.into_iter().map(|(k, v)| (k.0, v.0)).collect()))
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppState {
-    pub kv: BTreeMap<Bytes, Bytes>,
+    /// The app's data, stored keys (generation prefix included). Shared with
+    /// running calls and views as their `StateView` (D46); `apply` copies it only
+    /// while a run still holds the previous version (`Arc::make_mut`).
+    #[serde(with = "kv_serde", default)]
+    pub kv: Kv,
     pub bundle: Option<String>,
     pub initialized: bool,
     /// Why `init` failed, if it did (`{ status, error }`).
     #[serde(default)]
     pub init_error: Option<Value>,
     pub last_index: u64,
+    /// The newest entry timestamp applied (D16): the next entry is stamped
+    /// after it, and views see it (D19).
+    #[serde(default)]
+    pub last_ts_ms: u64,
+    /// Host records, never in `kv` (D39).
+    #[serde(default)]
     idempotency: BTreeMap<String, IdemRecord>,
+    /// `(index, key)` of each record, oldest first, for retention by entries.
+    #[serde(default)]
+    idempotency_order: VecDeque<(u64, String)>,
     pub events: VecDeque<EventRecord>,
-    /// Follow-ups the leader has yet to run, by sequence number.
-    #[serde(default)]
-    pub pending: BTreeMap<u64, Pending>,
-    #[serde(default)]
-    pub next_pending: u64,
-    /// The last tick fired per timer method.
-    #[serde(default)]
-    pub timer_ticks: BTreeMap<String, u64>,
 }
-
-/// Entities touched per entry, kept in memory for search to catch up from.
-pub const TOUCHED_RING: usize = 4096;
 
 /// The app group's state machine.
 pub struct AppMachine {
     pub app_id: AppId,
     pub state: AppState,
     pub events_tx: broadcast::Sender<EventRecord>,
-    /// `(index, entities)` of recent entries that touched any; empty after a
-    /// restart or a snapshot, which makes search rebuild instead.
-    pub touched: VecDeque<(u64, Vec<String>)>,
-    /// The first index `touched` is complete from.
-    pub touched_since: u64,
 }
 
 impl AppMachine {
@@ -262,133 +305,124 @@ impl AppMachine {
             app_id,
             state: AppState::default(),
             events_tx,
-            touched: VecDeque::new(),
-            touched_since: u64::MAX,
         }
     }
 
     fn idem_key(caller: &Caller, key: &str) -> String {
         match caller {
             Caller::App { app } => format!("app:{app}|{key}"),
+            Caller::System => format!("system|{key}"),
             _ => format!("{}|{key}", caller.account().unwrap_or("public")),
         }
     }
 
-    /// The entities touched by entries after `index`, or `None` when this
-    /// replica does not know them all (search then rebuilds).
-    #[must_use]
-    pub fn touched_after(&self, index: u64) -> Option<Vec<String>> {
-        if index + 1 < self.touched_since {
-            return None;
-        }
-        let mut out = Vec::new();
-        for (i, ids) in &self.touched {
-            if *i > index {
-                out.extend(ids.iter().cloned());
-            }
-        }
-        Some(out)
-    }
-
-    /// Whether `id` (hex) is a blob of this app.
-    #[must_use]
-    pub fn holds_blob(&self, id: &[u8; 32]) -> bool {
-        self.state.kv.contains_key(&Bytes(blob_key(id)))
-    }
-
     /// A previous answer for this idempotency key, if still remembered.
     #[must_use]
-    pub fn replay(&self, caller: &Caller, key: &str, now: u64) -> Option<Applied> {
+    pub fn replay(&self, caller: &Caller, key: &str) -> Option<Applied> {
         self.state
             .idempotency
             .get(&Self::idem_key(caller, key))
-            .filter(|r| r.expires_ms > now)
             .map(|r| r.applied.clone())
+    }
+
+    /// The state a run reads (D46): the current version, shared.
+    #[must_use]
+    pub fn view(&self) -> Arc<dyn host::StateView> {
+        Arc::clone(&self.state.kv) as Arc<dyn host::StateView>
     }
 
     fn apply_outcome(
         &mut self,
         index: u64,
         base_index: u64,
+        ts_ms: u64,
         outcome: &Outcome,
-        depth: u32,
+        caller: Option<&str>,
     ) -> Applied {
         let conflict = base_index != self.state.last_index;
         if !conflict {
-            if depth < MAX_FOLLOWUP_DEPTH {
-                for f in &outcome.followups {
-                    let seq = self.state.next_pending;
-                    self.state.next_pending += 1;
-                    let _prev = self.state.pending.insert(
-                        seq,
-                        Pending {
-                            followup: f.clone(),
-                            from_index: index,
-                            depth,
-                        },
-                    );
+            self.state.last_ts_ms = self.state.last_ts_ms.max(ts_ms);
+            if outcome.status == Status::Ok && !outcome.diff.is_empty() {
+                let kv = Arc::make_mut(&mut self.state.kv);
+                for w in &outcome.diff {
+                    let _prev = match &w.value {
+                        Some(v) => kv.insert(w.key.0.clone(), v.0.clone()),
+                        None => kv.remove(&w.key.0),
+                    };
                 }
             }
-            if !outcome.touched.is_empty() {
-                if self.touched_since == u64::MAX {
-                    self.touched_since = index;
-                }
-                self.touched.push_back((index, outcome.touched.clone()));
-                if self.touched.len() > TOUCHED_RING {
-                    if let Some((i, _)) = self.touched.pop_front() {
-                        self.touched_since = i + 1;
+            if outcome.status == Status::Ok {
+                for (seq, e) in outcome.events.iter().enumerate() {
+                    let rec = EventRecord {
+                        index,
+                        seq: u32::try_from(seq).unwrap_or(u32::MAX),
+                        kind: e.kind.clone(),
+                        data: e.data.clone(),
+                        audience: e.audience.clone(),
+                        caller: caller.map(str::to_owned),
+                    };
+                    self.state.events.push_back(rec.clone());
+                    if self.state.events.len() > EVENT_RING {
+                        let _old = self.state.events.pop_front();
                     }
-                }
-            } else if self.touched_since == u64::MAX {
-                self.touched_since = index;
-            }
-            for w in &outcome.diff {
-                match &w.value {
-                    Some(v) => {
-                        let _prev = self.state.kv.insert(w.key.clone(), v.clone());
-                    }
-                    None => {
-                        let _prev = self.state.kv.remove(&w.key);
-                    }
+                    let _receivers = self.events_tx.send(rec);
                 }
             }
-            for (seq, (kind, data)) in outcome.events.iter().enumerate() {
-                let rec = EventRecord {
-                    index,
-                    seq: u32::try_from(seq).unwrap_or(u32::MAX),
-                    kind: kind.clone(),
-                    data: data.clone(),
-                };
-                self.state.events.push_back(rec.clone());
-                if self.state.events.len() > EVENT_RING {
-                    let _old = self.state.events.pop_front();
-                }
-                let _receivers = self.events_tx.send(rec);
-            }
+        }
+        if conflict {
+            return Applied {
+                index,
+                status: Status::Trap,
+                result: Value::Null,
+                error: json!({ "kind": "Conflict", "detail": "conflict: retry" }),
+                events: Vec::new(),
+                conflict: true,
+                timeout: false,
+            };
         }
         Applied {
             index,
-            status: if conflict {
-                Status::Trap
-            } else {
-                outcome.status.clone()
-            },
-            result: if conflict {
-                Value::Null
-            } else {
-                outcome.result.clone()
-            },
-            error: if conflict {
-                Value::String("conflict: retry".into())
-            } else {
-                outcome.error.clone()
-            },
-            events: if conflict {
-                Vec::new()
-            } else {
+            status: outcome.status.clone(),
+            result: outcome.result.clone(),
+            error: outcome.error.clone(),
+            events: if outcome.status == Status::Ok {
                 outcome.events.clone()
+            } else {
+                Vec::new()
             },
-            conflict,
+            conflict: false,
+            timeout: false,
+        }
+    }
+
+    fn remember(&mut self, index: u64, caller: &Caller, key: &str, applied: &Applied) {
+        let id = Self::idem_key(caller, key);
+        let _prev = self.state.idempotency.insert(
+            id.clone(),
+            IdemRecord {
+                applied: applied.clone(),
+            },
+        );
+        self.state.idempotency_order.push_back((index, id));
+    }
+
+    /// Forget records older than the last [`IDEMPOTENCY_ENTRIES`] entries.
+    fn expire(&mut self, index: u64) {
+        while let Some((at, _)) = self.state.idempotency_order.front() {
+            if at + IDEMPOTENCY_ENTRIES > index {
+                break;
+            }
+            if let Some((at, key)) = self.state.idempotency_order.pop_front() {
+                // A key reused later has a newer record; keep that one.
+                if self
+                    .state
+                    .idempotency
+                    .get(&key)
+                    .is_some_and(|r| r.applied.index == at)
+                {
+                    let _gone = self.state.idempotency.remove(&key);
+                }
+            }
         }
     }
 }
@@ -399,14 +433,15 @@ impl Machine for AppMachine {
             Ok(AppCmd::Init {
                 bundle,
                 base_index,
+                ts_ms,
                 outcome,
             }) => {
-                let a = self.apply_outcome(index, base_index, &outcome, 0);
+                let a = self.apply_outcome(index, base_index, ts_ms, &outcome, None);
                 if !a.conflict {
                     self.state.bundle = Some(bundle);
                     self.state.initialized = outcome.status == Status::Ok;
                     if !self.state.initialized {
-                        self.state.init_error = Some(serde_json::json!({
+                        self.state.init_error = Some(json!({
                             "status": outcome.status,
                             "error": outcome.error,
                         }));
@@ -414,78 +449,23 @@ impl Machine for AppMachine {
                 }
                 a
             }
-            Ok(AppCmd::Upgrade {
-                bundle,
-                base_index,
-                outcome,
-            }) => {
-                let a = self.apply_outcome(index, base_index, &outcome, 0);
-                if !a.conflict && outcome.status == Status::Ok {
+            Ok(AppCmd::Upgrade { bundle, base_index }) => {
+                let a = self.apply_outcome(index, base_index, 0, &Outcome::default(), None);
+                if !a.conflict {
                     self.state.bundle = Some(bundle);
                 }
                 a
             }
-            Ok(AppCmd::Blob { id, size }) => {
-                if let Ok(raw) = hex::decode(&id) {
-                    if let Ok(id) = <[u8; 32]>::try_from(raw.as_slice()) {
-                        let _prev = self
-                            .state
-                            .kv
-                            .insert(Bytes(blob_key(&id)), Bytes(size.to_le_bytes().to_vec()));
-                    }
-                }
-                Applied {
-                    index,
-                    status: Status::Ok,
-                    result: Value::Null,
-                    error: Value::Null,
-                    events: Vec::new(),
-                    conflict: false,
-                }
-            }
-            Ok(AppCmd::Done { seqs }) => {
-                for seq in seqs {
-                    let _done = self.state.pending.remove(&seq);
-                }
-                Applied {
-                    index,
-                    status: Status::Ok,
-                    result: Value::Null,
-                    error: Value::Null,
-                    events: Vec::new(),
-                    conflict: false,
-                }
-            }
             Ok(AppCmd::Call(call)) => {
-                let depth = call.depth(&self.state.pending);
-                let a = self.apply_outcome(index, call.base_index, &call.outcome, depth);
-                if !a.conflict {
-                    match &call.trigger {
-                        Some(Trigger::FollowUp { seq }) => {
-                            let _done = self.state.pending.remove(seq);
-                        }
-                        Some(Trigger::Timer { method, tick }) => {
-                            let _prev = self.state.timer_ticks.insert(method.clone(), *tick);
-                        }
-                        Some(Trigger::XCall { .. }) | None => {}
-                    }
-                }
+                let a = self.apply_outcome(
+                    index,
+                    call.base_index,
+                    call.ts_ms,
+                    &call.outcome,
+                    call.caller.account(),
+                );
                 if let (Some(key), false) = (&call.idempotency_key, a.conflict) {
-                    let _prev = self.state.idempotency.insert(
-                        Self::idem_key(&call.caller, key),
-                        IdemRecord {
-                            applied: a.clone(),
-                            expires_ms: call.ts_ms
-                                + if key.starts_with(NODE_KEY_PREFIX) {
-                                    NODE_KEY_TTL_MS
-                                } else {
-                                    IDEMPOTENCY_TTL_MS
-                                },
-                        },
-                    );
-                    // Forget expired keys, judged by the log's own clock.
-                    let now = call.ts_ms;
-                    self.state.idempotency.retain(|_, r| r.expires_ms > now);
+                    self.remember(index, &call.caller, key, &a);
                 }
                 a
             }
@@ -493,11 +473,13 @@ impl Machine for AppMachine {
                 index,
                 status: Status::Trap,
                 result: Value::Null,
-                error: Value::String(format!("malformed entry: {e}")),
+                error: json!({ "kind": "Fault", "detail": format!("malformed entry: {e}") }),
                 events: Vec::new(),
                 conflict: true,
+                timeout: false,
             },
         };
+        self.expire(index);
         self.state.last_index = index;
         serde_json::to_vec(&applied).unwrap_or_default()
     }
@@ -508,668 +490,151 @@ impl Machine for AppMachine {
 
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
         self.state = serde_json::from_slice(data)?;
-        self.touched.clear();
-        self.touched_since = u64::MAX;
         Ok(())
     }
 }
 
-/// Copy-on-write view of an app's state, recording writes in order.
-pub struct Overlay<'a> {
-    base: &'a BTreeMap<Bytes, Bytes>,
-    writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
-    order: Vec<Vec<u8>>,
-    /// Prepended to every key: empty for the app's state, an account's space
-    /// for its private storage ([`private_prefix`]).
-    prefix: Vec<u8>,
+/// What the host core asks the node about identity, answered from this node's
+/// replica of the system state at the moment it asks (the run is the leader's,
+/// and only its outcome is logged).
+pub struct SysDirectory {
+    node: Weak<Node>,
+    app_id: AppId,
 }
 
-/// Where a shared-storage cell's current writer set lives in the app's state.
-///
-/// v1 recorded a cell's writer rotations as group governance ops. A cloud app
-/// has one log already, so the rotation a run asks for is written beside the
-/// cell, in the same entry as the run's other writes, and read back from there.
-#[must_use]
-pub fn writers_key(cell: &[u8; 32]) -> Vec<u8> {
-    let mut k = b"\0calimero.writers\0".to_vec();
-    k.extend_from_slice(cell);
-    k
-}
-
-/// Marks a blob as the app's: written with the run that wrote it (or the
-/// upload's entry), so a run opens only its own app's blobs.
-#[must_use]
-pub fn blob_key(id: &[u8; 32]) -> Vec<u8> {
-    let mut k = b"\0calimero.blobs\0".to_vec();
-    k.extend_from_slice(id);
-    k
-}
-
-/// Where an account's private storage lives in the app's state.
-///
-/// v1 kept "private" data on the member's own node, never synced. A cloud app
-/// has no member nodes, so private data is the caller's own space instead:
-/// replicated and sealed like the rest of the state, but the host hands a run
-/// only its caller's space, so app code can never read another account's.
-#[must_use]
-pub fn private_prefix(account: &[u8; 32]) -> Vec<u8> {
-    let mut p = b"\0calimero.private\0".to_vec();
-    p.extend_from_slice(account);
-    p.push(0);
-    p
-}
-
-impl<'a> Overlay<'a> {
+impl SysDirectory {
     #[must_use]
-    pub fn new(base: &'a BTreeMap<Bytes, Bytes>) -> Self {
-        Self::with_prefix(base, Vec::new())
+    pub fn new(node: Weak<Node>, app_id: AppId) -> Self {
+        Self { node, app_id }
     }
 
-    /// An overlay that reads and writes only keys under `prefix`.
-    #[must_use]
-    pub fn with_prefix(base: &'a BTreeMap<Bytes, Bytes>, prefix: Vec<u8>) -> Self {
-        Self {
-            base,
-            writes: BTreeMap::new(),
-            order: Vec::new(),
-            prefix,
-        }
-    }
-
-    fn full(&self, key: &[u8]) -> Vec<u8> {
-        let mut k = self.prefix.clone();
-        k.extend_from_slice(key);
-        k
-    }
-
-    /// The writes, in the order they last happened.
-    #[must_use]
-    pub fn into_diff(self) -> Vec<Write> {
-        let mut seen = std::collections::HashSet::new();
-        let mut out = Vec::new();
-        for k in self.order.into_iter().rev() {
-            if seen.insert(k.clone()) {
-                let v = self.writes.get(&k).cloned().flatten();
-                out.push(Write {
-                    key: Bytes(k),
-                    value: v.map(Bytes),
-                });
-            }
-        }
-        out.reverse();
-        out
-    }
-}
-
-impl Storage for Overlay<'_> {
-    fn get(&self, key: &Key) -> Option<StoreValue> {
-        let key = self.full(key);
-        match self.writes.get(&key) {
-            Some(v) => v.clone(),
-            None => self.base.get(&Bytes(key)).map(|v| v.0.clone()),
-        }
-    }
-
-    fn set(&mut self, key: Key, value: StoreValue) -> Option<StoreValue> {
-        let prev = self.get(&key);
-        let key = self.full(&key);
-        self.order.push(key.clone());
-        let _prev = self.writes.insert(key, Some(value));
-        prev
-    }
-
-    fn remove(&mut self, key: &Key) -> Option<Vec<u8>> {
-        let prev = self.get(key);
-        let key = self.full(key);
-        self.order.push(key.clone());
-        let _prev = self.writes.insert(key, None);
-        prev
-    }
-
-    fn has(&self, key: &Key) -> bool {
-        self.get(key).is_some()
-    }
-
-    fn shared_writers(&self, cell: &[u8; 32]) -> Option<CellWriters> {
-        let key = writers_key(cell);
-        let raw = match self.writes.get(&key) {
-            Some(v) => v.clone(),
-            None => self.base.get(&Bytes(key)).map(|v| v.0.clone()),
+    fn with<R: Default>(
+        &self,
+        f: impl FnOnce(&crate::system::SystemState, &crate::types::AppRecord) -> R,
+    ) -> R {
+        let Some(node) = self.node.upgrade() else {
+            return R::default();
         };
-        match raw {
-            None => Some(CellWriters::Genesis),
-            Some(bytes) => borsh::from_slice(&bytes).ok().map(CellWriters::Rotated),
-        }
+        node.sys(|s| {
+            s.apps
+                .get(&self.app_id)
+                .map(|a| f(s, a))
+                .unwrap_or_default()
+        })
+    }
+
+    fn with_org<R: Default>(&self, f: impl FnOnce(&crate::types::Org) -> R) -> R {
+        self.with(|s, a| {
+            a.org
+                .as_ref()
+                .and_then(|o| s.orgs.get(o))
+                .map(f)
+                .unwrap_or_default()
+        })
     }
 }
 
-/// Write `state` (borsh of the app's state) as the app's root entry, with the
-/// Merkle index updated, as v1's `write_migration_state` does. The storage
-/// layer's callbacks outlive any borrow, so they work over a copy of the state
-/// and the writes are carried back into `overlay`.
-fn write_root_state(
-    overlay: &mut Overlay<'_>,
-    base: &BTreeMap<Bytes, Bytes>,
-    context: [u8; 32],
-    executor: [u8; 32],
-    state: &[u8],
-) -> Result<(), String> {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    use calimero_prelude::ROOT_STORAGE_ENTRY_ID;
-    use calimero_storage::address::Id;
-    use calimero_storage::entities::Metadata;
-    use calimero_storage::env::{with_runtime_env, RuntimeEnv};
-    use calimero_storage::index::Index;
-    use calimero_storage::store::{Key as SKey, MainStorage};
-    use calimero_storage::Interface;
-
-    let mut view: BTreeMap<Vec<u8>, Option<Vec<u8>>> = base
-        .iter()
-        .map(|(k, v)| (k.0.clone(), Some(v.0.clone())))
-        .collect();
-    for (k, v) in &overlay.writes {
-        let _prev = view.insert(k.clone(), v.clone());
+fn host_role(r: crate::types::OrgRole) -> host::OrgRole {
+    match r {
+        crate::types::OrgRole::Guest => host::OrgRole::Guest,
+        crate::types::OrgRole::Member => host::OrgRole::Member,
+        crate::types::OrgRole::Admin => host::OrgRole::Admin,
+        crate::types::OrgRole::Owner => host::OrgRole::Owner,
     }
-    let view = Rc::new(RefCell::new(view));
-    let written = Rc::new(RefCell::new(Vec::<(Vec<u8>, Option<Vec<u8>>)>::new()));
-    let read = {
-        let view = Rc::clone(&view);
-        Rc::new(move |k: &SKey| view.borrow().get(&k.to_bytes().to_vec()).cloned().flatten())
-            as Rc<dyn Fn(&SKey) -> Option<Vec<u8>>>
-    };
-    let write = {
-        let (view, written) = (Rc::clone(&view), Rc::clone(&written));
-        Rc::new(move |k: SKey, v: &[u8]| {
-            let k = k.to_bytes().to_vec();
-            let _prev = view.borrow_mut().insert(k.clone(), Some(v.to_vec()));
-            written.borrow_mut().push((k, Some(v.to_vec())));
-            true
-        }) as Rc<dyn Fn(SKey, &[u8]) -> bool>
-    };
-    let remove = {
-        let (view, written) = (Rc::clone(&view), Rc::clone(&written));
-        Rc::new(move |k: &SKey| {
-            let k = k.to_bytes().to_vec();
-            let _prev = view.borrow_mut().insert(k.clone(), None);
-            written.borrow_mut().push((k, None));
-            true
-        }) as Rc<dyn Fn(&SKey) -> bool>
-    };
-    let env = RuntimeEnv::new(read, write, remove, context, executor, executor);
-    let root = Id::new(ROOT_STORAGE_ENTRY_ID);
-    let mut entry = state.to_vec();
-    entry.extend_from_slice(&ROOT_STORAGE_ENTRY_ID);
-    with_runtime_env(env, || -> Result<(), String> {
-        // Stamped after whatever the root entry holds now, so it wins.
-        let at = Index::<MainStorage>::get_index(root)
-            .map_err(|e| e.to_string())?
-            .map_or(u64::MAX / 2, |i| {
-                i.metadata
-                    .updated_at()
-                    .max(i.metadata.created_at())
-                    .saturating_add(1)
-            });
-        let result = Interface::<MainStorage>::write_migrated_root_state(
-            root,
-            &entry,
-            Metadata::new(at, at),
-        )
-        .map(drop)
-        .map_err(|e| e.to_string());
-        calimero_storage::delta::clear_pending_delta();
-        result
-    })?;
-    for (k, v) in written.take() {
-        let _prev = match v {
-            Some(v) => overlay.set(k, v),
-            None => overlay.remove(&k),
+}
+
+impl host::Directory for SysDirectory {
+    fn org(&self) -> Option<String> {
+        self.with(|_, a| a.org.clone())
+    }
+
+    fn app_owner(&self) -> String {
+        self.with(|_, a| a.owner.clone())
+    }
+
+    fn org_role(&self, account: &str) -> Option<host::OrgRole> {
+        self.with_org(|o| o.role(account).map(host_role))
+    }
+
+    fn in_team(&self, account: &str, team: &str) -> bool {
+        self.with_org(|o| o.in_team(account, team))
+    }
+
+    fn team_exists(&self, team: &str) -> bool {
+        self.with_org(|o| o.teams.contains_key(team))
+    }
+
+    fn orgs_of(&self, account: &str) -> Vec<(String, host::OrgRole)> {
+        let Some(node) = self.node.upgrade() else {
+            return Vec::new();
         };
+        node.sys(|s| {
+            s.orgs
+                .iter()
+                .filter_map(|(id, o)| o.role(account).map(|r| (id.clone(), host_role(r))))
+                .collect()
+        })
     }
-    Ok(())
-}
-
-/// What the node gives one run besides its call.
-#[derive(Clone, Debug, Default)]
-pub struct RunEnv {
-    /// The caller's organization standing ([`caller_org`]), as `env::caller_org` reads it.
-    pub org: Option<Vec<u8>>,
-    /// The app's blobs.
-    pub blobs: Option<Arc<dyn calimero_runtime::logic::BlobHost>>,
-    /// Search over the app's own indexes (views only).
-    pub search: Option<Arc<dyn calimero_runtime::logic::SearchHost>>,
-    /// The app that dispatched this run with `xcall` (its context id).
-    pub xcall_origin: Option<[u8; 32]>,
-    /// The node fired it itself, as the app's TEE authority.
-    pub tee_trigger: bool,
-    /// The keys `TeeSecret` and the other sealing host functions use.
-    pub sealing: calimero_runtime::logic::SealingContext,
-}
-
-/// The storage entities a run's artifact (a borsh `StorageDelta`) touches, and
-/// every entry above them, hex: what search re-extracts. Empty for anything
-/// that does not decode. (v1: `calimero_context::search::changed_entity_ids`.)
-#[must_use]
-pub fn changed_entities(artifact: &[u8]) -> Vec<String> {
-    use calimero_storage::action::Action;
-    use calimero_storage::delta::StorageDelta;
-    let actions = match borsh::from_slice::<StorageDelta>(artifact) {
-        Ok(StorageDelta::Actions(actions) | StorageDelta::CausalActions { actions, .. }) => actions,
-        _ => return Vec::new(),
-    };
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for action in &actions {
-        let ancestors = match action {
-            Action::Add { ancestors, .. } | Action::Update { ancestors, .. } => {
-                ancestors.as_slice()
-            }
-            Action::DeleteRef { .. } => &[],
-        };
-        let ids = core::iter::once(action.id()).chain(ancestors.iter().map(|c| c.id()));
-        for id in ids {
-            let id: [u8; 32] = id.into();
-            if seen.insert(id) {
-                out.push(hex::encode(id));
-            }
-        }
-    }
-    out
-}
-
-/// Compiles and runs app bundles.
-pub struct Executor {
-    modules: Mutex<HashMap<String, Arc<calimero_runtime::Module>>>,
-}
-
-impl Default for Executor {
-    fn default() -> Self {
-        Self {
-            modules: Mutex::new(HashMap::new()),
-        }
-    }
-}
-
-fn json_or_string(bytes: &[u8]) -> Value {
-    serde_json::from_slice(bytes)
-        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(bytes).into_owned()))
-}
-
-impl Executor {
-    /// The compiled module for `hash`, compiling `wasm` on first use.
-    pub fn module(&self, hash: &str, wasm: &[u8]) -> eyre::Result<Arc<calimero_runtime::Module>> {
-        if let Some(m) = self
-            .modules
-            .lock()
-            .map_err(|e| eyre::eyre!("{e}"))?
-            .get(hash)
-        {
-            return Ok(Arc::clone(m));
-        }
-        let module = calimero_runtime::Engine::default()
-            .compile(wasm)
-            .map_err(|e| eyre::eyre!("compile: {e:?}"))?;
-        let module = Arc::new(module);
-        let _prev = self
-            .modules
-            .lock()
-            .map_err(|e| eyre::eyre!("{e}"))?
-            .insert(hash.to_owned(), Arc::clone(&module));
-        Ok(module)
-    }
-
-    /// Run a migration export the way v1 does (`calimero-context`'s
-    /// `update_application`): the export reads the old state and returns the
-    /// new root state (borsh), the app's `__calimero_migration_check`, if it
-    /// exports one, must pass over it, and the host writes it as the app's root
-    /// entry. Never fails: errors become the outcome's status. A module without
-    /// the export upgrades code-only.
-    #[must_use]
-    pub fn migrate(
-        module: &calimero_runtime::Module,
-        app_id: &str,
-        caller: &Caller,
-        method: &str,
-        base: &BTreeMap<Bytes, Bytes>,
-        env: &RunEnv,
-    ) -> Outcome {
-        use calimero_runtime::errors::{FunctionCallError, MethodResolutionError};
-        let mut overlay = Overlay::new(base);
-        let context = calimero_identity::sha256(app_id.as_bytes());
-        let account = calimero_account::AccountId::from(caller.account_bytes());
-        let cloud = || calimero_runtime::CloudRun {
-            caller_org: env.org.clone(),
-            blobs: env.blobs.clone(),
-            ..Default::default()
-        };
-        let out = match module.run_cloud(
-            context.into(),
-            account,
-            caller.account_bytes().into(),
-            method,
-            &[],
-            &mut overlay,
-            None,
-            cloud(),
-        ) {
-            Ok(out) => out,
-            Err(e) => return Outcome::trap(&format!("{e:?}")),
-        };
-        let state = match out.returns {
-            Ok(Some(state)) => state,
-            Ok(None) => {
-                return Outcome {
-                    status: Status::AppError,
-                    error: Value::String(format!("{method} returned no state")),
-                    logs: out.logs,
-                    ..Outcome::default()
-                }
-            }
-            Err(FunctionCallError::MethodResolutionError(
-                MethodResolutionError::MethodNotFound { .. },
-            )) => return Outcome::default(),
-            Err(e) => {
-                return Outcome {
-                    status: Status::AppError,
-                    error: Value::String(format!("migration failed: {e:?}")),
-                    logs: out.logs,
-                    ..Outcome::default()
-                }
-            }
-        };
-        // The check reads the migrated state; whatever it writes is dropped.
-        if module.exports_function("__calimero_migration_check") {
-            let input =
-                borsh::to_vec(&(state.clone(), out.migration_witness.clone())).unwrap_or_default();
-            let (writes, order) = (overlay.writes.clone(), overlay.order.clone());
-            let verdict = module.run_cloud(
-                context.into(),
-                account,
-                caller.account_bytes().into(),
-                "__calimero_migration_check",
-                &input,
-                &mut overlay,
-                None,
-                cloud(),
-            );
-            overlay.writes = writes;
-            overlay.order = order;
-            // A check that trapped or answered anything but `true` refuses.
-            let passed = matches!(
-                &verdict,
-                Ok(v) if matches!(&v.returns, Ok(Some(bytes)) if borsh::from_slice::<bool>(bytes).is_ok_and(|ok| ok))
-            );
-            if !passed {
-                return Outcome {
-                    status: Status::AppError,
-                    error: Value::String("the migration check refused the migrated state".into()),
-                    logs: out.logs,
-                    ..Outcome::default()
-                };
-            }
-        }
-        if let Err(e) =
-            write_root_state(&mut overlay, base, context, caller.account_bytes(), &state)
-        {
-            return Outcome::trap(&format!("writing the migrated state: {e}"));
-        }
-        let events = out
-            .events
-            .iter()
-            .map(|e| (e.kind.clone(), json_or_string(&e.data)))
-            .collect();
-        Outcome {
-            status: Status::Ok,
-            diff: overlay.into_diff(),
-            events,
-            logs: out.logs,
-            ..Outcome::default()
-        }
-    }
-
-    /// Run `method` against `base` as `caller`, with JSON `args`. Never fails:
-    /// errors become the outcome's status.
-    #[must_use]
-    pub fn run(
-        module: &calimero_runtime::Module,
-        app_id: &str,
-        caller: &Caller,
-        method: &str,
-        args: &Value,
-        base: &BTreeMap<Bytes, Bytes>,
-        env: &RunEnv,
-    ) -> Outcome {
-        let input = if args.is_null() {
-            Vec::new()
-        } else {
-            serde_json::to_vec(args).unwrap_or_default()
-        };
-        Self::run_bytes(module, app_id, caller, method, &input, base, env).0
-    }
-
-    /// [`Self::run`] with raw input; also answers the raw return value.
-    #[must_use]
-    pub fn run_bytes(
-        module: &calimero_runtime::Module,
-        app_id: &str,
-        caller: &Caller,
-        method: &str,
-        input: &[u8],
-        base: &BTreeMap<Bytes, Bytes>,
-        env: &RunEnv,
-    ) -> (Outcome, Option<Vec<u8>>) {
-        let mut overlay = Overlay::new(base);
-        let context = calimero_identity::sha256(app_id.as_bytes());
-        // A run the node fired as the app's TEE (a timer, a `tee:` handler)
-        // authors as the TEE authority, the one writer `TeeOnly` state admits.
-        let account = if env.tee_trigger {
-            calimero_account::AccountId::TEE_AUTHORITY
-        } else {
-            calimero_account::AccountId::from(caller.account_bytes())
-        };
-        // release-v2 has no devices: a person is their account, so the executor
-        // (v1's per-device key, `env::executor_id`) is the account too. Apps that
-        // key players or authors by executor then tell people apart as before.
-        // The caller's private storage (`env::private_storage_*`), when there
-        // is a caller to own it.
-        let mut private = caller
-            .account()
-            .map(|_| Overlay::with_prefix(base, private_prefix(&caller.account_bytes())));
-        let result = module.run_cloud(
-            context.into(),
-            account,
-            caller.account_bytes().into(),
-            method,
-            input,
-            &mut overlay,
-            private
-                .as_mut()
-                .map(|p| p as &mut dyn calimero_runtime::store::Storage),
-            calimero_runtime::CloudRun {
-                caller_org: env.org.clone(),
-                search: env.search.clone(),
-                blobs: env.blobs.clone(),
-                xcall_origin: env.xcall_origin.map(Into::into),
-                tee_trigger: env.tee_trigger,
-                sealing: env.sealing.clone(),
-            },
-        );
-        let mut new_blobs = Vec::new();
-        if let Ok(out) = &result {
-            if out.returns.is_ok() {
-                // Rotations of shared cells' writers take effect with the run's writes.
-                for r in &out.shared_rotations {
-                    if let Ok(bytes) = borsh::to_vec(&r.new) {
-                        let _prev = overlay.set(writers_key(r.cell.as_bytes()), bytes);
-                    }
-                }
-                // So are the blobs it wrote, and they are this app's.
-                for (id, bytes) in &out.new_blobs {
-                    let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                    let _prev = overlay.set(blob_key(id), size.to_le_bytes().to_vec());
-                    new_blobs.push((hex::encode(id), bytes.clone()));
-                }
-            }
-        }
-        let mut diff = overlay.into_diff();
-        if let Some(p) = private {
-            diff.extend(p.into_diff());
-        }
-        match result {
-            Ok(out) => {
-                let events: Vec<(String, Value)> = out
-                    .events
-                    .iter()
-                    .map(|e| (e.kind.clone(), json_or_string(&e.data)))
-                    .collect();
-                let mut followups: Vec<FollowUp> = out
-                    .events
-                    .iter()
-                    .filter_map(|e| {
-                        let handler = e.handler.as_deref()?;
-                        Some(match handler.strip_prefix("tee:") {
-                            Some(method) => FollowUp::Handler {
-                                method: method.to_owned(),
-                                input: Bytes(e.data.clone()),
-                                tee: true,
-                            },
-                            None => FollowUp::Handler {
-                                method: handler.to_owned(),
-                                input: Bytes(e.data.clone()),
-                                tee: false,
-                            },
-                        })
-                    })
-                    .collect();
-                followups.extend(out.xcalls.iter().map(|x| FollowUp::XCall {
-                    context: hex::encode(x.context_id),
-                    method: x.function.clone(),
-                    input: Bytes(x.params.clone()),
-                }));
-                match out.returns {
-                    Ok(ret) => (
-                        Outcome {
-                            status: Status::Ok,
-                            result: ret.as_deref().map_or(Value::Null, json_or_string),
-                            error: Value::Null,
-                            diff,
-                            events,
-                            logs: out.logs,
-                            followups,
-                            touched: changed_entities(&out.artifact),
-                            new_blobs,
-                        },
-                        ret,
-                    ),
-                    Err(calimero_runtime::errors::FunctionCallError::ExecutionError(payload)) => (
-                        Outcome {
-                            status: Status::AppError,
-                            error: json_or_string(&payload),
-                            logs: out.logs,
-                            ..Outcome::default()
-                        },
-                        None,
-                    ),
-                    Err(e) => (
-                        Outcome {
-                            status: Status::Trap,
-                            error: Value::String(format!("{e:?}")),
-                            logs: out.logs,
-                            ..Outcome::default()
-                        },
-                        None,
-                    ),
-                }
-            }
-            Err(e) => (Outcome::trap(&format!("{e:?}")), None),
-        }
-    }
-}
-
-/// Milliseconds now, for entries.
-#[must_use]
-pub fn stamp() -> u64 {
-    now_ms()
-}
-
-/// The caller's standing in the app's organization, encoded for
-/// `env::caller_org` as `org\nrole\nteam\n...`; `None` when the app has no
-/// organization or the caller is not in it.
-#[must_use]
-pub fn caller_org(
-    state: &crate::system::SystemState,
-    app_id: &str,
-    caller: &Caller,
-) -> Option<Vec<u8>> {
-    let app = state.apps.get(app_id)?;
-    let org_id = app.org.as_ref()?;
-    let org = state.orgs.get(org_id)?;
-    let account = caller.account()?;
-    let role = match org.role(account)? {
-        crate::types::OrgRole::Guest => "guest",
-        crate::types::OrgRole::Member => "member",
-        crate::types::OrgRole::Admin => "admin",
-        crate::types::OrgRole::Owner => "owner",
-    };
-    let mut out = format!("{org_id}\n{role}");
-    for team in org.teams.keys().filter(|t| org.in_team(account, t)) {
-        out.push('\n');
-        out.push_str(team);
-    }
-    Some(out.into_bytes())
 }
 
 #[cfg(test)]
 mod tests {
-    use calimero_runtime::store::Storage;
-
     use super::*;
 
-    #[test]
-    fn private_storage_is_the_callers_own_space() {
-        let alice = [1_u8; 32];
-        let bob = [2_u8; 32];
-        let base = BTreeMap::new();
-        let mut a = Overlay::with_prefix(&base, private_prefix(&alice));
-        let _prev = a.set(b"note".to_vec(), b"alice's".to_vec());
-        let diff = a.into_diff();
-        // The write lands under Alice's prefix, never under the bare key.
-        assert_eq!(diff.len(), 1);
-        assert!(diff[0].key.0.starts_with(&private_prefix(&alice)));
-
-        let mut state = BTreeMap::new();
-        for w in diff {
-            let _prev = state.insert(w.key, w.value.unwrap());
-        }
-        let main = Overlay::new(&state);
-        let as_bob = Overlay::with_prefix(&state, private_prefix(&bob));
-        let as_alice = Overlay::with_prefix(&state, private_prefix(&alice));
-        assert!(!main.has(&b"note".to_vec()));
-        assert!(!as_bob.has(&b"note".to_vec()));
-        assert_eq!(as_alice.get(&b"note".to_vec()), Some(b"alice's".to_vec()));
+    fn call(index_base: u64, key: Option<&str>, diff: Vec<Write>) -> Vec<u8> {
+        serde_json::to_vec(&AppCmd::Call(Box::new(CallEntry {
+            method: "m".into(),
+            args: Value::Null,
+            caller: Caller::Account {
+                account: "a".into(),
+            },
+            idempotency_key: key.map(str::to_owned),
+            consent: None,
+            ts_ms: 1,
+            base_index: index_base,
+            id_term: 1,
+            id_seq: 1,
+            outcome: Outcome {
+                diff,
+                ..Outcome::default()
+            },
+        })))
+        .unwrap()
     }
 
     #[test]
-    fn a_cells_writers_come_from_the_apps_own_state() {
-        use calimero_storage::shared_writers::CellWriters;
+    fn a_view_keeps_its_version_while_apply_moves_on() {
+        let mut m = AppMachine::new("app".into());
+        let w = |v: &str| Write {
+            key: Bytes(b"k".to_vec()),
+            value: Some(Bytes(v.as_bytes().to_vec())),
+        };
+        let _a = m.apply(1, &call(0, None, vec![w("1")]));
+        let held = m.view();
+        let _a = m.apply(2, &call(1, None, vec![w("2")]));
+        assert_eq!(held.get(b"k"), Some(b"1".to_vec()));
+        assert_eq!(m.view().get(b"k"), Some(b"2".to_vec()));
+    }
 
-        let cell = [7_u8; 32];
-        let base = BTreeMap::new();
-        let fresh = Overlay::new(&base);
-        assert_eq!(fresh.shared_writers(&cell), Some(CellWriters::Genesis));
-
-        // A stored set (as a run's rotation writes it) is what the next run reads.
-        let mut state = BTreeMap::new();
-        let writers = calimero_storage::shared_writers::Writers::default();
-        let _prev = state.insert(
-            Bytes(writers_key(&cell)),
-            Bytes(borsh::to_vec(&writers).unwrap()),
+    #[test]
+    fn idempotency_records_are_kept_for_a_number_of_entries() {
+        let mut m = AppMachine::new("app".into());
+        let caller = Caller::Account {
+            account: "a".into(),
+        };
+        let _a = m.apply(1, &call(0, Some("k"), Vec::new()));
+        assert!(m.replay(&caller, "k").is_some());
+        // Entries without keys: the record lives until IDEMPOTENCY_ENTRIES later.
+        m.state.last_index = IDEMPOTENCY_ENTRIES;
+        let _a = m.apply(
+            IDEMPOTENCY_ENTRIES,
+            &call(IDEMPOTENCY_ENTRIES, None, Vec::new()),
         );
-        let later = Overlay::new(&state);
-        assert_eq!(
-            later.shared_writers(&cell),
-            Some(CellWriters::Rotated(writers))
+        assert!(m.replay(&caller, "k").is_some());
+        let _a = m.apply(
+            IDEMPOTENCY_ENTRIES + 1,
+            &call(IDEMPOTENCY_ENTRIES, None, Vec::new()),
         );
+        assert!(m.replay(&caller, "k").is_none());
     }
 }

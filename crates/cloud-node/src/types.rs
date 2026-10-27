@@ -22,10 +22,12 @@ pub enum Caller {
     ApiKey { key: String, account: AccountId },
     /// Nobody in particular (public apps).
     Public,
-    /// The app itself: the node running an event handler, a timer, or an
-    /// `xcall` from app `app` (then the caller is the calling app). Never from
-    /// a client: the API builds callers from credentials.
+    /// Another app (`xcall` delivery, not in this milestone). Never from a
+    /// client: the API builds callers from credentials.
     App { app: AppId },
+    /// The platform itself (timer ticks); reaches only methods whose ABI says
+    /// `allowSystem`. Never from a client.
+    System,
 }
 
 impl Caller {
@@ -33,25 +35,24 @@ impl Caller {
     pub fn account(&self) -> Option<&str> {
         match self {
             Self::Account { account } | Self::ApiKey { account, .. } => Some(account),
-            Self::Public | Self::App { .. } => None,
+            Self::Public | Self::App { .. } | Self::System => None,
         }
     }
 
-    /// The 32 bytes the runtime exposes as `env::account_id()`.
+    /// The caller as the host core sees it (the WIT `caller`, D13).
     #[must_use]
-    pub fn account_bytes(&self) -> [u8; 32] {
-        // An app calls as its context id, what it sees as `env::context_id()`.
-        if let Self::App { app } = self {
-            return calimero_identity::sha256(app.as_bytes());
+    pub fn to_host(&self) -> calimero_app_host::Caller {
+        use calimero_app_host::Caller as H;
+        match self {
+            Self::Account { account } => H::Account(account.clone()),
+            Self::ApiKey { key, account } => H::ApiKey {
+                key_id: key.clone(),
+                account: account.clone(),
+            },
+            Self::Public => H::Public,
+            Self::App { app } => H::App(app.clone()),
+            Self::System => H::System,
         }
-        let mut out = [0; 32];
-        if let Some(a) = self.account() {
-            if let Ok(b) = calimero_identity::from_b64url(a) {
-                let n = b.len().min(32);
-                out[..n].copy_from_slice(&b[..n]);
-            }
-        }
-        out
     }
 }
 
@@ -94,9 +95,6 @@ pub struct AppRecord {
     pub org: Option<OrgId>,
     #[serde(default)]
     pub access: Access,
-    /// Methods that need a fresh passkey assertion (`#[app::confirm]`).
-    #[serde(default)]
-    pub confirm_methods: Vec<String>,
     pub replicas: Vec<u64>,
     pub created_at: u64,
     /// The arguments `init` ran with (JSON; `null` for none).
@@ -390,6 +388,46 @@ pub struct Invite {
     pub uses_left: u32,
 }
 
+/// Who receives an event (R9). Resolved when the event is sent to a
+/// subscriber, against the system state of that moment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Audience {
+    /// Everyone who reaches the app.
+    All,
+    /// The account that made the call.
+    Caller,
+    Accounts {
+        accounts: Vec<AccountId>,
+    },
+    /// The members of a team of the app's organization.
+    Team {
+        team: TeamId,
+    },
+    /// Members, admins and the owner of the organization.
+    OrgMembers {
+        org: OrgId,
+    },
+    /// Admins and the owner of the organization.
+    OrgAdmins {
+        org: OrgId,
+    },
+}
+
+impl From<calimero_app_host::Audience> for Audience {
+    fn from(a: calimero_app_host::Audience) -> Self {
+        use calimero_app_host::Audience as H;
+        match a {
+            H::All => Self::All,
+            H::Caller => Self::Caller,
+            H::Accounts(accounts) => Self::Accounts { accounts },
+            H::Team(team) => Self::Team { team },
+            H::OrgMembers(org) => Self::OrgMembers { org },
+            H::OrgAdmins(org) => Self::OrgAdmins { org },
+        }
+    }
+}
+
 /// One event committed with a call.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -398,6 +436,10 @@ pub struct EventRecord {
     pub seq: u32,
     pub kind: String,
     pub data: serde_json::Value,
+    pub audience: Audience,
+    /// The calling account, for [`Audience::Caller`].
+    #[serde(default)]
+    pub caller: Option<AccountId>,
 }
 
 /// Seconds since the epoch.

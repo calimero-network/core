@@ -8,6 +8,12 @@ use calimero_app_build::build_component_cached;
 /// by source hash under `target/app-components` (the fixture, the SDK crates, the toolchain and
 /// app-build's post-processing are hashed; see `calimero_app_build::cache_key`).
 pub fn component(name: &str) -> Vec<u8> {
+    // Tests run in parallel threads of one process; two builds of the same fixture into
+    // one target directory race, so builds are serialized.
+    static BUILDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one_at_a_time = BUILDING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let dir = root.join("apps/v2-fixtures").join(name);
     let sdk = root.join("crates/app-sdk");

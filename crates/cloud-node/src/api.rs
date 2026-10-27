@@ -698,11 +698,8 @@ async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Bod
         ));
     }
     let hash = hex::encode(sha256(&body));
-    // Refuse what does not compile before replicating it.
-    let _module = node
-        .executor
-        .module(&hash, &body)
-        .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))?;
+    // The engine judges the component when an app is created from it: a refused
+    // one fails that app's `init` (`INIT_FAILED`), with the reason.
     node.replicate_bundle(&hash, &body).await?;
     let _ok = node
         .sys_write(&SystemCmd::PutBundle {
@@ -724,8 +721,6 @@ struct CreateAppBody {
     org: Option<String>,
     #[serde(default)]
     access: Option<Access>,
-    #[serde(default)]
-    confirm_methods: Vec<String>,
     /// Arguments for the app's `init`, as JSON.
     #[serde(default)]
     init_args: Value,
@@ -761,7 +756,6 @@ async fn app_create(
                 owner,
                 org: body.org,
                 access,
-                confirm_methods: body.confirm_methods,
                 replicas,
                 created_at: now_secs(),
                 init_args: body.init_args,
@@ -908,11 +902,8 @@ async fn gate(
             ApiError::not_found("no such app")
         });
     }
-    // A read-only row refuses what writes: a blob upload here, a call that
-    // would write at commit (`Node::call_local`), as v1 discarded its writes.
-    if write && method == "__blob" && read_only_in(node, app, account).await {
-        return Err(ApiError::forbidden("read-only in this team"));
-    }
+    // A read-only row refuses a call that would write at commit
+    // (`Node::call_local`), as v1 discarded its writes.
     if let Some(k) = p.as_ref().and_then(|p| p.api_key.as_ref()) {
         if write && k.read_only {
             return Err(ApiError::forbidden("read-only API key"));
@@ -1025,25 +1016,66 @@ async fn consent(
     Ok(serde_json::to_value(&confirm.assertion).unwrap_or_default())
 }
 
-fn answer(a: Applied) -> Response {
+/// The 422/503 of a run that did not end `Ok` (spec section 5, D23, D36).
+fn failure(index: u64, status: &Status, error: &Value, timeout: bool) -> Option<ApiError> {
+    if timeout {
+        return Some(
+            ApiError::new(
+                503,
+                "TIMEOUT",
+                "the run hit its deadline; retry with the same key",
+            )
+            .with_details(json!({ "retryAfter": 1 })),
+        );
+    }
+    match status {
+        Status::Ok => None,
+        Status::AppError => Some(
+            ApiError::new(422, "APP_ERROR", "the app refused the call").with_details(json!({
+                "index": index,
+                "code": error["code"],
+                "fields": error["fields"],
+            })),
+        ),
+        Status::Trap => Some(
+            ApiError::new(422, "TRAP", "the run trapped").with_details(json!({
+                "index": index,
+                "kind": error["kind"],
+                "detail": error["detail"],
+            })),
+        ),
+    }
+}
+
+/// A call's answer. Its events are the ones the caller is in the audience of.
+fn answer(node: &Node, app_id: &str, caller: &Caller, a: Applied) -> Response {
     if a.conflict {
         return ApiError::unavailable(
             "the call raced a leader change; retry with the same idempotency key",
         )
         .into_response();
     }
+    if a.error.as_str() == Some(crate::node::NOT_REACHED) {
+        return ApiError::not_found(crate::node::NOT_REACHED).into_response();
+    }
     if a.error.as_str() == Some(crate::node::READ_ONLY) {
         return ApiError::forbidden(crate::node::READ_ONLY).into_response();
     }
-    match a.status {
-        Status::Ok => Json(json!({ "index": a.index, "result": a.result, "events": a.events.iter().map(|(k, d)| json!({ "kind": k, "data": d })).collect::<Vec<_>>() })).into_response(),
-        Status::AppError => ApiError::new(422, "APP_ERROR", "the app refused the call")
-            .with_details(json!({ "index": a.index, "error": a.error }))
-            .into_response(),
-        Status::Trap => ApiError::new(422, "TRAP", "the call failed")
-            .with_details(json!({ "index": a.index, "error": a.error }))
-            .into_response(),
+    if let Some(e) = failure(a.index, &a.status, &a.error, a.timeout) {
+        return e.into_response();
     }
+    let account = caller.account();
+    let events: Vec<Value> = node.sys(|s| {
+        let Some(app) = s.apps.get(app_id) else {
+            return Vec::new();
+        };
+        a.events
+            .iter()
+            .filter(|e| s.receives(app, &e.audience, account, account))
+            .map(|e| json!({ "kind": e.kind, "data": e.data }))
+            .collect()
+    });
+    Json(json!({ "index": a.index, "result": a.result, "events": events })).into_response()
 }
 
 async fn intents(
@@ -1055,12 +1087,24 @@ async fn intents(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, &body.method, true).await?;
+    let method = node
+        .prepared_for(&app.bundle)
+        .await?
+        .abi
+        .methods
+        .get(&body.method)
+        .cloned();
     // A declared view runs as one, whichever way it is invoked (v1's rule): it
-    // reads the latest state, writes nothing, and may search.
-    if node.facts(&app.bundle).await.views.contains(&body.method) {
+    // reads the latest state and writes nothing (the SDK's dispatcher allows a
+    // view under `call` too).
+    if method
+        .as_ref()
+        .is_some_and(|m| m.kind == calimero_app_host::MethodKind::View && !m.confirm)
+    {
+        let caller = p.caller.clone();
         let a = node
             .view(&ViewRequest {
-                app_id,
+                app_id: app_id.clone(),
                 method: body.method,
                 args: body.args,
                 caller: p.caller,
@@ -1068,28 +1112,36 @@ async fn intents(
                 min_index: 0,
             })
             .await?;
-        return Ok(answer(Applied {
-            index: a.index,
-            status: a.status,
-            result: a.result,
-            error: a.error,
-            events: Vec::new(),
-            conflict: false,
-        }));
+        return Ok(answer(
+            &node,
+            &app_id,
+            &caller,
+            Applied {
+                index: a.index,
+                status: a.status,
+                result: a.result,
+                error: a.error,
+                events: Vec::new(),
+                conflict: false,
+                timeout: a.timeout,
+            },
+        ));
     }
-    let consent_value = if app.confirm_methods.iter().any(|m| m == &body.method) {
+    // Confirm flags come from the bundle's ABI (S5), never from the app record.
+    let consent_value = if method.as_ref().is_some_and(|m| m.confirm) {
         Some(consent(&node, &p, &app_id, &body.method, &body.args, body.confirm).await?)
     } else {
         None
     };
+    let caller = p.caller.clone();
     let applied = node
         .call(&CallRequest {
             idempotency_key: body.idempotency_key,
             consent: consent_value,
-            ..CallRequest::new(app_id, body.method, body.args, p.caller)
+            ..CallRequest::new(app_id.clone(), body.method, body.args, p.caller)
         })
         .await?;
-    Ok(answer(applied))
+    Ok(answer(&node, &app_id, &caller, applied))
 }
 
 #[derive(Deserialize)]
@@ -1123,14 +1175,9 @@ async fn views(
             min_index: body.min_index,
         })
         .await?;
-    Ok(match a.status {
-        Status::Ok => Json(json!({ "index": a.index, "result": a.result })).into_response(),
-        Status::AppError => ApiError::new(422, "APP_ERROR", "the app refused the read")
-            .with_details(json!({ "index": a.index, "error": a.error }))
-            .into_response(),
-        Status::Trap => ApiError::new(422, "TRAP", "the read failed")
-            .with_details(json!({ "index": a.index, "error": a.error }))
-            .into_response(),
+    Ok(match failure(a.index, &a.status, &a.error, a.timeout) {
+        Some(e) => e.into_response(),
+        None => Json(json!({ "index": a.index, "result": a.result })).into_response(),
     })
 }
 
@@ -1140,10 +1187,14 @@ struct EventsQuery {
     from: u64,
 }
 
+/// The app's events from `from`, then live, as `subscriber` (`None`: anonymous)
+/// may see them: each is checked against the system state when it is sent (R9),
+/// so a member removed from the org or the team stops receiving at once.
 fn local_events(
-    node: &Node,
+    node: &Arc<Node>,
     app_id: &str,
     from: u64,
+    subscriber: Option<String>,
 ) -> Option<impl Stream<Item = Result<Event, Infallible>>> {
     let g = node.hosted(app_id)?;
     let (backlog, rx) = g.read_local(|m, _| {
@@ -1164,7 +1215,21 @@ fn local_events(
             let fresh = last.is_none_or(|l| (e.index, e.seq) > l);
             async move { fresh }
         });
-    let stream = futures_util::stream::iter(backlog).chain(live).map(|e| {
+    let (node, app_id) = (Arc::clone(node), app_id.to_owned());
+    let receives = move |e: &EventRecord| {
+        node.sys(|s| {
+            s.apps.get(&app_id).is_some_and(|app| {
+                s.receives(app, &e.audience, e.caller.as_deref(), subscriber.as_deref())
+            })
+        })
+    };
+    let stream = futures_util::stream::iter(backlog)
+        .chain(live)
+        .filter(move |e| {
+            let ok = receives(e);
+            async move { ok }
+        });
+    let stream = stream.map(|e| {
         Ok(Event::default()
             .id(format!("{}:{}", e.index, e.seq))
             .event(e.kind.clone())
@@ -1181,8 +1246,9 @@ async fn events(
 ) -> Result<Response, ApiError> {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    let _p = gate(&node, &headers, &app, "*", false).await?;
-    if let Some(stream) = local_events(&node, &app_id, q.from) {
+    let p = gate(&node, &headers, &app, "*", false).await?;
+    let subscriber = p.caller.account().map(str::to_owned);
+    if let Some(stream) = local_events(&node, &app_id, q.from, subscriber.clone()) {
         return Ok(Sse::new(stream)
             .keep_alive(KeepAlive::default())
             .into_response());
@@ -1197,7 +1263,11 @@ async fn events(
     let resp = node
         .peer_stream(
             &addr,
-            &format!("internal/events?app={app_id}&from={}", q.from),
+            &format!(
+                "internal/events?app={app_id}&from={}&subscriber={}",
+                q.from,
+                subscriber.unwrap_or_default()
+            ),
         )
         .await
         .map_err(|e| ApiError::unavailable(&e.to_string()))?;
@@ -1251,7 +1321,7 @@ async fn app_upgrade(
     let applied = node
         .call(&CallRequest::new(
             app_id.clone(),
-            "__upgrade".into(),
+            crate::node::UPGRADE.into(),
             json!({ "bundle": body.bundle, "migrate": body.migrate }),
             Caller::Account {
                 account: account.clone(),
@@ -1759,107 +1829,6 @@ async fn internal_blob_get(
     Ok(Json(json!({ "wasm": calimero_log::Bytes(wasm) })))
 }
 
-/// A blob id as a client gives it: base58 (what apps print, v1's `BlobId`) or hex.
-fn parse_blob_id(id: &str) -> Result<[u8; 32], ApiError> {
-    if let Ok(raw) = hex::decode(id) {
-        if let Ok(b) = <[u8; 32]>::try_from(raw.as_slice()) {
-            return Ok(b);
-        }
-    }
-    id.parse::<calimero_primitives::blobs::BlobId>()
-        .map(|b| *b.as_ref())
-        .map_err(|_| ApiError::bad_request("BAD_REQUEST", "not a blob id"))
-}
-
-fn blob_json(id: &[u8; 32], size: u64) -> Value {
-    json!({
-        "blobId": calimero_primitives::blobs::BlobId::from(*id).to_string(),
-        "id": hex::encode(id),
-        "size": size,
-    })
-}
-
-/// Upload a blob for an app: the body is its bytes. Anyone who may call the
-/// app may add one; its runs then open it by id.
-async fn blob_upload(
-    State(node): State<Arc<Node>>,
-    headers: HeaderMap,
-    Path(app_id): Path<String>,
-    body: axum::body::Bytes,
-) -> ApiResult {
-    let app_id = node.canonical_app_id(&app_id);
-    let app = node.app(&app_id).await?;
-    let p = gate(&node, &headers, &app, "__blob", true).await?;
-    if p.caller.account().is_none() {
-        return Err(ApiError::unauthenticated("sign in to upload"));
-    }
-    let id = node.store_blob(&body).await?;
-    let size = body.len() as u64;
-    let a = node
-        .call(&CallRequest::new(
-            app_id,
-            "__blob".into(),
-            json!({ "id": id, "size": size }),
-            p.caller,
-        ))
-        .await?;
-    let raw = parse_blob_id(&id)?;
-    let mut out = blob_json(&raw, size);
-    out["index"] = json!(a.index);
-    Ok(Json(out))
-}
-
-/// Download one of an app's blobs.
-async fn blob_download(
-    State(node): State<Arc<Node>>,
-    headers: HeaderMap,
-    Path((app_id, id)): Path<(String, String)>,
-) -> Result<Response, ApiError> {
-    let app_id = node.canonical_app_id(&app_id);
-    let app = node.app(&app_id).await?;
-    let _p = gate(&node, &headers, &app, "__blob", false).await?;
-    let raw = parse_blob_id(&id)?;
-    if !node.blob_held(&app, &raw).await? {
-        return Err(ApiError::not_found("no such blob in this app"));
-    }
-    let hex_id = hex::encode(raw);
-    let bytes = match node
-        .engine
-        .get_blob(&hex_id)
-        .map_err(|e| ApiError::internal(&e.to_string()))?
-    {
-        Some(b) => b,
-        None => node.fetch_blob(&hex_id).await?,
-    };
-    Ok((
-        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        bytes,
-    )
-        .into_response())
-}
-
-#[derive(Deserialize)]
-struct HeldBody {
-    app: String,
-    id: String,
-}
-
-async fn internal_blob_held(
-    State(node): State<Arc<Node>>,
-    headers: HeaderMap,
-    Json(body): Json<HeldBody>,
-) -> ApiResult {
-    peer_only(&node, &headers)?;
-    let app = node.app(&body.app).await?;
-    let raw = parse_blob_id(&body.id)?;
-    let g = node
-        .hosted(&app.app_id)
-        .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
-    Ok(Json(
-        json!({ "held": g.read_local(|m, _| m.holds_blob(&raw)) }),
-    ))
-}
-
 /// The system leader's applied index, once it confirmed it leads.
 async fn internal_system_index(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     peer_only(&node, &headers)?;
@@ -1918,6 +1887,9 @@ struct InternalEvents {
     app: String,
     #[serde(default)]
     from: u64,
+    /// The account the stream is filtered for; empty: anonymous.
+    #[serde(default)]
+    subscriber: String,
 }
 
 async fn internal_events(
@@ -1926,7 +1898,8 @@ async fn internal_events(
     Query(q): Query<InternalEvents>,
 ) -> Result<Response, ApiError> {
     peer_only(&node, &headers)?;
-    let stream = local_events(&node, &q.app, q.from)
+    let subscriber = Some(q.subscriber).filter(|s| !s.is_empty());
+    let stream = local_events(&node, &q.app, q.from, subscriber)
         .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
     Ok(Sse::new(stream)
         .keep_alive(KeepAlive::default())
@@ -2147,8 +2120,6 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/events", get(events))
         .route("/apps/{app}/upgrade", post(app_upgrade))
         .route("/apps/{app}/access", post(app_access))
-        .route("/apps/{app}/blobs", post(blob_upload))
-        .route("/apps/{app}/blobs/{id}", get(blob_download))
         .route("/orgs", post(org_create))
         .route("/orgs/{org}", get(org_get))
         .route("/orgs/{org}/members", post(org_set_member))
@@ -2169,7 +2140,6 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/call", post(internal_call))
         .route("/internal/blob", post(internal_blob_put))
         .route("/internal/blob/get", post(internal_blob_get))
-        .route("/internal/blob/held", post(internal_blob_held))
         .route("/internal/view", post(internal_view))
         .route("/internal/app-ready", post(internal_app_ready))
         .route("/internal/events", get(internal_events))

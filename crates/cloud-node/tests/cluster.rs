@@ -1,8 +1,8 @@
 //! A three-node cluster in one process, driven only through the client, over
-//! sealed channels, with the real kv-store app.
-//!
-//! Needs `kv_store.wasm`: `cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release`,
-//! or set `KV_STORE_WASM`.
+//! sealed channels, with the real v2 fixture components (`apps/v2-fixtures/*`,
+//! built on first use by `common::component`).
+
+mod common;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -18,23 +18,11 @@ use serde_json::{json, Value};
 const ORIGIN: &str = "http://localhost:3000";
 
 fn kv_wasm() -> Vec<u8> {
-    let path = std::env::var("KV_STORE_WASM")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/wasm32-unknown-unknown/app-release/kv_store.wasm")
-        });
-    std::fs::read(&path)
-        .unwrap_or_else(|e| panic!("{}: {e}; build kv-store for wasm32 first", path.display()))
+    common::component("kv")
 }
 
 fn wasm(name: &str) -> Vec<u8> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/wasm32-unknown-unknown/app-release")
-        .join(format!("{name}.wasm"));
-    std::fs::read(&path).unwrap_or_else(|e| {
-        panic!("{}: {e}; build it with cargo build --target wasm32-unknown-unknown --profile app-release", path.display())
-    })
+    common::component(name)
 }
 
 fn free_port() -> u16 {
@@ -48,6 +36,7 @@ fn free_port() -> u16 {
 struct Cluster {
     nodes: Vec<Option<Running>>,
     urls: Vec<String>,
+    configs: Vec<Config>,
     _dirs: Vec<tempfile::TempDir>,
 }
 
@@ -69,6 +58,7 @@ impl Cluster {
             .collect();
         let mut nodes = Vec::new();
         let mut dirs = Vec::new();
+        let mut configs = Vec::new();
         for (i, port) in ports.iter().enumerate() {
             let dir = tempfile::tempdir().unwrap();
             let mut config = Config {
@@ -99,14 +89,18 @@ impl Cluster {
                 tee_release: None,
                 tee_profile: None,
                 peer_measurements: calimero_cloud_client::Measurements::None,
+                clock_offset_ms: 0,
+                budget: None,
             };
             configure(&mut config);
+            configs.push(config.clone());
             nodes.push(Some(run(config).await.unwrap()));
             dirs.push(dir);
         }
         let c = Self {
             nodes,
             urls,
+            configs,
             _dirs: dirs,
         };
         // Wait for the system group to elect, register nodes and mint a session key.
@@ -139,6 +133,25 @@ impl Cluster {
         if let Some(r) = self.nodes[i].take() {
             r.stop().await;
         }
+    }
+
+    /// Start node `i` again from its data directory, its configuration changed by `configure`.
+    async fn restart(&mut self, i: usize, configure: impl Fn(&mut Config)) {
+        self.stop(i).await;
+        let mut config = self.configs[i].clone();
+        config.bootstrap = false;
+        configure(&mut config);
+        // The stopped node's tasks may hold its log open for a moment.
+        for _ in 0..50 {
+            match run(config.clone()).await {
+                Ok(r) => {
+                    self.nodes[i] = Some(r);
+                    return;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+        panic!("node {i} did not restart");
     }
 
     fn app_leader(&self, app: &str) -> Option<usize> {
@@ -228,7 +241,7 @@ async fn end_to_end() {
 
     // The app's own error comes back as APP_ERROR.
     let e = alice
-        .call(&app, "get_result", json!({ "key": "missing" }), None)
+        .call(&app, "getResult", json!({ "key": "missing" }), None)
         .await
         .unwrap_err();
     assert!(matches!(e.code(), Some("APP_ERROR" | "TRAP")), "{e}");
@@ -783,7 +796,7 @@ async fn apps_see_the_callers_organization_role_and_teams() {
         .await
         .unwrap();
 
-    let bundle = alice.upload_bundle(wasm("org_gated")).await.unwrap();
+    let bundle = alice.upload_bundle(wasm("org-gated")).await.unwrap();
     let app = alice
         .create_app("notes", &bundle, json!({ "org": org }))
         .await
@@ -793,18 +806,18 @@ async fn apps_see_the_callers_organization_role_and_teams() {
     let me = strong_view(&alice, &app, "whoami", json!({})).await;
     assert_eq!(me["role"], "owner");
     assert_eq!(me["org"], json!(org));
-    let me = strong_view(&bob, &app, "whoami", json!({})).await;
+    let me = strong_view(&bob, &app, "whoami", json!({ "candidates": [team] })).await;
     assert_eq!(me["role"], "member");
     assert_eq!(me["teams"], json!([team]));
 
     // Admins write the pinned note; members read it but cannot write it.
     let _ok = alice
-        .call(&app, "set_pinned", json!({ "text": "hello" }), None)
+        .call(&app, "setPinned", json!({ "text": "hello" }), None)
         .await
         .unwrap();
     assert_eq!(strong_view(&bob, &app, "pinned", json!({})).await, "hello");
     let err = bob
-        .call(&app, "set_pinned", json!({ "text": "mine" }), None)
+        .call(&app, "setPinned", json!({ "text": "mine" }), None)
         .await
         .unwrap_err();
     assert_eq!(err.code(), Some("APP_ERROR"), "{err}");
@@ -822,7 +835,7 @@ async fn apps_see_the_callers_organization_role_and_teams() {
     let _ok = bob
         .call(
             &app,
-            "set_team_note",
+            "setTeamNote",
             json!({ "team": team, "text": "ship it" }),
             None,
         )
@@ -831,7 +844,7 @@ async fn apps_see_the_callers_organization_role_and_teams() {
     let err = alice
         .call(
             &app,
-            "set_team_note",
+            "setTeamNote",
             json!({ "team": team, "text": "x" }),
             None,
         )
@@ -957,6 +970,7 @@ async fn eventually(
     panic!("{method} never got there; last answer {last}");
 }
 
+#[ignore = "blobs: v1 host path removed; returns per spec R8"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn blobs_are_the_apps_own_and_reach_every_node() {
     let c = Cluster::start(3).await;
@@ -1008,6 +1022,7 @@ async fn blobs_are_the_apps_own_and_reach_every_node() {
     assert!(alice.download_blob(&other, &blob_id).await.is_err());
 }
 
+#[ignore = "event handlers: v1 host path removed; returns per spec D25/D29 (xcall outbox) and D17 (actions)"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn event_handlers_run_once_after_the_entry_that_emitted_them() {
     let c = Cluster::start(3).await;
@@ -1037,6 +1052,7 @@ async fn event_handlers_run_once_after_the_entry_that_emitted_them() {
     );
 }
 
+#[ignore = "xcall: v1 host path removed; returns per spec D25/D29"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn xcalls_reach_only_declared_entry_points_in_the_same_organization() {
     let c = Cluster::start(3).await;
@@ -1088,6 +1104,7 @@ async fn xcalls_reach_only_declared_entry_points_in_the_same_organization() {
     );
 }
 
+#[ignore = "TEE handlers/timers: v1 host path removed; returns per spec D34 (timers, Task 11) and D17 (actions)"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn tee_handlers_and_timers_run_as_the_apps_tee() {
     let c = Cluster::start(3).await;
@@ -1151,6 +1168,7 @@ async fn tee_handlers_and_timers_run_as_the_apps_tee() {
     }
 }
 
+#[ignore = "search: v1 host path removed; returns per spec R2"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn views_search_the_apps_own_index_as_it_changes() {
     let c = Cluster::start(3).await;
@@ -1453,6 +1471,7 @@ async fn a_second_passkey_is_another_device_of_the_same_account() {
     assert_eq!(b["passkeys"].as_array().unwrap().len(), 2);
 }
 
+#[ignore = "in-place migrations: v1 host path removed; returns per spec D38 (rebuild)"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn upgrades_plan_and_run_the_apps_migration_and_its_check() {
     let c = Cluster::start(3).await;
@@ -1544,4 +1563,300 @@ async fn upgrades_plan_and_run_the_apps_migration_and_its_check() {
         alice.get(&format!("apps/{app}")).await.unwrap()["bundle"],
         json!(f1)
     );
+}
+
+/// The `u64` a fixture returned (a decimal string in JSON, D20).
+fn as_u64(v: &Value) -> u64 {
+    v.as_str().unwrap().parse().unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn views_refuse_confirm_methods() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let e = alice
+        .view(&app, "wipe", json!({}), Consistency::Strong)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
+    assert_eq!(e.details().unwrap()["code"], "ConfirmNotAView", "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn timeouts_are_not_logged() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.budget = Some(calimero_app_host::Budget {
+            fuel: u64::MAX,
+            ..calimero_app_host::Budget::call()
+        });
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let leader = c.app_leader(&app).unwrap();
+    let applied = || {
+        c.nodes[leader]
+            .as_ref()
+            .unwrap()
+            .node
+            .hosted(&app)
+            .unwrap()
+            .applied()
+    };
+    let before = applied();
+    let e = alice
+        .call(&app, "spin", json!({}), Some("k-1"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("TIMEOUT"), "{e}");
+    assert!(e.details().unwrap()["retryAfter"].is_u64(), "{e}");
+    assert_eq!(applied(), before, "a timeout was logged");
+    // The key was not spent: the same key on a fast method runs it.
+    let r = alice
+        .call(
+            &app,
+            "set",
+            json!({ "key": "a", "value": "1" }),
+            Some("k-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.index, before + 1);
+    let v = alice
+        .view(&app, "get", json!({ "key": "a" }), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!("1"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn oversized_entry_is_host_denied() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let _r = alice
+        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .await
+        .unwrap();
+    // 1,000 keys of 1,000 bytes, each with its event: within every per-run limit
+    // (writes, events, event size), but about 2 MB of diff and events.
+    let e = alice
+        .call(&app, "fill", json!({ "n": 1000, "size": 1000 }), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("TRAP"), "{e}");
+    assert_eq!(e.details().unwrap()["kind"], "HostDenied", "{e}");
+    let v = alice
+        .view(&app, "len", json!({}), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!(1));
+    let _r = alice
+        .call(&app, "set", json!({ "key": "b", "value": "2" }), None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn entry_timestamps_never_go_backwards() {
+    let mut c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let first = alice.call(&app, "stamp", json!({}), None).await.unwrap();
+    let t1 = as_u64(&first.result);
+
+    // The leader comes back with its clock a minute behind, and leads again.
+    let slow = c.app_leader(&app).unwrap();
+    c.restart(slow, |cfg| cfg.clock_offset_ms = -60_000).await;
+    for _ in 0..30 {
+        match c.app_leader(&app) {
+            Some(l) if l == slow => break,
+            Some(l) => c.restart(l, |_| {}).await,
+            None => {}
+        }
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+    }
+    assert_eq!(
+        c.app_leader(&app),
+        Some(slow),
+        "the slow node never led again"
+    );
+
+    let cl = c.client(slow);
+    let _s = cl.sign_in(&mut pk).await.unwrap();
+    let second = cl.call(&app, "stamp", json!({}), None).await.unwrap();
+    let t2 = as_u64(&second.result);
+    assert!(t2 > t1, "entry time went back: {t1} -> {t2}");
+
+    let follower = (0..3).find(|i| *i != slow).unwrap();
+    let fc = c.client(follower);
+    let _s = fc.sign_in(&mut pk).await.unwrap();
+    let seen = fc
+        .view(
+            &app,
+            "timeNow",
+            json!({}),
+            Consistency::Stale {
+                min_index: second.index,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(as_u64(&seen.result) >= t2, "a view saw an earlier time");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn removed_member_stops_receiving_org_events() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let org = s(
+        alice.post("orgs", json!({ "name": "Acme" })).await.unwrap(),
+        "orgId",
+    );
+    for member in [&bob, &carol] {
+        let token = s(
+            alice
+                .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+                .await
+                .unwrap(),
+            "token",
+        );
+        let _r = member
+            .post(&format!("invites/{token}/redeem"), json!({}))
+            .await
+            .unwrap();
+    }
+    let bob_id = s(bob.me().await.unwrap(), "accountId");
+    let bundle = alice.upload_bundle(wasm("org-gated")).await.unwrap();
+    let app = alice
+        .create_app("notes", &bundle, json!({ "org": org }))
+        .await
+        .unwrap();
+
+    let mut bob_events = bob.events(&app, 0).await.unwrap();
+    let mut carol_events = carol.events(&app, 0).await.unwrap();
+    let _r = alice
+        .call(&app, "announce", json!({ "text": "one" }), None)
+        .await
+        .unwrap();
+    for stream in [&mut bob_events, &mut carol_events] {
+        let (_id, kind, data) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(kind, "Announced");
+        assert_eq!(data["text"], "one");
+    }
+
+    let _r = alice
+        .delete(&format!("orgs/{org}/members/{bob_id}"))
+        .await
+        .unwrap();
+    // Every replica has applied the removal before the next event.
+    for r in c.nodes.iter().flatten() {
+        let applied = r.node.system.status().last_log.unwrap_or(0);
+        assert!(
+            r.node
+                .system
+                .wait_applied(applied, Duration::from_secs(5))
+                .await
+        );
+    }
+    let _r = alice
+        .call(&app, "announce", json!({ "text": "two" }), None)
+        .await
+        .unwrap();
+    let (_id, _kind, data) = tokio::time::timeout(Duration::from_secs(5), carol_events.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(data["text"], "two");
+    let got = tokio::time::timeout(Duration::from_secs(2), bob_events.next()).await;
+    assert!(
+        !matches!(got, Ok(Some(_))),
+        "a removed member still received {got:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn unique_ids_differ_within_a_term_and_across_leaders() {
+    let mut c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let id = |v: &Value| -> (u64, u64, u64) {
+        let parts: Vec<u64> = v
+            .as_str()
+            .unwrap()
+            .split('.')
+            .map(|p| p.parse().unwrap())
+            .collect();
+        (parts[0], parts[1], parts[2])
+    };
+    let a = id(&alice
+        .call(&app, "newId", json!({}), None)
+        .await
+        .unwrap()
+        .result);
+    let b = id(&alice
+        .call(&app, "newId", json!({}), None)
+        .await
+        .unwrap()
+        .result);
+    assert_eq!(a.0, b.0, "one term");
+    assert_ne!(a, b);
+
+    let leader = c.app_leader(&app).unwrap();
+    c.stop(leader).await;
+    let other = (0..3).find(|i| *i != leader).unwrap();
+    let cl = c.client(other);
+    let _s = cl.sign_in(&mut pk).await.unwrap();
+    let mut after = None;
+    for _ in 0..40 {
+        if let Ok(r) = cl.call(&app, "newId", json!({}), None).await {
+            after = Some(id(&r.result));
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let after = after.expect("no call after the leader change");
+    assert!(after.0 > a.0, "{a:?} then {after:?}");
+    assert_ne!(after, a);
+    assert_ne!(after, b);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_system_caller_is_refused_where_the_abi_does_not_allow_it() {
+    use calimero_cloud_node::node::CallRequest;
+    use calimero_cloud_node::types::Caller;
+
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let node = &c.nodes[1].as_ref().unwrap().node;
+    let e = node
+        .call(&CallRequest::new(
+            app.clone(),
+            "set".into(),
+            json!({ "key": "s", "value": "v" }),
+            Caller::System,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, "APP_ERROR", "{e}");
+    assert_eq!(e.details["code"], "Forbidden", "{e}");
+    let v = alice
+        .view(&app, "len", json!({}), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!(0));
 }

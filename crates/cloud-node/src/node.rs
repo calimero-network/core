@@ -3,8 +3,14 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
+
+use calimero_app_engine_wasmtime::WasmtimeEngine;
+use calimero_app_host::{
+    Budget, Engine as _, HostCore, Invocation, InvocationKind, MethodKind, Prepared, TrapKind,
+};
 
 use calimero_log::{
     BoxFuture, Engine, Group, GroupId, NodeId, Proposal, RpcRequest, RpcResponse, Transport,
@@ -16,12 +22,9 @@ use serde_json::{json, Value};
 use tracing::{debug, info, warn};
 use url::Url;
 
-use crate::app::{
-    AppCmd, AppMachine, Applied, CallEntry, Executor, FollowUp, Outcome, RunEnv, Status, Trigger,
-};
+use crate::app::{AppCmd, AppMachine, Applied, CallEntry, Outcome, Status, SysDirectory};
 use crate::attest::{HttpAttestor, Mode, Policy};
 use crate::error::ApiError;
-use crate::services::{AppBlobs, BundleFacts, Search};
 use crate::system::{output, SystemCmd, SystemMachine, SystemState};
 use crate::types::{now_ms, AppRecord, Caller, NodeRecord};
 
@@ -67,6 +70,41 @@ pub struct Config {
     pub tee_profile: Option<String>,
     /// Which TD images a peer's real quote may come from.
     pub peer_measurements: calimero_cloud_client::Measurements,
+    /// Where app time starts relative to this host's clock, in ms (D19). `0` in
+    /// production; tests move a node's app clock with it.
+    pub clock_offset_ms: i64,
+    /// The limits of every call and view; `None` is `Budget::call()`. Tests only.
+    pub budget: Option<Budget>,
+}
+
+/// App time (D16, D19): this host's clock plus a shared offset. It stamps entries
+/// and timer slots, nothing else; sessions, tokens and challenges use
+/// `types::now_ms`/`now_secs`, and Raft timers use `Instant`.
+#[derive(Clone, Debug, Default)]
+pub struct Clock {
+    offset_ms: Arc<AtomicI64>,
+}
+
+impl Clock {
+    #[must_use]
+    pub fn new(offset_ms: i64) -> Self {
+        Self {
+            offset_ms: Arc::new(AtomicI64::new(offset_ms)),
+        }
+    }
+
+    /// Milliseconds since the epoch, on app time.
+    #[must_use]
+    pub fn now_ms(&self) -> u64 {
+        let host = i64::try_from(now_ms()).unwrap_or(i64::MAX);
+        let at = host.saturating_add(self.offset_ms.load(Ordering::Relaxed));
+        u64::try_from(at).unwrap_or(0)
+    }
+
+    /// Moves app time by `ms` (negative: back).
+    pub fn advance(&self, ms: i64) {
+        let _prev = self.offset_ms.fetch_add(ms, Ordering::Relaxed);
+    }
 }
 
 /// Request to run a method.
@@ -82,13 +120,6 @@ pub struct CallRequest {
     pub idempotency_key: Option<String>,
     #[serde(default)]
     pub consent: Option<Value>,
-    /// Raw input instead of `args` (an event handler's event, an xcall's params).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<calimero_log::Bytes>,
-    /// Why the node runs it itself; `None` for a request. Peers pass it along
-    /// on `internal/call`, which only peers reach.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger: Option<Trigger>,
 }
 
 impl CallRequest {
@@ -102,17 +133,16 @@ impl CallRequest {
             caller,
             idempotency_key: None,
             consent: None,
-            input: None,
-            trigger: None,
         }
     }
+}
 
-    fn input_bytes(&self) -> Vec<u8> {
-        match &self.input {
-            Some(b) => b.0.clone(),
-            None if self.args.is_null() => Vec::new(),
-            None => serde_json::to_vec(&self.args).unwrap_or_default(),
-        }
+/// A method's JSON arguments as the guest takes them (`null`: none).
+fn args_bytes(args: &Value) -> Vec<u8> {
+    if args.is_null() {
+        Vec::new()
+    } else {
+        serde_json::to_vec(args).unwrap_or_default()
     }
 }
 
@@ -138,6 +168,9 @@ pub struct ViewAnswer {
     pub status: Status,
     pub result: Value,
     pub error: Value,
+    /// The view hit its deadline: answered `503 TIMEOUT` (D36).
+    #[serde(default)]
+    pub timeout: bool,
 }
 
 /// Shared node state.
@@ -146,7 +179,15 @@ pub struct Node {
     pub engine: Arc<Engine>,
     pub system: Arc<Group<SystemMachine>>,
     apps: RwLock<HashMap<GroupId, Arc<Group<AppMachine>>>>,
-    pub executor: Executor,
+    /// Runs every app's components (one engine for all apps, spec section 5).
+    wasm: Arc<WasmtimeEngine>,
+    /// Prepared components per bundle hash.
+    prepared: Mutex<HashMap<String, Prepared>>,
+    /// App time ([`Clock`]).
+    clock: Clock,
+    /// Per app group: the term this node last led it in, and its execution
+    /// counter in that term (`id_seq`, D52).
+    id_seqs: Mutex<HashMap<GroupId, (u64, u64)>>,
     pub transport: Arc<calimero_sealed::SealedTransport>,
     peers: Mutex<HashMap<String, Arc<calimero_sealed::client::SealedTransport>>>,
     http: reqwest::Client,
@@ -154,13 +195,7 @@ pub struct Node {
     pub challenges: Mutex<HashMap<String, crate::api::Pending>>,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
-    /// Full-text search over the apps hosted here.
-    pub search: Search,
-    /// ABI facts per bundle hash.
-    facts: Mutex<HashMap<String, Arc<BundleFacts>>>,
-    /// Wakes the follow-up driver: an entry may have queued work.
-    pub kick: tokio::sync::Notify,
-    /// This node, for what a run is handed (its blob host).
+    /// This node, for the directory a run asks ([`SysDirectory`]).
     this: Mutex<Weak<Node>>,
 }
 
@@ -192,6 +227,22 @@ impl Transport for PeerTransport {
 
 /// The error of a call a read-only member made that would have written.
 pub const READ_ONLY: &str = "read-only in this team: the call would write";
+
+/// The error of a call whose caller no longer reaches the app (answered `404`).
+pub const NOT_REACHED: &str = "no such app";
+
+/// The code of a component the engine refuses.
+pub const BAD_BUNDLE: &str = "BAD_BUNDLE";
+
+/// The method name `POST /apps/{app}/upgrade` travels under.
+pub const UPGRADE: &str = "__upgrade";
+
+/// A refusal the host makes for the app, before running it (`422 APP_ERROR`).
+#[must_use]
+pub fn app_refusal(code: &str) -> ApiError {
+    ApiError::new(422, "APP_ERROR", "the app refused the call")
+        .with_details(json!({ "code": code, "fields": {} }))
+}
 
 /// How long a forwarded call or read waits for the leader before retrying.
 pub const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);
@@ -236,6 +287,9 @@ impl Node {
                 unsealed_paths: vec!["/attestation".into(), "/health".into()],
             },
         ));
+        // Compiled components live in the node's own data directory (S8).
+        let wasm = Arc::new(WasmtimeEngine::new(config.data_dir.join("components"))?);
+        let clock = Clock::new(config.clock_offset_ms);
         let secret = hmac::sign(
             &hmac::Key::new(hmac::HMAC_SHA256, &config.storage_key),
             format!("calimero.cluster.v1|{}", config.cluster).as_bytes(),
@@ -246,7 +300,10 @@ impl Node {
             engine: Arc::clone(&engine),
             system,
             apps: RwLock::new(HashMap::new()),
-            executor: Executor::default(),
+            wasm,
+            prepared: Mutex::new(HashMap::new()),
+            clock,
+            id_seqs: Mutex::new(HashMap::new()),
             transport: sealed,
             peers: Mutex::new(HashMap::new()),
             http: reqwest::Client::builder()
@@ -254,9 +311,6 @@ impl Node {
                 .build()?,
             challenges: Mutex::new(HashMap::new()),
             starting: tokio::sync::Mutex::new(()),
-            search: Search::default(),
-            facts: Mutex::new(HashMap::new()),
-            kick: tokio::sync::Notify::new(),
             this: Mutex::new(Weak::new()),
         });
         *peer_transport.node.lock().map_err(|e| eyre::eyre!("{e}"))? = Arc::downgrade(&node);
@@ -384,7 +438,12 @@ impl Node {
                         )
                         .await
                     {
-                        Ok(v) => return Ok(v),
+                        Ok(v) => {
+                            // Read-your-writes: the next request through this node
+                            // (an access check) sees the write it just made.
+                            self.sys_fresh().await;
+                            return Ok(v);
+                        }
                         Err(e) => match e.downcast::<ApiError>() {
                             Ok(api) if api.code != "UNAVAILABLE" => return Err(api),
                             _ => {}
@@ -585,9 +644,6 @@ impl Node {
                     debug!(app = %app.app_id, error = %e.message, "init not yet possible");
                 }
             }
-            if g.status().is_leader {
-                self.drive(&g, &app).await;
-            }
         }
         // Stop groups this node no longer replicates.
         let hosted: Vec<GroupId> = self
@@ -602,14 +658,6 @@ impl Node {
                     .any(|a| a.group == group && a.replicas.contains(&self.config.node_id))
             });
             if !keep {
-                if let Some(app) = self.sys(|s| {
-                    s.apps
-                        .values()
-                        .find(|a| a.group == group)
-                        .map(|a| a.app_id.clone())
-                }) {
-                    self.search.drop_app(&app);
-                }
                 let _g = self.apps.write().ok().and_then(|mut a| a.remove(&group));
                 let _r = self.engine.remove_group(group).await;
                 info!(group, "stopped hosting app group");
@@ -691,245 +739,162 @@ impl Node {
         Err(ApiError::unavailable("no peer holds the bundle"))
     }
 
-    /// What a run of `app_id` by `caller` is handed besides its call.
-    fn env(&self, app_id: &str, caller: &Caller) -> RunEnv {
-        let opener = caller.account().map(|a| {
-            Arc::new(calimero_primitives::identity::PrivateKey::from(
-                crate::backup::member_key(&self.config.storage_key, app_id, a),
-            ))
-        });
-        RunEnv {
-            org: self.sys(|s| crate::app::caller_org(s, app_id, caller)),
-            blobs: Some(Arc::new(AppBlobs {
-                node: self.this.lock().map(|w| w.clone()).unwrap_or_default(),
-            })),
-            sealing: calimero_runtime::logic::SealingContext {
-                opener,
-                ..Default::default()
-            },
-            ..RunEnv::default()
+    /// The engine every app runs on.
+    #[must_use]
+    pub fn app_engine(&self) -> &WasmtimeEngine {
+        &self.wasm
+    }
+
+    /// App time: what entry stamps (and, later, timer slots) read (D16, D19).
+    #[must_use]
+    pub fn app_clock(&self) -> Clock {
+        self.clock.clone()
+    }
+
+    /// Moves this node's app time by `ms` (negative: back). Tests only.
+    #[cfg(feature = "testing")]
+    pub fn advance_clock(&self, ms: i64) {
+        self.clock.advance(ms);
+    }
+
+    /// The prepared component of `bundle`, preparing it on first use. A component
+    /// the engine refuses is `422 BAD_BUNDLE`; a bundle not reachable yet is `503`.
+    pub async fn prepared_for(&self, bundle: &str) -> Result<Prepared, ApiError> {
+        if let Some(p) = self
+            .prepared
+            .lock()
+            .ok()
+            .and_then(|m| m.get(bundle).cloned())
+        {
+            return Ok(p);
+        }
+        let component = self.bundle_wasm(bundle).await?;
+        let (wasm, hash) = (Arc::clone(&self.wasm), bundle.to_owned());
+        let prepared = tokio::task::spawn_blocking(move || wasm.prepare(&hash, &component))
+            .await
+            .map_err(|e| ApiError::internal(&e.to_string()))?
+            .map_err(|e| ApiError::new(422, BAD_BUNDLE, &e.to_string()))?;
+        if let Ok(mut m) = self.prepared.lock() {
+            let _prev = m.insert(bundle.to_owned(), prepared.clone());
+        }
+        Ok(prepared)
+    }
+
+    fn budget(&self) -> Budget {
+        self.config.budget.unwrap_or_else(Budget::call)
+    }
+
+    /// Run one invocation of `app_id` against `state` at `applied`.
+    fn run(
+        &self,
+        prepared: &Prepared,
+        app_id: &str,
+        state: Arc<dyn calimero_app_host::StateView>,
+        applied: u64,
+        invocation: Invocation,
+    ) -> Outcome {
+        let this = self.this.lock().map(|w| w.clone()).unwrap_or_default();
+        let directory = Arc::new(SysDirectory::new(this, app_id.to_owned()));
+        match HostCore::new(app_id, state, applied, invocation, directory) {
+            Ok(host) => Outcome::from_host(self.wasm.invoke(prepared, host, self.budget())),
+            Err(e) => Outcome::trap(TrapKind::Fault, &e.to_string()),
         }
     }
 
-    /// The sealing keys of a run the node fires as the app's TEE: it opens
-    /// with the app's TEE key, seals to it, and seals a member's share to the
-    /// key standing for that member (every account that may reach the app).
-    fn tee_sealing(&self, app_id: &str) -> calimero_runtime::logic::SealingContext {
-        use calimero_primitives::identity::PrivateKey;
-        let tee = PrivateKey::from(crate::backup::tee_key(&self.config.storage_key, app_id));
-        let accounts: Vec<String> = self.sys(|s| {
-            let Some(app) = s.apps.get(app_id) else {
-                return Vec::new();
-            };
-            let mut out: Vec<String> = vec![app.owner.clone()];
-            match &app.access {
-                crate::types::Access::Accounts { accounts } => out.extend(accounts.iter().cloned()),
-                crate::types::Access::Org => {
-                    if let Some(org) = app.org.as_ref().and_then(|o| s.orgs.get(o)) {
-                        out.extend(org.members.keys().cloned());
-                    }
-                }
-                _ => {}
-            }
-            out.sort();
-            out.dedup();
-            out
-        });
-        // A member's one "device" is their account, which is what their runs
-        // see as `env::device_id()`; sealing to it seals to their member key.
-        let mut account_devices = BTreeMap::new();
-        let mut stand_ins = BTreeMap::new();
-        for a in &accounts {
-            let key = PrivateKey::from(crate::backup::member_key(
-                &self.config.storage_key,
-                app_id,
-                a,
-            ));
-            let id = Caller::Account { account: a.clone() }.account_bytes();
-            let _prev = account_devices.insert(id, vec![id]);
-            let _prev = stand_ins.insert(id, *AsRef::<[u8; 32]>::as_ref(&key.public_key()));
+    /// The next `(id_term, id_seq)` for a run this node leads in `term` (D52): the
+    /// counter restarts in a new term and is never reused within one.
+    fn next_id(&self, group: GroupId, term: u64) -> (u64, u64) {
+        let Ok(mut ids) = self.id_seqs.lock() else {
+            return (term, u64::MAX);
+        };
+        let entry = ids.entry(group).or_insert((term, 0));
+        if entry.0 != term {
+            *entry = (term, 0);
         }
-        calimero_runtime::logic::SealingContext {
-            tee_authority_keys: vec![*AsRef::<[u8; 32]>::as_ref(&tee.public_key())],
-            opener: Some(Arc::new(tee)),
-            vault_keys: Vec::new(),
-            account_devices,
-            stand_ins,
-        }
+        entry.1 += 1;
+        (term, entry.1)
     }
 
-    /// What a bundle's ABI declares that the node acts on.
-    pub async fn facts(&self, bundle: &str) -> Arc<BundleFacts> {
-        if let Some(f) = self.facts.lock().ok().and_then(|f| f.get(bundle).cloned()) {
-            return f;
-        }
-        let facts = Arc::new(
-            self.bundle_wasm(bundle)
-                .await
-                .map(|w| BundleFacts::of(&w))
-                .unwrap_or_default(),
-        );
-        if let Ok(mut f) = self.facts.lock() {
-            let _prev = f.insert(bundle.to_owned(), Arc::clone(&facts));
-        }
-        facts
+    /// The timestamp of the next entry (D16): never before the last one applied.
+    fn stamp(&self, m: &AppMachine) -> u64 {
+        (m.state.last_ts_ms + 1).max(self.clock.now_ms())
     }
 
-    /// Store a blob here and on the other nodes; `Ok` once a majority holds it.
-    /// Its id is `hex(SHA-256(bytes))`, the key the store files it under.
-    pub async fn store_blob(&self, bytes: &[u8]) -> Result<String, ApiError> {
-        let id = hex::encode(calimero_identity::sha256(bytes));
-        self.engine
-            .put_blob(&id, bytes)
-            .map_err(|e| ApiError::internal(&e.to_string()))?;
-        self.spread_blob(&id, bytes).await?;
-        Ok(id)
-    }
-
-    /// Hand a blob this node holds to every other node; `Ok` once a majority holds it.
-    async fn spread_blob(&self, id: &str, bytes: &[u8]) -> Result<(), ApiError> {
-        let peers: Vec<String> = self.sys(|s| {
-            s.nodes
-                .values()
-                .filter(|n| n.id != self.config.node_id)
-                .map(|n| n.addr.clone())
-                .collect()
-        });
-        let body = json!({ "hash": id, "wasm": calimero_log::Bytes(bytes.to_vec()) });
-        let results = futures_util::future::join_all(
-            peers
-                .iter()
-                .map(|addr| self.peer_post(addr, "internal/blob", &body)),
-        )
-        .await;
-        let held = 1 + results.iter().filter(|r| r.is_ok()).count();
-        if held * 2 <= peers.len() + 1 {
-            return Err(ApiError::unavailable(
-                "the blob could not reach a majority of nodes",
-            ));
+    /// An entry as bytes; one over `MAX_ENTRY_BYTES` becomes the same call
+    /// trapped `HostDenied` with nothing in it, decided before proposing (D50).
+    fn entry_bytes(mut entry: CallEntry) -> Vec<u8> {
+        let bytes = serde_json::to_vec(&AppCmd::Call(Box::new(entry.clone()))).unwrap_or_default();
+        if bytes.len() <= calimero_log::MAX_ENTRY_BYTES {
+            return bytes;
         }
-        Ok(())
-    }
-
-    /// A blob's bytes from a peer (this node missed it), kept here after.
-    pub async fn fetch_blob(&self, id: &str) -> Result<Vec<u8>, ApiError> {
-        let peers: Vec<String> = self.sys(|s| {
-            s.nodes
-                .values()
-                .filter(|n| n.id != self.config.node_id)
-                .map(|n| n.addr.clone())
-                .collect()
-        });
-        for addr in peers {
-            let Ok(v) = self
-                .peer_post(&addr, "internal/blob/get", &json!({ "hash": id }))
-                .await
-            else {
-                continue;
-            };
-            let Ok(bytes) = serde_json::from_value::<calimero_log::Bytes>(v["wasm"].clone()) else {
-                continue;
-            };
-            if hex::encode(calimero_identity::sha256(&bytes.0)) == id {
-                self.engine
-                    .put_blob(id, &bytes.0)
-                    .map_err(|e| ApiError::internal(&e.to_string()))?;
-                return Ok(bytes.0);
-            }
-        }
-        Err(ApiError::unavailable("no peer holds the blob"))
-    }
-
-    /// Whether `id` is one of `app`'s blobs. A replica that has not applied
-    /// the upload yet says no, so the others are asked too.
-    pub async fn blob_held(&self, app: &AppRecord, id: &[u8; 32]) -> Result<bool, ApiError> {
-        if let Some(g) = self.replica_group(app) {
-            if g.read_local(|m, _| m.holds_blob(id)) {
-                return Ok(true);
-            }
-        }
-        let others: Vec<String> = self.sys(|s| {
-            app.replicas
-                .iter()
-                .filter(|r| **r != self.config.node_id)
-                .filter_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
-                .collect()
-        });
-        let body = json!({ "app": app.app_id, "id": hex::encode(id) });
-        for addr in others {
-            if let Ok(v) = self.peer_forward(&addr, "internal/blob/held", &body).await {
-                if v["held"].as_bool() == Some(true) {
-                    return Ok(true);
-                }
-            }
-        }
-        Ok(false)
-    }
-
-    async fn module_for(&self, bundle: &str) -> Result<Arc<calimero_runtime::Module>, ApiError> {
-        let wasm = self.bundle_wasm(bundle).await?;
-        self.executor
-            .module(bundle, &wasm)
-            .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))
+        entry.outcome = Outcome::trap(TrapKind::HostDenied, "entry too large");
+        serde_json::to_vec(&AppCmd::Call(Box::new(entry))).unwrap_or_default()
     }
 
     async fn init_app(&self, g: &Group<AppMachine>, app: &AppRecord) -> Result<Applied, ApiError> {
-        let module = self.module_for(&app.bundle).await?;
+        // A component the engine refuses fails `init` for good (reported as
+        // INIT_FAILED); anything else is retried by `reconcile`.
+        let prepared = match self.prepared_for(&app.bundle).await {
+            Ok(p) => Ok(p),
+            Err(e) if e.code == BAD_BUNDLE => Err(format!("component refused: {}", e.message)),
+            Err(e) => return Err(e),
+        };
         let owner = Caller::Account {
             account: app.owner.clone(),
         };
-        let bundle = app.bundle.clone();
-        let app_id = app.app_id.clone();
-        let init_args = app.init_args.clone();
-        let env = self.env(&app.app_id, &owner);
+        let args = args_bytes(&app.init_args);
         let p = g
             .propose(|m, applied| {
                 if m.state.initialized || m.state.bundle.is_some() {
                     return Proposal::Reply(Vec::new());
                 }
-                let outcome = Executor::run(
-                    &module,
-                    &app_id,
-                    &owner,
-                    "init",
-                    &init_args,
-                    &m.state.kv,
-                    &env,
-                );
-                self.keep_blobs(&outcome);
-                let cmd = AppCmd::Init {
-                    bundle: bundle.clone(),
-                    base_index: applied,
-                    outcome,
+                let ts_ms = self.stamp(m);
+                let (id_term, id_seq) = self.next_id(g.id(), g.status().term);
+                let outcome = match &prepared {
+                    Ok(prepared) => self.run(
+                        prepared,
+                        &app.app_id,
+                        m.view(),
+                        applied,
+                        Invocation {
+                            kind: InvocationKind::Init,
+                            method: "init".into(),
+                            args: args.clone(),
+                            caller: owner.to_host(),
+                            entry_ts_ms: ts_ms,
+                            id_term,
+                            id_seq,
+                            seed: calimero_identity::random::<32>(),
+                            timer: None,
+                        },
+                    ),
+                    Err(why) => Outcome::trap(TrapKind::Fault, why),
                 };
-                Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
+                if outcome.is_timeout() {
+                    // Not logged (D23): reconcile runs init again.
+                    return Proposal::Reply(Vec::new());
+                }
+                let mut cmd = AppCmd::Init {
+                    bundle: app.bundle.clone(),
+                    base_index: applied,
+                    ts_ms,
+                    outcome: Box::new(outcome),
+                };
+                let mut bytes = serde_json::to_vec(&cmd).unwrap_or_default();
+                if bytes.len() > calimero_log::MAX_ENTRY_BYTES {
+                    if let AppCmd::Init { outcome, .. } = &mut cmd {
+                        **outcome = Outcome::trap(TrapKind::HostDenied, "entry too large");
+                    }
+                    bytes = serde_json::to_vec(&cmd).unwrap_or_default();
+                }
+                Proposal::Append(bytes)
             })
             .await
             .map_err(|e| status_of(&e))?;
         if !p.appended {
-            return Err(ApiError::conflict("already initialized"));
+            return Err(ApiError::conflict("already initialized or not yet run"));
         }
-        self.kick.notify_one();
         serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))
-    }
-
-    /// Keep the blobs a run wrote here, before its entry is proposed; the
-    /// leader hands them to the other nodes once the entry commits.
-    fn keep_blobs(&self, outcome: &Outcome) {
-        for (id, bytes) in &outcome.new_blobs {
-            if let Err(e) = self.engine.put_blob(id, bytes) {
-                warn!(blob = %id, error = %e, "blob not stored");
-            }
-        }
-    }
-
-    /// After a run's entry committed: its blobs to the other nodes.
-    async fn spread_blobs(&self, blobs: Vec<(String, Vec<u8>)>) {
-        for (id, bytes) in blobs {
-            if let Err(e) = self.spread_blob(&id, &bytes).await {
-                warn!(blob = %id, error = %e.message, "blob held by too few nodes");
-            }
-        }
     }
 
     /// Run a call on this node, which must be the app group's leader.
@@ -938,216 +903,140 @@ impl Node {
         g: &Group<AppMachine>,
         req: &CallRequest,
     ) -> Result<Applied, WriteError> {
-        let bundle = g.read_local(|m, _| m.state.bundle.clone());
-        let module = match bundle.as_deref() {
-            Some(b) => self.module_for(b).await.ok(),
-            None => None,
-        };
-        let now = now_ms();
-        if req.method == "__upgrade" {
+        if req.method == UPGRADE {
             return self.upgrade_local(g, req).await;
         }
-        if req.method == "__blob" {
-            let cmd = AppCmd::Blob {
-                id: req.args["id"].as_str().unwrap_or_default().to_owned(),
-                size: req.args["size"].as_u64().unwrap_or_default(),
-            };
-            let bytes = serde_json::to_vec(&cmd).unwrap_or_default();
-            let (_index, out) = g.write(bytes).await?;
-            return serde_json::from_slice(&out)
-                .map_err(|e| WriteError::Unavailable(e.to_string()));
-        }
-        let mut env = self.env(&req.app_id, &req.caller);
-        // Who may reach this method, when the node runs it itself.
-        let facts = match bundle.as_deref() {
-            Some(b) => self.facts(b).await,
-            None => Arc::new(BundleFacts::default()),
-        };
-        let refused: Option<String> = match &req.trigger {
-            None => None,
-            Some(Trigger::Timer { .. }) => {
-                env.tee_trigger = true;
-                env.sealing = self.tee_sealing(&req.app_id);
-                None
-            }
-            Some(Trigger::FollowUp { seq }) => {
-                let tee = g.read_local(|m, _| {
-                    matches!(
-                        m.state.pending.get(seq).map(|p| &p.followup),
-                        Some(FollowUp::Handler { tee: true, .. })
-                    )
-                });
-                env.tee_trigger = tee;
-                if tee {
-                    env.sealing = self.tee_sealing(&req.app_id);
+        let bundle = g
+            .read_local(|m, _| m.state.bundle.clone())
+            .ok_or_else(|| WriteError::Unavailable("the app is not initialized yet".into()))?;
+        let prepared = self
+            .prepared_for(&bundle)
+            .await
+            .map_err(|e| WriteError::Unavailable(e.message))?;
+        let app = self.sys(|s| s.apps.get(&req.app_id).cloned());
+        // The node that took the request checked the caller reaches the app on its
+        // own replica, which may not have applied a removal yet: the leader checks
+        // again (fresh), before anything runs.
+        if let (Some(app), Some(account)) = (&app, req.caller.account()) {
+            if !self.sys(|s| s.may_reach(app, Some(account))) {
+                self.sys_fresh().await;
+                if !self.sys(|s| s.may_reach(app, Some(account))) {
+                    return Ok(Applied::unlogged(
+                        g.applied(),
+                        Outcome {
+                            status: Status::AppError,
+                            error: Value::String(NOT_REACHED.into()),
+                            ..Outcome::default()
+                        },
+                    ));
                 }
-                (!tee && !facts.handlers.iter().any(|h| h == &req.method))
-                    .then(|| format!("{} is not an #[app::handler]", req.method))
             }
-            Some(Trigger::XCall { origin, .. }) => {
-                env.xcall_origin = Some(calimero_identity::sha256(origin.as_bytes()));
-                self.xcall_refusal(&facts, origin, &req.app_id, &req.method)
-            }
-        };
-        let input = req.input_bytes();
+        }
         // A read-only member's call runs, but one that would write is refused
         // (v1 discarded such writes; a client is told).
-        let read_only = match self.sys(|s| s.apps.get(&req.app_id).cloned()) {
-            Some(app) => crate::api::read_only_in(self, &app, req.caller.account()).await,
+        let read_only = match &app {
+            Some(app) => crate::api::read_only_in(self, app, req.caller.account()).await,
             None => false,
         };
-        let mut fresh_blobs = Vec::new();
+        let args = args_bytes(&req.args);
         let p = g
             .propose(|m, applied| {
                 if let Some(key) = &req.idempotency_key {
-                    if let Some(prev) = m.replay(&req.caller, key, now) {
+                    if let Some(prev) = m.replay(&req.caller, key) {
                         return Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default());
                     }
                 }
-                // A follow-up already run (a replayed driver pass) is not run twice.
-                if let Some(Trigger::FollowUp { seq }) = &req.trigger {
-                    if !m.state.pending.contains_key(seq) {
-                        return Proposal::Reply(Vec::new());
-                    }
-                }
-                let outcome = match (&module, &refused) {
-                    (_, Some(why)) => Outcome {
-                        status: Status::AppError,
-                        error: Value::String(why.clone()),
-                        ..Outcome::default()
+                let ts_ms = self.stamp(m);
+                let (id_term, id_seq) = self.next_id(g.id(), g.status().term);
+                let outcome = self.run(
+                    &prepared,
+                    &req.app_id,
+                    m.view(),
+                    applied,
+                    Invocation {
+                        kind: InvocationKind::Call,
+                        method: req.method.clone(),
+                        args: args.clone(),
+                        caller: req.caller.to_host(),
+                        entry_ts_ms: ts_ms,
+                        id_term,
+                        id_seq,
+                        seed: calimero_identity::random::<32>(),
+                        timer: None,
                     },
-                    (Some(module), None) => {
-                        let (outcome, _ret) = Executor::run_bytes(
-                            module,
-                            &req.app_id,
-                            &req.caller,
-                            &req.method,
-                            &input,
-                            &m.state.kv,
-                            &env,
-                        );
-                        if read_only && (!outcome.diff.is_empty() || !outcome.new_blobs.is_empty())
-                        {
-                            let refused = Applied {
-                                index: applied,
-                                status: Status::AppError,
-                                result: Value::Null,
-                                error: Value::String(READ_ONLY.into()),
-                                events: Vec::new(),
-                                conflict: false,
-                            };
-                            return Proposal::Reply(
-                                serde_json::to_vec(&refused).unwrap_or_default(),
-                            );
-                        }
-                        self.keep_blobs(&outcome);
-                        fresh_blobs.clone_from(&outcome.new_blobs);
-                        outcome
-                    }
-                    (None, None) => Outcome::trap("the app is not initialized yet"),
-                };
-                let cmd = AppCmd::Call(Box::new(CallEntry {
+                );
+                // A timeout is not logged and does not spend the key (D23).
+                if outcome.is_timeout() {
+                    let a = Applied::unlogged(applied, outcome);
+                    return Proposal::Reply(serde_json::to_vec(&a).unwrap_or_default());
+                }
+                if read_only && !outcome.diff.is_empty() {
+                    let refused = Applied {
+                        index: applied,
+                        status: Status::AppError,
+                        result: Value::Null,
+                        error: Value::String(READ_ONLY.into()),
+                        events: Vec::new(),
+                        conflict: false,
+                        timeout: false,
+                    };
+                    return Proposal::Reply(serde_json::to_vec(&refused).unwrap_or_default());
+                }
+                Proposal::Append(Self::entry_bytes(CallEntry {
                     method: req.method.clone(),
                     args: req.args.clone(),
                     caller: req.caller.clone(),
                     idempotency_key: req.idempotency_key.clone(),
                     consent: req.consent.clone(),
-                    ts_ms: now,
+                    ts_ms,
                     base_index: applied,
+                    id_term,
+                    id_seq,
                     outcome,
-                    trigger: req.trigger.clone(),
-                }));
-                Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
+                }))
             })
             .await?;
-        if p.output.is_empty() {
-            // A follow-up someone already ran: nothing to answer.
-            return Ok(Applied {
-                index: 0,
-                status: Status::Ok,
-                result: Value::Null,
-                error: Value::Null,
-                events: Vec::new(),
-                conflict: false,
-            });
-        }
-        let applied: Applied = serde_json::from_slice(&p.output)
-            .map_err(|e| WriteError::Unavailable(e.to_string()))?;
-        if p.appended && !applied.conflict {
-            self.kick.notify_one();
-            self.spread_blobs(fresh_blobs).await;
-        }
-        Ok(applied)
+        serde_json::from_slice(&p.output).map_err(|e| WriteError::Unavailable(e.to_string()))
     }
 
-    /// Switch an app to a new bundle, running its migration export if named.
+    /// Switch an app to a new bundle, code only. A named migration is refused:
+    /// migrations are rebuilds (D38), not in this milestone.
     async fn upgrade_local(
         &self,
         g: &Group<AppMachine>,
         req: &CallRequest,
     ) -> Result<Applied, WriteError> {
+        let refuse = |code: &str, message: &str| Applied {
+            index: g.applied(),
+            status: Status::AppError,
+            result: Value::Null,
+            error: json!({ "code": code, "fields": { "message": message } }),
+            events: Vec::new(),
+            conflict: false,
+            timeout: false,
+        };
+        if req.args.get("migrate").is_some_and(|m| !m.is_null()) {
+            return Ok(refuse(
+                "MigrationsNotSupported",
+                "migrations are rebuilds (D38), not in this milestone",
+            ));
+        }
         let bundle = req
             .args
             .get("bundle")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        let mut migrate = req
-            .args
-            .get("migrate")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        let module = self
-            .module_for(&bundle)
-            .await
-            .map_err(|e| WriteError::Unavailable(e.message))?;
-        // Without a named migration, plan it from the two ABIs, as v1 does.
-        if migrate.is_none() {
-            let current = g.read_local(|m, _| m.state.bundle.clone());
-            if let Some(current) = current.filter(|c| *c != bundle) {
-                let (from, to) = (
-                    self.bundle_wasm(&current).await,
-                    self.bundle_wasm(&bundle).await,
-                );
-                if let (Ok(from), Ok(to)) = (from, to) {
-                    match crate::services::plan_upgrade(&from, &to) {
-                        Ok(planned) => migrate = planned,
-                        Err(why) => {
-                            return Ok(Applied {
-                                index: g.applied(),
-                                status: Status::AppError,
-                                result: Value::Null,
-                                error: Value::String(format!("upgrade refused: {why}")),
-                                events: Vec::new(),
-                                conflict: false,
-                            })
-                        }
-                    }
-                }
-            }
+        match self.prepared_for(&bundle).await {
+            Ok(_) => {}
+            Err(e) if e.code == BAD_BUNDLE => return Ok(refuse(BAD_BUNDLE, &e.message)),
+            Err(e) => return Err(WriteError::Unavailable(e.message)),
         }
-        let env = self.env(&req.app_id, &req.caller);
         let p = g
-            .propose(|m, applied| {
-                let outcome = match &migrate {
-                    Some(method) => {
-                        let outcome = Executor::migrate(
-                            &module,
-                            &req.app_id,
-                            &req.caller,
-                            method,
-                            &m.state.kv,
-                            &env,
-                        );
-                        self.keep_blobs(&outcome);
-                        outcome
-                    }
-                    None => Outcome::default(),
-                };
+            .propose(|_, applied| {
                 let cmd = AppCmd::Upgrade {
                     bundle: bundle.clone(),
                     base_index: applied,
-                    outcome,
                 };
                 Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
             })
@@ -1155,153 +1044,42 @@ impl Node {
         serde_json::from_slice(&p.output).map_err(|e| WriteError::Unavailable(e.to_string()))
     }
 
-    /// Why an `xcall` from app `origin` may not run `method` of app `target`,
-    /// if it may not (v1's rules): the method must be an `#[app::xcall]` entry
-    /// point, `from_same_app` admits only the same bundle, and the two apps
-    /// must share their organization (or, outside one, their owner).
-    fn xcall_refusal(
+    /// The ABI checks the host makes before invoking (S5, D13), from the bundle's
+    /// own ABI: a `confirm` method never runs as a view (`ConfirmNotAView`) and a
+    /// call to one needs a consent; only views run as views (`NotAView`);
+    /// anonymous callers reach only `public` methods (`LoginRequired`) and the
+    /// System caller only `allowSystem` ones (`Forbidden`). A method the ABI does
+    /// not name, and `init` or timers, are left to the guest (`UnknownMethod`,
+    /// `WrongKind`); `kind = action` never reaches here: `prepare` refuses it.
+    pub async fn abi_gate(
         &self,
-        target_facts: &BundleFacts,
-        origin: &str,
-        target: &str,
+        app: &AppRecord,
         method: &str,
-    ) -> Option<String> {
-        let Some(callers) = target_facts.xcalls.get(method) else {
-            return Some(format!(
-                "xcall denied: {method} is not an #[app::xcall] entry point"
-            ));
-        };
-        let (source, dest) =
-            self.sys(|s| (s.apps.get(origin).cloned(), s.apps.get(target).cloned()));
-        let (Some(source), Some(dest)) = (source, dest) else {
-            return Some("xcall denied: unknown app".into());
-        };
-        let same_boundary = match (&source.org, &dest.org) {
-            (Some(a), Some(b)) => a == b,
-            (None, None) => source.owner == dest.owner,
-            _ => false,
-        };
-        if !same_boundary {
-            return Some("xcall denied: the apps are not in the same organization".into());
+        caller: &Caller,
+        view: bool,
+        consented: bool,
+    ) -> Result<(), ApiError> {
+        if method == UPGRADE {
+            return Ok(());
         }
-        if *callers == calimero_wasm_abi::schema::XCallCallers::SameApp
-            && source.bundle != dest.bundle
-        {
-            return Some(format!("xcall denied: {method} admits only the same app"));
-        }
-        None
-    }
-
-    /// The leader's work for an app beyond requests: timer methods whose period
-    /// came, and follow-ups (event handlers, xcalls) the log queued. Each runs
-    /// as an entry that also records it done, so a new leader neither skips
-    /// nor repeats one.
-    pub async fn drive(&self, g: &Group<AppMachine>, app: &AppRecord) {
-        let (bundle, initialized) =
-            g.read_local(|m, _| (m.state.bundle.clone(), m.state.initialized));
-        let (Some(bundle), true) = (bundle, initialized) else {
-            return;
+        let prepared = self.prepared_for(&app.bundle).await?;
+        let Some(m) = prepared.abi.methods.get(method) else {
+            return Ok(());
         };
-        let facts = self.facts(&bundle).await;
-        let app_caller = Caller::App {
-            app: app.app_id.clone(),
-        };
-        let now = crate::types::now_secs();
-        for (method, every) in &facts.timers {
-            let tick = now / every;
-            let last = g.read_local(|m, _| m.state.timer_ticks.get(method).copied());
-            if last.is_some_and(|l| l >= tick) {
-                continue;
-            }
-            let mut req = CallRequest::new(
-                app.app_id.clone(),
-                method.clone(),
-                Value::Null,
-                app_caller.clone(),
-            );
-            req.trigger = Some(Trigger::Timer {
-                method: method.clone(),
-                tick,
-            });
-            match self.call_local(g, &req).await {
-                Ok(a) if a.status != Status::Ok => {
-                    warn!(app = %app.app_id, %method, error = %a.error, "timer method failed");
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    debug!(app = %app.app_id, %method, error = %e, "timer not fired");
-                    return;
-                }
-            }
+        if view && m.confirm {
+            return Err(app_refusal("ConfirmNotAView"));
         }
-        let pending: Vec<(u64, crate::app::Pending)> = g.read_local(|m, _| {
-            m.state
-                .pending
-                .iter()
-                .take(64)
-                .map(|(k, v)| (*k, v.clone()))
-                .collect()
-        });
-        for (seq, p) in pending {
-            match p.followup {
-                FollowUp::Handler { method, input, .. } => {
-                    let mut req = CallRequest::new(
-                        app.app_id.clone(),
-                        method,
-                        Value::Null,
-                        app_caller.clone(),
-                    );
-                    req.input = Some(input);
-                    req.trigger = Some(Trigger::FollowUp { seq });
-                    match self.call_local(g, &req).await {
-                        Ok(a) if a.status != Status::Ok => {
-                            warn!(app = %app.app_id, method = %req.method, error = %a.error, "event handler failed");
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            debug!(app = %app.app_id, seq, error = %e, "handler not run");
-                            return;
-                        }
-                    }
-                }
-                FollowUp::XCall {
-                    context,
-                    method,
-                    input,
-                } => {
-                    let target = self.canonical_app_id(&context);
-                    let mut req =
-                        CallRequest::new(target.clone(), method, Value::Null, app_caller.clone());
-                    req.input = Some(input);
-                    req.idempotency_key = Some(format!("xcall:{}:{seq}", app.app_id));
-                    req.trigger = Some(Trigger::XCall {
-                        origin: app.app_id.clone(),
-                        depth: p.depth + 1,
-                    });
-                    let known = self.sys(|s| s.apps.contains_key(&target));
-                    if known {
-                        match self.call(&req).await {
-                            Ok(a) if a.status != Status::Ok => {
-                                warn!(from = %app.app_id, to = %target, error = %a.error, "xcall refused");
-                            }
-                            Ok(_) => {}
-                            Err(e) if e.code == "UNAVAILABLE" => {
-                                debug!(to = %target, error = %e.message, "xcall waits for its target");
-                                return;
-                            }
-                            Err(e) => warn!(to = %target, error = %e.message, "xcall failed"),
-                        }
-                    } else {
-                        warn!(from = %app.app_id, to = %context, "xcall to an unknown app dropped");
-                    }
-                    let done =
-                        serde_json::to_vec(&AppCmd::Done { seqs: vec![seq] }).unwrap_or_default();
-                    if let Err(e) = g.write(done).await {
-                        debug!(error = %e, "xcall not yet marked done");
-                        return;
-                    }
-                }
-            }
+        if view && m.kind != MethodKind::View {
+            return Err(app_refusal("NotAView"));
+        }
+        if !matches!(m.kind, MethodKind::Call | MethodKind::View) {
+            return Ok(());
+        }
+        match caller {
+            Caller::Public if !m.public => Err(app_refusal("LoginRequired")),
+            Caller::System if !m.allow_system => Err(app_refusal("Forbidden")),
+            _ if m.confirm && !view && !consented => Err(app_refusal("ConfirmRequired")),
+            _ => Ok(()),
         }
     }
 
@@ -1323,6 +1101,8 @@ impl Node {
             &keyed
         };
         let app = self.app(&req.app_id).await?;
+        self.abi_gate(&app, &req.method, &req.caller, false, req.consent.is_some())
+            .await?;
         let body = serde_json::to_value(req).map_err(|e| ApiError::internal(&e.to_string()))?;
         for _attempt in 0..30 {
             // A conflict (the diff was built on state a leader change replaced)
@@ -1365,6 +1145,8 @@ impl Node {
     /// Answer an internal call (from a peer): run it here, without forwarding further.
     pub async fn call_here(&self, req: &CallRequest) -> Result<Applied, ApiError> {
         let app = self.app(&req.app_id).await?;
+        self.abi_gate(&app, &req.method, &req.caller, false, req.consent.is_some())
+            .await?;
         let g = self
             .app_group(app.group)
             .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
@@ -1393,31 +1175,42 @@ impl Node {
         let bundle = g
             .read_local(|m, _| m.state.bundle.clone())
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
-        let module = self.module_for(&bundle).await?;
-        let mut env = self.env(&req.app_id, &req.caller);
-        Ok(g.read_local(|m, applied| {
-            // Search answers from indexes brought up to this very state.
-            env.search = self.search.for_view(&module, &bundle, m, applied);
-            let out = Executor::run(
-                &module,
-                &req.app_id,
-                &req.caller,
-                &req.method,
-                &req.args,
-                &m.state.kv,
-                &env,
-            );
-            ViewAnswer {
-                index: applied,
-                status: out.status,
-                result: out.result,
-                error: out.error,
-            }
-        }))
+        let prepared = self.prepared_for(&bundle).await?;
+        // The view holds its version of the state (D46) and runs outside the
+        // machine's lock; it sees the last applied entry's time (D19).
+        let (state, applied, ts_ms) =
+            g.read_local(|m, applied| (m.view(), applied, m.state.last_ts_ms));
+        let out = self.run(
+            &prepared,
+            &req.app_id,
+            state,
+            applied,
+            Invocation {
+                kind: InvocationKind::View,
+                method: req.method.clone(),
+                args: args_bytes(&req.args),
+                caller: req.caller.to_host(),
+                entry_ts_ms: ts_ms,
+                id_term: 0,
+                id_seq: 0,
+                seed: [0; 32],
+                timer: None,
+            },
+        );
+        Ok(ViewAnswer {
+            index: applied,
+            timeout: out.is_timeout(),
+            status: out.status,
+            result: out.result,
+            error: out.error,
+        })
     }
 
     /// Run a read-only method. Its writes, if any, are discarded.
     pub async fn view(&self, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
+        let app = self.app(&req.app_id).await?;
+        self.abi_gate(&app, &req.method, &req.caller, true, false)
+            .await?;
         // Like calls, ride out an election (e.g. right after the leader moved off).
         let mut last = None;
         for _attempt in 0..30 {

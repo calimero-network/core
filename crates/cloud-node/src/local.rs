@@ -73,6 +73,8 @@ pub async fn start(
             tee_release: None,
             tee_profile: None,
             peer_measurements: calimero_cloud_client::Measurements::None,
+            clock_offset_ms: 0,
+            budget: None,
         };
         nodes.push(run(config).await?);
     }
