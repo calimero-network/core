@@ -1056,3 +1056,54 @@ pub(crate) fn load_generation(db: &Db, group: GroupId) -> eyre::Result<u32> {
 pub fn store_path(dir: &Path) -> PathBuf {
     dir.join("store")
 }
+
+#[cfg(test)]
+mod known_answers {
+    use super::*;
+
+    const KEY: [u8; 32] = [0x42; 32];
+
+    fn vector(name: &str) -> Vec<u8> {
+        let text = include_str!("../fixtures/known_answers.txt");
+        let hex = text
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .find_map(|l| l.strip_prefix(name).and_then(|r| r.strip_prefix(' ')))
+            .unwrap_or_else(|| panic!("no vector {name}"));
+        hex::decode(hex.trim()).unwrap()
+    }
+
+    #[test]
+    fn the_keys_derived_from_the_storage_key_are_unchanged() {
+        assert_eq!(
+            derive(&KEY, "calimero.log.snapshot.v1").to_vec(),
+            vector("snapshot_key")
+        );
+        assert_eq!(
+            derive(&KEY, "calimero.log.hidden-keys.v1").to_vec(),
+            vector("hider_key")
+        );
+    }
+
+    #[test]
+    fn a_hidden_rows_place_is_unchanged() {
+        let hider = hmac::Key::new(
+            hmac::HMAC_SHA256,
+            &derive(&KEY, "calimero.log.hidden-keys.v1"),
+        );
+        assert_eq!(hide(&hider, 7, 3, b"app-key"), vector("hidden_row"));
+    }
+
+    #[test]
+    fn a_row_sealed_before_still_opens() {
+        let sealer = Sealer::new(&KEY);
+        assert_eq!(
+            sealer.open(b"calimero.kat", &vector("sealed_row")).unwrap(),
+            b"sealed-under-aes-256-gcm"
+        );
+        assert!(
+            sealer.open(b"other aad", &vector("sealed_row")).is_err(),
+            "the aad is bound"
+        );
+    }
+}

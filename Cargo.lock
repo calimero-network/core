@@ -1208,6 +1208,7 @@ version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
  "eyre",
+ "hex",
  "openraft",
  "redb",
  "ring",

@@ -10,27 +10,23 @@ cargo-fuzz = true
 # Shared dependencies resolve to the root Cargo.lock, which scripts/fuzz.sh copies in.
 [dependencies]
 borsh = "*"
-calimero-account = { path = "../crates/account" }
+axum = "*"
 calimero-bundle = { path = "../crates/bundle" }
-calimero-context-config = { path = "../crates/context/config" }
-calimero-governance-store = { path = "../crates/governance-store", features = ["testing"] }
-calimero-governance-types = { path = "../crates/governance-types" }
-calimero-network = { path = "../crates/network" }
-calimero-network-primitives = { path = "../crates/network/primitives" }
-calimero-node-primitives = { path = "../crates/node/primitives" }
-calimero-primitives = { path = "../crates/primitives", features = ["borsh"] }
+calimero-identity = { path = "../crates/identity", features = ["testing"] }
+calimero-sealed = { path = "../crates/sealed" }
 calimero-storage = { path = "../crates/storage", features = ["testing"] }
-calimero-store = { path = "../crates/store" }
+calimero-tee-attestation = { path = "../crates/tee-attestation" }
 eyre = "*"
 flate2 = "*"
 hex = "*"
 libfuzzer-sys = "0.4"
-libp2p = { version = "*", features = ["ed25519"] }
 mero-sign = { path = "../tools/mero-sign" }
 semver = "*"
 serde_json = "*"
 sha2 = "*"
 tar = "*"
+tokio = { version = "*", features = ["rt"] }
+tower = { version = "*", features = ["util"] }
 
 [[bin]]
 name = "bundle_open"
@@ -47,29 +43,29 @@ doc = false
 bench = false
 
 [[bin]]
-name = "wire_decode"
-path = "fuzz_targets/wire_decode.rs"
+name = "sealed_request"
+path = "fuzz_targets/sealed_request.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "provider_record"
-path = "fuzz_targets/provider_record.rs"
+name = "passkey_verify"
+path = "fuzz_targets/passkey_verify.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "governance_apply"
-path = "fuzz_targets/governance_apply.rs"
+name = "session_token"
+path = "fuzz_targets/session_token.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "signed_ops"
-path = "fuzz_targets/signed_ops.rs"
+name = "quote_parse"
+path = "fuzz_targets/quote_parse.rs"
 test = false
 doc = false
 bench = false
