@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ["master"]
+    # release-v2-parity is the release-v2 release branch: it never merges into
+    # master, so its merges run CI as master's do.
+    branches: ["master", "release-v2-parity"]
   merge_group:
   # Every PR, with no `paths:` filter: the `Rust` check is required, and `scope`
   # below skips what a change cannot reach (all of it, for docs). A filter would
@@ -17,10 +19,10 @@ env:
 permissions:
   contents: read
 
-# Cancel superseded PR runs; never cancel a master run.
+# Cancel superseded PR runs; never cancel a run of master or the release branch.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && github.ref != 'refs/heads/release-v2-parity' }}
 
 jobs:
   # The macOS release build of the developer CLIs lives in platforms.yml (nightly).
@@ -196,7 +198,7 @@ jobs:
           # Tests that self-build app wasm must not race to install the target.
           targets: wasm32-unknown-unknown
           shared-key: ci-checks
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release-v2-parity' }}
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
@@ -280,8 +282,8 @@ jobs:
           persist-credentials: false
 
       # A hit is the output of this exact build (same app trees, cargo-mero,
-      # lockfile, toolchain, script and workflows), which already passed on master:
-      # only master saves, and only after the build below succeeds.
+      # lockfile, toolchain, script and workflows), which already passed on master
+      # or the release branch: only they save, and only after the build below succeeds.
       - name: Restore the apps, or set up to build them
         id: apps
         uses: ./.github/actions/wasm-apps
@@ -290,7 +292,7 @@ jobs:
           script: scripts/build-all-apps.sh
           workflows: .github/workflows/ci-checks.yml
           # The wasm-apps rust-cache group's one saver.
-          rust-cache-save: ${{ github.ref == 'refs/heads/master' }}
+          rust-cache-save: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release-v2-parity' }}
 
       - name: Build every app
         if: steps.apps.outputs.hit != 'true'
@@ -424,7 +426,7 @@ jobs:
         uses: ./.github/actions/setup-rust-ci
         with:
           shared-key: storage-cost
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release-v2-parity' }}
 
       # Shape first: it catches a regression even when the snapshot was regenerated to absorb it.
       - name: Assert cost curves keep their declared shape

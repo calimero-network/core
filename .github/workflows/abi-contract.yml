@@ -8,7 +8,7 @@ permissions:
 
 on:
   push:
-    branches: [master]
+    branches: [master, release-v2-parity]
   pull_request:
     # edited: a changed `devtools-ref:` line in the PR body must re-resolve the pair.
     types: [opened, synchronize, reopened, edited]

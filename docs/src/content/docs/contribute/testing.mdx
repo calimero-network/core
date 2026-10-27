@@ -235,19 +235,22 @@ with `docker create` and `docker cp`):
 - **The latest release's image, nightly** (`e2e.yml`, jobs
   `Latest release image`, `merobox cloud-v2 fixtures (release V)` and
   `merobox cloud-v2 on release V (K/4)`; on demand with the `release_image`
-  input: `latest` or an image reference). It pulls
+  input: `latest`, a tag of `ghcr.io/<owner>/merod` such as `release-v2-edge`,
+  or an image reference). It pulls
   `ghcr.io/calimero-network/merod:<version>` for the newest published release
   (a prerelease included) and runs the four shards, soak included, on the
   workflows, fixtures and baseline of the commit the image was built from
   (its `org.opencontainers.image.revision`), so a workflow added after the
   release does not fail it. A release cut before release-v2 is a v1 node,
   which merobox does not run: the job says so in its summary and the shards
-  are skipped.
+  are skipped. On the release branch the nightly tests `release-v2-edge`
+  instead, the image of the branch's latest merge
+  ([Release branch](#release-branch)).
 
 To run the smoke list against a binary taken out of an image locally:
 
 ```bash
-docker create --name m ghcr.io/calimero-network/merod:edge && docker cp m:/usr/local/bin/merod /tmp/merod && docker rm m
+docker create --name m ghcr.io/calimero-network/merod:release-v2-edge && docker cp m:/usr/local/bin/merod /tmp/merod && docker rm m
 python3 scripts/build-cloud-v2-fixtures.py $(jq -r '.fixtures[]' scripts/cloud-v2-workflows-smoke.json)
 MEROD_BINARY=/tmp/merod python3 scripts/cloud-v2-workflows.py --smoke
 ```
@@ -311,6 +314,39 @@ does not match the running kernel; `PROFILE_DELAY`, `PROFILE_SECONDS` and
 `PROFILE_HZ` set when and how it samples, and a second argument names another
 fuzzy workflow (a third, another node).
 
+## Release branch
+
+`release-v2-parity` is release-v2's long-lived release branch: PRs merge into
+it, and it never merges into master. Its CI is master's, with its own image
+tags and nightly:
+
+| When | What runs | What publishes |
+| --- | --- | --- |
+| PR into the branch | Every check a PR into master runs (no check's `pull_request` trigger leaves the branch out; `abi-guard.yml` and `platforms.yml` name it) | Nothing; `Release Merod container` builds the PR's image and `E2E on the merod image` tests it |
+| Merge (push) into the branch | `ci-checks.yml`, `e2e.yml`, `release.yml`, `benchmarks.yml`, `docs-ci.yml`, `crypto-vectors.yml`, `abi-contract.yml`, `abi-guard.yml`, `workflow-lint.yml`, `codeql.yml`; ci-checks and E2E runs are never cancelled, and the ci-checks, wasm-apps and storage-cost caches save, as on master | The multi-arch `merod` image as `ghcr.io/calimero-network/merod:release-v2-edge` and `:release-v2-<short sha>`, labelled with the commit (`org.opencontainers.image.revision`); the release binaries as the run's `artifacts-<target>` artifacts, kept 14 days; the criterion, search and cluster benchmark reports as the base the branch's PRs compare against |
+| Nightly | `e2e.yml` with `nightly: true` (the 15-minute soak, the shards on `release-v2-edge`, the flamegraph), `fuzz.yml` (30 minutes per target) and `platforms.yml` with `nightly: true` (macOS; a failure opens "Nightly platform build is failing on release-v2-parity") | Nothing |
+
+The branch never publishes a version: no `edge`, `latest`, `prerelease` or
+version tag, no GitHub Release, crates, App Bundle, Homebrew tap update or SDK
+bump PRs. `release.yml` gates each of those on master. The clients job tests
+the clients' own `release-v2-parity` branches when nothing is paired
+(`sdk-ref:`, `py-ref:` or a same-named branch), since their master has no
+cloud-v2 tests.
+
+GitHub runs `schedule` only from the default branch, so the nightly is started
+by `.github/workflows/nightly-release-v2.yml` on master, which runs
+`gh workflow run <workflow> --ref release-v2-parity` for the three workflows
+above (with `GITHUB_TOKEN` and `actions: write`). To run one by hand:
+
+```bash
+gh workflow run e2e.yml --ref release-v2-parity -f nightly=true
+gh workflow run e2e.yml --ref release-v2-parity -f release_image=release-v2-edge   # the 30 s soak, plus the image's shards
+```
+
+`docs-site.yml` stays master's: it deploys the public documentation site to
+GitHub Pages, which has one site per repository, so the branch's docs are
+built and link-checked (`docs-ci.yml`) but not deployed.
+
 ## What scenario tests cannot catch
 
 Every node in a merobox run is the same build on fresh state, so it never
@@ -339,10 +375,11 @@ the `log.redb` store.
 
 Storage cost gates, scaling guards and criterion benches are described in
 [`docs/benchmarking.md`](https://github.com/calimero-network/core/blob/master/docs/benchmarking.md).
-`.github/workflows/benchmarks.yml` runs them on every master push and on a PR
-labelled `run-benchmarks`: the criterion benches per crate (`calimero-log`'s
-append and commit, `calimero-sealed`'s request round trip, the storage and
-runtime benches), compared against the base commit with `critcmp`, plus two
+`.github/workflows/benchmarks.yml` runs them on every push to master or the
+release branch and on a PR labelled `run-benchmarks`: the criterion benches per
+crate (`calimero-log`'s append and commit, `calimero-sealed`'s request round
+trip, the storage and runtime benches), compared with `critcmp` against the
+base commit's push run on the PR's base branch, plus two
 reports that are not criterion: `tools/search-bench` (the search engine) and
 the cluster throughput bench, whose JSON the comparison also diffs.
 
@@ -408,9 +445,12 @@ seconds-long p99 with two leader nodes (c') is gone.
   every commit), the same formula gives 20 to 50 writes/s per app, the range
   of the ~38/s a macOS build on redb reported.
 
-<Aside type="caution" title="Fuzzing">
-  `fuzz/` still depends on deleted v1 crates (`calimero-governance-store`,
-  `calimero-network`) and does not build on release-v2.
+<Aside type="note" title="Fuzzing">
+  `fuzz/` fuzzes what a node reads from untrusted bytes (`sealed_request`,
+  `passkey_verify`, `session_token`, `quote_parse`, `bundle_open`,
+  `crdt_sync`). `fuzz.yml` runs a changed target for a minute on a PR and
+  every target for 30 minutes nightly; `scripts/fuzz.sh <target> [seconds]`
+  runs one locally.
 </Aside>
 
 ## Where to go next

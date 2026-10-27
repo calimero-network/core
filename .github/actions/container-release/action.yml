@@ -34,6 +34,13 @@ inputs:
   github-token:
     description: "GitHub token"
     required: true
+  tag-prefix:
+    description: >
+      Tag a branch other than master under tags of its own: `<prefix>edge` and
+      `<prefix><short sha>`, and nothing else (no `edge`, bare sha, version,
+      `latest` or `prerelease`). Empty: master's tags.
+    required: false
+    default: ""
   load-to:
     description: >
       A file to `docker save` the built image to, for a later job to test (a
@@ -119,16 +126,21 @@ runs:
           org.opencontainers.image.licenses=MIT OR Apache-2.0
           org.opencontainers.image.authors=Calimero Limited <info@calimero.network>
           org.opencontainers.image.url=https://calimero.network
+          org.opencontainers.image.revision=${{ github.event.pull_request.head.sha || github.sha }}
         DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
         DOCKER_METADATA_PR_HEAD_SHA: true
       with:
         images: ghcr.io/${{ github.repository_owner }}/${{ inputs.container_name }}
+        # The commit is in the labels (org.opencontainers.image.revision), which
+        # e2e.yml's `Latest release image` reads to test that commit's workflows.
         tags: |
-          type=edge
-          type=sha,prefix=,format=short
-          type=raw,value=${{ inputs.version }},enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' }}
-          type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' && inputs.prerelease == 'false' }}
-          type=raw,value=prerelease,enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' && inputs.prerelease == 'true' }}
+          type=edge,enable=${{ inputs.tag-prefix == '' }}
+          type=sha,prefix=,format=short,enable=${{ inputs.tag-prefix == '' }}
+          type=raw,value=${{ inputs.tag-prefix }}edge,enable=${{ inputs.tag-prefix != '' }}
+          type=sha,prefix=${{ inputs.tag-prefix }},format=short,enable=${{ inputs.tag-prefix != '' }}
+          type=raw,value=${{ inputs.version }},enable=${{ github.ref == 'refs/heads/master' && inputs.tag-prefix == '' && inputs.release == 'true' }}
+          type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && inputs.tag-prefix == '' && inputs.release == 'true' && inputs.prerelease == 'false' }}
+          type=raw,value=prerelease,enable=${{ github.ref == 'refs/heads/master' && inputs.tag-prefix == '' && inputs.release == 'true' && inputs.prerelease == 'true' }}
         labels: ${{ env.LABELS }}
         annotations: ${{ env.LABELS }}
 

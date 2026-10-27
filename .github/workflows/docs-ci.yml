@@ -6,7 +6,7 @@ on:
   pull_request:
     paths: ['docs/**']
   push:
-    branches: [master]
+    branches: [master, release-v2-parity]
     paths: ['docs/**']
 
 permissions:

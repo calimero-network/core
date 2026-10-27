@@ -5,8 +5,12 @@ name: Platforms
 # those for aarch64-apple-darwin (MACOS_BINARIES). This builds exactly that set
 # and runs each binary:
 #
-#   - nightly on master, opening (or updating) an issue on failure;
-#   - on a PR labelled `ci:platforms`, and on dispatch.
+#   - nightly on master, opening (or updating) an issue on failure, and on the
+#     release-v2-parity release branch by the master-side dispatcher
+#     (workflow_dispatch with `nightly: true`; docs: contribute/testing,
+#     "Release branch"), with an issue of its own;
+#   - on a PR (into master or the release-v2-parity release branch) labelled
+#     `ci:platforms`, and on dispatch.
 #
 # There is no Windows lane: release-v2 nodes run on Linux TDX hosts only.
 # release.yml builds macOS from the release commit itself, so nothing reaches a
@@ -16,8 +20,14 @@ on:
   schedule:
     - cron: "37 2 * * *" # nightly, off the hour
   workflow_dispatch:
+    inputs:
+      nightly:
+        description: Report the result in the nightly tracking issue, as a scheduled run does
+        type: boolean
+        required: false
+        default: false
   pull_request:
-    branches: [master]
+    branches: [master, release-v2-parity]
     types: [opened, synchronize, reopened, labeled]
     paths:
       - Cargo.toml
@@ -145,7 +155,7 @@ jobs:
   report:
     name: Report the nightly
     needs: [gate, build-binaries]
-    if: always() && github.event_name == 'schedule'
+    if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.nightly))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -158,9 +168,14 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # One issue per branch: master's nightly and the release branch's.
           title="Nightly platform build is failing"
+          if [ "$REF_NAME" != master ]; then
+            title="$title on $REF_NAME"
+          fi
           failed=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "- `\(.key)`: \(.value.result)"' <<<"$NEEDS")
           issue=$(gh issue list --state open --search "in:title \"$title\"" --json number,title \
             --jq "[.[] | select(.title == \"$title\")][0].number // empty")

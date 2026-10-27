@@ -1,9 +1,16 @@
 name: Release
 
+# Pushes to master release: binaries, crates, the App Bundle, the Homebrew tap
+# and SDK bump PRs for a new version, and the merod image's version tags. Pushes
+# to the release-v2 release branch (release-v2-parity) publish only the merod
+# image, under tags of its own (release-v2-edge, release-v2-<short sha>), and
+# keep the binaries as workflow artifacts for 14 days; every release step below
+# is gated on master.
 on:
   push:
     branches:
       - master
+      - release-v2-parity
     paths:
       - Cargo.toml
       - Cargo.lock
@@ -50,6 +57,8 @@ env:
   INCLUDE_AARCH64: ${{ github.event_name != 'push' && 'false' || 'true' }}
   # The merobox revision `E2E on the merod image` runs; keep it e2e.yml's MEROBOX_REF.
   MEROBOX_REF: release-v2-parity
+  # The release branch's image tags are this prefix plus `edge` and the short sha.
+  IMAGE_TAG_PREFIX: ${{ github.ref == 'refs/heads/release-v2-parity' && 'release-v2-' || '' }}
 
 jobs:
   prepare:
@@ -150,8 +159,8 @@ jobs:
           [ -n "$files" ] || echo "::notice::could not list this change's files; everything builds"
           printf '%s\n' "$files" | python3 scripts/ci-scope.py --workflow release >> "$GITHUB_OUTPUT"
 
-      # Linux x86_64 always (a required check); arm64 on master pushes, which the
-      # multi-arch :edge image needs; macOS only when this run publishes binaries,
+      # Linux x86_64 always (a required check); arm64 on pushes (master and the
+      # release branch), which the multi-arch edge images need; macOS only when this run publishes binaries,
       # the one job that reads them (platforms.yml builds it nightly). There is no
       # Windows build: release-v2 nodes run on Linux TDX hosts only.
       - name: Choose the build targets
@@ -178,7 +187,7 @@ jobs:
       # GITHUB_TOKEN is an integration token, and GitHub rejects release/tag creation whose target
       # is not the branch head; create it now, before master moves, so the later upload only attaches.
       - name: Create release at trigger time
-        if: github.event_name == 'push' && steps.version_info.outputs.binary_release == 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.version_info.outputs.binary_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version_info.outputs.version }}
@@ -305,17 +314,18 @@ jobs:
           tar -czf artifacts/calimero-tee-verify_${MATRIX_TARGET}.tar.gz \
             -C target/${MATRIX_TARGET}/release calimero-tee-verify
 
+      # The release branch publishes no release: its binaries are kept here.
       - name: Upload artifacts
         if: needs.prepare.outputs.build == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: artifacts-${{ matrix.target }}
           path: artifacts/*
-          retention-days: 2
+          retention-days: ${{ github.ref == 'refs/heads/release-v2-parity' && 14 || 2 }}
 
   release-binaries:
     name: Release Binaries
-    if: needs.prepare.outputs.binary_release == 'true'
+    if: github.ref == 'refs/heads/master' && needs.prepare.outputs.binary_release == 'true'
     runs-on: big-machine
     needs: [prepare, build-binaries]
     concurrency:
@@ -385,7 +395,7 @@ jobs:
     name: Release App Bundle
     runs-on: ubuntu-latest
     needs: [prepare]
-    if: needs.prepare.outputs.binary_release == 'true'
+    if: github.ref == 'refs/heads/master' && needs.prepare.outputs.binary_release == 'true'
     concurrency:
       # Per-commit, not per-version: a version key would cancel an older, still-good master push.
       group: ${{ github.workflow }}-release-app-bundle-${{ github.event.pull_request.number || github.sha }}
@@ -426,7 +436,7 @@ jobs:
 
   release-crates:
     name: Release Crates
-    if: needs.prepare.outputs.crate_release == 'true'
+    if: github.ref == 'refs/heads/master' && needs.prepare.outputs.crate_release == 'true'
     runs-on: ubuntu-latest
     needs: [prepare, build-binaries]
 
@@ -503,8 +513,10 @@ jobs:
           release: ${{ needs.prepare.outputs.docker_release }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
           # PRs build the image to prove the Dockerfile still packages the binaries,
-          # but push nothing; master pushes the multi-arch (amd64, arm64) image.
+          # but push nothing; master pushes the multi-arch (amd64, arm64) image, and
+          # so does the release branch, under its own tags only (IMAGE_TAG_PREFIX).
           push: ${{ github.event_name == 'push' }}
+          tag-prefix: ${{ env.IMAGE_TAG_PREFIX }}
           # Everything else saves its amd64 image for `E2E on the merod image`.
           load-to: ${{ github.event_name != 'push' && 'merod-image.tar' || '' }}
           binaries: ${{ env.BINARIES }}
@@ -566,8 +578,9 @@ jobs:
   # workflow against a debug `cargo build`, and this runs the smoke list (one
   # workflow per area, scripts/cloud-v2-workflows-smoke.json, every one on the
   # baseline) and two of merobox's fault examples (a crashed node, a frozen
-  # leader) against the release `merod` inside the image. Master pushes its
-  # image instead; e2e.yml's nightly tests the latest release's.
+  # leader) against the release `merod` inside the image. Master and the
+  # release branch push their image instead; e2e.yml's nightly tests the latest
+  # release's (the release branch's nightly, its release-v2-edge).
   image-e2e:
     name: E2E on the merod image
     needs: [prepare, release-merod-container, image-e2e-fixtures]
@@ -661,7 +674,7 @@ jobs:
 
   brew-update:
     name: Update Homebrew Tap
-    if: needs.prepare.outputs.binary_release == 'true'
+    if: github.ref == 'refs/heads/master' && needs.prepare.outputs.binary_release == 'true'
     runs-on: big-machine
     needs: [prepare, release-binaries]
     permissions: {}
@@ -736,7 +749,7 @@ jobs:
 
   fleet-bump:
     name: Open SDK bump PRs
-    if: needs.prepare.outputs.binary_release == 'true'
+    if: github.ref == 'refs/heads/master' && needs.prepare.outputs.binary_release == 'true'
     needs: [prepare, release-binaries]
     uses: ./.github/workflows/fleet-bump.yml
     with:

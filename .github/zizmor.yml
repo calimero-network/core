@@ -22,6 +22,18 @@ rules:
     ignore:
       - comment.yml
       - new-issue-or-pr.yml
+  # zizmor reads a push to a branch named release* as publishing, so
+  # release-v2-parity's push trigger flags these cache restores. None of these
+  # jobs publishes (release.yml does, and restores with `save-if: false`), and
+  # a cache a branch push restores was written by a push to that branch or to
+  # master. Listed by line, so a cache step added later is still audited.
+  cache-poisoning:
+    ignore:
+      - abi-contract.yml:85
+      - ci-checks.yml:356
+      - docs-ci.yml:29
+      - e2e.yml:514
+      - e2e.yml:661
   # The consumer checkout keeps its token to push the bump branch.
   artipacked:
     ignore:

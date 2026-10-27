@@ -2,7 +2,7 @@ name: CodeQL
 
 on:
   push:
-    branches: ["master"]
+    branches: ["master", "release-v2-parity"]
     paths:
       - Cargo.toml
       - Cargo.lock
@@ -22,8 +22,10 @@ on:
       - "tools/cargo-mero/tests/fixtures/multi-app/GUIDE.md"
       - "tools/mero-sign/README.md"
 
+# One analysis per branch at a time: master's and the release branch's
+# results are kept apart, so a push to one never queues behind the other.
 concurrency:
-  group: codeql-${{ github.repository }}
+  group: codeql-${{ github.repository }}-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:

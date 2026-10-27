@@ -32,6 +32,12 @@ name: E2E
 #
 # A PR's own image is tested in release.yml (`E2E on the merod image`), which
 # builds it.
+#
+# GitHub runs `schedule` only from the default branch (master). The release-v2
+# release branch (release-v2-parity) gets its nightly from a dispatcher on
+# master that runs this workflow there with `nightly: true` (docs:
+# contribute/testing, "Release branch"); a nightly dispatch runs every job a
+# scheduled run does, and tests the branch's own image (release-v2-edge).
 
 on:
   pull_request:
@@ -55,18 +61,23 @@ on:
       - "tools/cargo-mero/tests/fixtures/demo-app/GUIDE.md"
       - "tools/cargo-mero/tests/fixtures/multi-app/GUIDE.md"
   push:
-    branches: ["master"]
+    branches: ["master", "release-v2-parity"]
   merge_group:
   schedule:
     - cron: "23 3 * * *" # nightly soak, off the hour
   workflow_dispatch:
     inputs:
+      nightly:
+        description: Run as the nightly does (the 15-minute soak, the release image's shards, the flamegraph)
+        type: boolean
+        required: false
+        default: false
       soak_seconds:
         description: How long each fuzzy_test step runs (the scenarios' own value applies when empty)
         required: false
         default: ""
       release_image:
-        description: Also run the shards against a release image's merod ("latest" for the newest release, or an image reference); empty skips it
+        description: Also run the shards against a release image's merod ("latest" for the newest release, a tag of ghcr.io/<owner>/merod such as release-v2-edge, or an image reference); empty skips it, except on a nightly run
         required: false
         default: ""
       flamegraph:
@@ -78,9 +89,12 @@ on:
 permissions:
   contents: read
 
+# A nightly (scheduled or dispatched) run has a group of its own, so a push to
+# the same branch neither cancels it nor waits behind it. Runs of master and the
+# release branch are never cancelled.
 concurrency:
-  group: e2e-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+  group: e2e-${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.nightly) && 'nightly' || 'run' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && github.ref != 'refs/heads/release-v2-parity' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -192,7 +206,7 @@ jobs:
       - name: Workflows of shard ${{ matrix.shard }}
         env:
           MEROD_BINARY: ${{ github.workspace }}/target/e2e/merod
-          MEROBOX_FUZZY_SECONDS: ${{ github.event_name == 'schedule' && '900' || inputs.soak_seconds || '30' }}
+          MEROBOX_FUZZY_SECONDS: ${{ (github.event_name == 'schedule' || inputs.nightly) && '900' || inputs.soak_seconds || '30' }}
           MEROBOX_SOAK_REPORT: ${{ github.workspace }}/target/e2e/soak-${{ matrix.shard }}.json
         run: |
           chmod +x "$MEROD_BINARY"
@@ -228,10 +242,12 @@ jobs:
   # runs the four shards of the commit the image was built from (its
   # org.opencontainers.image.revision label), with that commit's fixtures and
   # baseline, so a workflow added after the release cannot fail it. A release
-  # older than release-v2 (a v1 node) is reported and not run.
+  # older than release-v2 (a v1 node) is reported and not run. On the release
+  # branch, until a release-v2 release ships, a nightly tests the branch's own
+  # image instead: release-v2-edge, which release.yml pushes on every merge.
   release-image:
     name: Latest release image
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.release_image != '')
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.nightly || inputs.release_image != ''))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -259,10 +275,19 @@ jobs:
           REPO: ${{ github.repository }}
           OWNER: ${{ github.repository_owner }}
           REQUESTED: ${{ inputs.release_image }}
+          REF: ${{ github.ref }}
         run: |
           set -euo pipefail
+          # The release branch's nightly default: its own published image.
+          if [ -z "$REQUESTED" ] && [ "$REF" = refs/heads/release-v2-parity ]; then
+            REQUESTED=release-v2-edge
+          fi
           if [ -n "$REQUESTED" ] && [ "$REQUESTED" != latest ]; then
-            image=$REQUESTED
+            # A bare tag (release-v2-edge, 0.12.0) names ghcr.io/<owner>/merod:<tag>.
+            case "$REQUESTED" in
+              */* | *:* | *@*) image=$REQUESTED ;;
+              *) image="ghcr.io/${OWNER,,}/merod:$REQUESTED" ;;
+            esac
             version=${image##*:}
           else
             version=$(gh api "repos/$REPO/releases?per_page=20" --jq '[.[] | select(.draft | not)][0].tag_name')
@@ -387,7 +412,7 @@ jobs:
       - name: Workflows of shard ${{ matrix.shard }}
         env:
           MEROD_BINARY: ${{ github.workspace }}/target/release-image/merod
-          MEROBOX_FUZZY_SECONDS: ${{ github.event_name == 'schedule' && '900' || inputs.soak_seconds || '30' }}
+          MEROBOX_FUZZY_SECONDS: ${{ (github.event_name == 'schedule' || inputs.nightly) && '900' || inputs.soak_seconds || '30' }}
           MEROBOX_SOAK_REPORT: ${{ github.workspace }}/target/release-image/soak-${{ matrix.shard }}.json
         run: |
           chmod +x "$MEROD_BINARY"
@@ -426,7 +451,7 @@ jobs:
   flamegraph:
     name: merod flamegraph (kv-store soak)
     needs: fixtures
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.flamegraph)
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.nightly || inputs.flamegraph))
     runs-on: big-machine
     timeout-minutes: 75
     steps:
@@ -584,16 +609,20 @@ jobs:
       - name: Test the ref pairing
         run: bash scripts/tests/resolve-paired-ref.test.sh
 
+      # Unpaired, a change on the release branch (a push to it, or a PR into it)
+      # tests the clients' release-v2-parity branches, which have the cloud-v2
+      # tests; their master has none.
       - name: Resolve the client refs (paired)
         id: refs
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
           HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          DEFAULT_REF: ${{ (github.base_ref || github.ref_name) == 'release-v2-parity' && 'release-v2-parity' || 'master' }}
         run: |
           set -euo pipefail
-          js="$(scripts/resolve-paired-ref.sh master)"
+          js="$(scripts/resolve-paired-ref.sh "$DEFAULT_REF")"
           py="$(SDK_REPO=https://github.com/calimero-network/calimero-client-py.git \
-            REF_KEY=py-ref scripts/resolve-paired-ref.sh master)"
+            REF_KEY=py-ref scripts/resolve-paired-ref.sh "$DEFAULT_REF")"
           echo "js=$js" >> "$GITHUB_OUTPUT"
           echo "py=$py" >> "$GITHUB_OUTPUT"
           echo "mero-js@$js, calimero-client-py@$py"

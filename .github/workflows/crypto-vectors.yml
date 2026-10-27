@@ -25,6 +25,7 @@ on:
   push:
     branches:
       - master
+      - release-v2-parity
 
 env:
   # As ci-checks.yml compiles with, so the ci-checks cache this restores is reusable.

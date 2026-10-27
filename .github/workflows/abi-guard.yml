@@ -8,10 +8,12 @@ on:
     branches:
       - feat/abi_v1
       - master
+      - release-v2-parity
   push:
     branches:
       - feat/abi_v1
       - master
+      - release-v2-parity
 
 jobs:
   abi-validation:
