@@ -113,13 +113,7 @@ steps:
     group_id: '{{club_sub}}'
     record_name: Club
 
-  - name: Node-1 flips the subgroup Open
-    type: set_subgroup_visibility
-    node: e2e-node-1
-    group_id: '{{club_sub}}'
-    visibility: open
-
-  # Closing it again: the flip node-2 can read but not settle.
+  # Restricted again after the sealed name: the flip node-2 can read but not settle.
   - name: Node-1 closes the subgroup again
     type: set_subgroup_visibility
     node: e2e-node-1
@@ -172,7 +166,7 @@ steps:
     outputs:
       node2_visibility: subgroupVisibility
 
-  # Without the replay node-2 would still read the Open the creator set.
+  # Without the replay node-2 would still read the subgroup Open, as it was born.
   - name: Assert the held flip applied on node-2
     type: assert
     statements:

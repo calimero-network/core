@@ -1,29 +1,22 @@
-name: E2E Scaffolding - only a Restricted subgroup's creator may open it
+name: E2E Scaffolding - a Restricted subgroup cannot be opened, even by its creator
 description: >
-  #4522. Opening a Restricted subgroup is its creator's decision alone - not an
-  admin promoted inside it. The creator is fixed at the subgroup's birth and
-  recorded from its GroupCreated, which every namespace member reads, so a
-  member OUTSIDE the subgroup verifies an opening flip without the subgroup's
-  sealed history: it applies the flip as it arrives, instead of parking it until
-  some key holder serves it the subgroup's key.
+  A Restricted subgroup stays Restricted: setting it back to Open is refused
+  for everyone, the creator included, and the subgroup keeps its visibility.
 
   Topology:
     * node-1 - the namespace owner, creates the subgroup.
     * node-2 - made an Admin of the subgroup, but not its creator.
-    * node-3 - a namespace member outside the subgroup, offline through the
-      flip.
 
   Pinned:
-    * node-2's opening flip is refused (an admin is not the creator);
-    * node-1's is accepted, and node-3 - back online - reads the subgroup Open
-      without a single backfill apply failing on the way.
+    * node-2's opening flip is refused;
+    * node-1's opening flip is refused too, and node-1 still reads Restricted.
 
 force_pull_image: false
 
 auth_mode: embedded
 
 nodes:
-  count: 3
+  count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: e2e-node
 
@@ -39,12 +32,6 @@ steps:
   - name: Login on e2e-node-2
     type: login
     node: e2e-node-2
-    username: dev
-    password: dev-password
-
-  - name: Login on e2e-node-3
-    type: login
-    node: e2e-node-3
     username: dev
     password: dev-password
 
@@ -75,7 +62,7 @@ steps:
     statements:
       - "is_set({{namespace_id}})"
 
-  # --- node-2 and node-3 join the namespace as ordinary members ---
+  # --- node-2 joins the namespace as an ordinary member ---
 
   - name: Invite node-2 to namespace
     type: create_namespace_invitation
@@ -92,36 +79,14 @@ steps:
     outputs:
       identity_node2: memberIdentity
 
-  - name: Invite node-3 to namespace
-    type: create_namespace_invitation
-    node: e2e-node-1
-    namespace_id: '{{namespace_id}}'
-    outputs:
-      invite_node3: invitation
-
-  - name: Node-3 joins namespace
-    type: join_namespace
-    node: e2e-node-3
-    namespace_id: '{{namespace_id}}'
-    invitation: '{{invite_node3}}'
-    outputs:
-      identity_node3: memberIdentity
-
   - name: Converge every node on the namespace
     type: wait_for_sync
     group_id: '{{namespace_id}}'
     nodes:
       - e2e-node-1
       - e2e-node-2
-      - e2e-node-3
     timeout: 60
     trigger_sync: true
-
-  # --- node-3 goes offline: the subgroup's whole history happens without it ---
-
-  - name: Node-3 goes offline
-    type: stop_node
-    nodes: e2e-node-3
 
   # Visibility in a step of its own: merobox's born-visibility create sends no
   # auth header.
@@ -144,7 +109,7 @@ steps:
     group_id: '{{club_sub}}'
     visibility: restricted
 
-  # Sealed under the subgroup's key: node-3 can never read it.
+  # Sealed under the subgroup's key.
   - name: Node-1 names the subgroup (an op sealed under its key)
     type: set_group_metadata
     node: e2e-node-1
@@ -181,57 +146,23 @@ steps:
     visibility: open
     expected_failure: true
 
-  - name: Node-1, its creator, opens it
+  - name: Node-1, its creator, may not open it either
     type: set_subgroup_visibility
     node: e2e-node-1
     group_id: '{{club_sub}}'
     visibility: open
+    expected_failure: true
 
-  # --- node-3, outside the subgroup, applies the flip as it arrives ---
-
-  - name: Node-3 comes back online
-    type: start_node
-    nodes: e2e-node-3
-
-  - name: Login on e2e-node-3
-    type: login
-    node: e2e-node-3
-    username: dev
-    password: dev-password
-
-  - name: Converge node-3 on the namespace
-    type: wait_for_sync
-    group_id: '{{namespace_id}}'
-    nodes:
-      - e2e-node-1
-      - e2e-node-3
-    timeout: 90
-    trigger_sync: true
-
-  - name: Let node-3 apply what it pulled
-    type: wait
-    seconds: 10
-
-  - name: Node-3 reads the subgroup's visibility
+  - name: Node-1 reads the subgroup's visibility
     type: get_group_info
-    node: e2e-node-3
+    node: e2e-node-1
     group_id: '{{club_sub}}'
     outputs:
-      node3_visibility: subgroupVisibility
+      node1_visibility: subgroupVisibility
 
-  - name: Assert node-3 reads the subgroup Open
+  - name: Assert the subgroup is still Restricted
     type: assert
     statements:
-      - "equals({{node3_visibility}}, open)"
-
-  # Without the creator rule, node-3 cannot authorize the flip (the subgroup's
-  # history is sealed) and every backfill apply of it fails until a key holder
-  # serves it the subgroup's key.
-  - name: Node-3 applied the flip without a failed backfill apply
-    type: assert_log_absent
-    nodes:
-      - e2e-node-3
-    patterns:
-      - "failed to apply namespace governance op from backfill"
+      - "equals({{node1_visibility}}, restricted)"
 
 stop_all_nodes: false

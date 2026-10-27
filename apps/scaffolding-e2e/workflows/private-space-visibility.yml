@@ -1,12 +1,12 @@
-name: E2E Private Spaces - Making A Folder Private Hides It From Outsiders, Reopening It Returns Its History
+name: E2E Private Spaces - Making A Folder Private Hides It From Outsiders, And It Cannot Be Reopened
 description: >
   Projects is an open folder with an open folder, Roadmap, and a context inside it.
   Alice makes Projects private and renames it while it is private: Bob and Carol, workspace members outside the new space,
   must stop listing it and must not read its new name or Roadmap on any node.
-  Alice then reopens it: every workspace member must read its full history, including the name set while it was private.
+  Alice then tries to reopen it: the reopen is refused and it stays private and hidden.
   Last, making private an open folder that already contains a private space must be refused.
 
-  Tree: workspace -> Projects (open, then private, then open) -> Roadmap; workspace -> Archive (open) -> Vault (private space).
+  Tree: workspace -> Projects (open, then private for good) -> Roadmap; workspace -> Archive (open) -> Vault (private space).
   Nodes: 1 Alice (workspace owner), 2 Bob, 3 Carol.
 
 force_pull_image: false
@@ -463,15 +463,16 @@ steps:
     absent:
     - data.name
 
-  # Reopening merges Projects back: its history, the private name included, is readable.
+  # A private space cannot be set back to open: the refusal leaves it private.
 
-  - name: Alice reopens Projects
+  - name: Alice's reopening of Projects is refused
     type: set_subgroup_visibility
     node: private-folders-1
     group_id: '{{f_projects}}'
     visibility: open
+    expected_failure: true
 
-  - name: Settle the workspace governance after Projects reopens
+  - name: Settle the workspace governance after the refused reopen
     type: wait_for_sync
     group_id: '{{ns}}'
     nodes:
@@ -482,20 +483,18 @@ steps:
     check_interval: 2
     trigger_sync: true
 
-  - name: Bob's node lists the reopened Projects
+  - name: Projects is still private on Alice's node
     type: assert_api_response
-    node: private-folders-2
-    path: /admin-api/namespaces/{{ns}}/groups
-    where:
-      groupId: '{{f_projects}}'
-    present:
-    - groupId
+    node: private-folders-1
+    path: /admin-api/groups/{{f_projects}}
+    match:
+      data.subgroupVisibility: restricted
     retries: 30
     interval: 2
 
-  - name: Bob's node reads the name set while Projects was private
+  - name: Alice's node still reads the name set while Projects was private
     type: assert_api_response
-    node: private-folders-2
+    node: private-folders-1
     path: /admin-api/groups/{{f_projects}}/metadata
     match:
       data.name: Hidden
@@ -503,90 +502,21 @@ steps:
     retries: 30
     interval: 2
 
-  - name: Bob's node lists Roadmap under Projects again
+  - name: Bob's node still does not list Projects
     type: assert_api_response
     node: private-folders-2
-    path: /admin-api/groups/{{f_projects}}/subgroups
+    path: /admin-api/namespaces/{{ns}}/groups
     where:
-      groupId: '{{f_roadmap}}'
-    present:
-    - groupId
-    retries: 30
-    interval: 2
+      groupId: '{{f_projects}}'
+    expect_no_match: true
 
-  - name: Bob's node reads Roadmap again
-    type: assert_api_response
-    node: private-folders-2
-    path: /admin-api/groups/{{f_roadmap}}/metadata
-    match:
-      data.name: Roadmap
-      data.data.topic: plan
-    retries: 30
-    interval: 2
-
-  - name: Bob's node lists the Projects context again
-    type: assert_api_response
-    node: private-folders-2
-    path: /admin-api/groups/{{f_projects}}/contexts
-    where:
-      contextId: '{{ctx}}'
-    present:
-    - contextId
-    retries: 30
-    interval: 2
-
-  - name: Carol's node lists the reopened Projects
+  - name: Carol's node still does not list Projects
     type: assert_api_response
     node: private-folders-3
     path: /admin-api/namespaces/{{ns}}/groups
     where:
       groupId: '{{f_projects}}'
-    present:
-    - groupId
-    retries: 30
-    interval: 2
-
-  - name: Carol's node reads the name set while Projects was private
-    type: assert_api_response
-    node: private-folders-3
-    path: /admin-api/groups/{{f_projects}}/metadata
-    match:
-      data.name: Hidden
-      data.data.topic: private-topic
-    retries: 30
-    interval: 2
-
-  - name: Carol's node lists Roadmap under Projects again
-    type: assert_api_response
-    node: private-folders-3
-    path: /admin-api/groups/{{f_projects}}/subgroups
-    where:
-      groupId: '{{f_roadmap}}'
-    present:
-    - groupId
-    retries: 30
-    interval: 2
-
-  - name: Carol's node reads Roadmap again
-    type: assert_api_response
-    node: private-folders-3
-    path: /admin-api/groups/{{f_roadmap}}/metadata
-    match:
-      data.name: Roadmap
-      data.data.topic: plan
-    retries: 30
-    interval: 2
-
-  - name: Carol's node lists the Projects context again
-    type: assert_api_response
-    node: private-folders-3
-    path: /admin-api/groups/{{f_projects}}/contexts
-    where:
-      contextId: '{{ctx}}'
-    present:
-    - contextId
-    retries: 30
-    interval: 2
+    expect_no_match: true
 
   # A subtree that already holds a private space cannot be made private.
 
