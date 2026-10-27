@@ -315,10 +315,11 @@ async fn namespace_key_cannot_open_presence_behind_a_restricted_wall() {
     for (seed, group) in [(0x86u8, restricted), (0x87u8, walled_open)] {
         let context_id = ContextId::from([seed; 32]);
         register_context_in_group(&node.store, &group, &context_id).expect("register context");
+        // One key covers a space and its folders: the space root's.
         let own_key = [seed.wrapping_add(0x10); 32];
-        let own_key_id = GroupKeyring::new(&node.store, group)
+        let own_key_id = GroupKeyring::new(&node.store, restricted)
             .store_key(&own_key)
-            .expect("store subgroup key");
+            .expect("store the space's key");
 
         let sealed_for_namespace = dispatch_presence(
             &node,
@@ -338,7 +339,7 @@ async fn namespace_key_cannot_open_presence_behind_a_restricted_wall() {
             Duration::from_secs(5),
         )
         .await
-        .expect("presence under the subgroup's own key must still land");
+        .expect("presence under the space's key must still land");
         assert_eq!(
             sealed_for_members.state.as_deref(),
             Some(b"member".as_ref())

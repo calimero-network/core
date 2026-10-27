@@ -355,16 +355,12 @@ impl World {
         let open_chain_op = group_created(owner_account, namespace.to_bytes(), false, 0x03);
         let open_chain = created_group(&open_chain_op);
         apply_root_op(&store, &namespace, &owner_sk, open_chain_op);
-        // Every group gets a key row at birth, as `create_group` mints one.
-        for (group, key) in [
-            (restricted, 0x52u8),
-            (subject, 0x53u8),
-            (open_chain, 0x54u8),
-        ] {
-            let _id = GroupKeyring::new(&store, group)
-                .store_key(&[key; 32])
-                .expect("the creating node keys the group it creates");
-        }
+        // Only a space root is minted a key: the subject rides it, and the open chain the
+        // workspace's.
+        let _id = GroupKeyring::new(&store, restricted)
+            .store_key(&[0x52u8; 32])
+            .expect("the creating node keys the space it creates");
+        let _ = (subject, open_chain);
 
         // What a created group publishes: members may join its open subgroups.
         group_op(

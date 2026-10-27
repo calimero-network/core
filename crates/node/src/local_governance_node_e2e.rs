@@ -674,47 +674,21 @@ async fn create_restricted_subgroup(
     resp.group_id
 }
 
-/// Create an **Open** subgroup nested under `parent_ns`.
-///
-/// Mirrors [`create_restricted_subgroup`] (same real `ContextClient::create_group`
-/// path, same `sample_meta`-derived application row), but then flips the
-/// subgroup's visibility to `Open` via the production
-/// `ContextClient::set_subgroup_visibility` path — a `GroupOp::SubgroupVisibilitySet`
-/// applied through `sign_apply_and_publish`, admin-signed by `admin_pk`.
-///
-/// Visibility is NOT a field on `CreateGroupRequest`: a freshly-created subgroup
-/// defaults to `Restricted` (see `CapabilitiesRepository::subgroup_visibility`).
-/// To make the chain `sub → ns` genuinely Open
-/// (`is_open_chain_to_namespace(&sub, &ns) == true`) we must apply the visibility
-/// op after create, which is what this helper does.
+/// Create an **Open** subgroup nested under `parent_ns`, born Open.
 ///
 /// Returns the new subgroup's `ContextGroupId`.
 async fn create_open_subgroup(
     node: &TestNode,
     parent_ns: &ContextGroupId,
-    admin_pk: &PublicKey,
+    _admin_pk: &PublicKey,
 ) -> ContextGroupId {
-    // Reuse the Restricted-create plumbing (seeds app meta, mints the key,
-    // applies `RootOp::GroupCreated`); the only difference is visibility.
-    let sub_gid = create_restricted_subgroup(node, parent_ns, admin_pk).await;
-
-    node.context_client
-        .set_subgroup_visibility(
-            calimero_context_client::group::SetSubgroupVisibilityRequest {
-                group_id: sub_gid,
-                subgroup_visibility: calimero_context_config::VisibilityMode::Open,
-            },
-        )
-        .await
-        .expect("set_subgroup_visibility(Open)");
-
-    sub_gid
+    // A private space is never reopened, so an Open subgroup is born Open.
+    create_born_open_subgroup(node, parent_ns).await
 }
 
 /// Create a **born-Open** subgroup nested under `parent_ns` in ONE op (#2771).
 ///
-/// Unlike [`create_open_subgroup`] (which creates Restricted then flips via a
-/// separate `SubgroupVisibilitySet`), this goes through the real
+/// This goes through the real
 /// `ContextClient::create_group` path with `restricted: false`, so
 /// `RootOp::GroupCreated { restricted: false }` writes the Open visibility key
 /// DURING apply — before `OpEvent::SubgroupCreated` is drained. The subgroup is
@@ -4793,8 +4767,7 @@ fn pulled_key(
     )
 }
 
-/// An Open -> Restricted flip must not leave the subgroup encrypting under a key
-/// that members who only inherited it could pull while it was Open.
+/// An Open -> Restricted flip mints the space's key and hands it to its direct members only.
 #[tokio::test]
 #[serial(boot_test_node)]
 async fn flipping_an_open_subgroup_to_restricted_rotates_its_key() {
@@ -4833,11 +4806,13 @@ async fn flipping_an_open_subgroup_to_restricted_rotates_its_key() {
         None,
         "while the namespace key covers the subgroup, no member may pull the subgroup's own key"
     );
-    let open_era_key = GroupKeyring::new(&node.store, sub)
-        .load_current_key()
-        .unwrap()
-        .expect("the subgroup holds its birth key")
-        .1;
+    assert!(
+        GroupKeyring::new(&node.store, sub)
+            .load_current_key()
+            .unwrap()
+            .is_none(),
+        "an open folder holds no key of its own: the workspace key covers it"
+    );
 
     node.context_client
         .set_subgroup_visibility(SetSubgroupVisibilityRequest {
@@ -4850,11 +4825,7 @@ async fn flipping_an_open_subgroup_to_restricted_rotates_its_key() {
     let (new_key_id, new_key) = GroupKeyring::new(&node.store, sub)
         .load_current_key()
         .unwrap()
-        .expect("a current subgroup key");
-    assert_ne!(
-        new_key, open_era_key,
-        "after the flip the subgroup must encrypt under a key minted with it"
-    );
+        .expect("the flip mints the space's key");
 
     let flip = published_namespace_ops(&node)
         .into_iter()
@@ -4900,37 +4871,15 @@ async fn flipping_an_open_subgroup_to_restricted_rotates_its_key() {
     );
     assert_eq!(pulled_key(&node.store, &ns_gid, &sub, &inherited_sk), None);
 
-    // Back to Open: the namespace key covers the subgroup again and nothing rotates.
-    node.context_client
+    // A private space is never reopened.
+    let _refusal = node
+        .context_client
         .set_subgroup_visibility(SetSubgroupVisibilityRequest {
             group_id: sub,
             subgroup_visibility: VisibilityMode::Open,
         })
         .await
-        .expect("flip back to Open");
-    let namespace_key_id = GroupKeyring::new(&node.store, ns_gid)
-        .load_current_key()
-        .unwrap()
-        .expect("the namespace key")
-        .0;
-    let reopen = published_namespace_ops(&node)
-        .into_iter()
-        .last()
-        .expect("the reopening was published");
-    let NamespaceOp::Group {
-        key_id,
-        key_rotation,
-        ..
-    } = reopen.op
-    else {
-        panic!("the reopening is a group op");
-    };
-    assert_eq!(
-        key_id.to_bytes(),
-        namespace_key_id,
-        "an Open subgroup stays under the namespace key"
-    );
-    assert!(key_rotation.is_none(), "opening a subgroup rotates nothing");
+        .expect_err("a space cannot be reopened");
 }
 
 /// A namespace op is applied only when it arrives on that namespace's own gossip

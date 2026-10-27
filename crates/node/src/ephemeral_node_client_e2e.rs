@@ -330,7 +330,7 @@ async fn inherited_member_publishes_presence_on_an_open_subgroup() {
     assert_eq!(update.state.as_deref(), Some(slice.as_ref()));
 }
 
-/// Behind a Restricted wall presence must be sealed under the subgroup's own
+/// Behind a Restricted wall presence must be sealed under the space's
 /// key, never the namespace key, even on a node holding both.
 #[tokio::test]
 #[serial(boot_test_node)]
@@ -349,9 +349,10 @@ async fn presence_behind_a_restricted_wall_is_not_sealed_for_the_namespace() {
     for (seed, group) in [(0x5Au8, restricted), (0x5Bu8, walled_open)] {
         let context_id = ContextId::from([seed; 32]);
         register_context_in_group(&node.store, &group, &context_id).expect("register context");
-        let own_key_id = GroupKeyring::new(&node.store, group)
+        // One key covers a space and its folders: the space root's.
+        let own_key_id = GroupKeyring::new(&node.store, restricted)
             .store_key(&[seed.wrapping_add(0x10); 32])
-            .expect("store subgroup key");
+            .expect("store the space's key");
 
         let (key_id, ..) =
             publish_and_capture(&node, context_id, &PrivateKey::from([seed; 32]), b"x").await;
@@ -361,7 +362,7 @@ async fn presence_behind_a_restricted_wall_is_not_sealed_for_the_namespace() {
         );
         assert_eq!(
             key_id, own_key_id,
-            "group {group:?} must seal under its own key"
+            "group {group:?} must seal under its space's key"
         );
     }
 }

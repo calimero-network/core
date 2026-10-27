@@ -58,9 +58,8 @@ const TABLES: &[OpTable] = &[
     },
     OpTable {
         op: GatedOp::AcceptRecoveredKey,
-        // The subject's own anchors only: the parent's admin is refused, though
-        // it may rotate the subject's key, as key deliveries are judged.
-        allow: &[Owner, DirectAdmin, SecondDevice],
+        // The key is the space's, so its anchors answer: the admins seated in the space.
+        allow: &[Owner, DirectAdmin, InheritedAdmin, SecondDevice],
         gap: &[],
     },
 ];
@@ -132,10 +131,13 @@ fn served(world: &World, actor: &Actor, group: ContextGroupId, envelope: &[u8]) 
     if envelope.is_empty() {
         return Outcome::Refuse;
     }
-    let (_id, current) = GroupKeyring::new(&world.store, group)
+    // A folder of a space rides the space's key.
+    let covering =
+        calimero_governance_store::key_covering_group(&world.store, &group).expect("read the tree");
+    let (_id, current) = GroupKeyring::new(&world.store, covering)
         .load_current_key()
         .expect("read the keyring")
-        .expect("the world keys every group");
+        .expect("the world keys every covering group");
     assert_eq!(
         actor.open(&group, envelope),
         Some(current),
@@ -274,21 +276,38 @@ fn namespace_topic(world: &World) -> TopicHash {
 async fn accept_recovered_key(world: &World, actor: &Actor) -> Outcome {
     let store = world.fork();
     let node = world.owner_sk.public_key();
-    // A creator holds no row in its folder; the node asks for the key of a group it is a member of.
+    // The subject's key is its space's: the node asks for the key of the space it is a member of.
     let account = member_account_in_namespace(&store, &world.namespace, &node)
         .expect("resolve the node")
         .expect("the node speaks for an account");
     calimero_governance_store::MembershipRepository::new(&store)
         .add_member(
-            &world.subject,
+            &world.restricted,
             &account,
             calimero_primitives::context::GroupMemberRole::Member,
         )
-        .expect("seat the node in the subject");
-    let keyring = GroupKeyring::new(&store, world.subject);
-    while let Some((key_id, _key)) = keyring.load_current_key().expect("read the keyring") {
+        .expect("seat the node in the space");
+    let keyring = GroupKeyring::new(&store, world.restricted);
+    let mut dropped = Vec::new();
+    while let Some((key_id, key)) = keyring.load_current_key().expect("read the keyring") {
         keyring.delete_key_by_id(&key_id).expect("drop a key");
+        dropped.push(key);
     }
+    // The space's logged ops are sealed under one of the keys just dropped: the node awaits it.
+    let awaited = calimero_governance_store::namespace_group_keys_awaiting(
+        &store,
+        world.namespace.to_bytes().into(),
+    )
+    .expect("read the awaited keys");
+    let offered = dropped
+        .iter()
+        .find(|key| {
+            awaited.iter().any(|(group, id)| {
+                *group == world.restricted.to_bytes() && *id == GroupKeyring::key_id_for(key)
+            })
+        })
+        .copied()
+        .expect("the node awaits one of the space's keys");
 
     let mock = Arc::new(MockSyncNetwork::default());
     let (manager, _tmp) = manager_over(store.clone(), Arc::clone(&mock)).await;
@@ -300,10 +319,13 @@ async fn accept_recovered_key(world: &World, actor: &Actor) -> Outcome {
         .node_state
         .peer_identities
         .insert(peer, [node].into_iter().collect());
-    let offered = [0x9A; 32];
-    let envelope =
-        GroupKeyring::wrap_for_member(&actor.sign_sk, &node, &world.subject.to_bytes(), &offered)
-            .expect("wrap the key");
+    let envelope = GroupKeyring::wrap_for_member(
+        &actor.sign_sk,
+        &node,
+        &world.restricted.to_bytes(),
+        &offered,
+    )
+    .expect("wrap the key");
     let responder = respond(
         mock.push_open_stream_ok_with_peer(),
         borsh::to_vec(&envelope).expect("borsh the envelope"),

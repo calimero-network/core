@@ -1151,7 +1151,7 @@ impl SyncManager {
         // this arm is what makes a stray one diagnosable rather than silently
         // wrong.
         let key_group_id = calimero_governance_store::key_covering_group(&store, &subgroup_gid)?;
-        if key_group_id != subgroup_gid {
+        if key_group_id == ContextGroupId::from(namespace_id) {
             debug!(
                 namespace_id = %hex::encode(namespace_id),
                 subgroup_id = %hex::encode(subgroup_id),
@@ -1171,7 +1171,8 @@ impl SyncManager {
             return Ok(());
         }
 
-        let key_envelope_bytes = match GroupKeyring::new(&store, subgroup_gid).load_current_key()? {
+        // A folder of a private space rides the space's key, served from the space root.
+        let key_envelope_bytes = match GroupKeyring::new(&store, key_group_id).load_current_key()? {
             Some((_key_id, group_key)) => {
                 let ns_gid = ContextGroupId::from(namespace_id);
                 match NamespaceRepository::new(&store).resolve_identity_record(&ns_gid)? {
@@ -4862,7 +4863,7 @@ mod join_responder_tests {
         );
     }
 
-    /// An Open subgroup under a Restricted parent, holding a key of its own, and
+    /// An Open subgroup under a Restricted parent, whose key is the parent's, and
     /// a member that reaches it only by inheritance from the parent.
     fn inherited_member(r: &Responder) -> PrivateKey {
         let parent = ContextGroupId::from(PARENT);
@@ -4884,7 +4885,8 @@ mod join_responder_tests {
             .unwrap();
         caps.set_subgroup_visibility(&subgroup, VisibilityMode::Open)
             .unwrap();
-        GroupKeyring::new(&r.store, subgroup)
+        // One key covers a space and its folders: the space root's.
+        GroupKeyring::new(&r.store, parent)
             .store_key(&[0x78; 32])
             .unwrap();
 
@@ -4902,9 +4904,13 @@ mod join_responder_tests {
         member
     }
 
+    /// Removal from the space, whose seat is the folder's.
     fn remove_from_subgroup(r: &Responder, member: &PrivateKey) {
         let subgroup = ContextGroupId::from(SUBGROUP);
         let account = account_of(member);
+        MembershipRepository::new(&r.store)
+            .remove_member(&ContextGroupId::from(PARENT), &account)
+            .unwrap();
         DenyListRepository::new(&r.store)
             .mark(&subgroup, &account)
             .unwrap();
