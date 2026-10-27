@@ -545,8 +545,9 @@ impl<'a> PermissionChecker<'a> {
         })
     }
 
-    /// Allow only the group's creator, read at the flip's cut and still in the namespace, to
-    /// open it; a group with no recorded creator (a namespace root) keeps the admin rule.
+    /// Allow only the group's owner, read at the flip's cut and still in the namespace, to
+    /// open it: its creator until a transfer moves it. A group with no recorded creator (a
+    /// namespace root) keeps the admin rule.
     pub fn require_creator_opens(&self, identity: &PublicKey) -> EyreResult<()> {
         let namespace = crate::NamespaceRepository::new(self.store).resolve(&self.group_id)?;
         let at_namespace = PermissionChecker::new(self.store, namespace)
@@ -574,18 +575,28 @@ impl<'a> PermissionChecker<'a> {
                 Some(creator)
             }
         };
-        if let Some(creator) = creator {
+        // A transfer moves the owner off the creator; where the cut cannot say, the creator is it.
+        let owner = crate::group_owner::owner_at_cut(
+            self.store,
+            &self.group_id,
+            self.parents,
+            self.authorizer,
+        )
+        .ok()
+        .flatten()
+        .or(creator);
+        if let Some(owner) = owner.filter(|_| creator.is_some()) {
             let signer = match self.principal_account(identity) {
                 Some(account) => Some(account),
                 None => at_namespace.account_for_signer_at_cut(identity)?,
             };
-            if signer == Some(creator) && at_namespace.effective_role_at_cut(&creator)?.is_some() {
+            if signer == Some(owner) && at_namespace.effective_role_at_cut(&owner)?.is_some() {
                 return Ok(());
             }
         }
         bail!(CapabilitiesError::Unauthorized {
             group_id: self.group_id.to_string(),
-            operation: "open a Restricted subgroup (only its creator may)".into(),
+            operation: "open a Restricted subgroup (only its owner may)".into(),
         })
     }
 

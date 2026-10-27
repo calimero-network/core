@@ -6591,6 +6591,9 @@ fn group_settings_subgroup_visibility_opens_for_its_creator_and_closes_for_its_m
     crate::group_creator::GroupCreatorRepository::new(&store)
         .record(&gid, &creator)
         .unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(creator))
+        .unwrap();
     CapabilitiesRepository::new(&store)
         .set_member_capability(
             &gid,
@@ -6617,10 +6620,7 @@ fn group_settings_subgroup_visibility_opens_for_its_creator_and_closes_for_its_m
         let err = svc
             .set_subgroup_visibility(not_creator, VisibilityMode::Open)
             .expect_err("only the creator may open a Restricted subgroup");
-        assert!(
-            format!("{err:#}").contains("only its creator may"),
-            "{err:#}"
-        );
+        assert!(format!("{err:#}").contains("only its owner may"), "{err:#}");
         assert_eq!(visibility(), VisibilityMode::Restricted);
     }
 
@@ -6670,6 +6670,9 @@ fn opening_is_decided_where_the_subgroups_history_is_sealed() {
     crate::group_creator::GroupCreatorRepository::new(&store)
         .record(&subgroup, &creator)
         .unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup, &sample_meta_with_admin(creator))
+        .unwrap();
 
     // This node is outside `subgroup`: no cut of it resolves here.
     let sealed = SealedSubgroupAuthorizer(subgroup);
@@ -6692,10 +6695,7 @@ fn opening_is_decided_where_the_subgroups_history_is_sealed() {
     let err = svc
         .set_subgroup_visibility(&admin_pk, VisibilityMode::Open)
         .expect_err("an admin who did not create it may not open it");
-    assert!(
-        format!("{err:#}").contains("only its creator may"),
-        "{err:#}"
-    );
+    assert!(format!("{err:#}").contains("only its owner may"), "{err:#}");
 
     // ... and the creator's flip applies.
     svc.set_subgroup_visibility(&creator_pk, VisibilityMode::Open)

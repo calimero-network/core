@@ -1390,6 +1390,37 @@ mod sealing_tests {
     }
 
     #[test]
+    fn a_space_roots_transfer_is_sealed_for_the_workspace() {
+        let (store, ns, board) = board_under_a_workspace();
+        let space_key_id = GroupKeyring::new(&store, board)
+            .store_key(&[0x32u8; 32])
+            .unwrap();
+        let ns_key_id = GroupKeyring::new(&store, ns)
+            .store_key(&[0x31u8; 32])
+            .unwrap();
+        let transfer = GroupOp::TransferOwnership {
+            new_owner: AccountId::from([0x44; 32]),
+        };
+        let check = |key_id: &[u8; 32]| {
+            ensure_sealed_for_the_tree(
+                &store,
+                &crate::LIVE_FALLBACK_AUTHORIZER,
+                &board,
+                &transfer,
+                key_id,
+                &[],
+            )
+        };
+
+        assert_eq!(sealing_group(&store, &board, &transfer).unwrap(), ns);
+        assert!(
+            check(&ns_key_id).is_ok(),
+            "who owns a space is a board fact"
+        );
+        assert!(check(&space_key_id).is_err(), "sealed under the space key");
+    }
+
+    #[test]
     fn an_op_in_a_space_sealed_under_the_workspace_key_is_refused() {
         let (store, ns, board) = board_under_a_workspace();
         let space_key_id = GroupKeyring::new(&store, board)

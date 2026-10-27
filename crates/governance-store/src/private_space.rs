@@ -230,11 +230,14 @@ impl Tree {
     }
 }
 
-/// Ops that change the tree every member reads: a visibility flip and a deletion.
+/// Ops that change what every member reads of the tree: a visibility flip, a deletion and a
+/// transfer of ownership, which decides who may move or delete a space root.
 pub fn is_tree_op(op: &GroupOp) -> bool {
     matches!(
         op.innermost(),
-        GroupOp::SubgroupVisibilitySet { .. } | GroupOp::GroupDelete
+        GroupOp::SubgroupVisibilitySet { .. }
+            | GroupOp::GroupDelete
+            | GroupOp::TransferOwnership { .. }
     )
 }
 
