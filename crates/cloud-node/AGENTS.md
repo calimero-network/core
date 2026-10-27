@@ -185,6 +185,8 @@ cargo test --release -p calimero-cloud-node   # 3-node cluster in process, seale
 # first use by tests/common/mod.rs into target/app-components (needs the wasm32-wasip2 target);
 # tests/common/mod.rs also holds the in-process `Cluster` the cluster and rooms tests share
 cargo test --release -p calimero-cloud-node --test rooms   # Rooms A1 (shared scenario), A3, A5
+# G1 measurements (fuel, latency, writes/s, fresh instance, spin, compile); #[ignore]d, idle machine
+cargo test --release -p calimero-cloud-node --test bench -- --ignored --nocapture --test-threads 1
 # A4, the fault test (merod-v2 --dev processes on ports 3600-3699; needs the release
 # merod-v2 and calimero-cloud --features cli binaries and the cached Rooms component)
 python3 -I crates/cloud-node/tests/fault/rooms_fault.py --iterations 200 --seed 1
