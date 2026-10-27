@@ -68,8 +68,8 @@ use std::time::Instant;
 use axum::body::{to_bytes, Body, BodyDataStream, Bytes};
 use axum::extract::{Request, State};
 use axum::http::header::{
-    CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, ORIGIN, RETRY_AFTER,
-    TRANSFER_ENCODING, UPGRADE,
+    CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, RETRY_AFTER, TRANSFER_ENCODING,
+    UPGRADE,
 };
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::Next;
@@ -131,7 +131,6 @@ const FRAME_HEAD: u8 = 0;
 const FRAME_DATA: u8 = 1;
 const FRAME_END: u8 = 2;
 
-const X_FORWARDED_HOST: HeaderName = HeaderName::from_static("x-forwarded-host");
 /// Tells nginx-style proxies not to buffer a response, which would hold back
 /// every frame of a sealed event stream.
 const X_ACCEL_BUFFERING: HeaderName = HeaderName::from_static("x-accel-buffering");
@@ -463,15 +462,10 @@ async fn open_and_dispatch(
     // Whatever the server's own layers put on the outer request (connection
     // info, above all) belongs to the inner one: it is the same request.
     *inner.extensions_mut() = outer.extensions;
-    // How the node was reached, and from which page, are facts about the outer
-    // hop, which the inner request cannot state for itself (a browser may not set
-    // `Host`). Auth and the Origin checks read them, so they come from outside.
-    for name in [HOST, X_FORWARDED_HOST, ORIGIN] {
-        let _previous = inner.headers_mut().remove(&name);
-        if let Some(value) = outer.headers.get(&name) {
-            let _previous = inner.headers_mut().insert(name, value.clone());
-        }
-    }
+    // The outer hop's Host, X-Forwarded-Host and Origin are set by whoever
+    // relays the envelope, which is not who sealed it: copying them in would let
+    // a relay choose what the node reads as the request's origin (Xil's review,
+    // issue 13). The inner request keeps only what the client sealed.
     let _previous = transport.metrics.requests.fetch_add(1, Ordering::Relaxed);
 
     let response = next.run(inner).await;

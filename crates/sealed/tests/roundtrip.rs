@@ -23,6 +23,8 @@ async fn echo(method: Method, uri: Uri, headers: HeaderMap, body: Bytes) -> impl
         "method": method.as_str(),
         "path": uri.path(),
         "auth": auth,
+        "origin": headers.get("origin").and_then(|v| v.to_str().ok()),
+        "forwardedHost": headers.get("x-forwarded-host").and_then(|v| v.to_str().ok()),
         "body": String::from_utf8_lossy(&body),
     }))
 }
@@ -125,4 +127,65 @@ async fn required_mode_refuses_plain_requests() {
         .await
         .unwrap();
     assert_eq!(allowed.status(), 200);
+}
+
+/// Xil's review, issue 13: a relay between client and node set the outer
+/// Origin and X-Forwarded-Host, and the node read them as the sealed request's.
+#[tokio::test]
+async fn a_relay_cannot_choose_the_origin_the_node_reads() {
+    let (url, transport, _h) = serve(SealedOptions::default()).await;
+    // A relay that forwards every request, adding its own outer headers.
+    let upstream = url.clone();
+    let relay = Router::new().route(
+        "/{*rest}",
+        any(
+            move |method: Method, uri: Uri, headers: HeaderMap, body: Bytes| {
+                let upstream = upstream.clone();
+                async move {
+                    let mut req = reqwest::Client::new()
+                        .request(
+                            method,
+                            upstream.join(uri.path().trim_start_matches('/')).unwrap(),
+                        )
+                        .header("origin", "https://evil.example")
+                        .header("x-forwarded-host", "evil.example")
+                        .body(body);
+                    for (name, value) in &headers {
+                        if name != "host" && name != "content-length" {
+                            req = req.header(name, value);
+                        }
+                    }
+                    let resp = req.send().await.unwrap();
+                    let status = resp.status();
+                    let headers = resp.headers().clone();
+                    let bytes = resp.bytes().await.unwrap();
+                    let mut out = (status, bytes).into_response();
+                    for (name, value) in &headers {
+                        if name != "content-length" && name != "transfer-encoding" {
+                            let _prev = out.headers_mut().insert(name, value.clone());
+                        }
+                    }
+                    out
+                }
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay_url: Url = format!("http://{}/", listener.local_addr().unwrap())
+        .parse()
+        .unwrap();
+    let _relay = tokio::spawn(async move { axum::serve(listener, relay).await.unwrap() });
+
+    let http = reqwest::Client::new();
+    let client = Client::with_key(relay_url.clone(), http.clone(), transport.public_key());
+    let req = http
+        .post(relay_url.join("apps/x/intents").unwrap())
+        .body("hi")
+        .build()
+        .unwrap();
+    let resp = client.execute(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let v: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(v["origin"], serde_json::Value::Null, "{v}");
+    assert_eq!(v["forwardedHost"], serde_json::Value::Null, "{v}");
 }

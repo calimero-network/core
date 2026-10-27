@@ -1015,7 +1015,7 @@ impl Node {
         let p = g
             .propose(|m, applied| {
                 if let Some(key) = &req.idempotency_key {
-                    if let Some(prev) = m.replay(&req.caller, key, now) {
+                    if let Some(prev) = m.replay(&req.caller, key) {
                         return Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default());
                     }
                 }

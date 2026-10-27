@@ -24,6 +24,17 @@ pub const IDEMPOTENCY_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 /// retries, so they are kept briefly.
 pub const NODE_KEY_PREFIX: &str = "node:";
 const NODE_KEY_TTL_MS: u64 = 10 * 60 * 1000;
+
+/// The newest client idempotency records an app always keeps, whatever the
+/// clock says: time-based expiry reads the leader's clock, and a leader whose
+/// clock jumped ahead would otherwise forget acknowledged calls and run their
+/// retries again (Xil's review, issue 10). Past this many, a record goes once
+/// it is also older than its TTL.
+pub const IDEMPOTENCY_MIN_KEEP: u64 = 10_000;
+/// The same for the node's own retry keys (`node:…`).
+const NODE_KEY_MIN_KEEP: u64 = 1_000;
+/// The most records of one class an app keeps at all, whatever their age.
+const IDEMPOTENCY_MAX_KEEP: u64 = 1_000_000;
 /// Events kept for resuming subscriptions.
 pub const EVENT_RING: usize = 10_000;
 
@@ -408,6 +419,8 @@ pub struct AppMachine {
     pub touched: VecDeque<(u64, Vec<String>)>,
     /// The first index `touched` is complete from.
     pub touched_since: u64,
+    /// Records kept per idempotency class whatever their age (client, node).
+    idem_keep: [u64; 2],
 }
 
 impl AppMachine {
@@ -420,6 +433,7 @@ impl AppMachine {
             events_tx,
             touched: VecDeque::new(),
             touched_since: u64::MAX,
+            idem_keep: [IDEMPOTENCY_MIN_KEEP, NODE_KEY_MIN_KEEP],
         }
     }
 
@@ -475,9 +489,10 @@ impl AppMachine {
         self.state.kv.get(&blob_key(id)).is_some()
     }
 
-    /// A previous answer for this idempotency key, if still remembered.
+    /// A previous answer for this idempotency key, if still remembered. Never
+    /// judged by a clock: a record that is kept replays.
     #[must_use]
-    pub fn replay(&self, caller: &Caller, key: &str, now: u64) -> Option<Applied> {
+    pub fn replay(&self, caller: &Caller, key: &str) -> Option<Applied> {
         let raw = self
             .state
             .kv
@@ -486,7 +501,6 @@ impl AppMachine {
             .get_hidden(rows::IDEM, Self::idem_key(caller, key).as_bytes())?;
         serde_json::from_slice::<IdemRecord>(&raw)
             .ok()
-            .filter(|r| r.expires_ms > now)
             .map(|r| r.applied)
     }
 
@@ -512,9 +526,14 @@ impl AppMachine {
         let ring = &mut self.state.expiry[class];
         tx.put(rows::expiry(class as u8, ring.next), key.into_bytes());
         ring.next += 1;
-        // Each class expires in the order it was written, so the oldest go first.
+        // Each class expires in the order it was written, so the oldest go first,
+        // but never one of the newest `idem_keep` (see IDEMPOTENCY_MIN_KEEP).
         for (c, ring) in self.state.expiry.iter_mut().enumerate() {
             while ring.first < ring.next {
+                let kept = ring.next - ring.first;
+                if kept <= self.idem_keep[c] {
+                    break;
+                }
                 let slot = rows::expiry(c as u8, ring.first);
                 let Some(key) = tx.get(&slot) else {
                     ring.first += 1;
@@ -524,7 +543,7 @@ impl AppMachine {
                     .get_hidden(rows::IDEM, &key)
                     .and_then(|r| serde_json::from_slice::<IdemRecord>(&r).ok())
                     .is_some_and(|r| r.expires_ms > now);
-                if live {
+                if live && kept <= IDEMPOTENCY_MAX_KEEP {
                     break;
                 }
                 tx.delete_hidden(rows::IDEM, &key);
@@ -1760,7 +1779,7 @@ mod tests {
         let caller = Caller::Account {
             account: "acct".into(),
         };
-        assert!(again.replay(&caller, "k1", 2_000).is_some());
+        assert!(again.replay(&caller, "k1").is_some());
         // The app's keys are not on disk in the clear.
         let mut seen = Vec::new();
         again
@@ -1778,6 +1797,8 @@ mod tests {
     fn expired_idempotency_keys_are_forgotten() {
         let dir = tempfile::tempdir().unwrap();
         let (_engine, mut m) = machine(&dir);
+        // Time alone decides here; the kept minimum is tested below.
+        m.idem_keep = [0, 0];
         let caller = Caller::Account {
             account: "acct".into(),
         };
@@ -1795,20 +1816,41 @@ mod tests {
             let cmd = call(&m, "mid", later, &[], 0);
             apply(&mut m, 3, &cmd)
         };
-        assert!(m.replay(&caller, "node:retry", later).is_none());
-        assert!(m.replay(&caller, "old", later).is_some());
+        assert!(m.replay(&caller, "node:retry").is_none());
+        assert!(m.replay(&caller, "old").is_some());
         // A day on, so is the client's; the newest stays.
         let day = 1_000 + IDEMPOTENCY_TTL_MS + 1;
         let _a = {
             let cmd = call(&m, "new", day, &[], 0);
             apply(&mut m, 4, &cmd)
         };
-        assert!(m.replay(&caller, "old", 0).is_none());
-        assert!(m.replay(&caller, "new", day).is_some());
-        assert!(m.replay(&caller, "mid", day).is_some());
+        assert!(m.replay(&caller, "old").is_none());
+        assert!(m.replay(&caller, "new").is_some());
+        assert!(m.replay(&caller, "mid").is_some());
         // Each ring dropped exactly what expired: "old", and the node's key.
         assert_eq!(m.state.expiry[0].first, 1);
         assert_eq!(m.state.expiry[1].first, 1);
+    }
+
+    /// Xil's review, issue 10: a leader whose clock jumped 25 hours ahead
+    /// forgot an acknowledged call, and its retry ran again.
+    #[test]
+    fn a_skewed_clock_does_not_forget_acknowledged_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut m) = machine(&dir);
+        let caller = Caller::Account {
+            account: "acct".into(),
+        };
+        let _a = {
+            let cmd = call(&m, "pay", 1_000, &[], 0);
+            apply(&mut m, 1, &cmd)
+        };
+        let skewed = 1_000 + 25 * 60 * 60 * 1000;
+        let _a = {
+            let cmd = call(&m, "other", skewed, &[], 0);
+            apply(&mut m, 2, &cmd)
+        };
+        assert!(m.replay(&caller, "pay").is_some(), "the retry replays");
     }
 
     /// Events past the ring are dropped from the store, oldest first.
@@ -1868,7 +1910,7 @@ mod tests {
             account: "acct".into(),
         };
         assert_eq!(
-            back.replay(&caller, "k", 1).map(|a| a.result),
+            back.replay(&caller, "k").map(|a| a.result),
             Some(Value::from(7))
         );
     }
