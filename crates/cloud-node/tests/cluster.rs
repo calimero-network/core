@@ -2682,3 +2682,46 @@ async fn concurrent_first_uses_of_a_bundle_prepare_it_once() {
     }
     assert_eq!(node.prepares() - before, 1, "prepared more than once");
 }
+
+/// C1, the leader's own check (Ruling 45): an `UpgradeRequest` that skipped the front
+/// check (as a peer's `internal/upgrade` does) is refused by the app's leader, from a
+/// replica that forwards it and on the leader itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_leader_checks_upgrade_authority_again() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let v1 = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice
+        .create_app("kv", &v1, json!({ "access": { "kind": "public" } }))
+        .await
+        .unwrap();
+    let mut other = kv_wasm();
+    other.extend_from_slice(&[0, 4, 3, b'b', b'o', b'b']);
+    let bobs = bob.upload_bundle(other).await.unwrap();
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let leader = c.app_leader(&app).unwrap();
+    let follower = (leader + 1) % 3;
+    for i in [follower, leader] {
+        let e = c.nodes[i]
+            .as_ref()
+            .unwrap()
+            .node
+            .upgrade(&calimero_cloud_node::node::UpgradeRequest {
+                app_id: app.clone(),
+                account: bob_id.clone(),
+                bundle: bobs.clone(),
+                migrate: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, "FORBIDDEN", "from node {i}: {e:?}");
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for i in 0..3 {
+        assert_eq!(running_bundle(&c, i, &app), Some(v1.clone()), "node {i}");
+    }
+}
