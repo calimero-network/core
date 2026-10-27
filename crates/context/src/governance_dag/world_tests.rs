@@ -2849,7 +2849,7 @@ mod concurrent {
     }
 
     #[actix::test]
-    async fn a_removal_from_a_space_concurrent_with_a_folders_move_into_it_lands_the_same_in_either_order(
+    async fn a_root_removal_concurrent_with_a_folders_move_into_a_space_lands_the_same_in_either_order(
     ) {
         let (world, store) = world_with_a_logged_admin().await;
         let (_outer, inner, _other) = folders_and_a_space(&store, world).await;
@@ -2863,7 +2863,7 @@ mod concurrent {
         let remove = signed_in(
             &store,
             world,
-            &space,
+            &world.namespace,
             &world.owner_sk,
             &parents,
             unused_nonce(),

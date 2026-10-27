@@ -115,14 +115,7 @@ pub(crate) fn apply(
             // `collect_descendants` returns the FULL subtree (every level, not
             // just direct children) and excludes the root itself, so one pass
             // covers each descendant group's own directly-registered contexts.
-            // Teardown sweeps what either tree shows below the root: rows that should not exist
-            // are always safe to remove.
-            let mut descendants = tree.below(group_id)?;
-            for live in namespaces.collect_descendants(group_id)? {
-                if !descendants.contains(&live) {
-                    descendants.push(live);
-                }
-            }
+            let descendants = tree.below(group_id)?;
             for sub in &descendants {
                 // Defensive: `collect_descendants` excludes the root, but were
                 // it ever to return `group_id` itself, the membership teardown
@@ -300,16 +293,11 @@ pub(crate) fn end_rows_in_space_folders(
     group_id: &calimero_context_config::types::ContextGroupId,
     member: &AccountId,
 ) -> EyreResult<()> {
-    let live = crate::private_space::Tree::live(store, group_id)?;
-    if tree.space_of(group_id)? != Some(*group_id) && live.space_of(group_id)? != Some(*group_id) {
+    if tree.space_of(group_id)? != Some(*group_id) {
         return Ok(());
     }
     let membership = MembershipRepository::new(store);
-    let mut folders = tree.below(group_id)?;
-    folders.extend(live.below(group_id)?);
-    folders.sort_unstable();
-    folders.dedup();
-    for folder in folders {
+    for folder in tree.below(group_id)? {
         if membership.role_of(&folder, member)?.is_some() {
             membership.remove_member(&folder, member)?;
         }
