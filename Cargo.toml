@@ -220,6 +220,7 @@ members = [
     "./tools/cargo-mero",
     "./tools/storage-cost",
     "./tools/state-disk-cost",
+    "./tools/search-bench",
 ]
 
 [workspace.dependencies]

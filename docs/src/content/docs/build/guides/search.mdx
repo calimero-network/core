@@ -334,8 +334,9 @@ run, so a node with search on and a node with it off charge a write the same,
 which is required, since every node must agree whether a write ran out of
 gas. The row is 109 bytes plus 32 per changed entity id, in the same batch.
 
-Measured on `search-chat` with the default budget (`tools/search-bench/README.md`
-has the rest):
+Measured on `search-chat` with the default budget, end to end on v1's node
+(the run is in `tools/search-bench`'s history on `master`; its README has the
+engine numbers of today's index):
 
 | | 2,000 messages | 10,000 | 50,000 | 200,000 |
 | --- | --- | --- | --- | --- |

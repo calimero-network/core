@@ -68,7 +68,7 @@ release-v2 node uses them directly. Do not build on them.
 - `utils/fs` (`calimero-utils-fs`) - writing an owner-only secret file on Unix and Windows; used by `tools/mero-sign`.
 
 Tools (`cargo-mero`, `mero-abi`, `mero-sign`, `storage-cost`, `storage-compare`,
-`state-disk-cost`) are under [`../tools`](../tools/AGENTS.md).
+`state-disk-cost`, `search-bench`) are under [`../tools`](../tools/AGENTS.md).
 
 ## Deleted with v1
 
@@ -76,7 +76,7 @@ Tools (`cargo-mero`, `mero-abi`, `mero-sign`, `storage-cost`, `storage-compare`,
 `config`, `context` (except `context/config`), `dag`, `governance-store`,
 `network` (except `primitives`), `node` (except `primitives`), `op`,
 `op-adapter`, `projection`, `server` (with `server/primitives`),
-`store/encryption`, `merodb`, `search-bench`. A document that describes them
+`store/encryption`, `merodb`. A document that describes them
 as current is stale.
 
 ## Commands

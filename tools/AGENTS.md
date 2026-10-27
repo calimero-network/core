@@ -12,6 +12,7 @@ store is inspected with `merod inspect` (`crates/merod`), which replaces v1's `m
 | `mero-sign`    | `mero-sign` | Sign Calimero bundle manifests (Ed25519)     |
 | `storage-cost` | `storage-cost` | Deterministic cost gate for `calimero-storage`: rows touched and SHA-256 work per workload, diffed against `storage-costs.json` (see `docs/benchmarking.md`) |
 | `state-disk-cost` | `state-disk-cost` | On-disk RocksDB bytes per state entry (kv, chat) under candidate column-family options (`README.md` holds the results) |
+| `search-bench` | `search-bench` | `calimero-search`'s engine over the node's `RamDirectory` (and `MmapDirectory`): index size, query latency, memory, the search-gas fit; `README.md` holds the results, CI's `benchmarks.yml` uploads a report |
 | `storage-compare` | `storage-compare` | State bytes, delta bytes and per-call time for kv and chat workloads, built at any commit to compare two of them (`RESULTS.md` holds the before/after results) |
 
 Everything here is a Rust crate.
