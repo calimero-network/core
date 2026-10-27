@@ -29,9 +29,12 @@ RUN chmod +x /usr/local/bin/merod /usr/local/bin/meroctl
 USER user
 WORKDIR /data
 ENV CALIMERO_HOME=/data
+# `merod --node NAME init ...` then `merod --node NAME run`, or `merod run` with
+# MEROD_* variables only; `meroctl` is beside it.
 
 VOLUME /data
-EXPOSE 2428 2528
+# The API (sealed channel, `/attestation`, `/health`); peers use it too.
+EXPOSE 2528
 
 ENTRYPOINT ["merod"]
 CMD ["--help"]

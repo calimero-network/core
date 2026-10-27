@@ -24,24 +24,9 @@ COPY crates ./crates
 COPY apps ./apps
 COPY tools ./tools
 
-ARG CALIMERO_WEBUI_SRC # the url or absolute path to the webui (archive or directory)
-ARG CALIMERO_WEBUI_REPO # the git repository hosting the webui (for a git release asset)
-ARG CALIMERO_WEBUI_VERSION # the version of the webui to use (for a git release asset)
-ARG CALIMERO_WEBUI_FETCH # invalidate the cache, fetch the webui (for a git release asset)
-ARG CALIMERO_WEBUI_ASSET # file name of the asset to use (for a git release asset)
-ARG CALIMERO_WEBUI_SHA256 # expected sha256 of the archive (required when overriding the pinned default with a remote source)
-# CALIMERO_WEBUI_FETCH_TOKEN # GitHub token to use for fetching the webui (for a git release asset)
-
-# ^~~ docker build
-#        --build-arg CALIMERO_WEBUI_FETCH=1
-#   env: --secret id=gh-token,env=CALIMERO_WEBUI_FETCH_TOKEN
-#  file: --secret id=gh-token,src=./gh_token.txt
-
 RUN --mount=type=cache,target=/app/target/ \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
-    --mount=type=secret,id=gh-token,env=CALIMERO_WEBUI_FETCH_TOKEN \
-    [ -n "$CALIMERO_WEBUI_FETCH_TOKEN" ] || unset CALIMERO_WEBUI_FETCH_TOKEN && \
     cargo build --locked --release -p merod -p meroctl && \
     cp /app/target/release/merod /app/target/release/meroctl /usr/local/bin/
 
@@ -77,9 +62,12 @@ COPY --from=build \
 USER user
 WORKDIR /data
 ENV CALIMERO_HOME=/data
+# `merod --node NAME init ...` then `merod --node NAME run`, or `merod run` with
+# MEROD_* variables only; `meroctl` is beside it.
 
 VOLUME /data
-EXPOSE 2428 2528
+# The API (sealed channel, `/attestation`, `/health`); peers use it too.
+EXPOSE 2528
 
 ENTRYPOINT ["merod"]
 CMD ["--help"]

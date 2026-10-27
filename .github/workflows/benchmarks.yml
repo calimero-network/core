@@ -35,7 +35,7 @@ jobs:
           LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'run-benchmarks') }}
         run: |
           # A crate's first `[[bench]]` goes here, or it gets no master baseline.
-          all='["storage-cost","calimero-storage","calimero-store","calimero-blobstore","calimero-crypto","calimero-runtime","calimero-dag"]'
+          all='["storage-cost","calimero-storage","calimero-store","calimero-blobstore","calimero-crypto","calimero-runtime"]'
           if [ "$EVENT" = push ]; then
             crates="$all"
           elif [ "$ACTION" = labeled ]; then

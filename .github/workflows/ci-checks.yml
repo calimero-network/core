@@ -10,8 +10,6 @@ on:
   pull_request:
 
 env:
-  CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   CARGO_TERM_COLOR: always
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
   CARGO_PROFILE_DEV_DEBUG: line-tables-only # keeps the target cache inside the 10 GB Actions budget
@@ -25,8 +23,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
-  # The Windows lanes (secret permissions, node smoke) live in platforms.yml: nightly,
-  # and on a PR whose change can reach Windows-only code.
+  # The macOS release build of the developer CLIs lives in platforms.yml (nightly).
 
   # Which of the narrow jobs below this change can reach: each is scoped by the
   # packages it builds, followed through their dependency closure, so a change
@@ -147,16 +144,11 @@ jobs:
       - name: No user data at info level
         run: python3 scripts/check-no-user-data-at-info.py
 
-      # Fails when a merobox scenario file is run by no e2e matrix.
-      - name: Check every merobox scenario runs somewhere
-        if: ${{ !cancelled() }}
-        run: python3 scripts/check-scenario-coverage.py
-
       - name: Test check-like-ci
         if: ${{ !cancelled() }}
         run: bash scripts/tests/check-like-ci.test.sh
 
-      # The cargo-mero and merod caches key on this closure; one it misses is a
+      # The cargo-mero and app caches key on this closure; one it misses is a
       # source change that silently reuses a stale binary.
       - name: Test path-dep-closure against cargo's resolve
         if: ${{ !cancelled() }}
@@ -167,29 +159,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
 
-      - name: Cargo clippy (mock-attestation)
+      # mock-attestation and calimero-cloud-node's outbound-testing are default-off so they
+      # never reach a release binary; the workspace clippy never compiles them.
+      - name: Cargo clippy (mock-attestation, outbound-testing)
         if: ${{ !cancelled() }}
-        run: cargo clippy -p merod -p calimero-node -p calimero-server -p calimero-tee-attestation --all-targets --features mock-attestation -- -D warnings
-
-      # calimero-client's tee feature (sealed transport) is default-off and no
-      # workspace member enables it, so the workspace clippy never compiles it.
-      - name: Cargo clippy (calimero-client tee)
-        if: ${{ !cancelled() }}
-        run: cargo clippy -p calimero-client --features tee --all-targets -- -D warnings
-
-      # The workspace clippy never compiles merodb's default-off gui feature.
-      # Build, not clippy: the gui code still has lint findings.
-      - name: Cargo build (merodb gui)
-        if: ${{ !cancelled() }}
-        run: cargo build -p merodb --features gui
+        run: cargo clippy -p calimero-tee-attestation -p calimero-cloud-node --all-targets --features calimero-tee-attestation/mock-attestation,calimero-cloud-node/outbound-testing -- -D warnings
 
       - name: Cargo check (calimero-context-config)
         if: ${{ !cancelled() }}
         run: cargo check -p calimero-context-config
-
-      - name: Cargo check (merod, local-only init binary)
-        if: ${{ !cancelled() }}
-        run: cargo check -p merod --no-default-features
 
   # The only job that saves `ci-checks`; the others restore it read-only.
   rust-test:
@@ -216,6 +194,22 @@ jobs:
         uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-nextest@0.9.146,cargo-expand@1.0.127
+
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
+      # The node's cluster tests and meroctl's run real app wasm: plain builds
+      # (read from target/wasm32-unknown-unknown/app-release) and cargo-mero builds,
+      # whose embedded ABI the node reads (read from apps/<app>/res).
+      # crates/cloud-node/AGENTS.md "Commands" lists the same set.
+      - name: Build the node test fixtures
+        run: |
+          cargo build -p kv-store -p org-gated -p outbound-probe --target wasm32-unknown-unknown --profile app-release
+          for a in blobs kv-store-with-handlers search-chat xcall-example tee-cards tee-dice \
+            migrations/migration-suite-v1 migrations/migration-suite-v2-add-field \
+            migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2; do
+            cargo mero build --manifest-path "apps/$a/Cargo.toml"
+          done
 
       - name: Cargo test
         run: |
@@ -252,14 +246,7 @@ jobs:
       # mock-attestation is default-off so it never reaches a release binary; the workspace tests skip it.
       - name: Cargo test (mock-attestation)
         if: ${{ !cancelled() }}
-        run: cargo test -p merod -p calimero-node -p calimero-tee-attestation --features mock-attestation -- --nocapture
-
-      # The sealed-transport tests (sealed requests against the node's own
-      # sealed implementation, served in process) sit behind calimero-client's
-      # tee feature.
-      - name: Cargo test (calimero-client tee)
-        if: ${{ !cancelled() }}
-        run: cargo test -p calimero-client --features tee
+        run: cargo test -p calimero-tee-attestation --features mock-attestation -- --nocapture
 
       # The stored-format tests sit behind calimero-store's default-off features.
       - name: Cargo test (calimero-store, all features)
@@ -285,15 +272,16 @@ jobs:
 
       # A hit is the output of this exact build (same app trees, cargo-mero,
       # lockfile, toolchain, script and workflows), which already passed on master:
-      # only master saves, and only after the build below succeeds. e2e-rust-apps'
-      # Build Apps runs the same script with the same inputs, so they share it.
+      # only master saves, and only after the build below succeeds.
       - name: Restore the apps, or set up to build them
         id: apps
         uses: ./.github/actions/wasm-apps
         with:
           root: apps
           script: scripts/build-all-apps.sh
-          workflows: .github/workflows/ci-checks.yml .github/workflows/e2e-rust-apps.yml
+          workflows: .github/workflows/ci-checks.yml
+          # The wasm-apps rust-cache group's one saver.
+          rust-cache-save: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Build every app
         if: steps.apps.outputs.hit != 'true'
@@ -367,7 +355,7 @@ jobs:
       - name: Run pipeline e2e
         run: env -u CARGO_TARGET_DIR cargo test -p cargo-mero --test pipeline --test frontend -- --include-ignored --test-threads 1
 
-  # PR-time guard against a wasm too large for merod to load; the fuzzy suite never runs on PRs.
+  # PR-time guard against a wasm too large for the runtime merod runs apps in to load.
   wasm-size:
     name: WASM size gate
     needs: scope
@@ -391,7 +379,7 @@ jobs:
         uses: ./.github/actions/setup-cargo-mero
 
       # Profiling builds skip wasm-opt, so they are the largest wasm a node is handed.
-      - name: Build the fuzzy apps with profiling
+      - name: Build the size-gated apps with profiling
         env:
           WASM_PROFILING: "true"
         run: |

@@ -85,7 +85,7 @@ fi
 # break or panic in the diff path fails here too. A state schema diffed against
 # itself must report NO unsafe downgrade (exit 0). The positive case - a real
 # AuthoredMap->UnorderedMap downgrade IS caught - is gated on a real built
-# pair in .github/workflows/app-migration-e2e.yml (schema-downgrade-guard).
+# pair in .github/workflows/abi-guard.yml ("identity downgrade" steps).
 echo "Exercising identity-downgrade lint (self-diff must be clean)..."
 STATE="/tmp/abi_conformance.state.json"
 "$EXTRACTOR" state "$WASM" -o "$STATE"
