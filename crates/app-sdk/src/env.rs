@@ -10,6 +10,7 @@ use std::time::SystemTime;
 use serde::Serialize;
 use serde_json::json;
 
+use crate::app::AppEvent;
 use crate::error::{AppError, Result};
 
 #[cfg(target_arch = "wasm32")]
@@ -77,8 +78,8 @@ pub enum Audience {
 pub struct TimerInfo {
     /// The slot this tick is for.
     pub scheduled: u64,
-    /// The previous slot applied.
-    pub previous: u64,
+    /// The previous slot applied; none on a timer's first tick.
+    pub previous: Option<u64>,
 }
 
 thread_local! {
@@ -139,8 +140,15 @@ pub fn random_bytes(len: usize) -> Vec<u8> {
     backend::random_bytes(len)
 }
 
-/// Emit an event: `data` is serialized as JSON, like call arguments and results.
-pub fn emit<T: Serialize + ?Sized>(name: &str, data: &T, audience: Audience) -> Result<()> {
+/// Emit an `#[app::event]` value: its variant name and JSON data (D20: 64-bit integers as
+/// decimal strings).
+pub fn emit<E: AppEvent>(event: E, audience: Audience) -> Result<()> {
+    let (name, data) = event.encode()?;
+    emit_raw(name, &data, audience)
+}
+
+/// Emit an event by name: `data` is serialized as JSON, like call arguments and results.
+pub fn emit_raw<T: Serialize + ?Sized>(name: &str, data: &T, audience: Audience) -> Result<()> {
     let data = serde_json::to_vec(data)
         .map_err(|e| AppError::with_fields("Emit", json!({ "message": e.to_string() })))?;
     backend::emit(name, data, audience)

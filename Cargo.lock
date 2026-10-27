@@ -1175,13 +1175,29 @@ name = "calimero-app-sdk"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
+ "calimero-app-build",
+ "calimero-app-engine-wasmtime",
+ "calimero-app-host",
+ "calimero-app-sdk-macros",
  "ciborium",
  "proptest",
  "rand 0.10.2",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
+ "trybuild",
  "wit-bindgen 0.63.0",
+]
+
+[[package]]
+name = "calimero-app-sdk-macros"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "syn 3.0.9",
 ]
 
 [[package]]

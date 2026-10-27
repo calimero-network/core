@@ -106,6 +106,7 @@ members = [
     "./crates/app-engine-wasmtime",
     "./crates/app-host",
     "./crates/app-sdk",
+    "./crates/app-sdk-macros",
     "./crates/app-wit",
     "./crates/auth",
     "./crates/build-utils",
@@ -414,6 +415,7 @@ calimero-app-build = { path = "./crates/app-build" }
 calimero-app-engine-wasmtime = { path = "./crates/app-engine-wasmtime" }
 calimero-app-host = { path = "./crates/app-host" }
 calimero-app-sdk = { path = "./crates/app-sdk" }
+calimero-app-sdk-macros = { path = "./crates/app-sdk-macros" }
 calimero-build-utils = { path = "./crates/build-utils" }
 calimero-bundle = { path = "./crates/bundle" }
 calimero-blobstore = { path = "./crates/store/blobs" }

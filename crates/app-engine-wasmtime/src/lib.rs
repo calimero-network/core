@@ -17,8 +17,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 use calimero_app_host::{
-    Abi, Budget, Engine, HostCore, Outcome, PrepareError, Prepared, Status, TrapKind, Usage,
-    DEFAULT_MEMORY_PAGES,
+    Abi, Budget, Engine, HostCore, Outcome, PrepareError, Prepared, Status, TimerCtx, TrapKind,
+    Usage, DEFAULT_MEMORY_PAGES,
 };
 use calimero_app_wit::{allowed_imports, stubbed_imports};
 use eyre::Result as EyreResult;
@@ -219,7 +219,11 @@ impl Engine for WasmtimeEngine {
             return host.finish(status, Vec::new(), Usage::default());
         };
         let inv = host.invocation();
-        let (kind, method, args) = (inv.kind.into(), inv.method.clone(), inv.args.clone());
+        let args = inv
+            .timer
+            .as_ref()
+            .map_or_else(|| inv.args.clone(), timer_args);
+        let (kind, method) = (inv.kind.into(), inv.method.clone());
 
         let log: SharedLog = Arc::default();
         let mut store = Store::new(&self.engine, StoreData::new(host, &budget, &log));
@@ -421,6 +425,20 @@ impl ResourceLimiter for Limits {
     fn memories(&self) -> usize {
         self.0.memories()
     }
+}
+
+/// The `args` of a timer tick, as the guest reads them: the slot and the previous applied
+/// slot, in milliseconds, as decimal strings (D20). The host core holds the tick
+/// (`Invocation::timer`), so a timer invocation's own `args` are ignored.
+fn timer_args(tick: &TimerCtx) -> Vec<u8> {
+    let previous = tick
+        .previous_ms
+        .map_or_else(|| "null".to_owned(), |p| format!("\"{p}\""));
+    format!(
+        "{{\"scheduled\":\"{}\",\"previous\":{previous}}}",
+        tick.scheduled_ms
+    )
+    .into_bytes()
 }
 
 #[cfg(test)]

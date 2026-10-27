@@ -5,7 +5,7 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
-description = "The Rust app SDK runtime for calimero:app: encoding, tables, collections and env"
+description = "The Rust app SDK for calimero:app: app attributes, encoding, tables, collections and env"
 publish = false
 
 [features]
@@ -14,6 +14,7 @@ testing = []
 
 [dependencies]
 base64.workspace = true
+calimero-app-sdk-macros.workspace = true
 ciborium.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -28,3 +29,10 @@ wit-bindgen.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 serde = { workspace = true, features = ["derive"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-app-build.workspace = true
+calimero-app-engine-wasmtime.workspace = true
+calimero-app-host.workspace = true
+tempfile.workspace = true
+trybuild.workspace = true

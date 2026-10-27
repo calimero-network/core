@@ -28,8 +28,8 @@ fn unique_ids_and_events() {
     mock::reset();
     assert_eq!(env::unique_id(), "1.1.0");
     assert_eq!(env::unique_id(), "1.1.1");
-    assert!(env::emit("x", &1, Audience::Org).is_err());
-    env::emit("x", &1, Audience::All).unwrap();
+    assert!(env::emit_raw("x", &1, Audience::Org).is_err());
+    env::emit_raw("x", &1, Audience::All).unwrap();
     assert_eq!(mock::with_mut(|s| s.events.len()), 1);
     mock::with_mut(|s| s.now_ms = Some(42));
     assert_eq!(env::time_now(), 42);
