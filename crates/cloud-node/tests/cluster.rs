@@ -118,25 +118,49 @@ impl Cluster {
     }
 
     async fn start_with(n: u64, configure: impl Fn(&mut Config)) -> Self {
-        let ports: Vec<u16> = (0..n).map(|_| free_port()).collect();
-        let urls: Vec<String> = ports
-            .iter()
-            .map(|p| format!("http://127.0.0.1:{p}/"))
-            .collect();
-        let peers: BTreeMap<u64, String> = urls
-            .iter()
-            .enumerate()
-            .map(|(i, u)| (i as u64 + 1, u.clone()))
-            .collect();
-        let mut nodes = Vec::new();
-        let mut dirs = Vec::new();
-        for i in 0..ports.len() {
-            let dir = tempfile::tempdir().unwrap();
-            let mut config = node_config(i as u64 + 1, &peers, dir.path());
-            configure(&mut config);
-            nodes.push(Some(run(config).await.unwrap()));
-            dirs.push(dir);
-        }
+        // `free_port` hands the port back before a node binds it, so another
+        // test can take it meanwhile: a cluster that loses that race starts
+        // again on other ports.
+        let mut attempt = 0;
+        let (nodes, urls, dirs) = loop {
+            attempt += 1;
+            let ports: Vec<u16> = (0..n).map(|_| free_port()).collect();
+            let urls: Vec<String> = ports
+                .iter()
+                .map(|p| format!("http://127.0.0.1:{p}/"))
+                .collect();
+            let peers: BTreeMap<u64, String> = urls
+                .iter()
+                .enumerate()
+                .map(|(i, u)| (i as u64 + 1, u.clone()))
+                .collect();
+            let mut nodes = Vec::new();
+            let mut dirs = Vec::new();
+            let mut failed = None;
+            for i in 0..ports.len() {
+                let dir = tempfile::tempdir().unwrap();
+                let mut config = node_config(i as u64 + 1, &peers, dir.path());
+                configure(&mut config);
+                match run(config).await {
+                    Ok(r) => nodes.push(Some(r)),
+                    Err(e) => {
+                        failed = Some(e);
+                        break;
+                    }
+                }
+                dirs.push(dir);
+            }
+            match failed {
+                None => break (nodes, urls, dirs),
+                Some(e) if attempt < 3 => {
+                    eprintln!("cluster start failed ({e:#}); retrying on other ports");
+                    for r in nodes.into_iter().flatten() {
+                        r.stop().await;
+                    }
+                }
+                Some(e) => panic!("cluster did not start: {e:#}"),
+            }
+        };
         let c = Self {
             nodes,
             urls,
@@ -3249,5 +3273,62 @@ async fn the_ops_token_can_be_given_as_a_hash_and_metrics_count() {
     assert!(
         alice.get_text("ops/metrics").await.is_err(),
         "operators only"
+    );
+}
+
+// ---------------------------------------------------------------- inspection
+
+/// `merod-v2 inspect` (v1's `merodb`): a stopped node's data directory, read
+/// offline. The raw layout without the key; with it, each group's metadata.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_stopped_nodes_store_can_be_inspected() {
+    let mut c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let _ = alice
+        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .await
+        .unwrap();
+    c.stop(1).await;
+    let dir = c._dirs[1].path().to_owned();
+    let key_file = dir.join("k_r.hex");
+    std::fs::write(&key_file, hex::encode([42u8; 32])).unwrap();
+    let run = |args: Vec<String>| {
+        tokio::task::spawn_blocking(move || {
+            let out = std::process::Command::new(env!("CARGO_BIN_EXE_merod-v2"))
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            serde_json::from_slice::<Value>(&out.stdout).unwrap()
+        })
+    };
+    let d = dir.to_string_lossy().into_owned();
+    let raw = run(vec!["inspect".into(), "--data-dir".into(), d.clone()])
+        .await
+        .unwrap();
+    let groups = raw["groups"].as_object().unwrap();
+    assert!(groups.contains_key("1"), "the system group: {raw}");
+    assert!(groups.len() >= 2, "the app's group too: {raw}");
+    assert!(raw["blobs"].as_u64().unwrap() >= 1, "the bundle: {raw}");
+    assert!(groups["1"]["logEntries"].as_u64().unwrap() > 0);
+    let opened = run(vec![
+        "inspect".into(),
+        "--data-dir".into(),
+        d,
+        "--storage-key-file".into(),
+        key_file.to_string_lossy().into_owned(),
+    ])
+    .await
+    .unwrap();
+    assert!(
+        opened["groups"]["1"]["values"]
+            .as_object()
+            .is_some_and(|v| !v.is_empty()),
+        "{opened}"
     );
 }

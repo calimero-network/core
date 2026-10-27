@@ -7,7 +7,7 @@
 //! later commands reuse and refresh it. The Ops API takes `--ops-token`.
 
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use calimero_cloud_client::{Client, Consistency, Measurements, Policy, Session};
 use calimero_identity::testing::SoftAuthenticator;
@@ -133,6 +133,9 @@ enum Cmd {
     Org(OrgCmd),
     #[command(subcommand)]
     Ops(OpsCmd),
+    /// Development helpers.
+    #[command(subcommand)]
+    Dev(DevCmd),
     /// Any API route: METHOD is get, post or delete; BODY is JSON.
     Raw {
         method: String,
@@ -218,6 +221,31 @@ enum AppCmd {
         /// elsewhere the owner approves in the console.
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DevCmd {
+    /// Push a build to its apps now, then again every time the file changes
+    /// (v1's `meroctl app watch`). A signed `.mpk` is installed and the apps
+    /// running its package are upgraded to its version; a raw `.wasm` (a
+    /// development cluster's bundle) upgrades the apps named with `--app`.
+    Watch {
+        #[arg(long)]
+        path: PathBuf,
+        /// The apps to upgrade (default for a `.mpk`: this account's apps of
+        /// its package).
+        #[arg(long = "app")]
+        apps: Vec<String>,
+        /// The owner's passkey file that approves each upgrade.
+        #[arg(long)]
+        dev_passkey: PathBuf,
+        /// Push once and exit.
+        #[arg(long)]
+        once: bool,
+        /// How often to look at the file, in milliseconds.
+        #[arg(long, default_value_t = 500)]
+        interval_ms: u64,
     },
 }
 
@@ -367,6 +395,58 @@ async fn authenticate(cli: &Cli, client: &Client, sessions: &Sessions) -> eyre::
     Ok(())
 }
 
+/// One push of `dev watch`: the build, then each app's upgrade to it.
+async fn dev_push(
+    client: &Client,
+    path: &std::path::Path,
+    apps: &[String],
+    dev_passkey: &std::path::Path,
+) -> eyre::Result<Value> {
+    let bytes = std::fs::read(path).wrap_err_with(|| format!("{}", path.display()))?;
+    let (body, targets) = if path.extension().is_some_and(|e| e == "mpk") {
+        let installed = client.upload_package(bytes).await?;
+        let package = installed["package"].as_str().unwrap_or_default().to_owned();
+        let version = installed["version"].as_str().unwrap_or_default().to_owned();
+        let targets = if apps.is_empty() {
+            let me = client.me().await?["accountId"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            client.get(&format!("apps?package={package}")).await?["apps"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter(|a| a["owner"].as_str() == Some(me.as_str()))
+                .filter_map(|a| a["appId"].as_str().map(str::to_owned))
+                .collect()
+        } else {
+            apps.to_vec()
+        };
+        (json!({ "version": version }), targets)
+    } else {
+        if apps.is_empty() {
+            bail!("a raw .wasm names the apps it upgrades: --app ID");
+        }
+        let bundle = client.upload_bundle(bytes).await?;
+        (json!({ "bundle": bundle }), apps.to_vec())
+    };
+    let mut pk = load_dev_passkey(dev_passkey)?;
+    let mut upgraded = Vec::new();
+    let mut failed = serde_json::Map::new();
+    for app in &targets {
+        match client.upgrade_app(app, body.clone(), &mut pk).await {
+            Ok(_) => upgraded.push(app.clone()),
+            Err(e) => {
+                let _prev = failed.insert(app.clone(), json!(e.to_string()));
+            }
+        }
+    }
+    // The passkey's counter moved; keep it.
+    write_private(dev_passkey, &pk.to_json())?;
+    Ok(json!({ "pushed": body, "upgraded": upgraded, "failed": failed }))
+}
+
 /// The passkey kept in a development passkey file.
 fn load_dev_passkey(path: &std::path::Path) -> eyre::Result<SoftAuthenticator> {
     SoftAuthenticator::from_json(&std::fs::read_to_string(path)?)
@@ -453,6 +533,38 @@ async fn main() -> eyre::Result<()> {
     }
 
     authenticate(&cli, &client, &sessions).await?;
+    if let Cmd::Dev(DevCmd::Watch {
+        path,
+        apps,
+        dev_passkey,
+        once,
+        interval_ms,
+    }) = &cli.cmd
+    {
+        let modified = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        let mut seen = modified(path);
+        loop {
+            match dev_push(&client, path, apps, dev_passkey).await {
+                Ok(out) => println!("{}", serde_json::to_string(&out)?),
+                Err(e) if *once => return Err(e),
+                Err(e) => eprintln!("push failed: {e:#}"),
+            }
+            if *once {
+                return Ok(());
+            }
+            // Wait for the next save, and for the writer to finish it.
+            loop {
+                tokio::time::sleep(Duration::from_millis(*interval_ms)).await;
+                let now = modified(path);
+                if now.is_some() && now != seen {
+                    tokio::time::sleep(Duration::from_millis(*interval_ms)).await;
+                    seen = modified(path);
+                    break;
+                }
+            }
+            authenticate(&cli, &client, &sessions).await?;
+        }
+    }
     let out: Value = match &cli.cmd {
         Cmd::Whoami => client.me().await?,
         Cmd::Attest => serde_json::to_value(client.attestation().await?)?,
@@ -627,7 +739,9 @@ async fn main() -> eyre::Result<()> {
                 other => bail!("unknown method {other}: use get, post or delete"),
             }
         }
-        Cmd::Login { .. } | Cmd::Logout | Cmd::Ops(_) => unreachable!("handled above"),
+        Cmd::Login { .. } | Cmd::Logout | Cmd::Ops(_) | Cmd::Dev(_) => {
+            unreachable!("handled above")
+        }
     };
     print(&out)
 }

@@ -176,6 +176,48 @@ struct LocalArgs {
     origins: Vec<String>,
 }
 
+/// `merod-v2 inspect`: what a node's data directory holds (v1's `merodb`),
+/// read offline. Without the storage key it reads the raw layout only (sizes
+/// are sealed sizes); with it, each group's metadata (vote, applied index,
+/// membership) too. Stop the node first: the store is opened for writing.
+#[derive(Debug, Parser)]
+#[command(name = "merod-v2 inspect")]
+struct InspectArgs {
+    #[arg(long)]
+    data_dir: PathBuf,
+    /// The storage key K_r, hex, in a file.
+    #[arg(long)]
+    storage_key_file: Option<PathBuf>,
+}
+
+fn inspect(args: &InspectArgs) -> eyre::Result<()> {
+    let key: [u8; 32] = match &args.storage_key_file {
+        Some(path) => hex::decode(std::fs::read_to_string(path)?.trim())?
+            .try_into()
+            .map_err(|_| eyre::eyre!("the storage key must be 32 bytes"))?,
+        None => [0; 32],
+    };
+    let store = calimero_log::store::store_path(&args.data_dir);
+    if !store.exists() {
+        eyre::bail!("{} holds no node store", args.data_dir.display());
+    }
+    let db = calimero_log::store::Db::open(&args.data_dir, &key)?;
+    let summary = db.summary()?;
+    let mut out = serde_json::to_value(&summary)?;
+    if args.storage_key_file.is_some() {
+        for (group, g) in &summary.groups {
+            for name in &g.meta {
+                let value: Option<serde_json::Value> = db
+                    .get_meta(*group, name)
+                    .map_err(|e| eyre::eyre!("group {group} {name}: {e} (wrong key?)"))?;
+                out["groups"][group.to_string()]["values"][name] = value.unwrap_or_default();
+            }
+        }
+    }
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
 /// `merod-v2 kms disk-key`: fetch the data-disk key (for the boot script).
 #[derive(Debug, Parser)]
 #[command(name = "merod-v2 kms")]
@@ -236,6 +278,9 @@ async fn main() -> eyre::Result<()> {
         .init();
     if is_local {
         return local(LocalArgs::parse_from(std::env::args().skip(1))).await;
+    }
+    if std::env::args().nth(1).as_deref() == Some("inspect") {
+        return inspect(&InspectArgs::parse_from(std::env::args().skip(1)));
     }
     if std::env::args().nth(1).as_deref() == Some("kms") {
         let KmsArgs::DiskKey(cmd) = KmsArgs::parse_from(std::env::args().skip(1));

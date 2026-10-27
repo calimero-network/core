@@ -17,7 +17,7 @@ mero-js `src/cloud-v2/attestation.ts` implements the same check; change both or 
 ## `calimero-cloud` (feature `cli`)
 
 The command line, over the same client: `deploy`, `bundle`, `app`, `call`, `view`,
-`events`, `apikey`, `org`, `ops` (with `--ops-token`), `raw`. Services use an API key
+`events`, `apikey`, `org`, `ops` (with `--ops-token`), `raw`, and `dev watch --path FILE` (v1's `meroctl app watch`: push a `.mpk` or a dev `.wasm` to its apps on every save; `--once` for one push). Services use an API key
 (`CALIMERO_API_KEY`). On a development cluster (`--allow-mock`) `login --dev-passkey FILE`
 signs up or in with a passkey kept in that file; sessions are saved per URL under
 `$XDG_CONFIG_HOME/calimero-cloud/` and refreshed when they expire.

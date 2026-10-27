@@ -275,6 +275,27 @@ impl SnapshotKeys {
 }
 
 /// The node's database, shared by all groups.
+/// [`Db::summary`]: sizes are as stored (sealed).
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreSummary {
+    pub groups: std::collections::BTreeMap<GroupId, GroupSummary>,
+    pub blobs: u64,
+    pub blob_bytes: u64,
+    pub snapshots: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupSummary {
+    pub log_entries: u64,
+    pub log_bytes: u64,
+    pub state_rows: u64,
+    pub state_bytes: u64,
+    /// The metadata rows' names (vote, applied index, membership, ...).
+    pub meta: Vec<String>,
+}
+
 pub struct Db {
     db: Rocks,
     sealer: Sealer,
@@ -517,6 +538,50 @@ impl Db {
         }
         it.status()?;
         Ok(())
+    }
+
+    /// What the store holds, from the raw keys alone (no row is opened):
+    /// per group, its log entries, state rows and metadata names, and the
+    /// blobs. v1's `merodb` read the same from its own columns.
+    pub fn summary(&self) -> eyre::Result<StoreSummary> {
+        let mut out = StoreSummary::default();
+        let group_of = |k: &[u8]| -> Option<GroupId> {
+            Some(GroupId::from_be_bytes(k.get(..8)?.try_into().ok()?))
+        };
+        self.scan(Column::Log, &[], |k, v| {
+            if let Some(g) = group_of(k) {
+                let e = out.groups.entry(g).or_default();
+                e.log_entries += 1;
+                e.log_bytes += v.len() as u64;
+            }
+            Ok(true)
+        })?;
+        self.scan(Column::State, &[], |k, v| {
+            if let Some(g) = group_of(k) {
+                let e = out.groups.entry(g).or_default();
+                e.state_rows += 1;
+                e.state_bytes += (k.len() + v.len()) as u64;
+            }
+            Ok(true)
+        })?;
+        self.scan(Column::Meta, &[], |k, _| {
+            if let Some(g) = group_of(k) {
+                let name = String::from_utf8_lossy(&k[8..]).into_owned();
+                out.groups.entry(g).or_default().meta.push(name);
+            }
+            Ok(true)
+        })?;
+        self.scan(Column::Blobs, &[], |_, v| {
+            out.blobs += 1;
+            out.blob_bytes += v.len() as u64;
+            Ok(true)
+        })?;
+        for entry in std::fs::read_dir(&self.snapshot_dir)?.flatten() {
+            out.snapshots
+                .push(entry.file_name().to_string_lossy().into_owned());
+        }
+        out.snapshots.sort();
+        Ok(out)
     }
 
     /// [`Db::scan`] over a consistent point-in-time view of the state column.

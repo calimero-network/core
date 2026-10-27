@@ -116,6 +116,35 @@ async fn deploy_call_view_and_operate_from_the_command_line() {
         let listed = cli.run(&["app", "list"]).unwrap();
         assert!(listed.to_string().contains(&app));
 
+        // `dev watch --once`: a rebuilt .wasm reaches the app it names.
+        let rebuilt = dir.path().join("kv-rebuilt.wasm");
+        let mut bytes = std::fs::read(&wasm2).unwrap();
+        bytes.extend_from_slice(&[0, 6, 5, b'r', b'e', b'b', b'l', b't']);
+        std::fs::write(&rebuilt, &bytes).unwrap();
+        let before = cli.run(&["app", "get", &app]).unwrap()["bundle"].clone();
+        let pushed = cli
+            .run(&[
+                "dev",
+                "watch",
+                "--path",
+                rebuilt.to_str().unwrap(),
+                "--app",
+                &app,
+                "--dev-passkey",
+                pk,
+                "--once",
+            ])
+            .unwrap();
+        assert_eq!(pushed["upgraded"], serde_json::json!([app]), "{pushed}");
+        let after = cli.run(&["app", "get", &app]).unwrap()["bundle"].clone();
+        assert_ne!(before, after);
+        assert_eq!(after, pushed["pushed"]["bundle"]);
+        assert_eq!(
+            cli.run(&["view", &app, "get", r#"{"key":"a"}"#]).unwrap()["result"],
+            "1",
+            "the app keeps its state across the push"
+        );
+
         // An API key made from the session works on its own.
         let key = cli.run(&["apikey", "create", "--app", &app]).unwrap();
         let key = key["key"].as_str().unwrap().to_owned();
