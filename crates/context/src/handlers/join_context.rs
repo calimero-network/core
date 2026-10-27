@@ -329,9 +329,13 @@ impl Handler<JoinContextRequest> for ContextManager {
                     None
                 };
 
+                let bootstrapped = config.is_some();
                 let _ignored = context_client
                     .sync_context_config(context_id, config)
                     .await?;
+                if bootstrapped {
+                    crate::activation::record_start_release(&datastore, &context_id);
+                }
 
                 {
                     let mut handle = datastore.handle();

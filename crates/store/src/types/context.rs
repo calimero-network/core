@@ -621,6 +621,23 @@ impl PredefinedEntry for key::ContextActivatedStateVersion {
     type DataType<'a> = ContextActivatedStateVersion;
 }
 
+/// Value for [`key::ContextStartBytecode`]: the release blob a joined context
+/// began on, consulted only until the context has an activation marker.
+/// Node-local; a missing row means the context was not recorded at join.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "single marker value; additions would need a migration"
+)]
+pub struct ContextStartBytecode {
+    pub blob: [u8; 32],
+}
+
+impl PredefinedEntry for key::ContextStartBytecode {
+    type Codec = Borsh;
+    type DataType<'a> = ContextStartBytecode;
+}
+
 #[cfg(test)]
 mod warrant_nonce_tests {
     use super::ContextWarrantNonce as W;

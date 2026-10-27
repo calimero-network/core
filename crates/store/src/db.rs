@@ -104,6 +104,11 @@ pub enum Column {
     /// Own column for the same `context_id`-only collision reason as above.
     /// NOT synchronized; auto-created from `Column::iter()` (no DB migration).
     ContextActivatedStateVersion,
+    /// Node-local per-context record of the release a joined context starts on,
+    /// written once at join and read only while no activation marker exists.
+    /// Own column for the same `context_id`-only collision reason as above.
+    /// NOT synchronized; auto-created from `Column::iter()` (no DB migration).
+    ContextStartBytecode,
     /// Node-local per-application breadcrumb of the bytecode blob an in-place
     /// (same-id) bundle install overwrote — the source for the executing-blob
     /// pin above and the L1 downgrade gate's pre-install ABI. Own column: the
