@@ -105,7 +105,7 @@ impl Cursor {
             };
             *buffered = (*buffered).max(out.len() + usize::from(pending.is_some()));
             if order == Ordering::Greater {
-                // `order` is `Greater` only when `pending` is `Some`.
+                // SAFETY: guaranteed by the match above: `order` is `Greater` only when `pending` is `Some`.
                 let (key, value) = pending.take().expect("pending entry");
                 self.last = Some(key.clone());
                 out.push((key, value));
@@ -114,7 +114,7 @@ impl Cursor {
                     // The overlay shadows the committed entry under the same key.
                     pending = None;
                 }
-                // `order` is `Less` or `Equal` only when `overlay_head` is `Some`.
+                // SAFETY: guaranteed by the match above: `order` is `Less` or `Equal` only when `overlay_head` is `Some`.
                 let (key, slot) = overlay_head.take().expect("overlay entry");
                 overlay_head = overlay_side.next();
                 self.last = Some(key.clone());
