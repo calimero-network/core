@@ -1,6 +1,6 @@
 ---
 title: Writing apps for release-v2
-description: What carries over from v1 apps, and what changes — init arguments, identity, organizations, confirmations, limits.
+description: What carries over from v1 apps, and what changes — init arguments, identity, organizations and teams, blobs, search, handlers, xcalls, timers, migrations, confirmations, limits.
 sidebar:
   order: 3
 ---
@@ -37,11 +37,44 @@ repository builds against the `release-v2` SDK and deploys unchanged
 
   `apps/org-gated` in core is a complete example; `TestHost::set_caller_org`
   drives it in unit tests.
+- **Teams are v1's subgroups.** A team is open (whoever reaches its parent, or
+  the organization at the top, is a member) or restricted (its members only),
+  nests and moves, keeps the app's metadata (a folder's name and colour), and
+  each member's row has a role — lead, member or read-only — and v1's
+  capability bits. Deploy an app to a team with
+  `access: { kind: "team", team }`: its members reach it, and a read-only
+  member's calls run but one that would write is refused (`403`). A team they
+  neither reach nor manage is invisible to them. Deleting a team deletes the
+  teams and apps below it.
+- **Devices are passkeys.** `env::account_id()` is the person; each passkey on
+  the account is one of their devices (`POST /auth/passkeys/add/*`, and
+  `/auth/me` names the session's `passkeyId`).
+- **Blobs.** `env::blob_*` work as in v1. A blob belongs to the app that wrote
+  or received it (`POST /apps/{app}/blobs`, `GET /apps/{app}/blobs/{id}`, ids
+  base58 or hex); every node holds it, so announcing one is a no-op.
+- **Search.** `#[derive(app::Searchable)]` and `app::search_indexes!` work as in
+  v1: views query the app's own index, kept up to date from the log before the
+  view runs. A declared `#[app::view]` called as a call runs as a view.
+- **Event handlers and xcalls** run once, after the entry that asked for them,
+  on the app's leader — not once per replica. v1's rules hold: only
+  `#[app::handler]` methods run for an event; an xcall reaches only
+  `#[app::xcall]` entry points (`from_same_app`: the same bundle) of apps in the
+  caller's organization, as the calling app, with `env::xcall_origin()`.
+- **Timers and TEE runs.** The cluster is every app's TEE: `#[app::tee(every =
+  "..")]` methods fire once per period, `tee:` handlers run as the TEE, and
+  `TeeOnly` / `TeeSecret` state works; a member's share opens only in their own
+  calls.
+- **Upgrades.** `POST /apps/{app}/upgrade { bundle }` plans the migration from
+  the two bundles' embedded ABIs as v1 does (`#[app::state(version)]` and
+  `#[app::migrate]`), runs your migration check, and refuses a downgrade or a
+  missing edge. Build bundles with `cargo mero build` so they carry their ABI:
+  handlers, xcall entry points, timers and migrations are read from it.
 - **Confirmations.** Methods listed in `confirmMethods` need a fresh passkey
   assertion over the exact call (`callConfirmed` in the clients).
 - **Ordering.** Calls on one instance are applied in one order, so a write never
   merges with a concurrent one: CRDT collections still work, and plain values do
-  too.
+  too. There are no offline replicas: a client without the cluster cannot write,
+  so v1's "edits made while partitioned" never happen.
 
 ## Limits
 
