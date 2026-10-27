@@ -1,7 +1,7 @@
 //! The node: hosts the system group and its app groups, routes calls to each
 //! group's leader, and talks to peers over attested sealed channels.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use calimero_app_engine_wasmtime::WasmtimeEngine;
 use calimero_app_host::{
-    Budget, Engine as _, HostCore, Invocation, InvocationKind, MethodKind, Prepared, TrapKind,
+    Budget, Engine as _, HostCore, Invocation, InvocationKind, MethodKind, Prepared, TimerCtx,
+    TrapKind,
 };
 
 use calimero_log::{
@@ -22,7 +23,9 @@ use serde_json::{json, Value};
 use tracing::{debug, info, warn};
 use url::Url;
 
-use crate::app::{AppCmd, AppMachine, Applied, CallEntry, Outcome, Status, SysDirectory};
+use crate::app::{
+    AppCmd, AppMachine, Applied, CallEntry, Outcome, Status, SysDirectory, TickEntry,
+};
 use crate::attest::{HttpAttestor, Mode, Policy};
 use crate::error::ApiError;
 use crate::system::{output, SystemCmd, SystemMachine, SystemState};
@@ -188,6 +191,8 @@ pub struct Node {
     /// Per app group: the term this node last led it in, and its execution
     /// counter in that term (`id_seq`, D52).
     id_seqs: Mutex<HashMap<GroupId, (u64, u64)>>,
+    /// App groups whose timer ticks are being run now (one round per app at a time).
+    ticking: Mutex<HashSet<GroupId>>,
     pub transport: Arc<calimero_sealed::SealedTransport>,
     peers: Mutex<HashMap<String, Arc<calimero_sealed::client::SealedTransport>>>,
     http: reqwest::Client,
@@ -335,6 +340,7 @@ impl Node {
             prepared: Mutex::new(HashMap::new()),
             clock,
             id_seqs: Mutex::new(HashMap::new()),
+            ticking: Mutex::new(HashSet::new()),
             transport: sealed,
             peers: Mutex::new(HashMap::new()),
             http: reqwest::Client::builder()
@@ -776,7 +782,7 @@ impl Node {
         &self.wasm
     }
 
-    /// App time: what entry stamps (and, later, timer slots) read (D16, D19).
+    /// App time: what entry stamps and timer slots read (D16, D19, D34).
     #[must_use]
     pub fn app_clock(&self) -> Clock {
         self.clock.clone()
@@ -943,6 +949,139 @@ impl Node {
             return Err(ApiError::conflict("already initialized"));
         }
         serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))
+    }
+
+    /// One round of timer ticks (D34), every [`TIMER_POLL`]: for each app group
+    /// this node leads, a task proposes the due ticks, unless the previous round
+    /// for that app is still running (a slow tick never delays another app).
+    pub fn tick_timers(self: &Arc<Self>) {
+        let led: Vec<(GroupId, Arc<Group<AppMachine>>)> = self
+            .apps
+            .read()
+            .map(|a| {
+                a.iter()
+                    .filter(|(_, g)| g.status().is_leader)
+                    .map(|(id, g)| (*id, Arc::clone(g)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (group, g) in led {
+            let Ok(mut ticking) = self.ticking.lock() else {
+                return;
+            };
+            if !ticking.insert(group) {
+                continue;
+            }
+            drop(ticking);
+            let node = Arc::clone(self);
+            drop(tokio::spawn(async move {
+                node.tick_app(&g).await;
+                if let Ok(mut t) = node.ticking.lock() {
+                    let _was = t.remove(&group);
+                }
+            }));
+        }
+    }
+
+    /// Propose the latest due slot of each of the app's timers not yet applied
+    /// (one catch-up tick for a gap). Nothing runs before the app is initialized.
+    async fn tick_app(&self, g: &Group<AppMachine>) {
+        let Some((app_id, bundle, install, applied)) = g.read_local(|m, _| {
+            let bundle = m.state.bundle.clone().filter(|_| m.state.initialized)?;
+            Some((
+                m.app_id.clone(),
+                bundle,
+                m.state.install_ts_ms,
+                m.state.timers.clone(),
+            ))
+        }) else {
+            return;
+        };
+        let Ok(prepared) = self.prepared_for(&bundle).await else {
+            return;
+        };
+        let now = self.clock.now_ms();
+        for (timer, method) in &prepared.abi.methods {
+            if method.kind != MethodKind::Timer {
+                continue;
+            }
+            let Some(slot) = method
+                .every
+                .and_then(|every| due_slot(install, every, now))
+                .filter(|slot| applied.get(timer).is_none_or(|last| last < slot))
+            else {
+                continue;
+            };
+            if let Err(e) = self.tick(g, &app_id, &prepared, timer, slot).await {
+                debug!(app = %app_id, timer, slot, error = %e, "tick not proposed");
+            }
+        }
+    }
+
+    /// Run `timer` for `slot` on this node, the app group's leader, and log it.
+    /// A tick that times out is not logged (D23): the next poll proposes the
+    /// same slot again, unless a later one is due by then.
+    async fn tick(
+        &self,
+        g: &Group<AppMachine>,
+        app_id: &str,
+        prepared: &Prepared,
+        timer: &str,
+        slot: u64,
+    ) -> Result<(), WriteError> {
+        let _p = g
+            .propose_led(|m, applied, leadership| {
+                if m.tick_applied(timer, slot) {
+                    return Proposal::Reply(Vec::new());
+                }
+                let previous_ms = m.state.timers.get(timer).copied();
+                let ts_ms = self.stamp(m);
+                let (id_term, id_seq) = self.next_id(g.id(), leadership.term, m.state.last_id);
+                let outcome = self.run(
+                    prepared,
+                    app_id,
+                    m.view(),
+                    applied,
+                    Invocation {
+                        kind: InvocationKind::Timer,
+                        method: timer.to_owned(),
+                        args: Vec::new(),
+                        caller: calimero_app_host::Caller::System,
+                        entry_ts_ms: ts_ms,
+                        id_term,
+                        id_seq,
+                        seed: calimero_identity::random::<32>(),
+                        timer: Some(TimerCtx {
+                            scheduled_ms: slot,
+                            previous_ms,
+                        }),
+                    },
+                );
+                if outcome.is_timeout() {
+                    debug!(app = %app_id, timer, slot, "tick timed out; proposed again");
+                    return Proposal::Reply(Vec::new());
+                }
+                let mut entry = TickEntry {
+                    timer: timer.to_owned(),
+                    scheduled_ms: slot,
+                    previous_ms,
+                    ts_ms,
+                    base_index: applied,
+                    id_term,
+                    id_seq,
+                    outcome,
+                };
+                let mut bytes =
+                    serde_json::to_vec(&AppCmd::Tick(Box::new(entry.clone()))).unwrap_or_default();
+                if bytes.len() > calimero_log::MAX_ENTRY_BYTES {
+                    // Too large to log (D50): the tick counts as trapped.
+                    entry.outcome = Outcome::trap(TrapKind::HostDenied, "entry too large");
+                    bytes = serde_json::to_vec(&AppCmd::Tick(Box::new(entry))).unwrap_or_default();
+                }
+                Proposal::Append(bytes)
+            })
+            .await?;
+        Ok(())
     }
 
     /// Run a call on this node, which must be the app group's leader.
@@ -1402,5 +1541,35 @@ impl Node {
             }
         }
         Ok(written)
+    }
+}
+
+/// How often an app group's leader looks for due timer ticks (D34).
+pub const TIMER_POLL: Duration = Duration::from_millis(100);
+
+/// The latest slot of a timer with interval `every`, installed at `install_ms`,
+/// that is due at `now_ms`: `install_ms + k · every` for the largest `k ≥ 1` not
+/// after `now_ms` (D34). Missed slots collapse into this one.
+#[must_use]
+pub fn due_slot(install_ms: u64, every: Duration, now_ms: u64) -> Option<u64> {
+    let every = u64::try_from(every.as_millis()).ok().filter(|e| *e > 0)?;
+    let k = now_ms.checked_sub(install_ms)? / every;
+    (k >= 1).then(|| install_ms + k * every)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_due_slot_is_the_latest_one_aligned_to_the_install_time() {
+        let every = Duration::from_secs(1);
+        assert_eq!(due_slot(10_000, every, 9_000), None, "before install");
+        assert_eq!(due_slot(10_000, every, 10_999), None, "no slot yet");
+        assert_eq!(due_slot(10_000, every, 11_000), Some(11_000));
+        assert_eq!(due_slot(10_000, every, 11_999), Some(11_000));
+        // Five missed slots collapse into the latest one.
+        assert_eq!(due_slot(10_000, every, 16_500), Some(16_000));
+        assert_eq!(due_slot(10_000, Duration::ZERO, 16_500), None);
     }
 }

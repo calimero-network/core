@@ -1104,7 +1104,7 @@ async fn xcalls_reach_only_declared_entry_points_in_the_same_organization() {
     );
 }
 
-#[ignore = "TEE handlers/timers: v1 host path removed; returns per spec D34 (timers, Task 11) and D17 (actions)"]
+#[ignore = "TEE handlers and sealing: v1 host path removed; returns per spec D17 (actions). Timers are D34 (see the timer tests below)"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn tee_handlers_and_timers_run_as_the_apps_tee() {
     let c = Cluster::start(3).await;
@@ -2077,4 +2077,309 @@ async fn upgrades_switch_the_bundle_and_refuse_migrations() {
         strong_view(&alice, &app, "get", json!({ "key": "a" })).await,
         json!("kept")
     );
+}
+
+// ---- Timers (D34). The kv fixture's `beat` ticks every hour of app time; the tests
+// move every node's app clock forward instead of sleeping.
+
+const HOUR: i64 = 3_600_000;
+
+/// One applied `beat` tick: `(scheduled, previous, at)`.
+type BeatRow = (u64, Option<u64>, u64);
+
+impl Cluster {
+    /// Moves the app clock of every running node by `ms`.
+    fn advance_all(&self, ms: i64) {
+        for r in self.nodes.iter().flatten() {
+            r.node.advance_clock(ms);
+        }
+    }
+
+    /// The applied index of `app` on node `i`.
+    fn applied_on(&self, i: usize, app: &str) -> u64 {
+        self.nodes[i]
+            .as_ref()
+            .unwrap()
+            .node
+            .hosted(app)
+            .unwrap()
+            .applied()
+    }
+}
+
+async fn beats(cl: &Client, app: &str) -> Vec<BeatRow> {
+    let v = cl
+        .view(app, "beats", json!({}), Consistency::Strong)
+        .await
+        .unwrap()
+        .result;
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|b| {
+            (
+                as_u64(&b["scheduled"]),
+                b["previous"].as_str().map(|p| p.parse().unwrap()),
+                as_u64(&b["at"]),
+            )
+        })
+        .collect()
+}
+
+/// Waits (up to `secs`) until `beats` has `n` rows.
+async fn beats_reach(cl: &Client, app: &str, n: usize, secs: u64) -> Vec<BeatRow> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    loop {
+        if let Ok(v) = cl.view(app, "beats", json!({}), Consistency::Strong).await {
+            if v.result.as_array().is_some_and(|a| a.len() >= n) {
+                return beats(cl, app).await;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "beats never reached {n}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Waits until node `i` has applied past `index` for `app`.
+async fn applied_past(c: &Cluster, i: usize, app: &str, index: u64) {
+    for _ in 0..100 {
+        if c.applied_on(i, app) > index {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("node {i} never applied past {index}");
+}
+
+fn slots(rows: &[BeatRow]) -> Vec<u64> {
+    rows.iter().map(|r| r.0).collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ticks_run_once_per_slot() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    for k in 1..=5 {
+        c.advance_all(HOUR);
+        let _rows = beats_reach(&alice, &app, k, 10).await;
+    }
+    // No slot runs twice, however long the leader keeps polling.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let rows = beats(&alice, &app).await;
+    assert_eq!(rows.len(), 5, "{rows:?}");
+    assert_eq!(rows[0].1, None, "the first tick has no previous");
+    for w in rows.windows(2) {
+        assert_eq!(
+            w[1].0,
+            w[0].0 + HOUR as u64,
+            "slots are an hour apart: {rows:?}"
+        );
+        assert_eq!(w[1].1, Some(w[0].0), "previous is the prior slot: {rows:?}");
+    }
+    for (scheduled, _, at) in &rows {
+        assert!(at >= scheduled, "a tick ran before its slot: {rows:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn advancing_the_app_clock_runs_the_due_slot_within_a_second() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let before = c.nodes[0].as_ref().unwrap().node.app_clock().now_ms();
+    c.advance_all(10 * HOUR);
+    let started = std::time::Instant::now();
+    let rows = beats_reach(&alice, &app, 1, 5).await;
+    let took = started.elapsed();
+    assert!(took < Duration::from_millis(1200), "took {took:?}");
+    // The latest due slot, one tick (no burst of ten).
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].0 > before + 9 * HOUR as u64, "{rows:?}");
+    assert_eq!(rows[0].1, None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_tick_runs_once_across_failover() {
+    let mut c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let leader = c.app_leader(&app).unwrap();
+    let group = c.nodes[leader].as_ref().unwrap().node.hosted(&app).unwrap();
+    let last = group.status().last_log.unwrap_or(0);
+    let mut offset = HOUR;
+    c.advance_all(HOUR);
+    // Kill the leader as soon as it has proposed the tick (its log grew).
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while group.status().last_log.unwrap_or(0) <= last {
+        assert!(std::time::Instant::now() < deadline, "no tick proposed");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    drop(group);
+    c.stop(leader).await;
+
+    // A new leader takes over and ticks the next slot.
+    let other = (0..3).find(|i| *i != leader).unwrap();
+    let cl = c.client(other);
+    let _s = cl.sign_in(&mut pk).await.unwrap();
+    for _ in 0..100 {
+        if c.app_leader(&app).is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    offset += HOUR;
+    c.advance_all(HOUR);
+    let second = c.nodes[other].as_ref().unwrap().node.app_clock().now_ms();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let rows = loop {
+        let rows = beats(&cl, &app).await;
+        if rows.iter().any(|r| r.2 >= second) {
+            break rows;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no tick after failover: {rows:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    // The old leader returns as a follower; nothing runs twice.
+    c.restart(leader, |cfg| cfg.clock_offset_ms = offset).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let rows = {
+        let later = beats(&cl, &app).await;
+        assert!(later.len() >= rows.len());
+        later
+    };
+    let mut seen = slots(&rows);
+    seen.dedup();
+    assert_eq!(seen.len(), rows.len(), "a slot ran twice: {rows:?}");
+    let mut sorted = slots(&rows);
+    sorted.sort_unstable();
+    assert_eq!(sorted, slots(&rows), "slots out of order: {rows:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn missed_ticks_collapse_into_one() {
+    let mut c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    c.advance_all(HOUR);
+    let first = beats_reach(&alice, &app, 1, 10).await;
+
+    // No leader for five slots: stop the app's leader and one more node.
+    let leader = c.app_leader(&app).unwrap();
+    let survivor = (0..3).find(|i| *i != leader).unwrap();
+    let down: Vec<usize> = (0..3).filter(|i| *i != survivor).collect();
+    for i in &down {
+        c.stop(*i).await;
+    }
+    c.advance_all(5 * HOUR);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    for i in &down {
+        c.restart(*i, |cfg| cfg.clock_offset_ms = 6 * HOUR).await;
+    }
+    let cl = c.client(survivor);
+    let _s = cl.sign_in(&mut pk).await.unwrap();
+    let rows = beats_reach(&cl, &app, 2, 20).await;
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let rows_later = beats(&cl, &app).await;
+    assert_eq!(
+        rows_later, rows,
+        "more than one tick for the gap: {rows_later:?}"
+    );
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(
+        rows[1].1,
+        Some(first[0].0),
+        "previous is the last applied slot"
+    );
+    assert!(
+        rows[1].0 >= first[0].0 + 4 * HOUR as u64,
+        "the catch-up tick is for the latest missed slot: {rows:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_failing_tick_counts_as_applied() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    c.advance_all(HOUR);
+    let first = beats_reach(&alice, &app, 1, 10).await;
+    // The next two slots fail (the beat returns an AppError).
+    let _r = alice
+        .call(&app, "failBeats", json!({ "n": 2 }), None)
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        let leader = c.app_leader(&app).unwrap();
+        let at = c.applied_on(leader, &app);
+        c.advance_all(HOUR);
+        // The failed tick is logged like any call.
+        applied_past(&c, leader, &app, at).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(beats(&alice, &app).await.len(), 1, "a failed tick wrote");
+    }
+    c.advance_all(HOUR);
+    let rows = beats_reach(&alice, &app, 2, 10).await;
+    assert_eq!(rows[1].0, first[0].0 + 3 * HOUR as u64, "{rows:?}");
+    assert_eq!(
+        rows[1].1,
+        Some(first[0].0 + 2 * HOUR as u64),
+        "previous is the failed slot, not the last one that wrote: {rows:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_timed_out_tick_is_not_logged_and_its_slot_runs_again() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.budget = Some(calimero_app_host::Budget {
+            fuel: u64::MAX,
+            wall_clock: Duration::from_millis(300),
+            ..calimero_app_host::Budget::call()
+        });
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    // Ticks whose entry time is within the next hour and 1.5 s spin past the deadline.
+    let stall = alice
+        .call(
+            &app,
+            "stallBeats",
+            json!({ "ms": (HOUR + 1500).to_string() }),
+            None,
+        )
+        .await
+        .unwrap();
+    let until = as_u64(&stall.result);
+    let leader = c.app_leader(&app).unwrap();
+    let at = c.applied_on(leader, &app);
+    c.advance_all(HOUR);
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(
+        c.applied_on(leader, &app),
+        at,
+        "a timed-out tick was logged"
+    );
+    assert!(beats(&alice, &app).await.is_empty());
+    let rows = beats_reach(&alice, &app, 1, 10).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let rows_later = beats(&alice, &app).await;
+    assert_eq!(rows_later, rows, "{rows_later:?}");
+    let (scheduled, previous, ran_at) = rows[0];
+    assert_eq!(previous, None);
+    // The slot that timed out ran again, after the stall: same slot, later entry time.
+    assert!(scheduled < until, "{rows:?} until {until}");
+    assert!(ran_at >= until, "{rows:?} until {until}");
 }

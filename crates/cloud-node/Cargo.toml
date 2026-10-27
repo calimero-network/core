@@ -48,6 +48,8 @@ testing = []
 
 [dev-dependencies]
 calimero-app-build.workspace = true
+# Itself with `testing`, so the cluster tests can move app time (`Node::advance_clock`).
+calimero-cloud-node = { workspace = true, features = ["testing"] }
 calimero-cloud-client = { workspace = true, features = ["testing"] }
 calimero-identity = { workspace = true, features = ["testing"] }
 tempfile.workspace = true

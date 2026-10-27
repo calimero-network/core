@@ -183,6 +183,26 @@ pub struct CallEntry {
     pub outcome: Outcome,
 }
 
+/// A timer tick as recorded in the log (D34).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TickEntry {
+    /// The timer method's ABI name.
+    pub timer: String,
+    /// The slot: `install_ts_ms + k · interval`.
+    pub scheduled_ms: u64,
+    /// The timer's last applied slot when the leader ran the tick.
+    #[serde(default)]
+    pub previous_ms: Option<u64>,
+    /// The entry timestamp (app clock, D16), at or after the slot.
+    pub ts_ms: u64,
+    pub base_index: u64,
+    /// The ids the tick ran with (D52), as for a call.
+    pub id_term: u64,
+    pub id_seq: u64,
+    pub outcome: Outcome,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum AppCmd {
@@ -197,6 +217,11 @@ pub enum AppCmd {
         outcome: Box<Outcome>,
     },
     Call(Box<CallEntry>),
+    /// A timer tick (D34), run by the leader as `System` for the slot
+    /// `scheduled_ms`. Applied only if that slot is later than the timer's last
+    /// applied one; then recorded whatever its status (a failed tick counts as
+    /// applied). A tick that timed out is never proposed.
+    Tick(Box<TickEntry>),
     /// Switch to a new bundle, code only (migrations are rebuilds, D38, not in
     /// this milestone).
     Upgrade {
@@ -289,6 +314,12 @@ pub struct AppState {
     /// restart continues after it instead of reusing an id.
     #[serde(default)]
     pub last_id: (u64, u64),
+    /// The timestamp of the applied `init` entry: timer slots are aligned to it (D34).
+    #[serde(default)]
+    pub install_ts_ms: u64,
+    /// Each timer's last applied slot (D34), a host record (D39).
+    #[serde(default)]
+    pub timers: BTreeMap<String, u64>,
     /// Host records, never in `kv` (D39).
     #[serde(default)]
     idempotency: BTreeMap<String, IdemRecord>,
@@ -414,6 +445,40 @@ impl AppMachine {
         self.state.idempotency_order.push_back((index, id));
     }
 
+    /// Whether `slot` of `timer` was already applied.
+    #[must_use]
+    pub fn tick_applied(&self, timer: &str, slot: u64) -> bool {
+        self.state
+            .timers
+            .get(timer)
+            .is_some_and(|last| *last >= slot)
+    }
+
+    /// A tick for a slot at or before the timer's last applied one changes
+    /// nothing (two leaders around a failover proposed it); any other is applied
+    /// like a call and its slot recorded, whatever its status (D34).
+    fn apply_tick(&mut self, index: u64, tick: &TickEntry) -> Applied {
+        if self.tick_applied(&tick.timer, tick.scheduled_ms) {
+            return Applied {
+                index,
+                status: Status::Trap,
+                result: Value::Null,
+                error: json!({ "kind": "Conflict", "detail": "slot already applied" }),
+                events: Vec::new(),
+                conflict: true,
+                timeout: false,
+            };
+        }
+        let a = self.apply_outcome(index, tick.base_index, tick.ts_ms, &tick.outcome, None);
+        if !a.conflict {
+            let _prev = self
+                .state
+                .timers
+                .insert(tick.timer.clone(), tick.scheduled_ms);
+        }
+        a
+    }
+
     fn note_id(&mut self, term: u64, seq: u64) {
         self.state.last_id = self.state.last_id.max((term, seq));
     }
@@ -447,6 +512,7 @@ impl Machine for AppMachine {
                 id_term, id_seq, ..
             }) => self.note_id(*id_term, *id_seq),
             Ok(AppCmd::Call(call)) => self.note_id(call.id_term, call.id_seq),
+            Ok(AppCmd::Tick(tick)) => self.note_id(tick.id_term, tick.id_seq),
             _ => {}
         }
         let applied = match cmd {
@@ -460,6 +526,7 @@ impl Machine for AppMachine {
                 let a = self.apply_outcome(index, base_index, ts_ms, &outcome, None);
                 if !a.conflict {
                     self.state.bundle = Some(bundle);
+                    self.state.install_ts_ms = ts_ms;
                     self.state.initialized = outcome.status == Status::Ok;
                     if !self.state.initialized {
                         self.state.init_error = Some(json!({
@@ -490,6 +557,7 @@ impl Machine for AppMachine {
                 }
                 a
             }
+            Ok(AppCmd::Tick(tick)) => self.apply_tick(index, &tick),
             Err(e) => Applied {
                 index,
                 status: Status::Trap,
@@ -621,6 +689,61 @@ mod tests {
             },
         })))
         .unwrap()
+    }
+
+    fn tick(base: u64, slot: u64, status: Status, diff: Vec<Write>) -> Vec<u8> {
+        serde_json::to_vec(&AppCmd::Tick(Box::new(TickEntry {
+            timer: "beat".into(),
+            scheduled_ms: slot,
+            previous_ms: None,
+            ts_ms: slot,
+            base_index: base,
+            id_term: 1,
+            id_seq: slot,
+            outcome: Outcome {
+                status,
+                diff,
+                ..Outcome::default()
+            },
+        })))
+        .unwrap()
+    }
+
+    fn applied(out: &[u8]) -> Applied {
+        serde_json::from_slice(out).unwrap()
+    }
+
+    #[test]
+    fn a_tick_for_a_slot_already_applied_changes_nothing() {
+        let mut m = AppMachine::new("app".into());
+        let w = || {
+            vec![Write {
+                key: Bytes(b"k".to_vec()),
+                value: Some(Bytes(b"v".to_vec())),
+            }]
+        };
+        assert!(!applied(&m.apply(1, &tick(0, 2000, Status::Ok, w()))).conflict);
+        assert_eq!(m.state.timers["beat"], 2000);
+        // The same slot again (a second leader's proposal), and an older one.
+        let _gone = Arc::make_mut(&mut m.state.kv).remove(b"k".as_slice());
+        assert!(applied(&m.apply(2, &tick(1, 2000, Status::Ok, w()))).conflict);
+        assert!(applied(&m.apply(3, &tick(2, 1000, Status::Ok, w()))).conflict);
+        assert!(m.view().get(b"k").is_none(), "an applied slot ran again");
+        assert_eq!(m.state.timers["beat"], 2000);
+    }
+
+    #[test]
+    fn a_failed_tick_counts_as_applied_and_a_conflicted_one_does_not() {
+        let mut m = AppMachine::new("app".into());
+        let failed = applied(&m.apply(1, &tick(0, 1000, Status::AppError, Vec::new())));
+        assert_eq!(failed.status, Status::AppError);
+        assert_eq!(
+            m.state.timers["beat"], 1000,
+            "a failed tick counts as applied"
+        );
+        // Built on a state that is no longer current: not applied, the slot stays due.
+        assert!(applied(&m.apply(2, &tick(0, 2000, Status::Ok, Vec::new()))).conflict);
+        assert_eq!(m.state.timers["beat"], 1000);
     }
 
     #[test]

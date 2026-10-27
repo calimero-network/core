@@ -1347,6 +1347,7 @@ dependencies = [
  "calimero-app-engine-wasmtime",
  "calimero-app-host",
  "calimero-cloud-client",
+ "calimero-cloud-node",
  "calimero-identity",
  "calimero-log",
  "calimero-sealed",

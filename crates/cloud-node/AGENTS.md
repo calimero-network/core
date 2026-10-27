@@ -19,7 +19,8 @@ architecture spec.
   the old version. Calls run inside `Group::propose_led` (serialized per app, on the
   machine's read lock, so the diff is built on exactly the state it applies to); views
   run outside the lock on a blocking thread (`spawn_blocking`). Host records
-  (idempotency, `last_ts_ms`, `last_id`) are `AppState` fields, never keys in `kv`.
+  (idempotency, `last_ts_ms`, `last_id`, `install_ts_ms`, `timers`) are `AppState`
+  fields, never keys in `kv`.
 - **Outcomes and statuses** (spec section 5, D23, D36): `Ok` → 200; `AppError` →
   `422 APP_ERROR` with `details.{code, fields}`; `Trap` → `422 TRAP` with
   `details.{kind, detail}` (`OutOfFuel`, `OutOfMemory`, `StackOverflow`, `Fault`,
@@ -40,18 +41,36 @@ architecture spec.
   by `prepare`. `confirmMethods` on `POST /apps` is ignored.
 - **Time** (`Node::app_clock`, D16, D19): app time is the host clock plus a shared
   offset (`Config.clock_offset_ms`; `Node::advance_clock` under feature `testing`).
-  It stamps entries (`max(last_ts_ms + 1, app now)`) and, later, timer slots; nothing
-  else. Sessions, tokens, challenges and API keys use `types::now_*`; Raft timers use
-  `Instant`. A view sees `last_ts_ms`, the last applied entry's time.
+  It stamps entries (`max(last_ts_ms + 1, app now)`) and decides which timer slots
+  are due; nothing else. Sessions, tokens, challenges and API keys use
+  `types::now_*`; Raft timers use `Instant`. A view sees `last_ts_ms`, the last
+  applied entry's time.
 - **Unique ids** (D52, Ruling 29): `id_term` is the term the leadership check that
   admitted the proposal found (`calimero_log::Leadership`, read from the Raft core),
   `id_seq` this node's per-term counter (`Node::next_id`), bumped for every execution
-  including conflicted re-runs. Both are logged with every call and `init`, and
-  `AppState::last_id` keeps the highest pair applied (conflicted entries included).
+  including conflicted re-runs. Both are logged with every call, tick and `init`,
+  and `AppState::last_id` keeps the highest pair applied (conflicted entries included).
   `propose_led` applies the leader's whole log before building, and the counter
   continues from `max(memory, last_id)`: a node restored as leader of the same term
   (openraft does this without an election, e.g. a one-replica group) never reissues
   an id.
+- **Timers** (D34): `lib.rs` polls every `node::TIMER_POLL` (100 ms);
+  `Node::tick_timers` spawns one round per app group this node leads (at most one
+  at a time per app). A round reads the ABI's `every` methods and, for each,
+  `node::due_slot`: the latest `install_ts_ms + k · interval` (k ≥ 1) at or before
+  `app_clock()`, where `install_ts_ms` is the applied `init` entry's timestamp. If
+  it is later than the timer's applied slot (`AppState::timers`, a host record), the
+  leader runs it inside `propose_led` as `Caller::System` with `TimerCtx {
+  scheduled, previous }` and logs `AppCmd::Tick` (slot, previous, stamp, ids,
+  outcome). `apply` ignores a tick at or before the timer's applied slot (two
+  leaders around a failover) and otherwise records the slot whatever the status:
+  a tick that traps or returns an AppError counts as applied. A tick that times out
+  is not logged, so the next poll proposes the same slot (or a later one, if one is
+  due by then). Missed slots (no leader, a frozen clock) collapse into one tick for
+  the latest; the app sees the gap through `previous`. Nothing ticks before `init`
+  succeeded. Tests move app time with `Node::advance_clock` (feature `testing`,
+  enabled for the crate's own tests through its dev-dependency on itself); the kv
+  fixture's `beat` ticks hourly so other tests see no ticks.
 - **Idempotency** (D16): records live for the last `IDEMPOTENCY_ENTRIES` (100,000)
   entries of the app, by log index, not wall time.
 - **Identity inside the app**: the host core asks `app::SysDirectory`, which reads
@@ -97,8 +116,9 @@ architecture spec.
   lists only the events its caller is in the audience of.
 - **Removed with the wasmer path** (D15, S4): private storage, shared-storage
   writer rotation, in-place migrations. **Deferred** (out of this milestone): blobs
-  (R8), search (R2), xcall (D25), event handlers and TEE runs (D17 actions), timers
-  (D34, Task 11). Their cluster tests are `#[ignore]`d with the spec reference.
+  (R8), search (R2), xcall (D25), event handlers and TEE runs (D17 actions; the v1
+  TEE timers are replaced by D34 timers). Their cluster tests are `#[ignore]`d with
+  the spec reference. Migrations, so pausing ticks during one (D38), are not here.
 - **Devices**: a person is their account, and each passkey is a device: the
   session names the one it was opened with (`SessionClaims::passkey`,
   `passkeyId` in `/auth/me`); `auth/passkeys/add` adds one.

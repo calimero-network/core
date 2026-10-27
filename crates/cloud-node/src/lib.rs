@@ -115,6 +115,20 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
     }));
 
+    // Timer ticks (D34) of the app groups this node leads.
+    let weak = Arc::downgrade(&node);
+    let stop = shutdown.clone();
+    drop(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = tokio::time::sleep(node::TIMER_POLL) => {}
+            }
+            let Some(node) = weak.upgrade() else { return };
+            node.tick_timers();
+        }
+    }));
+
     // Encrypted snapshots to object storage.
     if node.config.backup_dir.is_some() {
         let weak = Arc::downgrade(&node);
