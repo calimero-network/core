@@ -1449,6 +1449,7 @@ impl ScopeState {
             revoked_devices: self.revoked_devices.clone(),
             descoped_devices: self.descoped_devices(),
             device_link_epochs: self.device_scope_epoch.clone(),
+            namespace_departed: self.namespace_left.keys().copied().collect(),
             tee_authoring_policy: self
                 .tee_authoring_policy
                 .as_ref()

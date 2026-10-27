@@ -708,7 +708,7 @@ impl<'a> MembershipRepository<'a> {
     }
 
     /// Whether `identity` is an admin of `group_id`: an `Admin` row, the creator slot
-    /// while the creator is still in the workspace, or - for a folder with neither - the
+    /// unless the creator has left or been removed from the workspace, or - for a folder with neither - the
     /// lowest-account `Member` or `Admin` row.
     pub fn is_admin(&self, group_id: &ContextGroupId, identity: &AccountId) -> EyreResult<bool> {
         if self.is_explicit_admin(group_id, identity)? {
@@ -738,7 +738,7 @@ impl<'a> MembershipRepository<'a> {
         Ok(lowest == Some(identity))
     }
 
-    /// An `Admin` row, or the creator slot while the creator is still in the workspace.
+    /// An `Admin` row, or the creator slot unless the creator has left or been removed from the workspace.
     pub(crate) fn is_explicit_admin(
         &self,
         group_id: &ContextGroupId,
@@ -754,7 +754,12 @@ impl<'a> MembershipRepository<'a> {
             return Ok(false);
         }
         let root = NamespaceRepository::new(self.store).resolve(group_id)?;
-        Ok(root == *group_id || self.role_of(&root, identity)?.is_some())
+        if root == *group_id || self.role_of(&root, identity)?.is_some() {
+            return Ok(true);
+        }
+        Ok(ReentryRepository::new(self.store)
+            .block_of(&root, identity)?
+            .is_none())
     }
 
     pub fn require_admin(&self, group_id: &ContextGroupId, identity: &AccountId) -> EyreResult<()> {

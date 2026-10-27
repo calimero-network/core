@@ -76,6 +76,9 @@ pub struct AclView {
     /// later op changes it, and it is readable at the namespace scope, so a
     /// node outside a Restricted subgroup can tell who may open it (#4522).
     pub group_creator: BTreeMap<ContextGroupId, AccountId>,
+    /// Accounts with a leave or removal from the scope's root group on record. One that
+    /// holds no root row is no longer in the workspace, and its creator slot is void.
+    pub namespace_departed: BTreeSet<AccountId>,
     /// Each account's **resolved** root key at the cut (the account plane).
     ///
     /// Derived by the projection by walking the account's handoff chain, so
@@ -237,7 +240,7 @@ impl AclView {
     }
 
     /// Is `author` an `Admin` of `group` at the cut? An `Admin` row, the creator slot
-    /// while the creator is still in the workspace, or - for a folder with neither - the
+    /// unless the creator left the workspace, or - for a folder with neither - the
     /// lowest-account `Member` or `Admin` row.
     #[must_use]
     pub fn is_group_admin(&self, author: &AccountId, group: ContextGroupId) -> bool {
@@ -268,15 +271,17 @@ impl AclView {
     }
 
     /// Does `author` hold `group`'s creator admin slot? Outside the root group the slot
-    /// counts only while `author` is still a member of the workspace root.
+    /// is void once `author` has left or been removed from the workspace root.
     #[must_use]
     pub fn holds_creator_slot(&self, author: &AccountId, group: ContextGroupId) -> bool {
         if self.group_admin.get(&group) != Some(author) {
             return false;
         }
+        if !self.namespace_departed.contains(author) {
+            return true;
+        }
         let root = self.group_and_ancestors(group).last().unwrap_or(group);
         root == group
-            || self.is_root_admin(author)
             || self
                 .groups
                 .get(&root)

@@ -1,5 +1,5 @@
-//! Who is an admin of a group: an `Admin` row, the creator slot while the creator is
-//! still in the workspace, and for a folder with neither its lowest member.
+//! Who is an admin of a group: an `Admin` row, the creator slot unless the creator has
+//! left the workspace, and for a folder with neither its lowest member.
 
 use std::collections::BTreeMap;
 
@@ -50,14 +50,27 @@ fn view(
     }
 }
 
-#[test]
-fn a_creator_outside_the_workspace_holds_no_admin_slot() {
-    let creator = account(0x10);
-    let inside = view(creator, &[(creator, GroupMemberRole::Member)], &[]);
-    let outside = view(creator, &[], &[]);
+/// [`view`] with `creator` on record as having left the workspace.
+fn departed_view(
+    creator: AccountId,
+    root_rows: &[(AccountId, GroupMemberRole)],
+    folder_rows: &[(AccountId, GroupMemberRole)],
+) -> AclView {
+    let mut v = view(creator, root_rows, folder_rows);
+    let _ = v.namespace_departed.insert(creator);
+    v
+}
 
-    assert!(inside.is_group_admin(&creator, folder()));
-    assert!(!outside.is_group_admin(&creator, folder()));
+#[test]
+fn a_creator_who_left_the_workspace_holds_no_admin_slot() {
+    let creator = account(0x10);
+    let rejoined = departed_view(creator, &[(creator, GroupMemberRole::Member)], &[]);
+    let departed = departed_view(creator, &[], &[]);
+    let never_joined = view(creator, &[], &[]);
+
+    assert!(rejoined.is_group_admin(&creator, folder()));
+    assert!(!departed.is_group_admin(&creator, folder()));
+    assert!(never_joined.is_group_admin(&creator, folder()));
 }
 
 #[test]
@@ -78,7 +91,7 @@ fn a_folder_left_without_an_admin_is_run_by_its_lowest_account() {
         (account(0x05), GroupMemberRole::ReadOnly),
         (account(0x06), GroupMemberRole::ReadOnlyTee),
     ];
-    let v = view(creator, &[], &rows);
+    let v = departed_view(creator, &[], &rows);
 
     assert!(v.is_group_admin(&account(0x40), folder()));
     assert!(!v.is_group_admin(&account(0x90), folder()));
@@ -93,20 +106,16 @@ fn a_folder_with_an_admin_has_no_stand_in() {
         (account(0x90), GroupMemberRole::Admin),
         (account(0x40), GroupMemberRole::Member),
     ];
-    let v = view(creator, &[], &rows);
+    let v = departed_view(creator, &[], &rows);
 
     assert!(v.is_group_admin(&account(0x90), folder()));
     assert!(!v.is_group_admin(&account(0x40), folder()));
 }
 
 #[test]
-fn a_folder_whose_creator_is_still_in_the_workspace_has_no_stand_in() {
+fn a_folder_whose_creator_never_left_has_no_stand_in() {
     let creator = account(0x90);
-    let v = view(
-        creator,
-        &[(creator, GroupMemberRole::Member)],
-        &[(account(0x40), GroupMemberRole::Member)],
-    );
+    let v = view(creator, &[], &[(account(0x40), GroupMemberRole::Member)]);
 
     assert!(v.is_group_admin(&creator, folder()));
     assert!(!v.is_group_admin(&account(0x40), folder()));
