@@ -53,7 +53,6 @@ refuses a larger command (`WriteError::TooLarge`) before anything is appended.
   ]}
   steps={[
     { from: 0, to: 0, label: 'take the group\'s propose lock' },
-    { from: 0, to: 1, label: 'confirm leadership (heartbeat quorum)' },
     { from: 0, to: 0, label: 'read applied state at index n; run the call' },
     { from: 0, to: 1, label: 'append entry n+1 { base_index: n, outcome }', color: '#a5ff11' },
     { from: 0, to: 2, label: 'append entry n+1', color: '#a5ff11' },
@@ -64,18 +63,35 @@ refuses a larger command (`WriteError::TooLarge`) before anything is appended.
   ]}
 />
 
-`Group::propose` serializes proposals on a group behind one lock and confirms
-the node still leads (openraft's `ensure_linearizable`) before it hands the
-builder the applied state. So the state a call runs against is exactly the
-state its entry will apply to — unless leadership changed in between.
+`Group::propose` serializes proposals on a group behind one lock and hands the
+builder the applied state, on a node that believes it leads (its Raft metrics
+say so; otherwise openraft's core answers, refusing a follower at once). It
+does not first confirm leadership with a majority: the entry's own replication
+does that, and `base_index` makes a stale build harmless.
 
-That is what `base_index` guards. `apply` compares the entry's `base_index`
-with the last index the machine applied. If they differ, a new leader's entries
-came in between and the diff was computed against replaced state: the entry
-applies as a no-op with `conflict: true`, records no idempotency key, and the
-node that proposed it runs the call again (`Node::call` loops). A client that
-gets `503` for a conflict that could not be resolved retries with the same
-idempotency key.
+`apply` compares the entry's `base_index` with the index of the last entry the
+machine applied. If they differ, other entries came in between (a new leader's,
+or a write that was not yet applied when the call ran) and the diff was computed
+against replaced state: the entry applies as a no-op with `conflict: true`,
+records no idempotency key, and the node that proposed it runs the call again
+(`Node::call` loops). A client that gets `503` for a conflict that could not be
+resolved retries with the same idempotency key.
+
+So a leader that has lost its majority without knowing it may still run a call
+on old state and append it, and nothing wrong follows. Either `client_write`
+answers `NotLeader`, or the entry never commits (the new leader's log replaces
+it), or the next leader had received it and commits it: then, if anything the
+build did not see was applied ahead of it, it applies as the no-op above.
+Regression:
+`a_stale_build_by_a_deposed_leader_never_applies` in `crates/log/tests/cluster.rs`.
+
+A proposal that answers without appending (`Proposal::Reply`: an idempotent
+replay, a follow-up already run, a read-only member's refused write) is a read,
+so it is confirmed: the leader runs a read-index round (openraft's
+`ensure_linearizable`) before answering, and builds again on the confirmed
+state if entries committed in between. Only a machine that checks the base
+it was built on may use `propose`; the system group's commands are built on no
+state (`Group::write`) and `apply` judges them.
 
 Followers never run WASM for an entry. They write the diff's keys into the
 app's state, append the events to the app's event ring, queue the follow-ups,

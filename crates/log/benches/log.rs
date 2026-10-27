@@ -134,9 +134,8 @@ impl Cluster {
 }
 
 async fn propose(group: &Group<Rows>) {
-    let cmd = vec![0xAB_u8; COMMAND_BYTES];
     let _ = group
-        .propose(|_m, _applied| Proposal::Append(cmd))
+        .propose(|_m, _applied| Proposal::Append(vec![0xAB_u8; COMMAND_BYTES]))
         .await
         .expect("the leader appends");
 }

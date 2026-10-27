@@ -123,8 +123,11 @@ is its command line.
   client key get a node key (`node:…`, kept 10 min) first, so a retry replays a call
   that did commit. System-log forwards keep the long timeout: some system commands
   are not idempotent yet. Regression: merobox `workflow-examples/cloud-v2/frozen-leader.yml`.
-- **Leader races**: a call whose diff was built on replaced state applies as a no-op
-  (`conflict`, no idempotency record); `Node::call` re-runs it instead of failing.
+- **Leader races**: `Group::propose` takes no leadership round before a call's
+  append, so a deposed leader may run a call on stale state; its entry never
+  commits, or commits as a no-op (`base_index` ≠ the last applied entry:
+  `conflict`, no idempotency record), and `Node::call` re-runs it instead of
+  failing. Replies without an append (idempotent replays) are confirmed first.
 - **Upgrades plan their migration from the ABIs** (`services::plan_upgrade`, v1's
   `plan_upgrade`): without a named `migrate`, an upgrade one state version up runs
   the target's `#[app::migrate]` edge; a downgrade, a jump or a missing edge is

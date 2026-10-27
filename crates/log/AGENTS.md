@@ -4,8 +4,14 @@ Replicated log for the cloud-only (release-v2) architecture: one Raft group per
 app instance plus a system group per cluster, on [openraft](https://docs.rs/openraft) 0.9.
 
 - `Engine` hosts every group of one node; `Group<M>` is one group with state machine `M: Machine`.
-- `Group::propose` serializes proposals per group and confirms leadership, so a
-  command built from the applied state applies to exactly that state.
+- `Group::propose` serializes proposals per group and builds on the applied state
+  without a majority round first (its metrics say it leads, or openraft's core
+  refuses a follower at once). The machine must refuse at apply a command built
+  on other state (the node's `AppMachine` checks `base_index` and answers
+  `conflict`), so a deposed leader's stale build commits as a no-op or not at all. A `Reply` is a read: it is confirmed with
+  `ensure_linearizable` and built again if entries committed meanwhile, so the
+  builder may run twice (`FnMut`). Regression:
+  `a_stale_build_by_a_deposed_leader_never_applies`.
 - Storage (`store.rs`): one RocksDB per node (`<data-dir>/store`), opened with
   `tuning`'s column and table options (moved from v1's `calimero-store-rocksdb`) (one bounded block cache,
   `BLOCK_CACHE_BYTES`). Column families `log`, `meta`, `state`, `blobs`. Every value
@@ -39,5 +45,5 @@ the redb migration (`migration_tests.rs`).
 Bench: `cargo bench -p calimero-log --bench log` (`benches/log.rs`): a proposal
 appended, committed and applied on one group, on 1 node and on a 3-node group
 over the in-memory transport, 1 and 64 in flight (64 only queue behind the
-propose lock); and one RocksDB write synced and unsynced on the same disk, the
+propose lock; an append takes no leadership round); and one RocksDB write synced and unsynced on the same disk, the
 unit a commit's latency is made of.

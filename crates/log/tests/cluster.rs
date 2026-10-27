@@ -41,6 +41,8 @@ impl Machine for Kv {
 struct Net {
     engines: RwLock<HashMap<NodeId, Arc<Engine>>>,
     down: Mutex<BTreeSet<NodeId>>,
+    /// Nodes whose requests arrive but whose answers are lost.
+    deaf: Mutex<BTreeSet<NodeId>>,
 }
 
 struct Wire(Arc<Net>, NodeId);
@@ -61,10 +63,14 @@ impl Transport for Wire {
                 return Err("down".into());
             }
             let engine = net.engines.read().unwrap().get(&target).cloned();
-            match engine {
-                Some(e) => Ok(e.handle_rpc(group, request).await),
-                None => Err("no such node".into()),
+            let answer = match engine {
+                Some(e) => e.handle_rpc(group, request).await,
+                None => return Err("no such node".into()),
+            };
+            if net.deaf.lock().unwrap().contains(&me) {
+                return Err("answer lost".into());
             }
+            Ok(answer)
         })
     }
 }
@@ -137,7 +143,7 @@ async fn put(c: &Cluster, key: &str, value: &str) -> u64 {
         let id = leader(c).await;
         let cmd = format!("{key}={value}").into_bytes();
         match c.groups[&id]
-            .propose(|_m, _applied| Proposal::Append(cmd))
+            .propose(|_m, _applied| Proposal::Append(cmd.clone()))
             .await
         {
             Ok(p) => return p.index,
@@ -229,6 +235,197 @@ async fn proposals_see_previous_writes() {
         .unwrap();
     assert!(!reply.appended);
     assert_eq!(reply.output, b"cached");
+}
+
+/// A counter that refuses, at apply, a value built on other state than the
+/// one it applies to, as the cloud node's `AppMachine` does with its
+/// `base_index`: `set:{base}:{value}` sets only when the last entry it applied
+/// is `base`; `add:{n}` adds unconditionally (a write built on no state).
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Ledger {
+    value: u64,
+    /// The index of the last entry applied.
+    last: u64,
+    /// How many `set`s were refused.
+    conflicts: u64,
+}
+
+impl Machine for Ledger {
+    const IN_MEMORY: bool = true;
+
+    fn apply(&mut self, index: u64, command: &[u8], _state: &mut StateTx<'_>) -> Vec<u8> {
+        let s = String::from_utf8_lossy(command).into_owned();
+        let parts: Vec<u64> = s.split(':').skip(1).map(|p| p.parse().unwrap()).collect();
+        let out: &[u8] = match (s.split(':').next(), parts.as_slice()) {
+            (Some("set"), [base, value]) if *base == self.last => {
+                self.value = *value;
+                b"ok"
+            }
+            (Some("set"), _) => {
+                self.conflicts += 1;
+                b"conflict"
+            }
+            (Some("add"), [n]) => {
+                self.value += n;
+                b"ok"
+            }
+            _ => panic!("unknown command {s}"),
+        };
+        self.last = index;
+        out.to_vec()
+    }
+
+    fn snapshot(&self) -> Vec<u8> {
+        serde_json::to_vec(self).unwrap()
+    }
+
+    fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
+        *self = serde_json::from_slice(data)?;
+        Ok(())
+    }
+}
+
+/// Increment the counter on whichever node leads, as `Node::call` runs a
+/// call: built on the applied state, built again after a conflict.
+async fn increment(groups: &HashMap<NodeId, Arc<Group<Ledger>>>, down: &BTreeSet<NodeId>) {
+    for _ in 0..100 {
+        let Some(g) = groups
+            .values()
+            .find(|g| g.status().is_leader && !down.contains(&g.node_id()))
+        else {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            continue;
+        };
+        let built = g
+            .propose(|m, applied| {
+                Proposal::Append(format!("set:{applied}:{}", m.value + 1).into_bytes())
+            })
+            .await;
+        match built {
+            Ok(p) if p.output == b"ok" => return,
+            _ => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    panic!("the increment never applied");
+}
+
+async fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+    for _ in 0..200 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+/// `propose` does not confirm leadership before an append. A leader that has
+/// lost its majority still builds, on state that a write it could not commit
+/// has already made stale, and its entry then commits under the next leader.
+/// The machine's base check turns that entry into a no-op: no diff built on
+/// stale state is ever applied, on any node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_build_by_a_deposed_leader_never_applies() {
+    let c = cluster(3).await;
+    let mut groups: HashMap<NodeId, Arc<Group<Ledger>>> = HashMap::new();
+    let engines: Vec<(NodeId, Arc<Engine>)> = c
+        .net
+        .engines
+        .read()
+        .unwrap()
+        .iter()
+        .map(|(id, e)| (*id, Arc::clone(e)))
+        .collect();
+    for (id, engine) in engines {
+        let g = engine.start_group(2, Ledger::default()).await.unwrap();
+        let _prev = groups.insert(id, g);
+    }
+    let voters: BTreeMap<NodeId, String> = (1..=3).map(|i| (i, format!("node-{i}"))).collect();
+    groups[&1].initialize(voters).await.unwrap();
+
+    increment(&groups, &BTreeSet::new()).await;
+    let base = groups
+        .values()
+        .map(|g| g.status().last_log)
+        .max()
+        .unwrap()
+        .unwrap();
+    for g in groups.values() {
+        assert!(g.wait_applied(base, Duration::from_secs(5)).await);
+    }
+    let old = groups
+        .values()
+        .find(|g| g.status().is_leader)
+        .unwrap()
+        .node_id();
+    let (keeps, cut) = {
+        let others: Vec<NodeId> = (1..=3).filter(|i| *i != old).collect();
+        (others[0], others[1])
+    };
+    let conflicts_before = groups[&keeps].read_local(|m, _| m.conflicts);
+
+    // The leader loses its majority: `cut` is gone, and `keeps` receives the
+    // leader's entries but the leader never hears back.
+    let _ = c.net.down.lock().unwrap().insert(cut);
+    let _ = c.net.deaf.lock().unwrap().insert(old);
+    let leader = Arc::clone(&groups[&old]);
+    let unbuilt = tokio::spawn(async move { leader.write(b"add:5".to_vec()).await });
+    wait_for("the write to reach the follower", || {
+        groups[&keeps].status().last_log >= Some(base + 1)
+    })
+    .await;
+
+    // Built on the counter before `add:5`, which the leader has not applied.
+    let leader = Arc::clone(&groups[&old]);
+    let built = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let saw = Arc::clone(&built);
+    let stale = tokio::spawn(async move {
+        leader
+            .propose(|m, applied| {
+                saw.store(true, std::sync::atomic::Ordering::SeqCst);
+                Proposal::Append(format!("set:{applied}:{}", m.value + 1).into_bytes())
+            })
+            .await
+    });
+    wait_for("the stale entry to reach the follower", || {
+        groups[&keeps].status().last_log >= Some(base + 2)
+    })
+    .await;
+    assert!(
+        built.load(std::sync::atomic::Ordering::SeqCst),
+        "the leader built without a leadership round"
+    );
+    assert_eq!(groups[&old].applied(), base, "it built on stale state");
+
+    // The old leader goes; `keeps`, holding both entries, is elected and
+    // commits them.
+    let _ = c.net.down.lock().unwrap().insert(old);
+    let _ = c.net.deaf.lock().unwrap().remove(&old);
+    let _ = c.net.down.lock().unwrap().remove(&cut);
+    for id in [keeps, cut] {
+        assert!(
+            groups[&id]
+                .wait_applied(base + 2, Duration::from_secs(10))
+                .await
+        );
+        let (value, conflicts) = groups[&id].read_local(|m, _| (m.value, m.conflicts));
+        assert_eq!(value, 1 + 5, "the stale set did not overwrite add:5");
+        assert_eq!(conflicts, conflicts_before + 1, "it applied as a no-op");
+    }
+
+    // The old leader comes back and agrees; whatever its proposal answered,
+    // it was not a set that applied.
+    let _ = c.net.down.lock().unwrap().remove(&old);
+    increment(&groups, &BTreeSet::new()).await;
+    let last = groups[&keeps].status().last_log.unwrap();
+    for g in groups.values() {
+        assert!(g.wait_applied(last, Duration::from_secs(10)).await);
+        assert_eq!(g.read_local(|m, _| m.value), 7);
+    }
+    if let Ok(Ok(Ok(p))) = tokio::time::timeout(Duration::from_secs(5), stale).await {
+        assert_eq!(p.output, b"conflict");
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(5), unbuilt).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -465,7 +662,7 @@ impl DiskCluster {
             let id = self.leader().await;
             let cmd = format!("{key}={value}").into_bytes();
             match self.groups[&id]
-                .propose(|_m, _applied| Proposal::Append(cmd))
+                .propose(|_m, _applied| Proposal::Append(cmd.clone()))
                 .await
             {
                 Ok(p) => return p.index,

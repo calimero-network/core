@@ -5,7 +5,8 @@
 //! opaque command bytes, persists them encrypted, and applies them in order on
 //! every replica. Writers that must execute against the latest state (the cloud
 //! node runs WASM on the leader) use [`Group::propose`], which serializes
-//! proposals per group and confirms leadership before building the command.
+//! proposals per group; the machine refuses, at apply, a command built on
+//! stale state, so an append needs no leadership round first.
 
 #![allow(
     clippy::result_large_err,
@@ -165,9 +166,12 @@ impl<M: Machine> Group<M> {
         }
     }
 
-    async fn confirm_leader(&self) -> Result<(), WriteError> {
+    /// Confirm leadership with a majority (a heartbeat round) and wait until
+    /// this node has applied everything committed before it; answers that
+    /// read index.
+    async fn confirm_leader(&self) -> Result<u64, WriteError> {
         match self.raft.ensure_linearizable().await {
-            Ok(_) => Ok(()),
+            Ok(read) => Ok(read.map_or(0, |l| l.index)),
             Err(RaftError::APIError(CheckIsLeaderError::ForwardToLeader(f))) => {
                 forward(f.leader_id, f.leader_node)
             }
@@ -175,37 +179,84 @@ impl<M: Machine> Group<M> {
         }
     }
 
-    /// Build a command against the latest applied state, as the confirmed
-    /// leader, and append it. Proposals on one group run one at a time, so the
-    /// state a builder sees is exactly the state the entry applies to.
-    pub async fn propose<F>(&self, build: F) -> Result<Proposed, WriteError>
+    /// Whether this node leads, without a majority round when its metrics
+    /// already say so. Otherwise openraft's core answers: a follower is refused
+    /// at once (no round trip), so it is not handed a build (a WASM run) it
+    /// could not append, and a leader the metrics do not show yet confirms.
+    async fn leads_here(&self) -> Result<(), WriteError> {
+        if self.raft.metrics().borrow().state == ServerState::Leader {
+            return Ok(());
+        }
+        self.confirm_leader().await.map(|_read| ())
+    }
+
+    fn build<F>(&self, build: &mut F) -> Result<(Proposal, u64), WriteError>
     where
-        F: FnOnce(&M, u64) -> Proposal,
+        F: FnMut(&M, u64) -> Proposal,
+    {
+        let st = self
+            .shared
+            .read()
+            .map_err(|e| WriteError::Unavailable(e.to_string()))?;
+        let applied = st.applied_index();
+        Ok((build(&st.machine, applied), applied))
+    }
+
+    async fn append(&self, cmd: Vec<u8>) -> Result<Proposed, WriteError> {
+        let (index, output) = self.write(cmd).await?;
+        Ok(Proposed {
+            index,
+            output,
+            appended: true,
+        })
+    }
+
+    /// Build a command against the latest applied state and append it.
+    /// Proposals on one group run one at a time, so no other proposal lands
+    /// between a build and its append.
+    ///
+    /// An append is not preceded by a leadership round: the machine must
+    /// refuse, at apply, a command built on any state other than the one it
+    /// applies to (the cloud node's `AppMachine` checks the `base_index` it
+    /// is handed, the `u64` here, against its last applied entry, and answers
+    /// `conflict`). A command built by a deposed or lagging leader then either
+    /// never commits (`client_write` answers `NotLeader`, or a new leader
+    /// truncates it) or commits as that no-op, and the caller builds again.
+    /// A machine without such a check must not use `propose`.
+    ///
+    /// A `Reply` appends nothing, so it is a read and must be linearizable:
+    /// it is confirmed with a majority before it is answered, and built again
+    /// on the confirmed state when entries committed in between. `build` may
+    /// therefore run twice.
+    pub async fn propose<F>(&self, mut build: F) -> Result<Proposed, WriteError>
+    where
+        F: FnMut(&M, u64) -> Proposal,
     {
         let _guard = self.propose_lock.lock().await;
-        self.confirm_leader().await?;
-        let (proposal, applied) = {
-            let st = self
-                .shared
-                .read()
-                .map_err(|e| WriteError::Unavailable(e.to_string()))?;
-            let applied = st.applied_index();
-            (build(&st.machine, applied), applied)
+        self.leads_here().await?;
+        let (proposal, built_at) = self.build(&mut build)?;
+        let output = match proposal {
+            Proposal::Append(cmd) => return self.append(cmd).await,
+            Proposal::Reply(output) => output,
         };
+        let read = self.confirm_leader().await?;
+        if built_at >= read {
+            return Ok(Proposed {
+                index: built_at,
+                output,
+                appended: false,
+            });
+        }
+        // Entries committed before the confirmation were not applied when the
+        // reply was built: build again on the state the confirmation waited for.
+        let (proposal, applied) = self.build(&mut build)?;
         match proposal {
+            Proposal::Append(cmd) => self.append(cmd).await,
             Proposal::Reply(output) => Ok(Proposed {
                 index: applied,
                 output,
                 appended: false,
             }),
-            Proposal::Append(cmd) => {
-                let (index, output) = self.write(cmd).await?;
-                Ok(Proposed {
-                    index,
-                    output,
-                    appended: true,
-                })
-            }
         }
     }
 
@@ -228,7 +279,7 @@ impl<M: Machine> Group<M> {
 
     /// A linearizable read, served by the confirmed leader.
     pub async fn read_strong<R>(&self, f: impl FnOnce(&M, u64) -> R) -> Result<R, WriteError> {
-        self.confirm_leader().await?;
+        let _read = self.confirm_leader().await?;
         Ok(self.read_local(f))
     }
 
