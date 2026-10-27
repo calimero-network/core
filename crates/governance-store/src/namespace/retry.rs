@@ -178,6 +178,8 @@ impl<'a> NamespaceRetryService<'a> {
     /// already answered by [`groups_member_but_keyless`], so nothing that
     /// worked before changes.
     pub fn root_participating_but_unbootstrapped(&self) -> EyreResult<Vec<[u8; 32]>> {
+        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
+
         // No identity ⇒ nothing to recover, and nothing to recover it AS.
         let Some(record) = NamespaceRepository::new(self.store).identity_record(&ns_typed)? else {
             return Ok(Vec::new());
@@ -213,6 +215,8 @@ impl<'a> NamespaceRetryService<'a> {
     }
 
     pub fn groups_member_but_keyless(&self) -> EyreResult<Vec<[u8; 32]>> {
+        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
+
         // The member we'd be missing a key for is this node's namespace
         // identity. No identity ⇒ nothing to recover.
         let my_identity = match NamespaceRepository::new(self.store).identity_record(&ns_typed)? {
@@ -350,6 +354,7 @@ impl<'a> NamespaceRetryService<'a> {
         &self,
         groups: &BTreeSet<[u8; 32]>,
     ) -> EyreResult<Vec<ReplayCandidate>> {
+        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
         let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
         let mut candidates = Vec::new();
         for entry in op_log
@@ -386,6 +391,7 @@ impl<'a> NamespaceRetryService<'a> {
     fn group_candidates(&self, group_id: [u8; 32]) -> EyreResult<Vec<RetryCandidate>> {
         let mut candidates = Vec::new();
         let gid_typed = ContextGroupId::from(group_id);
+        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
 
         // This node's own namespace identity. Ops it SIGNED were applied through
         // the local authoring path (`sign_apply_and_publish` →
