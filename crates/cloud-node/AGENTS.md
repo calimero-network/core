@@ -296,6 +296,8 @@ for a in blobs kv-store-with-handlers search-chat xcall-example tee-cards tee-di
   migrations/scenario-identity-downgrade-v1 migrations/scenario-identity-downgrade-v2; do
   cargo mero build --manifest-path apps/$a/Cargo.toml; done
 cargo test -p calimero-cloud-node    # 3-node cluster in process, sealed, real WASM
+# calls/s and p50/p99 through that cluster (harness: tests/harness/cluster.rs), as JSON:
+cargo bench -p calimero-cloud-node --bench cluster_throughput -- --secs 15 --out cluster.json
 cargo run -p merod -- --help
 cargo run -p merod -- local   # dev cluster: 3 nodes on :2501-2503 (`local.rs`)
 cargo run -p merod -- --node n1 inspect [--storage-key-file F]   # a stopped node's store (v1's merodb; `inspect.rs`)

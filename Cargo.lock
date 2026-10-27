@@ -1088,6 +1088,7 @@ dependencies = [
  "hex",
  "reqwest 0.12.28",
  "ring",
+ "rocksdb",
  "semver",
  "serde",
  "serde_json",
