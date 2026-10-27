@@ -114,6 +114,9 @@ pub(crate) const HEARTBEAT_STATE_TTL: Duration = Duration::from_secs(300);
 pub(crate) const DIVERGENCE_PERSIST_FOR: Duration =
     Duration::from_secs(crate::constants::HASH_HEARTBEAT_FREQUENCY_S.saturating_sub(5));
 
+/// Last firing per (namespace, peer), for a debounce that must not let one peer use up another's slot.
+pub(crate) type PeerDebounce = HashMap<([u8; 32], libp2p::PeerId), Instant>;
+
 /// Main node orchestrator.
 ///
 /// **SRP Applied**: Clear separation of:
@@ -206,6 +209,9 @@ pub struct NodeManager {
     /// trigger is an unauthenticated message, and the whole point is to act on
     /// it without trusting it.
     pub(crate) ns_stranded_beacon_sync_debounce: Arc<Mutex<HashMap<[u8; 32], Instant>>>,
+    /// The account-namespace arm's budget, per (namespace, peer): one peer's beacons cannot
+    /// use up the slot another's pull needs.
+    pub(crate) ns_account_beacon_sync_debounce: Arc<Mutex<PeerDebounce>>,
     /// Shared per-(namespace, peer) migration-heartbeat TTL cache (PR-6c
     /// Task 6c.8). The receiver-side
     /// `network_event::namespace::handle_namespace_governance_delta`
@@ -303,6 +309,7 @@ impl NodeManager {
             behind_sync_at: HashMap::new(),
             ns_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
             ns_stranded_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
+            ns_account_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
             migration_status_cache: Arc::new(MigrationStatusCache::default()),
             migration_emitter_addr: None,
             awareness_store: crate::handlers::ephemeral::store::AwarenessStore::new(),

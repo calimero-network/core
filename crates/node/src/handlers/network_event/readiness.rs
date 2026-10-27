@@ -39,6 +39,8 @@ use crate::NodeManager;
 /// this a behind-node would fire one sync per beacon per peer.
 const NS_BEACON_SYNC_DEBOUNCE: Duration = Duration::from_secs(5);
 
+const MAX_DEBOUNCE_KEYS: usize = 1024; // bounds a debounce map against beacons from many peers
+
 /// True when a beacon shows the peer is ahead AND this node should act on
 /// it — i.e. trigger a namespace governance sync.
 ///
@@ -81,21 +83,27 @@ fn beacon_indicates_divergence(
         && (!head_op_present_locally || peer_applied_more)
 }
 
-/// Per-namespace debounce gate. Returns `true` (and records `now`) when
-/// no beacon-triggered sync fired for `namespace_id` within
+/// Debounce gate. Returns `true` (and records `now`) when nothing fired for `key` within
 /// [`NS_BEACON_SYNC_DEBOUNCE`]; returns `false` otherwise.
 ///
-/// Applied to whichever of the caller's two per-path maps is in play, so the
-/// window is per (namespace, path) without ever being per peer.
-fn debounce_allows_sync(
-    debounce: &mut HashMap<[u8; 32], Instant>,
-    namespace_id: [u8; 32],
+/// Keyed per namespace on the path-wide maps and per (namespace, peer) on the account arm's, so
+/// one peer's beacons cannot use up another's slot. A full map drops its expired keys first and
+/// refuses a new one while none has expired.
+fn debounce_allows_sync<K: std::hash::Hash + Eq>(
+    debounce: &mut HashMap<K, Instant>,
+    key: K,
     now: Instant,
 ) -> bool {
-    match debounce.get(&namespace_id) {
+    if debounce.len() >= MAX_DEBOUNCE_KEYS && !debounce.contains_key(&key) {
+        debounce.retain(|_, last| now.duration_since(*last) < NS_BEACON_SYNC_DEBOUNCE);
+        if debounce.len() >= MAX_DEBOUNCE_KEYS {
+            return false;
+        }
+    }
+    match debounce.get(&key) {
         Some(last) if now.duration_since(*last) < NS_BEACON_SYNC_DEBOUNCE => false,
         _ => {
-            let _ = debounce.insert(namespace_id, now);
+            let _ = debounce.insert(key, now);
             true
         }
     }
@@ -125,9 +133,7 @@ fn namespace_has_governance_state(store: &Store, namespace_id: [u8; 32]) -> Eyre
     )
 }
 
-/// Whether `namespace_id` is the account namespace this node follows. Every member of it is a
-/// device of this node's own account, so a restored holder that has recreated its copy must
-/// still pull from a surviving device whose key it has not yet learned.
+/// Whether `namespace_id` is the account namespace this node follows.
 fn is_own_account_namespace(store: &Store, namespace_id: [u8; 32]) -> bool {
     NodeDeviceRepository::new(store)
         .account_namespace()
@@ -136,6 +142,44 @@ fn is_own_account_namespace(store: &Store, namespace_id: [u8; 32]) -> bool {
             warn!(?err, "account namespace read failed");
             false
         })
+}
+
+/// Whether an unverifiable beacon on this node's own account namespace shows the peer holds
+/// governance this node lacks. A restored holder has re-created its copy, so it is not
+/// stranded, yet cannot verify a surviving device's beacons until it has pulled that
+/// device's history. Once caught up the beacon is ignored.
+fn account_namespace_cue(
+    store: &Store,
+    namespace_id: [u8; 32],
+    dag_head: [u8; 32],
+    peer_applied_through: u64,
+) -> bool {
+    if !is_own_account_namespace(store, namespace_id) {
+        return false;
+    }
+    let read = || -> EyreResult<bool> {
+        let local_has_state = namespace_has_governance_state(store, namespace_id)?;
+        let head_present = store
+            .handle()
+            .get(&calimero_store::key::NamespaceGovOp::new(
+                namespace_id,
+                dag_head,
+            ))?
+            .is_some();
+        let peer_applied_more = peer_applied_through
+            > read_local_applied_through(store, namespace_id, peer_applied_through);
+        Ok(beacon_indicates_divergence(
+            local_has_state,
+            false,
+            dag_head,
+            head_present,
+            peer_applied_more,
+        ))
+    };
+    read().unwrap_or_else(|err| {
+        warn!(?err, "account namespace beacon read failed");
+        false
+    })
 }
 
 /// A participant with no metadata row and no applied op: a paired device that
@@ -195,8 +239,7 @@ pub(super) fn handle_readiness_beacon(
                 stranded_ns.into(),
             ),
             Ok(ref groups) if !groups.is_empty()
-        ) || participant_without_governance_state(&manager.datastore, stranded_ns)
-            || is_own_account_namespace(&manager.datastore, stranded_ns);
+        ) || participant_without_governance_state(&manager.datastore, stranded_ns);
         if stranded && beacon_ts_within_drift(beacon.ts_millis, now_millis()) {
             let allowed = {
                 let mut guard = manager
@@ -234,6 +277,36 @@ pub(super) fn handle_readiness_beacon(
                 }));
                 return;
             }
+        }
+        let account_ns = beacon.namespace_id.to_bytes();
+        if beacon_ts_within_drift(beacon.ts_millis, now_millis())
+            && account_namespace_cue(
+                &manager.datastore,
+                account_ns,
+                beacon.dag_head,
+                beacon.applied_through,
+            )
+            && {
+                let mut guard = manager
+                    .ns_account_beacon_sync_debounce
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                debounce_allows_sync(&mut guard, (account_ns, peer_id), Instant::now())
+            }
+        {
+            let sync_manager = manager.managers.sync.clone();
+            drop(actix::spawn(async move {
+                let ops = sync_manager
+                    .sync_namespace_from_peer(account_ns, Some(peer_id), None)
+                    .await;
+                debug!(
+                    %peer_id,
+                    namespace_id = %hex::encode(account_ns),
+                    ops,
+                    "account namespace: pulled from the signer of an unverifiable beacon"
+                );
+            }));
+            return;
         }
         debug!(
             namespace_id = %hex::encode(beacon.namespace_id.as_bytes()),
@@ -424,19 +497,89 @@ mod tests {
         Store::new(Arc::new(InMemoryDB::owned()))
     }
 
-    /// A beacon on the account namespace this node follows cues a pull; one on any other
-    /// namespace this node merely holds does not.
-    #[test]
-    fn only_the_followed_account_namespace_is_its_own() {
-        let store = test_store();
-        let own = ContextGroupId::from([0xA5; 32]);
-        NodeDeviceRepository::new(&store)
-            .store_account_namespace(&own)
-            .expect("name the account namespace");
+    const OWN: [u8; 32] = [0xA5; 32];
 
-        assert!(is_own_account_namespace(&store, [0xA5; 32]));
-        assert!(!is_own_account_namespace(&store, [0xA6; 32]));
-        assert!(!is_own_account_namespace(&test_store(), [0xA5; 32]));
+    fn follow_account_namespace(store: &Store) {
+        NodeDeviceRepository::new(store)
+            .store_account_namespace(&ContextGroupId::from(OWN))
+            .expect("name the account namespace");
+    }
+
+    fn put_gov_op(store: &Store, namespace_id: [u8; 32], delta_id: [u8; 32]) {
+        store
+            .handle()
+            .put(
+                &calimero_store::key::NamespaceGovOp::new(namespace_id, delta_id),
+                &calimero_store::key::NamespaceGovOpValue {
+                    skeleton_bytes: vec![0],
+                },
+            )
+            .expect("write namespace gov op");
+    }
+
+    /// The cue fires while the peer advertises governance this node lacks, and not once the
+    /// node holds the peer's head and has applied as much.
+    #[test]
+    fn the_account_namespace_cue_stops_once_caught_up() {
+        let store = test_store();
+        follow_account_namespace(&store);
+        put_gov_head(&store, OWN, vec![[1u8; 32]]);
+
+        assert!(account_namespace_cue(&store, OWN, [2u8; 32], 1));
+
+        put_gov_op(&store, OWN, [2u8; 32]);
+        assert!(!account_namespace_cue(&store, OWN, [2u8; 32], 1));
+        assert!(
+            account_namespace_cue(&store, OWN, [2u8; 32], 2),
+            "a peer that applied more still cues a pull when its head is one we hold"
+        );
+    }
+
+    /// Another namespace, and a node with nothing applied (the stranded arm's), never cue.
+    #[test]
+    fn the_account_namespace_cue_is_for_a_followed_namespace_with_state() {
+        let store = test_store();
+        follow_account_namespace(&store);
+        put_gov_head(&store, [0xA6; 32], vec![[1u8; 32]]);
+        assert!(!account_namespace_cue(&store, [0xA6; 32], [2u8; 32], 9));
+
+        assert!(!account_namespace_cue(&store, OWN, [2u8; 32], 9));
+        assert!(!account_namespace_cue(&test_store(), OWN, [2u8; 32], 9));
+    }
+
+    /// A flood of beacons from one peer must not use up another peer's slot, and the map
+    /// stays bounded against beacons from many peers.
+    #[test]
+    fn a_per_peer_debounce_isolates_peers_and_stays_bounded() {
+        let (a, b) = (PeerId::random(), PeerId::random());
+        let mut d: HashMap<([u8; 32], PeerId), Instant> = HashMap::new();
+        let t0 = Instant::now();
+
+        assert!(debounce_allows_sync(&mut d, (OWN, a), t0));
+        for ms in 1..100 {
+            assert!(!debounce_allows_sync(
+                &mut d,
+                (OWN, a),
+                t0 + Duration::from_millis(ms)
+            ));
+        }
+        assert!(debounce_allows_sync(&mut d, (OWN, b), t0));
+
+        let mut full: HashMap<([u8; 32], PeerId), Instant> = HashMap::new();
+        for _ in 0..MAX_DEBOUNCE_KEYS {
+            assert!(debounce_allows_sync(&mut full, (OWN, PeerId::random()), t0));
+        }
+        assert!(!debounce_allows_sync(
+            &mut full,
+            (OWN, PeerId::random()),
+            t0
+        ));
+        assert!(debounce_allows_sync(
+            &mut full,
+            (OWN, PeerId::random()),
+            t0 + NS_BEACON_SYNC_DEBOUNCE
+        ));
+        assert_eq!(full.len(), 1);
     }
 
     fn put_gov_head(store: &Store, namespace_id: [u8; 32], dag_heads: Vec<[u8; 32]>) {

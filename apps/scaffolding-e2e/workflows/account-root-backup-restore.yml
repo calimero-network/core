@@ -84,6 +84,9 @@ description: >
        of it. A holder that never recreated the namespace has neither the device's
        certificate nor a registry to read it from.
 
+       It also gets back into a second namespace it joined before the wipe and was
+       never invited back into, and its new node is bound there.
+
   Deliberately NOT asserted: that `account show` reports the same id before and
   after enrolment. It does not (#3366) — before enrolment the read API reports the
   op-adapter's stand-in — so this scenario reads its account only from enrolment,
@@ -300,6 +303,40 @@ steps:
     await_self: true
     outputs:
       paired_device: deviceId
+
+  # A second namespace the account joins before the wipe, which the restored holder is
+  # never invited back into: it can only return through its account and its paired device.
+  - name: Node-1 creates a second namespace
+    type: create_namespace
+    node: backup-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      shared_namespace: namespaceId
+
+  - name: Invite node-2 into the second namespace
+    type: create_namespace_invitation
+    node: backup-node-1
+    namespace_id: '{{shared_namespace}}'
+    outputs:
+      shared_invitation: invitation
+
+  - name: Node-2 joins the second namespace
+    type: join_namespace
+    node: backup-node-2
+    namespace_id: '{{shared_namespace}}'
+    invitation: '{{shared_invitation}}'
+
+  - name: The paired device is bound in the second namespace
+    type: assert_api_response
+    node: backup-node-2
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{paired_device}}'
+    contains:
+      namespaces:
+        - '{{shared_namespace}}'
+    retries: 45
+    interval: 2
 
   # ── Phase 2: export, which needs the node stopped ─────────────────
 
@@ -584,6 +621,27 @@ steps:
     contains:
       namespaces:
         - '{{original_account_ns}}'
+    retries: 45
+    interval: 2
+
+  - name: The restored holder is back in the shared namespace without an invitation
+    type: assert_api_response
+    node: backup-node-2
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{shared_namespace}}'
+    retries: 45
+    interval: 2
+
+  - name: The restored holder's new node is bound in the shared namespace
+    type: assert_api_response
+    node: backup-node-2
+    path: /admin-api/account/devices
+    where:
+      isSelf: true
+    contains:
+      namespaces:
+        - '{{shared_namespace}}'
     retries: 45
     interval: 2
 

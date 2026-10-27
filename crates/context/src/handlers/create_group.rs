@@ -20,6 +20,26 @@ use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, MetadataRepository,
 };
 
+impl ContextManager {
+    /// The root-derived founder, only for the account's own namespace salt: any other salt
+    /// founds an ordinary root with this node's identity.
+    fn account_namespace_founder(
+        &self,
+        salt: Option<[u8; 32]>,
+        parent_group_id: Option<ContextGroupId>,
+    ) -> eyre::Result<Option<calimero_governance_store::AccountNamespaceFounder>> {
+        let Some(salt) = salt.filter(|_| parent_group_id.is_none()) else {
+            return Ok(None);
+        };
+        let root = calimero_governance_store::NodeDeviceRepository::new(&self.datastore)
+            .require_account_root()?;
+        if salt != root.account_namespace_salt() {
+            return Ok(None);
+        }
+        root.account_namespace_founder().map(Some)
+    }
+}
+
 impl Handler<CreateGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <CreateGroupRequest as Message>::Result>;
 
@@ -93,20 +113,13 @@ impl Handler<CreateGroupRequest> for ContextManager {
 
         // The account namespace is founded by a key and credential derived from the account
         // root, so a restored holder re-creates the genesis it lost byte for byte.
-        let account_founder = if account_namespace && parent_group_id.is_none() {
-            match calimero_governance_store::NodeDeviceRepository::new(&self.datastore)
-                .require_account_root()
-                .and_then(|root| root.account_namespace_founder())
-            {
-                Ok(founder) => Some(founder),
-                Err(err) => {
-                    return ActorResponse::reply(Err(
-                        err.wrap_err("failed to derive the account namespace's founder")
-                    ))
-                }
+        let account_founder = match self.account_namespace_founder(salt, parent_group_id) {
+            Ok(founder) => founder,
+            Err(err) => {
+                return ActorResponse::reply(Err(
+                    err.wrap_err("failed to derive the account namespace's founder")
+                ))
             }
-        } else {
-            None
         };
 
         let Some(namespace_anchor_group_id) = parent_group_id.or(root_id) else {
@@ -1496,6 +1509,53 @@ mod tests {
                 .expect("read the founding record"),
             Some((founder, SALT)),
             "the genesis carried the salt, so the apply recorded the pair"
+        );
+    }
+
+    /// The root-derived founder and key are for the account's own namespace salt only: any other
+    /// salt founds with this node's identity, so no derived key signs or seals for it.
+    #[actix::test]
+    async fn only_the_accounts_own_salt_takes_the_root_derived_founder() {
+        let store = store();
+        let root = calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+        let derived = root.account_namespace_founder().expect("derive");
+
+        let harness = actor::over(store.clone()).await;
+        let create = |salt: [u8; 32]| CreateGroupRequest {
+            salt: Some(salt),
+            bytecode_id: None,
+            application_id: None,
+            name: None,
+            parent_group_id: None,
+            restricted: true,
+        };
+        let own = harness
+            .manager
+            .send(create(root.account_namespace_salt()))
+            .await
+            .expect("the manager answers")
+            .expect("the account namespace is created");
+        let other = harness
+            .manager
+            .send(create(SALT))
+            .await
+            .expect("the manager answers")
+            .expect("another salt founds an ordinary root");
+
+        let key_of = |group: ContextGroupId| {
+            calimero_governance_store::GroupKeyring::new(&store, group)
+                .load_current_key()
+                .expect("read")
+                .expect("a root holds a key")
+                .1
+        };
+        assert_eq!(key_of(own.group_id), *derived.group_key);
+        assert_ne!(
+            key_of(other.group_id),
+            *derived.group_key,
+            "another salt took the account's derived key"
         );
     }
 
