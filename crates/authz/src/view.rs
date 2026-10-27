@@ -236,17 +236,35 @@ impl AclView {
         self.may(author, object, OpMask::ADMIN)
     }
 
-    /// Is `author` an `Admin` of `group` at the cut? An `Admin` row, or the creator slot
-    /// while the creator is still in the workspace.
+    /// Is `author` an `Admin` of `group` at the cut? An `Admin` row, the creator slot
+    /// while the creator is still in the workspace, or - for a folder with neither - the
+    /// lowest-account `Member` or `Admin` row.
     #[must_use]
     pub fn is_group_admin(&self, author: &AccountId, group: ContextGroupId) -> bool {
         if self.holds_creator_slot(author, group) {
             return true;
         }
-        matches!(
-            self.groups.get(&group).and_then(|m| m.get(author)),
-            Some(GroupMemberRole::Admin)
-        )
+        let Some(members) = self.groups.get(&group) else {
+            return false;
+        };
+        if members.values().any(|role| *role == GroupMemberRole::Admin) {
+            return members.get(author) == Some(&GroupMemberRole::Admin);
+        }
+        let creator_serves = self
+            .group_admin
+            .get(&group)
+            .is_some_and(|creator| self.holds_creator_slot(creator, group));
+        let is_root = self.group_and_ancestors(group).last().unwrap_or(group) == group;
+        !is_root
+            && !creator_serves
+            && members
+                .iter()
+                .filter(|(_, role)| {
+                    matches!(role, GroupMemberRole::Member | GroupMemberRole::Admin)
+                })
+                .map(|(account, _)| account)
+                .min()
+                == Some(author)
     }
 
     /// Does `author` hold `group`'s creator admin slot? Outside the root group the slot

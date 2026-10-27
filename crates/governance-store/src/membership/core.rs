@@ -707,9 +707,43 @@ impl<'a> MembershipRepository<'a> {
         bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH))
     }
 
-    /// Whether `identity` is an admin of `group_id`: an `Admin` row, or the creator slot
-    /// while the creator is still in the workspace.
+    /// Whether `identity` is an admin of `group_id`: an `Admin` row, the creator slot
+    /// while the creator is still in the workspace, or - for a folder with neither - the
+    /// lowest-account `Member` or `Admin` row.
     pub fn is_admin(&self, group_id: &ContextGroupId, identity: &AccountId) -> EyreResult<bool> {
+        if self.is_explicit_admin(group_id, identity)? {
+            return Ok(true);
+        }
+        let root = NamespaceRepository::new(self.store).resolve(group_id)?;
+        if root == *group_id {
+            return Ok(false);
+        }
+        let members = self.list(group_id, 0, usize::MAX)?;
+        if members
+            .iter()
+            .any(|(_, role)| *role == GroupMemberRole::Admin)
+        {
+            return Ok(false);
+        }
+        if let Some(meta) = MetaRepository::new(self.store).load(group_id)? {
+            if self.is_explicit_admin(group_id, &meta.admin_identity)? {
+                return Ok(false);
+            }
+        }
+        let lowest = members
+            .iter()
+            .filter(|(_, role)| matches!(role, GroupMemberRole::Member | GroupMemberRole::Admin))
+            .map(|(account, _)| account)
+            .min();
+        Ok(lowest == Some(identity))
+    }
+
+    /// An `Admin` row, or the creator slot while the creator is still in the workspace.
+    pub(crate) fn is_explicit_admin(
+        &self,
+        group_id: &ContextGroupId,
+        identity: &AccountId,
+    ) -> EyreResult<bool> {
         if let Some(GroupMemberRole::Admin) = self.role_of(group_id, identity)? {
             return Ok(true);
         }

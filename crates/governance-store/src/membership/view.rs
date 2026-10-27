@@ -33,7 +33,7 @@ impl<'a> GroupMembershipView<'a> {
     /// so we return `false` for it rather than treating the genesis founder as
     /// the "other" admin.
     pub fn has_another_admin(&self, excluded: &AccountId) -> EyreResult<bool> {
-        if !self.is_admin(excluded)? {
+        if !MembershipRepository::new(self.store).is_explicit_admin(&self.group_id, excluded)? {
             return Ok(false);
         }
         if self

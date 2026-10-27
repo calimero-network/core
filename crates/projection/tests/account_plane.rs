@@ -2708,7 +2708,7 @@ fn a_creator_removed_from_the_workspace_holds_no_admin_slot_in_any_order() {
     let creator = Account::new(0x5A);
     let device = creator.enroll(0x5B, 0);
     let folder = ContextGroupId::from([0x35; 32]);
-    let ops = vec![
+    let ops = [
         device.sign_op(
             1,
             vec![],
