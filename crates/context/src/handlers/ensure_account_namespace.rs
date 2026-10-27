@@ -6,8 +6,8 @@ use calimero_context_client::group::CreateGroupRequest;
 use calimero_context_client::local_governance::AckRouter;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
-    placeholder_admin_identity, AccountDeviceRegistry, AccountRoot, MetaRepository,
-    NamespaceRepository, NodeDeviceRepository,
+    placeholder_admin_identity, AccountBindingRepository, AccountDeviceRegistry, AccountRoot,
+    MetaRepository, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -16,6 +16,80 @@ use eyre::Result as EyreResult;
 use tracing::{info, warn};
 
 use crate::account_namespace::publish_device_certified;
+
+/// This device's certificate and the root-signed scope the registry and its binding carry.
+fn holder_known_cert(
+    datastore: &Store,
+    namespace_id: ContextGroupId,
+    signer_pk: &PublicKey,
+    root: &AccountRoot,
+) -> Option<calimero_governance_store::KnownDeviceCert> {
+    let credential = match crate::join_credential::build(datastore, &namespace_id, signer_pk) {
+        Ok(credential) => credential,
+        Err(err) => {
+            warn!(
+                ?err,
+                ?namespace_id,
+                "could not build this device's credential, so the holder is not in its own registry"
+            );
+            return None;
+        }
+    };
+    let scope = match crate::account_namespace::next_device_scope(
+        datastore,
+        Some(namespace_id),
+        root,
+        &credential,
+        &[],
+    ) {
+        Ok(scope) => scope,
+        Err(err) => {
+            warn!(
+                ?err,
+                ?namespace_id,
+                "could not sign this device's own scope"
+            );
+            return None;
+        }
+    };
+    Some(calimero_governance_store::KnownDeviceCert {
+        proof: *credential,
+        scope,
+    })
+}
+
+/// Binds the holder's node in the namespace its genesis does not name, so what the node
+/// signs next is accepted. Signed by the root-derived founder; a no-op once bound.
+async fn bind_holder_node(
+    datastore: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    namespace_id: ContextGroupId,
+    signer_pk: &PublicKey,
+    root: &AccountRoot,
+) -> EyreResult<()> {
+    let bound = NodeDeviceRepository::new(datastore)
+        .get()?
+        .map_or(Ok(false), |own| {
+            AccountBindingRepository::new(datastore).is_device_linked(&namespace_id, own.device())
+        })?;
+    if bound {
+        return Ok(());
+    }
+    let Some(known) = holder_known_cert(datastore, namespace_id, signer_pk, root) else {
+        eyre::bail!("could not certify this node's device to bind it in its account namespace");
+    };
+    let founder = root.account_namespace_founder()?;
+    calimero_governance_store::link_holder_device(
+        datastore,
+        node_client,
+        ack_router,
+        &namespace_id,
+        &founder.signer,
+        &known,
+    )
+    .await
+}
 
 /// The holder's own registry row, published whenever it is missing: a device
 /// that founds a namespace later binds the holder from it.
@@ -47,37 +121,8 @@ async fn record_holder_device(
         }
     }
 
-    let credential = match crate::join_credential::build(datastore, &namespace_id, signer_pk) {
-        Ok(credential) => credential,
-        Err(err) => {
-            warn!(
-                ?err,
-                ?namespace_id,
-                "could not build this device's credential, so the holder is not in its own registry"
-            );
-            return;
-        }
-    };
-    let scope = match crate::account_namespace::next_device_scope(
-        datastore,
-        Some(namespace_id),
-        root,
-        &credential,
-        &[],
-    ) {
-        Ok(scope) => scope,
-        Err(err) => {
-            warn!(
-                ?err,
-                ?namespace_id,
-                "could not sign this device's own scope"
-            );
-            return;
-        }
-    };
-    let known = calimero_governance_store::KnownDeviceCert {
-        proof: *credential,
-        scope,
+    let Some(known) = holder_known_cert(datastore, namespace_id, signer_pk, root) else {
+        return;
     };
     let _recorded = publish_device_certified(
         datastore,
@@ -147,7 +192,19 @@ pub(crate) async fn ensure_account_namespace(
             Err(_) if is_established(store, &namespace_id)? => {}
             Err(err) => return Err(err),
         }
+    }
 
+    bind_holder_node(
+        store,
+        context_client.node_client(),
+        context_client.ack_router(),
+        namespace_id,
+        &signer_pk,
+        &root,
+    )
+    .await?;
+
+    if !exists {
         // Seed the set with what this node already takes part in, so a device
         // paired later reads the account's whole history off one DAG.
         let already = match NamespaceRepository::new(store).participating_namespaces() {
@@ -192,9 +249,9 @@ mod tests {
     use calimero_account::AccountGenesis;
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{
-        placeholder_admin_identity, AccountDeviceRegistry, AccountNamespaceSet,
-        MembershipRepository, MetaRepository, NamespaceFoundingRepository, NamespaceRepository,
-        NodeDeviceRepository,
+        placeholder_admin_identity, AccountBindingRepository, AccountDeviceRegistry,
+        AccountNamespaceSet, MembershipRepository, MetaRepository, NamespaceFoundingRepository,
+        NamespaceOpLogService, NamespaceRepository, NodeDeviceRepository,
     };
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
@@ -304,6 +361,74 @@ mod tests {
             Some((root.account(), root.account_namespace_salt())),
             "only a genesis whose pair derives the id records one"
         );
+    }
+
+    /// The account namespace's genesis, as the one parentless op in its log.
+    fn genesis_hash(store: &Store, namespace: ContextGroupId) -> [u8; 32] {
+        let mut genesis = NamespaceOpLogService::new(store, namespace.to_bytes().into())
+            .collect_root_ops()
+            .expect("read the log")
+            .into_iter()
+            .filter(|op| op.parent_op_hashes.is_empty());
+        let op = genesis.next().expect("the namespace has a genesis");
+        assert!(genesis.next().is_none(), "a namespace has one genesis");
+        op.content_hash().expect("hash")
+    }
+
+    /// A holder restored from the same root on another disk founds the genesis the
+    /// surviving copies hold, so the two copies are one DAG rather than a fork.
+    #[actix::test]
+    async fn a_restored_holder_recreates_the_identical_genesis() {
+        let original = holder_store();
+        let root = NodeDeviceRepository::new(&original)
+            .account_root()
+            .expect("read")
+            .expect("root");
+        let restored = Store::new(Arc::new(InMemoryDB::owned()));
+        NodeDeviceRepository::new(&restored)
+            .try_import_account_root(
+                &calimero_governance_store::AccountRoot::from_mnemonic(
+                    &root.to_mnemonic().expect("export"),
+                )
+                .expect("import"),
+                false,
+            )
+            .expect("restore the root");
+
+        let first = actor::over(original.clone()).await;
+        let second = actor::over(restored.clone()).await;
+        let namespace = ensure_account_namespace(&original, &first.context_client)
+            .await
+            .expect("created")
+            .expect("holder");
+        let _ = ensure_account_namespace(&restored, &second.context_client)
+            .await
+            .expect("re-created");
+
+        assert_eq!(
+            genesis_hash(&original, namespace),
+            genesis_hash(&restored, namespace)
+        );
+    }
+
+    /// The genesis names no node, so the node is bound by a later op that its own
+    /// signing key is then accepted under.
+    #[actix::test]
+    async fn the_holders_node_is_bound_in_its_account_namespace() {
+        let store = holder_store();
+        let harness = actor::over(store.clone()).await;
+        let namespace = ensure_account_namespace(&store, &harness.context_client)
+            .await
+            .expect("created")
+            .expect("holder");
+        let own = NodeDeviceRepository::new(&store)
+            .get()
+            .expect("read")
+            .expect("the node's device");
+
+        assert!(AccountBindingRepository::new(&store)
+            .is_device_linked(&namespace, own.device())
+            .expect("read"));
     }
 
     /// The holder records itself, since only that row carries its certificate.

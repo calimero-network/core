@@ -74,6 +74,44 @@ fn plan(store: &Store, namespace: &ContextGroupId, cert: &KnownDeviceCert) -> Ey
     Ok(BindPlan::Publish(ns_key))
 }
 
+/// Only a member can endorse and only the root can certify; the apply gate needs both,
+/// and a fresh endorsement is all a namespace gained later is missing.
+fn link_op(signer_sk: &PrivateKey, known: &KnownDeviceCert) -> EyreResult<GroupOp> {
+    let proof = &known.proof;
+    let device = proof.statement.device;
+    let endorsement = AccountMemberEndorsement::sign(signer_sk, proof.statement.account)
+        .map_err(|err| eyre::eyre!("failed to endorse device {device}: {err}"))?;
+    Ok(GroupOp::AccountDeviceLinked {
+        genesis: proof.genesis,
+        chain: proof.chain.clone(),
+        cert: proof.statement,
+        endorsement,
+        // The registry's statement, re-presented. A sibling holds no account root
+        // and so could not sign a replacement even if it wanted a wider one.
+        scope: Box::new(known.scope.clone()),
+    })
+}
+
+/// Bind the holder's own device in the account namespace it just founded, signed by
+/// the root-derived founder: the genesis names no node, so this is the node's way in.
+///
+/// # Errors
+/// Propagates a signing or local apply failure.
+pub async fn link_holder_device(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    namespace: &ContextGroupId,
+    founder_sk: &PrivateKey,
+    known: &KnownDeviceCert,
+) -> EyreResult<()> {
+    let link = link_op(founder_sk, known)?;
+    let _report =
+        crate::sign_apply_and_publish(store, node_client, ack_router, namespace, founder_sk, link)
+            .await?;
+    Ok(())
+}
+
 /// Publish the two ops that make a device usable in `namespace`.
 ///
 /// The link confers authority; the delivery hands over the key without which the
@@ -115,20 +153,7 @@ async fn publish_link_and_key(
         ns_key,
     )?;
 
-    // Only a member can endorse and only the root can certify; the apply gate
-    // needs both, and a fresh endorsement is all a namespace gained later is
-    // missing.
-    let endorsement = AccountMemberEndorsement::sign(signer_sk, cert.account)
-        .map_err(|err| eyre::eyre!("failed to endorse device {device}: {err}"))?;
-    let link = GroupOp::AccountDeviceLinked {
-        genesis: proof.genesis,
-        chain: proof.chain.clone(),
-        cert: *cert,
-        endorsement,
-        // The registry's statement, re-presented. A sibling holds no account root
-        // and so could not sign a replacement even if it wanted a wider one.
-        scope: Box::new(known.scope.clone()),
-    };
+    let link = link_op(signer_sk, known)?;
 
     let report =
         crate::sign_apply_and_publish(store, node_client, ack_router, namespace, signer_sk, link)

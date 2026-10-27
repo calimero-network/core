@@ -16045,6 +16045,143 @@ mod account_plane_apply {
         );
     }
 
+    fn root_derived_genesis(
+        root: &crate::AccountRoot,
+    ) -> (
+        calimero_context_client::local_governance::SignedNamespaceOp,
+        ContextGroupId,
+    ) {
+        use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+        let founder = root
+            .account_namespace_founder()
+            .expect("derive the founder");
+        let namespace = root.account_namespace();
+        let genesis = NamespaceOp::Root(RootOp::AccountNamespaceCreated {
+            founder: root.account(),
+            account: founder.credential,
+            salt: root.account_namespace_salt(),
+        });
+        let signed = SignedNamespaceOp::sign(
+            &founder.signer,
+            namespace.to_bytes().into(),
+            vec![],
+            1,
+            genesis,
+        )
+        .expect("sign the genesis");
+        (signed, namespace)
+    }
+
+    /// A restored holder re-creates the namespace from the same root, and its genesis must be
+    /// the op the surviving copies hold: same bytes, same id in the DAG.
+    #[test]
+    fn re_creating_the_account_namespace_from_the_same_root_gives_the_same_genesis() {
+        let root = crate::AccountRoot::from_mnemonic(
+            &crate::NodeDeviceRepository::new(&test_store())
+                .account_root()
+                .expect("read")
+                .expect("the fixture's root")
+                .to_mnemonic()
+                .expect("export"),
+        )
+        .expect("import");
+        let restored = crate::AccountRoot::from_mnemonic(&root.to_mnemonic().expect("export"))
+            .expect("import");
+
+        let (first, _) = root_derived_genesis(&root);
+        let (second, _) = root_derived_genesis(&restored);
+
+        assert_eq!(
+            first.content_hash().expect("hash"),
+            second.content_hash().expect("hash")
+        );
+        assert_eq!(
+            borsh::to_vec(&first).expect("encode"),
+            borsh::to_vec(&second).expect("encode")
+        );
+    }
+
+    /// A bare replica takes the root-derived genesis: the founder is the account, the id and
+    /// the account-namespace mark are recorded, and the signer is bound as the founder's device.
+    #[test]
+    fn a_replica_accepts_a_root_derived_account_namespace_genesis() {
+        let store = test_store();
+        let root = crate::NodeDeviceRepository::new(&store)
+            .account_root()
+            .expect("read")
+            .expect("the fixture's root");
+        let (signed, namespace) = root_derived_genesis(&root);
+
+        let _founded = crate::apply_signed_namespace_op(&store, &signed).expect("it founds");
+
+        let meta = crate::MetaRepository::new(&store)
+            .load(&namespace)
+            .expect("read")
+            .expect("the namespace exists");
+        assert_eq!(meta.admin_identity, root.account());
+        assert_eq!(meta.owner_identity, root.account());
+        assert_eq!(
+            crate::NamespaceFoundingRepository::new(&store)
+                .account_namespace_founder(&namespace)
+                .expect("read the mark"),
+            Some(root.account())
+        );
+        assert!(crate::MembershipRepository::new(&store)
+            .is_admin(&namespace, &root.account())
+            .expect("read"));
+    }
+
+    /// The identical genesis arriving at a node that holds it is a duplicate: it applies
+    /// nothing again and leaves the one logged op.
+    #[test]
+    fn the_identical_account_namespace_genesis_is_a_duplicate() {
+        let store = test_store();
+        let root = crate::NodeDeviceRepository::new(&store)
+            .account_root()
+            .expect("read")
+            .expect("the fixture's root");
+        let (signed, namespace) = root_derived_genesis(&root);
+
+        let _first = crate::apply_signed_namespace_op(&store, &signed).expect("it founds");
+        let before = crate::NamespaceDagService::new(&store, namespace.to_bytes().into())
+            .read_head_record()
+            .expect("read the head");
+        let _again =
+            crate::apply_signed_namespace_op(&store, &signed).expect("a duplicate is not an error");
+        let after = crate::NamespaceDagService::new(&store, namespace.to_bytes().into())
+            .read_head_record()
+            .expect("read the head");
+
+        assert_eq!(before.parent_hashes, after.parent_hashes);
+        assert_eq!(before.next_nonce, after.next_nonce);
+    }
+
+    /// Two different roots never share a founder, so a genesis cannot be lifted across accounts.
+    #[test]
+    fn the_account_namespace_founder_differs_per_root() {
+        let one = crate::AccountRoot::from_mnemonic(
+            &crate::NodeDeviceRepository::new(&test_store())
+                .account_root()
+                .expect("read")
+                .expect("root")
+                .to_mnemonic()
+                .expect("export"),
+        )
+        .expect("import");
+        let other = crate::NodeDeviceRepository::new(
+            &crate::test_fixtures::test_store_without_account_root(),
+        )
+        .provision_account_root()
+        .expect("provision");
+        let (a, b) = (
+            one.account_namespace_founder().expect("derive"),
+            other.account_namespace_founder().expect("derive"),
+        );
+        assert_ne!(a.signer.public_key(), b.signer.public_key());
+        assert_ne!(a.group_key, b.group_key);
+    }
+
     /// A re-run before the op-log dedup names the signer at the op's cut, so a self-descope
     /// is not refused for having unbound its own device, and narrows nothing again.
     #[test]

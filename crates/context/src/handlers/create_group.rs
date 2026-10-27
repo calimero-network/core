@@ -91,6 +91,24 @@ impl Handler<CreateGroupRequest> for ContextManager {
             Some(_) => (None, None),
         };
 
+        // The account namespace is founded by a key and credential derived from the account
+        // root, so a restored holder re-creates the genesis it lost byte for byte.
+        let account_founder = if account_namespace && parent_group_id.is_none() {
+            match calimero_governance_store::NodeDeviceRepository::new(&self.datastore)
+                .require_account_root()
+                .and_then(|root| root.account_namespace_founder())
+            {
+                Ok(founder) => Some(founder),
+                Err(err) => {
+                    return ActorResponse::reply(Err(
+                        err.wrap_err("failed to derive the account namespace's founder")
+                    ))
+                }
+            }
+        } else {
+            None
+        };
+
         let Some(namespace_anchor_group_id) = parent_group_id.or(root_id) else {
             return ActorResponse::reply(Err(eyre::eyre!(
                 "internal: neither a parent nor a root id"
@@ -143,6 +161,11 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 Err(err) => return ActorResponse::reply(Err(err)),
             };
             (account, None)
+        } else if let Some(founder) = &account_founder {
+            (
+                founder.credential.statement.account,
+                Some(founder.credential.clone()),
+            )
         } else {
             match crate::join_credential::build(&self.datastore, &namespace_id, &admin_identity) {
                 Ok(credential) => {
@@ -376,7 +399,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     //
                     // Minted whatever the visibility. On an Open chain the namespace key
                     // covers the group (`key_covering_group`); no reader may serve this row.
-                    let group_key: [u8; 32] = rand::rng().random();
+                    let group_key: [u8; 32] = account_founder
+                        .as_ref()
+                        .map_or_else(|| rand::rng().random(), |founder| founder.group_key);
                     let key_id = GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
                     group_key_id = Some(key_id);
                     tracing::debug!(
@@ -413,7 +438,10 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     );
                 }
 
-                let signer_sk = PrivateKey::from(sk_bytes);
+                let signer_sk = account_founder.as_ref().map_or_else(
+                    || PrivateKey::from(sk_bytes),
+                    |founder| PrivateKey::from(*founder.signer.as_bytes()),
+                );
                 // Strict-tree refactor: GroupCreated is now an atomic
                 // create+nest op. It ONLY applies to subgroups — the namespace
                 // root itself has no parent by definition.

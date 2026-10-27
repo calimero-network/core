@@ -52,6 +52,21 @@ static ACCOUNT_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// namespace id was derived from its founder.
 const ACCOUNT_NAMESPACE_SALT_TAG: &[u8] = b"calimero/account-namespace-salt/v2";
 
+const FOUNDER_SIGNER_TAG: &[u8] = b"calimero/account-namespace-founder-signer/v1"; // the genesis signing key
+const FOUNDER_DEVICE_TAG: &[u8] = b"calimero/account-namespace-founder-device/v1"; // the genesis device's id nonce
+const FOUNDER_KEM_TAG: &[u8] = b"calimero/account-namespace-founder-kem/v1"; // the genesis device's agreement secret
+const NAMESPACE_KEY_TAG: &[u8] = b"calimero/account-namespace-key/v1"; // the namespace's first group key
+
+/// What founds an account namespace, every part derived from the account root alone.
+///
+/// A holder that loses its disk and re-creates the namespace therefore signs the
+/// byte-identical genesis the surviving copies hold, instead of forking from them.
+pub struct AccountNamespaceFounder {
+    pub signer: PrivateKey,
+    pub credential: Box<calimero_context_client::local_governance::JoinAccountCredential>,
+    pub group_key: [u8; 32],
+}
+
 /// This node's account root — the one key that survives losing every device.
 ///
 /// Node-level: it is what certifies a replacement device after total loss, so it
@@ -118,10 +133,51 @@ impl AccountRoot {
     /// only that namespace's members hold, and reveals nothing about the secret.
     #[must_use]
     pub fn account_namespace_salt(&self) -> [u8; calimero_account::NAMESPACE_SALT_LEN] {
-        let mut input = Zeroizing::new(Vec::with_capacity(ACCOUNT_NAMESPACE_SALT_TAG.len() + 32));
-        input.extend_from_slice(ACCOUNT_NAMESPACE_SALT_TAG);
+        self.derive(ACCOUNT_NAMESPACE_SALT_TAG)
+    }
+
+    fn derive(&self, tag: &[u8]) -> [u8; 32] {
+        let mut input = Zeroizing::new(Vec::with_capacity(tag.len() + 32));
+        input.extend_from_slice(tag);
         input.extend_from_slice(self.secret.as_bytes());
         *Hash::new(&input)
+    }
+
+    /// The signer, credential and first group key of this account's namespace genesis.
+    ///
+    /// The signer is a device of its own, certified by this root, so no node's key or
+    /// credential is in the genesis. The holder's node is bound by a later op.
+    ///
+    /// # Errors
+    /// Only if signing the device certificate fails.
+    pub fn account_namespace_founder(&self) -> EyreResult<AccountNamespaceFounder> {
+        let signer = PrivateKey::from(self.derive(FOUNDER_SIGNER_TAG));
+        let device_nonce: [u8; 16] = self.derive(FOUNDER_DEVICE_TAG)[..16]
+            .try_into()
+            .expect("a 32-byte hash has a 16-byte prefix");
+        let kem = X25519SecretKey::from(self.derive(FOUNDER_KEM_TAG)).public_key();
+        let account = self.account();
+        let statement = DeviceCert::sign(
+            &self.secret,
+            account,
+            DeviceId::mint(account, device_nonce),
+            &signer.public_key(),
+            &KemPublicKey::from(*kem.as_bytes()),
+            0,
+            0,
+        )
+        .map_err(|err| eyre::eyre!("failed to certify the account namespace's founder: {err}"))?;
+        Ok(AccountNamespaceFounder {
+            signer,
+            credential: Box::new(
+                calimero_context_client::local_governance::JoinAccountCredential {
+                    genesis: self.genesis(),
+                    chain: vec![],
+                    statement,
+                },
+            ),
+            group_key: self.derive(NAMESPACE_KEY_TAG),
+        })
     }
 
     /// The namespace every device of this account follows.
