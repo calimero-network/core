@@ -78,10 +78,8 @@ pub fn build_component(crate_dir: &Path, target_dir: &Path) -> EyreResult<Built>
 
 /// Builds `crate_dir` like [`build_component`], reusing a result cached under `cache_dir`.
 ///
-/// The cache key is the SHA-256 of the crate's `Cargo.toml`, `Cargo.lock` and every file under
-/// its `src/`, plus every file under each of `also_hash` (the SDK crates the guest links), so
-/// an edit to any of them rebuilds. The component is `cache_dir/<crate dir name>-<hash>.wasm`;
-/// cargo's own target directory is `cache_dir/target/<crate dir name>`.
+/// The component is `cache_dir/<crate dir name>-<key>.wasm` (key: see [`cache_key`]); cargo's
+/// own target directory is `cache_dir/target/<crate dir name>`.
 pub fn build_component_cached(
     crate_dir: &Path,
     also_hash: &[&Path],
@@ -91,41 +89,68 @@ pub fn build_component_cached(
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| eyre::eyre!("{} has no name", crate_dir.display()))?;
-    let mut hasher = Sha256::new();
-    let mut files = vec![crate_dir.join("Cargo.toml"), crate_dir.join("Cargo.lock")];
-    collect_files(&crate_dir.join("src"), &mut files)?;
-    for dir in also_hash {
-        collect_files(dir, &mut files)?;
-    }
-    files.sort();
-    for file in files {
-        // A missing Cargo.lock is fine; any other unreadable file is an error.
-        match std::fs::read(&file) {
-            Ok(bytes) => {
-                hasher.update(file.to_string_lossy().as_bytes());
-                hasher.update((bytes.len() as u64).to_be_bytes());
-                hasher.update(bytes);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => eyre::bail!("{}: {e}", file.display()),
-        }
-    }
-    let hash: String = hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    let cached = cache_dir.join(format!("{name}-{}.wasm", &hash[..16]));
+    let key = cache_key(crate_dir, also_hash)?;
+    let cached = cache_dir.join(format!("{name}-{key}.wasm"));
     if let Ok(bytes) = std::fs::read(&cached) {
         return Ok(bytes);
     }
     std::fs::create_dir_all(cache_dir)?;
     let built = build_component(crate_dir, &cache_dir.join("target").join(name))?;
     // Write beside, then rename: a concurrent reader never sees half a file.
-    let tmp = cache_dir.join(format!("{name}-{}.{}.tmp", &hash[..16], std::process::id()));
+    let tmp = cache_dir.join(format!("{name}-{key}.{}.tmp", std::process::id()));
     std::fs::write(&tmp, &built.component)?;
     std::fs::rename(&tmp, &cached)?;
     Ok(built.component)
+}
+
+/// Bump when [`build_component`]'s post-processing (the ABI lift) changes behaviour without
+/// its source text changing; the source of this file is hashed too.
+const POST_PROCESSING_VERSION: u32 = 1;
+
+/// The first 16 hex digits of a SHA-256 over everything that decides the built component:
+/// - every file under `crate_dir` and under each of `also_hash` (the guest's path
+///   dependencies, e.g. the SDK crates), skipping any `target/` directory, as
+///   (path relative to its root, length, bytes), so `Cargo.toml`, `Cargo.lock` and `src/` count;
+/// - the nearest `rust-toolchain.toml` / `rust-toolchain` at or above `crate_dir`;
+/// - the output of `rustc -V` run in `crate_dir` (the toolchain that builds the guest);
+/// - this crate's version, [`POST_PROCESSING_VERSION`] and the source of this file.
+pub fn cache_key(crate_dir: &Path, also_hash: &[&Path]) -> EyreResult<String> {
+    let mut hasher = Sha256::new();
+    let mut part = |label: &str, bytes: &[u8]| {
+        hasher.update((label.len() as u64).to_be_bytes());
+        hasher.update(label.as_bytes());
+        hasher.update((bytes.len() as u64).to_be_bytes());
+        hasher.update(bytes);
+    };
+    for (i, root) in std::iter::once(&crate_dir).chain(also_hash).enumerate() {
+        let mut files = Vec::new();
+        collect_files(root, &mut files)?;
+        files.sort();
+        for file in files {
+            let rel = file.strip_prefix(root).unwrap_or(&file);
+            let bytes = std::fs::read(&file).map_err(|e| eyre::eyre!("{}: {e}", file.display()))?;
+            part(&format!("{i}:{}", rel.to_string_lossy()), &bytes);
+        }
+    }
+    let toolchain = crate_dir
+        .canonicalize()
+        .unwrap_or_else(|_| crate_dir.to_path_buf())
+        .ancestors()
+        .flat_map(|d| ["rust-toolchain.toml", "rust-toolchain"].map(|n| d.join(n)))
+        .find_map(|f| std::fs::read(f).ok());
+    part("toolchain-file", &toolchain.unwrap_or_default());
+    let rustc = Command::new("rustc")
+        .arg("-V")
+        .current_dir(crate_dir)
+        .stdin(Stdio::null())
+        .output()?;
+    eyre::ensure!(rustc.status.success(), "rustc -V failed ({})", rustc.status);
+    part("rustc", &rustc.stdout);
+    part("app-build-version", env!("CARGO_PKG_VERSION").as_bytes());
+    part("post-processing", &POST_PROCESSING_VERSION.to_be_bytes());
+    part("app-build-source", include_str!("lib.rs").as_bytes());
+    let digest = hasher.finalize();
+    Ok(digest.iter().take(8).map(|b| format!("{b:02x}")).collect())
 }
 
 /// Every file under `dir` (none when it does not exist), skipping build output.
