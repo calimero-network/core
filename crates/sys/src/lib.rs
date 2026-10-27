@@ -62,6 +62,12 @@ wasm_imports! {
         // Views only; the host binds it to the running context.
         fn search_query(request: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
         // --
+        // One outbound HTTPS request: borsh `OutboundRequest` in, borsh
+        // `OutboundResponse` (true) or a UTF-8 reason (false) in the register.
+        // Off unless the node's operator, the app's manifest and the run all
+        // allow it; see `calimero_primitives::outbound`.
+        fn http_request(request: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
+        // --
         // Private storage functions (node-local, NOT synchronized)
         fn private_storage_read(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
         fn private_storage_remove(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
@@ -73,6 +79,8 @@ wasm_imports! {
         fn tee_origin() -> Bool;
         fn tee_random_bytes(buf: Ref<BufferMut<'_>>);
         fn tee_authority_keys(register_id: RegisterId);
+        // The namespace TEE key, public, in every run; 0 while there is none.
+        fn tee_sealing_key(register_id: RegisterId) -> Bool;
         fn account_device_keys(account: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
         // The writers of a `SharedStorage` cell at this run's governance cut. Returns 0 when
         // they cannot be resolved, 1 when no rotation took effect (the cell's stored set

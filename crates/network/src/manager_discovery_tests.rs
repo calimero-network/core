@@ -29,14 +29,16 @@ use calimero_network_primitives::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, NetworkConfig, RelayConfig,
     RendezvousConfig, SwarmConfig,
 };
-use calimero_network_primitives::messages::{NetworkEvent, NetworkEventDispatcher};
+use calimero_network_primitives::messages::{DialFailed, NetworkEvent, NetworkEventDispatcher};
+use calimero_network_primitives::stream::CALIMERO_STREAM_PROTOCOL;
 use futures_util::StreamExt;
+use libp2p::core::PeerRecord;
 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage, MessageId};
 use libp2p::identity::Keypair;
 use libp2p::kad::store::RecordStore as _;
 use libp2p::kad::{Event as KadEvent, InboundRequest, Record, RecordKey};
 use libp2p::rendezvous::client::Event as RzClientEvent;
-use libp2p::rendezvous::{server as rz_server, Cookie, ErrorCode, Namespace};
+use libp2p::rendezvous::{server as rz_server, Cookie, ErrorCode, Namespace, Registration};
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, SwarmEvent};
 use libp2p::{gossipsub, identify, noise, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder};
 use prometheus_client::registry::Registry;
@@ -44,6 +46,8 @@ use tokio::time::timeout;
 
 use crate::behaviour::{Behaviour, BehaviourEvent};
 use crate::blob_provider_record::BlobProviderRecord;
+use crate::discovery::MAX_RENDEZVOUS_DIALS_PER_EVENT;
+use crate::handlers::commands::open_stream::open_stream_error;
 use crate::handlers::stream::swarm::kad::MAX_RECORDS_PER_SOURCE;
 use crate::NetworkManager;
 
@@ -819,4 +823,60 @@ async fn a_received_gossip_message_is_logged_without_its_payload() {
     );
     assert!(!logs.contains("192, 255, 238, 171"), "{logs}");
     assert!(!logs.to_ascii_lowercase().contains("c0ffeeab"), "{logs}");
+}
+
+#[tokio::test]
+async fn a_discovered_event_dials_at_most_the_per_event_cap() {
+    let mut manager = build_manager().await;
+    let namespace = Namespace::new("cap".to_owned()).unwrap();
+    let registrations: Vec<_> = (0..MAX_RENDEZVOUS_DIALS_PER_EVENT + 8)
+        .map(|i| {
+            // TEST-NET-2 (RFC 5737): the dials stay pending, so they are countable.
+            let addr: Multiaddr = format!("/ip4/198.51.100.9/tcp/{}", 4000 + i)
+                .parse()
+                .unwrap();
+            Registration {
+                namespace: namespace.clone(),
+                record: PeerRecord::new(&Keypair::generate_ed25519(), vec![addr]).unwrap(),
+                ttl: 3600,
+            }
+        })
+        .collect();
+
+    manager.dispatch_behaviour_event(BehaviourEvent::Rendezvous(RzClientEvent::Discovered {
+        rendezvous_node: PeerId::random(),
+        registrations,
+        cookie: Cookie::for_namespace(namespace),
+    }));
+
+    let dialed = manager
+        .swarm
+        .network_info()
+        .connection_counters()
+        .num_pending_outgoing();
+    assert_eq!(dialed as usize, MAX_RENDEZVOUS_DIALS_PER_EVENT);
+}
+
+/// The error libp2p-stream gives for a peer with no address is what the
+/// namespace join classifies on, so run the real dial rather than a built error.
+#[tokio::test]
+async fn opening_a_stream_to_a_peer_with_no_address_reports_a_failed_dial() {
+    let mut manager = build_manager().await;
+    let mut control = manager.swarm.behaviour().stream.new_control();
+    let open = control.open_stream(PeerId::random(), CALIMERO_STREAM_PROTOCOL);
+    tokio::pin!(open);
+
+    let result = timeout(Duration::from_secs(5), async {
+        loop {
+            tokio::select! {
+                result = &mut open => break result,
+                _event = manager.swarm.select_next_some() => {}
+            }
+        }
+    })
+    .await
+    .expect("the dial fails without an address");
+
+    let err = open_stream_error(result.expect_err("no address to dial"));
+    assert!(err.downcast_ref::<DialFailed>().is_some(), "{err:?}");
 }

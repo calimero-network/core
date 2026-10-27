@@ -577,6 +577,29 @@ mod tests {
         assert_eq!(body, json_rpc_error, "the rest is JSON-RPC's error object");
     }
 
+    /// A node with no identity in the context is the caller addressing a context
+    /// this node is not in, a client fault; a failed identity lookup is the
+    /// node's own and stays a server error.
+    #[test]
+    fn a_missing_owned_identity_is_a_client_fault_and_a_failed_lookup_is_not() {
+        use calimero_context_client::messages::{ExecuteError, InternalErrorKind};
+        use calimero_server_primitives::jsonrpc::ExecutionError;
+
+        let missing =
+            crate::admin::service::method_error_response(&ExecutionError::NoOwnedIdentity);
+        assert_eq!(missing.status(), axum::http::StatusCode::FORBIDDEN);
+
+        let failed = crate::admin::service::method_error_response(&ExecutionError::ExecuteError(
+            ExecuteError::InternalError {
+                kind: InternalErrorKind::Context,
+            },
+        ));
+        assert_eq!(
+            failed.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
     /// Output that is not JSON is the node path's `SerdeError`, not a `null`.
     #[test]
     fn undecodable_output_is_a_serde_error_not_a_null_return() {

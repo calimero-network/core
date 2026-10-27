@@ -109,6 +109,27 @@ pub struct VMContext<'a> {
     /// `true` when this run merge-applies a peer's delta, so `apply_storage_delta`
     /// draws on a replay budget. Set by the node, never from guest memory.
     pub remote_delta: bool,
+    /// The node's outbound HTTPS client, bound to this run's application. The
+    /// node supplies it only when its operator turned outbound requests on, the
+    /// app's manifest declares at least one URL, and the run writes state and
+    /// executes on this node (never a view, a migration, a check or a peer's
+    /// delta). `None` everywhere else, and `http_request` then traps.
+    pub outbound: Option<std::sync::Arc<dyn OutboundHost>>,
+}
+
+/// The node's outbound HTTPS client as a run sees it.
+///
+/// Bytes in, bytes out — borsh `calimero_primitives::outbound::OutboundRequest`
+/// and `OutboundResponse` — so the runtime neither speaks HTTP nor decides what
+/// may be reached. Every policy decision (the operator's hosts, the app's
+/// declared URLs, the address checks, secrets) is the host's.
+pub trait OutboundHost: Send + Sync + fmt::Debug {
+    /// Send `request`, or say why not.
+    ///
+    /// # Errors
+    /// A message for the guest: a refused or malformed request, a failed
+    /// connection, a timeout, a response over the size limit.
+    fn send(&self, request: &[u8]) -> Result<Vec<u8>, String>;
 }
 
 /// The node's full-text search as a run sees it.
@@ -156,6 +177,11 @@ pub struct SealingContext {
     /// the namespace TEE key once this TEE holds it, else the attested key of
     /// every TEE authority. Empty for any other run.
     pub tee_authority_keys: Vec<[u8; DIGEST_SIZE]>,
+    /// Resolves the namespace TEE key a value only the TEE may read is sealed
+    /// to now, as every member sees it (`tee_sealing_key`). Given to every run,
+    /// since the key is public, and asked only when the run calls for it: it is
+    /// a read of the namespace's governance log.
+    pub namespace_sealing_key: Option<SealingKeyResolver>,
     /// The namespace TEE keys this TEE holds, for a TEE-triggered run; empty
     /// otherwise. An envelope that does not open with `opener` is tried with
     /// each of these.
@@ -165,6 +191,18 @@ pub struct SealingContext {
     /// value one member may read to, so that each of their devices opens it.
     /// Empty for any other run.
     pub account_devices: std::collections::BTreeMap<[u8; DIGEST_SIZE], Vec<[u8; DIGEST_SIZE]>>,
+}
+
+/// Looks up the namespace TEE key on demand: `None` while there is none.
+#[derive(Clone)]
+pub struct SealingKeyResolver(
+    pub std::sync::Arc<dyn Fn() -> Option<[u8; DIGEST_SIZE]> + Send + Sync>,
+);
+
+impl core::fmt::Debug for SealingKeyResolver {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SealingKeyResolver")
+    }
 }
 
 impl<'a> VMContext<'a> {
@@ -199,6 +237,7 @@ impl<'a> VMContext<'a> {
             sealing: SealingContext::default(),
             search: None,
             remote_delta: false,
+            outbound: None,
         }
     }
 }
@@ -658,6 +697,9 @@ pub struct VMLogic<'a> {
     blob_bytes_written: u64,
     /// `search_query` calls made so far, capped at `MAX_SEARCH_CALLS`.
     search_calls: u64,
+    /// `http_request` calls made so far, capped at
+    /// `calimero_primitives::outbound::MAX_REQUESTS_PER_RUN`.
+    http_requests: u64,
     /// Host calls made so far, capped at [`VMLimits::max_host_calls`].
     host_calls: u64,
     /// The instance's gas meter, when it is metered. Set by the runtime once
@@ -779,6 +821,7 @@ impl<'a> VMLogic<'a> {
             storage_read_bytes: 0,
             blob_bytes_written: 0,
             search_calls: 0,
+            http_requests: 0,
             host_calls: 0,
             gas_meter: None,
             host_gas_owed: 0,

@@ -45,6 +45,12 @@ steps:
       - e2e-node-2
     timeout: 30
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "test_key"
+      equals:
+        output: "test_value"
 
   # Verify on node-2
   - name: Get value on node-2
@@ -80,6 +86,12 @@ steps:
       - e2e-node-2
     timeout: 30
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "from_node2"
+      equals:
+        output: "node2_value"
 
   # Verify on node-1
   - name: Get node-2 value on node-1

@@ -239,6 +239,10 @@ steps:
       - app-migration-rename-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_details
+      equals:
+        output: "rename-scenario-updated-via-v4"
 
   - name: Node 2 reads details back via v4 get_details
     type: call

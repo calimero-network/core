@@ -58,7 +58,7 @@ The `testing` feature (enabled via `calimero-storage`'s `testing` feature in `[d
 | `add_delta(delta, applier) -> Result<bool, DagError>` | Applies immediately, stores pending, or dedupes; `true` only on `Applied`. Refuses a delta over the parent cap, and a waiting delta larger than the whole pending byte budget. Needs `T: BorshSerialize` to size pending deltas |
 | `add_delta_with_outcome(delta, applier) -> Result<AddDeltaOutcome, DagError>` | Same, but distinguishes `Pending` from `Duplicate` |
 | `restore_applied_delta(delta) -> bool` | Registers topology for an already-applied delta (e.g. loaded from DB) without re-applying; does **not** cascade pending children |
-| `try_process_pending(applier) -> Result<usize, DagError>` | Explicitly re-attempts every currently-pending delta; needed after `restore_applied_delta` |
+| `try_process_pending(applier) -> Result<Vec<[u8; 32]>, DagError>` | Explicitly re-attempts every currently-pending delta and returns the ids it drained; needed after `restore_applied_delta` |
 | `get_heads() -> Vec<[u8; 32]>` | Current DAG tips (no children yet) |
 | `get_missing_parents(query_limit) -> Vec<[u8; 32]>` | Parent ids referenced by pending deltas but absent from the DAG entirely - the backfill fetch list |
 | `get_deltas_since(ancestor, start_ids, query_limit) -> (Vec<CausalDelta<T>>, Vec<[u8; 32]>)` | BFS from heads (or `start_ids`) back to `ancestor`; returns deltas plus a pagination cursor |

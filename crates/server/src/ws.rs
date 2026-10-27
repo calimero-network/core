@@ -1485,7 +1485,6 @@ mod tests {
             None,
         );
         config.cors.allowed_origins = Some(vec!["https://app.example".to_owned()]);
-        config.apps.port = Some(2429);
         let (event_sender, _) = broadcast::channel(16);
         let (node_client, ctx_client, blob_dir) =
             test_clients(LazyRecipient::new(), event_sender).await;
@@ -1586,13 +1585,17 @@ mod tests {
         }
     }
 
-    /// An app's page is third-party code: on the apps port it is no loopback page.
+    /// An app's page is third-party code: on its own origin it is no loopback page.
     #[tokio::test]
     async fn ws_upgrade_refuses_an_app_origin() {
+        let label = crate::app_host::encode_label(
+            &calimero_primitives::application::ApplicationId::from([7; 32]),
+        );
+        let origin = format!("http://{label}.localhost:2528");
         for embedded_auth in [false, true] {
             let (addr, _blob_dir) = spawn_guarded_ws(embedded_auth).await;
             assert_eq!(
-                upgrade(addr, "127.0.0.1", Some("http://127.0.0.1:2429")).await,
+                upgrade(addr, "127.0.0.1", Some(&origin)).await,
                 StatusCode::FORBIDDEN,
                 "embedded auth: {embedded_auth}"
             );

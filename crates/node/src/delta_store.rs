@@ -128,6 +128,18 @@ pub struct BatchAddResult {
     pub forwarded_events: Vec<([u8; 32], Vec<u8>)>,
 }
 
+impl BatchAddResult {
+    /// Inputs the DAG took in, applied or still pending; everything but `failed`.
+    pub fn admitted(&self) -> usize {
+        self.applied.len() + self.pending.len()
+    }
+
+    /// Whether the DAG took `delta_id` in, applied or still pending.
+    pub fn was_admitted(&self, delta_id: &[u8; 32]) -> bool {
+        self.applied.contains(delta_id) || self.pending.contains(delta_id)
+    }
+}
+
 /// Max orphaned member deltas held across all anchors before the buffer stops
 /// accepting new ones (and they fall back to the DAG / HashComparison re-fetch
 /// path). Bounds the memory a peer can pin by sending members whose anchor never
@@ -1901,7 +1913,10 @@ impl DeltaStore {
             self.applier
                 .retain_apply_lock
                 .store(true, std::sync::atomic::Ordering::Release);
-            let processed = dag.try_process_pending(&*self.applier).await;
+            let processed = dag
+                .try_process_pending(&*self.applier)
+                .await
+                .map(|drained| drained.len());
             self.applier
                 .retain_apply_lock
                 .store(false, std::sync::atomic::Ordering::Release);
@@ -2360,7 +2375,11 @@ impl DeltaStore {
                 .retain_apply_lock
                 .store(true, std::sync::atomic::Ordering::Release);
             if added {
-                match dag.try_process_pending(&*self.applier).await {
+                match dag
+                    .try_process_pending(&*self.applier)
+                    .await
+                    .map(|drained| drained.len())
+                {
                     Ok(0) => {}
                     Ok(n) => {
                         let pending_after: HashSet<[u8; 32]> =
@@ -3183,7 +3202,11 @@ impl DeltaStore {
                 // stay stuck without this explicit nudge. Closes the
                 // up-to-DEFAULT_SYNC_FREQUENCY_SECS (10 s) stall
                 // otherwise incurred before the periodic sync fires.
-                match dag.try_process_pending(&*self.applier).await {
+                match dag
+                    .try_process_pending(&*self.applier)
+                    .await
+                    .map(|drained| drained.len())
+                {
                     Ok(0) => {}
                     Ok(n) => {
                         tracing::info!(
@@ -3890,7 +3913,10 @@ impl DeltaStore {
             self.applier
                 .retain_apply_lock
                 .store(true, std::sync::atomic::Ordering::Release);
-            let processed = dag.try_process_pending(&*self.applier).await;
+            let processed = dag
+                .try_process_pending(&*self.applier)
+                .await
+                .map(|drained| drained.len());
             self.applier
                 .retain_apply_lock
                 .store(false, std::sync::atomic::Ordering::Release);

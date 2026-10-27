@@ -239,6 +239,12 @@ steps:
       - app-migration-newenum-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: schema_info
+      equals:
+        output:
+          schema_version: "2.0.0"
+          status: "Archived"
 
   - name: Read schema_info after archiving on node 1
     type: call

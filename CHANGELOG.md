@@ -4,6 +4,219 @@
 
 ### Added
 
+- **A method can call an outside HTTPS service, off unless the node's
+  operator turns it on.** The new host function `http_request`
+  (`calimero_sdk::env::http_request`) sends one `GET`, `POST`, `PUT`, `PATCH`
+  or `DELETE` per run and returns the status and body. A node makes the
+  request only when `[context.outbound]` is enabled and allows the host
+  (listed, or `"*"` for any host an installed app declares), a URL prefix in
+  the app's signed manifest covers the URL (`outbound = [...]` in
+  `[package.metadata.calimero]`), and the run writes state on this node: never
+  a view, a migration, a state op or a peer's delta. https on port 443 to a
+  host that resolves only to public addresses, no redirects, no proxy, a
+  64 KiB body, a 1 MiB answer and 10 s. A request names a secret as
+  `{{secret:NAME}}`; the node fills it in from its operator's secrets
+  (`env_secrets`, or a loopback `sidecar` service) for that app only (its
+  package and its bundle signer), sends it only to the hosts it is bound to,
+  and removes it from the response, so the app never reads it. Nothing
+  changes on a node that does not turn it on: `http_request` traps there.
+  Guide: *Call an external service*. (#4670)
+- **The namespace approves the hosts its data may reach.** An outbound
+  request now also needs a URL prefix the run's namespace approved for the
+  app's publisher, so a node that allows any host (`hosts = ["*"]`) no longer
+  lets an app send a namespace's state to whatever its publisher declared. An
+  admin (or a member with `MANAGE_APPLICATION`) approves in the same call that
+  installs or upgrades the app: `approveOutbound` (`"manifest"` or a list of
+  prefixes) on `POST /admin-api/namespaces` and `POST
+  /admin-api/groups/{id}/upgrade`, published as a new
+  `GroupOp::OutboundApprovalSet` at the namespace root that every subgroup and
+  context reads. Approvals are per publisher signer; an upgrade adds to them,
+  and a prefix it declares that nobody approved answers `AwaitingApproval`
+  while the approved ones keep working. A refused request returns a reason
+  starting `NotApproved:` or `AwaitingApproval:`. `GET`/`PUT
+  /admin-api/namespaces/{id}/outbound-approvals` list and set them (an empty
+  list revokes); `meroctl` gains `--approve-outbound` and `namespace outbound
+  ls|set`. Nothing is approved by default, so an app installed on
+  `0.12.0-rc.1` makes no requests until an admin approves. The op is appended
+  at the `GroupOp` tail without a schema bump, so SDKs keep signing at 27, and
+  a node that predates it stalls only on that op. (#4673)
+- `calimero_sdk::outbound::OutboundRefusal::of` tells an app's method which of
+  the two namespace refusals a failed `env::http_request` was. (#4673)
+- An app can keep an outbound secret in its own state, sealed to the namespace
+  TEE key: `env::seal_outbound_secret(value, hosts)` returns a `SealedSecret`,
+  and a request names it with `SealedSecret::placeholder()` (`{{sealed:<hex>}}`).
+  Only a node that is a TEE authority of the namespace fills it in, for a host
+  sealed with it, and removes it from the response; any other node forwards
+  the request to one (below), and it is refused `SealedUnavailable:` when no
+  TEE can be reached. `env::tee_sealing_key()` reads the namespace TEE key in
+  every run, and is `None` with no TEE, so an app can refuse to store a secret
+  no node could open. New host function `tee_sealing_key`.
+- A member's node that is not a TEE hands an outbound request naming a sealed
+  secret to a TEE of the namespace (new sync-stream payload
+  `SealedOutboundRequest`, answered `SealedOutboundAnswer`), and takes the
+  response only under a TEE authority's signature, so the method gets the
+  answer in the same call and its writes stay on the member's node. A peer
+  that predates it closes the stream, and the request is refused
+  `SealedUnavailable:` when no TEE answers.
+
+## [0.11.1] - 2026-10-25
+
+A patch release of 0.11.0 with one fix.
+
+### Fixed
+
+- **A member of a Restricted subgroup nested under a Restricted group it is
+  not in now sees the subgroup.** Its node parked every op of the subgroup
+  (`AuthorityUndecidable`, cause `AncestryUnreadable`), because judging one
+  required the parent's sealed history readable at the op's cut, and only the
+  parent's members ever get the parent's key. So the subgroup's name, members
+  and contexts never applied there: in Mero Docs, a folder shared from inside
+  a private folder showed no name and no documents to the person it was
+  shared with. A node now needs a group's ancestors readable only up to the
+  first Restricted edge whose state it reads (the root's `GroupCreated` and
+  `GroupReparented` and the subgroup's own `SubgroupVisibilitySet`), plus the
+  namespace root, which is as far as any inheritance or admin question climbs.
+  An edge in a state the node cannot read still needs everything above it.
+
+## [0.11.0] - 2026-10-24
+
+The first stable 0.11 release. It carries every change shipped across
+0.11.0-rc.11 through 0.11.0-rc.90 and everything merged since, listed
+below, on top of the 0.11.0-rc.1 to 0.11.0-rc.10 entries that follow it.
+
+### Added
+
+- **A context can hand a third party a token that calls only named
+  methods.** `POST /admin-api/contexts/{id}/grants` takes `{ methods, label?,
+  notAfter? }` and returns the token once, with the grant id; `GET
+  .../grants` lists grants and `DELETE .../grants/{grant_id}` revokes one.
+  mero-auth maps these three to `context:execute[<ctx>]`. A grant only
+  narrows: every method must be one the issuer's own token may execute, a
+  method-scoped token lists and revokes only grants it could have issued
+  (`404` otherwise), and an account session is refused on all three. Method
+  names are `[A-Za-z0-9_]` only; `methods` is capped at 32 names of up to 128
+  bytes and `label` at 128 bytes. The holder calls `POST
+  .../grant-calls` with `{ token, method, argsJson }`, a route that is
+  public on every node and sealable in proxy mode; the token is the whole
+  credential. `notAfter` is judged on this node's clock, and an unknown and
+  a revoked token get the same answer. The node stores only a hash of the
+  token, in the node-local `ContextAccessGrant` column, and deleting the
+  context purges its grants. A grant is not delegated authorship: the call
+  runs as the node, as `/jsonrpc` does, so the application sees the node's
+  account as the caller and peers see an ordinary delta from this node; an
+  app that must tell holders apart takes something from the holder in its
+  arguments. A proxy-mode deployment must exempt `POST
+  /admin-api/contexts/{id}/grant-calls` at the ingress, as it does
+  `/namespaces/{id}/admit`. Client methods are in calimero-network/mero-js#303.
+  (#4663)
+
+- **A bundle can carry its built frontend, signed with the rest.** `cargo
+  mero bundle --frontend-dir dist/` (or `frontend-dir` in
+  `[package.metadata.calimero]`) packs the files under `frontend/` and lists
+  them in the manifest's optional `frontend: { entry, files: [{ path, hash,
+  size }] }`, which the bundle signature covers. The build requires an
+  `index.html`, caps the total at 32 MiB before reading any file, refuses or
+  skips symlinks, devices, dot entries and `*.map` files, checks paths and a
+  MIME allowlist, and lints HTML for remote URLs, root-absolute URLs,
+  `<base>` and inline script. `cargo mero bundle --check-frontend app.mpk`
+  verifies the signature and every file; `--format json` prints one object
+  with a stable `code`. A node refuses the whole install, before writing any
+  blob or application row, when a frontend file is missing or its size or
+  hash differs (`FRONTEND_SIZE_MISMATCH`, `FRONTEND_HASH_MISMATCH`,
+  `FRONTEND_MISSING_FILE`, ...). An installed frontend's files are stored as
+  blobs and indexed per bundle in the node-local `BundleFrontend` column, so
+  an upgrade keeps older releases' files and uninstall releases them. A
+  manifest without `frontend` serializes as before, and an older node
+  ignores the field. (#4643, #4644, #4645, #4646)
+
+- **A node serves an installed app's frontend from the app's own origin.**
+  A request whose `Host` is `{label}.{base_domain}`, where the label is the
+  application id in lowercase base32, is answered before every other layer:
+  `GET /{version}/{path}` serves that release's bundled file (re-hashed on
+  read) with a CSP, `nosniff`, `no-referrer`, an `ETag` and an immutable
+  `Cache-Control`; `/` redirects to the current release and keeps the query,
+  so an invitation link reaches the app (#4668). Client routes get the entry
+  file for a page request, an asset below a deep link resolves to the
+  release's own file, and the CSP allows wasm compilation. An older
+  release stays served at its own `/{version}/` after an upgrade.
+  `[server.apps] base_domain` defaults to `localhost`; a one-label domain
+  other than `localhost` is refused. App hosts are not mounted when
+  `[server.sealed] required` is set. The release lookup uses a new node-local
+  `ApplicationRelease` column, filled at install. (#4647, #4653, #4668)
+
+- **An app's page calls the node only as its own app.** On an app host,
+  `/jsonrpc`, `/ws`, `/sse`, `/auth/refresh` and `/auth/validate` are served,
+  `GET /auth/login` redirects to the node's own origin, and `/admin-api` is
+  limited to an allowlist of exact shapes: the group, member, context and
+  subgroup reads and writes the app owns, blob and alias routes, deleting its
+  own groups and leaving its own namespace. Cascading over another app's
+  subtree, `leave?purge` and account routes are refused. A token with
+  `admin` or bound to another app is refused, and any other token is bound
+  to this app. The `Origin` must equal the `Host` called, and a page on any
+  app origin (`{label}.{base_domain}`, `calimero-app://{label}`,
+  `http(s)://calimero-app.{label}`) gets `403` on every route of the node's
+  own host, including the desktop app's `calimero-app` webviews. In proxy
+  mode the app API answers `403` unless `[server.apps] trust_proxy = true`;
+  merod then takes `X-Auth-Permissions` on an app host as given, so the proxy
+  must overwrite `X-Auth-Permissions`, `X-Auth-Account` and `X-Auth-Device`
+  on every app-host request (`operate/deployment.mdx` has an nginx example).
+  A namespace joined by invitation keeps its application unverified until a
+  signed `TargetApplicationSet` or cascade names it, and an application's
+  client key acting on it or its subgroups gets `403` until then, because the
+  invitation's application hint is unsigned. (#4648, #4653)
+
+- **A removed namespace can be restored without an invitation.** `POST
+  /admin-api/namespaces/{id}/join` with no `invitation` restores a namespace
+  this device removed while its account stayed a member: the node follows it
+  again, replays its own ops, and answers `200` once group state and the
+  account's membership land, or `503` after 30 s with the removal still
+  recorded. It answers `403` when the account no longer names the namespace
+  or the device or client key is scoped elsewhere; an application-bound key
+  restores only its own application's namespaces. `GET
+  /admin-api/namespaces/for-application/{id}` lists removed namespaces with
+  `forgotten: true`, under the name they had. A join with an invitation
+  behaves as before. Paired with calimero-network/mero-js#295. (#4624)
+
+- **Leaving a namespace can free every device of the account.** `POST
+  /admin-api/namespaces/{id}/leave?purge=true` leaves as before and, once an
+  admin has acknowledged the `MemberLeft`, deletes the namespace and its
+  contexts from this device and announces `AccountNamespacePurged` in the
+  account namespace, so each linked device purges it once the account is no
+  longer a member there. Without an admin's acknowledgement it is a plain
+  leave, and the response's `purged` says so. `?purge=` takes only `true` or
+  `false` (anything else is `400`); `meroctl namespace leave --purge` sends
+  it. The account namespace cannot be left or purged
+  (`AccountNamespaceNotRemovable`, `409`). (breaking: a linked device on an
+  older build cannot decode `AccountNamespacePurged` and stalls on its
+  account namespace, including any later `DeviceRevoked`, until it upgrades)
+  (#4623)
+
+- **An operator can switch a namespace's upgrade on this node on demand.**
+  `POST /admin-api/groups/{namespace_id}/upgrade/activate` with optional
+  `expectedApplicationId` and `expectedVersion` switches every local context
+  of the namespace and its subgroups to the stored target release and
+  replays their parked deltas. It answers `400` for a subgroup, `409` when
+  the target differs from what the caller expected, and `404` when the
+  target or a ladder rung is not installed (it never installs). The response
+  carries `switchedContexts`, `replayedDeltas` and `failedContexts: [{
+  contextId, error, retryable }]`; a repeat call switches nothing. `meroctl
+  group upgrade activate <namespace_id>` exits non-zero on an error status or
+  any failed context. (#4608)
+
+- **Group info says whether a group is open to the whole namespace.** `GET
+  /admin-api/groups/{id}` returns `effectiveVisibility`: `"open"` only when
+  every group up to the namespace is Open, `"restricted"` otherwise,
+  including for the namespace root. An Open subgroup inside a Restricted one
+  reported only `subgroupVisibility: "open"`, so clients showed a private
+  folder as unlocked. `subgroupVisibility` is unchanged. (#4640)
+
+- **A revoked device's notice stays until the user acknowledges it.**
+  `revokedFrom` on `GET /admin-api/identity` was cleared when a device or
+  account root was minted or imported, so re-pairing hid the revocation. It
+  now stays until `DELETE /admin-api/identity/revoked-from` (idempotent,
+  answers `{"data": null}`). A client that treated `revokedFrom` as transient
+  keeps showing it until it calls the new route. (#4621)
+
 - **A refused join says which refusal it was.** `POST /namespaces/{id}/join`
   and `POST /groups/join` answer a refusal with a `code` beside `error`:
   `invitation_expired`, `invitation_invalid`, `invitation_already_used`,
@@ -529,6 +742,111 @@
   [#3528])
 
 ### Fixed
+
+- **A founder who transfers ownership stays an admin of the namespace.**
+  After `TransferOwnership` the former owner lost access to their own
+  namespace (`403` "node is not a member of group"): the projection read the
+  root's admin from the meta row a transfer moves. The genesis now folds as
+  `NamespaceFounded`, seating the founder as Admin below every other op, so
+  a later removal, leave or role change still wins and a second genesis
+  seats nobody. A genesis a relay published for the founder seats them too.
+  (breaking: `SIGNED_NAMESPACE_OP_SCHEMA_VERSION` moves to 27 and only 27 is
+  accepted, so ops signed at 25 or 26, by rc.89, rc.90 or older mero-js, are
+  refused and every node re-bootstraps; a genesis stored before 27 is not
+  re-derived (#4660); pairs with calimero-network/mero-js#292) (#4625,
+  #4660)
+
+- **Every node reaches the same verdict on a governance op, whatever order
+  it arrives in.** Device-plane gates (link scope, endorser, descope signer,
+  withdrawal), direct role changes, join re-entry, TEE admission and context
+  grant, revoke, metadata and detach now read the state at the op's causal
+  cut, not the rows the node holds when it arrives. An op whose cut the node
+  cannot read whole is held (listed in `heldOps`) and judged when it can be;
+  a refused op folds as nothing, and a publisher whose own apply refuses a
+  device link, unlink or descope gets an error, not a silent no-op.
+  `NamespaceOp::Group` names in the clear the context it registers
+  (`registers`), so a node without the group's key judges a registration too.
+  A context belongs to the first group that registers it: it can no longer
+  move to another group after a detach or group deletion
+  (`RegisteredElsewhere`, `409`), and every namespace member can see which
+  group registered which context id. (#4546)
+
+- **Opening a subgroup, a reused nonce and owner checks are judged at the
+  op's cut.** Opening a Restricted subgroup reads its creator and the
+  signer's namespace standing at the flip's cut, so a creator removed from
+  the namespace cannot open it, and a flip voided by a concurrent removal
+  leaves it Restricted on every node. An op reusing a nonce already spent in
+  its causal past is refused (`NonceRespent`) instead of skipped as a
+  duplicate. Owner gates read the owner from the latest transfer at the cut,
+  and the namespace founder from its founding row or logged genesis. A
+  subgroup deletion applies inside and outside the subgroup; before, a node
+  outside it refused it and parked every later namespace op. Nodes on older
+  code may still apply what these refuse, so upgrade the fleet together.
+  (#4588)
+
+- **An owner's group delete reaches every member and leaves no ghost
+  group.** An owner-delete answered `200` but never left the owner's node,
+  so other members kept the group and every node listed its id as a child.
+  It is now published, and it deletes the group's empty subgroups with it;
+  a subtree holding any context is refused (`409`). Owner-level ops (delete,
+  transfer ownership, TEE admission and authoring policy) that this node
+  cannot seal are refused unapplied (`NoGroupKey` / `NoNamespaceIdentity`)
+  instead of answering `200`. (#4615)
+
+- **A member's upgrade status names the released versions.** `GET
+  /admin-api/groups/{id}/upgrade/status` on a member reported `fromVersion:
+  "unknown"` and the version of whatever bundle it had installed as
+  `toVersion`. It now reports the versions the upgrade op names, as the
+  admin's does, and the `MigrationStarted` event uses the same pair. (#4631)
+
+- **A context reports the release it runs, not the latest installed one.**
+  `applicationVersion` on `GET /admin-api/contexts/{id}` and the context list
+  reported a newly installed release before the context switched to it. It
+  now reports the release the context executes until the switch. (#4632)
+
+- **A context waiting for its release switch is synced at most once a
+  minute.** Until the node switches to the namespace's target release, every
+  unforced sync of such a context ended in "did not converge"; those syncs
+  now run at most once a minute and log the warning at debug. Explicit and
+  heartbeat syncs are unaffected. (#4612)
+
+- **An absorb record that cannot be decoded is deleted.** The drains logged
+  and skipped it, so it stayed in the store and kept the context counted as
+  holding records for its target release. (#4616)
+
+- **Two concurrent views no longer run one lazy upgrade twice.** A view on a
+  context with a pending lazy upgrade took the read lock, so concurrent views
+  could each run the switch. Such a view now takes the write lock and decides
+  again once it holds it; views on a context with nothing pending still share
+  the read lock. (#4617)
+
+- **A purge armed by another device waits until this node has synced the
+  namespace.** A waiting account purge deleted a namespace this device
+  followed but had not synced, reading "no member row" as "the account
+  left". It now waits for the namespace's governance to be folded here. A
+  kick still purges. (#4651)
+
+- **A root restored with `merod account import` gets its account
+  namespace.** On start, a holder that takes part in a namespace or has
+  cached certificates now ensures the account namespace; before, a node with
+  no cached certificates never created it. A node that takes part in nothing
+  is left alone. (#4659)
+
+- **An account namespace counts as created only once it names a real
+  admin.** A placeholder meta row no longer stops it, or any group, from
+  being created. Creating a group with a parent group or a `bytecode_id` but
+  no application is refused with `ApplicationRequired` (`400`). (#4661)
+
+- **Executing in a context the node holds no identity in is a typed `403`.**
+  The admin API's execute routes answered an untyped `FunctionCallError("No
+  owned identity found for this context")`; they now return
+  `NoOwnedIdentity`, mapped to `403` as `NotAMember` is. A failed identity
+  lookup is an internal error (`500`), not a `400`. (#4656)
+
+- **`converge_app` / `Script` and `TestHost` can share a test binary.**
+  `calimero-storage` cached the root id process-wide from the first context
+  it saw, so whichever harness ran second failed with `CannotCreateOrphan`
+  on its first collection. The root id is now resolved per call. (#4658)
 
 - **A device link racing a target-application change binds the same way on
   every replica.** An `AccountDeviceLinked` scoped to some applications is
@@ -2010,15 +2328,57 @@
 
 ### Changed
 
-- **auth-frontend v1.3.10 and admin dashboard v1.22.1 are embedded.** Both
-  give an app's client key `context:delete` (auth-frontend#67,
-  admin-dashboard#188), which `DELETE /admin-api/contexts/:id` requires: an
-  app signed in through the node's login page, or opened from the dashboard,
-  could create a context but deleting it answered 403. The key stays bound to
-  the app's own application, so it deletes only that application's contexts.
-  The dashboard moves up from v1.21.3, so v1.22.0 comes with it: opening an
-  app asks first and mints only the grants apps call, and marketplace
-  listings name the registry they come from.
+- **auth-frontend v1.3.12 and admin dashboard v1.22.1 are embedded.** Both
+  give an app's client key `context:delete`, which `DELETE
+  /admin-api/contexts/:id` requires; the key stays bound to the app's own
+  application, so it deletes only that application's contexts. The dashboard
+  moves up from v1.21.3, so v1.22.0 comes with it: opening an app asks
+  first, mints only the grants apps call, and marketplace listings name
+  their registry (#4619). The login page binds an app's login to its
+  application, so an app-origin callback gets tokens only for the app they
+  were minted for; the install screen reads its manifest from the registry
+  by package coordinates; and a remote node refuses a loopback callback that
+  a bundle or the registry declares, unless the operator lists it (#4665).
+  v1.3.12 compares an app-origin callback with the application id as hex;
+  v1.3.11 decoded it as base58, so signing in from an app host ended on
+  "Login callback destination is not allowed" (#4669). (#4619, #4665, #4669)
+
+- **Removing a namespace is local to this device and removes all of it.**
+  `DELETE /admin-api/namespaces/{id}` no longer needs an admin: any member
+  may remove a namespace from its own node. The purge now also deletes every
+  context's state, deltas, op-log, single-row records, service name and
+  aliases, every group's rows, metadata, capabilities and owner counter, and
+  the namespace's governance ops and identity. When the account is a member,
+  the node keeps a removal marker with the namespace's name, which the
+  restore above reads, and no automatic path (follow, start-up sweep,
+  auto-follow, pairing) follows a marked namespace; joining clears it. The
+  device row is kept while a marker exists. The account namespace cannot be
+  removed (`409`). (#4622)
+
+- **A group upgrade is tried on the admin's own contexts before it is
+  published.** `POST /admin-api/groups/{id}/upgrade`, plain or cascade, runs
+  every rung's migrate and check on each context the admin's node holds, in
+  a buffer it then drops, and refuses the upgrade with `409` naming the
+  context when one fails; all trials share a 300 s budget. Before, a
+  migration that failed on real state was published, and every member hit
+  the failure on its own switch. The response adds `contextsTrialled` and
+  `contextsNotHeld`. `skipTrial: true`, or `meroctl group upgrade
+  --skip-trial`, publishes without the trial. Each trialled context's write
+  lock is held while its trial runs. A migration's ordered-index writes are
+  now staged in its buffer, so an aborted migration leaves no index rows.
+  (#4618)
+
+- **Behind an auth proxy, a token in the URL is accepted only on the
+  streaming routes.** mero-auth's `GET /auth/validate` took `?token=` from
+  `X-Forwarded-Uri` for any route; it now does so only for `/ws`, `/sse` and
+  `/sse/...`, only when the request has no `Authorization` header, and never
+  for a path with a `.`/`..` segment or a `%` escape. This is the rule the
+  embedded guard already applied, and both now share it; it also covers
+  merod's `[server.sealed] forward_auth`. (breaking: `?token=` on any other
+  route through forward-auth or a sealed request now gets `401
+  missing_token`, and behind a proxy that forwards a path prefix, such as
+  `/node1/ws?token=`, the token must move to the `Authorization` header)
+  (#4585)
 
 - **auth-frontend v1.3.9 is embedded.** A node's sign-in page now trusts more
   login callbacks, each one an origin something on the node side declared:
@@ -2466,6 +2826,26 @@
   removal breaks every E2E scenario that joins a namespace, on a client nobody
   has rebuilt. Prerequisite for [#3485] ([#3530])
 
+### Security
+
+- **TLS certificate validation takes the patched webpki crates.**
+  `rustls-webpki` moves to 0.103.16, `webpki-root-certs` to 1.0.10 and
+  `webpki-roots` to 1.0.10 for RUSTSEC-2026-0381, -0382 and -0383. Lockfile
+  only. (#4641)
+
+- **`ctutils` moves to 0.4.5 for RUSTSEC-2026-0385.** Before 0.4.4,
+  `ctutils::Choice` mask generation could branch on secret values. Lockfile
+  only. (#4652)
+
+- **RUSTSEC-2026-0387 is ignored until the elliptic-curve 0.14 upgrade.**
+  The advisory reports secret-dependent branches in `crypto-bigint`'s
+  constant-time operations; only 0.7.6 and later are patched. The node
+  reaches `crypto-bigint` 0.5.5 through `elliptic-curve` 0.13 (k256, p256,
+  p384, p521, `dcap-qvl-webpki`, `x509-verify`), and 0.7 needs the
+  elliptic-curve 0.14 generation across all of them, so `deny.toml` ignores
+  the advisory. The timing exposure remains until that upgrade; the ignore
+  must be removed with it. (#4667)
+
 ## [0.11.0-rc.10] - 2026-07-05
 
 > **Draft — release manager to curate.** Another large hardening release
@@ -2909,7 +3289,8 @@ Integrations:
 
 <!-- versions -->
 
-[unreleased]: https://github.com/calimero-network/core/compare/0.11.0-rc.10...HEAD
+[unreleased]: https://github.com/calimero-network/core/compare/0.11.0...HEAD
+[0.11.0]: https://github.com/calimero-network/core/compare/0.11.0-rc.10...0.11.0
 [0.11.0-rc.10]: https://github.com/calimero-network/core/compare/0.11.0-rc.9...0.11.0-rc.10
 [0.11.0-rc.9]: https://github.com/calimero-network/core/compare/0.11.0-rc.8...0.11.0-rc.9
 [0.11.0-rc.8]: https://github.com/calimero-network/core/compare/0.11.0-rc.7...0.11.0-rc.8

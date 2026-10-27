@@ -110,6 +110,12 @@ steps:
       - sync-resil-node-2
     timeout: 90
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: baseline
+      equals:
+        output: pre_restart
 
   - name: Read baseline on node-2 (sanity)
     type: call
@@ -161,6 +167,12 @@ steps:
       - sync-resil-node-2
     timeout: 150
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: post_restart
+      equals:
+        output: recovered_via_relay
 
   - name: Read post-restart key on node-2
     type: call
@@ -209,15 +221,13 @@ steps:
   #    `renewal: false`). Pinned by
   #    `crates/network/src/handlers/stream/swarm/relay.rs`.
   #
-  # 3. `direct-connection upgrade succeeded` is ABSENT —
-  #    proves DCUtR didn't manage to upgrade to a direct path.
+  # 3. no `direct_upgrades` entry in network status reports
+  #    `succeeded` - proves DCUtR didn't upgrade to a direct path.
   #    If `--random-fully` silently fell back to plain
   #    MASQUERADE (kernel without the iptables-extensions
   #    `random-fully` flag), DCUtR would succeed and this
   #    assertion would fail — fast-failing the test rather
-  #    than silently running with cone-mode semantics. Pinned
-  #    by `crates/network/src/handlers/stream/swarm/dcutr.rs`
-  #    (the info!-level outcome line added in core#2487).
+  #    than silently running with cone-mode semantics.
   #
   # Post-fault relay recovery is validated by the
   # sync-converge step above (which only passes if
@@ -249,12 +259,20 @@ steps:
     patterns:
       - "ReservationReqAccepted"
 
-  - name: Confirm DCUtR did NOT upgrade (symmetric mode invariant)
-    type: assert_log_absent
-    nodes:
-      - sync-resil-node-1
-      - sync-resil-node-2
-    patterns:
-      - "direct-connection upgrade succeeded"
+  - name: Confirm node-1 reports no successful DCUtR upgrade (symmetric mode invariant)
+    type: assert_api_response
+    node: sync-resil-node-1
+    path: /admin-api/network/status
+    where:
+      status: succeeded
+    expect_no_match: true
+
+  - name: Confirm node-2 reports no successful DCUtR upgrade (symmetric mode invariant)
+    type: assert_api_response
+    node: sync-resil-node-2
+    path: /admin-api/network/status
+    where:
+      status: succeeded
+    expect_no_match: true
 
 stop_all_nodes: true

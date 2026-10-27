@@ -141,6 +141,17 @@ pub struct DeleteNamespaceResponse {
     pub deleted: bool,
 }
 
+/// Take part in a namespace again with no invitation: one this node's user
+/// removed from it while the account stayed a member.
+#[derive(Clone, Debug)]
+pub struct RejoinNamespaceRequest {
+    pub namespace_id: ContextGroupId,
+}
+
+impl Message for RejoinNamespaceRequest {
+    type Result = eyre::Result<JoinGroupResponse>;
+}
+
 /// A governance op a member asked this node to publish on their behalf, in the
 /// delegable form their warrant signs.
 #[derive(Debug)]
@@ -386,8 +397,23 @@ pub struct GetGroupUpgradeStatusRequest {
     pub group_id: ContextGroupId,
 }
 
+/// A release this node must install before it can activate the namespace's upgrade.
+#[derive(Clone, Debug)]
+pub struct MissingRelease {
+    pub package: String,
+    pub version: String,
+    pub application_id: ApplicationId,
+}
+
+#[derive(Debug)]
+pub struct GroupUpgradeStatusResponse {
+    pub upgrade: Option<GroupUpgradeInfo>,
+    /// Oldest first in ladder order, the target included.
+    pub missing_releases: Vec<MissingRelease>,
+}
+
 impl Message for GetGroupUpgradeStatusRequest {
-    type Result = eyre::Result<Option<GroupUpgradeInfo>>;
+    type Result = eyre::Result<GroupUpgradeStatusResponse>;
 }
 
 #[derive(Debug)]
@@ -842,6 +868,37 @@ pub struct SignedReleaseTrust {
 
 impl Message for SetTeeAdmissionPolicyRequest {
     type Result = eyre::Result<()>;
+}
+
+/// Approve URL prefixes for the publisher of `application_id` in the namespace
+/// `group_id` belongs to, with a `GroupOp::OutboundApprovalSet` at its root.
+#[derive(Clone, Debug)]
+pub struct ApproveOutboundRequest {
+    /// Any group of the namespace; the approval is published at its root.
+    pub group_id: ContextGroupId,
+    /// The installed application whose publisher and manifest it is for.
+    pub application_id: ApplicationId,
+    pub selection: calimero_primitives::outbound::OutboundSelection,
+    /// `true` replaces the publisher's approved set with `selection` (how a
+    /// prefix is revoked); `false` adds `selection` to it, as an install or an
+    /// upgrade does.
+    pub replace: bool,
+}
+
+/// What the namespace approves for the publisher after the request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApproveOutboundResponse {
+    pub namespace_id: ContextGroupId,
+    pub signer: String,
+    pub prefixes: Vec<String>,
+    pub reviewed: Vec<String>,
+    /// `false` when nothing needed publishing: the app declares no outbound
+    /// prefix, or the namespace already approved exactly this.
+    pub published: bool,
+}
+
+impl Message for ApproveOutboundRequest {
+    type Result = eyre::Result<ApproveOutboundResponse>;
 }
 
 #[derive(Debug)]
@@ -1645,6 +1702,9 @@ pub struct NamespaceSummary {
     pub member_count: usize,
     pub context_count: usize,
     pub subgroup_count: usize,
+    /// Removed from this node by its user while the account stayed a member:
+    /// nothing of it is held here, and a join without an invitation restores it.
+    pub forgotten: bool,
 }
 
 #[derive(Debug)]

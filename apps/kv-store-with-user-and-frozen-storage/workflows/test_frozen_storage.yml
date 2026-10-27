@@ -87,6 +87,12 @@ steps:
       - new-calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_frozen
+      args:
+        hash_hex: "{{frozen_value_hash_hex}}"
+      equals:
+        output: "SomeFrozenString"
 
   # Step 11: Node2: get frozen storage
   - name: Node 2 - frozen storage get test
@@ -129,6 +135,12 @@ steps:
       - new-calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_frozen
+      args:
+        hash_hex: "{{frozen_value_hash_hex_node2}}"
+      equals:
+        output: "SomeFrozenString2"
 
   # Step 13: Node1: get frozen storage (that was set by Node2)
   - name: Node 1 - frozen storage get test (that was set by Node2)

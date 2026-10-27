@@ -191,6 +191,12 @@ steps:
       - open-selfjoin-node-2
     timeout: 30
     check_interval: 2
+    expect:
+      method: get
+      args:
+        key: "from_admin"
+      equals:
+        output: "node1_msg"
 
   - name: Node-2 reads node-1's write
     type: call
@@ -233,6 +239,12 @@ steps:
       - open-selfjoin-node-2
     timeout: 30
     check_interval: 2
+    expect:
+      method: get
+      args:
+        key: "from_joiner"
+      equals:
+        output: "node2_msg"
 
   - name: Node-1 reads node-2's write (THE BUG)
     type: call

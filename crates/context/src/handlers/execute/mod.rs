@@ -589,6 +589,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
         let execution_count = self.metrics.as_ref().map(|m| m.execution_count.clone());
         let execution_duration = self.metrics.as_ref().map(|m| m.execution_duration.clone());
+        let metrics = self.metrics.clone();
 
         // Cloned for the broadcast continuation, which is a sibling link in this
         // chain rather than nested inside the execute closure — so it needs its
@@ -605,6 +606,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             let context_client = act.context_client.clone();
             let scope_projections = std::sync::Arc::clone(&act.scope_projections);
             let search = act.search.clone();
+            let outbound = act.outbound.clone();
             let ack_router = std::sync::Arc::clone(&act.ack_router);
 
             // The calling context's application id, resolved once (xcall path
@@ -775,6 +777,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         read_as,
                         tee_trigger.as_ref(),
                         search,
+                        outbound,
                         governance_position.as_ref(),
                         &ack_router,
                     )
@@ -813,6 +816,13 @@ impl Handler<ExecuteRequest> for ContextManager {
                             status: status.to_owned(),
                         })
                         .observe(duration);
+                }
+
+                if let (Some(metrics), Ok((outcome, ..))) = (&metrics, &executed) {
+                    metrics.record_gas(
+                        outcome.gas_used,
+                        matches!(outcome.returns, Err(FunctionCallError::GasExhausted { .. })),
+                    );
                 }
 
                 let (
@@ -2239,6 +2249,10 @@ async fn internal_execute(
     // Full-text search, when the node runs it. Only an app that declares a
     // search index (exports the extract method) takes part.
     search: Option<std::sync::Arc<calimero_search::SearchService>>,
+    // Outbound HTTPS requests, when the node's operator turned them on. Only
+    // an app whose manifest declares a URL takes part, and only in a run that
+    // writes on this node (see below).
+    outbound: Option<std::sync::Arc<crate::outbound::OutboundService>>,
     // The cut a peer's delta was signed at, where a state op reads writers; else the heads.
     governance_position: Option<&GovernanceParentEdge>,
     // Where the run's writer-set rotations are published.
@@ -2494,7 +2508,7 @@ async fn internal_execute(
     let account = principal.account;
     let sealing = sealing_context(
         &datastore,
-        &crate::scope_projection::FoldedProjections(scope_projections),
+        scope_projections,
         &context.id,
         &executor,
         identity_private_key,
@@ -2550,6 +2564,46 @@ async fn internal_execute(
             std::sync::Arc::new(crate::search::SearchHostAdapter(std::sync::Arc::clone(s)))
                 as std::sync::Arc<dyn calimero_runtime::logic::SearchHost>
         });
+    // Outbound requests: only a run that writes on this node gets a client —
+    // never a view (it would make a read reach the network), a peer's delta or
+    // a state op (this node did not decide them), or a search export. A
+    // migration and its check run through `update_application`, which passes
+    // none. The app is the installed one, identified by this node: its
+    // package and signer scope the secrets, its manifest the URLs, and what
+    // the context's namespace approved for that signer the URLs it may reach.
+    let outbound_host = match outbound {
+        Some(service)
+            if !is_read_only_call
+                && !is_state_op
+                && write_source == WriteSource::Local
+                && !is_search_export =>
+        {
+            node_client
+                .get_application(&context.application_id)?
+                .as_ref()
+                .and_then(crate::outbound::app_outbound)
+                .map(|(app, declared)| {
+                    let approval =
+                        crate::outbound::namespace_approval(&datastore, &context.id, &app.signer)?;
+                    Ok::<_, eyre::Report>(service.for_run(
+                        app,
+                        declared,
+                        approval,
+                        Some(outbound_sealed_keys(
+                            &datastore,
+                            node_client,
+                            scope_projections,
+                            context.id,
+                            identity_private_key,
+                        )),
+                        context.id.to_string(),
+                    ))
+                })
+                .transpose()?
+                .flatten()
+        }
+        _ => None,
+    };
     // Self-authored: both halves are this node's own identity. Delegated: both
     // come from the warrant, resolved in the match above — which is what keeps a
     // `User` leaf's owner equal to its delta's author and so survives
@@ -2569,6 +2623,7 @@ async fn internal_execute(
         tee_authority,
         sealing,
         search_host,
+        outbound_host,
         write_source == WriteSource::RemoteDelta,
     )
     .await?;
@@ -3275,13 +3330,14 @@ fn on_behalf_refusal(
 /// authority instead.
 fn sealing_context(
     datastore: &Store,
-    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
+    scope_projections: &Arc<std::sync::RwLock<crate::scope_projection::ScopeProjections>>,
     context_id: &ContextId,
     executor: &PublicKey,
     identity_private_key: &PrivateKey,
     tee_authority: bool,
     delegated: bool,
 ) -> eyre::Result<calimero_runtime::logic::SealingContext> {
+    let folded = &crate::scope_projection::FoldedProjections(scope_projections);
     let may_open = tee_authority
         || (!delegated
             && !calimero_governance_store::is_tee_member_key_for_context(
@@ -3320,12 +3376,76 @@ fn sealing_context(
         std::collections::BTreeMap::new()
     };
     Ok(calimero_runtime::logic::SealingContext {
+        namespace_sealing_key: Some(namespace_sealing_key(
+            datastore,
+            scope_projections,
+            *context_id,
+        )),
         opener: may_open
             .then(|| std::sync::Arc::new(PrivateKey::from(*identity_private_key.as_bytes()))),
         tee_authority_keys,
         vault_keys: vault.held.into_iter().map(std::sync::Arc::new).collect(),
         account_devices,
     })
+}
+
+/// The namespace TEE keys a `{{sealed:…}}` in this run's outbound request
+/// opens with, looked up only when a request names one: those this node holds
+/// while it is a TEE authority of the namespace, none otherwise. Without them,
+/// the request goes to a TEE of the namespace (`crate::outbound_forward`).
+fn outbound_sealed_keys(
+    datastore: &Store,
+    node_client: &NodeClient,
+    scope_projections: &Arc<std::sync::RwLock<crate::scope_projection::ScopeProjections>>,
+    context_id: ContextId,
+    identity_private_key: &PrivateKey,
+) -> crate::outbound::SealedKeys {
+    let forward = tokio::runtime::Handle::try_current().ok().map(|runtime| {
+        crate::outbound_forward::network_forwarder(
+            runtime,
+            node_client.clone(),
+            datastore.clone(),
+            Arc::clone(scope_projections),
+            context_id,
+            identity_private_key.public_key(),
+        )
+    });
+    let datastore = datastore.clone();
+    let scope_projections = Arc::clone(scope_projections);
+    let identity = PrivateKey::from(*identity_private_key.as_bytes());
+    crate::outbound::SealedKeys {
+        forward,
+        context_id: *context_id.as_ref(),
+        keys: Arc::new(move || {
+            let folded = crate::scope_projection::FoldedProjections(&scope_projections);
+            let Some(group_id) =
+                calimero_governance_store::get_group_for_context(&datastore, &context_id)?
+            else {
+                return Ok(Vec::new());
+            };
+            calimero_governance_store::tee_outbound_keys(&datastore, &folded, &group_id, &identity)
+        }),
+    }
+}
+
+/// Looks up the namespace TEE key for `context_id` when the run asks for it
+/// (`env::tee_sealing_key`). A read error answers `None`, the same as a
+/// namespace with no TEE, so the app refuses to seal rather than trapping.
+fn namespace_sealing_key(
+    datastore: &Store,
+    scope_projections: &Arc<std::sync::RwLock<crate::scope_projection::ScopeProjections>>,
+    context_id: ContextId,
+) -> calimero_runtime::logic::SealingKeyResolver {
+    let datastore = datastore.clone();
+    let scope_projections = Arc::clone(scope_projections);
+    calimero_runtime::logic::SealingKeyResolver(Arc::new(move || {
+        let folded = crate::scope_projection::FoldedProjections(&scope_projections);
+        let group_id =
+            calimero_governance_store::get_group_for_context(&datastore, &context_id).ok()??;
+        calimero_governance_store::tee_sealing_key(&datastore, &folded, &group_id)
+            .ok()?
+            .map(|key| *key)
+    }))
 }
 
 /// The signing key of every live device of each account bound in the
@@ -3392,6 +3512,8 @@ pub(crate) async fn execute(
     sealing: calimero_runtime::logic::SealingContext,
     // Only ever `Some` for a read-only run (see `internal_execute`).
     search: Option<std::sync::Arc<dyn calimero_runtime::logic::SearchHost>>,
+    // Only ever `Some` for a run that writes on this node (see `internal_execute`).
+    outbound: Option<std::sync::Arc<dyn calimero_runtime::logic::OutboundHost>>,
     remote_delta: bool,
 ) -> eyre::Result<(Outcome, ContextStorage, Option<ContextPrivateStorage>)> {
     let context_id = **context;
@@ -3434,6 +3556,8 @@ pub(crate) async fn execute(
                     tee_trigger,
                     sealing,
                     search,
+                    // A view never reaches the network.
+                    None,
                     remote_delta,
                 )?
             } else {
@@ -3450,6 +3574,7 @@ pub(crate) async fn execute(
                     tee_trigger,
                     sealing,
                     None,
+                    outbound,
                     remote_delta,
                 )?
             };

@@ -73,6 +73,10 @@ steps:
     timeout: 60
     trigger_sync: true
     description: Wait for network sync and handler execution on receiving nodes
+    expect:
+      method: get_handler_execution_count
+      equals:
+        output: 1
 
   - name: Verify Insert Handler Called on Node 1
     type: call
@@ -115,6 +119,10 @@ steps:
     timeout: 60
     trigger_sync: true
     description: Wait for network sync and handler execution on receiving nodes
+    expect:
+      method: get_handler_execution_count
+      equals:
+        output: 2
 
   - name: Verify Update Handler Called on Node 1
     type: call
@@ -161,6 +169,10 @@ steps:
     timeout: 60
     trigger_sync: true
     description: Wait for network sync and handler execution on receiving nodes
+    expect:
+      method: get_handler_execution_count
+      equals:
+        output: 3
 
   - name: Verify Remove Handler Called on Node 1
     type: call
@@ -221,6 +233,10 @@ steps:
     timeout: 60
     trigger_sync: true
     description: Wait for network sync and handler execution on receiving nodes
+    expect:
+      method: get_handler_execution_count
+      equals:
+        output: 5
 
   - name: Verify Clear Handler Called on Node 1
     type: call
@@ -260,6 +276,12 @@ steps:
       - kvh-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: node2_key
+      equals:
+        output: value_from_node2
 
   - name: Node 1 Get Node 2 Value
     type: call

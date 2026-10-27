@@ -95,7 +95,8 @@ src/
 │       ├── storage.rs        # storage_read/write/remove, private_storage_*
 │       ├── blobs.rs          # blob_create/write/close/open/read
 │       ├── utility.rs        # random_bytes, time_now, ed25519_verify, tee_origin, tee_random_bytes
-│       ├── sealing.rs        # seal_to, open_sealed (bound to the run's own context), tee_authority_keys, account_device_keys (keys from VMContext.sealing)
+│       ├── outbound.rs       # http_request (one HTTPS request per run, through VMContext.outbound; never gas)
+│       ├── sealing.rs        # seal_to, open_sealed (bound to the run's own context), tee_authority_keys, account_device_keys, tee_sealing_key (every run; resolved lazily) (keys from VMContext.sealing)
 │       ├── shared_writers.rs # shared_writers (a cell's writers from Storage::shared_writers), shared_writers_rotate (records a SharedRotation on the Outcome)
 │       ├── system.rs         # panic, registers, input/output, emit, commit
 │       ├── js_collections.rs # js_crdt_* functions for JS SDK
@@ -307,6 +308,7 @@ cargo test -p calimero-runtime test_storage -- --nocapture
 11. **Memory and table maxima come from the tunables** - `max_memory_pages` and `max_table_elements` cap what a module declares (or omits); the threads feature is off in `create_engine` and shared memories are refused at instantiation
 12. **Host calls and the bytes they move are capped** - the import wrapper charges every call against `max_host_calls` before it runs, and `Registers::set`, `read_guest_memory` and `write_guest_memory_slice` charge `max_host_bytes`; copy guest bytes only through them
 13. **A writer-set rotation is a request, never a write** - `shared_writers_rotate` (and the JS `js_crdt_shared_rotate_writers`) push a `SharedRotation` onto `VMLogic.shared_rotations`, which `finish` carries on `Outcome.shared_rotations` (not serialized) for the node to publish as a governance op. Reads go through `Storage::shared_writers`, which defaults to `Some(CellWriters::Genesis)` and which the node overrides with the governance fold; `None` means unresolvable and the guest fails closed. `build_runtime_env` installs a resolver that answers this run's own rotations first, because each JS host call gets a fresh env. A run is bounded to 64 rotations of at most 256 writers per set, and both `shared_writers_rotate` and the JS `js_crdt_shared_rotate_writers` (through `WriterSetCell::rotate_writers_scoped`) apply the one rule `SharedRotation::refusal` (storage): an empty prior or new set, a cell that is not a cell id (`HostError::InvalidSharedRotation`) or either set over `MAX_WRITERS_PER_ROTATION` (`HostError::SharedWritersOverflow`, or an error message in register 0 for JS), so the node's publish cannot fail on those half way through a run.
+14. **`http_request` decides nothing about where a request goes** - it traps with `OutboundUnavailable` when `VMContext::outbound` is `None`, counts one call per run (`MAX_REQUESTS_PER_RUN`, then `OutboundRequestsExceeded`), refuses an encoded request over `MAX_ENCODED_REQUEST`, and hands the bytes to the node's `OutboundHost`. The node (`calimero-context`'s `outbound` module) supplies one only to a run that writes on it, and owns every other check: the operator's hosts, the app's declared URLs, public addresses, secrets and redaction. Never gas: the request is node-local and a write's gas must match on every node
 
 ## Related Crates
 

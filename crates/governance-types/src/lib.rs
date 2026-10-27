@@ -1008,6 +1008,26 @@ pub enum GroupOp {
         /// The namespace the account has left.
         namespace: ContextGroupId,
     },
+    /// The URL prefixes the namespace lets apps by one publisher send requests
+    /// under. Published at the namespace root by whoever may set its target
+    /// application; replaces that publisher's whole set, and an empty `prefixes`
+    /// revokes everything.
+    ///
+    /// A run's outbound request must be under a prefix the node's operator
+    /// allows, the app's manifest declares, and this approves for the app's
+    /// signer. Approvals are keyed by `signer`, so an app whose publisher
+    /// changes starts from none.
+    OutboundApprovalSet {
+        /// The publisher, as the `did:key` an installed bundle's signature
+        /// derives (`ApplicationMeta::signer_id`).
+        signer: String,
+        /// The approved prefixes: each a `calimero_bundle::is_outbound_url`.
+        prefixes: Vec<String>,
+        /// The prefixes the approver was shown, approved or not. A declared
+        /// prefix outside it reaches the node as awaiting approval rather than
+        /// not approved: a later version of the app added it.
+        reviewed: Vec<String>,
+    },
 }
 
 impl GroupOp {
@@ -1244,6 +1264,7 @@ impl GroupOp {
             GroupOp::RootGuarded { .. } => "root_guarded",
             GroupOp::SharedWritersRotated { .. } => "shared_writers_rotated",
             GroupOp::AccountNamespacePurged { .. } => "account_namespace_purged",
+            GroupOp::OutboundApprovalSet { .. } => "outbound_approval_set",
         }
     }
 }
@@ -2432,7 +2453,16 @@ pub struct SignedNamespaceOp {
 ///
 /// `GroupOp::AccountNamespacePurged` is appended without a bump: an older device of
 /// the same account stalls on it until it upgrades, so it ships in a batched release.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 26;
+///
+/// `GroupOp::OutboundApprovalSet` is appended after it without a bump, on the same
+/// terms: no earlier layout moves, it appears only in a namespace that approves
+/// outbound requests, and a bump would make every SDK re-sign joins for nothing.
+///
+/// v27: a namespace genesis folds its founder's Admin row at the root, so a founder
+/// who transfers ownership stays an admin at every cut. No layout moves, but every
+/// signer, the SDK included, signs at 27, a v26 node folds a different scope root, and
+/// an older build cannot read the op-store rows this one writes: a coordinated upgrade.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 27;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
 /// proof. An op signed under an earlier schema was applied under the old rule,
@@ -2832,6 +2862,13 @@ pub mod bounds {
     /// Max byte length of a registry coordinate (`package` / `version`). Mirrors
     /// the artifact-URL builder's own cap, applied here at decode instead.
     pub const MAX_COORD_BYTES: usize = 128;
+    /// Max prefixes one [`super::GroupOp::OutboundApprovalSet`] approves, and
+    /// max it records as reviewed.
+    pub const MAX_OUTBOUND_APPROVALS: usize = 64;
+    /// Max byte length of an approved publisher's signer id; a `did:key` is
+    /// about 56.
+    pub const MAX_OUTBOUND_SIGNER_BYTES: usize = 256;
+
     /// Max byte length of a device label, which a settings listing renders.
     pub const MAX_DEVICE_LABEL_BYTES: usize = 64;
 
@@ -3182,6 +3219,37 @@ impl GroupOp {
                     bounds::MAX_ROOT_KEY_HANDOFFS,
                 )?;
                 op.validate()
+            }
+            // Each entry is the same shape a manifest's `outbound` declares, so
+            // a malformed prefix is refused on decode rather than stored as one
+            // the gate can never match.
+            Self::OutboundApprovalSet {
+                signer,
+                prefixes,
+                reviewed,
+            } => {
+                if signer.is_empty() {
+                    return Err(GovernanceError::Bounds(
+                        "outbound_approval.signer: empty".to_owned(),
+                    ));
+                }
+                check_bound(
+                    "outbound_approval.signer",
+                    signer.len(),
+                    bounds::MAX_OUTBOUND_SIGNER_BYTES,
+                )?;
+                for (name, list) in [
+                    ("outbound_approval.prefixes", prefixes),
+                    ("outbound_approval.reviewed", reviewed),
+                ] {
+                    check_bound(name, list.len(), bounds::MAX_OUTBOUND_APPROVALS)?;
+                    if let Some(bad) = list.iter().find(|p| !calimero_bundle::is_outbound_url(p)) {
+                        return Err(GovernanceError::Bounds(format!(
+                            "{name}: {bad:?} is not an https URL prefix"
+                        )));
+                    }
+                }
+                Ok(())
             }
             _ => Ok(()),
         }

@@ -27,6 +27,7 @@ there and implemented under [`src/logic/host_functions/`](src/logic/host_functio
   - [Storage (Ordered Index)](#storage-ordered-index)
   - [Storage (Private/Local)](#storage-privatelocal)
   - [Full-Text Search](#full-text-search)
+  - [Outbound HTTPS](#outbound-https)
   - [State Management](#state-management)
   - [CRDT Collections (JS)](#crdt-collections-js)
   - [User & Frozen Storage (JS)](#user--frozen-storage-js)
@@ -177,6 +178,14 @@ Node-local, per-context search (`calimero-search`); views only.
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `search_query` | `(request_ptr: u64, register_id: u64) -> u32` | Reads a borsh `SearchRequest` (at most 4 KiB) and queries the **running** context's index (the request names no context). `1`: a borsh `SearchResponse` in the register; `0`: the node's UTF-8 reason. Traps with `SearchUnavailable` outside a read-only run or on a node without search, and with `SearchCallsExceeded` past 32 calls. Charged `search_gas` (`SEARCH_BASE_GAS` + `SEARCH_GAS_PER_MATCH`·matched + `SEARCH_GAS_PER_HIT`·hits + `SEARCH_GAS_PER_BYTE`·response bytes) as it returns; `HostGasExhausted` when the budget cannot cover it. |
+
+### Outbound HTTPS
+
+One request per run, from a run that writes; off unless the node's operator turns it on (`[context.outbound]`). The guide is `docs/src/content/docs/build/guides/outbound.mdx`.
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `http_request` | `(request_ptr: u64, register_id: u64) -> u32` | Reads a borsh `OutboundRequest` (`calimero_primitives::outbound`) and hands it to the node's `OutboundHost` (`VMContext::outbound`), which decides whether and where it goes: the operator's host list, the URL prefixes in the app's signed manifest, the size limits, public addresses only, `{{secret:NAME}}` substitution and response redaction. `1`: a borsh `OutboundResponse` (status and body only) in the register; `0`: the node's UTF-8 reason. Traps with `OutboundUnavailable` when the node gave the run no client (feature off, no declared URL, a view, a migration, a state op, a peer's delta), with `OutboundRequestsExceeded` on a second call, and with `ValueLengthOverflow` for an encoded request over the limits. Never charged gas: a write's gas must be the same on every node. |
 
 ### State Management
 
@@ -451,6 +460,7 @@ Large binary object streaming.
 | `ed25519_verify` | `(sig_ptr: u64, pk_ptr: u64, msg_ptr: u64) -> u32` | Verifies Ed25519 signature. Returns `1` if valid, `0` if invalid. |
 | `tee_origin` | `() -> u32` | `1` in a run the node's TEE scheduler fired as the TEE authority, `0` otherwise. |
 | `tee_random_bytes` | `(dest_ptr: u64)` | `random_bytes`, but only in a TEE-triggered run; traps (`TeeOnly`) otherwise. |
+| `tee_sealing_key` | `(register_id: u64) -> u32` | Writes the namespace TEE key a value only the TEE may read is sealed to now, 32 bytes, and returns `1`; `0` while the namespace has none. Every run: the key is public. An app seals an outbound secret to it (`env::seal_outbound_secret`). |
 | `tee_authority_keys` | `(register_id: u64)` | Writes the keys to seal a value only the TEE may read to, 32 bytes each: the namespace TEE key once the TEE holds it, else the attested key of every TEE authority. TEE-triggered runs only; traps (`TeeOnly`) otherwise. |
 | `shared_writers` | `(cell_ptr: u64, register_id: u64) -> u32` | The writers of a `SharedStorage` cell (32-byte cell id) at the run's governance cut. `0` if they cannot be resolved (fail closed); `1` if no rotation took effect (the set stored with the cell stands); `2` if rotated, with `borsh(BTreeMap<AccountId, OpMask>)` in the register. |
 | `shared_writers_rotate` | `(rotation_ptr: u64)` | Records a `borsh(SharedRotation { cell, prior, new })` on the execution `Outcome` for the node to publish as a governance op; nothing is stored. Traps on malformed borsh, a set over 256 writers, or more than 64 rotations in one run. |

@@ -92,6 +92,10 @@ steps:
       - rust-private-data-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: games
+      equals:
+        output: "{{node_1_games}}"
 
   - name: Node 2 Get Games
     type: call
@@ -128,6 +132,14 @@ steps:
       game_id: game3
       secret: node2-secret-789
 
+  - name: Capture the games map on rust-private-data-2
+    type: call
+    node: rust-private-data-2
+    context_id: "{{context_id}}"
+    method: games
+    outputs:
+      games_after_node2_add: result.output
+
   - name: Wait After Node 2 Update
     type: wait_for_sync
     context_id: "{{context_id}}"
@@ -136,6 +148,10 @@ steps:
       - rust-private-data-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: games
+      equals:
+        output: "{{games_after_node2_add}}"
 
   - name: Node 1 Get Own Secrets Again
     type: call

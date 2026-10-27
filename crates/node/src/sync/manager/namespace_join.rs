@@ -15,6 +15,7 @@
 
 use std::collections::HashSet;
 
+use calimero_network_primitives::messages::DialFailed;
 use calimero_network_primitives::stream::Stream;
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
@@ -77,7 +78,7 @@ const MAX_PEERS_PER_ROUND: usize = 4;
 pub(super) struct ConnectBudget {
     /// Per-peer stream-open timeout.
     pub(super) open_timeout: std::time::Duration,
-    /// Rounds to spend once candidates exist and keep failing.
+    /// Rounds to spend once a candidate is reached and keeps failing; rounds that cannot dial any do not count.
     pub(super) mesh_retries: u32,
     /// Pause between rounds, and the poll cadence while waiting for discovery.
     pub(super) mesh_retry_delay: std::time::Duration,
@@ -237,11 +238,11 @@ pub(super) async fn open_namespace_join_stream(
     let connect_started = tokio::time::Instant::now();
 
     let mut result: Option<(Stream, PeerId)> = None;
-    // Rounds where we actually had a candidate peer to try (and it
-    // failed) or where every discovered peer was excluded. Cold-start
-    // rounds — nothing discovered yet — deliberately do NOT count, so
-    // they wait out the full `discovery_wait` instead of burning this
-    // budget in a few cheap polls.
+    // Rounds that reached a candidate peer (and it failed) or where every
+    // discovered peer was excluded. Cold-start rounds — nothing discovered
+    // yet — and rounds where no candidate could be dialed deliberately do
+    // NOT count, so they wait out the full `discovery_wait` instead of
+    // burning this budget in a few cheap polls.
     let mut failed_attempts: u32 = 0;
 
     'connect: loop {
@@ -378,6 +379,7 @@ pub(super) async fn open_namespace_join_stream(
         rest.shuffle(&mut rand::rng());
         peers.truncate(MAX_PEERS_PER_ROUND);
 
+        let mut reached_a_peer = false;
         for peer in &peers {
             if connect_started.elapsed() >= discovery_wait {
                 break 'connect;
@@ -388,6 +390,7 @@ pub(super) async fn open_namespace_join_stream(
                     break 'connect;
                 }
                 Ok(Err(err)) => {
+                    reached_a_peer |= err.downcast_ref::<DialFailed>().is_none();
                     debug!(
                         namespace_id = %hex::encode(namespace_id),
                         %peer,
@@ -397,6 +400,7 @@ pub(super) async fn open_namespace_join_stream(
                     );
                 }
                 Err(_) => {
+                    reached_a_peer = true;
                     debug!(
                         namespace_id = %hex::encode(namespace_id),
                         %peer,
@@ -407,9 +411,11 @@ pub(super) async fn open_namespace_join_stream(
             }
         }
 
-        failed_attempts += 1;
-        if failed_attempts >= mesh_retries {
-            break 'connect;
+        if reached_a_peer {
+            failed_attempts += 1;
+            if failed_attempts >= mesh_retries {
+                break 'connect;
+            }
         }
         if connect_started.elapsed().saturating_add(mesh_retry_delay) >= discovery_wait {
             break 'connect;
@@ -1020,6 +1026,62 @@ mod tests {
             "err should report 1 excluded peer for diagnostic symmetry: {err}"
         );
         mock.assert_all_consumed();
+    }
+
+    /// A peer with no known address yet is not a failed attempt: only a round
+    /// that reached a peer counts against `mesh_retries`, so the join keeps
+    /// polling until the address shows up.
+    #[tokio::test(start_paused = true)]
+    async fn rounds_that_cannot_dial_do_not_spend_the_retry_budget() {
+        let mock = MockSyncNetwork::default();
+        let admitter = PeerId::random();
+        let budget = defaults();
+        for _ in 0..budget.mesh_retries + 2 {
+            mock.push_open_stream_dial_failed();
+        }
+        mock.push_open_stream_ok();
+
+        let (_stream, peer) =
+            open_namespace_join_stream(&mock, NAMESPACE_ID, budget, &no_excluded(), &[admitter])
+                .await
+                .expect("the admitter becomes dialable before the deadline");
+
+        assert_eq!(peer, admitter);
+        mock.assert_all_consumed();
+    }
+
+    /// A peer that never becomes dialable still ends the join, at the
+    /// discovery deadline rather than the retry count.
+    #[tokio::test(start_paused = true)]
+    async fn a_peer_that_never_becomes_dialable_ends_the_join_at_the_deadline() {
+        let mock = MockSyncNetwork::default();
+        let budget = defaults();
+        for _ in 0..100 {
+            mock.push_open_stream_dial_failed();
+        }
+
+        let started = time::Instant::now();
+        let err = open_namespace_join_stream(
+            &mock,
+            NAMESPACE_ID,
+            budget,
+            &no_excluded(),
+            &[PeerId::random()],
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            err.contains("could not open a namespace-join stream"),
+            "unexpected err: {err}"
+        );
+        assert!(
+            started.elapsed() >= budget.discovery_wait - budget.mesh_retry_delay,
+            "gave up after {:?}, well before the {:?} deadline",
+            started.elapsed(),
+            budget.discovery_wait
+        );
     }
 
     /// The recovery path: earlier peers fail, then a later peer's

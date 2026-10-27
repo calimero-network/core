@@ -7,6 +7,9 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use super::handshake::{SyncCapabilities, SyncHandshake};
 use super::levelwise::should_use_levelwise;
 
+/// Trees deeper than this qualify for subtree prefetch.
+pub const DEEP_TREE_DEPTH: u32 = 3;
+
 // =============================================================================
 // Protocol Kind (Discriminant-only)
 // =============================================================================
@@ -230,7 +233,7 @@ pub fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> Protoco
     }
 
     // Rule 4: Deep tree with localized changes
-    if remote.max_depth > 3 && divergence < 0.2 {
+    if remote.max_depth > DEEP_TREE_DEPTH && divergence < 0.2 {
         return ProtocolSelection {
             protocol: SyncProtocol::SubtreePrefetch {
                 subtree_roots: vec![], // Will be populated during sync

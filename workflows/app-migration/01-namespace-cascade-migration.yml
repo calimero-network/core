@@ -424,6 +424,10 @@ steps:
       - app-migration-cascade-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_notes
+      equals:
+        output: "written-post-cascade-by-node1"
 
   - name: Node 2 reads notes via v2 getter
     type: call

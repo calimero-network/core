@@ -460,6 +460,7 @@ impl Module {
             false,
             logic::SealingContext::default(),
             None,
+            None,
             false,
         )
     }
@@ -493,6 +494,7 @@ impl Module {
         tee_trigger: bool,
         sealing: logic::SealingContext,
         search: Option<Arc<dyn logic::SearchHost>>,
+        outbound: Option<Arc<dyn logic::OutboundHost>>,
         remote_delta: bool,
     ) -> RuntimeResult<Outcome> {
         let context_id = context;
@@ -504,6 +506,7 @@ impl Module {
         context.tee_trigger = tee_trigger;
         context.sealing = sealing;
         context.search = search;
+        context.outbound = outbound;
         context.remote_delta = remote_delta;
 
         let mut logic = VMLogic::new(storage, private_storage, context, &self.limits, node_client);
@@ -2029,6 +2032,7 @@ mod gas_metering_tests {
                 false,
                 logic::SealingContext::default(),
                 Some(Arc::new(Matches(matched))),
+                None,
                 false,
             )
             .expect("run must return an Outcome")

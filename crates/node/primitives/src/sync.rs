@@ -56,7 +56,7 @@ pub use handshake::{SyncCapabilities, SyncHandshake, SyncHandshakeResponse};
 // Protocol types and selection
 pub use protocol::{
     calculate_divergence, is_protocol_supported, select_protocol, select_protocol_with_fallback,
-    ProtocolSelection, SyncProtocol, SyncProtocolKind,
+    ProtocolSelection, SyncProtocol, SyncProtocolKind, DEEP_TREE_DEPTH,
 };
 
 // Delta sync types

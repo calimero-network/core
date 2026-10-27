@@ -188,7 +188,8 @@ impl AuthLayerExt for Router {
     }
 
     fn with_proxy_permissions(self) -> Self {
-        self.layer(axum::middleware::from_fn(proxy_permissions::inject))
+        self.layer(axum::middleware::from_fn(auth::bind_to_app))
+            .layer(axum::middleware::from_fn(proxy_permissions::inject))
     }
 }
 
@@ -207,7 +208,8 @@ impl AuthLayerExt for axum::routing::MethodRouter {
     }
 
     fn with_proxy_permissions(self) -> Self {
-        self.layer(axum::middleware::from_fn(proxy_permissions::inject))
+        self.layer(axum::middleware::from_fn(auth::bind_to_app))
+            .layer(axum::middleware::from_fn(proxy_permissions::inject))
     }
 }
 

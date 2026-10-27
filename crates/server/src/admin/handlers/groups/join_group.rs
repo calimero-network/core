@@ -20,7 +20,8 @@ pub async fn handler(
     if let Some(refusal) = crate::admin::client_key_scope::refuse_join_outside_binding(
         &state,
         client_key.as_deref(),
-        &req.invitation,
+        &req.invitation.invitation.group_id,
+        Some(&req.invitation),
     ) {
         return refusal;
     }

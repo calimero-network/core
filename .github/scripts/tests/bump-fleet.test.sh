@@ -29,6 +29,8 @@ trap 'rm -rf "$ROOT"' EXIT
 # No network: a release's SHA256SUMS is never fetched. A case that needs one
 # writes it and points this at it; everywhere else the release has none.
 export RELEASE_SUMS_FILE="$ROOT/no-such-SHA256SUMS"
+# Nor is a tag resolved to its commit: set and empty, it resolves to nothing.
+export RELEASE_COMMIT=""
 
 ok()   { PASS=$((PASS + 1)); printf '  ok    %s\n' "$1"; }
 bad()  { FAIL=$((FAIL + 1)); printf '  FAIL  %s\n     %s\n' "$1" "$2"; }
@@ -677,6 +679,37 @@ C="$D/merod-config.json"
 expect_exit 1 "tauri: a pin the release cannot supply stops the bump, rather than opening a red PR" \
   env RELEASE_SUMS_FILE="$SUMS" bash "$BUMP" --surface tauri --version 0.11.0-rc.2 --dir "$D"
 expect_file "$C" '"version": "0.11.0-rc.1"' "  ...and merod-config.json is left as it was"
+
+# A pin naming a core commit, not a version: apps' run-relay.sh builds the
+# mobile live tests' merod from CORE_REF, and a bundle built against the new
+# release refuses the old commit's runtime.
+OLDREF=2222222222222222222222222222222222222222
+NEWREF=bd82bae8d68c896a23cae127c38ce12023f227af
+mkrelay() {
+  mkinstaller "$1" aarch64_apple_darwin
+  mkdir -p "$1/apps/chat/mobile/e2e"
+  printf '#!/usr/bin/env bash\n# builds merod from calimero-network/core\nCORE_REF=%s\nexport CORE_REF\n' "$OLDREF" \
+    > "$1/apps/chat/mobile/e2e/run-relay.sh"
+}
+
+D=$(mkfixture core-ref); mkrelay "$D"; commit "$D"
+R="$D/apps/chat/mobile/e2e/run-relay.sh"
+CH="$ROOT/changed-core-ref.txt"
+expect_exit 0 "a CORE_REF pin moves to the release's commit" \
+  env RELEASE_SUMS_FILE="$SUMS" RELEASE_COMMIT="$NEWREF" CHANGED_FILES_OUT="$CH" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
+expect_file "$R" "CORE_REF=$NEWREF" "  CORE_REF is the release commit"
+expect_absent "$R" "$OLDREF" "  no old commit left"
+expect_file "$CH" 'apps/chat/mobile/e2e/run-relay.sh' "  ...and the file is staged with the bump"
+
+D=$(mkfixture core-ref-unresolved); mkrelay "$D"; commit "$D"
+R="$D/apps/chat/mobile/e2e/run-relay.sh"
+UNCLAIMED="$ROOT/unclaimed-core-ref.txt"
+expect_exit 0 "a tag that cannot be resolved still lets the rest of the bump through" \
+  env RELEASE_SUMS_FILE="$SUMS" RELEASE_COMMIT="" UNCLAIMED_OUT="$UNCLAIMED" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
+expect_file "$R" "CORE_REF=$OLDREF" "  ...but CORE_REF is left as it was"
+expect_file "$UNCLAIMED" 'apps/chat/mobile/e2e/run-relay.sh' "  ...and it is named in the report"
 
 echo
 echo "$PASS passed, $FAIL failed"

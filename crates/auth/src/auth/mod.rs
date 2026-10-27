@@ -2,6 +2,7 @@ pub mod bindings;
 pub mod challenge;
 pub mod middleware;
 pub mod permissions;
+pub mod query_token;
 pub mod rate_limit;
 pub mod security;
 pub mod service;

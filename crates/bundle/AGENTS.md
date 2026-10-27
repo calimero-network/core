@@ -22,11 +22,12 @@ cargo test -p calimero-bundle
 
 | Item | Kind | Purpose |
 | --- | --- | --- |
-| `BundleManifest` | struct | The full `manifest.json` shape: `version`, `package`, `app_version`, `signer_id`, `min_runtime_version`, `metadata`, `handlers`, `interfaces`, `wasm`/`abi` (single-service) or `services` (multi-service), `frontend`, `links`, `frontend_aliases`, `signature` |
+| `BundleManifest` | struct | The full `manifest.json` shape: `version`, `package`, `app_version`, `signer_id`, `min_runtime_version`, `metadata`, `handlers`, `interfaces`, `wasm`/`abi` (single-service) or `services` (multi-service), `frontend`, `links`, `frontend_aliases`, `outbound`, `signature` |
 | `BundleManifest::artifacts()` | fn | Every artifact the manifest declares, paired with its field name; a `..`-free destructure, so a new `BundleManifest` field is a compile error here until classified |
 | `BundleManifest::wasm_artifacts()` | fn | Iterates wasm artifacts uniformly across single- and multi-service bundles |
 | `BundleManifest::service_names()` / `is_multi_service()` | fn | Shape queries over `services` |
-| `BundleManifest::to_metadata_json()` | fn | Flattens `package`/`app_version`/`metadata.*`/`links.*`/`frontendAliases` to JSON for on-disk storage, keeping only web URLs (`is_web_url`) |
+| `BundleManifest::to_metadata_json()` | fn | Flattens `package`/`app_version`/`metadata.*`/`links.*`/`frontendAliases`/`outbound` to JSON for on-disk storage, keeping only web URLs (`is_web_url`) and, under `outbound`, only `is_outbound_url` ones |
+| `is_outbound_url()` | fn | Whether a URL prefix may be declared under `outbound`: `https://` with a host, no credentials, query or fragment, no whitespace or control characters, at most `MAX_URL` bytes. `cargo mero` refuses a bundle with any other; `to_metadata_json()` drops it |
 | `BundleArtifact`, `BundleMetadata`, `BundleInterfaces`, `BundleLinks`, `BundleHandlers`, `BundleSignature`, `BundleService` | structs | The manifest's nested shapes |
 | `WasmArtifact` | struct | Borrowed `(name, wasm)` pair, the common type `wasm_artifacts()` returns |
 | `BundleFrontend::validate()`, `verify_frontend_file()` | fn | What the node enforces at install and `cargo mero` shares: manifest-level (paths, case-insensitive duplicates, HTML entry, MIME allowlist, `MAX_FRONTEND_BYTES`), then per file size and hash |
@@ -59,6 +60,7 @@ Signing is two SHA-256 hashes over the same canonical bytes (the signing payload
 
 - **No `..` in `BundleManifest::artifacts()`.** Keep the exhaustive destructure; it is the trip-wire that forces every new field through a deliberate classification instead of silently being skipped.
 - **`_`-prefixed fields never reach the signed bytes.** `canonicalize_manifest` strips them unconditionally; don't add a real (signed) field with a leading underscore.
+- **`outbound` is signed and is the app's half of the outbound gate.** A node reads it from the stored metadata (`calimero_context::outbound::app_outbound`) and lets a run send a request only to a URL under a prefix listed there (same host; the prefix's path, or one below it at a `/`; any query string), and only to a host its operator also allows. A prefix has no query or fragment. Empty is omitted from the manifest, so a bundle without it signs as before.
 - **`frontend_aliases` is a sibling of `links`, on purpose.** The registry refuses any `links` value that is not one URL string, and clients iterate `links` as one URL each. The aliases do reach `to_metadata_json()`: a node's sign-in page reads them there to trust a login callback to an app's old origin.
 - **A frontend path has one spelling.** `frontend/` then non-empty components of only `A-Za-z0-9._~@+-` (no `.` or `..`), compared ASCII-case-insensitively, so the archive entry, the manifest and a served URL cannot name different files.
 - **The node enforces paths, sizes, hashes and the MIME allowlist.** The HTML rules are build-time feedback in `cargo mero`, not a security boundary.
@@ -72,7 +74,8 @@ Signing is two SHA-256 hashes over the same canonical bytes (the signing payload
 - **The static check mirrors the serving contract.** Each app is served from its own origin `{label}.{base_domain}` under `/{version}/`, so a root-absolute URL resolves outside that version's folder.
   Root-absolute or climbing resource URLs and any `<base>` (`FRONTEND_ESCAPING_URL`), remote resource URLs (`FRONTEND_REMOTE_RESOURCE`), and inline code including `srcdoc` (`FRONTEND_INLINE_SCRIPT`) are refused.
   SVG files are left to the CSP.
-- **The server must send this CSP with the frontend.** `default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'`.
+- **The server must send this CSP with the frontend.** `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'`.
+  `'wasm-unsafe-eval'` lets an app compile WebAssembly (the SDK's WASM client) and does not allow `eval` or inline script.
   Loosening it without loosening `check_html` refuses bundles that would work, and tightening it without `check_html` ships pages that break.
 - **`handlers` is a sibling of `metadata`, on purpose.** Keep it out of `to_metadata_json()` - see `handlers_does_not_affect_metadata` in `lib.rs`.
 

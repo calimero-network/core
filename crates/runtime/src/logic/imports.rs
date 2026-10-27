@@ -69,6 +69,10 @@ impl VMLogic<'_> {
             // host to the running context.
             fn search_query(request_ptr: u64, register_id: u64) -> u32;
 
+            // One outbound HTTPS request — off unless the operator, the
+            // app's manifest and the run all allow it.
+            fn http_request(request_ptr: u64, register_id: u64) -> u32;
+
             // Private storage functions (node-local, NOT synchronized)
             fn private_storage_read(key_ptr: u64, register_id: u64) -> u32;
             fn private_storage_remove(key_ptr: u64, register_id: u64) -> u32;
@@ -289,6 +293,7 @@ impl VMLogic<'_> {
             fn tee_origin() -> u32;
             fn tee_random_bytes(ptr: u64);
             fn tee_authority_keys(register_id: u64);
+            fn tee_sealing_key(register_id: u64) -> u32;
             fn account_device_keys(account_ptr: u64, register_id: u64) -> u32;
             fn shared_writers(cell_ptr: u64, register_id: u64) -> u32;
             fn shared_writers_rotate(rotation_ptr: u64);

@@ -129,6 +129,10 @@ steps:
       - app-migration-userstore-2
     timeout: 90
     trigger_sync: true
+    expect:
+      method: note_count
+      equals:
+        output: 2
 
   - name: Assert v1 shape on node 1 (two user slots present)
     type: call

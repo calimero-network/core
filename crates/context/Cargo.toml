@@ -16,14 +16,18 @@ either.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true
+libp2p = { workspace = true, features = ["gossipsub"] }
 ouroboros.workspace = true
 prometheus-client.workspace = true
 rand.workspace = true
 serde.workspace = true
 sha2.workspace = true
 serde_json.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+url.workspace = true
+zeroize.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
+tokio = { workspace = true, features = ["sync", "macros", "rt", "time", "net"] }
 tracing.workspace = true
 
 calimero-app-downloader.workspace = true
@@ -32,6 +36,7 @@ calimero-context-client.workspace = true
 calimero-governance-store.workspace = true
 calimero-crypto.workspace = true
 calimero-dag.workspace = true
+calimero-bundle.workspace = true
 calimero-governance-types.workspace = true
 calimero-network-primitives.workspace = true
 calimero-node-primitives.workspace = true
@@ -67,6 +72,13 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 wat.workspace = true
 # Ids of a cell's members and owned entries, for tests that play a run writing them.
 calimero-storage = { workspace = true, features = ["testing"] }
+# A local TLS server with its own CA, for the outbound transport's tests.
+rcgen.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
 
 [features]
 profiling = ["calimero-runtime/profiling"]
+# DEV/TEST ONLY: `[context.outbound.testing]`, which answers requests to `.test`
+# hosts in-process and takes literal secrets. merod's test image enables it.
+outbound-testing = []

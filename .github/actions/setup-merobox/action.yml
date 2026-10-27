@@ -32,7 +32,8 @@ runs:
         # create_group_in_namespace step with `visibility:` now sends the node's
         # token, so an embedded-auth node no longer refuses it with 401
         # (calimero-network/merobox#437, #438).
-        MEROBOX_VERSION="0.6.84"
+        # >= 0.6.85 for the transfer_ownership step.
+        MEROBOX_VERSION="0.6.85"
 
         MEROBOX_ARCH=""
         if [ "${RUNNER_OS}" != "Windows" ]; then

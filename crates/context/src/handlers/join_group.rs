@@ -1,7 +1,7 @@
 use calimero_governance_store::{
     account_for_group, CapabilitiesRepository, ForgottenNamespaces, GroupKeyring,
     MembershipRepository, MetaRepository, MetadataRepository, NamespaceMembershipService,
-    ReentryRepository,
+    NamespaceRepository, ReentryRepository,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,6 +23,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tracing::{info, warn};
 
 use crate::error::ContextError;
+use crate::handlers::rejoin_namespace::RejoinLock;
 use crate::ContextManager;
 use calimero_governance_store::op_events::subscribe as subscribe_op_events;
 use calimero_governance_store::op_events::OpEvent;
@@ -75,9 +76,13 @@ impl Handler<JoinGroupRequest> for ContextManager {
         let ack_router = Arc::clone(&self.ack_router);
         let context_client = self.context_client.clone();
         let key_delivery_fallback_wait = self.config.key_delivery_fallback_wait;
+        let rejoining = Arc::clone(&self.rejoining);
 
         ActorResponse::r#async(
             async move {
+                // A restore in flight may undo its follow; the join runs after it, on its own.
+                let _in_flight = RejoinLock::acquire(rejoining, namespace_id).await;
+                NamespaceRepository::new(&datastore).participate_in(&group_id)?;
                 let sk = PrivateKey::from(sk_bytes);
                 let role = match invited_role {
                     0 => GroupMemberRole::Admin,
@@ -189,6 +194,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         created_at: 0,
                         auto_join: true,
                     };
+                    // Marked before the meta is written: a crash in between leaves
+                    // an orphan marker, which only refuses, never an unmarked hint.
+                    if target_application_id != calimero_primitives::application::ZERO_APPLICATION_ID {
+                        MetaRepository::new(&datastore).mark_target_unverified(&group_id)?;
+                    }
                     MetaRepository::new(&datastore).save(&group_id, &meta)?;
 
                     // The hint goes to its own node-local row, not to a
@@ -978,7 +988,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         }
 
                         for context_id in contexts {
-                            let config = if !context_client.has_context(context_id)? {
+                            let bootstrapping = !context_client.has_context(context_id)?;
+                            let config = if bootstrapping {
                                 let zero_app =
                                     calimero_primitives::application::ApplicationId::from(
                                         [0u8; 32],
@@ -1008,6 +1019,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                 .await
                             {
                                 warn!(%context_id, ?e, "failed to sync context config");
+                            } else if bootstrapping {
+                                crate::activation::record_start_release(&datastore, context_id);
                             }
                             if let Err(e) = node_client.subscribe(context_id).await {
                                 warn!(%context_id, ?e, "failed to subscribe to context");
@@ -1264,6 +1277,7 @@ mod authz_matrix;
 mod tests {
     use std::sync::Arc;
 
+    use calimero_context_client::group::RejoinNamespaceRequest;
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
@@ -1637,6 +1651,99 @@ mod tests {
                 .expect("read"),
             "the join lifts the removal, or a restart stops following the namespace"
         );
+    }
+
+    /// A restore that times out undoes its follow while the join is in flight; the
+    /// join then lifts the removal, so it must run after the restore is done.
+    #[actix::test]
+    async fn a_join_waits_for_a_restore_in_flight_and_keeps_its_follow() {
+        let group = ContextGroupId::from(GROUP);
+        let store = a_store_with_a_joiner();
+        ForgottenNamespaces::new(&store)
+            .mark(
+                &group,
+                Some(calimero_primitives::application::ApplicationId::from(APP)),
+                1,
+                None,
+            )
+            .expect("remove the namespace");
+        let (harness, gate) = actor::over_answering_joins_holding_subscribe(
+            store.clone(),
+            a_bundle_keyed_by(&PrivateKey::from([0xD3; 32]), &[0xE1; 32]),
+            format!("ns/{}", hex::encode(GROUP)),
+        )
+        .await;
+        gate.add_permits(1);
+
+        let restore = harness.manager.send(RejoinNamespaceRequest {
+            namespace_id: group,
+        });
+        let join = async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let join = harness.manager.send(JoinGroupRequest {
+                invitation: an_invitation(group),
+                group_name: None,
+            });
+            let release = async {
+                tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+                gate.add_permits(1);
+            };
+            tokio::join!(join, release).0
+        };
+        let (restored, joined) = tokio::join!(restore, join);
+
+        assert!(restored.expect("answers").is_err(), "no state ever lands");
+        joined.expect("answers").expect("the join completes");
+        assert!(NamespaceRepository::new(&store)
+            .participating_namespaces()
+            .expect("read participation")
+            .contains(&group));
+    }
+
+    /// The invitation's application id is unsigned, so a join that seeds it as
+    /// the group's target leaves it marked until a signed op confirms it.
+    #[actix::test]
+    async fn a_joined_groups_target_is_unverified_until_a_signed_op_confirms_it() {
+        let group = ContextGroupId::from(GROUP);
+        let (store, outcome) = join_with_bundle(a_bundle_keyed_by(
+            &PrivateKey::from([0xD3; 32]),
+            &[0xE1; 32],
+        ))
+        .await;
+        assert!(outcome.is_ok(), "the join completes: {outcome:?}");
+
+        let metas = calimero_governance_store::MetaRepository::new(&store);
+        let seeded = metas
+            .load(&group)
+            .expect("read")
+            .expect("the join seeds meta");
+        assert_eq!(
+            seeded.target.application_id,
+            calimero_primitives::application::ApplicationId::from(APP)
+        );
+        assert!(metas.is_target_unverified(&group).expect("read"));
+    }
+
+    /// A join no member endorses still leaves the seeded meta behind, so the
+    /// marker has to be there for the hint it holds.
+    #[actix::test]
+    async fn a_refused_join_leaves_its_seeded_target_marked() {
+        let group = ContextGroupId::from(GROUP);
+        let store = a_store_with_a_joiner();
+        let harness = actor::over_refusing_joins(store.clone(), "not admitted").await;
+        let outcome = harness
+            .manager
+            .send(JoinGroupRequest {
+                invitation: an_invitation(group),
+                group_name: None,
+            })
+            .await
+            .expect("the manager answers");
+        assert!(outcome.is_err(), "the join is refused");
+
+        let metas = calimero_governance_store::MetaRepository::new(&store);
+        assert!(metas.load(&group).expect("read").is_some());
+        assert!(metas.is_target_unverified(&group).expect("read"));
     }
 
     /// A join every member refused carries the member's reason.

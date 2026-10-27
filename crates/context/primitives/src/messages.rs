@@ -10,27 +10,28 @@ use tokio::sync::oneshot;
 
 use crate::group::{
     AbortMigrationRequest, ActivateNamespaceUpgradeRequest, ActivateUpgradeRequest,
-    AddGroupMembersRequest, AdmitTeeNodeRequest, AttestFoundingRelayRequest,
-    BroadcastGroupLocalStateRequest, ChangeNamespaceAdminRequest, CreateGroupInvitationRequest,
-    CreateGroupRequest, DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
-    GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
-    GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
-    GetMemberCapabilitiesRequest, GetMemberMetadataRequest, GetMigrationStatusRequest,
-    GetNamespaceIdentityRequest, GovernOnBehalfRequest, IssueNamespaceOwnershipProofRequest,
-    IssueOwnershipProofRequest, JoinContextRequest, JoinGroupRequest,
-    JoinSubgroupInheritanceRequest, LabelDeviceRequest, LeaveContextRequest, LeaveGroupRequest,
-    LeaveNamespaceRequest, LinkAccountDeviceRequest, ListAllGroupsRequest,
+    AddGroupMembersRequest, AdmitTeeNodeRequest, ApproveOutboundRequest,
+    AttestFoundingRelayRequest, BroadcastGroupLocalStateRequest, ChangeNamespaceAdminRequest,
+    CreateGroupInvitationRequest, CreateGroupRequest, DeleteGroupRequest, DeleteNamespaceRequest,
+    DetachContextFromGroupRequest, GetCascadeStatusRequest, GetContextMetadataRequest,
+    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
+    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberMetadataRequest,
+    GetMigrationStatusRequest, GetNamespaceIdentityRequest, GovernOnBehalfRequest,
+    IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest, JoinContextRequest,
+    JoinGroupRequest, JoinSubgroupInheritanceRequest, LabelDeviceRequest, LeaveContextRequest,
+    LeaveGroupRequest, LeaveNamespaceRequest, LinkAccountDeviceRequest, ListAllGroupsRequest,
     ListGroupContextsRequest, ListGroupMembersRequest, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, OwnerDeleteGroupRequest, PairDeviceCompleteRequest,
-    PairDeviceInitRequest, RelinkDeviceRequest, RemoveGroupMembersRequest, RescopeDeviceRequest,
-    ResyncContextRequest, RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
-    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
-    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
-    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, SetTeeAuthoringPolicyRequest,
-    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
-    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
-    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
-    TransferOwnershipRequest, TrialUpgradeRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    PairDeviceInitRequest, RejoinNamespaceRequest, RelinkDeviceRequest, RemoveGroupMembersRequest,
+    RescopeDeviceRequest, ResyncContextRequest, RetryGroupUpgradeRequest, RevokeDeviceRequest,
+    RotateGroupKeyRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
+    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
+    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
+    SetTeeAuthoringPolicyRequest, StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest,
+    StoreGroupContextRequest, StoreGroupMetaRequest, StoreGroupMetadataRequest,
+    StoreMemberCapabilityRequest, StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest,
+    SyncGroupRequest, TransferOwnershipRequest, TrialUpgradeRequest, UpdateMemberRoleRequest,
+    UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -95,6 +96,25 @@ pub struct PrecompileApplicationRequest {
 impl Message for PrecompileApplicationRequest {
     /// How many modules were compiled now; already-cached ones are not counted.
     type Result = eyre::Result<usize>;
+}
+
+/// An outbound request a member's node forwarded to this node because it names
+/// a `{{sealed:…}}` secret only a TEE of the namespace can open.
+///
+/// `requester` has already proven its key on the stream and been checked as a
+/// member of `context`; `responder` is this node's identity there.
+#[derive(Clone, Debug)]
+pub struct ForwardedOutboundRequest {
+    pub context: ContextId,
+    pub requester: PublicKey,
+    pub responder: PublicKey,
+    /// A borsh `calimero_primitives::outbound::OutboundRequest`.
+    pub request: Vec<u8>,
+}
+
+impl Message for ForwardedOutboundRequest {
+    /// A borsh `calimero_context::outbound::ForwardedAnswer`, sent back as is.
+    type Result = eyre::Result<Vec<u8>>;
 }
 
 /// Whom a delegated **read** runs as: the authenticated session's account, and
@@ -706,6 +726,14 @@ pub enum ContextMessage {
         request: DeleteNamespaceRequest,
         outcome: oneshot::Sender<<DeleteNamespaceRequest as Message>::Result>,
     },
+    RejoinNamespace {
+        request: RejoinNamespaceRequest,
+        outcome: oneshot::Sender<<RejoinNamespaceRequest as Message>::Result>,
+    },
+    ForwardedOutbound {
+        request: ForwardedOutboundRequest,
+        outcome: oneshot::Sender<<ForwardedOutboundRequest as Message>::Result>,
+    },
     AddGroupMembers {
         request: AddGroupMembersRequest,
         outcome: oneshot::Sender<<AddGroupMembersRequest as Message>::Result>,
@@ -829,6 +857,10 @@ pub enum ContextMessage {
     SetTeeAdmissionPolicy {
         request: SetTeeAdmissionPolicyRequest,
         outcome: oneshot::Sender<<SetTeeAdmissionPolicyRequest as Message>::Result>,
+    },
+    ApproveOutbound {
+        request: ApproveOutboundRequest,
+        outcome: oneshot::Sender<<ApproveOutboundRequest as Message>::Result>,
     },
     SetTeeAuthoringPolicy {
         request: SetTeeAuthoringPolicyRequest,

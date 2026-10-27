@@ -19,8 +19,9 @@ use eyre::{bail, Result};
 use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
-use crate::delta_store::DeltaStore;
+use crate::delta_store::{BatchDeltaInput, DeltaStore, DELTA_BATCH_MAX};
 use crate::peer_identity_cache::ObservedMembership;
+use crate::sync::delta_request::flush_delta_batch;
 
 mod buffering;
 mod crypto;
@@ -2060,6 +2061,8 @@ async fn request_missing_deltas(
         // Reverse so oldest ancestors are added first
         fetched_deltas.reverse();
 
+        let mut batch = Vec::with_capacity(DELTA_BATCH_MAX.min(fetched_deltas.len()));
+        let mut tee_markers = Vec::new();
         for (
             dag_delta,
             delta_id,
@@ -2070,76 +2073,47 @@ async fn request_missing_deltas(
             events_hash,
         ) in fetched_deltas
         {
-            // Use the events-aware entry point so we can forward any events
-            // attached to *cascaded children* to the caller. The peer-fetched
-            // parent itself has no events (the wire protocol doesn't carry
-            // them on `DeltaResponse`) — hence `None` for the second arg —
-            // but `add_delta_internal`'s internal `apply_pending` can cascade
-            // children that were pre-persisted with events, and those need
-            // to reach `execute_cascaded_events` at the caller.
-            //
-            // The wire-received author + governance position + envelope
-            // signature are persisted on the row so subsequent
-            // DAG-catchup serves from this node include the claim
-            // (responder filters out rows without an author claim, see
-            // `crates/node/src/sync/delta_request.rs`).
-            // The resolver answers at the cut this delta was signed at, not the last one armed.
-            arm_signer_resolver_for_cut(
-                &delta_store,
-                node_state,
-                &datastore,
-                &context_id,
-                governance_position_blob
-                    .as_deref()
-                    .and_then(|blob| {
-                        borsh::from_slice::<calimero_context_config::types::GovernanceParentEdge>(
-                            blob,
-                        )
-                        .ok()
-                    })
-                    .as_ref(),
-                calimero_storage::logical_clock::physical_time_secs(&dag_delta.hlc),
-            );
             record_accepted_events_hash(&datastore, &context_id, &delta_id, events_hash.as_ref());
-            match delta_store
-                .add_delta_with_events(
-                    dag_delta,
-                    None,
-                    author_id,
-                    governance_position_blob,
-                    delta_signature,
-                    // This path reconstructs a delta from a parent-fetch, which
-                    // carries no envelope of its own; a delegated parent is
-                    // served with its bundle by the responder and threaded via
-                    // `FetchedDelta` instead.
-                    None,
+            if let Some(envelope) = envelope {
+                tee_markers.push((delta_id, envelope));
+            }
+            // The wire-received author + governance position + envelope
+            // signature are persisted on the row so subsequent DAG-catchup
+            // serves from this node include the claim (responder filters out
+            // rows without an author claim). A parent-fetch carries no events
+            // or delegation of its own; a delegated parent is served with its
+            // bundle by the responder and threaded via `FetchedDelta` instead.
+            batch.push(BatchDeltaInput {
+                delta: dag_delta,
+                events: None,
+                author_id,
+                governance_position_blob,
+                delta_signature,
+                delegation: None,
+            });
+            if batch.len() == DELTA_BATCH_MAX {
+                let result = flush_delta_batch(
+                    &delta_store,
+                    node_state,
+                    &datastore,
+                    &context_id,
+                    std::mem::take(&mut batch),
+                    std::mem::take(&mut tee_markers),
                 )
-                .await
-            {
-                Ok(result) => {
-                    if let Some(envelope) = &envelope {
-                        verify::record_accepted_tee_delta(
-                            &datastore,
-                            &context_id,
-                            &delta_id,
-                            envelope,
-                        );
-                    }
-                    if !result.cascaded_events.is_empty() {
-                        info!(
-                            %context_id,
-                            parent_delta_id = ?delta_id,
-                            cascaded_count = result.cascaded_events.len(),
-                            "Peer-fetched parent cascaded pending children with events"
-                        );
-                        cascaded_events.extend(result.cascaded_events);
-                    }
-                }
-                Err(e) => {
-                    warn!(?e, %context_id, delta_id = ?delta_id, "Failed to add fetched delta to DAG");
-                }
+                .await;
+                cascaded_events.extend(result.forwarded_events);
             }
         }
+        let result = flush_delta_batch(
+            &delta_store,
+            node_state,
+            &datastore,
+            &context_id,
+            batch,
+            tee_markers,
+        )
+        .await;
+        cascaded_events.extend(result.forwarded_events);
 
         // Log warning for very large syncs (informational, not a hard limit)
         if fetch_count > 1000 {

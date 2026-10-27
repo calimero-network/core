@@ -920,7 +920,7 @@ where
     /// - `401` → `AuthMode::Required`
     /// - `2xx` → `AuthMode::None` (server responded without demanding auth)
     /// - anything else (including `404`) → `AuthMode::Required` (safe default)
-    /// - network error → `AuthMode::None` (node unreachable / no admin API)
+    /// - network error → `Err` (an unreachable node must not read as "no auth")
     ///
     /// Note: unlike the previous implementation, **localhost / 127.0.0.1 no longer
     /// bypasses the probe**. Local nodes now go through the same detection so that
@@ -951,15 +951,7 @@ where
                     Ok(AuthMode::Required)
                 }
             }
-            Err(e) => {
-                // If we can't reach the endpoint, assume no authentication
-                // required — common for local nodes without the admin API. This
-                // also fires when a reverse-proxy base path is misconfigured or
-                // the proxy is down, so log the cause at debug to make that
-                // diagnosable rather than silently skipping auth.
-                tracing::debug!("detect_auth_mode: probe request failed, assuming no auth: {e}");
-                Ok(AuthMode::None)
-            }
+            Err(e) => Err(e.wrap_err("could not probe the node to detect its authentication mode")),
         }
     }
 }

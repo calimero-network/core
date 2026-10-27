@@ -55,6 +55,13 @@ pub(crate) mod peer_cache;
 /// key is eventually covered across successive ticks.
 const RENDEZVOUS_DISCOVER_BUDGET: usize = 8;
 
+/// Most registrations a single rendezvous `Discovered` event may dial; the
+/// server is only semi-trusted and could return an unbounded list.
+pub(crate) const MAX_RENDEZVOUS_DIALS_PER_EVENT: usize = 32;
+
+/// Registrations asked of the server per discover; the handler enforces the cap itself.
+const RENDEZVOUS_DISCOVER_LIMIT: u64 = MAX_RENDEZVOUS_DIALS_PER_EVENT as u64;
+
 #[derive(Debug)]
 pub struct Discovery {
     pub(crate) state: DiscoveryState,
@@ -392,7 +399,7 @@ impl NetworkManager {
         self.swarm.behaviour_mut().rendezvous.discover(
             Some(self.discovery.rendezvous_config.namespace.clone()),
             global_cookie,
-            None,
+            Some(RENDEZVOUS_DISCOVER_LIMIT),
             *rendezvous_peer,
         );
 
@@ -418,7 +425,7 @@ impl NetworkManager {
                 self.swarm.behaviour_mut().rendezvous.discover(
                     Some(key.clone()),
                     None,
-                    None,
+                    Some(RENDEZVOUS_DISCOVER_LIMIT),
                     *rendezvous_peer,
                 );
                 debug!(

@@ -109,6 +109,12 @@ steps:
       - calimero-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: hello
+      equals:
+        output: world
 
   # Step 10: Execute a view call to retrieve the stored value from node 2
   - name: Execute View Call - Get Value from Node 2
@@ -154,6 +160,12 @@ steps:
       - calimero-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: node3_key
+      equals:
+        output: node3_value
 
   # Step 14: Verify the node 3 value can be read from other nodes
   - name: Verify Node 3 Value from Node 1

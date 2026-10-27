@@ -274,6 +274,7 @@ fn create_test_bundle_custom_wasm_path(
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),
+        outbound: Vec::new(),
         services: None,
         signature: None,
     };
@@ -1304,6 +1305,7 @@ fn create_test_bundle_with_key(
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),
+        outbound: Vec::new(),
         services: None,
         signature: None,
     })

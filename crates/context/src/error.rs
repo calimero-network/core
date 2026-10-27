@@ -128,6 +128,16 @@ pub enum ContextError {
         namespace_id: String,
     },
 
+    /// A restore followed the namespace but its group rows and key had not
+    /// landed in time; the removal stands and the restore may be retried.
+    #[error(
+        "namespace '{namespace_id}' was followed again but its state has not arrived yet; retry"
+    )]
+    NamespaceNotRestored {
+        /// Hex rendering of the target namespace id (for the message only).
+        namespace_id: String,
+    },
+
     /// A caller-supplied identity is not a member of the group it named.
     ///
     /// Distinct from [`Self::NotAGroupMember`], which is about THIS NODE's own
@@ -762,6 +772,11 @@ pub enum ContextError {
         /// Hex rendering of the parent the caller named (for the message only).
         parent_id: String,
     },
+
+    /// A `400`: a subgroup, or a group pinned to a `bytecode_id`, has to name its
+    /// `application_id`; only the app-less account namespace goes without.
+    #[error("application_id is required for a subgroup and when bytecode_id is given")]
+    ApplicationRequired,
 
     /// A `400`: the `bytecode_id` a caller chose cannot be bound (zero, not an
     /// application bundle, or another package's bundle).

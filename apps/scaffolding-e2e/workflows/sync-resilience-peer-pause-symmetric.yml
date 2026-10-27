@@ -102,6 +102,12 @@ steps:
       - sync-resil-node-2
     timeout: 90
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: baseline
+      equals:
+        output: awake
 
   - name: Read baseline on node-2 (sanity)
     type: call
@@ -158,6 +164,12 @@ steps:
       - sync-resil-node-2
     timeout: 150
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: during_pause
+      equals:
+        output: written_while_paused_via_relay
 
   - name: Read during-pause key on node-2
     type: call
@@ -201,7 +213,7 @@ steps:
   #      ever opened a relay-circuit connection at all (sanity).
   #   2. `ReservationReqAccepted` proves the relay-reservation
   #      handshake completed (one-shot at initial reserve).
-  #   3. `direct-connection upgrade succeeded` is ABSENT — if
+  #   3. no `direct_upgrades` entry in network status reports `succeeded` — if
   #      `--random-fully` silently fell back to plain MASQUERADE,
   #      DCUtR would succeed and the test would be running cone
   #      semantics under a symmetric label. Better to fail-fast.
@@ -237,12 +249,20 @@ steps:
     patterns:
       - "ReservationReqAccepted"
 
-  - name: Confirm DCUtR did NOT upgrade (symmetric mode invariant)
-    type: assert_log_absent
-    nodes:
-      - sync-resil-node-1
-      - sync-resil-node-2
-    patterns:
-      - "direct-connection upgrade succeeded"
+  - name: Confirm node-1 reports no successful DCUtR upgrade (symmetric mode invariant)
+    type: assert_api_response
+    node: sync-resil-node-1
+    path: /admin-api/network/status
+    where:
+      status: succeeded
+    expect_no_match: true
+
+  - name: Confirm node-2 reports no successful DCUtR upgrade (symmetric mode invariant)
+    type: assert_api_response
+    node: sync-resil-node-2
+    path: /admin-api/network/status
+    where:
+      status: succeeded
+    expect_no_match: true
 
 stop_all_nodes: true

@@ -105,6 +105,12 @@ steps:
       - rust-blob-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_blob_id_hex
+      args:
+        file_id: "{{txt_file_id}}"
+      equals:
+        output: "{{txt_blob_id}}"
 
   - name: List files on inviter
     type: call
@@ -165,6 +171,12 @@ steps:
       - rust-blob-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: search_files
+      args:
+        query: screenshot
+      equals:
+        output: []
 
   - name: List files after delete
     type: call

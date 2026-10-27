@@ -105,6 +105,12 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_frozen
+      args:
+        hash_hex: "{{frozen_hash}}"
+      equals:
+        output: "Immutable data"
 
   - name: Get frozen value on node-3 (sanity - synced cleanly)
     type: call
@@ -140,6 +146,10 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: rga_get_text
+      equals:
+        output: "Hello"
 
   - name: RGA append text on node-2
     type: call
@@ -166,6 +176,10 @@ steps:
       - e2e-node-3
     timeout: 60
     trigger_sync: true
+    expect:
+      method: rga_get_length
+      equals:
+        output: 36
 
   - name: RGA delete text on node-1
     type: call
@@ -208,6 +222,10 @@ steps:
       - e2e-node-3
     timeout: 90
     trigger_sync: true
+    expect:
+      method: rga_get_title
+      equals:
+        output: "E2E Test Document"
 
   # --- Post-convergence assertions: the frozen entry is still consistent ---
   - name: Get frozen value on node-2 after title change

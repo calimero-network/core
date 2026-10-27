@@ -214,6 +214,11 @@ impl PredefinedEntry for key::GroupLocalGovNonceWindow {
     type DataType<'a> = key::GroupLocalGovNonceWindowValue;
 }
 
+impl PredefinedEntry for key::GroupOutboundApproval {
+    type Codec = Borsh;
+    type DataType<'a> = key::GroupOutboundApprovalValue;
+}
+
 impl PredefinedEntry for key::GroupContextMetadata {
     type Codec = Borsh;
     type DataType<'a> = calimero_primitives::metadata::MetadataRecord;
@@ -266,6 +271,11 @@ impl PredefinedEntry for key::NamespaceBootstrapInviter {
     type DataType<'a> = [u8; 32];
 }
 
+impl PredefinedEntry for key::GroupTargetUnverified {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
 impl PredefinedEntry for key::NamespaceParticipation {
     type Codec = Borsh;
     type DataType<'a> = key::NamespaceParticipationValue;
@@ -304,4 +314,36 @@ impl PredefinedEntry for key::GroupKeyEntry {
 impl PredefinedEntry for key::AbsorbBufferKey {
     type Codec = Borsh;
     type DataType<'a> = Vec<u8>;
+}
+
+#[cfg(test)]
+mod group_target_unverified_tests {
+    use std::sync::Arc;
+
+    use crate::db::InMemoryDB;
+    use crate::{key, Store};
+
+    #[test]
+    fn a_store_without_the_key_reads_as_verified() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let key = key::GroupTargetUnverified::new([7; 32]);
+
+        assert!(!store.handle().has(&key).expect("read an absent key"));
+    }
+
+    #[test]
+    fn a_marker_is_scoped_to_its_group() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let mut handle = store.handle();
+        handle
+            .put(&key::GroupTargetUnverified::new([7; 32]), &())
+            .unwrap();
+
+        assert!(handle
+            .has(&key::GroupTargetUnverified::new([7; 32]))
+            .unwrap());
+        assert!(!handle
+            .has(&key::GroupTargetUnverified::new([8; 32]))
+            .unwrap());
+    }
 }

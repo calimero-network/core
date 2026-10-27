@@ -529,6 +529,11 @@ pub(crate) fn setup(
             "/namespaces/for-application/{application_id}",
             get(namespaces::list_for_application::handler),
         )
+        // What a namespace lets each publisher's apps reach (`approveOutbound`).
+        .route(
+            "/namespaces/{namespace_id}/outbound-approvals",
+            get(namespaces::outbound_approvals::list).put(namespaces::outbound_approvals::set),
+        )
         // Namespace governance (Phase 2)
         .route(
             "/namespaces/{namespace_id}/groups",
@@ -1018,6 +1023,7 @@ pub(crate) fn method_error_response(
 
     let status_code = match err {
         ExecutionError::FunctionCallError(_) => StatusCode::BAD_REQUEST,
+        ExecutionError::NoOwnedIdentity => StatusCode::FORBIDDEN,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     let mut body = serde_json::to_value(err).unwrap_or_else(|_| json!({}));
@@ -1079,6 +1085,7 @@ fn group_lifecycle_refusal_status(
         | Refusal::InvitationInvalid { .. }
         | Refusal::TeePolicyInvalid { .. }
         | Refusal::OwnershipProofInvalid { .. }
+        | Refusal::ApplicationRequired
         | Refusal::BytecodeIdInvalid { .. } => StatusCode::BAD_REQUEST,
         Refusal::UpgradeNotFound { .. } => StatusCode::NOT_FOUND,
         Refusal::UpgradeInProgress { .. }
@@ -1182,7 +1189,8 @@ fn namespace_refusal_status(err: &NamespaceError) -> Option<StatusCode> {
         | Refusal::CannotDeleteRoot(_)
         | Refusal::SelfParentEdge
         | Refusal::TeePolicyNotOnSubgroup(_)
-        | Refusal::TeeAuthoringPolicyNotOnSubgroup(_) => StatusCode::BAD_REQUEST,
+        | Refusal::TeeAuthoringPolicyNotOnSubgroup(_)
+        | Refusal::OutboundApprovalNotOnSubgroup(_) => StatusCode::BAD_REQUEST,
         // Valid in general, but not against the tree as it stands.
         Refusal::NestingCycle | Refusal::AlreadyHasParent(_) | Refusal::ReparentCycle { .. } => {
             StatusCode::CONFLICT
@@ -1492,8 +1500,10 @@ pub fn parse_api_error(err: Report) -> ApiError {
             message: format!("{err:#}"),
         };
     }
-    if let Some(calimero_context::error::ContextError::AuthorityNotYetResolvable { .. }) =
-        err.downcast_ref::<calimero_context::error::ContextError>()
+    if let Some(
+        calimero_context::error::ContextError::AuthorityNotYetResolvable { .. }
+        | calimero_context::error::ContextError::NamespaceNotRestored { .. },
+    ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
         return ApiError {
             status_code: StatusCode::SERVICE_UNAVAILABLE,
@@ -2055,6 +2065,16 @@ mod parse_api_error_tests {
         );
     }
 
+    #[test]
+    fn a_restore_whose_state_has_not_landed_maps_to_503() {
+        let err = calimero_context::error::ContextError::NamespaceNotRestored {
+            namespace_id: "test-namespace".to_owned(),
+        };
+        let api = parse_api_error(err.into());
+        assert_eq!(api.status_code, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(api.message.contains("retry"), "got: {}", api.message);
+    }
+
     /// The pair that must stay apart: same shape of failure to a caller, opposite
     /// meanings. If these ever collapse to one status, retry logic built on the
     /// first will spin forever on the second.
@@ -2601,6 +2621,7 @@ mod parse_api_error_tests {
                     },
                     StatusCode::BAD_REQUEST,
                 ),
+                (ContextError::ApplicationRequired, StatusCode::BAD_REQUEST),
                 (
                     ContextError::BytecodeNotInstalled {
                         blob_id: "b1".to_owned(),

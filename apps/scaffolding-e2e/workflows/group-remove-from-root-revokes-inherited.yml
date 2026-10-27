@@ -218,6 +218,12 @@ steps:
       - revoke-inherit-node-3
     timeout: 30
     check_interval: 2
+    expect:
+      method: get
+      args:
+        key: "pre_revoke"
+      equals:
+        output: "node2_msg_before_revoke"
 
   - name: Pre-revoke — node-3 reads node-2's write
     type: call
@@ -311,6 +317,12 @@ steps:
       - revoke-inherit-node-3
     timeout: 30
     check_interval: 2
+    expect:
+      method: get
+      args:
+        key: "node3_after_revoke"
+      equals:
+        output: "node3_still_works"
 
   - name: Admin reads node-3's write
     type: call

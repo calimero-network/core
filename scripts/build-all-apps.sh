@@ -35,6 +35,7 @@ APPS=(
     "apps/migrations/migration-suite-v4-rename-field/Cargo.toml"
     "apps/migrations/migration-suite-v5-change-type/Cargo.toml"
     "apps/nested-crdt-test/Cargo.toml"
+    "apps/outbound-probe/Cargo.toml"
     "apps/private_data/Cargo.toml"
     "apps/rich-collab/Cargo.toml"
     "apps/scaffolding-e2e/Cargo.toml"

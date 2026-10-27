@@ -1,0 +1,25 @@
+[package]
+name = "outbound-probe"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk.workspace = true
+calimero-storage.workspace = true
+
+[package.metadata.workspaces]
+independent = true
+
+[package.metadata.calimero]
+package = "com.calimero.outbound-probe"
+name = "Outbound Probe"
+# The one prefix this app may send a request under. The merobox scenario runs
+# a test-build node that answers `.test` hosts in-process.
+outbound = ["https://echo.outbound.test/v1/"]

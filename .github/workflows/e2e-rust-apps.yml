@@ -125,7 +125,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/master' && github.sha || '' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 env:
@@ -242,6 +242,8 @@ jobs:
         run: pip install --quiet pyyaml
       - name: Lint merobox scenarios for unbarriered convergence reads
         run: python3 scripts/lint-e2e-convergence.py
+      - name: Test the convergence lint
+        run: python3 scripts/tests/lint-e2e-convergence-test.py
       - name: Lint merobox scenarios for unnamed multi-service bundles
         run: python3 scripts/lint-e2e-bundle-shape.py
       - name: Lint e2e workflows for unbuilt scenario bundles
@@ -588,6 +590,20 @@ jobs:
       - name: Load Docker image
         if: matrix.image != 'merod:local-mock-tee'
         run: zstd -d /tmp/merod-local.tar.zst --stdout | docker load
+
+      # tc netem needs iproute2; the file capability lets merod's non-root user run it.
+      - name: Build fault-injection image
+        if: matrix.image == 'merod:local-fault'
+        run: |
+          docker build -q -t merod:local-fault - <<'EOF'
+          FROM merod:local
+          USER root
+          RUN apt-get update && apt-get install -y --no-install-recommends iproute2 libcap2-bin \
+              && setcap cap_net_admin+ep "$(command -v tc)" \
+              && rm -rf /var/lib/apt/lists/*
+          USER user
+          EOF
+          docker run --rm --cap-add NET_ADMIN --entrypoint tc merod:local-fault -V
 
       # Only the mock-TEE groups need it, and it is a second full image —
       # not worth pulling into every group.

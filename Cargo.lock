@@ -1198,6 +1198,7 @@ dependencies = [
  "calimero-account",
  "calimero-app-downloader",
  "calimero-authz",
+ "calimero-bundle",
  "calimero-context-client",
  "calimero-context-config",
  "calimero-crypto",
@@ -1224,17 +1225,24 @@ dependencies = [
  "eyre",
  "futures-util",
  "hex",
+ "libp2p",
  "ouroboros",
  "prometheus-client",
  "rand 0.10.2",
+ "rcgen",
+ "reqwest 0.12.28",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-rustls",
  "tracing",
+ "url",
  "wat",
+ "zeroize",
 ]
 
 [[package]]
@@ -1367,6 +1375,7 @@ dependencies = [
  "blake3",
  "borsh",
  "calimero-account",
+ "calimero-bundle",
  "calimero-context-config",
  "calimero-primitives",
  "calimero-storage",
@@ -1660,6 +1669,7 @@ dependencies = [
  "calimero-storage",
  "calimero-sys",
  "calimero-wasm-abi",
+ "macrotest",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -3055,7 +3065,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
- "syn 2.0.117",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -3324,6 +3334,12 @@ dependencies = [
  "syn 2.0.117",
  "unicode-xid",
 ]
+
+[[package]]
+name = "diff"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
 
 [[package]]
 name = "digest"
@@ -6163,6 +6179,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "macrotest"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd198afd908012e57564b66e43e7d4d19056cec7e6232e9e6d54a1798622f81d"
+dependencies = [
+ "diff",
+ "fastrand",
+ "glob",
+ "prettyplease 0.2.37",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "syn 2.0.117",
+ "toml",
+]
+
+[[package]]
 name = "markup5ever"
 version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7319,6 +7352,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "outbound-probe"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+]
+
+[[package]]
 name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7950,7 +7991,7 @@ version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "itertools 0.14.0",
  "log",
  "multimap",
@@ -9926,7 +9967,7 @@ version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -12868,9 +12909,9 @@ dependencies = [
 
 [[package]]
 name = "zstd-sys"
-version = "2.1.0+zstd.1.5.7"
+version = "2.1.2+zstd.1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ef0a8027ec3ee71300ab3bcbcd0393f434aa72b91ca6d635a39941deae8eea0"
+checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
 dependencies = [
  "cc",
  "pkg-config",

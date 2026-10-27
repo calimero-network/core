@@ -8,12 +8,13 @@ use calimero_server_primitives::admin::{
     JoinGroupApiResponse, JoinNamespaceApiResponse, LeaveContextApiResponse, LeaveGroupApiResponse,
     LeaveNamespaceApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
     ListMemberDevicesApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
-    ListSubgroupsApiResponse, NamespaceApiResponse, NodeIdentityApiResponse,
-    PairDeviceCompleteApiResponse, PairDeviceInitApiResponse, RemoveGroupMembersApiResponse,
-    ReparentGroupApiResponse, RevokeDeviceApiResponse, SealToAccountApiResponse,
-    SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse, SetMetadataApiResponse,
-    SetSubgroupVisibilityApiResponse, SetTeeAdmissionPolicyApiResponse, SyncGroupApiResponse,
-    TeeAdmissionMode, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    ListOutboundApprovalsApiResponse, ListSubgroupsApiResponse, NamespaceApiResponse,
+    NodeIdentityApiResponse, PairDeviceCompleteApiResponse, PairDeviceInitApiResponse,
+    RemoveGroupMembersApiResponse, ReparentGroupApiResponse, RevokeDeviceApiResponse,
+    SealToAccountApiResponse, SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse,
+    SetMetadataApiResponse, SetOutboundApprovalApiResponse, SetSubgroupVisibilityApiResponse,
+    SetTeeAdmissionPolicyApiResponse, SyncGroupApiResponse, TeeAdmissionMode,
+    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -214,6 +215,46 @@ impl Report for CreateNamespaceApiResponse {
             Cell::new("Value").fg(Color::Blue),
         ]);
         let _ = table.add_row(vec!["Namespace ID", &self.data.namespace_id]);
+        println!("{table}");
+    }
+}
+
+impl Report for ListOutboundApprovalsApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Publisher").fg(Color::Blue),
+            Cell::new("Approved").fg(Color::Green),
+            Cell::new("Reviewed").fg(Color::Blue),
+        ]);
+        for approval in &self.data {
+            let _ = table.add_row(vec![
+                approval.signer.clone(),
+                approval.prefixes.join("\n"),
+                approval.reviewed.join("\n"),
+            ]);
+        }
+        println!("{table}");
+    }
+}
+
+impl Report for SetOutboundApprovalApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Outbound Approval").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Namespace ID", &self.data.namespace_id]);
+        let _ = table.add_row(vec!["Publisher", &self.data.approval.signer]);
+        let _ = table.add_row(vec![
+            "Approved".to_owned(),
+            self.data.approval.prefixes.join("\n"),
+        ]);
+        let _ = table.add_row(vec![
+            "Published".to_owned(),
+            self.data.published.to_string(),
+        ]);
         println!("{table}");
     }
 }
@@ -607,6 +648,22 @@ impl Report for GetGroupUpgradeStatusApiResponse {
                 }
                 println!("{table}");
             }
+        }
+        if !self.missing_releases.is_empty() {
+            let mut table = Table::new();
+            let _ = table.set_header(vec![
+                Cell::new("Missing Release").fg(Color::Blue),
+                Cell::new("Version").fg(Color::Blue),
+                Cell::new("Application ID").fg(Color::Blue),
+            ]);
+            for release in &self.missing_releases {
+                let _ = table.add_row(vec![
+                    &release.package,
+                    &release.version,
+                    &release.application_id.to_string(),
+                ]);
+            }
+            println!("{table}");
         }
     }
 }

@@ -6,6 +6,7 @@
 //! submodules under `group_store/`, invisible outside.
 
 use super::{MembershipRepository, MetaRepository, NamespaceRepository};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use calimero_account::AccountId;
@@ -14,8 +15,12 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::db::{Column, InMemoryDB};
+use calimero_store::config::StoreConfig;
+use calimero_store::db::{Column, Database, InMemoryDB};
+use calimero_store::iter::Iter;
 use calimero_store::key::{GroupMetaValue, GroupParentRef, GroupTarget};
+use calimero_store::slice::Slice;
+use calimero_store::tx::Transaction;
 use calimero_store::Store;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
@@ -163,6 +168,54 @@ pub fn test_store() -> Store {
 /// certificate its account root signed elsewhere.
 pub fn test_store_without_account_root() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
+}
+
+/// Fails every `apply` and every `put` after the first `puts_allowed`, so a
+/// multi-key write that is not one `apply` leaves a partial state behind.
+#[derive(Debug)]
+struct FlakyWriteDb {
+    inner: Box<dyn for<'a> Database<'a>>,
+    puts_allowed: AtomicUsize,
+}
+
+impl<'a> Database<'a> for FlakyWriteDb {
+    fn open(_: &StoreConfig) -> eyre::Result<Self> {
+        unreachable!("built directly")
+    }
+
+    fn has(&self, col: Column, key: Slice<'_>) -> eyre::Result<bool> {
+        self.inner.has(col, key)
+    }
+
+    fn get(&self, col: Column, key: Slice<'_>) -> eyre::Result<Option<Slice<'_>>> {
+        self.inner.get(col, key)
+    }
+
+    fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> eyre::Result<()> {
+        let left = self.puts_allowed.load(Ordering::SeqCst);
+        eyre::ensure!(left > 0, "injected put failure");
+        self.puts_allowed.store(left - 1, Ordering::SeqCst);
+        self.inner.put(col, key, value)
+    }
+
+    fn delete(&self, col: Column, key: Slice<'_>) -> eyre::Result<()> {
+        self.inner.delete(col, key)
+    }
+
+    fn iter(&self, col: Column) -> eyre::Result<Iter<'_>> {
+        self.inner.iter(col)
+    }
+
+    fn apply(&self, _: &Transaction<'a>) -> eyre::Result<()> {
+        eyre::bail!("injected apply failure")
+    }
+}
+
+pub fn flaky_write_store(puts_allowed: usize) -> Store {
+    Store::new(Arc::new(FlakyWriteDb {
+        inner: Box::new(InMemoryDB::owned()),
+        puts_allowed: AtomicUsize::new(puts_allowed),
+    }))
 }
 
 pub fn test_group_id() -> ContextGroupId {

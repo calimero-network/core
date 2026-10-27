@@ -343,6 +343,10 @@ steps:
     context_id: '{{context_id}}'
     timeout: 60
     trigger_sync: true
+    expect:
+      method: shared_get
+      equals:
+        output: from-phone
 
   - name: Node-1 reads the phone's write
     type: call
@@ -398,6 +402,12 @@ steps:
     context_id: '{{context_id}}'
     timeout: 60
     trigger_sync: true
+    expect:
+      method: authored_get
+      args:
+        key: notes
+      equals:
+        output: laptop-wrote-this
 
   # Same account, different device — and an authored entry's owner is the
   # ACCOUNT. So this SUCCEEDS, and that is the feature: one person reaches their
@@ -426,6 +436,12 @@ steps:
     context_id: '{{context_id}}'
     timeout: 60
     trigger_sync: true
+    expect:
+      method: authored_get
+      args:
+        key: notes
+      equals:
+        output: phone-wrote-this
 
   - name: Node-1 reads the authored entry
     type: call

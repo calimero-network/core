@@ -1222,6 +1222,54 @@ pub fn tee_authority_keys() -> Vec<[u8; 32]> {
     keys.to_vec()
 }
 
+/// The namespace TEE key a value only the TEE may read is sealed to now, or
+/// `None` while the context's namespace has no TEE authority holding one.
+///
+/// Available in every run: it is public, and every member's node derives it
+/// from the replicated governance log. Seal an outbound secret to it with
+/// [`seal_outbound_secret`]. Under the in-process test harness it is whatever
+/// `TestHost::set_tee_sealing_key` set, `None` by default.
+#[must_use]
+pub fn tee_sealing_key() -> Option<[u8; 32]> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let set: bool = unsafe { sys::tee_sealing_key(DATA_REGISTER) }
+            .try_into()
+            .unwrap_or_else(expected_boolean::<bool>);
+        set.then(|| {
+            let bytes = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+            <[u8; 32]>::try_from(bytes.as_slice()).unwrap_or_else(|_| expected_register())
+        })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::tee_sealing_key()
+}
+
+/// Seals `value` for outbound requests to the namespace's TEE key: only a
+/// node that is a TEE authority of the namespace can fill it into a request,
+/// and only for one of `hosts` (DNS names, lowercase). Store the result and
+/// write its [`placeholder`](calimero_primitives::outbound::SealedSecret::placeholder)
+/// where the value goes in a request's header or body.
+///
+/// `None` while the namespace has no TEE key ([`tee_sealing_key`]): there is no
+/// node that could ever open it, so tell the caller to add a TEE first.
+/// Available in every run; the value passes through this run's memory, never
+/// into state.
+#[must_use]
+pub fn seal_outbound_secret(
+    value: &str,
+    hosts: &[&str],
+) -> Option<calimero_primitives::outbound::SealedSecret> {
+    let key = tee_sealing_key()?;
+    let payload = calimero_primitives::outbound::SealedSecretPayload {
+        value: value.to_owned(),
+        hosts: hosts.iter().map(|h| h.to_ascii_lowercase()).collect(),
+    };
+    let bytes = borsh::to_vec(&payload).ok()?;
+    let envelope = seal_to(&key, &bytes)?;
+    Some(calimero_primitives::outbound::SealedSecret { key, envelope })
+}
+
 /// The signing key of every live device of `account` in the context's
 /// namespace: the keys a value only that member may read is sealed to, so that
 /// each of their devices can open it. Empty for an account with no device
@@ -1292,6 +1340,67 @@ pub fn search(
     {
         let _ = request;
         Err("full-text search needs a node".to_owned())
+    }
+}
+
+/// Ask the node to make one outbound HTTPS request to an outside service: a
+/// captcha check, a payment API, any HTTPS API.
+///
+/// The node makes it only when every gate holds, and answers with its reason
+/// otherwise:
+///
+/// - the node's operator turned outbound requests on (`[context.outbound]`,
+///   off by default) and allows the request's host;
+/// - a URL prefix in the app's signed manifest (`outbound`) covers
+///   `request.url`: the same host, the prefix's path or one below it;
+/// - the run writes state and executes on this node, as its own write or one
+///   it relays for an author (never a view, a migration, a state op or a
+///   peer's delta);
+/// - it is the run's only request, within the limits in
+///   [`calimero_primitives::outbound`], to a host with public addresses only.
+///
+/// A secret the request needs is written `{{secret:NAME}}` in a header value
+/// or the body. The node fills it in from its operator's secrets, only for a
+/// host that secret is bound to, and removes any copy of it from the response:
+/// the app never reads it.
+///
+/// The request and its response stay on this node. Only the state the run
+/// writes because of them replicates, so decide from the response and store
+/// the decision, not the response.
+///
+/// # Errors
+///
+/// The node's reason for refusing the request, or the transport's failure.
+/// [`OutboundRefusal::of`](calimero_primitives::outbound::OutboundRefusal::of)
+/// picks out the two an app should handle: `NotApproved` (ask an admin of the
+/// namespace) and `AwaitingApproval` (an admin should approve what this version
+/// added).
+///
+/// # Panics
+///
+/// When the node gives this run no outbound client at all, or on a second
+/// request in one run, the host traps the run.
+pub fn http_request(
+    request: &calimero_primitives::outbound::OutboundRequest,
+) -> Result<calimero_primitives::outbound::OutboundResponse, String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let bytes = borsh::to_vec(request).map_err(|e| e.to_string())?;
+        let ok: bool =
+            unsafe { sys::http_request(Ref::new(&Buffer::from(&*bytes)), DATA_REGISTER) }
+                .try_into()
+                .unwrap_or_else(expected_boolean::<bool>);
+        let out = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+        if ok {
+            borsh::from_slice(&out).map_err(|e| e.to_string())
+        } else {
+            Err(String::from_utf8_lossy(&out).into_owned())
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = request;
+        Err("outbound requests need a node".to_owned())
     }
 }
 

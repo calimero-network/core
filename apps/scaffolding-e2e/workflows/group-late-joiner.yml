@@ -120,6 +120,12 @@ steps:
       - e2e-node-2
     timeout: 90
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "pre_join_3"
+      equals:
+        output: "third_before_join"
 
   # --- Verify node-2 sees all pre-existing state ---
 
@@ -187,6 +193,12 @@ steps:
       - e2e-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "post_join"
+      equals:
+        output: "written_after_join"
 
   - name: Node-2 reads post-join key
     type: call
@@ -220,6 +232,12 @@ steps:
       - e2e-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "node2_post_join"
+      equals:
+        output: "node2_wrote_this"
 
   - name: Node-1 reads node-2 post-join key
     type: call

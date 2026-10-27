@@ -241,13 +241,15 @@ impl<'a> MembershipRepository<'a> {
             handle.delete(&GroupMemberByAccount::new(*identity, group_id.to_bytes()))?;
         }
         MetadataRepository::new(self.store).delete_member(group_id, identity)?;
-        // Clear the per-member capability row so a stale (possibly elevated)
+        // Clear the per-member and per-context capability rows so a stale (possibly elevated)
         // grant can't survive removal and be read back on re-add. Mirrors the
         // deny-list clear on `MemberAdded`. Hash-neutral: a separate column
         // from `GroupMember`, so it doesn't feed `compute_state_hash`.
-        // The three deletes aren't atomic, but apply is replay-safe: a crash
+        // The deletes aren't atomic, but apply is replay-safe: a crash
         // between them is healed when the idempotent op re-applies.
-        CapabilitiesRepository::new(self.store).delete_member_capability(group_id, identity)?;
+        let capabilities = CapabilitiesRepository::new(self.store);
+        capabilities.delete_member_capability(group_id, identity)?;
+        capabilities.delete_member_context_caps(group_id, identity)?;
         Ok(())
     }
 
@@ -1316,6 +1318,7 @@ mod tests {
     use super::*;
     use crate::test_fixtures::{test_group_id, test_meta, test_store};
     use crate::MetaRepository;
+    use calimero_primitives::context::ContextId;
 
     #[test]
     fn role_of_returns_none_when_not_a_member() {
@@ -1349,6 +1352,41 @@ mod tests {
         repo.add_member(&gid, &pk, GroupMemberRole::Member).unwrap();
         repo.remove_member(&gid, &pk).unwrap();
         assert!(repo.role_of(&gid, &pk).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_removed_and_re_added_member_holds_no_per_context_capability() {
+        let store = test_store();
+        let repo = MembershipRepository::new(&store);
+        let caps = CapabilitiesRepository::new(&store);
+        let gid = test_group_id();
+        let (removed, other) = (AccountId::from([0x01; 32]), AccountId::from([0x02; 32]));
+        let contexts = [ContextId::from([0x21; 32]), ContextId::from([0x22; 32])];
+        for member in [removed, other] {
+            repo.add_member(&gid, &member, GroupMemberRole::Member)
+                .unwrap();
+            for context in &contexts {
+                caps.set_context_member(&gid, context, &member, 0b111)
+                    .unwrap();
+            }
+        }
+
+        repo.remove_member(&gid, &removed).unwrap();
+        repo.add_member(&gid, &removed, GroupMemberRole::Member)
+            .unwrap();
+
+        for context in &contexts {
+            assert_eq!(
+                caps.context_member_capability(&gid, context, &removed)
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                caps.context_member_capability(&gid, context, &other)
+                    .unwrap(),
+                Some(0b111)
+            );
+        }
     }
 
     #[test]

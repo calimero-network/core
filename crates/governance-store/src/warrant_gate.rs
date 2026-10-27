@@ -42,7 +42,9 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextId;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
+use tracing::warn;
 
+use crate::metrics::record_warrant_outcome;
 use crate::warrant_admission::{
     admit, executor_standing, spend_nonce, AdmissionRefusal, AuthorRule, LiveReads,
 };
@@ -115,6 +117,35 @@ pub enum WarrantRefusal {
     ContextMismatch,
 }
 
+impl WarrantRefusal {
+    /// `outcome` label for `warrant_outcome_total`. The match is exhaustive, so
+    /// a new variant cannot go uncounted.
+    fn label(self) -> &'static str {
+        match self {
+            Self::NoOwningGroup => "no_owning_group",
+            Self::AuthorDeviceRevoked => "author_device_revoked",
+            Self::ExecutorDeviceRevoked => "executor_device_revoked",
+            Self::AuthorNotAMember => "author_not_a_member",
+            Self::AuthorIsReadOnly => "author_is_read_only",
+            Self::ExecutorMayNotAuthor => "executor_may_not_author",
+            Self::ExecutorIsTeeReplica => "executor_is_tee_replica",
+            Self::ExecutorIsReadOnly => "executor_is_read_only",
+            Self::NonceAlreadySpent => "nonce_already_spent",
+            Self::FloorNotCovered => "floor_not_covered",
+            Self::ContextMismatch => "context_mismatch",
+        }
+    }
+}
+
+fn warrant_outcome_label(result: &EyreResult<()>) -> &'static str {
+    match result {
+        Ok(()) => "accepted",
+        Err(err) => err
+            .downcast_ref::<WarrantRefusal>()
+            .map_or("error", |refusal| refusal.label()),
+    }
+}
+
 impl AdmissionRefusal for WarrantRefusal {
     const FLOOR_NOT_COVERED: Self = Self::FloorNotCovered;
     const AUTHOR_DEVICE_REVOKED: Self = Self::AuthorDeviceRevoked;
@@ -177,6 +208,21 @@ impl AdmissionRefusal for WarrantRefusal {
 /// `ApplyError::AuthorityUndecidable` when the cited cut is not yet folded on
 /// this node (retry, not a refusal), or a store failure.
 pub fn check_delegated_delta(
+    store: &Store,
+    context_id: &ContextId,
+    delegation: &Delegation,
+    cut: AdmissionCut<'_>,
+) -> EyreResult<()> {
+    let result = decide_delegated_delta(store, context_id, delegation, cut);
+    let outcome = warrant_outcome_label(&result);
+    if outcome != "accepted" && outcome != "error" {
+        warn!(%context_id, refusal = outcome, "delegated write refused by the warrant gate");
+    }
+    record_warrant_outcome(outcome);
+    result
+}
+
+fn decide_delegated_delta(
     store: &Store,
     context_id: &ContextId,
     delegation: &Delegation,
@@ -313,7 +359,7 @@ mod tests {
 
     use super::{
         account_may_author, authorship_grant_source, check_delegated_delta,
-        executor_refusal_for_context, spend_warrant_nonce, WarrantRefusal,
+        executor_refusal_for_context, spend_warrant_nonce, warrant_outcome_label, WarrantRefusal,
     };
     use crate::test_fixtures::{
         enrol_member, nest_for_test, real_join_account, sample_meta_with_admin, test_store,
@@ -435,6 +481,33 @@ mod tests {
     /// holds one, so a relay could keep writing for a device its account had
     /// withdrawn. A delegated delta's device need not be bound here at all, so
     /// nothing earlier on the receive path refuses it either.
+    #[test]
+    fn every_refusal_variant_has_its_own_outcome_label() {
+        use WarrantRefusal::*;
+        let all = [
+            NoOwningGroup,
+            AuthorDeviceRevoked,
+            ExecutorDeviceRevoked,
+            AuthorNotAMember,
+            AuthorIsReadOnly,
+            ExecutorMayNotAuthor,
+            ExecutorIsTeeReplica,
+            ExecutorIsReadOnly,
+            NonceAlreadySpent,
+            FloorNotCovered,
+            ContextMismatch,
+        ];
+        let mut labels: Vec<_> = all
+            .iter()
+            .map(|refusal| warrant_outcome_label(&Err((*refusal).into())))
+            .collect();
+        labels.push(warrant_outcome_label(&Ok(())));
+        labels.push(warrant_outcome_label(&Err(eyre::eyre!("store failure"))));
+        let distinct: std::collections::HashSet<_> = labels.iter().collect();
+        assert_eq!(distinct.len(), all.len() + 2, "{labels:?}");
+        assert!(labels.contains(&"accepted") && labels.contains(&"error"));
+    }
+
     #[test]
     fn a_device_revoked_in_the_namespace_is_refused_in_a_subgroup_context() {
         let w = seed(7);

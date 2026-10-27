@@ -32,6 +32,8 @@ const MIME_TYPES: &[(&str, &str)] = &[
     ("woff2", "font/woff2"),
     ("ttf", "font/ttf"),
     ("wasm", "application/wasm"),
+    ("webm", "video/webm"),
+    ("xml", "application/xml"),
 ];
 
 /// A static web build shipped inside the bundle and covered by its signature.
@@ -320,6 +322,8 @@ mod tests {
             Some("text/javascript; charset=utf-8")
         );
         assert_eq!(mime_type("frontend/a.map"), None);
+        assert_eq!(mime_type("frontend/a.webm"), Some("video/webm"));
+        assert_eq!(mime_type("frontend/a.XML"), Some("application/xml"));
     }
 
     fn declared(path: &str, bytes: &[u8]) -> BundleArtifact {
@@ -345,9 +349,14 @@ mod tests {
 
     #[test]
     fn accepts_a_well_formed_frontend() {
-        frontend(&["frontend/assets/app.js", "frontend/style.css"])
-            .validate()
-            .unwrap();
+        frontend(&[
+            "frontend/assets/app.js",
+            "frontend/style.css",
+            "frontend/clip.webm",
+            "frontend/feed.xml",
+        ])
+        .validate()
+        .unwrap();
     }
 
     #[cfg(feature = "html")]

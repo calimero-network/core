@@ -9,5 +9,12 @@
     "localContextsTotal": 3,
     "status": "pending",
     "toVersion": "2.0.0"
-  }
+  },
+  "missingReleases": [
+    {
+      "applicationId": "0101010101010101010101010101010101010101010101010101010101010101",
+      "package": "com.acme.app",
+      "version": "1.1.0"
+    }
+  ]
 }

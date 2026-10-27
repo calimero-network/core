@@ -13,7 +13,9 @@
 #   app             the app directory the scenario runs from
 #   image           optional, default merod:local. `merod:local-dht` marks
 #                   peer-route scenarios (no fixture registry); `merod:local-mock-tee`
-#                   marks ones booting `merod run --mock-tee`. A group holds one image.
+#                   marks ones booting `merod run --mock-tee`; `merod:local-fault` is
+#                   merod:local plus iproute2, for `inject_network_fault`.
+#                   A group holds one image.
 #   registry_fetch  optional. "false" marks a scenario that fetches no bytecode,
 #                   since a node needs it only to run a context, not to join a
 #                   group; every other http-registry scenario must have fetched
@@ -51,6 +53,12 @@ scenarios:
   # just a signature on each request. Verified by unit tests and by a
   # byte fixture three implementations agree on, but until this nothing
   # had ever presented one to a running node.
+  # A non-admin mints an invitation, so the joiner must reach an admitter named
+  # in `admitter_addrs` rather than the node that minted it.
+  - workflow: delegated-invitation-routing
+    file: workflows/delegated-invitation-routing.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
   - workflow: delegated-proof
     file: workflows/delegated-proof.yml
     app: scaffolding-e2e
@@ -143,6 +151,17 @@ scenarios:
     registry_fetch: "false"
   - workflow: account-revoked-device-repairs
     file: workflows/account-revoked-device-repairs.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: namespace-restore-without-invitation
+    file: workflows/namespace-restore-without-invitation.yml
+    app: scaffolding-e2e
+  - workflow: namespace-restore-kicked-member
+    file: workflows/namespace-restore-kicked-member.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: namespace-transfer-ownership-keeps-founder
+    file: workflows/namespace-transfer-ownership-keeps-founder.yml
     app: scaffolding-e2e
     registry_fetch: "false"
   - workflow: account-namespace-left-unfollows
@@ -412,6 +431,14 @@ scenarios:
     file: workflows/tee-dice-roll.yml
     app: tee-dice
     image: merod:local-mock-tee
+  # Outbound HTTPS from an app method, every gate end to end: off by default, the
+  # operator's hosts, the manifest's prefix, one request per run, never from a view
+  # or a peer's delta, the secret filled in and redacted. The mock-tee image is the
+  # test build whose `[context.outbound.testing]` echoes `.test` hosts in-process.
+  - workflow: outbound
+    file: workflows/outbound.yml
+    app: outbound-probe
+    image: merod:local-mock-tee
   # The namespace TEE admission policy's `mode` decides who relays: a mock TEE admitted under
   # `mode: relay` is a RelayTee and runs a member's /intents (200); under the default it is a
   # ReadOnlyTee and is refused by role (403). Needs merobox >= 0.6.80.
@@ -513,8 +540,11 @@ scenarios:
   - workflow: sync-resilience-peer-pause-symmetric
     file: workflows/sync-resilience-peer-pause-symmetric.yml
     app: scaffolding-e2e
-  # sync-resilience-lossy-link.yml needs a custom merod image with iproute2 (tc) installed; the
-  # stock image lacks it, so inject_network_fault would short-circuit.
+  # Runs on merod:local-fault: the default image plus iproute2, which `tc netem` needs.
+  - workflow: sync-resilience-lossy-link
+    file: workflows/sync-resilience-lossy-link.yml
+    app: scaffolding-e2e
+    image: merod:local-fault
   - workflow: abi-conformance
     file: workflows/abi-conformance.yml
     app: abi_conformance

@@ -77,6 +77,10 @@ steps:
       - calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_text
+      equals:
+        output: "Hello"
 
   # Step 8: Verify text on both nodes
   - name: Get Text After Hello (Node 1)
@@ -124,6 +128,10 @@ steps:
       - calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_text
+      equals:
+        output: "Hello World"
 
   # Step 10: Verify both nodes see "Hello World"
   - name: Get Text After World (Node 1)
@@ -172,6 +180,10 @@ steps:
       - calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_text
+      equals:
+        output: "Hello World!"
 
   # Step 12: Verify both nodes see "Hello World!"
   - name: Get Text After Exclamation (Node 1)
@@ -220,6 +232,10 @@ steps:
       - calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_text
+      equals:
+        output: "Hello !"
 
   # Step 14: Verify both nodes see "Hello !"
   - name: Get Text After Deletion (Node 1)
@@ -268,6 +284,10 @@ steps:
       - calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_text
+      equals:
+        output: "Hello CRDT!"
 
   # Step 16: Verify both nodes see "Hello CRDT!"
   - name: Get Text After CRDT Insert (Node 1)
@@ -317,6 +337,10 @@ steps:
       - calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_text
+      equals:
+        output: "Hello Calimero!"
 
   # Step 18: Verify both nodes see "Hello Calimero!"
   - name: Get Text After Replace (Node 1)
@@ -406,6 +430,10 @@ steps:
       - calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_title
+      equals:
+        output: "Collaborative Editor Demo"
 
   # Step 23: Verify title changed on both nodes
   - name: Get New Title (Node 1)
@@ -465,6 +493,10 @@ steps:
       - calimero-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get_text
+      equals:
+        output: ""
 
   # Step 26: Verify document is empty on both nodes
   - name: Get Text After Clear (Node 1)

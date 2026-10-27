@@ -142,6 +142,12 @@ steps:
       - sync-resil-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: baseline
+      equals:
+        output: pre_partition
 
   - name: Read baseline on node-2 (sanity)
     type: call
@@ -207,6 +213,12 @@ steps:
       - sync-resil-node-2
     timeout: 120
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: during_partition
+      equals:
+        output: written_while_partitioned
 
   - name: Read during-partition key on node-2
     type: call

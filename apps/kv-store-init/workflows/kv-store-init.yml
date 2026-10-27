@@ -293,6 +293,12 @@ steps:
       - kv-store-init-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: sync_test
+      equals:
+        output: value_from_node1
 
   - name: Node 2 Get Synced Value
     type: call
@@ -326,6 +332,12 @@ steps:
       - kv-store-init-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: node2_key
+      equals:
+        output: value_from_node2
 
   - name: Node 1 Get Node 2 Value
     type: call
