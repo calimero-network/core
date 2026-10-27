@@ -23,6 +23,23 @@ pub(crate) fn apply(
     // The verifier vouched for the attestation, so its key is resolved to the
     // account whose authority is checked. A key bound to no account here
     // vouches for nobody.
+    // The root never has a parent, so only a subgroup's target needs the tree.
+    if crate::NamespaceRepository::new(store)
+        .parent(group_id)?
+        .is_some()
+    {
+        crate::private_space::Tree::at_cut(
+            store,
+            ctx.authorizer(),
+            group_id,
+            ctx.cut(),
+            crate::TreeReads {
+                chains: &[*group_id],
+                subtrees: &[],
+            },
+        )?
+        .require_member_row_target(group_id)?;
+    }
     let Some(verifier) = ctx.signer_account()? else {
         bail!(MembershipError::TeeVerifierNotAuthorized);
     };

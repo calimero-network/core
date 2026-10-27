@@ -254,6 +254,14 @@ async fn admit_member_into_subgroup(
     }
 }
 
+/// Whether `group` is a folder inside a private space: its seats come from the space root, so
+/// a root TEE is never admitted to it directly.
+fn is_folder_in_space(store: &Store, group: &ContextGroupId) -> bool {
+    calimero_governance_store::private_space::Tree::live(store, group)
+        .and_then(|tree| tree.space_of(group))
+        .is_ok_and(|space| space.is_some_and(|space| space != *group))
+}
+
 async fn handle_new_subgroup(
     store: &Store,
     context_client: &ContextClient,
@@ -276,6 +284,11 @@ async fn handle_new_subgroup(
         namespace = %hex::encode(namespace_id.as_bytes()),
         "tee-subgroup-admit: new-subgroup trigger received"
     );
+
+    if is_folder_in_space(store, &child_gid) {
+        debug!(subgroup = %hex::encode(child_group_id), "tee-subgroup-admit: skip - a folder inside a private space");
+        return;
+    }
 
     // Only act for Restricted subgroups — Open subgroups are already readable
     // by a root-admitted TEE node (inherited membership + namespace key).
@@ -486,6 +499,9 @@ async fn handle_new_tee_member(
 
     let caps = CapabilitiesRepository::new(store);
     for sub in descendants {
+        if is_folder_in_space(store, &sub) {
+            continue;
+        }
         // Restricted only — Open subgroups are already readable by a
         // root-admitted TEE node (inherited membership + namespace key).
         match caps.is_open_chain_to_namespace(&sub, &namespace_gid) {
