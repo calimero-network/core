@@ -2667,10 +2667,10 @@ fn a_namespace_leave_ends_the_role_held_in_a_subgroup() {
     );
 }
 
-/// Only a leave of the namespace cascades: the apply leaves the subgroup rows
-/// of a member an admin removed from the root, and of one who left a subgroup.
+/// Only a leave or removal from the namespace cascades: a subgroup leave leaves
+/// the member's rows in every other subgroup.
 #[test]
-fn neither_an_admin_removal_nor_a_subgroup_leave_cascades() {
+fn a_root_removal_cascades_but_a_subgroup_leave_does_not() {
     let joiner = Account::new(0x5A);
     let device = joiner.enroll(0x5B, 0);
     let other_subgroup = ContextGroupId::from([0x34; 32]);
@@ -2697,6 +2697,6 @@ fn neither_an_admin_removal_nor_a_subgroup_leave_cascades() {
         member: joiner.id,
     });
 
-    assert_eq!(removed_from_the_root, Some(GroupMemberRole::Admin));
+    assert_eq!(removed_from_the_root, None);
     assert_eq!(left_another_subgroup, Some(GroupMemberRole::Admin));
 }

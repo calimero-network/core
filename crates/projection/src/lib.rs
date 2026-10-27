@@ -209,8 +209,8 @@ pub struct ScopeState {
     /// Each member's invitation joins: see [`MemberJoins::role`] for the
     /// membership they give while no add stands.
     member_joins: BTreeMap<(ContextGroupId, AccountId), MemberJoins>,
-    /// Each member's latest leave of the scope's root group, which removes it
-    /// from every other group too, as the apply cascades a namespace leave.
+    /// Each member's latest leave or removal from the scope's root group, which
+    /// removes it from every other group too, as the apply cascades it.
     namespace_left: BTreeMap<AccountId, Stamp>,
     // --- admin plane ---
     root_admin: Option<AccountId>,
@@ -585,6 +585,9 @@ impl ScopeState {
             } => self.fold_member_added(*group, *member, role, stamp),
             OpPayload::MemberRemoved { group, member } => {
                 self.fold_member_removed((*group, *member), stamp);
+                if group.to_bytes() == *op.scope.as_bytes() {
+                    self.fold_namespace_left(*member, stamp);
+                }
             }
             OpPayload::MemberLeft { group, member } => {
                 self.fold_member_removed((*group, *member), stamp);
@@ -988,7 +991,7 @@ impl ScopeState {
         self.remove_member_at(key, stamp);
     }
 
-    /// Record `member`'s leave of the root group, and remove the member from
+    /// Record `member`'s leave or removal from the root group, and remove the member from
     /// every other group it has a membership write or a relay seat in.
     fn fold_namespace_left(&mut self, member: AccountId, stamp: Stamp) {
         if !wins(stamp, self.namespace_left.get(&member)) {
