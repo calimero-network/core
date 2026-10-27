@@ -4332,7 +4332,12 @@ fn log_opaque_blocker(
     let awaiting =
         calimero_governance_store::namespace_group_keys_awaiting(store, namespace_id.into())
             .unwrap_or_default();
-    let key_awaited = cited.is_some_and(|pair| awaiting.contains(&pair));
+    let key_awaited = cited.is_some_and(|(group, key)| {
+        awaiting.contains(&(
+            calimero_governance_store::key_request_group(store, group),
+            key,
+        ))
+    });
     tracing::debug!(
         group = ?group,
         cut = ?cut.iter().map(hex::encode).collect::<Vec<_>>(),

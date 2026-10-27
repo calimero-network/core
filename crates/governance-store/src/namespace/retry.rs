@@ -304,9 +304,9 @@ impl<'a> NamespaceRetryService<'a> {
 
         let mut awaiting = std::collections::BTreeSet::new();
         for (group_id, key_id) in op_keys {
-            let gid_typed = ContextGroupId::from(group_id);
-            if !self.holds_key_epoch(gid_typed, &key_id)? {
-                awaiting.insert((group_id, key_id));
+            let request_group = crate::key_request_group(self.store, group_id);
+            if !self.holds_key_epoch(ContextGroupId::from(request_group), &key_id)? {
+                awaiting.insert((request_group, key_id));
             }
         }
         Ok(awaiting.into_iter().collect())

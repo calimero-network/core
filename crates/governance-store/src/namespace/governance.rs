@@ -3917,6 +3917,17 @@ pub fn build_group_key_delivery(
     )
 }
 
+/// The group a key request for an op of `group_id` is addressed to: the space whose key seals it.
+/// A folder the tree does not yet place under a space stays itself, for the responder to map.
+pub fn key_request_group(store: &Store, group_id: [u8; 32]) -> [u8; 32] {
+    let group = ContextGroupId::from(group_id);
+    let namespace = NamespaceRepository::new(store).resolve(&group).ok();
+    match crate::key_covering_group(store, &group) {
+        Ok(covering) if Some(covering) != namespace => covering.to_bytes(),
+        _ => group_id,
+    }
+}
+
 /// Distinct `(group_id, key_id)` pairs the node is buffering an undecryptable
 /// group op for — the direct-pull requester asks a peer for each specific key
 /// epoch. See [`NamespaceRetryService::awaited_group_keys`].

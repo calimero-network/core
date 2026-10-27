@@ -4,8 +4,10 @@
 use std::collections::{BTreeSet, HashSet};
 
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+use calimero_context_config::types::ContextGroupId;
 use eyre::Result as EyreResult;
 
+use super::super::core::NamespaceRepository;
 use super::super::op_log::NamespaceOpLogService;
 use super::super::retry::{order_causally, NamespaceRetryService, ReplayCandidate, RetryCandidate};
 use super::{
@@ -71,7 +73,6 @@ impl NamespaceGovernance<'_> {
     }
 
     fn replay_rounds(&self, target: [u8; 32], depth: u8, replay: &mut Replay) -> EyreResult<()> {
-        let ns = self.namespace_id.to_bytes();
         let retry = NamespaceRetryService::new(self.store, self.namespace_id);
         let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
 
@@ -82,17 +83,7 @@ impl NamespaceGovernance<'_> {
         loop {
             // What was folded before the key arrived, or a round ago, is stale now.
             self.authorizer.forget();
-            let mut groups = opened.clone();
-            groups.extend(
-                HeldOps::new(self.store, self.namespace_id)
-                    .read()?
-                    .ops
-                    .iter()
-                    .map(|held| held.group_id),
-            );
-            if target == ns {
-                groups.extend(retry.groups_with_held_key_buffered_ops()?);
-            }
+            let groups = self.replay_scope(target, &opened)?;
             let mut candidates = Vec::new();
             let mut fresh = false;
             for candidate in retry.collect_replay_candidates(&groups)? {
@@ -129,6 +120,37 @@ impl NamespaceGovernance<'_> {
             record_namespace_retry_event("none");
         }
         Ok(())
+    }
+
+    /// The groups whose ops a round replays: those opened so far, those holding an op, and
+    /// for a space the folders its key also covers.
+    pub(in crate::namespace) fn replay_scope(
+        &self,
+        target: [u8; 32],
+        opened: &BTreeSet<[u8; 32]>,
+    ) -> EyreResult<BTreeSet<[u8; 32]>> {
+        let mut groups = opened.clone();
+        groups.extend(
+            HeldOps::new(self.store, self.namespace_id)
+                .read()?
+                .ops
+                .iter()
+                .map(|held| held.group_id),
+        );
+        if target == self.namespace_id.to_bytes() {
+            groups.extend(
+                NamespaceRetryService::new(self.store, self.namespace_id)
+                    .groups_with_held_key_buffered_ops()?,
+            );
+        } else {
+            groups.extend(
+                NamespaceRepository::new(self.store)
+                    .collect_descendants(&ContextGroupId::from(target))?
+                    .into_iter()
+                    .map(|folder| folder.to_bytes()),
+            );
+        }
+        Ok(groups)
     }
 
     /// Replay a sealed root op `key` opens, running what its arrival would have run.

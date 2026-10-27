@@ -9217,6 +9217,78 @@ fn a_late_member_awaits_the_earlier_epochs_its_space_cites() {
     );
 }
 
+/// An op in a folder rides its space's key, so the epochs a node awaits are the space's.
+#[test]
+fn a_late_member_awaits_a_spaces_epoch_through_an_op_in_its_folder() {
+    use crate::group_keys::GroupKeyring;
+
+    let namespace_id = [0xE8u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let space = ContextGroupId::from([0xE9u8; 32]);
+    let folder = ContextGroupId::from([0xEAu8; 32]);
+    let author = PrivateKey::from([0x33u8; 32]);
+    let store = test_store();
+    for group in [&ns_gid, &space, &folder] {
+        MetaRepository::new(&store)
+            .save(
+                group,
+                &sample_meta_with_admin(crate::test_fixtures::account_for(&author.public_key())),
+            )
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &space)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&space, &folder)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&space, calimero_context_config::VisibilityMode::Restricted)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&folder, calimero_context_config::VisibilityMode::Open)
+        .unwrap();
+    let epochs = [[0x61u8; 32], [0x62u8; 32]];
+    log_op_sealed_under(
+        &store,
+        namespace_id,
+        &author,
+        folder.to_bytes(),
+        &epochs[0],
+        1,
+    );
+    let _ = GroupKeyring::new(&store, space)
+        .store_key(&epochs[1])
+        .unwrap();
+
+    assert_eq!(
+        crate::namespace_group_keys_awaiting(&store, namespace_id.into()).unwrap(),
+        vec![(space.to_bytes(), GroupKeyring::key_id_for(&epochs[0]))],
+        "the request names the space that holds the key, not the folder the op is in"
+    );
+}
+
+/// The space's key arriving replays the ops of its folders, not only the space's own.
+#[test]
+fn a_spaces_key_arrival_replays_the_ops_of_its_folders() {
+    let namespace_id = [0xE8u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let space = ContextGroupId::from([0xE9u8; 32]);
+    let folder = ContextGroupId::from([0xEAu8; 32]);
+    let store = test_store();
+    let nest = NamespaceRepository::new(&store);
+    nest.nest(&ns_gid, &space).unwrap();
+    nest.nest(&space, &folder).unwrap();
+
+    let scope = NamespaceGovernance::new(&store, namespace_id.into())
+        .replay_scope(
+            space.to_bytes(),
+            &std::collections::BTreeSet::from([space.to_bytes()]),
+        )
+        .unwrap();
+    assert!(scope.contains(&folder.to_bytes()));
+}
+
 /// A space row that outlived the account's workspace row is no standing to be served the
 /// space's key; with the workspace row back, it is.
 #[test]
