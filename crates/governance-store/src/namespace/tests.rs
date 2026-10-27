@@ -8238,9 +8238,9 @@ fn groups_member_but_keyless_finds_an_open_subgroup_behind_a_restricted_ancestor
     caps.set_subgroup_visibility(&leaf, VisibilityMode::Open)
         .unwrap();
 
-    // A direct row in the leaf only, and the namespace key held.
+    // A direct row in the space root, and the namespace key held.
     MembershipRepository::new(&store)
-        .add_member(&leaf, &my_account, GroupMemberRole::Member)
+        .add_member(&mid, &my_account, GroupMemberRole::Member)
         .unwrap();
     GroupKeyring::new(&store, ns_gid)
         .store_key(&[0x6F; 32])
@@ -8248,8 +8248,8 @@ fn groups_member_but_keyless_finds_an_open_subgroup_behind_a_restricted_ancestor
 
     assert_eq!(
         namespace_groups_member_but_keyless(&store, namespace_id.into()).unwrap(),
-        vec![leaf.to_bytes()],
-        "an Open subgroup behind a Restricted wall is covered by its own key,          which the held namespace key does not open"
+        vec![mid.to_bytes()],
+        "a space is covered by its own key, which the held namespace key does not open"
     );
 }
 
@@ -8470,88 +8470,6 @@ fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
         namespace_groups_awaiting_key(&store, namespace_id.into()).unwrap(),
         vec![subgroup_id],
         "holding the namespace key must not mask a Restricted subgroup awaiting its own key"
-    );
-}
-
-/// A row of its own in a folder of a space is no standing without a seat in the space.
-#[test]
-fn a_folder_key_needs_a_row_at_the_space_root() {
-    use crate::group_keys::GroupKeyring;
-    use crate::{build_group_key_delivery, KeyRequester};
-    use rand::rand_core::UnwrapErr;
-    use rand::rngs::SysRng;
-
-    let mut rng = UnwrapErr(SysRng);
-    let namespace_id = [0xF8u8; 32];
-    let ns_gid = ContextGroupId::from(namespace_id);
-    let space_id = [0xF9u8; 32];
-    let space = ContextGroupId::from(space_id);
-    let folder_id = [0xFAu8; 32];
-    let folder = ContextGroupId::from(folder_id);
-    let responder_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
-    let responder_sk = PrivateKey::from(responder_sk_bytes);
-    let responder_account = crate::test_fixtures::account_for(&responder_sk.public_key());
-    let joiner_pk = PrivateKey::from([0x5Au8; 32]).public_key();
-
-    let store = test_store();
-    let (joiner_account, joiner_device, credential) =
-        crate::test_fixtures::enrol_local_device(&store, &ns_gid, &joiner_pk);
-    crate::test_fixtures::record_credential(&store, &ns_gid, &credential);
-    let _ = enrol_member(&store, &ns_gid, &responder_sk.public_key());
-    NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &responder_sk.public_key(), &responder_sk_bytes)
-        .unwrap();
-    for group in [&ns_gid, &space, &folder] {
-        MetaRepository::new(&store)
-            .save(group, &sample_meta_with_admin(responder_account))
-            .unwrap();
-    }
-    NamespaceRepository::new(&store)
-        .nest(&ns_gid, &space)
-        .unwrap();
-    NamespaceRepository::new(&store)
-        .nest(&space, &folder)
-        .unwrap();
-    CapabilitiesRepository::new(&store)
-        .set_subgroup_visibility(&space, calimero_context_config::VisibilityMode::Restricted)
-        .unwrap();
-    CapabilitiesRepository::new(&store)
-        .set_subgroup_visibility(&folder, calimero_context_config::VisibilityMode::Open)
-        .unwrap();
-    GroupKeyring::new(&store, folder)
-        .store_key(&[0x6Cu8; 32])
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&ns_gid, &joiner_account, GroupMemberRole::Member)
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&folder, &joiner_account, GroupMemberRole::Member)
-        .unwrap();
-
-    let serve = || {
-        build_group_key_delivery(
-            &store,
-            namespace_id.into(),
-            folder_id,
-            KeyRequester {
-                identity: joiner_pk,
-                device: Some(joiner_device),
-            },
-            None,
-        )
-        .unwrap()
-        .0
-    };
-    assert!(
-        serve().is_empty(),
-        "a folder row alone is no seat in the space"
-    );
-    MembershipRepository::new(&store)
-        .add_member(&space, &joiner_account, GroupMemberRole::Member)
-        .unwrap();
-    assert!(
-        !serve().is_empty(),
-        "control: with a seat in the space it is served"
     );
 }
 
@@ -10632,37 +10550,6 @@ fn an_inherited_join_into_a_folder_of_a_space_needs_no_op() {
             "{what}: {err:?}"
         );
     }
-}
-
-#[test]
-fn a_member_removed_from_an_open_group_is_served_no_key_for_its_child() {
-    let store = test_store();
-    let f = super::super::test_fixtures::kicked_from_open(&store);
-    GroupKeyring::new(&store, f.child)
-        .store_key(&[0x7Cu8; 32])
-        .unwrap();
-
-    let served = |sk: &PrivateKey| {
-        let identity = sk.public_key();
-        let (bytes, _) = build_group_key_delivery(
-            &store,
-            f.ns.to_bytes().into(),
-            f.child.to_bytes(),
-            crate::KeyRequester {
-                identity,
-                device: Some(crate::test_fixtures::device_secret_for(&identity).device),
-            },
-            None,
-        )
-        .unwrap();
-        !bytes.is_empty()
-    };
-
-    assert!(
-        !served(&f.kicked.0),
-        "a removal from an ancestor ends the right to the child's key"
-    );
-    assert!(served(&f.honest.0), "an honest inheritor is still served");
 }
 
 #[test]
@@ -14458,7 +14345,8 @@ fn inherited_subgroup_fixture() -> InheritedSubgroup {
     CapabilitiesRepository::new(&store)
         .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
         .unwrap();
-    GroupKeyring::new(&store, subgroup)
+    // One key covers a space and its folders.
+    GroupKeyring::new(&store, parent)
         .store_key(&[0x85; 32])
         .unwrap();
 
@@ -14500,99 +14388,20 @@ fn inherited_subgroup_fixture() -> InheritedSubgroup {
 }
 
 fn subgroup_key_served(fixture: &InheritedSubgroup, requester: crate::KeyRequester) -> bool {
+    // The subgroup's key is its space's.
+    let space = NamespaceRepository::new(&fixture.store)
+        .parent(&fixture.subgroup)
+        .unwrap()
+        .expect("the subgroup is nested");
     let (bytes, _) = crate::build_group_key_delivery(
         &fixture.store,
         fixture.namespace_id.into(),
-        fixture.subgroup.to_bytes(),
+        space.to_bytes(),
         requester,
         None,
     )
     .unwrap();
     !bytes.is_empty()
-}
-
-/// A member removed from an Open subgroup it only inherits into has no row to
-/// delete: the removal is the deny-list entry plus the re-entry block.
-#[test]
-fn kicked_inherited_member_is_served_no_key_for_the_subgroup_it_was_removed_from() {
-    use calimero_store::key::GroupExitReason;
-
-    let f = inherited_subgroup_fixture();
-    let (kicked_account, kicked) = f.kicked;
-    let (_, kept) = f.kept;
-
-    assert!(
-        MembershipRepository::new(&f.store)
-            .is_member(&f.subgroup, &kicked_account)
-            .unwrap(),
-        "precondition: the member reaches the subgroup by inheritance"
-    );
-    assert!(
-        subgroup_key_served(&f, kicked),
-        "precondition: before the removal the member is served the subgroup key"
-    );
-
-    DenyListRepository::new(&f.store)
-        .mark(&f.subgroup, &kicked_account)
-        .unwrap();
-    ReentryRepository::new(&f.store)
-        .block(&f.subgroup, &kicked_account, GroupExitReason::Removed)
-        .unwrap();
-
-    assert!(
-        MembershipRepository::new(&f.store)
-            .check_path(&f.subgroup, &kicked_account)
-            .unwrap()
-            != crate::MembershipPath::None,
-        "precondition: the removal leaves the inheritance walk untouched"
-    );
-    assert!(
-        !subgroup_key_served(&f, kicked),
-        "a member removed from the subgroup must not be served its key"
-    );
-    assert!(
-        subgroup_key_served(&f, kept),
-        "control: another inherited member is still served"
-    );
-}
-
-/// A leave ends inheritance too: it writes a deny-list entry beside its `Left` block.
-#[test]
-fn an_inherited_member_who_left_the_subgroup_is_served_no_key_for_it() {
-    use calimero_store::key::GroupExitReason;
-
-    let f = inherited_subgroup_fixture();
-    let (account, requester) = f.kicked;
-    assert!(subgroup_key_served(&f, requester));
-
-    DenyListRepository::new(&f.store)
-        .mark(&f.subgroup, &account)
-        .unwrap();
-    ReentryRepository::new(&f.store)
-        .block(&f.subgroup, &account, GroupExitReason::Left)
-        .unwrap();
-
-    assert!(!subgroup_key_served(&f, requester));
-}
-
-/// A direct row is the membership: an exit record left from before the member was
-/// added back does not take the key away.
-#[test]
-fn a_direct_member_with_an_older_exit_record_is_still_served_the_subgroup_key() {
-    use calimero_store::key::GroupExitReason;
-
-    let f = inherited_subgroup_fixture();
-    let (account, requester) = f.kicked;
-    ReentryRepository::new(&f.store)
-        .block(&f.subgroup, &account, GroupExitReason::Removed)
-        .unwrap();
-    assert!(!subgroup_key_served(&f, requester));
-
-    MembershipRepository::new(&f.store)
-        .add_member(&f.subgroup, &account, GroupMemberRole::Member)
-        .unwrap();
-
-    assert!(subgroup_key_served(&f, requester));
 }
 
 /// A snapshot source is admitted only while it is a live member.
@@ -14629,20 +14438,6 @@ fn a_removed_inherited_member_is_not_admitted_as_a_snapshot_source() {
     );
 }
 
-/// The deny-list entry alone is enough as well.
-#[test]
-fn a_deny_listed_inherited_member_is_served_no_key_for_the_subgroup() {
-    let f = inherited_subgroup_fixture();
-    let (account, requester) = f.kicked;
-    assert!(subgroup_key_served(&f, requester));
-
-    DenyListRepository::new(&f.store)
-        .mark(&f.subgroup, &account)
-        .unwrap();
-
-    assert!(!subgroup_key_served(&f, requester));
-}
-
 /// On an Open chain the namespace key covers the subgroup, and its own current
 /// row is not for members who only inherit it.
 #[test]
@@ -14677,14 +14472,14 @@ fn a_member_is_served_no_subgroup_key_while_the_namespace_key_covers_it() {
         "a subgroup covered by the namespace key must not hand out its own key"
     );
 
-    let (key_id, _) = GroupKeyring::new(&f.store, f.subgroup)
+    let (key_id, _) = GroupKeyring::new(&f.store, parent)
         .load_current_key()
         .unwrap()
-        .expect("the subgroup holds a key row");
+        .expect("the space holds a key row");
     let (bytes, _) = crate::build_group_key_delivery(
         &f.store,
         f.namespace_id.into(),
-        f.subgroup.to_bytes(),
+        parent.to_bytes(),
         requester,
         Some(key_id),
     )

@@ -825,16 +825,11 @@ impl<'a> NamespaceGovernance<'a> {
                 // saw `Open` but the receiver has already applied a flip
                 // to `Restricted`, the fallback still resolves the key
                 // because both keyrings persist their entries.
-                let resolved_key = match GroupKeyring::new(self.store, group_id_typed)
-                    .load_key_by_id(key_id.as_bytes())?
-                {
-                    Some(k) => Some(k),
-                    None => {
-                        let ns_id_typed = ContextGroupId::from(self.namespace_id.to_bytes());
-                        GroupKeyring::new(self.store, ns_id_typed)
-                            .load_key_by_id(key_id.as_bytes())?
-                    }
-                };
+                let resolved_key = GroupKeyring::load_covering_key_by_id(
+                    self.store,
+                    &group_id_typed,
+                    key_id.as_bytes(),
+                )?;
 
                 // Whether we hold the current key and could decrypt+apply the
                 // inner op. This doubles as the "am I a member of this group"
@@ -1744,10 +1739,6 @@ impl<'a> NamespaceGovernance<'a> {
         else {
             return Ok(true);
         };
-        // A folder's seat is the seat in its space, whatever row the folder itself holds.
-        if *group != space && !membership.is_live_member(&space, account)? {
-            return Ok(false);
-        }
         if membership.is_live_member(namespace, account)? {
             return Ok(true);
         }

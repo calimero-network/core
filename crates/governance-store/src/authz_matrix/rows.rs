@@ -22,10 +22,23 @@ use crate::{
 };
 use ActorState::*;
 
+/// The space's members: the key of a folder is the space's, and a folder's exits do not end a seat.
+const SPACE_MEMBERS: &[ActorState] = &[
+    Owner,
+    DirectAdmin,
+    DirectMember,
+    InheritedAdmin,
+    InheritedMember,
+    Kicked,
+    Left,
+    ReadmittedAfterKick,
+    SecondDevice,
+];
+
 const TABLES: &[OpTable] = &[
     OpTable {
         op: GatedOp::GroupKeyPull,
-        allow: SUBJECT_MEMBERS,
+        allow: SPACE_MEMBERS,
         gap: &[],
     },
     OpTable {
@@ -106,7 +119,8 @@ fn key_pull(world: &World, actor: &Actor, group: ContextGroupId) -> Outcome {
 }
 
 fn group_key_pull(world: &World, actor: &Actor) -> Outcome {
-    key_pull(world, actor, world.subject)
+    // The subject is a folder in a space: its key is the space's.
+    key_pull(world, actor, world.restricted)
 }
 
 fn namespace_key_pull(world: &World, actor: &Actor) -> Outcome {

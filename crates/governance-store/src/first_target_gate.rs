@@ -305,11 +305,7 @@ impl AncestryWalk<'_> {
         key_id: &[u8; 32],
         encrypted: &calimero_governance_types::EncryptedGroupOp,
     ) -> EyreResult<Option<GroupOp>> {
-        let key = match GroupKeyring::new(self.store, group).load_key_by_id(key_id)? {
-            Some(key) => Some(key),
-            None => GroupKeyring::new(self.store, ContextGroupId::from(self.namespace.to_bytes()))
-                .load_key_by_id(key_id)?,
-        };
+        let key = GroupKeyring::load_covering_key_by_id(self.store, &group, key_id)?;
         Ok(key.and_then(|key| GroupKeyring::decrypt_op(&key, encrypted).ok()))
     }
 }

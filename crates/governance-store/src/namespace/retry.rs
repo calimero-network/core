@@ -89,20 +89,12 @@ impl<'a> NamespaceRetryService<'a> {
     /// buffered-op enumerator (`groups_awaiting_key`, `awaited_group_keys`,
     /// `groups_with_held_key_buffered_ops`) so the fallback order lives in one
     /// place — a future fix to the resolution order changes only this method.
-    fn holds_key_epoch(
-        &self,
-        group_id: ContextGroupId,
-        ns_typed: ContextGroupId,
-        key_id: &[u8; 32],
-    ) -> EyreResult<bool> {
-        Ok(GroupKeyring::new(self.store, group_id)
-            .load_key_by_id(key_id)
-            .map_err(|e| eyre::eyre!("load_key_by_id(group): {e}"))?
-            .is_some()
-            || GroupKeyring::new(self.store, ns_typed)
-                .load_key_by_id(key_id)
-                .map_err(|e| eyre::eyre!("load_key_by_id(namespace): {e}"))?
-                .is_some())
+    fn holds_key_epoch(&self, group_id: ContextGroupId, key_id: &[u8; 32]) -> EyreResult<bool> {
+        Ok(
+            GroupKeyring::load_covering_key_by_id(self.store, &group_id, key_id)
+                .map_err(|e| eyre::eyre!("load_key_by_id(covering): {e}"))?
+                .is_some(),
+        )
     }
 
     /// Distinct group ids that have at least one buffered encrypted op the
@@ -124,12 +116,11 @@ impl<'a> NamespaceRetryService<'a> {
         let op_keys = op_log
             .collect_buffered_group_op_keys()
             .map_err(|e| eyre::eyre!("op_log.collect_buffered_group_op_keys: {e}"))?;
-        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
 
         let mut awaiting = std::collections::BTreeSet::new();
         for (group_id, key_id) in op_keys {
             let gid_typed = ContextGroupId::from(group_id);
-            if !self.holds_key_epoch(gid_typed, ns_typed, &key_id)? {
+            if !self.holds_key_epoch(gid_typed, &key_id)? {
                 awaiting.insert(group_id);
             }
         }
@@ -187,8 +178,6 @@ impl<'a> NamespaceRetryService<'a> {
     /// already answered by [`groups_member_but_keyless`], so nothing that
     /// worked before changes.
     pub fn root_participating_but_unbootstrapped(&self) -> EyreResult<Vec<[u8; 32]>> {
-        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
-
         // No identity ⇒ nothing to recover, and nothing to recover it AS.
         let Some(record) = NamespaceRepository::new(self.store).identity_record(&ns_typed)? else {
             return Ok(Vec::new());
@@ -224,8 +213,6 @@ impl<'a> NamespaceRetryService<'a> {
     }
 
     pub fn groups_member_but_keyless(&self) -> EyreResult<Vec<[u8; 32]>> {
-        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
-
         // The member we'd be missing a key for is this node's namespace
         // identity. No identity ⇒ nothing to recover.
         let my_identity = match NamespaceRepository::new(self.store).identity_record(&ns_typed)? {
@@ -310,12 +297,11 @@ impl<'a> NamespaceRetryService<'a> {
         let op_keys = op_log
             .collect_buffered_group_op_keys()
             .map_err(|e| eyre::eyre!("op_log.collect_buffered_group_op_keys: {e}"))?;
-        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
 
         let mut awaiting = std::collections::BTreeSet::new();
         for (group_id, key_id) in op_keys {
             let gid_typed = ContextGroupId::from(group_id);
-            if !self.holds_key_epoch(gid_typed, ns_typed, &key_id)? {
+            if !self.holds_key_epoch(gid_typed, &key_id)? {
                 awaiting.insert((group_id, key_id));
             }
         }
@@ -347,12 +333,11 @@ impl<'a> NamespaceRetryService<'a> {
         let op_keys = op_log
             .collect_buffered_group_op_keys()
             .map_err(|e| eyre::eyre!("op_log.collect_buffered_group_op_keys: {e}"))?;
-        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
 
         let mut held = std::collections::BTreeSet::new();
         for (group_id, key_id) in op_keys {
             let gid_typed = ContextGroupId::from(group_id);
-            if self.holds_key_epoch(gid_typed, ns_typed, &key_id)? {
+            if self.holds_key_epoch(gid_typed, &key_id)? {
                 held.insert(group_id);
             }
         }
@@ -365,7 +350,6 @@ impl<'a> NamespaceRetryService<'a> {
         &self,
         groups: &BTreeSet<[u8; 32]>,
     ) -> EyreResult<Vec<ReplayCandidate>> {
-        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
         let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
         let mut candidates = Vec::new();
         for entry in op_log
@@ -402,7 +386,6 @@ impl<'a> NamespaceRetryService<'a> {
     fn group_candidates(&self, group_id: [u8; 32]) -> EyreResult<Vec<RetryCandidate>> {
         let mut candidates = Vec::new();
         let gid_typed = ContextGroupId::from(group_id);
-        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
 
         // This node's own namespace identity. Ops it SIGNED were applied through
         // the local authoring path (`sign_apply_and_publish` →
@@ -439,20 +422,11 @@ impl<'a> NamespaceRetryService<'a> {
             // Issue #2256: same fallback as the live-apply path — the op
             // may have been encrypted with the namespace key if the
             // subgroup was `Open` at publish time.
-            let group_key = match GroupKeyring::new(self.store, gid_typed)
-                .load_key_by_id(key_id.as_bytes())
-                .map_err(|e| eyre::eyre!("load_group_key_by_id(group): {e}"))?
-            {
-                Some(k) => k,
-                None => {
-                    let Some(k) = GroupKeyring::new(self.store, ns_typed)
-                        .load_key_by_id(key_id.as_bytes())
-                        .map_err(|e| eyre::eyre!("load_group_key_by_id(namespace): {e}"))?
-                    else {
-                        continue;
-                    };
-                    k
-                }
+            let Some(group_key) =
+                GroupKeyring::load_covering_key_by_id(self.store, &gid_typed, key_id.as_bytes())
+                    .map_err(|e| eyre::eyre!("load_group_key_by_id(covering): {e}"))?
+            else {
+                continue;
             };
             let signed_op: SignedNamespaceOp = entry.signed_op;
             candidates.push(RetryCandidate {

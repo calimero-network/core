@@ -211,14 +211,20 @@ impl Tree {
         }
     }
 
-    /// Whether `op` in `group` is sealed under the workspace key: the group is readable by every
-    /// member. A tree op is judged by the parent chain, so a flip is seen by those who see the wall.
-    pub fn sealed_for_workspace(&self, group: &ContextGroupId, op: &GroupOp) -> EyreResult<bool> {
+    /// The group whose key seals `op` in `group`: the root of the space it is in, else the
+    /// workspace. A tree op is judged by the parent chain, so a flip is seen by those who see
+    /// the wall.
+    pub fn key_group(
+        &self,
+        namespace: &ContextGroupId,
+        group: &ContextGroupId,
+        op: &GroupOp,
+    ) -> EyreResult<ContextGroupId> {
         let Some((parent, _)) = self.0.get(group) else {
-            return Ok(false);
+            return Ok(*group);
         };
         let start = if is_tree_op(op) { parent } else { group };
-        Ok(self.private_on_chain(start)?.is_none())
+        Ok(self.private_on_chain(start)?.unwrap_or(*namespace))
     }
 
     /// A folder is deleted after the spaces beneath it, never with them. The namespace root

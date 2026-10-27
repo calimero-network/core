@@ -3685,14 +3685,14 @@ fn key_covering_group_maps_an_open_chain_to_the_namespace() {
 
     // A Restricted wall anywhere above breaks the chain: `leaf` is Open but its
     // contents are not namespace-scoped, so its own key covers it. This is the
-    // case a one-hop visibility check would get wrong.
+    // case a one-hop visibility check would get wrong. One key covers a space and its folders.
     CapabilitiesRepository::new(&store)
         .set_subgroup_visibility(&mid, VisibilityMode::Restricted)
         .unwrap();
     assert_eq!(
         crate::key_covering_group(&store, &leaf).unwrap(),
-        leaf,
-        "an Open subgroup behind a Restricted ancestor is covered by its own key"
+        mid,
+        "a folder inside a private space is covered by the space's key"
     );
 }
 

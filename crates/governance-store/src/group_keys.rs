@@ -253,6 +253,27 @@ impl<'a> GroupKeyring<'a> {
         Ok(max_seq.map_or(0, |m| m.saturating_add(1)))
     }
 
+    /// The key `key_id` names for an op of `group`: the group's own keyring, else each ancestor's
+    /// up to the workspace, whose key may cover it (a space's folders ride the space's key).
+    pub fn load_covering_key_by_id(
+        store: &'a Store,
+        group: &ContextGroupId,
+        key_id: &[u8; 32],
+    ) -> EyreResult<Option<[u8; 32]>> {
+        let namespaces = NamespaceRepository::new(store);
+        let mut current = *group;
+        for _ in 0..=crate::MAX_NAMESPACE_DEPTH {
+            if let Some(key) = Self::new(store, current).load_key_by_id(key_id)? {
+                return Ok(Some(key));
+            }
+            match namespaces.parent(&current)? {
+                Some(parent) => current = parent,
+                None => return Ok(None),
+            }
+        }
+        Ok(None)
+    }
+
     pub fn load_key_by_id(&self, key_id: &[u8; 32]) -> EyreResult<Option<[u8; 32]>> {
         let entry = GroupKeyEntry::new(self.group_id.to_bytes(), *key_id);
         let handle = self.store.handle();
@@ -1178,11 +1199,25 @@ impl<'a> GroupKeyring<'a> {
 /// the walk was meant to identify.
 pub fn key_covering_group(store: &Store, group_id: &ContextGroupId) -> EyreResult<ContextGroupId> {
     let namespace_id = NamespaceRepository::new(store).resolve(group_id)?;
-    if CapabilitiesRepository::new(store).is_open_chain_to_namespace(group_id, &namespace_id)? {
-        Ok(namespace_id)
-    } else {
-        Ok(*group_id)
+    if *group_id == namespace_id {
+        return Ok(namespace_id);
     }
+    // The root of the private space the group is in, else the workspace: one key per space.
+    let namespaces = NamespaceRepository::new(store);
+    let capabilities = CapabilitiesRepository::new(store);
+    let mut current = *group_id;
+    for _ in 0..=crate::MAX_NAMESPACE_DEPTH {
+        if capabilities.subgroup_visibility(&current)?
+            == calimero_context_config::VisibilityMode::Restricted
+        {
+            return Ok(current);
+        }
+        match namespaces.parent(&current)? {
+            Some(parent) if parent != namespace_id => current = parent,
+            _ => return Ok(namespace_id),
+        }
+    }
+    bail!(crate::NamespaceError::DepthExceeded)
 }
 
 /// The group whose key seals `op` in `group_id`: the namespace's for a group readable by every
@@ -1239,12 +1274,7 @@ pub(crate) fn sealing_group(
     //   namespace key. The parent chain is trivially Open.
     //
     // A deletion is judged like a flip: both change the tree every member reads.
-    let sealed_for_workspace = Tree::live(store, group_id)?.sealed_for_workspace(group_id, op)?;
-    Ok(if sealed_for_workspace {
-        namespace_id
-    } else {
-        *group_id
-    })
+    Tree::live(store, group_id)?.key_group(&namespace_id, group_id, op)
 }
 
 /// Refuse a group op sealed under any key but the one [`sealing_group`] picks for it: a space's
@@ -1274,11 +1304,7 @@ pub(crate) fn ensure_sealed_for_the_tree(
                 signer: "the group's seal".to_owned(),
             });
         }
-        if tree.sealed_for_workspace(group_id, op)? {
-            namespace_id
-        } else {
-            *group_id
-        }
+        tree.key_group(&namespace_id, group_id, op)?
     };
     if GroupKeyring::new(store, covering)
         .load_key_by_id(key_id)?
@@ -1303,7 +1329,7 @@ mod sealing_tests {
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::Store;
 
-    use super::{ensure_sealed_for_the_tree, sealing_group, GroupKeyring};
+    use super::{ensure_sealed_for_the_tree, key_covering_group, sealing_group, GroupKeyring};
     use crate::test_fixtures::{real_join_account, test_meta, test_store};
     use crate::{CapabilitiesRepository, MetaRepository, NamespaceRepository};
 
@@ -1324,6 +1350,9 @@ mod sealing_tests {
         }
         CapabilitiesRepository::new(&store)
             .set_subgroup_visibility(&board, VisibilityMode::Restricted)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&drafts, VisibilityMode::Open)
             .unwrap();
         let rename = GroupOp::GroupMetadataSet {
             name: None,
@@ -1346,7 +1375,12 @@ mod sealing_tests {
             board,
             "ops inside a space stay under its key"
         );
-        assert_eq!(seal(drafts, &GroupOp::GroupDelete), drafts);
+        assert_eq!(
+            seal(drafts, &GroupOp::GroupDelete),
+            board,
+            "a folder's tree ops ride the space's key"
+        );
+        assert_eq!(seal(drafts, &rename), board, "and so do its other ops");
     }
 
     fn board_under_a_workspace() -> (Store, ContextGroupId, ContextGroupId) {
@@ -1451,6 +1485,64 @@ mod sealing_tests {
         assert!(
             check(&space_key_id).is_ok(),
             "sealed under the space's own key"
+        );
+    }
+
+    #[test]
+    fn an_open_folder_moved_into_a_space_is_sealed_under_the_spaces_key() {
+        let (store, ns, board) = board_under_a_workspace();
+        let folder = ContextGroupId::from([0x13; 32]);
+        NamespaceRepository::new(&store).nest(&ns, &folder).unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&folder, VisibilityMode::Open)
+            .unwrap();
+        let rename = GroupOp::GroupMetadataSet {
+            name: None,
+            data: Default::default(),
+        };
+        assert_eq!(sealing_group(&store, &folder, &rename).unwrap(), ns);
+        assert_eq!(key_covering_group(&store, &folder).unwrap(), ns);
+
+        let _ = NamespaceRepository::new(&store)
+            .reparent(&folder, &board)
+            .unwrap();
+
+        assert_eq!(sealing_group(&store, &folder, &rename).unwrap(), board);
+        assert_eq!(key_covering_group(&store, &folder).unwrap(), board);
+    }
+
+    #[test]
+    fn a_member_removed_from_a_space_reads_no_later_op_of_its_folders() {
+        let (store, _ns, board) = board_under_a_workspace();
+        let folder = ContextGroupId::from([0x13; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&board, &folder)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&folder, VisibilityMode::Open)
+            .unwrap();
+        let (old, rotated) = ([0x32u8; 32], [0x33u8; 32]);
+        let old_id = GroupKeyring::new(&store, board).store_key(&old).unwrap();
+        let rotated_id = GroupKeyring::key_id_for(&rotated);
+
+        // The removed member never got the rotated key; the space's key covers the folder.
+        assert!(
+            GroupKeyring::load_covering_key_by_id(&store, &folder, &old_id)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            GroupKeyring::load_covering_key_by_id(&store, &folder, &rotated_id)
+                .unwrap()
+                .is_none()
+        );
+        let _ = GroupKeyring::new(&store, board)
+            .store_key(&rotated)
+            .unwrap();
+        assert!(
+            GroupKeyring::load_covering_key_by_id(&store, &folder, &rotated_id)
+                .unwrap()
+                .is_some()
         );
     }
 
