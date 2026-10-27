@@ -9,8 +9,8 @@
 //! `as` is an account, `"@anonymous"` or `"@system"`; `"confirmed": true` adds the step-up.
 //! `expect` may also be `{ "confirmRequired": true }`, `{ "error": code, "fields": {..} }` (fields compared exactly)
 //! or `{ "refused": "<API code>" }`: the platform refused before the app ran, with the node's code
-//! (`UNAUTHENTICATED` for an anonymous caller of a non-public method, `NOT_FOUND` for an account the
-//! app's org does not hold; Ruling 32).
+//! (`UNAUTHENTICATED` for an anonymous caller of the org app, `NOT_FOUND` for an account the app's org
+//! does not hold; Rulings 32, 35).
 //! A `tick` always runs as the system: `as` on a tick is refused.
 //! `op` is `call`, `view`, `tick` (`method` names the timer), `advance` (`args` is the ms)
 //! or `removeMember` (`args` is the account).

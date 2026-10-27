@@ -12,7 +12,7 @@ Constants: `SLOT_MS = 900_000`, `CHECK_IN_GRACE_MS = 900_000`, at most 8 slots p
 
 ## ABI
 
-Every method needs an org member (`LoginRequired` for anonymous, `Forbidden` for guests); admin-only where noted.
+Every method needs an org member; admin-only where noted. Rooms is an org app, so the platform refuses before the app runs: an anonymous caller gets `401 UNAUTHENTICATED`, an account outside the org `404 NOT_FOUND`. A guest reaches the app and gets `Forbidden` from its guard.
 
 | Method | Kind | Params | Returns | Notes |
 | --- | --- | --- | --- | --- |

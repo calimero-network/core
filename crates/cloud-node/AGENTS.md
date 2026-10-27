@@ -75,8 +75,9 @@ architecture spec.
   is not logged, so the next poll proposes the same slot (or a later one, if one is
   due by then). Missed slots (no leader, a frozen clock) collapse into one tick for
   the latest; the app sees the gap through `previous`. Nothing ticks before `init`
-  succeeded. Each replica keeps its last `TICK_RING` (64) applied ticks with their
-  outcome (`AppMachine::ticks`, not persisted; a snapshot restore starts it empty). Tests move app time with `Node::advance_clock` (feature `testing`,
+  succeeded. Under feature `testing` each replica keeps its last `TICK_RING` (64) applied
+  ticks with their outcome (`AppMachine::ticks`, not persisted), which the Rooms cluster runner
+  reads; a production build has no such field. Tests move app time with `Node::advance_clock` (feature `testing`,
   enabled for the crate's own tests through its dev-dependency on itself); the kv
   fixture's `beat` ticks hourly so other tests see no ticks.
 - **Idempotency** (D16): records live for the last `IDEMPOTENCY_ENTRIES` (100,000)

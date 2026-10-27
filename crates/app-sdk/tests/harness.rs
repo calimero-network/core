@@ -59,7 +59,7 @@ fn harness_runs_the_real_component() {
     );
     assert!(t.last_usage().fuel > 0);
     assert_eq!(
-        t.anonymous().view("roomCount", json!({ "roomId": "r1" })),
+        t.as_("bob").view("roomCount", json!({ "roomId": "r1" })),
         Ok(json!("1"))
     );
 }
@@ -148,7 +148,7 @@ fn scenario_file_runs() {
     let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("scenario.json");
     let steps = json!([
         { "as": "bob", "op": "call", "method": "bump", "args": {}, "expect": { "ok": "1" } },
-        { "as": "@anonymous", "op": "view", "method": "roomCount", "args": { "roomId": "x" }, "expect": { "ok": "0" } },
+        { "as": "@anonymous", "op": "view", "method": "roomCount", "args": { "roomId": "x" }, "expect": { "refused": "UNAUTHENTICATED" } },
         { "as": "ada", "confirmed": true, "op": "call", "method": "adminRelease", "args": { "id": "nope" }, "expect": { "error": "NotFound" } },
         { "op": "advance", "args": 5 },
     ]);
@@ -343,10 +343,11 @@ fn not_found() -> Failure {
     }
 }
 
-/// The platform's refusals come before the app runs, with the node's codes (Ruling 32):
-/// anonymous on a non-public method is `401 UNAUTHENTICATED`; an account the app's org does
-/// not hold (never in it, or removed) is `404 NOT_FOUND`. A public method stays open to
-/// anonymous callers, and a guest still reaches the app, whose own guard decides.
+/// The platform's refusals come before the app runs, with the node's codes (Rulings 32, 35):
+/// the harness app is an org app, so every anonymous caller is `401 UNAUTHENTICATED`, a
+/// `public` method included (the node's access gate refuses before the ABI is read); an
+/// account the app's org does not hold (never in it, or removed) is `404 NOT_FOUND`. A guest
+/// still reaches the app, whose own guard decides.
 #[test]
 fn the_platform_refuses_before_the_app_with_the_nodes_codes() {
     let mut t = TestApp::new(
@@ -361,7 +362,8 @@ fn the_platform_refuses_before_the_app_with_the_nodes_codes() {
     );
     assert_eq!(
         t.anonymous().view("roomCount", json!({ "roomId": "r1" })),
-        Ok(json!("0"))
+        Err(unauthenticated()),
+        "a public method of an org app is not open to anonymous callers"
     );
     assert_eq!(
         t.as_("stranger").call("book", args.clone()),

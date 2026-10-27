@@ -38,8 +38,8 @@ pub enum Failure {
     /// A `confirm` method was called without `.confirmed()`.
     ConfirmRequired,
     /// The platform refused before the app ran, with the node's HTTP status and API code
-    /// (Ruling 32): `401 UNAUTHENTICATED` for an anonymous caller of a non-public method,
-    /// `404 NOT_FOUND` for an account the app's org does not hold.
+    /// (Rulings 32, 35): `401 UNAUTHENTICATED` for an anonymous caller (the harness app is an
+    /// org app), `404 NOT_FOUND` for an account the app's org does not hold.
     Refused { status: u16, code: String },
 }
 
@@ -416,10 +416,11 @@ impl TestApp {
         }
     }
 
-    /// The checks a node makes before `handle`, with its codes (Ruling 32). First the
-    /// platform's: the harness app is an org app, so an account the org does not hold (never in
-    /// it, or removed) is `404 NOT_FOUND`, and an anonymous caller of a method that is not
-    /// public is `401 UNAUTHENTICATED`. Then the ABI's (confirm, allowSystem).
+    /// The checks a node makes before `handle`, with its codes (Rulings 32, 35). First the
+    /// platform's access gate: the harness app is an org app, so an account the org does not
+    /// hold (never in it, or removed) is `404 NOT_FOUND`, and every anonymous caller is
+    /// `401 UNAUTHENTICATED`, whatever the method's `public` flag (on a node only a public app
+    /// lets anonymous callers reach the ABI). Then the ABI's (confirm, allowSystem).
     fn gate(
         &self,
         method: &str,
@@ -435,13 +436,13 @@ impl TestApp {
                 });
             }
         }
-        let m = self.prepared.abi.methods.get(method)?;
-        if matches!(caller, HostCaller::Public) && !m.public {
+        if matches!(caller, HostCaller::Public) {
             return Some(Failure::Refused {
                 status: 401,
                 code: "UNAUTHENTICATED".to_owned(),
             });
         }
+        let m = self.prepared.abi.methods.get(method)?;
         let refuse = |code: &str| {
             Some(Failure::App {
                 code: code.to_owned(),
