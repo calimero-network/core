@@ -9,6 +9,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 calimero-app-sdk = { path = "../../.." }
-serde = { version = "1", features = ["derive"] }
 
 [workspace]

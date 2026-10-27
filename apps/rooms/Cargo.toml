@@ -10,7 +10,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 calimero-app-sdk = { path = "../../crates/app-sdk" }
-serde = { version = "1", features = ["derive"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 calimero-app-sdk = { path = "../../crates/app-sdk", features = ["testing"] }
