@@ -140,18 +140,21 @@ impl Rooms {
             app::bail!(Error::NotFound);
         }
         let end = start + u64::from(slot_count) * SLOT_MS;
+        let slot_starts: Vec<u64> = (start..end).step_by(SLOT_MS as usize).collect();
+        // Check every slot first, so `Taken` names the first held one before anything is written.
+        for &slot_start in &slot_starts {
+            if self.slots.contains(&(room_id.as_str(), slot_start))? {
+                app::bail!(Error::Taken { start: slot_start });
+            }
+        }
         let id = format!("b{}", env::unique_id());
-        for slot_start in (start..end).step_by(SLOT_MS as usize) {
-            let slot = Slot {
+        for slot_start in slot_starts {
+            self.slots.insert(Slot {
                 room_id: room_id.clone(),
                 start: slot_start,
                 booking_id: id.clone(),
                 holder: me.clone(),
-            };
-            if self.slots.contains(&(room_id.as_str(), slot_start))? {
-                app::bail!(Error::Taken { start: slot_start });
-            }
-            self.slots.insert(slot)?;
+            })?;
         }
         self.bookings.insert(Booking {
             id: id.clone(),

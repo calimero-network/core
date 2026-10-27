@@ -340,7 +340,23 @@
  },
  {
   "op": "tick",
-  "method": "releaseNoShows"
+  "method": "releaseNoShows",
+  "events": {
+   "cy": [
+    "SlotsTaken",
+    "SlotsTaken",
+    "Booked",
+    "SlotsTaken",
+    "BookingReleased"
+   ],
+   "bob": [
+    "SlotsTaken",
+    "Booked",
+    "SlotsTaken",
+    "SlotsTaken",
+    "Booked"
+   ]
+  }
  },
  {
   "as": "cy",

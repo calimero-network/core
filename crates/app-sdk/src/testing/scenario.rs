@@ -13,8 +13,10 @@
 //! or `removeMember` (`args` is the account).
 //!
 //! Variables: `"save": "name"` on a call or view stores its ok result; later, any string
-//! that is exactly `"$name"` inside `args` or `expect` is replaced by the stored value
-//! (ids an app mints are not known to the scenario author). After a step, `events` lists for each account
+//! that is exactly `"$"` plus a name (`[A-Za-z_][A-Za-z0-9_]*`) inside `args` or `expect` is replaced by the stored value
+//! (ids an app mints are not known to the scenario author). Any other string, such as
+//! `"$5 lunch"`, is literal; there is no escape, so a literal that looks like `$name` is not expressible.
+//! `save` on `tick`, `advance` or `removeMember` is an error. After a step, `events` lists for each account
 //! the names of all events it receives so far, in order.
 
 use std::collections::HashMap;
@@ -43,10 +45,19 @@ pub fn run_scenario(t: &mut TestApp, path: &Path) -> Result<()> {
 
 type Vars = HashMap<String, Value>;
 
+/// `[A-Za-z_][A-Za-z0-9_]*`.
+fn is_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// Replaces every string that is exactly `$name` by the saved value of `name`.
 fn substitute(value: &Value, vars: &Vars) -> Result<Value> {
     Ok(match value {
-        Value::String(s) => match s.strip_prefix('$') {
+        Value::String(s) => match s.strip_prefix('$').filter(|n| is_var_name(n)) {
             Some(name) => vars
                 .get(name)
                 .cloned()
@@ -70,6 +81,9 @@ fn substitute(value: &Value, vars: &Vars) -> Result<Value> {
 
 fn run_step(t: &mut TestApp, step: &Value, vars: &mut Vars) -> Result<()> {
     let op = str_of(step, "op")?;
+    if step.get("save").is_some() && !matches!(op, "call" | "view") {
+        bail!("`save` only applies to a call or view, not {op:?}");
+    }
     let args = substitute(step.get("args").unwrap_or(&Value::Null), vars)?;
     let result = match op {
         "call" | "view" => {

@@ -178,6 +178,41 @@ fn scenario_variables_carry_minted_ids() {
     assert!(format!("{err:#}").contains("unknown variable $nope"));
 }
 
+#[test]
+fn scenario_dollar_strings_are_variables_only_when_exactly_a_name() {
+    let mut t = app();
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("scenario-dollar.json");
+    let steps = json!([
+        { "as": "bob", "op": "call", "method": "book", "save": "id",
+          "args": { "roomId": "r1", "start": "10", "title": "$5 lunch" } },
+        { "as": "bob", "op": "view", "method": "booking", "args": { "id": "$id" },
+          "expect": { "ok": { "id": "$id", "roomId": "r1", "start": "10", "title": "$5 lunch", "checkedIn": false } } },
+    ]);
+    std::fs::write(&path, steps.to_string()).unwrap();
+    run_scenario(&mut t, &path).unwrap();
+
+    let steps =
+        json!([{ "as": "bob", "op": "view", "method": "booking", "args": { "id": "$nope" } }]);
+    std::fs::write(&path, steps.to_string()).unwrap();
+    let err = run_scenario(&mut t, &path).unwrap_err();
+    assert!(format!("{err:#}").contains("unknown variable $nope"));
+}
+
+#[test]
+fn scenario_save_on_a_step_without_a_result_is_an_error() {
+    let mut t = app();
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("scenario-save.json");
+    for step in [
+        json!({ "op": "tick", "method": "tickInfo", "save": "x" }),
+        json!({ "op": "advance", "args": 5, "save": "x" }),
+        json!({ "op": "removeMember", "args": "bob", "save": "x" }),
+    ] {
+        std::fs::write(&path, json!([step]).to_string()).unwrap();
+        let err = run_scenario(&mut t, &path).unwrap_err();
+        assert!(format!("{err:#}").contains("save"), "{err:#}");
+    }
+}
+
 fn roll(seed: u64) -> Value {
     let mut t = app();
     t.seed(seed);
