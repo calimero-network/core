@@ -415,3 +415,14 @@ pub fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
+
+/// For an `Option<Option<T>>` field: absent is `None`, `null` is `Some(None)`
+/// ("clear it"), a value is `Some(Some(v))`. Plain serde reads `null` as
+/// absent, which silently dropped "move this team to the top".
+pub fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}

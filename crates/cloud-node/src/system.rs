@@ -422,7 +422,11 @@ pub enum SystemCmd {
         name: Option<String>,
         #[serde(default)]
         join: Option<TeamJoin>,
-        #[serde(default)]
+        #[serde(
+            default,
+            deserialize_with = "crate::types::present",
+            skip_serializing_if = "Option::is_none"
+        )]
         parent: Option<Option<TeamId>>,
         #[serde(default)]
         metadata: Option<Value>,
@@ -1379,5 +1383,46 @@ impl Machine for SystemMachine {
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
         self.state = serde_json::from_slice(data)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SystemCmd;
+
+    /// "Move this team to the top" is `parent: Some(None)`; it was lost on its
+    /// way through the log, where `null` read back as absent.
+    #[test]
+    fn moving_a_team_to_the_top_survives_the_log() {
+        let update = |parent| SystemCmd::UpdateTeam {
+            org: "o".into(),
+            team: "t".into(),
+            name: None,
+            join: None,
+            parent,
+            metadata: None,
+            actor: "a".into(),
+        };
+        let round = |cmd: &SystemCmd| -> SystemCmd {
+            serde_json::from_slice(&serde_json::to_vec(cmd).unwrap()).unwrap()
+        };
+        assert!(matches!(
+            round(&update(Some(None))),
+            SystemCmd::UpdateTeam {
+                parent: Some(None),
+                ..
+            }
+        ));
+        assert!(matches!(
+            round(&update(None)),
+            SystemCmd::UpdateTeam { parent: None, .. }
+        ));
+        assert!(matches!(
+            round(&update(Some(Some("p".into())))),
+            SystemCmd::UpdateTeam {
+                parent: Some(Some(_)),
+                ..
+            }
+        ));
     }
 }

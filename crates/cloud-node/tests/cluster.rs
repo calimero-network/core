@@ -1464,10 +1464,17 @@ async fn upgrades_plan_and_run_the_apps_migration_and_its_check() {
     let upgrade = |app: String, bundle: String| {
         let alice = &alice;
         async move {
-            alice
+            // A refused upgrade is a 422 whose details carry the run's status.
+            match alice
                 .post(&format!("apps/{app}/upgrade"), json!({ "bundle": bundle }))
                 .await
-                .unwrap()
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    assert_eq!(e.code(), Some("UPGRADE_FAILED"), "{e}");
+                    e.details().cloned().unwrap()
+                }
+            }
         }
     };
 

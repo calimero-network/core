@@ -1167,19 +1167,12 @@ async fn gate(
 ) -> Result<Principal, ApiError> {
     let p = principal(node, headers).await?;
     let account = p.as_ref().and_then(|p| p.caller.account());
-    // A write is judged on the cluster's latest system state: a removal or
-    // revocation committed through another node must hold before the call it
-    // precedes (Xil's review: access judged on lagging local state). A read's
-    // refusal is checked again the same way: a membership granted through
-    // another node may not have reached this replica yet.
-    if write {
-        node.sys_fresh().await;
-    }
-    let mut reaches = node.sys(|s| s.may_reach(app, account));
-    if !reaches {
-        node.sys_fresh().await;
-        reaches = node.sys(|s| s.may_reach(app, account));
-    }
+    // Access is judged on the cluster's latest system state (a read index): a
+    // removal or revocation committed through another node holds before the
+    // next request, read or write, and a grant is seen at once (Xil's review:
+    // access judged on lagging local state).
+    node.sys_fresh().await;
+    let reaches = node.sys(|s| s.may_reach(app, account));
     if !reaches {
         return Err(if p.is_none() {
             ApiError::unauthenticated("sign in to use this app")
@@ -1614,6 +1607,15 @@ async fn app_upgrade(
             })
             .await?;
     }
+    // A refused or failed upgrade leaves the app on its bundle; say so as an
+    // error, not a 200 a client can mistake for success.
+    if applied.status != Status::Ok {
+        return Err(
+            ApiError::new(422, "UPGRADE_FAILED", "the upgrade did not run").with_details(
+                json!({ "index": applied.index, "status": applied.status, "error": applied.error }),
+            ),
+        );
+    }
     Ok(Json(
         json!({ "index": applied.index, "status": applied.status, "error": applied.error }),
     ))
@@ -1865,15 +1867,10 @@ struct TeamUpdateBody {
     #[serde(default)]
     join: Option<TeamJoin>,
     /// Present (even `null`) to move the team; `null` moves it to the top.
-    #[serde(default, deserialize_with = "present")]
+    #[serde(default, deserialize_with = "crate::types::present")]
     parent: Option<Option<String>>,
     #[serde(default)]
     metadata: Option<Value>,
-}
-
-/// A field that may be present as `null`, told apart from an absent one.
-fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
-    Option::<String>::deserialize(d).map(Some)
 }
 
 async fn team_update(
