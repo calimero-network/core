@@ -6,7 +6,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use calimero_app_host::{
-    app_key, Abi, Audience, Caller, Directory, Event, HostCore, HostDenied, InvalidInvocation,
+    stored_key, Abi, Audience, Caller, Directory, Event, HostCore, HostDenied, InvalidInvocation,
     Invocation, InvocationKind, KeyValue, MethodKind, OrgRole, PrepareError, Status, TimerCtx,
     Usage, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE, EMIT_FOREIGN_ORG, EMIT_NAME_TOO_LONG,
     EMIT_TOO_MANY, EMIT_UNKNOWN_TEAM, GENERATION, MAX_EVENTS, MAX_EVENT_DATA_BYTES,
@@ -65,7 +65,7 @@ fn core_for(state: &BTreeMap<Vec<u8>, Vec<u8>>, inv: &Invocation) -> HostCore {
 fn base(entries: &[(&[u8], &[u8])]) -> BTreeMap<Vec<u8>, Vec<u8>> {
     entries
         .iter()
-        .map(|(k, v)| (app_key(GENERATION, k), v.to_vec()))
+        .map(|(k, v)| (stored_key(GENERATION, k), v.to_vec()))
         .collect()
 }
 
@@ -249,7 +249,7 @@ fn range_ignores_writes_made_between_batches() {
 #[test]
 fn range_is_lazy() {
     let state: BTreeMap<Vec<u8>, Vec<u8>> = (0u32..100_000)
-        .map(|i| (app_key(GENERATION, &i.to_be_bytes()), b"v".to_vec()))
+        .map(|i| (stored_key(GENERATION, &i.to_be_bytes()), b"v".to_vec()))
         .collect();
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
@@ -272,8 +272,8 @@ fn add_counts_as_one_write_and_sums() {
     let out = host.finish(Status::Ok, Vec::new(), Usage::default());
     assert_eq!(out.usage.writes, 3);
     let diff: BTreeMap<_, _> = out.diff.into_iter().map(|w| (w.key, w.value)).collect();
-    assert_eq!(diff[&app_key(GENERATION, b"k")], Some(cbor(11)));
-    assert_eq!(diff[&app_key(GENERATION, b"fresh")], Some(cbor(-2)));
+    assert_eq!(diff[&stored_key(GENERATION, b"k")], Some(cbor(11)));
+    assert_eq!(diff[&stored_key(GENERATION, b"fresh")], Some(cbor(-2)));
 }
 
 #[test]
@@ -306,9 +306,9 @@ fn unique_ids_are_term_seq_and_position() {
 }
 
 #[test]
-fn app_keys_carry_the_generation() {
+fn stored_keys_carry_the_generation() {
     let mut state = base(&[]);
-    state.insert(app_key(1, b"old"), b"x".to_vec());
+    state.insert(stored_key(1, b"old"), b"x".to_vec());
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
     assert_eq!(host.storage_get(b"old"), Ok(None));
@@ -592,7 +592,7 @@ fn tombstones_empty_ranges_and_max_zero() {
 #[test]
 fn range_stops_at_the_next_generation() {
     let mut state = base(&[(b"\xff\xff\xff\xff\xff\xff\xff\xff\xff", b"v")]);
-    state.insert(app_key(1, b""), b"g1".to_vec());
+    state.insert(stored_key(1, b""), b"g1".to_vec());
     let inv = inv(InvocationKind::Call);
     let mut host = core_for(&state, &inv);
     let forward = host.range_open(b"", b"", false).unwrap();
@@ -723,7 +723,7 @@ fn index(positions: std::ops::Range<u32>) -> BTreeMap<Vec<u8>, Vec<u8>> {
     positions
         .map(|pos| {
             (
-                app_key(GENERATION, &index_key(pos)),
+                stored_key(GENERATION, &index_key(pos)),
                 pos.to_be_bytes().to_vec(),
             )
         })

@@ -10,7 +10,7 @@ use rand::Rng;
 use rand_chacha::ChaCha20Rng;
 
 use crate::overlay::{Cursor, Overlay};
-use crate::state::{app_key, KeyValue, StateView, GENERATION};
+use crate::state::{stored_key, KeyValue, StateView, GENERATION};
 use crate::time;
 use crate::types::{
     Audience, BlobInfo, Caller, Directory, Event, HostDenied, InvalidInvocation, Invocation,
@@ -135,14 +135,15 @@ impl HostCore {
     pub fn storage_get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, HostDenied> {
         self.may_read()?;
         check_key(key)?;
-        Ok(self.current(&app_key(GENERATION, key)))
+        Ok(self.current(&stored_key(GENERATION, key)))
     }
 
     pub fn storage_put(&mut self, key: &[u8], value: &[u8]) -> Result<(), HostDenied> {
         self.check_write()?;
         check_key(key)?;
         self.charge(key.len().saturating_add(value.len()))?;
-        self.overlay.put(app_key(GENERATION, key), value.to_vec());
+        self.overlay
+            .put(stored_key(GENERATION, key), value.to_vec());
         self.writes += 1;
         Ok(())
     }
@@ -151,7 +152,7 @@ impl HostCore {
         self.check_write()?;
         check_key(key)?;
         self.charge(key.len())?;
-        self.overlay.delete(app_key(GENERATION, key));
+        self.overlay.delete(stored_key(GENERATION, key));
         self.writes += 1;
         Ok(())
     }
@@ -161,7 +162,7 @@ impl HostCore {
     pub fn storage_add(&mut self, key: &[u8], delta: i64) -> Result<(), HostDenied> {
         self.check_write()?;
         check_key(key)?;
-        let key = app_key(GENERATION, key);
+        let key = stored_key(GENERATION, key);
         let current = match self.current(&key) {
             None => 0,
             Some(bytes) => cbor_integer(&bytes)?,
@@ -192,14 +193,14 @@ impl HostCore {
         if self.cursors.len() >= MAX_OPEN_CURSORS {
             return Err(HostDenied::new("too many open cursors"));
         }
-        let start = app_key(GENERATION, start);
+        let start = stored_key(GENERATION, start);
         let end = if end.is_empty() {
             // The generation's own keyspace ends where the next generation starts.
             GENERATION
                 .checked_add(1)
-                .map_or_else(Vec::new, |next| app_key(next, &[]))
+                .map_or_else(Vec::new, |next| stored_key(next, &[]))
         } else {
-            app_key(GENERATION, end)
+            stored_key(GENERATION, end)
         };
         let id = self.next_cursor;
         self.next_cursor = self

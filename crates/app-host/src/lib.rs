@@ -19,7 +19,7 @@ pub use core::{
     MAX_RUN_BYTES, MAX_WRITES,
 };
 pub use engine::{Engine, PrepareError, Prepared};
-pub use state::{app_key, KeyValue, StateView, GENERATION};
+pub use state::{stored_key, KeyValue, StateView, GENERATION};
 pub use types::{
     Audience, BlobInfo, Budget, Caller, Directory, Event, HostDenied, InvalidInvocation,
     Invocation, InvocationKind, OrgRole, Outcome, Status, TimerCtx, TrapKind, Usage, Write,

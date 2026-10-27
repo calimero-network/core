@@ -14,9 +14,9 @@ use std::sync::{Arc, OnceLock};
 
 use calimero_app_engine_wasmtime::WasmtimeEngine;
 use calimero_app_host::{
-    app_key as host_key, Audience as HostAudience, Budget, Caller as HostCaller, Engine, HostCore,
-    Invocation, InvocationKind, MethodKind, OrgRole, Outcome, Prepared, Status, TimerCtx, TrapKind,
-    Usage,
+    stored_key as host_key, Audience as HostAudience, Budget, Caller as HostCaller, Engine,
+    HostCore, Invocation, InvocationKind, MethodKind, OrgRole, Outcome, Prepared, Status, TimerCtx,
+    TrapKind, Usage,
 };
 use serde_json::Value;
 
@@ -492,7 +492,7 @@ impl TestApp {
         }
     }
 
-    /// The stored key of an app key, for tests that read state directly.
+    /// The stored key of a key the app wrote, for tests that read state directly.
     #[must_use]
     pub fn stored_key(key: &[u8]) -> Vec<u8> {
         host_key(calimero_app_host::GENERATION, key)

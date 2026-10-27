@@ -4,7 +4,7 @@
 
 - **Crate**: `calimero-app-wit` (`publish = false`, prototype)
 - **Entry**: `src/lib.rs`; WIT in `wit/calimero-app.wit`, vendored WASI 0.2.12 in `wit/deps/`
-- **Spec**: `docs/specs/app-runtime-v0.13.md` section 4 is the authority
+- **Spec**: `docs/specs/app-runtime-v0.14.md` section 4 is the authority
 
 ## What This Crate Does
 

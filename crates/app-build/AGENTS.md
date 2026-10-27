@@ -4,7 +4,7 @@
 
 - **Crate**: `calimero-app-build` (`publish = false`, prototype); lib plus bin `mero-app-build`
 - **Entry**: `src/lib.rs`, `src/main.rs`
-- **Spec**: `docs/specs/app-runtime-v0.13.md` (D45 build path)
+- **Spec**: `docs/specs/app-runtime-v0.14.md` (D45 build path)
 
 ## What This Crate Does
 

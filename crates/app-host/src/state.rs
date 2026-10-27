@@ -12,9 +12,9 @@ pub(crate) type KeyBounds<'k> = (Bound<&'k [u8]>, Bound<&'k [u8]>);
 /// The generation every app uses in this milestone; rebuilds allocate new ones (D38, D39).
 pub const GENERATION: u64 = 0;
 
-/// The stored key of an app key: 8-byte big-endian generation ‖ key.
+/// The stored key of a key: 8-byte big-endian generation ‖ key.
 #[must_use]
-pub fn app_key(generation: u64, key: &[u8]) -> Vec<u8> {
+pub fn stored_key(generation: u64, key: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 + key.len());
     out.extend_from_slice(&generation.to_be_bytes());
     out.extend_from_slice(key);
