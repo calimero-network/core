@@ -14,6 +14,7 @@ use tracing::{info, warn};
 
 pub mod api;
 pub mod app;
+pub mod app_host;
 pub mod attest;
 pub mod backup;
 pub mod error;
@@ -52,14 +53,24 @@ impl Running {
     }
 }
 
-fn cors(origins: &[String]) -> tower_http::cors::CorsLayer {
+/// The configured origins, and every package's frontend origin
+/// (`app_host`), whose sessions are bound to their package.
+fn cors(node: &Arc<Node>) -> tower_http::cors::CorsLayer {
     use axum::http::{header, HeaderValue, Method};
-    let origins: Vec<HeaderValue> = origins
+    let origins: Vec<HeaderValue> = node
+        .config
+        .origins
         .iter()
         .filter_map(|o| HeaderValue::from_str(o.trim_end_matches('/')).ok())
         .collect();
+    let weak = Arc::downgrade(node);
+    let allow = tower_http::cors::AllowOrigin::predicate(move |origin: &HeaderValue, _| {
+        origins.contains(origin)
+            || (weak.upgrade().zip(origin.to_str().ok()))
+                .is_some_and(|(n, o)| n.app_origin_package(o).is_some())
+    });
     tower_http::cors::CorsLayer::new()
-        .allow_origin(origins)
+        .allow_origin(allow)
         .allow_methods([Method::GET, Method::POST, Method::DELETE])
         .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
         .expose_headers([header::RETRY_AFTER])
@@ -85,7 +96,12 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
     // Browser apps on the configured origins (the same ones passkeys are bound
     // to) may reach the node. Outermost, so a preflight is answered before the
     // sealed envelope sees it; what travels sealed needs no header of its own.
-    let app = tower::Layer::layer(&cors(&node.config.origins), app);
+    let app = tower::Layer::layer(&cors(&node), app);
+    // App frontends on their own origins, before anything of the node's.
+    let app = tower::Layer::layer(
+        &axum::middleware::from_fn_with_state(Arc::clone(&node), app_host::layer),
+        app,
+    );
     let stop = shutdown.clone();
     let server = tokio::spawn(async move {
         let svc = axum::ServiceExt::<axum::extract::Request>::into_make_service(app);

@@ -103,6 +103,7 @@ impl Cluster {
                 allow_unsigned_bundles: true,
                 outbound: None,
                 governance: Default::default(),
+                apps_domain: None,
             };
             configure(&mut config);
             nodes.push(Some(run(config).await.unwrap()));
@@ -1577,7 +1578,25 @@ fn mpk_declaring(
     key: &ed25519_dalek::SigningKey,
     outbound: &[&str],
 ) -> Vec<u8> {
+    mpk_full(package, version, wasm, key, outbound, &[])
+}
+
+/// [`mpk`] declaring `outbound` and shipping `frontend` files (paths under
+/// `frontend/`, the first is the entry).
+fn mpk_full(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+    frontend: &[(&str, &[u8])],
+) -> Vec<u8> {
     use sha2::Digest;
+    let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
+        path: path.to_owned(),
+        hash: hex::encode(sha2::Sha256::digest(bytes)),
+        size: bytes.len() as u64,
+    };
     let manifest = calimero_bundle::BundleManifest {
         version: "1.0".to_owned(),
         package: package.to_owned(),
@@ -1590,14 +1609,13 @@ fn mpk_declaring(
         handlers: None,
         build_info: None,
         interfaces: None,
-        wasm: Some(calimero_bundle::BundleArtifact {
-            path: "app.wasm".to_owned(),
-            hash: hex::encode(sha2::Sha256::digest(wasm)),
-            size: wasm.len() as u64,
-        }),
+        wasm: Some(artifact("app.wasm", wasm)),
         abi: None,
         links: None,
-        frontend: None,
+        frontend: (!frontend.is_empty()).then(|| calimero_bundle::BundleFrontend {
+            entry: frontend[0].0.to_owned(),
+            files: frontend.iter().map(|(p, b)| artifact(p, b)).collect(),
+        }),
         frontend_aliases: Vec::new(),
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
         services: None,
@@ -1605,10 +1623,19 @@ fn mpk_declaring(
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
     calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();
-    pack(&[
-        ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
-        ("app.wasm", wasm.to_vec()),
-    ])
+    let mut entries = vec![
+        (
+            "manifest.json".to_owned(),
+            serde_json::to_vec(&manifest).unwrap(),
+        ),
+        ("app.wasm".to_owned(), wasm.to_vec()),
+    ];
+    entries.extend(frontend.iter().map(|(p, b)| ((*p).to_owned(), b.to_vec())));
+    let refs: Vec<(&str, Vec<u8>)> = entries
+        .iter()
+        .map(|(p, b)| (p.as_str(), b.clone()))
+        .collect();
+    pack(&refs)
 }
 
 fn pack(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
@@ -2897,4 +2924,177 @@ async fn presence_reaches_every_node_and_expires() {
     for cl in [&alice, &bob, &carol] {
         assert_eq!(cl.presence(&app).await.unwrap()["present"], json!([]));
     }
+}
+
+// ---------------------------------------------------------------- app frontends
+
+/// v1's app hosts: each package's frontend on its own origin, served from the
+/// release's verified `.mpk` under a strict CSP, with client routes and deep
+/// links; and a passkey session opened from that origin is bound to the
+/// package, reaching its apps and nothing else of the account.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn app_frontends_are_served_and_their_sessions_are_bound() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, _apk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+    let html: &[u8] = b"<!doctype html><html><head><script type=\"module\" src=\"./assets/app.js\"></script></head><body></body></html>";
+    let _ = alice
+        .upload_package(mpk_full(
+            "com.test.site",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            &[
+                ("frontend/index.html", html),
+                ("frontend/assets/app.js", b"console.log(1)"),
+            ],
+        ))
+        .await
+        .unwrap();
+    let _ = alice
+        .upload_package(mpk(
+            "com.test.other",
+            "0.1.0",
+            &variant(&kv_wasm(), "o"),
+            &publisher,
+        ))
+        .await
+        .unwrap();
+    let other = alice
+        .post(
+            "apps",
+            json!({ "name": "other", "package": "com.test.other", "access": { "kind": "public" } }),
+        )
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let label = calimero_cloud_node::app_host::label("com.test.site");
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let host = format!("{label}.localhost");
+    let origin = format!("http://{host}:{port}");
+    let web = reqwest::Client::builder()
+        .resolve(&host, ([127, 0, 0, 1], port).into())
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let get = |path: &str, accept: &str| {
+        web.get(format!("{origin}{path}"))
+            .header("accept", accept)
+            .send()
+    };
+
+    let root = get("/", "text/html").await.unwrap();
+    assert_eq!(root.status(), 302);
+    assert_eq!(root.headers()["location"], "/0.1.0/");
+    let page = get("/0.1.0/", "text/html").await.unwrap();
+    assert_eq!(page.status(), 200);
+    let csp = page.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(csp.contains("default-src 'self'"), "{csp}");
+    assert!(
+        csp.contains(&c.urls[0].trim_end_matches('/').to_owned()),
+        "the API is reachable: {csp}"
+    );
+    assert_eq!(page.headers()["content-type"], "text/html; charset=utf-8");
+    assert_eq!(page.bytes().await.unwrap().as_ref(), html);
+    let js = get("/0.1.0/assets/app.js", "*/*").await.unwrap();
+    assert_eq!(js.status(), 200);
+    assert!(js.headers()["cache-control"]
+        .to_str()
+        .unwrap()
+        .contains("immutable"));
+    // A client route reloaded, and a deep link's relative asset.
+    let route = get("/0.1.0/docs/42", "text/html").await.unwrap();
+    assert_eq!(route.status(), 200);
+    assert_eq!(route.bytes().await.unwrap().as_ref(), html);
+    let deep = get("/0.1.0/docs/42/assets/app.js", "*/*").await.unwrap();
+    assert_eq!(deep.status(), 200);
+    // Nothing but files: no node route, no other method, no other package.
+    assert_eq!(get("/health", "*/*").await.unwrap().status(), 404);
+    assert_eq!(
+        get("/attestation?nonce=00", "*/*").await.unwrap().status(),
+        404
+    );
+    let post = web.post(format!("{origin}/0.1.0/")).send().await.unwrap();
+    assert_eq!(post.status(), 404);
+    let known = get("/.well-known/calimero.json", "*/*").await.unwrap();
+    let known: Value = known.json().await.unwrap();
+    assert_eq!(known["package"], json!("com.test.site"));
+    assert_eq!(known["versions"], json!(["0.1.0"]));
+    let stranger = format!("{}.localhost", "a".repeat(52));
+    let web2 = reqwest::Client::builder()
+        .resolve(&stranger, ([127, 0, 0, 1], port).into())
+        .build()
+        .unwrap();
+    let r = web2
+        .get(format!("http://{stranger}:{port}/health"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404, "an unknown label never reaches the node");
+
+    // Signing up on the app's origin opens a session bound to its package.
+    let carol = c.client(1);
+    let mut carol_key = SoftAuthenticator::new("localhost", &origin);
+    let _s = carol.sign_up(&mut carol_key, "carol").await.unwrap();
+    let mine = carol
+        .post(
+            "apps",
+            json!({ "name": "mine", "package": "com.test.site" }),
+        )
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = carol
+        .call(&mine, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap();
+    // Not another package's app, even a public one; not the account's keys.
+    assert!(carol
+        .call(&other, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .is_err());
+    assert!(carol.get(&format!("apps/{other}")).await.is_err());
+    assert!(carol
+        .post("apps", json!({ "name": "x", "package": "com.test.other" }))
+        .await
+        .is_err());
+    assert!(carol.create_api_key(json!({ "label": "k" })).await.is_err());
+    let listed = carol.get("apps").await.unwrap();
+    assert!(
+        listed["apps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["appId"] != json!(other)),
+        "{listed}"
+    );
+    // The binding survives a refresh.
+    let _ = carol.refresh().await.unwrap();
+    assert!(carol.create_api_key(json!({ "label": "k" })).await.is_err());
+    assert!(carol
+        .call(&other, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .is_err());
+
+    // The same person on the cluster's own origin is not bound.
+    let carol_home = c.client(2);
+    let mut home_key = SoftAuthenticator::with_key(&carol_key, "localhost", ORIGIN);
+    let _s = carol_home.sign_in(&mut home_key).await.unwrap();
+    let _ = carol_home
+        .call(&other, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap();
+    assert!(carol_home
+        .create_api_key(json!({ "label": "k" }))
+        .await
+        .is_ok());
 }

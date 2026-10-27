@@ -207,6 +207,9 @@ pub struct RefreshRecord {
     /// The passkey the session was opened with.
     #[serde(default)]
     pub passkey: Option<String>,
+    /// The package whose frontend opened the session, which binds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

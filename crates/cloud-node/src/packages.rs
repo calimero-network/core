@@ -261,27 +261,7 @@ impl Node {
     /// `.mpk` from where it lives (the registry, or a peer for an upload),
     /// checked against the hash the log recorded and verified again.
     pub async fn release_wasm(&self, hash: &str, r: &Release) -> Result<Vec<u8>, ApiError> {
-        let mpk: Arc<[u8]> = match r.version.source {
-            BundleSource::Registry => {
-                self.fetch_from_registry(&r.at.package, &r.at.version)
-                    .await?
-            }
-            BundleSource::Upload => match self.engine.get_blob(&r.version.mpk) {
-                Ok(Some(b)) => b.into(),
-                _ => self.fetch_blob(&r.version.mpk).await?.into(),
-            },
-        };
-        if hex::encode(calimero_identity::sha256(&mpk)) != r.version.mpk {
-            warn!(
-                package = %r.at.package,
-                version = %r.at.version,
-                "the fetched release is not the one the fleet installed"
-            );
-            return Err(ApiError::unavailable(&format!(
-                "{}@{} as fetched differs from the release the fleet installed",
-                r.at.package, r.at.version
-            )));
-        }
+        let mpk = self.release_mpk(&r.at.package, &r.version).await?;
         let (_bundle, wasm) = verify(mpk)?;
         let service = r.at.service.clone().unwrap_or_default();
         let bytes = wasm
@@ -301,6 +281,35 @@ impl Node {
             .map_err(|e| ApiError::internal(&e.to_string()))?;
         info!(package = %r.at.package, version = %r.at.version, "fetched and verified a release");
         Ok(bytes)
+    }
+
+    /// A release's `.mpk` from where it lives (the registry, or this node's
+    /// blob store or a peer for an upload), refused unless its hash is the one
+    /// the log recorded. Not verified yet: the caller opens it.
+    pub async fn release_mpk(
+        &self,
+        package: &str,
+        v: &PackageVersion,
+    ) -> Result<Arc<[u8]>, ApiError> {
+        let mpk: Arc<[u8]> = match v.source {
+            BundleSource::Registry => self.fetch_from_registry(package, &v.version).await?,
+            BundleSource::Upload => match self.engine.get_blob(&v.mpk) {
+                Ok(Some(b)) => b.into(),
+                _ => self.fetch_blob(&v.mpk).await?.into(),
+            },
+        };
+        if hex::encode(calimero_identity::sha256(&mpk)) != v.mpk {
+            warn!(
+                %package,
+                version = %v.version,
+                "the fetched release is not the one the fleet installed"
+            );
+            return Err(ApiError::unavailable(&format!(
+                "{package}@{} as fetched differs from the release the fleet installed",
+                v.version
+            )));
+        }
+        Ok(mpk)
     }
 
     /// The bundle hash `package@version` (service `service`) runs, installing

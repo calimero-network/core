@@ -123,6 +123,24 @@ fn take_pending(node: &Node, id: &str) -> Result<Pending, ApiError> {
     Ok(p)
 }
 
+/// The package whose frontend origin a ceremony claims (unverified: the
+/// ceremony is then checked against that origin), and the origin.
+fn claimed_app(node: &Node, client_data_json: &str) -> Option<(String, String)> {
+    let origin = calimero_identity::claimed_origin(client_data_json)?;
+    let package = node.app_origin_package(&origin)?;
+    Some((package, origin))
+}
+
+/// The relying party for a ceremony that may come from `app`'s frontend
+/// origin as well as the cluster's own.
+fn rp_with(base: RelyingParty, app: Option<&(String, String)>) -> RelyingParty {
+    let mut rp = base;
+    if let Some((_, origin)) = app {
+        rp.origins.push(origin.clone());
+    }
+    rp
+}
+
 fn rp(node: &Node) -> RelyingParty {
     RelyingParty {
         id: node.config.rp_id.clone(),
@@ -156,6 +174,46 @@ impl Principal {
             .map(str::to_owned)
             .ok_or_else(|| ApiError::unauthenticated("sign in first"))
     }
+
+    /// The package a session opened on that package's frontend origin is
+    /// bound to: it reaches that package's apps only.
+    fn bound_app(&self) -> Option<&str> {
+        self.session.as_ref().and_then(|s| s.app.as_deref())
+    }
+
+    /// Refuse a package-bound session: credentials, keys, approvals and
+    /// upgrades are the account holder's, on the cluster's own origin.
+    fn unbound(&self) -> Result<(), ApiError> {
+        match self.bound_app() {
+            Some(_) => Err(ApiError::forbidden(
+                "a session opened on an app's frontend can use that app only; do this on the cluster's own page",
+            )),
+            None => Ok(()),
+        }
+    }
+
+    /// Whether this principal may touch `app` at all: a package-bound
+    /// session only an app running a release of its package.
+    fn within(&self, node: &Node, app: &crate::types::AppRecord) -> Result<(), ApiError> {
+        match self.bound_app() {
+            None => Ok(()),
+            Some(pkg)
+                if node
+                    .release_of(&app.bundle)
+                    .is_some_and(|r| r.at.package == pkg) =>
+            {
+                Ok(())
+            }
+            Some(_) => Err(ApiError::not_found("no such app")),
+        }
+    }
+}
+
+/// [`person`], and never a package-bound session.
+async fn holder(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError> {
+    let p = person(node, headers).await?;
+    p.unbound()?;
+    Ok(p)
 }
 
 async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>, ApiError> {
@@ -225,6 +283,7 @@ async fn signed_in(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiErr
 /// issue 7).
 async fn installer(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError> {
     let p = signed_in(node, headers).await?;
+    p.unbound()?;
     if let Some(k) = &p.api_key {
         if k.read_only || k.apps.is_some() || k.methods.is_some() {
             return Err(ApiError::forbidden(
@@ -246,7 +305,7 @@ async fn person(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError>
     Ok(p)
 }
 
-async fn new_session(node: &Node, account: &str, passkey: &str) -> ApiResult {
+async fn new_session(node: &Node, account: &str, passkey: &str, app: Option<String>) -> ApiResult {
     let (version, key) = node
         .sys(|s| s.current_session_key())
         .ok_or_else(|| ApiError::unavailable("the cluster has no session key yet"))?;
@@ -260,6 +319,7 @@ async fn new_session(node: &Node, account: &str, passkey: &str) -> ApiResult {
             expires_at,
             key_version: version,
             passkey: Some(passkey.to_owned()),
+            app: app.clone(),
         },
     );
     let refresh = format!("rt_{}", b64url(&random::<32>()));
@@ -271,6 +331,7 @@ async fn new_session(node: &Node, account: &str, passkey: &str) -> ApiResult {
                 session,
                 expires_at: now_secs() + REFRESH_TTL,
                 passkey: Some(passkey.to_owned()),
+                app,
             },
         })
         .await?;
@@ -471,8 +532,14 @@ async fn register_finish(
             "not a registration challenge",
         ));
     };
-    let cred = verify_registration(&rp(&node), &challenge, &body.registration)
-        .map_err(|e| ApiError::bad_request("BAD_REGISTRATION", &e.to_string()))?;
+    // Signing up on a package's frontend opens a session bound to it.
+    let app = claimed_app(&node, &body.registration.client_data_json);
+    let cred = verify_registration(
+        &rp_with(rp(&node), app.as_ref()),
+        &challenge,
+        &body.registration,
+    )
+    .map_err(|e| ApiError::bad_request("BAD_REGISTRATION", &e.to_string()))?;
     let account = b64url(&random::<32>());
     let _ok = node
         .sys_write(&SystemCmd::CreateAccount {
@@ -490,7 +557,7 @@ async fn register_finish(
             },
         })
         .await?;
-    new_session(&node, &account, &cred.id).await
+    new_session(&node, &account, &cred.id, app.map(|(pkg, _)| pkg)).await
 }
 
 async fn login_begin(State(node): State<Arc<Node>>) -> ApiResult {
@@ -516,13 +583,20 @@ struct AssertionBody {
 }
 
 /// Verify an assertion for `challenge` and move the credential's counter.
+/// `bound`: the ceremony may come from that package's frontend origin only;
+/// `None` with `any_app`, from any package's (a sign-in there opens a session
+/// bound to it). Answers the account and the package whose origin it came from.
 async fn check_assertion(
     node: &Node,
     challenge: &[u8; 32],
     assertion: &Assertion,
     account: Option<&str>,
     step_up: bool,
-) -> Result<String, ApiError> {
+    bound: Option<&str>,
+    any_app: bool,
+) -> Result<(String, Option<String>), ApiError> {
+    let app = claimed_app(node, &assertion.client_data_json)
+        .filter(|(pkg, _)| any_app || bound == Some(pkg.as_str()));
     let (owner, cred) = node
         .sys_until(|s| {
             s.account_of_credential(&assertion.credential_id)
@@ -535,7 +609,10 @@ async fn check_assertion(
             "this passkey belongs to another account",
         ));
     }
-    let rp = if step_up { rp_step_up(node) } else { rp(node) };
+    let rp = rp_with(
+        if step_up { rp_step_up(node) } else { rp(node) },
+        app.as_ref(),
+    );
     let count = verify_assertion(&rp, challenge, &cred, assertion)
         .map_err(|e| ApiError::unauthenticated(&e.to_string()))?;
     if count != 0 {
@@ -553,7 +630,7 @@ async fn check_assertion(
                 }
             })?;
     }
-    Ok(owner)
+    Ok((owner, app.map(|(pkg, _)| pkg)))
 }
 
 async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionBody>) -> ApiResult {
@@ -563,12 +640,13 @@ async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionB
             "not a login challenge",
         ));
     };
-    let account = check_assertion(&node, &challenge, &body.assertion, None, false).await?;
-    new_session(&node, &account, &body.assertion.credential_id).await
+    let (account, app) =
+        check_assertion(&node, &challenge, &body.assertion, None, false, None, true).await?;
+    new_session(&node, &account, &body.assertion.credential_id, app).await
 }
 
 async fn passkey_add_begin(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let account = p.account()?;
     let challenge = random::<32>();
     let id = put_pending(
@@ -608,7 +686,7 @@ async fn passkey_add_finish(
     headers: HeaderMap,
     Json(body): Json<RegisterFinish>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let Pending::AddPasskey {
         challenge, account, ..
     } = take_pending(&node, &body.challenge_id)?
@@ -638,7 +716,7 @@ async fn passkey_remove(
     headers: HeaderMap,
     Path(cred): Path<String>,
 ) -> ApiResult {
-    let account = person(&node, &headers).await?.account()?;
+    let account = holder(&node, &headers).await?.account()?;
     let _ok = node
         .sys_write(&SystemCmd::RemovePasskey {
             account,
@@ -682,6 +760,7 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
         session: rec.session.clone(),
         expires_at: now_secs() + REFRESH_TTL,
         passkey: rec.passkey.clone(),
+        app: rec.app.clone(),
     };
     let _ok = node
         .sys_write(&SystemCmd::UseRefresh {
@@ -701,6 +780,7 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
             expires_at,
             key_version: version,
             passkey: rec.passkey,
+            app: rec.app,
         },
     );
     Ok(Json(
@@ -746,7 +826,7 @@ async fn set_release_approval(
     scope: crate::system::ReleaseScope,
     body: ReleaseApprovalBody,
 ) -> ApiResult {
-    let p = person(node, headers).await?;
+    let p = holder(node, headers).await?;
     let account = p.account()?;
     let subject = match &scope {
         crate::system::ReleaseScope::Org { org } => format!("org:{org}"),
@@ -832,7 +912,7 @@ async fn set_outbound_approval(
     scope: crate::system::ReleaseScope,
     body: OutboundApprovalBody,
 ) -> ApiResult {
-    let p = person(node, headers).await?;
+    let p = holder(node, headers).await?;
     let account = p.account()?;
     let subject = match &scope {
         crate::system::ReleaseScope::Org { org } => format!("org:{org}"),
@@ -891,7 +971,7 @@ async fn account_outbound_approval(
 
 /// Sign out everywhere: revoke every session of the caller's account.
 async fn logout_all(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let out = node
         .sys_write(&SystemCmd::RevokeAllSessions {
             actor: p.account()?,
@@ -958,7 +1038,7 @@ async fn apikey_create(
     headers: HeaderMap,
     Json(body): Json<ApiKeyBody>,
 ) -> ApiResult {
-    let account = person(&node, &headers).await?.account()?;
+    let account = holder(&node, &headers).await?.account()?;
     let (key, hash) = calimero_identity::new_api_key();
     let key_id = b64url(&random::<8>());
     let _ok = node
@@ -984,7 +1064,7 @@ async fn apikey_create(
 }
 
 async fn apikey_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
-    let account = person(&node, &headers).await?.account()?;
+    let account = holder(&node, &headers).await?.account()?;
     let keys: Vec<ApiKeyRecord> = node.sys(|s| {
         s.api_keys
             .values()
@@ -1000,7 +1080,7 @@ async fn apikey_revoke(
     headers: HeaderMap,
     Path(key_id): Path<String>,
 ) -> ApiResult {
-    let account = person(&node, &headers).await?.account()?;
+    let account = holder(&node, &headers).await?.account()?;
     let _ok = node
         .sys_write(&SystemCmd::RevokeApiKey {
             key_id,
@@ -1120,7 +1200,7 @@ async fn package_uninstall(
     headers: HeaderMap,
     Path(package): Path<String>,
 ) -> ApiResult {
-    let account = person(&node, &headers).await?.account()?;
+    let account = holder(&node, &headers).await?.account()?;
     Ok(Json(
         node.sys_write(&SystemCmd::UninstallPackage {
             package,
@@ -1136,7 +1216,7 @@ async fn package_version_uninstall(
     headers: HeaderMap,
     Path((package, version)): Path<(String, String)>,
 ) -> ApiResult {
-    let account = person(&node, &headers).await?.account()?;
+    let account = holder(&node, &headers).await?.account()?;
     Ok(Json(
         node.sys_write(&SystemCmd::UninstallPackage {
             package,
@@ -1200,7 +1280,21 @@ async fn app_create(
     headers: HeaderMap,
     Json(body): Json<CreateAppBody>,
 ) -> ApiResult {
-    let p = installer(&node, &headers).await?;
+    let p = signed_in(&node, &headers).await?;
+    match p.bound_app() {
+        // A frontend makes instances of its own package, already installed.
+        Some(pkg) => {
+            let installed = node.sys(|s| s.packages.contains_key(pkg));
+            if body.bundle.is_some() || body.package.as_deref() != Some(pkg) || !installed {
+                return Err(ApiError::forbidden(
+                    "a session opened on an app's frontend creates instances of that app only",
+                ));
+            }
+        }
+        None => {
+            let _p = installer(&node, &headers).await?;
+        }
+    }
     if p.api_key.as_ref().is_some_and(|k| k.read_only) {
         return Err(ApiError::forbidden("read-only API key"));
     }
@@ -1214,14 +1308,9 @@ async fn app_create(
         &owner,
     )
     .await?;
-    // Only nodes on a release the owner approved may hold the app.
-    let approved = node.sys(|s| {
-        match &body.org {
-            Some(o) => s.orgs.get(o).map(|o| o.approved_releases.clone()),
-            None => s.accounts.get(&owner).map(|a| a.approved_releases.clone()),
-        }
-        .filter(|set| !set.is_empty())
-    });
+    // Only nodes on an approved release (the owner's, or the operator's where
+    // the deployment gave it release approvals) may hold the app.
+    let approved = node.sys(|s| s.approved_for(body.org.as_deref(), &owner).cloned());
     let replicas = node.place(approved.as_ref()).await;
     if replicas.is_empty() {
         return Err(ApiError::unavailable(
@@ -1329,9 +1418,18 @@ async fn app_list(
     let account = p
         .as_ref()
         .and_then(|p| p.caller.account().map(str::to_owned));
+    let bound = p.as_ref().and_then(|p| p.bound_app().map(str::to_owned));
     let apps: Vec<Value> = node.sys(|s| {
         s.apps
             .values()
+            .filter(|a| {
+                bound.as_ref().is_none_or(|pkg| {
+                    s.bundles
+                        .get(&a.bundle)
+                        .and_then(|b| b.package.as_ref())
+                        .is_some_and(|r| r.package == *pkg)
+                })
+            })
             .filter(|a| a.access != Access::Public || account.as_deref() == Some(a.owner.as_str()))
             .filter(|a| s.may_reach(a, account.as_deref()))
             .filter(|a| q.bundle.as_ref().is_none_or(|b| *b == a.bundle))
@@ -1367,8 +1465,10 @@ async fn app_delete(
     Path(app_id): Path<String>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
-    let account = person(&node, &headers).await?.account()?;
-    let _app = node.app(&app_id).await?;
+    let p = person(&node, &headers).await?;
+    let account = p.account()?;
+    let app = node.app(&app_id).await?;
+    p.within(&node, &app)?;
     let _ok = node
         .sys_write(&SystemCmd::DeleteApp {
             app_id: app_id.clone(),
@@ -1386,6 +1486,9 @@ async fn app_get(
     let app_id = node.canonical_app_id(&app_id);
     let p = principal(&node, &headers).await?;
     let app = node.app(&app_id).await?;
+    if let Some(p) = &p {
+        p.within(&node, &app)?;
+    }
     let account = p.as_ref().and_then(|p| p.caller.account());
     if !node.sys(|s| s.may_reach(&app, account)) {
         return Err(ApiError::not_found("no such app"));
@@ -1429,6 +1532,9 @@ async fn gate(
     write: bool,
 ) -> Result<Principal, ApiError> {
     let p = principal(node, headers).await?;
+    if let Some(p) = &p {
+        p.within(node, app)?;
+    }
     let account = p.as_ref().and_then(|p| p.caller.account());
     // Access is judged on the cluster's latest system state (a read index): a
     // removal or revocation committed through another node holds before the
@@ -1559,8 +1665,16 @@ async fn consent(
             "the approval was for a different call",
         ));
     }
-    let _owner =
-        check_assertion(node, &challenge, &confirm.assertion, Some(&account), true).await?;
+    let _owner = check_assertion(
+        node,
+        &challenge,
+        &confirm.assertion,
+        Some(&account),
+        true,
+        p.bound_app(),
+        false,
+    )
+    .await?;
     Ok(serde_json::to_value(&confirm.assertion).unwrap_or_default())
 }
 
@@ -1934,7 +2048,7 @@ async fn app_upgrade(
     Json(mut body): Json<UpgradeBody>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let account = p.account()?;
     // Who may upgrade is the system log's rule (`UpgradeApp`); asked first, so
     // a refused or failed upgrade records nothing. An upgrade is the app's
@@ -2252,7 +2366,7 @@ async fn org_upgrade(
     Path(org): Path<String>,
     Json(mut body): Json<OrgUpgradeBody>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let account = p.account()?;
     owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
     if node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&account))) != Some(OrgRole::Owner) {
@@ -2378,7 +2492,7 @@ async fn org_upgrade_retry(
         };
         return start_run(node, org, retry, failed, who).await;
     }
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let account = p.account()?;
     owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
     if node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&account))) != Some(OrgRole::Owner) {
@@ -2419,9 +2533,11 @@ async fn alias_set(
     Path(alias): Path<String>,
     Json(body): Json<AliasBody>,
 ) -> ApiResult {
-    let account = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    let account = p.account()?;
     let app = node.canonical_app_id(&body.app);
     let rec = node.app(&app).await?;
+    p.within(&node, &rec)?;
     if !node.sys(|s| s.may_reach(&rec, Some(&account))) {
         return Err(ApiError::not_found("no such app"));
     }
@@ -2486,7 +2602,9 @@ async fn app_access(
     Json(body): Json<AccessBody>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
-    let account = person(&node, &headers).await?.account()?;
+    let p = person(&node, &headers).await?;
+    let account = p.account()?;
+    p.within(&node, &node.app(&app_id).await?)?;
     let _ok = node
         .sys_write(&SystemCmd::SetAccess {
             app_id,
@@ -2562,7 +2680,7 @@ async fn org_delete(
     Path(org): Path<String>,
     body: Option<Json<DeleteOrgBody>>,
 ) -> ApiResult {
-    let p = person(&node, &headers).await?;
+    let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let is_owner =
         node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)) == Some(OrgRole::Owner));
@@ -2633,7 +2751,9 @@ async fn app_metadata(
     Json(body): Json<MetadataBody>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
-    let actor = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    let actor = p.account()?;
+    p.within(&node, &node.app(&app_id).await?)?;
     let _ok = node
         .sys_write(&SystemCmd::SetAppMetadata {
             app_id,
@@ -2656,7 +2776,7 @@ async fn passkey_label(
     Path(cred): Path<String>,
     Json(body): Json<PasskeyLabelBody>,
 ) -> ApiResult {
-    let account = person(&node, &headers).await?.account()?;
+    let account = holder(&node, &headers).await?.account()?;
     let _ok = node
         .sys_write(&SystemCmd::SetPasskeyLabel {
             account,

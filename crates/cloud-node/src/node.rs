@@ -100,6 +100,9 @@ pub struct Config {
     /// Take raw WASM uploads (`POST /bundles`), which carry no publisher
     /// signature. Development only; production installs signed packages.
     pub allow_unsigned_bundles: bool,
+    /// The domain app frontends are served under (`--apps-domain`): a
+    /// package's at `{label}.{apps_domain}` (`app_host`). `None`: not served.
+    pub apps_domain: Option<String>,
     /// Who decides releases, app upgrades and outbound hosts
     /// (`--release-approvals`, `--app-upgrades`, `--outbound-approvals`).
     /// Written to the system state at genesis by the first leader; after that
@@ -202,6 +205,8 @@ pub struct Node {
     pub event_streams: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Every app's ephemeral presence, in memory only.
     pub presence: crate::presence::Presence,
+    /// Release frontends opened for `app_host`.
+    pub frontends: crate::app_host::FrontendCache,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
     /// Full-text search over the apps hosted here.
@@ -311,6 +316,7 @@ impl Node {
             challenges: Mutex::new(HashMap::new()),
             event_streams: std::sync::Arc::default(),
             presence: crate::presence::Presence::default(),
+            frontends: crate::app_host::FrontendCache::default(),
             peer_releases: Mutex::new(HashMap::new()),
             starting: tokio::sync::Mutex::new(()),
             search: Search::default(),

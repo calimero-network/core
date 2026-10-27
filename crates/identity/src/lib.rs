@@ -16,8 +16,8 @@ pub mod webauthn;
 pub mod testing;
 
 pub use webauthn::{
-    verify_assertion, verify_registration, Assertion, Credential, PublicKey, Registration,
-    RelyingParty,
+    claimed_origin, verify_assertion, verify_registration, Assertion, Credential, PublicKey,
+    Registration, RelyingParty,
 };
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -78,6 +78,10 @@ pub struct SessionClaims {
     /// device, for whoever asks which one this is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passkey: Option<String>,
+    /// The package whose frontend origin opened the session: it reaches only
+    /// that package's apps. `None` for the cluster's own origins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 /// Mint a session token: `v1.<claims>.<mac>`, MAC = HMAC-SHA256 under `key`.
@@ -237,6 +241,7 @@ mod tests {
             expires_at: 1000,
             key_version: 1,
             passkey: None,
+            app: None,
         };
         let token = mint_session(&key, &claims);
         assert_eq!(verify_session(&key, &token, 999).unwrap(), claims);

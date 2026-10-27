@@ -78,6 +78,7 @@ pub async fn start(
             allow_unsigned_bundles: true,
             outbound: None,
             governance: Default::default(),
+            apps_domain: Some("localhost".into()),
         };
         nodes.push(run(config).await?);
     }

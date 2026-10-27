@@ -103,6 +103,10 @@ struct Args {
     /// Who approves the URL prefixes apps may call out to: `owner` or `operator`.
     #[arg(long, env = "MEROD_OUTBOUND_APPROVALS", default_value = "owner", value_parser = authority)]
     outbound_approvals: Authority,
+    /// Serve app frontends from their releases at `{label}.{DOMAIN}`, one
+    /// origin per package (a wildcard DNS name pointing at the cluster).
+    #[arg(long, env = "MEROD_APPS_DOMAIN")]
+    apps_domain: Option<String>,
     /// A TOML settings file; its `[outbound]` table is the outbound HTTPS
     /// policy (hosts, secrets). Without it, apps cannot call out.
     #[arg(long, env = "MEROD_SETTINGS")]
@@ -306,6 +310,9 @@ async fn main() -> eyre::Result<()> {
         registry: args.registry_url,
         allow_unsigned_bundles: args.allow_unsigned_bundles || args.dev,
         outbound: outbound(args.settings.as_deref())?,
+        apps_domain: args
+            .apps_domain
+            .map(|d| d.trim_matches('.').to_ascii_lowercase()),
         governance: Governance {
             releases: args.release_approvals,
             app_upgrades: args.app_upgrades,

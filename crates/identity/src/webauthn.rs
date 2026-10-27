@@ -174,6 +174,16 @@ fn cose_public_key(key: &Value) -> Result<PublicKey, Error> {
     }
 }
 
+/// The origin a ceremony's client data claims, unchecked: what a relying party
+/// with several kinds of origin reads to decide which to verify it against.
+/// Verifying the ceremony still requires the origin to be one it allows.
+#[must_use]
+pub fn claimed_origin(client_data_json: &str) -> Option<String> {
+    let raw = b64(client_data_json).ok()?;
+    let cd: ClientData = serde_json::from_slice(&raw).ok()?;
+    Some(cd.origin)
+}
+
 fn check_client_data(
     rp: &RelyingParty,
     client_data_json: &[u8],

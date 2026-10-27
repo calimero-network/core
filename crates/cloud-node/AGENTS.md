@@ -156,6 +156,19 @@ architecture spec.
   a mark just committed; an app whose leader does not answer counts as holding
   it) or it is a bundle or a release `.mpk`. Known window: the same content
   uploaded to another app between that check and the deletion loses its bytes.
+- **App frontends** (`app_host.rs`, v1's app hosts): with `--apps-domain D`
+  (`merod-v2 local`: `localhost`), each package's frontend is at
+  `{label}.D` (`app_host::label`, 52 base32 characters), from its release's
+  `.mpk` (`Node::release_mpk`, verified before a byte is served, opened ones
+  cached). Outermost layer: only `GET`/`HEAD` of files, `/` → newest release,
+  client routes and relative tails as v1, v1's CSP plus the cluster's API
+  origins in `connect-src`, `/.well-known/calimero.json`; an unknown label under
+  D is a 404, never a node route. App origins pass CORS, and a passkey ceremony
+  from one opens a session bound to its package (`SessionClaims::app`, carried
+  by refresh): `Principal::within` keeps it to that package's apps (gate, app
+  reads and writes, listings), `unbound`/`holder` refuse it credentials, API
+  keys, approvals, upgrades, uninstalls and uploads, and it creates instances
+  of its own package only. Its step-ups come from its own origin only.
 - **Presence** (`presence.rs`, v1's ephemeral awareness channel): in memory on
   every node, never in a log. `POST /apps/{app}/presence { seq, state }` (anyone
   who reaches the app; one entry per account and device) applies it here and

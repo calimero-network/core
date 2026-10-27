@@ -215,13 +215,20 @@ impl SystemState {
     /// (state from before approvals), which leaves the app unrestricted.
     #[must_use]
     pub fn approved_releases(&self, app: &AppRecord) -> Option<&BTreeSet<String>> {
+        self.approved_for(app.org.as_deref(), &app.owner)
+    }
+
+    /// [`Self::approved_releases`] for an app of `org` (or of `owner` outside
+    /// one), before it exists.
+    #[must_use]
+    pub fn approved_for(&self, org: Option<&str>, owner: &str) -> Option<&BTreeSet<String>> {
         if self.governance().releases == Authority::Operator {
             let set = &self.operator_releases;
             return (!set.is_empty()).then_some(set);
         }
-        let set = match &app.org {
+        let set = match org {
             Some(o) => &self.orgs.get(o)?.approved_releases,
-            None => &self.accounts.get(&app.owner)?.approved_releases,
+            None => &self.accounts.get(owner)?.approved_releases,
         };
         (!set.is_empty()).then_some(set)
     }

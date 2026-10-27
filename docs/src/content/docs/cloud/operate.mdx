@@ -40,6 +40,11 @@ merod-v2 --node-id 1 --listen 0.0.0.0:2501 --public-url https://n1.eu1.example/ 
   cluster starts and attested with every node's receipt key, so users check
   them (`verify_app_cluster`). Give the operator a decision only where users
   trust it with code, or destinations, that read their data.
+- **App frontends.** `--apps-domain apps.example.com` (with a wildcard DNS name
+  for it pointing at the cluster) serves each package's frontend, from its
+  signed release, at its own origin `{label}.apps.example.com` (the label is in
+  `calimero_cloud_node::app_host::label`; `merod-v2 local` uses `localhost`).
+  Signing in there opens a session that reaches that package's apps only.
 - **Outbound HTTPS.** Off unless `--settings FILE` has an `[outbound]` table
   (`enabled`, `hosts`, and `env_secrets` or a loopback `sidecar`), v1's
   `[context.outbound]`. The operator bounds the hosts and holds the secrets;
