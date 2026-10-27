@@ -128,9 +128,8 @@ pub async fn handler(
     // and makes it visible the instant the event fires. It also means a failed
     // publish no longer silently skips key creation.
     //
-    // Minted whatever the visibility, as the actor handler does. On an Open chain the
-    // namespace key covers the group (`key_covering_group`), and no reader may serve this row.
-    {
+    // Only a space root is its own covering group; an open folder rides the workspace key.
+    if restricted {
         let group_key: [u8; 32] = {
             use rand::RngExt;
             rand::rng().random()

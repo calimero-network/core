@@ -484,6 +484,45 @@ mod tests {
     }
 
     #[actix::test]
+    async fn only_a_space_root_is_minted_a_key_at_creation() {
+        let (store, harness, namespace, space) = owned_namespace().await;
+        let new_folder = async |parent| {
+            harness
+                .manager
+                .send(CreateGroupRequest {
+                    salt: None,
+                    bytecode_id: None,
+                    application_id: Some(ApplicationId::from(APP)),
+                    name: None,
+                    parent_group_id: Some(parent),
+                    restricted: false,
+                })
+                .await
+                .expect("the manager answers")
+                .expect("a folder")
+                .group_id
+        };
+        let in_space = new_folder(space).await;
+        let in_open_space = new_folder(namespace).await;
+
+        let keyed = |group: ContextGroupId| {
+            GroupKeyring::new(&store, group)
+                .load_current_key_record()
+                .unwrap()
+                .is_some()
+        };
+        assert!(keyed(space), "a space root is its own covering group");
+        assert!(
+            !keyed(in_space),
+            "a folder of a space rides the space's key"
+        );
+        assert!(
+            !keyed(in_open_space),
+            "an open folder rides the workspace key"
+        );
+    }
+
+    #[actix::test]
     async fn an_owner_delete_refused_for_a_context_publishes_nothing() {
         let (store, mut harness, namespace, subgroup) = owned_namespace().await;
         register_context_in_group(&store, &subgroup, &ContextId::from([0xE2; 32])).unwrap();

@@ -365,7 +365,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // or skip it if the failure preceded the key write. The success
                 // path takes `key_id` straight from the closure's `Ok`.
                 let mut group_key_id: Option<[u8; 32]> = None;
-                let write_local_rows = (|| -> eyre::Result<[u8; 32]> {
+                let write_local_rows = (|| -> eyre::Result<()> {
                     MetaRepository::new(&datastore).save(&group_id, &meta)?;
                     // Members are rows of a space root; an open folder takes its members from
                     // the root or space.
@@ -382,23 +382,25 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         initial_default_capabilities(parent_group_id.is_none()),
                     )?;
 
-                    // Generate and store the group encryption key.
-                    //
-                    // Minted whatever the visibility. On an Open chain the namespace key
-                    // covers the group (`key_covering_group`); no reader may serve this row.
-                    let group_key: [u8; 32] = rand::rng().random();
-                    let key_id = GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
-                    group_key_id = Some(key_id);
-                    tracing::debug!(
-                        ?group_id,
-                        key_id = %hex::encode(key_id),
-                        "stored initial group key"
-                    );
+                    // A key is minted only for a group that is its own covering group: the
+                    // namespace root and a space root. A folder rides the space's or the
+                    // workspace's key (`key_covering_group`).
+                    if restricted || parent_group_id.is_none() {
+                        let group_key: [u8; 32] = rand::rng().random();
+                        let key_id =
+                            GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
+                        group_key_id = Some(key_id);
+                        tracing::debug!(
+                            ?group_id,
+                            key_id = %hex::encode(key_id),
+                            "stored initial group key"
+                        );
+                    }
 
-                    Ok(key_id)
+                    Ok(())
                 })();
-                let key_id = match write_local_rows {
-                    Ok(key_id) => key_id,
+                match write_local_rows {
+                    Ok(()) => {}
                     Err(err) => {
                         rollback_local_group_rows(
                             &datastore,
@@ -656,7 +658,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                                     &datastore,
                                     &group_id,
                                     &admin_account,
-                                    Some(key_id),
+                                    group_key_id,
                                 );
                                 return Err(eyre::eyre!(
                                     "failed to apply NamespaceCreated genesis on namespace \
