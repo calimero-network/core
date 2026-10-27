@@ -591,6 +591,23 @@ impl AppMachine {
         }
     }
 
+    /// The conflict a build answers when its module is not the state's.
+    /// `loaded` is the bundle the caller compiled its module from, read before
+    /// the propose lock: an upgrade (or the init) applied since would have the
+    /// old code run against the new state, on a base the apply check accepts.
+    /// The caller runs it again (`Node::call`), with the bundle named now.
+    #[must_use]
+    pub fn stale_module(&self, loaded: Option<&str>) -> Option<Applied> {
+        (self.state.bundle.as_deref() != loaded).then(|| Applied {
+            index: self.state.last_index,
+            status: Status::Trap,
+            result: Value::Null,
+            error: Value::String("conflict: the app's bundle changed; retry".into()),
+            events: Vec::new(),
+            conflict: true,
+        })
+    }
+
     fn apply_outcome(
         &mut self,
         tx: &mut StateTx<'_>,
@@ -1825,6 +1842,48 @@ mod tests {
             },
             trigger: None,
         }))
+    }
+
+    /// `Node::call_local` compiles a call's module from the bundle it reads
+    /// before the propose lock. An upgrade that applies in between leaves the
+    /// base check satisfied (the build reads the upgraded state), so only the
+    /// build can tell that the module is the old one: the old code's result
+    /// must not commit.
+    #[test]
+    fn a_call_built_with_a_module_an_upgrade_replaced_never_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut m) = machine(&dir);
+        let init = AppCmd::Init {
+            bundle: "old".into(),
+            base_index: 0,
+            outcome: Outcome::default(),
+        };
+        assert!(!apply(&mut m, 1, &init).conflict);
+        // The call's module is chosen, outside the lock.
+        let loaded = m.state.bundle.clone();
+        // An upgrade applies before the call's build.
+        let upgrade = AppCmd::Upgrade {
+            bundle: "new".into(),
+            base_index: m.state.last_index,
+            outcome: Outcome::default(),
+        };
+        assert!(!apply(&mut m, 2, &upgrade).conflict);
+        // The build, as `call_local`'s: refused, or the old module's run on
+        // the state the upgrade left.
+        match m.stale_module(loaded.as_deref()) {
+            Some(refused) => assert!(refused.conflict, "{refused:?}"),
+            None => {
+                let cmd = call(&m, "k1", 1_000, &[("a", "old code")], 0);
+                let _applied = apply(&mut m, 3, &cmd);
+            }
+        }
+        assert_eq!(
+            m.state.kv.get(b"a"),
+            None,
+            "the old module's diff applied to the upgraded state"
+        );
+        // Built with the module the state names, the call runs.
+        assert!(m.stale_module(Some("new")).is_none());
     }
 
     /// The app's state is the store's: written by entries, read back by a

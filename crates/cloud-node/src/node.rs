@@ -1522,6 +1522,11 @@ impl Node {
                         return Proposal::Reply(Vec::new());
                     }
                 }
+                // The module (and the facts and outbound client) came from the
+                // bundle read before the lock; an upgrade may have applied since.
+                if let Some(stale) = m.stale_module(bundle.as_deref()) {
+                    return Proposal::Reply(serde_json::to_vec(&stale).unwrap_or_default());
+                }
                 let outcome = match (&module, &refused) {
                     (_, Some(why)) => Outcome {
                         status: Status::AppError,
@@ -1613,10 +1618,12 @@ impl Node {
             .module_for(&bundle)
             .await
             .map_err(|e| WriteError::Unavailable(e.message))?;
+        // The bundle the migration is planned from; the build checks it is
+        // still the state's, as a call's does.
+        let current = g.read_local(|m, _| m.state.bundle.clone());
         // Without a named migration, plan it from the two ABIs, as v1 does.
         if migrate.is_none() {
-            let current = g.read_local(|m, _| m.state.bundle.clone());
-            if let Some(current) = current.filter(|c| *c != bundle) {
+            if let Some(current) = current.clone().filter(|c| *c != bundle) {
                 let (from, to) = (
                     self.bundle_wasm(&current).await,
                     self.bundle_wasm(&bundle).await,
@@ -1641,6 +1648,9 @@ impl Node {
         let env = self.env(&req.app_id, &req.caller);
         let p = g
             .propose(|m, applied| {
+                if let Some(stale) = m.stale_module(current.as_deref()) {
+                    return Proposal::Reply(serde_json::to_vec(&stale).unwrap_or_default());
+                }
                 let outcome = match &migrate {
                     Some(method) => {
                         let outcome = Executor::migrate(

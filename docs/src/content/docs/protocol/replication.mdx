@@ -85,6 +85,17 @@ build did not see was applied ahead of it, it applies as the no-op above.
 Regression:
 `a_stale_build_by_a_deposed_leader_never_applies` in `crates/log/tests/cluster.rs`.
 
+The base check covers the state, not the code. A call's module (and its ABI
+facts and outbound client) is compiled from the bundle the leader reads before
+it takes the propose lock, so an `Upgrade` that applies in between would let
+the old code run against the upgraded state on a base that matches. The build
+therefore checks that the state still names the bundle its module came from
+(`AppMachine::stale_module`); if not, it answers a conflict without appending,
+and `Node::call` runs the call again with the new module. An upgrade checks the
+bundle it planned its migration from the same way. Regression:
+`a_call_built_with_a_module_an_upgrade_replaced_never_commits` in
+`crates/cloud-node/src/app.rs`.
+
 A proposal that answers without appending (`Proposal::Reply`: an idempotent
 replay, a follow-up already run, a read-only member's refused write) is a read,
 so it is confirmed: the leader runs a read-index round (openraft's

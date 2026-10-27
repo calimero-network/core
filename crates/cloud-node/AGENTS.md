@@ -128,6 +128,11 @@ is its command line.
   commits, or commits as a no-op (`base_index` ≠ the last applied entry:
   `conflict`, no idempotency record), and `Node::call` re-runs it instead of
   failing. Replies without an append (idempotent replays) are confirmed first.
+  The module is compiled from the bundle read before the lock, so the build
+  also answers a conflict when the state names another bundle by then (an
+  upgrade applied in between; `AppMachine::stale_module`, also checked by
+  `upgrade_local`). Regression:
+  `a_call_built_with_a_module_an_upgrade_replaced_never_commits`.
 - **Upgrades plan their migration from the ABIs** (`services::plan_upgrade`, v1's
   `plan_upgrade`): without a named `migrate`, an upgrade one state version up runs
   the target's `#[app::migrate]` edge; a downgrade, a jump or a missing edge is
