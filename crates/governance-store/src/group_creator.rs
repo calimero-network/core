@@ -37,6 +37,7 @@ impl<'a> GroupCreatorRepository<'a> {
     /// Record `creator` for `group`. A second record for the same group is a
     /// no-op: the id commits to the creator, so a re-applied `GroupCreated`
     /// names the same account.
+    #[cfg(test)]
     pub(crate) fn record(&self, group: &ContextGroupId, creator: &AccountId) -> EyreResult<()> {
         if self.creator(group)?.is_some() {
             return Ok(());
