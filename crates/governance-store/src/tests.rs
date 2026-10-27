@@ -12896,6 +12896,84 @@ mod self_leave_rotation {
             "a read-only member is never promoted"
         );
     }
+
+    /// A folder whose only admin slot is a departed creator, with two plain members
+    /// (both in the workspace); returns the lower account's key first.
+    fn leaderless_folder() -> (Fixture, [(PrivateKey, AccountId); 2]) {
+        let f = fixture();
+        let gone = AccountId::from([0xEE; 32]);
+        ReentryRepository::new(&f.store)
+            .block(&f.ns_gid, &gone, calimero_store::key::GroupExitReason::Left)
+            .unwrap();
+        let mut meta = sample_meta_with_admin(gone);
+        meta.admin_identity = gone;
+        MetaRepository::new(&f.store)
+            .save(&f.sub_gid, &meta)
+            .unwrap();
+        let repo = MembershipRepository::new(&f.store);
+        repo.remove_member(&f.sub_gid, &f.admin).unwrap();
+        repo.remove_member(&f.sub_gid, &f.leaver).unwrap();
+        let mut members = [0x61u8, 0x62].map(|seed| {
+            let sk = PrivateKey::from([seed; 32]);
+            let account = enrol_member(&f.store, &f.ns_gid, &sk.public_key());
+            repo.add_member(&f.ns_gid, &account, GroupMemberRole::Member)
+                .unwrap();
+            repo.add_member(&f.sub_gid, &account, GroupMemberRole::Member)
+                .unwrap();
+            (sk, account)
+        });
+        members.sort_by_key(|(_, account)| *account);
+        (f, members)
+    }
+
+    fn apply_add(
+        f: &Fixture,
+        signer: &PrivateKey,
+        member: AccountId,
+        role: GroupMemberRole,
+    ) -> eyre::Result<()> {
+        let op = SignedGroupOp::sign(
+            signer,
+            f.sub_gid.to_bytes().into(),
+            vec![],
+            1,
+            GroupOp::MemberAdded { member, role },
+        )
+        .expect("sign MemberAdded");
+        apply_local_signed_group_op(&f.store, &op).map(|_| ())
+    }
+
+    #[test]
+    fn a_folder_without_an_admin_refuses_an_add_and_no_newcomer_displaces_its_successor() {
+        let (f, [(low_sk, low), (_, _high)]) = leaderless_folder();
+        let repo = MembershipRepository::new(&f.store);
+        assert!(repo.is_admin(&f.sub_gid, &low).unwrap());
+
+        let grinder = AccountId::from([0x00; 32]);
+        let err = apply_add(&f, &low_sk, grinder, GroupMemberRole::Member)
+            .expect_err("a folder with no admin takes no new member");
+
+        assert!(matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::GroupHasNoAdmin(_))
+        ));
+        assert!(!repo.is_admin(&f.sub_gid, &grinder).unwrap());
+        assert!(repo.is_admin(&f.sub_gid, &low).unwrap());
+    }
+
+    #[test]
+    fn the_successor_promotes_itself_and_the_folder_takes_members_again() {
+        let (f, [(low_sk, low), _]) = leaderless_folder();
+
+        apply_add(&f, &low_sk, low, GroupMemberRole::Admin).expect("the successor may promote");
+        let newcomer = AccountId::from([0x00; 32]);
+        apply_add(&f, &low_sk, newcomer, GroupMemberRole::Member)
+            .expect("a folder with an admin takes members");
+
+        let repo = MembershipRepository::new(&f.store);
+        assert!(repo.is_admin(&f.sub_gid, &low).unwrap());
+        assert!(!repo.is_admin(&f.sub_gid, &newcomer).unwrap());
+    }
 }
 
 // -----------------------------------------------------------------------

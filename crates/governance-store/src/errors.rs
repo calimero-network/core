@@ -71,6 +71,10 @@ pub enum MembershipError {
     #[error("cannot remove the last admin of the group")]
     LastAdmin,
 
+    /// The group has no admin, so adding a member is refused until an admin is promoted.
+    #[error("group {0} has no admin; promote one before adding members")]
+    GroupHasNoAdmin(String),
+
     /// Demoting this member would leave the group with zero admins.
     #[error("cannot demote the last admin of the group")]
     LastAdminDemotion,

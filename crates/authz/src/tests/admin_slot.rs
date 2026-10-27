@@ -131,3 +131,54 @@ fn the_root_has_no_stand_in() {
 
     assert!(!v.is_group_admin(&account(0x40), root()));
 }
+
+fn add_op(author: AccountId, member: AccountId, role: GroupMemberRole) -> calimero_op::Op {
+    super::support::op_with(
+        author,
+        calimero_op::OpPayload::MemberAdded {
+            group: folder(),
+            member,
+            role,
+        },
+    )
+}
+
+#[test]
+fn a_folder_without_an_admin_refuses_an_add_until_its_successor_promotes_itself() {
+    let creator = account(0x10);
+    let successor = account(0x40);
+    let newcomer = account(0x01);
+    let bound =
+        |v: AclView| super::support::bind_test_devices(super::support::bind_account(v, newcomer));
+    let leaderless = bound(departed_view(
+        creator,
+        &[],
+        &[(successor, GroupMemberRole::Member)],
+    ));
+
+    assert_eq!(
+        crate::authorize(
+            &add_op(successor, newcomer, GroupMemberRole::Member),
+            &leaderless
+        ),
+        Err(crate::Rejected::GroupHasNoAdmin)
+    );
+    assert!(!leaderless.is_group_admin(&newcomer, folder()));
+    assert!(leaderless.is_group_admin(&successor, folder()));
+
+    assert!(crate::authorize(
+        &add_op(successor, successor, GroupMemberRole::Admin),
+        &leaderless
+    )
+    .is_ok());
+    let promoted = bound(departed_view(
+        creator,
+        &[],
+        &[(successor, GroupMemberRole::Admin)],
+    ));
+    assert!(crate::authorize(
+        &add_op(successor, newcomer, GroupMemberRole::Member),
+        &promoted
+    )
+    .is_ok());
+}

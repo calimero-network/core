@@ -33,6 +33,9 @@ pub enum Rejected {
     /// Author is not an admin of the group being mutated.
     #[error("author is not an admin of the group at the cut")]
     NotGroupAdmin,
+    /// The group has no admin, so it takes no new member until its successor promotes an admin.
+    #[error("the group has no admin at the cut, so it takes no new member")]
+    GroupHasNoAdmin,
     /// Author did not create the subgroup it is opening: only its creator may.
     #[error("author is not the creator of the subgroup it is opening")]
     NotGroupCreator,
