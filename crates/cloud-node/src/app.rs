@@ -8,7 +8,7 @@ use calimero_storage::shared_writers::CellWriters;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use calimero_log::{Bytes, Machine};
+use calimero_log::{Bytes, GroupState, Machine, StateTx};
 use calimero_runtime::store::{Key, Storage, Value as StoreValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -217,26 +217,182 @@ struct IdemRecord {
     expires_ms: u64,
 }
 
+/// Reads an app's state: the keys its runs see.
+pub trait StateRead: Send + Sync {
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
+
+    /// An owned handle on the same state, for callbacks that outlive a borrow.
+    fn handle(&self) -> Arc<dyn StateRead>;
+}
+
+impl StateRead for BTreeMap<Bytes, Bytes> {
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        BTreeMap::get(self, &Bytes(key.to_vec())).map(|v| v.0.clone())
+    }
+
+    fn handle(&self) -> Arc<dyn StateRead> {
+        Arc::new(self.clone())
+    }
+}
+
+/// Where an app's rows live in its group's state.
+///
+/// The app's own keys and the idempotency table are hidden rows (the key on
+/// disk is an HMAC; see `calimero_log::store::hide`); the rest are the node's
+/// bookkeeping.
+mod rows {
+    /// The app's storage: `env::storage_*`, private storage, blobs, writers.
+    pub const KV: u8 = b'k';
+    /// Idempotency records, by `caller|key`.
+    pub const IDEM: u8 = b'i';
+    /// The [`super::Head`].
+    pub const HEAD: &[u8] = b"h";
+    /// Event `n`: `e ‖ n`.
+    pub const EVENT: u8 = b'e';
+    /// The idempotency keys in the order they expire, per TTL class: `r ‖ class ‖ n`.
+    pub const EXPIRY: u8 = b'r';
+
+    pub fn event(n: u64) -> Vec<u8> {
+        let mut k = vec![EVENT];
+        k.extend_from_slice(&n.to_be_bytes());
+        k
+    }
+
+    pub fn expiry(class: u8, n: u64) -> Vec<u8> {
+        let mut k = vec![EXPIRY, class];
+        k.extend_from_slice(&n.to_be_bytes());
+        k
+    }
+}
+
+/// An app's storage, read from its group's durable state.
+#[derive(Clone, Default)]
+pub struct KvView {
+    state: Option<GroupState>,
+}
+
+impl KvView {
+    /// Every key and value of the app's storage, in no particular order.
+    pub fn for_each(&self, mut f: impl FnMut(&[u8], &[u8])) -> eyre::Result<()> {
+        let Some(state) = &self.state else {
+            return Ok(());
+        };
+        state.scan_hidden(rows::KV, |k, v| {
+            f(k, v);
+            Ok(true)
+        })
+    }
+}
+
+impl StateRead for KvView {
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.state.as_ref()?.get_hidden(rows::KV, key)
+    }
+
+    fn handle(&self) -> Arc<dyn StateRead> {
+        Arc::new(self.clone())
+    }
+}
+
+/// The ring of idempotency keys of one TTL class, oldest first.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+struct Ring {
+    first: u64,
+    next: u64,
+}
+
+/// What an app's state machine keeps besides its storage: small, rewritten
+/// with every entry.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct Head {
+    bundle: Option<String>,
+    initialized: bool,
+    #[serde(default)]
+    init_error: Option<Value>,
+    last_index: u64,
+    #[serde(default)]
+    pending: BTreeMap<u64, Pending>,
+    #[serde(default)]
+    next_pending: u64,
+    #[serde(default)]
+    timer_ticks: BTreeMap<String, u64>,
+    #[serde(default)]
+    events_first: u64,
+    #[serde(default)]
+    events_next: u64,
+    #[serde(default)]
+    expiry: [Ring; 2],
+}
+
+#[derive(Clone, Default)]
 pub struct AppState {
-    pub kv: BTreeMap<Bytes, Bytes>,
+    /// The app's storage, on disk.
+    pub kv: KvView,
     pub bundle: Option<String>,
     pub initialized: bool,
     /// Why `init` failed, if it did (`{ status, error }`).
-    #[serde(default)]
     pub init_error: Option<Value>,
     pub last_index: u64,
-    idempotency: BTreeMap<String, IdemRecord>,
-    pub events: VecDeque<EventRecord>,
     /// Follow-ups the leader has yet to run, by sequence number.
-    #[serde(default)]
     pub pending: BTreeMap<u64, Pending>,
-    #[serde(default)]
     pub next_pending: u64,
     /// The last tick fired per timer method.
-    #[serde(default)]
     pub timer_ticks: BTreeMap<String, u64>,
+    events_first: u64,
+    events_next: u64,
+    expiry: [Ring; 2],
+}
+
+impl AppState {
+    fn head(&self) -> Head {
+        Head {
+            bundle: self.bundle.clone(),
+            initialized: self.initialized,
+            init_error: self.init_error.clone(),
+            last_index: self.last_index,
+            pending: self.pending.clone(),
+            next_pending: self.next_pending,
+            timer_ticks: self.timer_ticks.clone(),
+            events_first: self.events_first,
+            events_next: self.events_next,
+            expiry: self.expiry,
+        }
+    }
+
+    fn set_head(&mut self, h: Head) {
+        self.bundle = h.bundle;
+        self.initialized = h.initialized;
+        self.init_error = h.init_error;
+        self.last_index = h.last_index;
+        self.pending = h.pending;
+        self.next_pending = h.next_pending;
+        self.timer_ticks = h.timer_ticks;
+        self.events_first = h.events_first;
+        self.events_next = h.events_next;
+        self.expiry = h.expiry;
+    }
+}
+
+/// The whole-state JSON the previous storage format kept for an app.
+#[derive(Deserialize)]
+struct LegacyAppState {
+    kv: BTreeMap<Bytes, Bytes>,
+    bundle: Option<String>,
+    initialized: bool,
+    #[serde(default)]
+    init_error: Option<Value>,
+    last_index: u64,
+    #[serde(default)]
+    idempotency: BTreeMap<String, IdemRecord>,
+    #[serde(default)]
+    events: VecDeque<EventRecord>,
+    #[serde(default)]
+    pending: BTreeMap<u64, Pending>,
+    #[serde(default)]
+    next_pending: u64,
+    #[serde(default)]
+    timer_ticks: BTreeMap<String, u64>,
 }
 
 /// Entities touched per entry, kept in memory for search to catch up from.
@@ -267,6 +423,29 @@ impl AppMachine {
         }
     }
 
+    /// The events kept for resuming subscriptions, from entry `from` on.
+    #[must_use]
+    pub fn events_from(&self, from: u64) -> Vec<EventRecord> {
+        let mut out = Vec::new();
+        let Some(state) = &self.state.kv.state else {
+            return out;
+        };
+        let res = state.scan(&rows::event(self.state.events_first), |k, v| {
+            if k.first() != Some(&rows::EVENT) {
+                return Ok(false);
+            }
+            let rec: EventRecord = serde_json::from_slice(v)?;
+            if rec.index >= from {
+                out.push(rec);
+            }
+            Ok(true)
+        });
+        if let Err(e) = res {
+            tracing::error!(app = %self.app_id, error = %e, "reading events failed");
+        }
+        out
+    }
+
     fn idem_key(caller: &Caller, key: &str) -> String {
         match caller {
             Caller::App { app } => format!("app:{app}|{key}"),
@@ -293,21 +472,71 @@ impl AppMachine {
     /// Whether `id` (hex) is a blob of this app.
     #[must_use]
     pub fn holds_blob(&self, id: &[u8; 32]) -> bool {
-        self.state.kv.contains_key(&Bytes(blob_key(id)))
+        self.state.kv.get(&blob_key(id)).is_some()
     }
 
     /// A previous answer for this idempotency key, if still remembered.
     #[must_use]
     pub fn replay(&self, caller: &Caller, key: &str, now: u64) -> Option<Applied> {
-        self.state
-            .idempotency
-            .get(&Self::idem_key(caller, key))
+        let raw = self
+            .state
+            .kv
+            .state
+            .as_ref()?
+            .get_hidden(rows::IDEM, Self::idem_key(caller, key).as_bytes())?;
+        serde_json::from_slice::<IdemRecord>(&raw)
+            .ok()
             .filter(|r| r.expires_ms > now)
-            .map(|r| r.applied.clone())
+            .map(|r| r.applied)
+    }
+
+    /// Remember `applied` for an idempotency key until `expires_ms`, and forget
+    /// keys that expired by `now` (the log's own clock).
+    fn remember(
+        &mut self,
+        tx: &mut StateTx<'_>,
+        key: String,
+        applied: Applied,
+        expires_ms: u64,
+        now: u64,
+    ) {
+        let class = usize::from(key.contains(NODE_KEY_PREFIX));
+        let record = IdemRecord {
+            applied,
+            expires_ms,
+        };
+        match serde_json::to_vec(&record) {
+            Ok(v) => tx.put_hidden(rows::IDEM, key.as_bytes(), &v),
+            Err(e) => tx.fail(e),
+        }
+        let ring = &mut self.state.expiry[class];
+        tx.put(rows::expiry(class as u8, ring.next), key.into_bytes());
+        ring.next += 1;
+        // Each class expires in the order it was written, so the oldest go first.
+        for (c, ring) in self.state.expiry.iter_mut().enumerate() {
+            while ring.first < ring.next {
+                let slot = rows::expiry(c as u8, ring.first);
+                let Some(key) = tx.get(&slot) else {
+                    ring.first += 1;
+                    continue;
+                };
+                let live = tx
+                    .get_hidden(rows::IDEM, &key)
+                    .and_then(|r| serde_json::from_slice::<IdemRecord>(&r).ok())
+                    .is_some_and(|r| r.expires_ms > now);
+                if live {
+                    break;
+                }
+                tx.delete_hidden(rows::IDEM, &key);
+                tx.delete(slot);
+                ring.first += 1;
+            }
+        }
     }
 
     fn apply_outcome(
         &mut self,
+        tx: &mut StateTx<'_>,
         index: u64,
         base_index: u64,
         outcome: &Outcome,
@@ -344,12 +573,8 @@ impl AppMachine {
             }
             for w in &outcome.diff {
                 match &w.value {
-                    Some(v) => {
-                        let _prev = self.state.kv.insert(w.key.clone(), v.clone());
-                    }
-                    None => {
-                        let _prev = self.state.kv.remove(&w.key);
-                    }
+                    Some(v) => tx.put_hidden(rows::KV, &w.key.0, &v.0),
+                    None => tx.delete_hidden(rows::KV, &w.key.0),
                 }
             }
             for (seq, (kind, data)) in outcome.events.iter().enumerate() {
@@ -359,9 +584,14 @@ impl AppMachine {
                     kind: kind.clone(),
                     data: data.clone(),
                 };
-                self.state.events.push_back(rec.clone());
-                if self.state.events.len() > EVENT_RING {
-                    let _old = self.state.events.pop_front();
+                match serde_json::to_vec(&rec) {
+                    Ok(v) => tx.put(rows::event(self.state.events_next), v),
+                    Err(e) => tx.fail(e),
+                }
+                self.state.events_next += 1;
+                while self.state.events_next - self.state.events_first > EVENT_RING as u64 {
+                    tx.delete(rows::event(self.state.events_first));
+                    self.state.events_first += 1;
                 }
                 let _receivers = self.events_tx.send(rec);
             }
@@ -394,14 +624,18 @@ impl AppMachine {
 }
 
 impl Machine for AppMachine {
-    fn apply(&mut self, index: u64, command: &[u8]) -> Vec<u8> {
+    fn attach(&mut self, state: GroupState) {
+        self.state.kv.state = Some(state);
+    }
+
+    fn apply(&mut self, index: u64, command: &[u8], tx: &mut StateTx<'_>) -> Vec<u8> {
         let applied = match serde_json::from_slice::<AppCmd>(command) {
             Ok(AppCmd::Init {
                 bundle,
                 base_index,
                 outcome,
             }) => {
-                let a = self.apply_outcome(index, base_index, &outcome, 0);
+                let a = self.apply_outcome(tx, index, base_index, &outcome, 0);
                 if !a.conflict {
                     self.state.bundle = Some(bundle);
                     self.state.initialized = outcome.status == Status::Ok;
@@ -419,7 +653,7 @@ impl Machine for AppMachine {
                 base_index,
                 outcome,
             }) => {
-                let a = self.apply_outcome(index, base_index, &outcome, 0);
+                let a = self.apply_outcome(tx, index, base_index, &outcome, 0);
                 if !a.conflict && outcome.status == Status::Ok {
                     self.state.bundle = Some(bundle);
                 }
@@ -428,10 +662,7 @@ impl Machine for AppMachine {
             Ok(AppCmd::Blob { id, size }) => {
                 if let Ok(raw) = hex::decode(&id) {
                     if let Ok(id) = <[u8; 32]>::try_from(raw.as_slice()) {
-                        let _prev = self
-                            .state
-                            .kv
-                            .insert(Bytes(blob_key(&id)), Bytes(size.to_le_bytes().to_vec()));
+                        tx.put_hidden(rows::KV, &blob_key(&id), &size.to_le_bytes());
                     }
                 }
                 Applied {
@@ -458,7 +689,7 @@ impl Machine for AppMachine {
             }
             Ok(AppCmd::Call(call)) => {
                 let depth = call.depth(&self.state.pending);
-                let a = self.apply_outcome(index, call.base_index, &call.outcome, depth);
+                let a = self.apply_outcome(tx, index, call.base_index, &call.outcome, depth);
                 if !a.conflict {
                     match &call.trigger {
                         Some(Trigger::FollowUp { seq }) => {
@@ -471,21 +702,18 @@ impl Machine for AppMachine {
                     }
                 }
                 if let (Some(key), false) = (&call.idempotency_key, a.conflict) {
-                    let _prev = self.state.idempotency.insert(
+                    let ttl = if key.starts_with(NODE_KEY_PREFIX) {
+                        NODE_KEY_TTL_MS
+                    } else {
+                        IDEMPOTENCY_TTL_MS
+                    };
+                    self.remember(
+                        tx,
                         Self::idem_key(&call.caller, key),
-                        IdemRecord {
-                            applied: a.clone(),
-                            expires_ms: call.ts_ms
-                                + if key.starts_with(NODE_KEY_PREFIX) {
-                                    NODE_KEY_TTL_MS
-                                } else {
-                                    IDEMPOTENCY_TTL_MS
-                                },
-                        },
+                        a.clone(),
+                        call.ts_ms + ttl,
+                        call.ts_ms,
                     );
-                    // Forget expired keys, judged by the log's own clock.
-                    let now = call.ts_ms;
-                    self.state.idempotency.retain(|_, r| r.expires_ms > now);
                 }
                 a
             }
@@ -499,24 +727,64 @@ impl Machine for AppMachine {
             },
         };
         self.state.last_index = index;
+        match serde_json::to_vec(&self.state.head()) {
+            Ok(h) => tx.put(rows::HEAD.to_vec(), h),
+            Err(e) => tx.fail(e),
+        }
         serde_json::to_vec(&applied).unwrap_or_default()
     }
 
-    fn snapshot(&self) -> Vec<u8> {
-        serde_json::to_vec(&self.state).unwrap_or_default()
-    }
-
-    fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
-        self.state = serde_json::from_slice(data)?;
+    fn restore(&mut self, _data: &[u8]) -> eyre::Result<()> {
+        let head = match self.state.kv.state.as_ref().and_then(|s| s.get(rows::HEAD)) {
+            Some(raw) => serde_json::from_slice(&raw)?,
+            None => Head::default(),
+        };
+        self.state.set_head(head);
+        // What search knows to catch up from is gone with the old state.
         self.touched.clear();
         self.touched_since = u64::MAX;
+        Ok(())
+    }
+
+    fn import(&mut self, data: &[u8], tx: &mut StateTx<'_>) -> eyre::Result<()> {
+        let old: LegacyAppState = serde_json::from_slice(data)?;
+        for (k, v) in &old.kv {
+            tx.put_hidden(rows::KV, &k.0, &v.0);
+        }
+        self.state.set_head(Head {
+            bundle: old.bundle,
+            initialized: old.initialized,
+            init_error: old.init_error,
+            last_index: old.last_index,
+            pending: old.pending,
+            next_pending: old.next_pending,
+            timer_ticks: old.timer_ticks,
+            ..Head::default()
+        });
+        for rec in old.events {
+            tx.put(
+                rows::event(self.state.events_next),
+                serde_json::to_vec(&rec)?,
+            );
+            self.state.events_next += 1;
+        }
+        let mut records: Vec<_> = old.idempotency.into_iter().collect();
+        records.sort_by_key(|(_, r)| r.expires_ms);
+        for (key, r) in records {
+            let class = usize::from(key.contains(NODE_KEY_PREFIX));
+            tx.put_hidden(rows::IDEM, key.as_bytes(), &serde_json::to_vec(&r)?);
+            let ring = &mut self.state.expiry[class];
+            tx.put(rows::expiry(class as u8, ring.next), key.into_bytes());
+            ring.next += 1;
+        }
+        tx.put(rows::HEAD.to_vec(), serde_json::to_vec(&self.state.head())?);
         Ok(())
     }
 }
 
 /// Copy-on-write view of an app's state, recording writes in order.
 pub struct Overlay<'a> {
-    base: &'a BTreeMap<Bytes, Bytes>,
+    base: &'a dyn StateRead,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     order: Vec<Vec<u8>>,
     /// Prepended to every key: empty for the app's state, an account's space
@@ -570,13 +838,13 @@ pub fn private_prefix(account: &[u8; 32]) -> Vec<u8> {
 
 impl<'a> Overlay<'a> {
     #[must_use]
-    pub fn new(base: &'a BTreeMap<Bytes, Bytes>) -> Self {
+    pub fn new(base: &'a dyn StateRead) -> Self {
         Self::with_prefix(base, Vec::new())
     }
 
     /// An overlay that reads and writes only keys under `prefix`.
     #[must_use]
-    pub fn with_prefix(base: &'a BTreeMap<Bytes, Bytes>, prefix: Vec<u8>) -> Self {
+    pub fn with_prefix(base: &'a dyn StateRead, prefix: Vec<u8>) -> Self {
         Self {
             base,
             writes: BTreeMap::new(),
@@ -641,7 +909,7 @@ impl Storage for Overlay<'_> {
         let key = self.full(key);
         match self.writes.get(&key) {
             Some(v) => v.clone(),
-            None => self.base.get(&Bytes(key)).map(|v| v.0.clone()),
+            None => self.base.get(&key),
         }
     }
 
@@ -675,7 +943,7 @@ impl Storage for Overlay<'_> {
         let key = self.full(key);
         match self.writes.get(&key) {
             Some(v) => v.clone(),
-            None => self.base.get(&Bytes(key)).map(|v| v.0.clone()),
+            None => self.base.get(&key),
         }
     }
 
@@ -683,7 +951,7 @@ impl Storage for Overlay<'_> {
         let key = writers_key(cell);
         let raw = match self.writes.get(&key) {
             Some(v) => v.clone(),
-            None => self.base.get(&Bytes(key)).map(|v| v.0.clone()),
+            None => self.base.get(&key),
         };
         match raw {
             None => Some(CellWriters::Genesis),
@@ -755,7 +1023,7 @@ fn rotation_refusal(
 /// and the writes are carried back into `overlay`.
 fn write_root_state(
     overlay: &mut Overlay<'_>,
-    base: &BTreeMap<Bytes, Bytes>,
+    base: &dyn StateRead,
     context: [u8; 32],
     executor: [u8; 32],
     state: &[u8],
@@ -771,19 +1039,21 @@ fn write_root_state(
     use calimero_storage::store::{Key as SKey, MainStorage};
     use calimero_storage::Interface;
 
-    let mut view: BTreeMap<Vec<u8>, Option<Vec<u8>>> = base
-        .iter()
-        .map(|(k, v)| (k.0.clone(), Some(v.0.clone())))
-        .collect();
-    for (k, v) in &overlay.writes {
-        let _prev = view.insert(k.clone(), v.clone());
-    }
-    let view = Rc::new(RefCell::new(view));
+    // The run's writes over the app's state, read through: never a copy of
+    // the whole state.
+    let view = Rc::new(RefCell::new(overlay.writes.clone()));
+    let base = base.handle();
     let written = Rc::new(RefCell::new(Vec::<(Vec<u8>, Option<Vec<u8>>)>::new()));
     let read = {
         let view = Rc::clone(&view);
-        Rc::new(move |k: &SKey| view.borrow().get(&k.to_bytes().to_vec()).cloned().flatten())
-            as Rc<dyn Fn(&SKey) -> Option<Vec<u8>>>
+        Rc::new(move |k: &SKey| {
+            let k = k.to_bytes().to_vec();
+            let staged = view.borrow().get(&k).cloned();
+            match staged {
+                Some(v) => v,
+                None => base.get(&k),
+            }
+        }) as Rc<dyn Fn(&SKey) -> Option<Vec<u8>>>
     };
     let write = {
         let (view, written) = (Rc::clone(&view), Rc::clone(&written));
@@ -937,7 +1207,7 @@ impl Executor {
         app_id: &str,
         caller: &Caller,
         method: &str,
-        base: &BTreeMap<Bytes, Bytes>,
+        base: &dyn StateRead,
         env: &RunEnv,
     ) -> Outcome {
         use calimero_runtime::errors::{FunctionCallError, MethodResolutionError};
@@ -1051,7 +1321,7 @@ impl Executor {
         caller: &Caller,
         method: &str,
         args: &Value,
-        base: &BTreeMap<Bytes, Bytes>,
+        base: &dyn StateRead,
         env: &RunEnv,
     ) -> Outcome {
         let input = if args.is_null() {
@@ -1070,7 +1340,7 @@ impl Executor {
         caller: &Caller,
         method: &str,
         input: &[u8],
-        base: &BTreeMap<Bytes, Bytes>,
+        base: &dyn StateRead,
         env: &RunEnv,
     ) -> (Outcome, Option<Vec<u8>>) {
         let mut overlay = Overlay::new(base);
@@ -1394,6 +1664,213 @@ mod tests {
             app: "other".into(),
         };
         assert!(rotation_refusal(&o, &[rotation(&genesis)], &admin, &app, &env).is_some());
+    }
+
+    struct Nowhere;
+
+    impl calimero_log::Transport for Nowhere {
+        fn send(
+            &self,
+            _t: calimero_log::NodeId,
+            _a: String,
+            _g: calimero_log::GroupId,
+            _r: calimero_log::RpcRequest,
+        ) -> calimero_log::BoxFuture<Result<calimero_log::RpcResponse, String>> {
+            Box::pin(async { Err("no peers".into()) })
+        }
+    }
+
+    /// An app machine over a fresh store, outside any running group.
+    fn machine(dir: &tempfile::TempDir) -> (std::sync::Arc<calimero_log::Engine>, AppMachine) {
+        let engine = calimero_log::Engine::open(
+            1,
+            dir.path(),
+            &[3; 32],
+            Arc::new(Nowhere),
+            calimero_log::Config::default(),
+        )
+        .unwrap();
+        let mut m = AppMachine::new("app".into());
+        m.attach(engine.group_state(9));
+        m.restore(&[]).unwrap();
+        (engine, m)
+    }
+
+    fn apply(m: &mut AppMachine, index: u64, cmd: &AppCmd) -> Applied {
+        let state = m.state.kv.state.clone().unwrap();
+        let mut tx = StateTx::new(&state);
+        let out = m.apply(index, &serde_json::to_vec(cmd).unwrap(), &mut tx);
+        tx.commit().unwrap();
+        serde_json::from_slice(&out).unwrap()
+    }
+
+    fn call(
+        m: &AppMachine,
+        key: &str,
+        ts_ms: u64,
+        writes: &[(&str, &str)],
+        events: usize,
+    ) -> AppCmd {
+        AppCmd::Call(Box::new(CallEntry {
+            method: "set".into(),
+            args: Value::Null,
+            caller: Caller::Account {
+                account: "acct".into(),
+            },
+            idempotency_key: Some(key.into()),
+            consent: None,
+            ts_ms,
+            base_index: m.state.last_index,
+            outcome: Outcome {
+                diff: writes
+                    .iter()
+                    .map(|(k, v)| Write {
+                        key: Bytes(k.as_bytes().to_vec()),
+                        value: Some(Bytes(v.as_bytes().to_vec())),
+                    })
+                    .collect(),
+                events: (0..events)
+                    .map(|i| ("e".to_owned(), Value::from(i)))
+                    .collect(),
+                ..Outcome::default()
+            },
+            trigger: None,
+        }))
+    }
+
+    /// The app's state is the store's: written by entries, read back by a
+    /// machine that holds none of it in memory.
+    #[test]
+    fn the_state_lives_in_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, mut m) = machine(&dir);
+        let a = {
+            let cmd = call(&m, "k1", 1_000, &[("a", "1"), ("b", "2")], 2);
+            apply(&mut m, 1, &cmd)
+        };
+        assert_eq!(a.status, Status::Ok);
+        assert_eq!(m.state.kv.get(b"a"), Some(b"1".to_vec()));
+        // A second machine over the same store sees the same state.
+        let mut again = AppMachine::new("app".into());
+        again.attach(engine.group_state(9));
+        again.restore(&[]).unwrap();
+        assert_eq!(again.state.last_index, 1);
+        assert_eq!(again.state.kv.get(b"b"), Some(b"2".to_vec()));
+        assert_eq!(again.events_from(0).len(), 2);
+        let caller = Caller::Account {
+            account: "acct".into(),
+        };
+        assert!(again.replay(&caller, "k1", 2_000).is_some());
+        // The app's keys are not on disk in the clear.
+        let mut seen = Vec::new();
+        again
+            .state
+            .kv
+            .for_each(|k, _v| seen.push(k.to_vec()))
+            .unwrap();
+        seen.sort();
+        assert_eq!(seen, vec![b"a".to_vec(), b"b".to_vec()]);
+    }
+
+    /// Idempotency keys are forgotten once expired, without a scan of the
+    /// whole table: the oldest go first.
+    #[test]
+    fn expired_idempotency_keys_are_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut m) = machine(&dir);
+        let caller = Caller::Account {
+            account: "acct".into(),
+        };
+        let _a = {
+            let cmd = call(&m, "old", 1_000, &[], 0);
+            apply(&mut m, 1, &cmd)
+        };
+        let _a = {
+            let cmd = call(&m, "node:retry", 1_000, &[], 0);
+            apply(&mut m, 2, &cmd)
+        };
+        // Ten minutes on, the node's own key is gone, the client's is not.
+        let later = 1_000 + 11 * 60 * 1000;
+        let _a = {
+            let cmd = call(&m, "mid", later, &[], 0);
+            apply(&mut m, 3, &cmd)
+        };
+        assert!(m.replay(&caller, "node:retry", later).is_none());
+        assert!(m.replay(&caller, "old", later).is_some());
+        // A day on, so is the client's; the newest stays.
+        let day = 1_000 + IDEMPOTENCY_TTL_MS + 1;
+        let _a = {
+            let cmd = call(&m, "new", day, &[], 0);
+            apply(&mut m, 4, &cmd)
+        };
+        assert!(m.replay(&caller, "old", 0).is_none());
+        assert!(m.replay(&caller, "new", day).is_some());
+        assert!(m.replay(&caller, "mid", day).is_some());
+        // Each ring dropped exactly what expired: "old", and the node's key.
+        assert_eq!(m.state.expiry[0].first, 1);
+        assert_eq!(m.state.expiry[1].first, 1);
+    }
+
+    /// Events past the ring are dropped from the store, oldest first.
+    #[test]
+    fn the_event_ring_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut m) = machine(&dir);
+        let _a = {
+            let cmd = call(&m, "k", 1, &[], EVENT_RING + 5);
+            apply(&mut m, 1, &cmd)
+        };
+        let events = m.events_from(0);
+        assert_eq!(events.len(), EVENT_RING);
+        assert_eq!(events[0].seq, 5);
+        assert_eq!(m.events_from(2).len(), 0);
+    }
+
+    /// The previous storage format kept an app as one JSON document; a node
+    /// migrating from it brings every part in.
+    #[test]
+    fn a_legacy_app_state_is_imported() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, mut m) = machine(&dir);
+        let legacy = serde_json::json!({
+            "kv": { "YQ==": "MQ==" },
+            "bundle": "abc",
+            "initialized": true,
+            "init_error": null,
+            "last_index": 41,
+            "idempotency": {
+                "acct|k": {
+                    "applied": { "index": 40, "status": "ok", "result": 7, "error": null, "events": [] },
+                    "expires_ms": 9_000_000
+                }
+            },
+            "events": [{ "index": 40, "seq": 0, "kind": "set", "data": "a" }],
+            "pending": {},
+            "next_pending": 3,
+            "timer_ticks": { "tick": 5 }
+        });
+        let state = engine.group_state(9);
+        let mut tx = StateTx::new(&state);
+        m.import(&serde_json::to_vec(&legacy).unwrap(), &mut tx)
+            .unwrap();
+        tx.commit().unwrap();
+        let mut back = AppMachine::new("app".into());
+        back.attach(engine.group_state(9));
+        back.restore(&[]).unwrap();
+        assert_eq!(back.state.kv.get(b"a"), Some(b"1".to_vec()));
+        assert_eq!(back.state.bundle.as_deref(), Some("abc"));
+        assert!(back.state.initialized);
+        assert_eq!(back.state.last_index, 41);
+        assert_eq!(back.state.next_pending, 3);
+        assert_eq!(back.state.timer_ticks.get("tick"), Some(&5));
+        assert_eq!(back.events_from(0).len(), 1);
+        let caller = Caller::Account {
+            account: "acct".into(),
+        };
+        assert_eq!(
+            back.replay(&caller, "k", 1).map(|a| a.result),
+            Some(Value::from(7))
+        );
     }
 
     #[test]

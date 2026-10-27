@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use calimero_log::{
-    BoxFuture, Config, Engine, Group, GroupId, Machine, NodeId, Proposal, RpcRequest, RpcResponse,
-    Transport, WriteError,
+    BoxFuture, Config, Engine, Group, GroupId, GroupState, Machine, NodeId, Proposal, RpcRequest,
+    RpcResponse, StateTx, Transport, WriteError,
 };
 
 /// A key-value machine: command `key=value` sets, output is the previous value.
@@ -16,7 +16,9 @@ struct Kv {
 }
 
 impl Machine for Kv {
-    fn apply(&mut self, _index: u64, command: &[u8]) -> Vec<u8> {
+    const IN_MEMORY: bool = true;
+
+    fn apply(&mut self, _index: u64, command: &[u8], _state: &mut StateTx<'_>) -> Vec<u8> {
         let s = String::from_utf8_lossy(command);
         let (k, v) = s.split_once('=').unwrap_or((&s, ""));
         self.map
@@ -91,7 +93,7 @@ async fn start_node(
 ) -> (Arc<Engine>, Arc<Group<Kv>>) {
     let engine = Engine::open(
         id,
-        &dir.path().join("log.redb"),
+        dir.path(),
         &KEY,
         Arc::new(Wire(Arc::clone(net), id)),
         config(),
@@ -273,8 +275,16 @@ async fn new_node_catches_up_and_becomes_voter() {
     let lid = leader(&c).await;
     c.groups[&lid].change_voters(voters.clone()).await.unwrap();
     let _ = c.groups.insert(4, Arc::clone(&g4));
-    let s = g4.status();
-    assert_eq!(s.voters.iter().copied().collect::<BTreeSet<_>>(), voters);
+    // The new node learns the membership a moment after the leader commits it.
+    let mut seen = BTreeSet::new();
+    for _ in 0..50 {
+        seen = g4.status().voters.iter().copied().collect();
+        if seen == voters {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(seen, voters);
     c.dirs.push(dir);
 }
 
@@ -290,8 +300,7 @@ async fn disk_holds_no_plaintext() {
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
     for dir in &c.dirs {
-        let bytes = std::fs::read(dir.path().join("log.redb")).unwrap();
-        let hay = String::from_utf8_lossy(&bytes);
+        let hay = all_bytes(dir.path());
         assert!(!hay.contains("plaintext-secret-value"));
         assert!(!hay.contains("needle"));
     }
@@ -315,7 +324,7 @@ async fn oversized_entries_are_refused_and_blobs_stay_sealed() {
     let dir = tempfile::tempdir().unwrap();
     let engine = Engine::open(
         9,
-        &dir.path().join("log.redb"),
+        dir.path(),
         &KEY,
         Arc::new(Wire(Arc::clone(&c.net), 9)),
         config(),
@@ -327,6 +336,228 @@ async fn oversized_entries_are_refused_and_blobs_stay_sealed() {
         Some(&b"blob-plaintext-marker"[..])
     );
     assert!(engine.get_blob("b2").unwrap().is_none());
-    let bytes = std::fs::read(dir.path().join("log.redb")).unwrap();
-    assert!(!String::from_utf8_lossy(&bytes).contains("blob-plaintext-marker"));
+    drop(engine);
+    assert!(!all_bytes(dir.path()).contains("blob-plaintext-marker"));
+}
+
+/// Every file under `dir`, as one lossy string.
+fn all_bytes(dir: &std::path::Path) -> String {
+    let mut out = String::new();
+    for entry in std::fs::read_dir(dir).unwrap().filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_dir() {
+            out.push_str(&all_bytes(&path));
+        } else if let Ok(bytes) = std::fs::read(&path) {
+            out.push_str(&String::from_utf8_lossy(&bytes));
+        }
+    }
+    out
+}
+
+/// A key-value machine whose state is the group's durable state: it holds
+/// nothing in memory, and counts the entries it applies.
+struct DiskKv {
+    state: Option<GroupState>,
+    applies: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl DiskKv {
+    fn get(&self, key: &str) -> Option<String> {
+        let v = self.state.as_ref()?.get_hidden(b'k', key.as_bytes())?;
+        Some(String::from_utf8(v).unwrap())
+    }
+}
+
+impl Machine for DiskKv {
+    fn attach(&mut self, state: GroupState) {
+        self.state = Some(state);
+    }
+
+    fn apply(&mut self, _index: u64, command: &[u8], state: &mut StateTx<'_>) -> Vec<u8> {
+        let _n = self
+            .applies
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let s = String::from_utf8_lossy(command);
+        let (k, v) = s.split_once('=').unwrap_or((&s, ""));
+        let prev = state.get_hidden(b'k', k.as_bytes()).unwrap_or_default();
+        state.put_hidden(b'k', k.as_bytes(), v.as_bytes());
+        prev
+    }
+
+    fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
+        assert!(
+            data.is_empty(),
+            "a disk machine restores from its own state"
+        );
+        Ok(())
+    }
+}
+
+struct DiskCluster {
+    net: Arc<Net>,
+    dirs: HashMap<NodeId, tempfile::TempDir>,
+    groups: HashMap<NodeId, Arc<Group<DiskKv>>>,
+    applies: HashMap<NodeId, Arc<std::sync::atomic::AtomicU64>>,
+}
+
+impl DiskCluster {
+    async fn start_node(&mut self, id: NodeId, dir: tempfile::TempDir) -> Arc<Group<DiskKv>> {
+        let engine = Engine::open(
+            id,
+            dir.path(),
+            &KEY,
+            Arc::new(Wire(Arc::clone(&self.net), id)),
+            config(),
+        )
+        .unwrap();
+        let applies = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let group = engine
+            .start_group(
+                1,
+                DiskKv {
+                    state: None,
+                    applies: Arc::clone(&applies),
+                },
+            )
+            .await
+            .unwrap();
+        let _prev = self
+            .net
+            .engines
+            .write()
+            .unwrap()
+            .insert(id, Arc::clone(&engine));
+        let _prev = self.dirs.insert(id, dir);
+        let _prev = self.groups.insert(id, Arc::clone(&group));
+        let _prev = self.applies.insert(id, applies);
+        group
+    }
+
+    async fn new(n: u64) -> Self {
+        let mut c = Self {
+            net: Arc::new(Net::default()),
+            dirs: HashMap::new(),
+            groups: HashMap::new(),
+            applies: HashMap::new(),
+        };
+        for id in 1..=n {
+            let _g = c.start_node(id, tempfile::tempdir().unwrap()).await;
+        }
+        let voters: BTreeMap<NodeId, String> = (1..=n).map(|i| (i, format!("node-{i}"))).collect();
+        c.groups[&1].initialize(voters).await.unwrap();
+        c
+    }
+
+    async fn leader(&self) -> NodeId {
+        for _ in 0..100 {
+            for g in self.groups.values() {
+                if g.status().is_leader {
+                    return g.node_id();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("no leader");
+    }
+
+    async fn put(&self, key: &str, value: &str) -> u64 {
+        for _ in 0..50 {
+            let id = self.leader().await;
+            let cmd = format!("{key}={value}").into_bytes();
+            match self.groups[&id]
+                .propose(|_m, _applied| Proposal::Append(cmd))
+                .await
+            {
+                Ok(p) => return p.index,
+                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+        panic!("write never succeeded");
+    }
+
+    async fn restart(&mut self, id: NodeId) -> Arc<Group<DiskKv>> {
+        let engine = self.net.engines.write().unwrap().remove(&id).unwrap();
+        engine.shutdown().await;
+        drop(engine);
+        let _ = self.groups.remove(&id);
+        let dir = self.dirs.remove(&id).unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        self.start_node(id, dir).await
+    }
+}
+
+/// Regression for "state machines live in memory": a disk machine resumes
+/// where it stopped. Nothing it had applied is applied again on restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_disk_machine_restarts_without_replaying_the_log() {
+    let mut c = DiskCluster::new(3).await;
+    let mut last = 0;
+    for i in 0..30 {
+        last = c.put(&format!("k{i}"), &i.to_string()).await;
+    }
+    for g in c.groups.values() {
+        assert!(g.wait_applied(last, Duration::from_secs(5)).await);
+    }
+    let g = c.restart(3).await;
+    assert!(g.wait_applied(last, Duration::from_secs(10)).await);
+    // Nothing up to `last` ran again: the state and its applied index were
+    // committed together.
+    assert_eq!(c.applies[&3].load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(g.read_local(|m, _| m.get("k29")).as_deref(), Some("29"));
+    assert_eq!(g.read_local(|m, _| m.get("k0")).as_deref(), Some("0"));
+    // And it keeps applying.
+    let index = c.put("after", "restart").await;
+    assert!(g.wait_applied(index, Duration::from_secs(5)).await);
+    assert_eq!(
+        g.read_local(|m, _| m.get("after")).as_deref(),
+        Some("restart")
+    );
+}
+
+/// A state many snapshot chunks and frames large reaches a new node through a
+/// streamed snapshot, and survives that node's restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_big_state_streams_to_a_new_node() {
+    let mut c = DiskCluster::new(3).await;
+    // ~6 MiB of state: six snapshot chunks, several frames.
+    let value = "v".repeat(2048);
+    let mut last = 0;
+    for i in 0..3000 {
+        last = c.put(&format!("key-{i:05}"), &value).await;
+    }
+    let lid = c.leader().await;
+    assert!(
+        c.groups[&lid]
+            .wait_applied(last, Duration::from_secs(10))
+            .await
+    );
+    // Snapshot and purge, so the new node can only catch up from the snapshot.
+    for g in c.groups.values() {
+        g.snapshot_now().await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let g4 = c.start_node(4, tempfile::tempdir().unwrap()).await;
+    let lid = c.leader().await;
+    c.groups[&lid]
+        .add_learner(4, "node-4".into())
+        .await
+        .unwrap();
+    assert!(g4.wait_applied(last, Duration::from_secs(30)).await);
+    // It installed a snapshot rather than replaying 3000 entries.
+    assert!(c.applies[&4].load(std::sync::atomic::Ordering::Relaxed) < 3000);
+    for i in [0, 1234, 2999] {
+        assert_eq!(
+            g4.read_local(|m, _| m.get(&format!("key-{i:05}")))
+                .as_deref(),
+            Some(value.as_str())
+        );
+    }
+    drop(g4);
+    let g4 = c.restart(4).await;
+    assert_eq!(
+        g4.read_local(|m, _| m.get("key-02999")).as_deref(),
+        Some(value.as_str())
+    );
+    // The snapshot on disk is sealed too.
+    assert!(!all_bytes(c.dirs[&4].path()).contains(&value[..64]));
 }

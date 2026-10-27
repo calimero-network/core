@@ -531,8 +531,10 @@ async fn backups_are_encrypted_and_restorable() {
     let (_index, data) = calimero_cloud_node::backup::latest(&dir, &node.config.storage_key, &app)
         .unwrap()
         .unwrap();
-    let state: Value = serde_json::from_slice(&data).unwrap();
-    assert!(state["kv"].as_object().is_some_and(|m| !m.is_empty()));
+    // The app's rows are in it, opened with the storage key.
+    assert!(data
+        .iter()
+        .any(|(_k, v)| String::from_utf8_lossy(v).contains("plaintext-value")));
 }
 
 /// Regression: Raft entries carrying WASM bundles exceeded the HTTP body

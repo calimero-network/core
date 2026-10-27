@@ -1513,10 +1513,12 @@ name = "calimero-log"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
+ "calimero-store-rocksdb",
  "eyre",
  "openraft",
  "redb",
  "ring",
+ "rocksdb",
  "serde",
  "serde_json",
  "tempfile",

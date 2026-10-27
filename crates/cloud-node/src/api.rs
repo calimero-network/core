@@ -31,8 +31,7 @@ use crate::error::ApiError;
 use crate::node::{CallRequest, Node, ViewRequest};
 use crate::system::SystemCmd;
 use crate::types::{
-    now_secs, Access, Account, ApiKeyRecord, Caller, EventRecord, Invite, OrgRole, RefreshRecord,
-    TeamJoin,
+    now_secs, Access, Account, ApiKeyRecord, Caller, Invite, OrgRole, RefreshRecord, TeamJoin,
 };
 
 const SESSION_TTL: u64 = 15 * 60;
@@ -1346,14 +1345,7 @@ fn local_events(
     let g = node.hosted(app_id)?;
     let (backlog, rx) = g.read_local(|m, _| {
         let rx = m.events_tx.subscribe();
-        let backlog: Vec<EventRecord> = m
-            .state
-            .events
-            .iter()
-            .filter(|e| e.index >= from)
-            .cloned()
-            .collect();
-        (backlog, rx)
+        (m.events_from(from), rx)
     });
     let last = backlog.last().map(|e| (e.index, e.seq));
     let live = tokio_stream::wrappers::BroadcastStream::new(rx)

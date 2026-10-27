@@ -10,14 +10,16 @@ publish = false
 
 [dependencies]
 base64.workspace = true
+calimero-store-rocksdb.workspace = true
 eyre.workspace = true
 openraft = { version = "0.9.25", features = ["serde", "storage-v2"] }
 redb = "2.6"
 ring.workspace = true
+rocksdb.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "time", "rt"] }
+tokio = { workspace = true, features = ["sync", "time", "rt", "fs", "io-util"] }
 tracing.workspace = true
 
 [dev-dependencies]
