@@ -8,7 +8,7 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.0","methods":{"put":{"kind":"call"},"write_n":{"kind":"call"}}}"#;
+const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.0","methods":{"put":{"kind":"call"},"write_n":{"kind":"call"},"big":{"kind":"call"},"overwrite":{"kind":"call"}}}"#;
 
 #[link_section = "calimero:abi"]
 #[used]
@@ -32,6 +32,16 @@ impl Guest for App {
                 let n = u32::from_le_bytes(args.try_into().map_err(|_| AppError { code: "BadArgs".into(), message: String::new() })?);
                 for i in 0..n {
                     storage::put(&i.to_be_bytes(), b"v");
+                }
+            }
+            // One 2 MiB value: over the run's 1 MiB cap at once.
+            "big" => storage::put(b"big", &vec![7u8; 2 << 20]),
+            // 64 KiB to one key, `n` times: each version counts.
+            "overwrite" => {
+                let n = u32::from_le_bytes(args.try_into().map_err(|_| AppError { code: "BadArgs".into(), message: String::new() })?);
+                let value = vec![9u8; 64 << 10];
+                for _ in 0..n {
+                    storage::put(b"same", &value);
                 }
             }
             _ => return Err(AppError { code: "NoMethod".into(), message: String::new() }),

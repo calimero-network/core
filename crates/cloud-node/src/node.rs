@@ -866,13 +866,16 @@ impl Node {
 
     /// An entry as bytes; one over `MAX_ENTRY_BYTES` becomes the same call
     /// trapped `HostDenied` with nothing in it, decided before proposing (D50).
-    fn entry_bytes(mut entry: CallEntry) -> Vec<u8> {
-        let bytes = serde_json::to_vec(&AppCmd::Call(Box::new(entry.clone()))).unwrap_or_default();
+    fn entry_bytes(entry: CallEntry) -> Vec<u8> {
+        let mut cmd = AppCmd::Call(Box::new(entry));
+        let bytes = serde_json::to_vec(&cmd).unwrap_or_default();
         if bytes.len() <= calimero_log::MAX_ENTRY_BYTES {
             return bytes;
         }
-        entry.outcome = Outcome::trap(TrapKind::HostDenied, "entry too large");
-        serde_json::to_vec(&AppCmd::Call(Box::new(entry))).unwrap_or_default()
+        if let AppCmd::Call(entry) = &mut cmd {
+            entry.outcome = Outcome::trap(TrapKind::HostDenied, "entry too large");
+        }
+        serde_json::to_vec(&cmd).unwrap_or_default()
     }
 
     async fn init_app(&self, g: &Group<AppMachine>, app: &AppRecord) -> Result<Applied, ApiError> {
@@ -1061,7 +1064,7 @@ impl Node {
                     debug!(app = %app_id, timer, slot, "tick timed out; proposed again");
                     return Proposal::Reply(Vec::new());
                 }
-                let mut entry = TickEntry {
+                let mut cmd = AppCmd::Tick(Box::new(TickEntry {
                     timer: timer.to_owned(),
                     scheduled_ms: slot,
                     previous_ms,
@@ -1070,13 +1073,14 @@ impl Node {
                     id_term,
                     id_seq,
                     outcome,
-                };
-                let mut bytes =
-                    serde_json::to_vec(&AppCmd::Tick(Box::new(entry.clone()))).unwrap_or_default();
+                }));
+                let mut bytes = serde_json::to_vec(&cmd).unwrap_or_default();
                 if bytes.len() > calimero_log::MAX_ENTRY_BYTES {
                     // Too large to log (D50): the tick counts as trapped.
-                    entry.outcome = Outcome::trap(TrapKind::HostDenied, "entry too large");
-                    bytes = serde_json::to_vec(&AppCmd::Tick(Box::new(entry))).unwrap_or_default();
+                    if let AppCmd::Tick(entry) = &mut cmd {
+                        entry.outcome = Outcome::trap(TrapKind::HostDenied, "entry too large");
+                    }
+                    bytes = serde_json::to_vec(&cmd).unwrap_or_default();
                 }
                 Proposal::Append(bytes)
             })

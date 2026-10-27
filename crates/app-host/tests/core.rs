@@ -10,7 +10,7 @@ use calimero_app_host::{
     Invocation, InvocationKind, KeyValue, MethodKind, OrgRole, PrepareError, Status, TimerCtx,
     Usage, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE, EMIT_FOREIGN_ORG, EMIT_NAME_TOO_LONG,
     EMIT_TOO_MANY, EMIT_UNKNOWN_TEAM, GENERATION, MAX_EVENTS, MAX_EVENT_DATA_BYTES,
-    MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES, MAX_WRITES, SUPPORTED_ABI_VERSIONS,
+    MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES, MAX_RUN_BYTES, MAX_WRITES, SUPPORTED_ABI_VERSIONS,
 };
 use serde_json::json;
 
@@ -117,6 +117,53 @@ fn eleven_thousand_writes_trap_after_ten_thousand() {
         host.storage_add(b"one-more", 1),
         Err(HostDenied(_))
     ));
+}
+
+/// C2 (Ruling 37): a run's writes are counted as they are made and refused at the host
+/// call once they pass `MAX_RUN_BYTES`, so host memory never holds more than that.
+#[test]
+fn bytes_written_past_the_run_cap_are_refused_at_the_call() {
+    assert_eq!(MAX_RUN_BYTES, 1024 * 1024);
+    let state = base(&[]);
+    let inv = inv(InvocationKind::Call);
+
+    // One value larger than the cap: refused, nothing kept.
+    let mut host = core_for(&state, &inv);
+    let big = vec![0u8; MAX_RUN_BYTES + 1];
+    assert!(matches!(host.storage_put(b"k", &big), Err(HostDenied(_))));
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    assert!(out.diff.is_empty());
+
+    // Overwriting one key: every version counts (the overlay keeps them all).
+    let mut host = core_for(&state, &inv);
+    let chunk = vec![1u8; 64 * 1024];
+    let mut accepted = 0usize;
+    let refused = loop {
+        match host.storage_put(b"k", &chunk) {
+            Ok(()) => accepted += 1,
+            Err(e) => break e,
+        }
+        assert!(accepted <= MAX_RUN_BYTES / chunk.len(), "never refused");
+    };
+    assert_eq!(refused, HostDenied("entry too large".to_owned()));
+    assert_eq!(accepted, MAX_RUN_BYTES / (chunk.len() + 1));
+
+    // Event names and data count too, as do `add` and `delete` keys.
+    let mut host = core_for(&state, &inv);
+    host.storage_put(b"k", &vec![2u8; MAX_RUN_BYTES - 64])
+        .unwrap();
+    let mut e = event();
+    e.data = vec![b'x'; 128];
+    assert!(matches!(host.emit(e), Err(HostDenied(_))));
+    assert!(matches!(
+        host.storage_add(&[3u8; 64], 1),
+        Err(HostDenied(_))
+    ));
+    assert!(matches!(
+        host.storage_delete(&[4u8; 64]),
+        Err(HostDenied(_))
+    ));
+    host.storage_delete(b"small").unwrap();
 }
 
 #[test]

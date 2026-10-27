@@ -17,9 +17,18 @@ use crate::types::{
     InvocationKind, OrgRole, Outcome, Status, Usage,
 };
 
-/// Bytes of an app key (before the generation prefix). Values have no separate cap: the
-/// executor's 1 MiB entry check bounds them.
+/// Bytes of an app key (before the generation prefix). Values have no separate cap:
+/// [`MAX_RUN_BYTES`] bounds them as they are written.
 pub const MAX_KEY_BYTES: usize = 1_024;
+/// Bytes one run may write (Ruling 37): the keys and values of every `put`, `add` and
+/// `delete` (each overwrite counts again: the overlay keeps every version) plus the name
+/// and data of every event. The host call that would pass it is refused with
+/// `HostDenied("entry too large")` before the bytes are kept, so the overlay and the events
+/// of a run never hold more than this. Equal to the executor's log-entry cap
+/// (`calimero_log::MAX_ENTRY_BYTES`, 1 MiB), which still checks the encoded entry.
+pub const MAX_RUN_BYTES: usize = 1024 * 1024;
+/// The refusal of a write past [`MAX_RUN_BYTES`]: the executor's D50 refusal, made early.
+pub const ENTRY_TOO_LARGE: &str = "entry too large";
 /// Writes per run: `put`, `delete` and `add` count one each; the next one is refused.
 pub const MAX_WRITES: u32 = 10_000;
 /// Entries one `range_next` returns at most.
@@ -66,6 +75,8 @@ pub struct HostCore {
     dir: Arc<dyn Directory>,
     overlay: Overlay,
     writes: u32,
+    /// Bytes written so far ([`MAX_RUN_BYTES`]).
+    run_bytes: usize,
     events: Vec<Event>,
     logs: Vec<String>,
     log_bytes: usize,
@@ -101,6 +112,7 @@ impl HostCore {
             dir,
             overlay: Overlay::default(),
             writes: 0,
+            run_bytes: 0,
             events: Vec::new(),
             logs: Vec::new(),
             log_bytes: 0,
@@ -129,6 +141,7 @@ impl HostCore {
     pub fn storage_put(&mut self, key: &[u8], value: &[u8]) -> Result<(), HostDenied> {
         self.check_write()?;
         check_key(key)?;
+        self.charge(key.len().saturating_add(value.len()))?;
         self.overlay.put(app_key(GENERATION, key), value.to_vec());
         self.writes += 1;
         Ok(())
@@ -137,6 +150,7 @@ impl HostCore {
     pub fn storage_delete(&mut self, key: &[u8]) -> Result<(), HostDenied> {
         self.check_write()?;
         check_key(key)?;
+        self.charge(key.len())?;
         self.overlay.delete(app_key(GENERATION, key));
         self.writes += 1;
         Ok(())
@@ -158,6 +172,7 @@ impl HostCore {
         let mut value = Vec::new();
         ciborium::into_writer(&Value::Integer(sum), &mut value)
             .map_err(|e| HostDenied::new(format!("storage.add encode: {e}")))?;
+        self.charge((key.len() - GENERATION_PREFIX).saturating_add(value.len()))?;
         self.overlay.put(key, value);
         self.writes += 1;
         Ok(())
@@ -334,6 +349,7 @@ impl HostCore {
         if let Err(reason) = self.check_event(&event) {
             return Ok(Err(reason.to_owned()));
         }
+        self.charge(event.name.len().saturating_add(event.data.len()))?;
         self.events.push(event);
         Ok(Ok(()))
     }
@@ -504,6 +520,17 @@ impl HostCore {
         if self.writes >= MAX_WRITES {
             return Err(HostDenied::new("more than 10,000 writes in one run"));
         }
+        Ok(())
+    }
+
+    /// Counts `bytes` against [`MAX_RUN_BYTES`] before they are kept; past it the call is
+    /// refused and nothing is counted.
+    fn charge(&mut self, bytes: usize) -> Result<(), HostDenied> {
+        let total = self.run_bytes.saturating_add(bytes);
+        if total > MAX_RUN_BYTES {
+            return Err(HostDenied::new(ENTRY_TOO_LARGE));
+        }
+        self.run_bytes = total;
         Ok(())
     }
 

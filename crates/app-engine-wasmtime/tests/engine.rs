@@ -455,6 +455,54 @@ fn ten_thousand_and_one_writes_trap() {
     assert_eq!(out.diff.len(), 10_000);
 }
 
+/// C2 (Ruling 37): writes past the run's 1 MiB are refused at the host call, so a guest
+/// cannot pile values into host memory until the entry check after the run.
+#[test]
+fn writes_past_the_run_cap_trap_host_denied_at_the_call() {
+    let fx = fixture();
+    let app = prepare(&fx, "view_writer");
+
+    let started = Instant::now();
+    let out = fx
+        .engine
+        .invoke(&app, host(InvocationKind::Call, "big", b""), Budget::call());
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::HostDenied),
+        "{:?}",
+        out.status
+    );
+    assert!(out.diff.is_empty());
+
+    // 1,024 overwrites of 64 KiB (64 MiB in all) stop at the 16th.
+    let out = fx.engine.invoke(
+        &app,
+        host(InvocationKind::Call, "overwrite", &1_024u32.to_le_bytes()),
+        Budget::call(),
+    );
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::HostDenied),
+        "{:?}",
+        out.status
+    );
+    assert!(out.diff.is_empty());
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+
+    // Under the cap the same writes succeed: 15 versions of 64 KiB.
+    let out = fx.engine.invoke(
+        &app,
+        host(InvocationKind::Call, "overwrite", &15u32.to_le_bytes()),
+        Budget::call(),
+    );
+    assert_eq!(out.status, Status::Ok);
+    assert_eq!(out.diff.len(), 1);
+}
+
 /// Removes a top-level custom section by name (component header is 8 bytes).
 fn strip_custom_section(bytes: &[u8], name: &str) -> Vec<u8> {
     let mut out = bytes[..8].to_vec();
