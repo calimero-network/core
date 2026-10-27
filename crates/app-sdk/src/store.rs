@@ -21,6 +21,9 @@ pub type DefaultStore = MemStore;
 
 /// The longest key the host accepts (D50).
 pub const MAX_KEY_BYTES: usize = 1024;
+/// The longest key the SDK builds: one under the host's limit, so the bounds it derives
+/// (`last ++ 0x00` for a cursor, `prefix ++ 0xFF` for a range) always fit.
+pub const MAX_SDK_KEY_BYTES: usize = MAX_KEY_BYTES - 1;
 /// The most entries the host returns for one cursor read.
 pub const MAX_RANGE_BATCH: u32 = 1000;
 
@@ -47,12 +50,12 @@ pub trait Store {
     fn range(&self, start: &[u8], end: &[u8], reverse: bool) -> Self::Range;
 }
 
-/// Refuse a key the host would refuse, with a clear error before the host call (D50).
+/// Refuse a key over [`MAX_SDK_KEY_BYTES`], with a clear error before the host call (D50).
 pub fn check_key(key: &[u8]) -> Result<(), StorageError> {
-    if key.len() > MAX_KEY_BYTES {
+    if key.len() > MAX_SDK_KEY_BYTES {
         return Err(StorageError::KeyTooLong {
             len: key.len(),
-            max: MAX_KEY_BYTES,
+            max: MAX_SDK_KEY_BYTES,
         });
     }
     Ok(())

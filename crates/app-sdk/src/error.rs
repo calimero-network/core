@@ -76,6 +76,14 @@ pub enum StorageError {
         /// The host's limit.
         max: usize,
     },
+    /// A find or count prefix names more parts than the index or count has fields.
+    #[error("prefix has {given} parts, the index has {max} fields")]
+    PrefixTooLong {
+        /// Parts given.
+        given: usize,
+        /// Fields declared.
+        max: usize,
+    },
     /// A page cursor is not one this SDK produced.
     #[error("malformed cursor")]
     BadCursor,

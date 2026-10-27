@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::rc::Rc;
 
-use super::{RangeCursor, Store, MAX_RANGE_BATCH};
+use super::{RangeCursor, Store, MAX_KEY_BYTES, MAX_RANGE_BATCH};
 use crate::encoding::value;
 
 #[derive(Default)]
@@ -13,6 +13,18 @@ struct Inner {
     map: BTreeMap<Vec<u8>, Vec<u8>>,
     pulled: usize,
     writes: usize,
+    /// Per key: how many `put`s and how many `add`s it has seen.
+    ops: BTreeMap<Vec<u8>, (usize, usize)>,
+}
+
+/// The host traps `HostDenied` on a key over its limit; the mock panics the same way.
+fn host_limit(k: &[u8]) {
+    // SAFETY: a key over the limit is an SDK bug the host would refuse; failing loudly in tests is the point.
+    assert!(
+        k.len() <= MAX_KEY_BYTES,
+        "host would refuse a {} byte key (HostDenied)",
+        k.len()
+    );
 }
 
 /// A shared in-memory store: clones see the same data.
@@ -48,6 +60,11 @@ impl MemStore {
         self.inner.borrow().writes
     }
 
+    /// How many `put`s and `add`s `k` has seen.
+    pub fn op_counts(&self, k: &[u8]) -> (usize, usize) {
+        self.inner.borrow().ops.get(k).copied().unwrap_or((0, 0))
+    }
+
     /// How many entries the store holds.
     pub fn len(&self) -> usize {
         self.inner.borrow().map.len()
@@ -70,24 +87,30 @@ impl Store for MemStore {
     type Range = MemCursor;
 
     fn get(&self, k: &[u8]) -> Option<Vec<u8>> {
+        host_limit(k);
         self.inner.borrow().map.get(k).cloned()
     }
 
     fn put(&mut self, k: &[u8], v: &[u8]) {
+        host_limit(k);
         let mut inner = self.inner.borrow_mut();
         inner.writes += 1;
+        inner.ops.entry(k.to_vec()).or_default().0 += 1;
         inner.map.insert(k.to_vec(), v.to_vec());
     }
 
     fn delete(&mut self, k: &[u8]) {
+        host_limit(k);
         let mut inner = self.inner.borrow_mut();
         inner.writes += 1;
         inner.map.remove(k);
     }
 
     fn add(&mut self, k: &[u8], delta: i64) {
+        host_limit(k);
         let mut inner = self.inner.borrow_mut();
         inner.writes += 1;
+        inner.ops.entry(k.to_vec()).or_default().1 += 1;
         let current = match inner.map.get(k) {
             None => 0,
             // SAFETY: the host traps `HostDenied` on a non-integer; a test hitting this is a bug.
@@ -100,6 +123,8 @@ impl Store for MemStore {
     }
 
     fn range(&self, start: &[u8], end: &[u8], reverse: bool) -> MemCursor {
+        host_limit(start);
+        host_limit(end);
         MemCursor {
             inner: Rc::clone(&self.inner),
             start: start.to_vec(),

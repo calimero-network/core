@@ -3,7 +3,7 @@
 use crate::encoding::key::{self, KeyPart};
 use crate::encoding::value;
 use crate::error::StorageError;
-use crate::store::{DefaultStore, Store};
+use crate::store::{check_key, DefaultStore, Store};
 
 /// A counter. `add` never conflicts; `increment` reads and rewrites the key, so it
 /// serializes every call that uses it (D47). Use `env::unique_id()` for generated ids.
@@ -28,12 +28,14 @@ impl<S: Store> Counter<S> {
         }
     }
 
-    fn storage_key(&self) -> Vec<u8> {
-        key::encode(&[KeyPart::Str(self.name.clone()), KeyPart::Str("n".into())])
+    fn storage_key(&self) -> Result<Vec<u8>, StorageError> {
+        let encoded = key::encode(&[KeyPart::Str(self.name.clone()), KeyPart::Str("n".into())]);
+        check_key(&encoded)?;
+        Ok(encoded)
     }
 
     fn read(&self) -> Result<i128, StorageError> {
-        match self.store.get(&self.storage_key()) {
+        match self.store.get(&self.storage_key()?) {
             Some(bytes) => value::int_from_slice(&bytes),
             None => Ok(0),
         }
@@ -48,13 +50,15 @@ impl<S: Store> Counter<S> {
     pub fn increment(&mut self) -> Result<u64, StorageError> {
         let next = self.read()? + 1;
         let out = u64::try_from(next).map_err(|_| StorageError::BadCounter(self.name.clone()))?;
-        self.store
-            .put(&self.storage_key(), &value::int_to_vec(next)?);
+        let key = self.storage_key()?;
+        self.store.put(&key, &value::int_to_vec(next)?);
         Ok(out)
     }
 
     /// Add `delta` without reading the counter (`storage.add`).
-    pub fn add(&mut self, delta: i64) {
-        self.store.add(&self.storage_key(), delta);
+    pub fn add(&mut self, delta: i64) -> Result<(), StorageError> {
+        let key = self.storage_key()?;
+        self.store.add(&key, delta);
+        Ok(())
     }
 }

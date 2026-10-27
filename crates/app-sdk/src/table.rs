@@ -17,7 +17,9 @@ use serde::Serialize;
 use crate::encoding::key::{self, KeyPart, ToKey};
 use crate::encoding::value;
 use crate::error::{StorageError, TableError};
-use crate::store::{check_key, DefaultStore, RangeCursor, Store, MAX_RANGE_BATCH};
+use crate::store::{
+    check_key, DefaultStore, RangeCursor, Store, MAX_RANGE_BATCH, MAX_SDK_KEY_BYTES,
+};
 
 /// A named set of fields: an index, a unique constraint or a count.
 pub type FieldSet = (&'static str, &'static [&'static str]);
@@ -45,6 +47,11 @@ pub const DEFAULT_LIMIT: u32 = 100;
 const MAX_LIMIT: u32 = 1000;
 
 /// One page of a query. `next` is an opaque cursor, present when more follow.
+///
+/// A cursor is the base64url of the last returned storage key. It is bound to the index and
+/// the prefix it came from (another index or prefix gives `BadCursor`), not to the world
+/// version or to `from`/`to`, and it is opaque by convention only: it is not signed, so a
+/// client can forge one, which can only move its own read within the same index and prefix.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Page<T> {
     /// The records of this page.
@@ -56,7 +63,7 @@ pub struct Page<T> {
 /// Options of [`Table::find`] and [`Table::scan`].
 #[derive(Clone, Debug, Default)]
 pub struct FindOpts {
-    /// Page size; capped at 1,000; 100 when unset.
+    /// Page size; capped at 1,000; 100 when unset; 0 is an empty page.
     pub limit: Option<u32>,
     /// The `next` of the previous page.
     pub cursor: Option<String>,
@@ -163,6 +170,10 @@ impl<T: Record, S: Store> Table<T, S> {
         let mut uniques = Vec::with_capacity(T::UNIQUE.len());
         for (name, fields) in T::UNIQUE {
             let parts = record.key_parts(fields);
+            // SQL NULL semantics: an entry with a None part is neither written nor checked.
+            if parts.contains(&KeyPart::None) {
+                continue;
+            }
             uniques.push((*name, self.encode(&self.prefix("u", &[name], &parts))?));
         }
         let mut counts = Vec::with_capacity(T::COUNTS.len());
@@ -318,8 +329,14 @@ impl<T: Record, S: Store> Table<T, S> {
         prefix: &[KeyPart],
         opts: FindOpts,
     ) -> Result<Page<T>, StorageError> {
-        if !T::INDEXES.iter().any(|(name, _)| *name == index) {
+        let Some((_, fields)) = T::INDEXES.iter().find(|(name, _)| *name == index) else {
             return Err(StorageError::UnknownName(index.into()));
+        };
+        if prefix.len() > fields.len() {
+            return Err(StorageError::PrefixTooLong {
+                given: prefix.len(),
+                max: fields.len(),
+            });
         }
         let base = self.prefix("i", &[index], prefix);
         let (entries, next) = self.read_page(&base, &opts)?;
@@ -349,6 +366,12 @@ impl<T: Record, S: Store> Table<T, S> {
         let Some((_, fields)) = T::COUNTS.iter().find(|(n, _)| *n == name) else {
             return Err(StorageError::UnknownName(name.into()));
         };
+        if prefix.len() > fields.len() {
+            return Err(StorageError::PrefixTooLong {
+                given: prefix.len(),
+                max: fields.len(),
+            });
+        }
         let base = self.prefix("c", &[name], prefix);
         let sum: i128 = if prefix.len() == fields.len() {
             match self.store.get(&self.encode(&base)?) {
@@ -379,8 +402,12 @@ impl<T: Record, S: Store> Table<T, S> {
         base: &[KeyPart],
         opts: &FindOpts,
     ) -> Result<(Vec<Entry>, Option<String>), StorageError> {
-        let limit = opts.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT) as usize;
-        let encoded_base = key::encode(base);
+        let limit = opts.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as usize;
+        // Checked first: every bound below adds at most one byte to a key of this length.
+        let encoded_base = self.encode(base)?;
+        if limit == 0 {
+            return Ok((Vec::new(), None));
+        }
         let (mut start, mut end) = bounds(&encoded_base);
         if let Some(from) = &opts.from {
             start = self.encode(&[base, from].concat())?;
@@ -392,7 +419,7 @@ impl<T: Record, S: Store> Table<T, S> {
             let last = URL_SAFE_NO_PAD
                 .decode(cursor)
                 .map_err(|_| StorageError::BadCursor)?;
-            if !last.starts_with(&encoded_base) {
+            if last.len() > MAX_SDK_KEY_BYTES || !last.starts_with(&encoded_base) {
                 return Err(StorageError::BadCursor);
             }
             if opts.reverse {

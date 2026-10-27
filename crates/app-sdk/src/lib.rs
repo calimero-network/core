@@ -17,6 +17,7 @@ pub mod encoding;
 pub mod env;
 pub mod error;
 pub mod guards;
+pub mod json;
 pub mod store;
 pub mod table;
 
