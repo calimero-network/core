@@ -15,9 +15,14 @@ The shared storage encoding (order-preserving tuple keys, deterministic CBOR val
 - Method lookup by ABI (camelCase) name; unknown → `AppError UnknownMethod`.
 - Kind: a view may run as a call (or xcall delivery); a call, timer or init method run as a view → `NotAView`; any other mismatch, and `action` / `migrate` (not in this version) → `WrongKind`.
 - Callers (D13), checked after the kind, except for `init` (runs as the owner): `System` needs `allow(system)` and `App(id)` needs `allow(app = id)`, else `Forbidden`; `Public` needs `public`, else `LoginRequired`.
-- Args: a JSON object keyed by camelCase parameter names, empty args = `{}`, unknown keys refused; `u64`/`i64` (and `Option`) params are decimal strings (D20); anything malformed → `BadArgs` (`{"message": ..}`).
+- Args: a JSON object keyed by camelCase parameter names, empty args = `{}`, unknown keys refused; `u64`/`i64` (and `Option`) params are canonical decimal strings (no `+`, no leading zeros, no `-0`) and `Vec<u8>` (and `Option`) params base64url without padding (D20); anything malformed → `BadArgs` (`{"message": ..}`).
+- Timers: `#[app::every]` implies `allow(system)` (Ruling 26), so the ABI says `allowSystem: true` on every timer.
 - Timer ticks: for `kind = timer` the engine passes the tick as `args`, `{"scheduled":"<ms>","previous":"<ms>"|null}`; `handle` sets `env::timer()` from it (and clears it for every other kind).
-- Results: JSON; a `u64`/`i64` (or `Option`) result is a decimal string; `()` and `init` give `null`. Records inside results: their `u64`/`i64` fields are decimal strings too (`json::*_auto`).
+- Results: JSON; a `u64`/`i64` (or `Option`) result is a decimal string, a `Vec<u8>` (or `Option`) result base64url; `()` and `init` give `null`. Records inside results: their `u64`/`i64` fields are decimal strings and `Vec<u8>` fields base64url too (`json::*_auto`).
+
+## D20 conversion rule (Ruling 27)
+
+The macros convert exactly these types, at the top level of a parameter, a result, a record field, or an event or error field: `u64`, `i64`, `Vec<u8>` and `Option` of each. The same types nested inside another type the macro can see (`Vec<u64>`, `Option<Vec<i64>>`, `Option<Option<u64>>`, tuples, arrays, maps, `Vec<Vec<u8>>`) are a compile error naming D20 ("u64 inside Vec<u64> would lose precision in JSON (D20); wrap it in a Record or use a string"). Limit: the macro sees only the tokens it is given. A user struct with plain serde, or a `type` alias, is opaque to it, so a `u64` inside one still reaches JSON as a number; use a `Record` (its derive converts the fields) or a string.
 - Errors: the wire `app-error` is `{ code, message }` with `message` = the fields as JSON (`{}` when none), e.g. `Taken` / `{"start":"7"}`.
 
 ## Rules
@@ -27,6 +32,7 @@ The shared storage encoding (order-preserving tuple keys, deterministic CBOR val
 - Keys over 1 KiB are refused with `StorageError::KeyTooLong` before any store call (D50).
 - Queries read `limit + 1` entries through the cursor and no more.
 - `bindings.rs` declares the `handle` export but never exports it: the code `#[app::logic]` generates does, through `__private::bindings::__calimero_export_handle!` and `__private::Export<State>`.
+- `#[app::error]` and `#[app::event]` must live in the `#[app::logic]` module (their ABI constants are picked up there; elsewhere the ABI lists none), and one module takes one of each: a second `#[app::error]` enum in a module is refused (`__CALIMERO_ABI_ERRORS` defined twice, pinned by `tests/ui/second_error.rs`).
 - `env::emit(event, audience)` takes an `#[app::event]` value (spec); `env::emit_raw(name, data, audience)` takes any serde value.
 - `env::mock` (host target) is the stand-in for the host in tests.
 
@@ -36,7 +42,7 @@ The shared storage encoding (order-preserving tuple keys, deterministic CBOR val
 - **Key length (D50, ruling 24)**: the host refuses keys over 1,024 bytes. The SDK caps every key it stores (record, index, unique, count, map, counter) at 1,023 (`MAX_SDK_KEY_BYTES`), so derived bounds (`last ++ 0x00`, `prefix ++ 0xFF`) always fit. Every range bound and decoded cursor is checked before any store call: bounds give `KeyTooLong`, a cursor gives `BadCursor`.
 - **Unique constraints use SQL NULL semantics (ruling 23)**: when any field of a unique constraint is `None`, no unique entry is written or checked (insert, upsert, update, remove). Two records with no email both insert; the same `Some(email)` still clashes.
 - **Values**: deterministic CBOR (RFC 8949 core). Field names are camelCase (applied by the `#[app::state]`/record macro, not by the SDK). `None` is written as CBOR null, never omitted. An integral float stays a float (`1.0` is `f93c00`), floats use the shortest exact form, `-0.0` is preserved, NaN is refused, map keys sort by encoded bytes, lengths are definite.
-- **JSON (D20, ruling 25)**: `u64`/`i64` in method args and results, event data and `AppError` fields are decimal strings; use `calimero_app_sdk::json::{u64_str, i64_str, opt_u64_str, opt_i64_str}` (the macros apply them). Record fields use `json::{u64_auto, ..}`: an integer in CBOR (not human-readable), a decimal string in JSON.
+- **JSON (D20, ruling 25)**: `u64`/`i64` in method args and results, event data and `AppError` fields are canonical decimal strings; bytes are base64url without padding; use `calimero_app_sdk::json::{u64_str, i64_str, opt_u64_str, opt_i64_str, bytes_b64url, opt_bytes_b64url}` (the macros apply them). Record fields use `json::{u64_auto, i64_auto, bytes_auto, ..}`: an integer or a byte string (major type 2) in CBOR (not human-readable), a decimal string or base64url in JSON.
 - **Cursors** are the base64url of the last storage key, bound to the index and prefix, not signed.
 - **Prefixes** longer than the index or count fields are refused (`PrefixTooLong`); `limit: 0` is an empty page.
 

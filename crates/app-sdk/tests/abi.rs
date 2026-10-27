@@ -185,6 +185,7 @@ fn abi_lists_every_method_with_its_attributes() {
         json!({
             "Booked": { "id": "string", "roomId": "string", "start": "u64" },
             "Released": { "id": "string" },
+            "Stored": { "id": "string", "data": "bytes" },
         })
     );
 }
@@ -342,4 +343,120 @@ fn unit_and_counter_results() {
     let mut app = App::new();
     assert_eq!(ok_json(&app.call("bump", b"")), json!("1"));
     assert_eq!(ok_json(&app.call("bump", b"{}")), json!("2"));
+}
+
+/// The raw `calimero:abi` text of the built component.
+fn raw_abi() -> &'static str {
+    let bytes = &built().component;
+    let needle = br#"{"abiVersion""#;
+    let start = bytes
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .expect("ABI in the component");
+    let mut stream =
+        serde_json::Deserializer::from_slice(&bytes[start..]).into_iter::<serde::de::IgnoredAny>();
+    let _ = stream.next().expect("one JSON value").expect("valid JSON");
+    std::str::from_utf8(&bytes[start..start + stream.byte_offset()]).unwrap()
+}
+
+/// `v` with every object's keys in sorted order, compact.
+fn sorted(v: &Value) -> String {
+    match v {
+        Value::Object(map) => {
+            let mut keys: Vec<_> = map.keys().collect();
+            keys.sort();
+            let parts: Vec<String> = keys
+                .into_iter()
+                .map(|k| format!("{}:{}", Value::String(k.clone()), sorted(&map[k])))
+                .collect();
+            format!("{{{}}}", parts.join(","))
+        }
+        Value::Array(items) => {
+            let parts: Vec<String> = items.iter().map(sorted).collect();
+            format!("[{}]", parts.join(","))
+        }
+        other => other.to_string(),
+    }
+}
+
+#[test]
+fn abi_bytes_have_sorted_keys() {
+    let raw = raw_abi();
+    let parsed: Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(raw, sorted(&parsed));
+}
+
+#[test]
+fn every_implies_allow_system() {
+    let abi = Abi::from_json(built().abi.as_ref().unwrap()).unwrap();
+    assert!(abi.methods["heartbeat"].allow_system);
+    let mut app = App::new();
+    let tick = TimerCtx {
+        scheduled_ms: 30_000,
+        previous_ms: None,
+    };
+    let out = app.run(
+        InvocationKind::Timer,
+        Caller::System,
+        "heartbeat",
+        b"",
+        Some(tick),
+    );
+    assert_eq!(ok_json(&out), Value::Null);
+}
+
+#[test]
+fn bytes_are_base64url_in_json_and_cbor_bytes_in_storage() {
+    let abi = built().abi.clone().unwrap();
+    assert_eq!(
+        abi["methods"]["putBlob"]["params"],
+        json!([["id", "string"], ["data", "bytes"]])
+    );
+    assert_eq!(
+        abi["events"]["Stored"],
+        json!({ "id": "string", "data": "bytes" })
+    );
+
+    let mut app = App::new();
+    let out = app.view("echoBytes", br#"{"data": "AQL_", "extra": "AA"}"#);
+    assert_eq!(ok_json(&out), json!("AQL_"));
+    for bad in [
+        &br#"{"data": "!!"}"#[..],
+        br#"{"data": [1, 2]}"#,
+        br#"{"data": "AQL_", "extra": "A"}"#,
+    ] {
+        assert_eq!(app_error(&app.view("echoBytes", bad)).0, "BadArgs");
+    }
+
+    let out = app.call("putBlob", br#"{"id": "b1", "data": "AQL_"}"#);
+    assert_eq!(ok_json(&out), Value::Null);
+    let data: Value = serde_json::from_slice(&out.events[0].data).unwrap();
+    assert_eq!(data, json!({ "id": "b1", "data": "AQL_" }));
+    // The record: {"id": "b1", "data": h'0102ff'}, keys in encoded-byte order.
+    let cbor: &[u8] = &[
+        0xa2, 0x62, b'i', b'd', 0x62, b'b', b'1', 0x64, b'd', b'a', b't', b'a', 0x43, 0x01, 0x02,
+        0xff,
+    ];
+    assert!(
+        out.diff.iter().any(|w| w.value.as_deref() == Some(cbor)),
+        "{:?}",
+        out.diff
+    );
+    let rec = ok_json(&app.view("blob", br#"{"id": "b1"}"#));
+    assert_eq!(rec, json!({ "id": "b1", "data": "AQL_" }));
+}
+
+#[test]
+fn wide_integers_refuse_leading_zeros_and_plus() {
+    let mut app = App::new();
+    for bad in ["01", "+1", "-0", " 1", ""] {
+        let args = args(json!({ "start": bad }));
+        assert_eq!(
+            app_error(&app.view("echoStart", &args)).0,
+            "BadArgs",
+            "{bad:?}"
+        );
+    }
+    let out = app.view("echoStart", br#"{"start": "0"}"#);
+    assert_eq!(ok_json(&out), json!("0"));
 }

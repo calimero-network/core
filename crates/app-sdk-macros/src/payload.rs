@@ -10,7 +10,7 @@ use quote::{format_ident, quote};
 use serde_json::{Map, Value};
 use syn::{Fields, ItemEnum};
 
-use crate::types::{abi_type, camel, int64, Int64};
+use crate::types::{abi_type, camel, canonical, check_wire, wire, Wire};
 
 /// What the payload enum becomes.
 #[derive(Clone, Copy)]
@@ -40,12 +40,30 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
                 Some(ident) => (camel(&ident.to_string()), ident.clone()),
                 None => (i.to_string(), format_ident!("__f{}", i)),
             };
+            check_wire(&field.ty)?;
             let _ = fields_abi.insert(key.clone(), Value::String(abi_type(&field.ty)));
-            let value = match int64(&field.ty) {
-                Some(Int64::U64 | Int64::I64) => quote! {
+            let value = match wire(&field.ty) {
+                Some(Wire::Bytes) => quote! {
+                    ::calimero_app_sdk::__private::serde_json::Value::String(
+                        ::calimero_app_sdk::__private::base64url(#bind),
+                    )
+                },
+                Some(Wire::OptBytes) => quote! {
+                    match #bind {
+                        ::core::option::Option::Some(v) => {
+                            ::calimero_app_sdk::__private::serde_json::Value::String(
+                                ::calimero_app_sdk::__private::base64url(v),
+                            )
+                        }
+                        ::core::option::Option::None => {
+                            ::calimero_app_sdk::__private::serde_json::Value::Null
+                        }
+                    }
+                },
+                Some(Wire::U64 | Wire::I64) => quote! {
                     ::calimero_app_sdk::__private::serde_json::Value::String(#bind.to_string())
                 },
-                Some(Int64::OptU64 | Int64::OptI64) => quote! {
+                Some(Wire::OptU64 | Wire::OptI64) => quote! {
                     match #bind {
                         ::core::option::Option::Some(v) => {
                             ::calimero_app_sdk::__private::serde_json::Value::String(v.to_string())
@@ -75,7 +93,7 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
             }
         });
     }
-    let abi = Value::Object(abi).to_string();
+    let abi = canonical(&Value::Object(abi));
     let (konst, trait_impl) = match kind {
         Payload::Error => (
             quote!(__CALIMERO_ABI_ERRORS),
@@ -119,4 +137,28 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
         #[allow(non_upper_case_globals, dead_code)]
         pub const #konst: &str = #abi;
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    #[test]
+    fn payload_abi_is_sorted_whatever_serde_json_features() {
+        let item: ItemEnum = parse_quote! {
+            pub enum E { Zeta { b_field: u32, a_field: String, data: Vec<u8> }, Alpha }
+        };
+        let out = expand(Payload::Event, &item).unwrap().to_string();
+        let abi = r#"{"Alpha":{},"Zeta":{"aField":"string","bField":"u32","data":"bytes"}}"#;
+        let lit = proc_macro2::Literal::string(abi).to_string();
+        assert!(out.contains(&lit), "{out}");
+    }
+
+    #[test]
+    fn nested_wide_integers_are_refused() {
+        let item: ItemEnum = parse_quote! { pub enum E { A { xs: Vec<u64> } } };
+        let err = expand(Payload::Error, &item).expect_err("refused");
+        assert!(err.to_string().contains("D20"), "{err}");
+    }
 }

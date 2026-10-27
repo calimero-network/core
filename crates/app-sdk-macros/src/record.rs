@@ -11,7 +11,7 @@ use syn::meta::ParseNestedMeta;
 use syn::punctuated::Punctuated;
 use syn::{DeriveInput, Fields, Ident, LitStr, Token};
 
-use crate::types::{camel, int64};
+use crate::types::{camel, check_wire, wire, Wire};
 
 /// A named set of fields, as written: `by_owner = ["owner", "name_key"]`.
 struct FieldSet {
@@ -114,6 +114,10 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         .map(|f| (f.ident.clone().expect("named field"), &f.ty))
         .collect();
 
+    for (_, ty) in &fields {
+        check_wire(ty)?;
+    }
+
     // Every listed field must exist; lists use Rust names, the trait uses camelCase.
     let resolve = |lit: &LitStr| -> syn::Result<String> {
         let wanted = lit.value();
@@ -153,21 +157,35 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
 
     let ser_fields = fields.iter().map(|(ident, ty)| {
         let rename = camel(&ident.to_string());
-        match int64(ty) {
-            Some(int) => {
-                let with = int.auto_module();
+        match wire(ty) {
+            // Bytes are borrowed (the helpers are generic over `AsRef<[u8]>`).
+            Some(w @ Wire::Bytes) => {
+                let with = w.auto_module();
+                quote! { #[serde(rename = #rename, with = #with)] #ident: &'__rec #ty }
+            }
+            Some(w @ Wire::OptBytes) => {
+                let with = w.auto_module();
+                quote! {
+                    #[serde(rename = #rename, with = #with)]
+                    #ident: ::core::option::Option<&'__rec [u8]>
+                }
+            }
+            // 64-bit integers are copied.
+            Some(w) => {
+                let with = w.auto_module();
                 quote! { #[serde(rename = #rename, with = #with)] #ident: #ty }
             }
             None => quote! { #[serde(rename = #rename)] #ident: &'__rec #ty },
         }
     });
-    let ser_values = fields.iter().map(|(ident, ty)| match int64(ty) {
+    let ser_values = fields.iter().map(|(ident, ty)| match wire(ty) {
+        Some(Wire::Bytes) | None => quote! { #ident: &self.#ident },
+        Some(Wire::OptBytes) => quote! { #ident: self.#ident.as_deref() },
         Some(_) => quote! { #ident: self.#ident },
-        None => quote! { #ident: &self.#ident },
     });
     let de_fields = fields.iter().map(|(ident, ty)| {
         let rename = camel(&ident.to_string());
-        match int64(ty) {
+        match wire(ty) {
             Some(int) if int.is_option() => {
                 let with = int.auto_module();
                 quote! { #[serde(rename = #rename, default, with = #with)] #ident: #ty }

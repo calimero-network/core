@@ -46,3 +46,17 @@ fn numbers_are_not_accepted_where_a_string_is_the_contract() {
     assert!(serde_json::from_str::<Booked>(r#"{"start":1,"delta":"2"}"#).is_err());
     assert!(serde_json::from_str::<Booked>(r#"{"start":"x","delta":"2"}"#).is_err());
 }
+
+#[test]
+fn decimal_strings_are_canonical() {
+    for bad in [
+        r#"{"start":"01","delta":"0"}"#,
+        r#"{"start":"+1","delta":"0"}"#,
+        r#"{"start":"1","delta":"-0"}"#,
+        r#"{"start":"1","delta":"-01"}"#,
+    ] {
+        assert!(serde_json::from_str::<Booked>(bad).is_err(), "{bad}");
+    }
+    let ok: Booked = serde_json::from_str(r#"{"start":"0","delta":"-5"}"#).unwrap();
+    assert_eq!((ok.start, ok.delta, ok.end), (0, -5, None));
+}

@@ -175,6 +175,21 @@ impl<T: Display> Serialize for Decimal<T> {
     }
 }
 
+/// Bytes written as base64url without padding (D20).
+pub struct Base64Url<T>(pub T);
+
+impl<T: AsRef<[u8]>> Serialize for Base64Url<T> {
+    fn serialize<S: Serializer>(&self, s: S) -> core::result::Result<S::Ok, S::Error> {
+        s.serialize_str(&base64url(&self.0))
+    }
+}
+
+/// `bytes` as base64url without padding.
+pub fn base64url<T: AsRef<[u8]> + ?Sized>(bytes: &T) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
 /// The `message` of a wire `app-error`: the error's fields as JSON, `{}` when it has none.
 pub fn error_message(error: &AppError) -> String {
     if error.fields.is_null() {

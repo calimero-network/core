@@ -13,7 +13,9 @@ use syn::{
     Visibility,
 };
 
-use crate::types::{abi_type, camel, generic_arg, int64, is_unit, Int64};
+use crate::types::{
+    abi_type, camel, canonical, check_wire, generic_arg, is_unit, valid_rate, wire, Wire,
+};
 
 /// The world this SDK builds for.
 const WORLD: &str = "calimero:app@0.5.0";
@@ -93,6 +95,12 @@ fn parse_attrs(f: &mut ImplItemFn) -> syn::Result<Attrs> {
                     attr.parse_nested_meta(|meta| {
                         if meta.path.is_ident("rate") {
                             let lit: LitStr = meta.value()?.parse()?;
+                            if !valid_rate(&lit.value()) {
+                                return Err(syn::Error::new(
+                                    lit.span(),
+                                    "a rate is `<n>/s`, `<n>/min` or `<n>/h` with n > 0",
+                                ));
+                            }
                             attrs.rate = Some(lit.value());
                             Ok(())
                         } else {
@@ -110,6 +118,8 @@ fn parse_attrs(f: &mut ImplItemFn) -> syn::Result<Attrs> {
                     ));
                 }
                 attrs.every = Some(lit.value());
+                // A timer's caller is always `System` (D13), so `every` implies it (Ruling 26).
+                attrs.allow_system = true;
             }
             "allow" => attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("system") {
@@ -175,6 +185,7 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
                         "app method parameters are owned values, decoded from JSON",
                     ));
                 }
+                check_wire(&pt.ty)?;
                 params.push((pi.ident.clone(), (*pt.ty).clone()));
             }
         }
@@ -189,7 +200,12 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
     };
     match kind {
         Kind::Init if receiver_mut.is_some() => return fail("`init` takes no `self`"),
-        Kind::Init if attrs.confirm || attrs.public || attrs.allow_system => {
+        Kind::Init
+            if attrs.confirm
+                || attrs.public
+                || attrs.allow_system
+                || !attrs.allow_apps.is_empty() =>
+        {
             return fail("`init` runs once as the owner; it takes no other attribute")
         }
         Kind::View if receiver_mut != Some(false) => return fail("a view takes `&self`"),
@@ -209,6 +225,10 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
             None => ((**ty).clone(), false),
         },
     };
+
+    if kind != Kind::Init {
+        check_wire(&ok)?;
+    }
 
     Ok(Some(Method {
         abi: camel(&sig.ident.to_string()),
@@ -261,7 +281,7 @@ fn abi_entry(m: &Method) -> Value {
 fn run_arm(index: usize, m: &Method, state: &Type) -> TokenStream {
     let fields = m.params.iter().map(|(name, ty)| {
         let rename = camel(&name.to_string());
-        match int64(ty) {
+        match wire(ty) {
             Some(int) if int.is_option() => {
                 let with = int.json_module();
                 quote! { #[serde(rename = #rename, default, with = #with)] #name: #ty }
@@ -293,11 +313,17 @@ fn run_arm(index: usize, m: &Method, state: &Type) -> TokenStream {
     let encode = if m.kind == Kind::Init {
         quote! { let _ = __out; ::calimero_app_sdk::__private::encode(&()) }
     } else {
-        match int64(&m.ok) {
-            Some(Int64::U64 | Int64::I64) => {
+        match wire(&m.ok) {
+            Some(Wire::Bytes) => {
+                quote! { ::calimero_app_sdk::__private::encode(&::calimero_app_sdk::__private::Base64Url(&__out)) }
+            }
+            Some(Wire::OptBytes) => {
+                quote! { ::calimero_app_sdk::__private::encode(&__out.as_deref().map(::calimero_app_sdk::__private::Base64Url)) }
+            }
+            Some(Wire::U64 | Wire::I64) => {
                 quote! { ::calimero_app_sdk::__private::encode(&::calimero_app_sdk::__private::Decimal(__out)) }
             }
-            Some(Int64::OptU64 | Int64::OptI64) => {
+            Some(Wire::OptU64 | Wire::OptI64) => {
                 quote! { ::calimero_app_sdk::__private::encode(&__out.map(::calimero_app_sdk::__private::Decimal)) }
             }
             None => quote! { ::calimero_app_sdk::__private::encode(&__out) },
@@ -348,8 +374,13 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
             ));
         }
     }
-    let head = format!("{{\"abiVersion\":{ABI_VERSION},\"world\":\"{WORLD}\",\"state\":");
-    let methods_json = format!(",\"methods\":{},\"errors\":", Value::Object(abi_methods));
+    // Top-level keys in sorted order, like every object below them (`canonical`).
+    let head = format!("{{\"abiVersion\":{ABI_VERSION},\"errors\":");
+    let methods_json = format!(
+        ",\"methods\":{},\"state\":",
+        canonical(&Value::Object(abi_methods))
+    );
+    let tail = format!(",\"world\":\"{WORLD}\"}}");
 
     let specs = methods.iter().map(|m| {
         let name = &m.abi;
@@ -401,12 +432,12 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
         const _: () = {
             const __PARTS: &[&str] = &[
                 #head,
-                <#state as ::calimero_app_sdk::app::AppState>::ABI,
-                #methods_json,
                 __CALIMERO_ABI_ERRORS,
                 ",\"events\":",
                 __CALIMERO_ABI_EVENTS,
-                "}",
+                #methods_json,
+                <#state as ::calimero_app_sdk::app::AppState>::ABI,
+                #tail,
             ];
             const __LEN: usize = ::calimero_app_sdk::__private::abi_len(__PARTS);
 
@@ -424,4 +455,84 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
         };
     }
     .into_token_stream())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    fn lit(s: &str) -> String {
+        proc_macro2::Literal::string(s).to_string()
+    }
+
+    #[test]
+    fn methods_abi_is_sorted_whatever_serde_json_features() {
+        let item: ItemImpl = parse_quote! {
+            impl S {
+                pub fn zed(&mut self, b_arg: u32, a_arg: String) -> Result<()> { Ok(()) }
+                #[app::view]
+                pub fn alpha(&self) -> Result<u32> { Ok(1) }
+                #[app::every("30s")]
+                pub fn tick(&mut self) -> Result<()> { Ok(()) }
+            }
+        };
+        let out = expand(item).unwrap().to_string();
+        let methods = concat!(
+            r#",\"methods\":"#,
+            r#"{"alpha":{"allowSystem":false,"confirm":false,"kind":"view","params":[],"public":false,"returns":"u32"},"#,
+            r#""tick":{"allowSystem":true,"confirm":false,"every":"30s","kind":"timer","params":[],"public":false,"returns":null},"#,
+            r#""zed":{"allowSystem":false,"confirm":false,"kind":"call","params":[["bArg","u32"],["aArg","string"]],"public":false,"returns":null}}"#,
+            r#","state":"#
+        );
+        let methods = methods.replace(r#"\""#, "\"");
+        assert!(out.contains(&lit(&methods)), "{out}");
+    }
+
+    fn refused(item: ItemImpl) -> String {
+        match expand(item) {
+            Ok(_) => panic!("expected a compile error"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn nested_wide_integers_are_refused() {
+        let msg = refused(parse_quote! {
+            impl S { pub fn m(&self, xs: Vec<u64>) -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("D20"), "{msg}");
+        let msg = refused(parse_quote! {
+            impl S { pub fn m(&self) -> Result<Option<Vec<i64>>> { Ok(None) } }
+        });
+        assert!(msg.contains("D20"), "{msg}");
+        let msg = refused(parse_quote! {
+            impl S { pub fn m(&self, p: (u32, u64)) -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("D20"), "{msg}");
+        let msg = refused(parse_quote! {
+            impl S { pub fn m(&self, p: [u64; 2]) -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("D20"), "{msg}");
+        let msg = refused(parse_quote! {
+            impl S { pub fn m(&self, p: Vec<Vec<u8>>) -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("D20"), "{msg}");
+    }
+
+    #[test]
+    fn bad_rate_and_init_with_apps_are_refused() {
+        let msg = refused(parse_quote! {
+            impl S { #[app::public(rate = "ten")] pub fn m(&self) -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("rate"), "{msg}");
+        let msg = refused(parse_quote! {
+            impl S { #[app::init] #[app::allow(app = "com.x")] pub fn init() -> Result<Self> { todo!() } }
+        });
+        assert!(msg.contains("init"), "{msg}");
+        let _ = expand(parse_quote! {
+            impl S { #[app::view] #[app::public(rate = "10/min")] pub fn m(&self) -> Result<()> { Ok(()) } }
+        })
+        .unwrap();
+    }
 }

@@ -17,9 +17,18 @@ pub struct Booking {
     pub checked_in: bool,
 }
 
+/// A record with a bytes field: CBOR bytes when stored, base64url in JSON.
+#[derive(Record)]
+#[table(key = "id")]
+pub struct Blob {
+    pub id: String,
+    pub data: Vec<u8>,
+}
+
 #[app::state(version = 3)]
 pub struct Rooms {
     bookings: Table<Booking>,
+    blobs: Table<Blob>,
     titles: UnorderedMap<String, String>,
     next_id: Counter,
 }
@@ -40,6 +49,10 @@ pub enum Event {
     },
     Released {
         id: String,
+    },
+    Stored {
+        id: String,
+        data: Vec<u8>,
     },
 }
 
@@ -132,6 +145,35 @@ impl Rooms {
             let _ = self.bookings.remove(&b.id)?;
         }
         Ok(Some(tick.scheduled))
+    }
+
+    /// Stores bytes, given as base64url.
+    pub fn put_blob(&mut self, id: String, data: Vec<u8>) -> app::Result<()> {
+        self.blobs.upsert(Blob {
+            id: id.clone(),
+            data: data.clone(),
+        })?;
+        env::emit(Event::Stored { id, data }, Audience::All)?;
+        Ok(())
+    }
+
+    /// A stored blob record.
+    #[app::view]
+    pub fn blob(&self, id: String) -> app::Result<Blob> {
+        self.blobs.get(&id)?.ok_or_else(|| Error::NotFound.into())
+    }
+
+    /// Returns `data` unchanged: bytes are base64url in arguments and results.
+    #[app::view]
+    pub fn echo_bytes(&self, data: Vec<u8>, extra: Option<Vec<u8>>) -> app::Result<Vec<u8>> {
+        let _ = extra;
+        Ok(data)
+    }
+
+    /// A timer without `allow(system)`: `every` implies it (Ruling 26).
+    #[app::every("30s")]
+    pub fn heartbeat(&mut self) -> app::Result<()> {
+        Ok(())
     }
 
     /// The counter, for a call that touches no table.

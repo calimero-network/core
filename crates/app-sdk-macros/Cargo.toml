@@ -16,3 +16,8 @@ proc-macro2.workspace = true
 quote.workspace = true
 serde_json.workspace = true
 syn = { workspace = true, features = ["full"] }
+
+[dev-dependencies]
+# The core workspace can unify `preserve_order` into serde_json (dcap-qvl); the unit tests
+# turn it on so the ABI must be sorted whatever the build graph.
+serde_json = { workspace = true, features = ["preserve_order"] }
