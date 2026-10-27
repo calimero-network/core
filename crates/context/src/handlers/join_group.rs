@@ -988,7 +988,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         }
 
                         for context_id in contexts {
-                            let config = if !context_client.has_context(context_id)? {
+                            let bootstrapping = !context_client.has_context(context_id)?;
+                            let config = if bootstrapping {
                                 let zero_app =
                                     calimero_primitives::application::ApplicationId::from(
                                         [0u8; 32],
@@ -1018,6 +1019,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                 .await
                             {
                                 warn!(%context_id, ?e, "failed to sync context config");
+                            } else if bootstrapping {
+                                crate::activation::record_start_release(&datastore, context_id);
                             }
                             if let Err(e) = node_client.subscribe(context_id).await {
                                 warn!(%context_id, ?e, "failed to subscribe to context");
