@@ -1165,7 +1165,6 @@ version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
  "ciborium",
- "eyre",
  "ring",
  "serde",
  "serde_json",

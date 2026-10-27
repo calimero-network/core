@@ -16,7 +16,6 @@ calimero-identity = { path = "../crates/identity", features = ["testing"] }
 calimero-sealed = { path = "../crates/sealed" }
 calimero-storage = { path = "../crates/storage", features = ["testing"] }
 calimero-tee-attestation = { path = "../crates/tee-attestation" }
-eyre = "*"
 flate2 = "*"
 hex = "*"
 libfuzzer-sys = "0.4"
