@@ -274,6 +274,17 @@ fn namespace_topic(world: &World) -> TopicHash {
 async fn accept_recovered_key(world: &World, actor: &Actor) -> Outcome {
     let store = world.fork();
     let node = world.owner_sk.public_key();
+    // A creator holds no row in its folder; the node asks for the key of a group it is a member of.
+    let account = member_account_in_namespace(&store, &world.namespace, &node)
+        .expect("resolve the node")
+        .expect("the node speaks for an account");
+    calimero_governance_store::MembershipRepository::new(&store)
+        .add_member(
+            &world.subject,
+            &account,
+            calimero_primitives::context::GroupMemberRole::Member,
+        )
+        .expect("seat the node in the subject");
     let keyring = GroupKeyring::new(&store, world.subject);
     while let Some((key_id, _key)) = keyring.load_current_key().expect("read the keyring") {
         keyring.delete_key_by_id(&key_id).expect("drop a key");
