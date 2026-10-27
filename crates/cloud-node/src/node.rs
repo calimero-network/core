@@ -212,6 +212,12 @@ pub struct Node {
     wasm: Arc<WasmtimeEngine>,
     /// Prepared components per bundle hash.
     prepared: Mutex<HashMap<String, Prepared>>,
+    /// One lock per bundle being prepared, so concurrent first uses wait for one
+    /// prepare instead of each compiling it (Ruling 44).
+    preparing: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// How many times this node ran the engine's `prepare` (feature `testing`).
+    #[cfg(feature = "testing")]
+    prepares: std::sync::atomic::AtomicU64,
     /// App time ([`Clock`]).
     clock: Clock,
     /// Per app group: the term this node last led it in, and its execution
@@ -380,6 +386,9 @@ impl Node {
             apps: RwLock::new(HashMap::new()),
             wasm,
             prepared: Mutex::new(HashMap::new()),
+            preparing: Mutex::new(HashMap::new()),
+            #[cfg(feature = "testing")]
+            prepares: std::sync::atomic::AtomicU64::new(0),
             clock,
             id_seqs: Mutex::new(HashMap::new()),
             ticking: Mutex::new(HashSet::new()),
@@ -838,16 +847,51 @@ impl Node {
 
     /// The prepared component of `bundle`, preparing it on first use. A component
     /// the engine refuses is `422 BAD_BUNDLE`; a bundle not reachable yet is `503`.
+    ///
+    /// Single-flight per bundle (Ruling 44): concurrent first uses wait for one
+    /// prepare and then read its result, instead of each compiling the component (a
+    /// burst of first calls once ran ~130 compilations of one bundle at once).
     pub async fn prepared_for(&self, bundle: &str) -> Result<Prepared, ApiError> {
-        if let Some(p) = self
-            .prepared
+        if let Some(p) = self.cached_prepared(bundle) {
+            return Ok(p);
+        }
+        let flight = {
+            let mut preparing = self
+                .preparing
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Arc::clone(preparing.entry(bundle.to_owned()).or_default())
+        };
+        let _one_at_a_time = flight.lock().await;
+        let result = match self.cached_prepared(bundle) {
+            Some(p) => Ok(p),
+            None => self.prepare_now(bundle).await,
+        };
+        // The last holder of the flight drops its entry (the map's reference and this
+        // one are all that is left); a failed prepare lets the next waiter try again.
+        if let Ok(mut preparing) = self.preparing.lock() {
+            if preparing
+                .get(bundle)
+                .is_some_and(|f| Arc::strong_count(f) <= 2)
+            {
+                let _done = preparing.remove(bundle);
+            }
+        }
+        result
+    }
+
+    fn cached_prepared(&self, bundle: &str) -> Option<Prepared> {
+        self.prepared
             .lock()
             .ok()
             .and_then(|m| m.get(bundle).cloned())
-        {
-            return Ok(p);
-        }
+    }
+
+    /// Prepares `bundle` and keeps the result ([`Self::prepared_for`]).
+    async fn prepare_now(&self, bundle: &str) -> Result<Prepared, ApiError> {
         let component = self.bundle_wasm(bundle).await?;
+        #[cfg(feature = "testing")]
+        let _n = self.prepares.fetch_add(1, Ordering::Relaxed);
         let (wasm, hash) = (Arc::clone(&self.wasm), bundle.to_owned());
         let prepared = tokio::task::spawn_blocking(move || wasm.prepare(&hash, &component))
             .await
@@ -881,6 +925,13 @@ impl Node {
                 .filter_map(|g| g.read_local(|m, _| m.state.bundle.clone())),
         );
         live
+    }
+
+    /// How many times this node ran the engine's `prepare`. Tests only.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn prepares(&self) -> u64 {
+        self.prepares.load(Ordering::Relaxed)
     }
 
     fn budget(&self) -> Budget {

@@ -2663,3 +2663,22 @@ async fn slow_calls_do_not_stall_the_async_workers() {
         "a task waited {worst:?} for a worker"
     );
 }
+
+/// Ruling 44: concurrent first uses of a bundle wait for one prepare. Without this, 200
+/// first calls compiled Rooms ~130 times at once and overflowed rayon's stacks in debug.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_first_uses_of_a_bundle_prepare_it_once() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let node = Arc::clone(&c.nodes[0].as_ref().unwrap().node);
+    let before = node.prepares();
+    let runs = (0..16).map(|_| {
+        let (node, bundle) = (Arc::clone(&node), bundle.clone());
+        tokio::spawn(async move { node.prepared_for(&bundle).await.map(|p| p.hash) })
+    });
+    for r in futures_util::future::join_all(runs).await {
+        assert_eq!(r.unwrap().unwrap(), bundle);
+    }
+    assert_eq!(node.prepares() - before, 1, "prepared more than once");
+}

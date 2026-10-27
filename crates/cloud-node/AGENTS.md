@@ -146,6 +146,10 @@ architecture spec.
 - **Devices**: a person is their account, and each passkey is a device: the
   session names the one it was opened with (`SessionClaims::passkey`,
   `passkeyId` in `/auth/me`); `auth/passkeys/add` adds one.
+- **Prepared components** (`Node::prepared_for`): single-flight per bundle hash (Ruling 44):
+  concurrent first uses wait for one prepare (a burst once compiled one bundle ~130 times at
+  once and overflowed rayon's stacks in debug builds). Bundles no app uses are dropped as new
+  ones come in. Test: `concurrent_first_uses_of_a_bundle_prepare_it_once`.
 - **Init**: `POST /apps` takes `initArgs` (JSON) for the app's `init`, kept on the
   `AppRecord`; a failed init answers `422 INIT_FAILED` (`AppState::init_error`). The
   engine judges a component when an app is created from it (`POST /bundles` stores
