@@ -11,12 +11,8 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_store::key::GroupExitReason;
 use eyre::Result as EyreResult;
 
-/// Takes `member` out of every descendant of the namespace root `root`, blocking
-/// re-entry with `reason`.
-///
-/// Runs before the root row is torn down so `verify_post_apply_state_hashes` sees
-/// the root's own rows change last. Per-descendant writes are not transactional: a
-/// store error aborts the apply and the idempotent cascade finishes on re-apply.
+/// Takes `member` out of every descendant of `root`, blocking re-entry with `reason`.
+/// Runs before the root row goes; a store error aborts and the idempotent cascade re-runs.
 pub(super) fn cascade_to_descendants(
     ctx: &mut GroupApplyCtx<'_>,
     root: &ContextGroupId,

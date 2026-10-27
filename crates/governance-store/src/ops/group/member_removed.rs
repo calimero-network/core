@@ -68,9 +68,7 @@ pub(crate) fn apply(
              inherited membership); skipping TeeMemberRemoved follow-up"
         );
     }
-    // A namespace-root removal reaches every descendant the member holds a
-    // direct row in, for any role: removed from the workspace, removed everywhere.
-    // A root is exactly a group with no parent edge.
+    // A root (no parent edge) removal reaches every descendant row, for any role.
     if NamespaceRepository::new(store).parent(group_id)?.is_none() {
         super::namespace_departure::cascade_to_descendants(
             ctx,
