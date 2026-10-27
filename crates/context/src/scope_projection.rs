@@ -2398,7 +2398,7 @@ impl ScopeProjections {
         let member_is_admin = rows
             .and_then(|m| m.get(member))
             .is_some_and(|r| *r == GroupMemberRole::Admin)
-            || view.group_admin.get(&group) == Some(member)
+            || view.holds_creator_slot(member, group)
             || root
                 .as_ref()
                 .is_some_and(|(root_g, root_admin)| *root_g == group && root_admin == member);
@@ -3414,8 +3414,8 @@ impl CutStandingReads<'_> {
         if let Some(role) = self.view.groups.get(group).and_then(|m| m.get(account)) {
             return Some(role.clone());
         }
-        let founds = self.view.group_admin.get(group) == Some(account)
-            || self.root == Some((*group, *account));
+        let founds =
+            self.view.holds_creator_slot(account, *group) || self.root == Some((*group, *account));
         founds.then_some(GroupMemberRole::Admin)
     }
 

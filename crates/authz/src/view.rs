@@ -236,16 +236,33 @@ impl AclView {
         self.may(author, object, OpMask::ADMIN)
     }
 
-    /// Is `author` an `Admin` of `group` at the cut?
+    /// Is `author` an `Admin` of `group` at the cut? An `Admin` row, or the creator slot
+    /// while the creator is still in the workspace.
     #[must_use]
     pub fn is_group_admin(&self, author: &AccountId, group: ContextGroupId) -> bool {
-        if self.group_admin.get(&group) == Some(author) {
+        if self.holds_creator_slot(author, group) {
             return true;
         }
         matches!(
             self.groups.get(&group).and_then(|m| m.get(author)),
             Some(GroupMemberRole::Admin)
         )
+    }
+
+    /// Does `author` hold `group`'s creator admin slot? Outside the root group the slot
+    /// counts only while `author` is still a member of the workspace root.
+    #[must_use]
+    pub fn holds_creator_slot(&self, author: &AccountId, group: ContextGroupId) -> bool {
+        if self.group_admin.get(&group) != Some(author) {
+            return false;
+        }
+        let root = self.group_and_ancestors(group).last().unwrap_or(group);
+        root == group
+            || self.is_root_admin(author)
+            || self
+                .groups
+                .get(&root)
+                .is_some_and(|members| members.contains_key(author))
     }
 
     /// Did `author` create `group`? Only the creator may open a Restricted

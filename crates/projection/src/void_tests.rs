@@ -797,8 +797,9 @@ fn a_demotion_by_an_admin_who_reaches_the_group_through_an_open_chain_counts() {
     let head = &ad[2];
     let mut log = ad.clone();
 
-    // Sam administers subgroup 1; Yara administers its open child, subgroup 2.
-    let first = create_subgroup(&[head], 1);
+    // Sam administers subgroup 1; Yara, a workspace member, administers its open child.
+    let yara_joins = add(OWNER, &[head], YARA, GroupMemberRole::Member);
+    let first = create_subgroup(&[&yara_joins], 1);
     let second = gov(
         OWNER,
         &[&first],
@@ -812,7 +813,7 @@ fn a_demotion_by_an_admin_who_reaches_the_group_through_an_open_chain_counts() {
     // Sam demotes Yara in subgroup 2 while Yara acts there.
     let demotion = add_in(subgroup(2), SAM, &[&second], YARA, GroupMemberRole::Member);
     let by_yara = add_in(subgroup(2), YARA, &[&second], ZED, GroupMemberRole::Member);
-    log.extend([first, second, demotion, by_yara.clone()]);
+    log.extend([yara_joins, first, second, demotion, by_yara.clone()]);
 
     assert!(ScopeState::void_ops(&log, base()).contains(&by_yara.id()));
 }

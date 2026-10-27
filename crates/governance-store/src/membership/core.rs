@@ -707,16 +707,20 @@ impl<'a> MembershipRepository<'a> {
         bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH))
     }
 
+    /// Whether `identity` is an admin of `group_id`: an `Admin` row, or the creator slot
+    /// while the creator is still in the workspace.
     pub fn is_admin(&self, group_id: &ContextGroupId, identity: &AccountId) -> EyreResult<bool> {
         if let Some(GroupMemberRole::Admin) = self.role_of(group_id, identity)? {
             return Ok(true);
         }
-        if let Some(meta) = MetaRepository::new(self.store).load(group_id)? {
-            if meta.admin_identity == *identity {
-                return Ok(true);
-            }
+        let Some(meta) = MetaRepository::new(self.store).load(group_id)? else {
+            return Ok(false);
+        };
+        if meta.admin_identity != *identity {
+            return Ok(false);
         }
-        Ok(false)
+        let root = NamespaceRepository::new(self.store).resolve(group_id)?;
+        Ok(root == *group_id || self.role_of(&root, identity)?.is_some())
     }
 
     pub fn require_admin(&self, group_id: &ContextGroupId, identity: &AccountId) -> EyreResult<()> {
