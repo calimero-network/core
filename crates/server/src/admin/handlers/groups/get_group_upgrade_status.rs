@@ -4,10 +4,9 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::GetGroupUpgradeStatusRequest;
-use calimero_server_primitives::admin::GetGroupUpgradeStatusApiResponse;
 use tracing::{debug, error, info};
 
-use super::{parse_group_id, upgrade_info_to_api_data};
+use super::{parse_group_id, upgrade_status_response};
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
@@ -46,14 +45,10 @@ pub async fn handler(
         .map_err(parse_api_error);
 
     match result {
-        Ok(upgrade) => {
-            let data = upgrade.as_ref().map(upgrade_info_to_api_data);
-
-            ApiResponse {
-                payload: GetGroupUpgradeStatusApiResponse { data },
-            }
-            .into_response()
+        Ok(status) => ApiResponse {
+            payload: upgrade_status_response(&status),
         }
+        .into_response(),
         Err(err) => {
             // A 4xx is the caller naming something absent or not theirs, not a
             // fault of this node. On a fleet node these journals ship to a

@@ -649,6 +649,22 @@ impl Report for GetGroupUpgradeStatusApiResponse {
                 println!("{table}");
             }
         }
+        if !self.missing_releases.is_empty() {
+            let mut table = Table::new();
+            let _ = table.set_header(vec![
+                Cell::new("Missing Release").fg(Color::Blue),
+                Cell::new("Version").fg(Color::Blue),
+                Cell::new("Application ID").fg(Color::Blue),
+            ]);
+            for release in &self.missing_releases {
+                let _ = table.add_row(vec![
+                    &release.package,
+                    &release.version,
+                    &release.application_id.to_string(),
+                ]);
+            }
+            println!("{table}");
+        }
     }
 }
 

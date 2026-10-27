@@ -15,7 +15,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_store::key::GroupTarget;
+use calimero_store::key::{GroupTarget, LadderRung};
 use calimero_store::Store;
 use eyre::bail;
 use tracing::{debug, warn};
@@ -207,8 +207,47 @@ fn plan_activation(
         }
     }
 
+    let Coverage { contexts, missing } = coverage(store, &has_blob, namespace_id, |group, app| {
+        check_expected(request, group, app)
+    })?;
+    if let Some(first) = missing.first() {
+        bail!(ContextError::BytecodeNotInstalled {
+            blob_id: BlobId::from(first.bytecode_id).to_string(),
+        });
+    }
+
+    Ok(ActivationPlan {
+        target_application_id,
+        contexts,
+    })
+}
+
+/// The releases this node must install before a switch of `namespace_id` can move
+/// every context it holds: oldest first in ladder order, deduplicated by bytecode,
+/// the target included when it is not installed. What `plan_activation` refuses on.
+pub(crate) fn missing_releases(
+    store: &Store,
+    has_blob: impl Fn(&BlobId) -> eyre::Result<bool>,
+    namespace_id: &ContextGroupId,
+) -> eyre::Result<Vec<LadderRung>> {
+    Ok(coverage(store, &has_blob, namespace_id, |_, _| Ok(()))?.missing)
+}
+
+/// The contexts a switch covers on this node and the releases it lacks for them.
+struct Coverage {
+    contexts: Vec<(ContextId, PublicKey)>,
+    missing: Vec<LadderRung>,
+}
+
+/// Walk the namespace subtree once; `check` vets each group a held context sits in.
+fn coverage(
+    store: &Store,
+    has_blob: &impl Fn(&BlobId) -> eyre::Result<bool>,
+    namespace_id: &ContextGroupId,
+    check: impl Fn(&ContextGroupId, ApplicationId) -> eyre::Result<()>,
+) -> eyre::Result<Coverage> {
     let mut contexts = Vec::new();
-    let mut chains = Vec::new();
+    let mut missing = Vec::new();
     for context_id in NamespaceRepository::new(store)
         .collect_subtree_for_cascade(namespace_id)?
         .contexts
@@ -219,28 +258,33 @@ fn plan_activation(
         };
         if let Some(group_id) = get_group_for_context(store, &context_id)? {
             if let Some(group) = MetaRepository::new(store).load(&group_id)? {
-                check_expected(request, &group_id, group.target.application_id)?;
+                check(&group_id, group.target.application_id)?;
                 // A zero id names no blob, as in the lazy upgrade's own check.
                 if group.target.bytecode_id != [0u8; 32] {
-                    chains.push(switch_chain(store, &context_id, &group_id, &group.target)?);
+                    let chain = switch_chain(store, &context_id, &group_id, &group.target)?;
+                    merge_ordered(&mut missing, not_installed(store, has_blob, &chain)?);
                 }
             }
         }
         contexts.push((context_id, executor));
     }
+    Ok(Coverage { contexts, missing })
+}
 
-    for chain in chains {
-        if let Some(missing) = first_not_installed(store, &has_blob, &chain)? {
-            bail!(ContextError::BytecodeNotInstalled {
-                blob_id: missing.to_string(),
-            });
+/// Add each release of `chain` not yet in `merged`, placing it before the first
+/// merged release that follows it in the chain, so ladder order survives the union.
+fn merge_ordered(merged: &mut Vec<LadderRung>, chain: Vec<LadderRung>) {
+    for (position, rung) in chain.iter().enumerate() {
+        if merged.iter().any(|m| m.bytecode_id == rung.bytecode_id) {
+            continue;
         }
+        let later = &chain[position + 1..];
+        let at = merged
+            .iter()
+            .position(|m| later.iter().any(|l| l.bytecode_id == m.bytecode_id))
+            .unwrap_or(merged.len());
+        merged.insert(at, rung.clone());
     }
-
-    Ok(ActivationPlan {
-        target_application_id,
-        contexts,
-    })
 }
 
 /// The releases a switch of `context_id` steps through, oldest first and ending at
@@ -250,7 +294,7 @@ fn switch_chain(
     context_id: &ContextId,
     group_id: &ContextGroupId,
     target: &GroupTarget,
-) -> eyre::Result<Vec<(ApplicationId, BlobId)>> {
+) -> eyre::Result<Vec<LadderRung>> {
     let ladder = UpgradeLadderRepository::new(store).load(group_id)?;
     let mut chain = Vec::new();
     if let Some(mut bound) = loaded_reader_bytecode_id(store, context_id)? {
@@ -259,36 +303,45 @@ fn switch_chain(
                 break;
             };
             bound = rung.bytecode_id;
-            chain.push((rung.application_id, BlobId::from(rung.bytecode_id)));
+            chain.push(rung);
         }
     }
-    chain.push((target.application_id, BlobId::from(target.bytecode_id)));
+    chain.push(LadderRung {
+        bytecode_id: target.bytecode_id,
+        application_id: target.application_id,
+        package: target.package.to_string(),
+        version: target.version.to_string(),
+    });
     Ok(chain)
 }
 
-/// The first release of `chain` a switch would fetch or install: its blob is not local,
-/// or its row names neither it nor a later release (a bundle's versions share one row).
-fn first_not_installed(
+/// The releases of `chain` a switch would fetch or install: a blob that is not local,
+/// or a row naming neither it nor a later release (a bundle's versions share one row).
+fn not_installed(
     store: &Store,
     has_blob: &impl Fn(&BlobId) -> eyre::Result<bool>,
-    chain: &[(ApplicationId, BlobId)],
-) -> eyre::Result<Option<BlobId>> {
-    for (position, (application_id, blob_id)) in chain.iter().enumerate() {
+    chain: &[LadderRung],
+) -> eyre::Result<Vec<LadderRung>> {
+    let mut missing = Vec::new();
+    for (position, rung) in chain.iter().enumerate() {
+        let blob_id = BlobId::from(rung.bytecode_id);
         let row = store
             .handle()
-            .get(&calimero_store::key::ApplicationMeta::new(*application_id))?
+            .get(&calimero_store::key::ApplicationMeta::new(
+                rung.application_id,
+            ))?
             .map(|row| row.bytecode.blob_id());
         let bound_by_row = row.is_some_and(|row| {
-            chain
-                .iter()
-                .skip(position)
-                .any(|(app, blob)| app == application_id && *blob == row)
+            chain[position..].iter().any(|later| {
+                later.application_id == rung.application_id
+                    && BlobId::from(later.bytecode_id) == row
+            })
         });
-        if !bound_by_row || !has_blob(blob_id)? {
-            return Ok(Some(*blob_id));
+        if !bound_by_row || !has_blob(&blob_id)? {
+            missing.push(rung.clone());
         }
     }
-    Ok(None)
+    Ok(missing)
 }
 
 /// Refuse when the caller expected another application than `group_id` targets.
@@ -314,7 +367,7 @@ mod tests {
 
     use calimero_governance_store::register_context_in_group;
     use calimero_store::db::InMemoryDB;
-    use calimero_store::key::{GroupMetaValue, LadderRung};
+    use calimero_store::key::GroupMetaValue;
 
     use super::*;
 
@@ -597,6 +650,163 @@ mod tests {
         let plan = plan_activation(&store, installed, &request(ns, None)).unwrap();
         let planned: Vec<_> = plan.contexts.iter().map(|(id, _)| *id).collect();
         assert_eq!(planned, vec![ctx]);
+    }
+
+    fn only(blobs: &[[u8; 32]]) -> impl Fn(&BlobId) -> eyre::Result<bool> + '_ {
+        move |blob| {
+            Ok(blobs
+                .iter()
+                .any(|installed| BlobId::from(*installed) == *blob))
+        }
+    }
+
+    fn missing_versions(
+        store: &Store,
+        has_blob: impl Fn(&BlobId) -> eyre::Result<bool>,
+        ns: &ContextGroupId,
+    ) -> Vec<String> {
+        missing_releases(store, has_blob, ns)
+            .unwrap()
+            .into_iter()
+            .map(|rung| rung.version)
+            .collect()
+    }
+
+    /// A namespace whose ladder is `rungs` (blob, version), the last its target.
+    fn seed_versioned(store: &Store, rungs: &[([u8; 32], &str)]) -> ContextGroupId {
+        let (target, version) = rungs[rungs.len() - 1];
+        let ns = seed_group_at(store, 0x10, app(), target);
+        set_target_version(store, &ns, version);
+        let repo = MetaRepository::new(store);
+        let mut meta = repo.load(&ns).unwrap().unwrap();
+        meta.target.package = "pkg".into();
+        repo.save(&ns, &meta).unwrap();
+        for (bytecode_id, version) in rungs {
+            UpgradeLadderRepository::new(store)
+                .append(
+                    &ns,
+                    LadderRung {
+                        bytecode_id: *bytecode_id,
+                        application_id: app(),
+                        package: "pkg".to_owned(),
+                        version: (*version).to_owned(),
+                    },
+                )
+                .unwrap();
+        }
+        ns
+    }
+
+    #[test]
+    fn nothing_is_missing_when_no_context_is_behind_and_the_target_is_installed() {
+        let store = store();
+        let ns = seed_group(&store, 0x10);
+        let ctx = seed_context(&store, &ns, 0x21, true);
+        crate::activation::record_activation(&store, &ctx, TARGET_BLOB);
+
+        assert!(missing_versions(&store, only(&[TARGET_BLOB]), &ns).is_empty());
+    }
+
+    #[test]
+    fn a_target_that_is_not_installed_is_the_only_release_missing() {
+        let store = store();
+        let ns = seed_versioned(&store, &[(TARGET_BLOB, "2.0.0")]);
+        let ctx = seed_context(&store, &ns, 0x21, true);
+        crate::activation::record_activation(&store, &ctx, TARGET_BLOB);
+
+        let missing = missing_releases(&store, only(&[]), &ns).unwrap();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].bytecode_id, TARGET_BLOB);
+        assert_eq!(missing[0].version, "2.0.0");
+        assert_eq!(missing[0].package, "pkg");
+        assert_eq!(missing[0].application_id, app());
+    }
+
+    #[test]
+    fn missed_rungs_are_listed_oldest_first_and_end_at_the_target() {
+        let store = store();
+        let rungs = [([0x03; 32], "1.1.0"), ([0x04; 32], "1.2.0")];
+        let ns = seed_versioned(&store, &rungs);
+        let ctx = seed_context(&store, &ns, 0x21, true);
+        crate::activation::record_activation(&store, &ctx, CREATION_BLOB);
+
+        let versions = missing_versions(&store, only(&[CREATION_BLOB]), &ns);
+        assert_eq!(versions, ["1.1.0", "1.2.0"]);
+        let versions = missing_versions(&store, only(&[[0x03; 32]]), &ns);
+        assert_eq!(versions, ["1.2.0"]);
+    }
+
+    #[test]
+    fn contexts_at_different_bounds_share_one_deduplicated_list_in_ladder_order() {
+        let store = store();
+        let rungs = [([0x03; 32], "1.1.0"), ([0x04; 32], "1.2.0")];
+        let ns = seed_versioned(&store, &rungs);
+        // The context nearer the target is seeded first, so a naive concatenation
+        // would list 1.2.0 before the older 1.1.0.
+        let near = seed_context(&store, &ns, 0x21, true);
+        crate::activation::record_activation(&store, &near, [0x03; 32]);
+        let far = seed_context(&store, &ns, 0x22, true);
+        crate::activation::record_activation(&store, &far, CREATION_BLOB);
+
+        assert_eq!(missing_versions(&store, only(&[]), &ns), ["1.1.0", "1.2.0"]);
+    }
+
+    #[test]
+    fn a_subgroup_created_on_an_ancestor_rung_replays_only_what_follows_it() {
+        let store = store();
+        let rungs = [([0x03; 32], "1.1.0"), ([0x04; 32], "1.2.0")];
+        let ns = seed_versioned(&store, &rungs);
+        let sub = seed_group_at(&store, 0x11, app(), [0x04; 32]);
+        NamespaceRepository::new(&store).nest(&ns, &sub).unwrap();
+        for (bytecode_id, version) in rungs {
+            UpgradeLadderRepository::new(&store)
+                .append(
+                    &sub,
+                    LadderRung {
+                        bytecode_id,
+                        application_id: app(),
+                        package: "pkg".to_owned(),
+                        version: version.to_owned(),
+                    },
+                )
+                .unwrap();
+        }
+        let ctx = seed_context(&store, &sub, 0x22, true);
+        crate::activation::record_activation(&store, &ctx, [0x03; 32]);
+
+        assert_eq!(missing_versions(&store, only(&[]), &ns), ["1.2.0"]);
+    }
+
+    #[test]
+    fn the_ladder_orders_the_list_not_the_versions() {
+        let store = store();
+        let rungs = [
+            ([0x03; 32], "0.0.72"),
+            ([0x04; 32], "0.0.70"),
+            ([0x05; 32], "0.0.71"),
+        ];
+        let ns = seed_versioned(&store, &rungs);
+        let ctx = seed_context(&store, &ns, 0x21, true);
+        crate::activation::record_activation(&store, &ctx, CREATION_BLOB);
+
+        let versions = missing_versions(&store, only(&[]), &ns);
+        assert_eq!(versions, ["0.0.72", "0.0.70", "0.0.71"]);
+    }
+
+    #[test]
+    fn a_refused_activation_names_the_first_missing_release() {
+        let store = store();
+        let rungs = [([0x03; 32], "1.1.0"), ([0x04; 32], "1.2.0")];
+        let ns = seed_versioned(&store, &rungs);
+        let ctx = seed_context(&store, &ns, 0x21, true);
+        crate::activation::record_activation(&store, &ctx, CREATION_BLOB);
+
+        let first = missing_releases(&store, only(&[]), &ns).unwrap()[0].bytecode_id;
+        let err = plan_activation(&store, only(&[]), &request(ns, None)).unwrap_err();
+        assert!(matches!(
+            refusal(&err),
+            ContextError::BytecodeNotInstalled { blob_id } if *blob_id == BlobId::from(first).to_string()
+        ));
     }
 
     #[test]

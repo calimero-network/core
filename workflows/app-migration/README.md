@@ -64,6 +64,7 @@ and the namespace-cascade additions designed in
 | `41-reader-sees-post-upgrade-writes.yml` | A member whose first call after a cascade is a read sees what was written on the new release: the switch replays the deltas the node held back before serving the read (2-node). |
 | `42-activate-upgrade-on-an-idle-node.yml` | A node that never ran the app switches on `POST /groups/{namespace}/upgrade/activate`: the held post-upgrade write is replayed so its first read returns it, a repeat activation moves nothing, a wrong expected application or a stale expected version is 409 and an unknown namespace 404 (2-node). |
 | `43-retarget-before-activate.yml` | The admin retargets the namespace from v2 to v3 (same application id) after a member read v2: the member's activation naming v2 is 409 naming the version, and activating the re-read target v3 succeeds (2-node). |
+| `47-missing-releases-before-activate.yml` | A member that missed two upgrades reads `missingReleases` (both newer releases, oldest first) from its upgrade status, is refused 404 until it installs them, installs the target first and sees only the middle release left, then activates and runs the target (2-node). |
 
 ### Out of scope
 

@@ -397,8 +397,23 @@ pub struct GetGroupUpgradeStatusRequest {
     pub group_id: ContextGroupId,
 }
 
+/// A release this node must install before it can activate the namespace's upgrade.
+#[derive(Clone, Debug)]
+pub struct MissingRelease {
+    pub package: String,
+    pub version: String,
+    pub application_id: ApplicationId,
+}
+
+#[derive(Debug)]
+pub struct GroupUpgradeStatusResponse {
+    pub upgrade: Option<GroupUpgradeInfo>,
+    /// Oldest first in ladder order, the target included.
+    pub missing_releases: Vec<MissingRelease>,
+}
+
 impl Message for GetGroupUpgradeStatusRequest {
-    type Result = eyre::Result<Option<GroupUpgradeInfo>>;
+    type Result = eyre::Result<GroupUpgradeStatusResponse>;
 }
 
 #[derive(Debug)]
