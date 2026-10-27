@@ -20,6 +20,7 @@ pub mod error;
 pub mod kms;
 pub mod local;
 pub mod node;
+pub mod packages;
 pub mod services;
 pub mod system;
 pub mod types;

@@ -21,6 +21,7 @@ futures-util.workspace = true
 hex.workspace = true
 reqwest = { workspace = true, features = ["json", "stream"] }
 ring.workspace = true
+semver.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
@@ -38,6 +39,8 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
 
 calimero-account.workspace = true
+calimero-app-downloader.workspace = true
+calimero-bundle.workspace = true
 calimero-cloud-client.workspace = true
 calimero-identity.workspace = true
 calimero-log.workspace = true
@@ -49,7 +52,14 @@ calimero-wasm-abi.workspace = true
 calimero-sealed.workspace = true
 calimero-tee-attestation.workspace = true
 
+[build-dependencies]
+toml.workspace = true
+
 [dev-dependencies]
 calimero-cloud-client = { workspace = true, features = ["testing"] }
+ed25519-dalek.workspace = true
+flate2.workspace = true
+sha2.workspace = true
+tar.workspace = true
 calimero-identity = { workspace = true, features = ["testing"] }
 tempfile.workspace = true

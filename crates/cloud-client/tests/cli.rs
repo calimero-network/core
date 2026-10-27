@@ -55,6 +55,7 @@ async fn deploy_call_view_and_operate_from_the_command_line() {
         &dir.path().join("cluster"),
         "ops-token",
         vec!["http://localhost:3000".into()],
+        None,
     )
     .await
     .unwrap();

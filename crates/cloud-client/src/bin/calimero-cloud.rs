@@ -71,6 +71,15 @@ enum Cmd {
         #[command(flatten)]
         opts: AppOpts,
     },
+    /// Install a signed package: `PACKAGE --version V` from the node's registry,
+    /// or a local `.mpk` file.
+    Install {
+        package_or_file: String,
+        #[arg(long)]
+        version: Option<String>,
+    },
+    #[command(subcommand)]
+    Package(PackageCmd),
     #[command(subcommand)]
     Bundle(BundleCmd),
     #[command(subcommand)]
@@ -131,6 +140,21 @@ struct AppOpts {
 }
 
 #[derive(Debug, Subcommand)]
+enum PackageCmd {
+    /// Installed packages and their versions.
+    List,
+    Get {
+        package: String,
+    },
+    /// Uninstall one version, or the whole package. Refused while an app runs it.
+    Uninstall {
+        package: String,
+        #[arg(long)]
+        version: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum BundleCmd {
     /// Upload a WASM bundle; prints its hash.
     Upload { wasm: PathBuf },
@@ -138,22 +162,41 @@ enum BundleCmd {
 
 #[derive(Debug, Subcommand)]
 enum AppCmd {
+    /// Create an app from a package release (or a raw bundle hash, on development nodes).
     Create {
         name: String,
+        #[arg(long, conflicts_with = "package")]
+        bundle: Option<String>,
         #[arg(long)]
-        bundle: String,
+        package: Option<String>,
+        /// The release; default the latest installed.
+        #[arg(long, requires = "package")]
+        version: Option<String>,
+        /// The service, for a multi-service package.
+        #[arg(long, requires = "package")]
+        service: Option<String>,
         #[command(flatten)]
         opts: AppOpts,
     },
-    List,
+    /// List apps, optionally only those of one package.
+    List {
+        #[arg(long)]
+        package: Option<String>,
+    },
     Get {
         app: String,
     },
-    /// Move an app to another bundle, optionally running its migration.
+    /// Delete an app instance (its owner or an org admin).
+    Delete {
+        app: String,
+    },
+    /// Move an app to another release of its package (`--version`), or another bundle.
     Upgrade {
         app: String,
+        #[arg(long, conflicts_with = "version")]
+        bundle: Option<String>,
         #[arg(long)]
-        bundle: String,
+        version: Option<String>,
         #[arg(long)]
         migrate: Option<String>,
     },
@@ -398,20 +441,62 @@ async fn main() -> eyre::Result<()> {
             let bytes = std::fs::read(wasm).wrap_err_with(|| format!("{}", wasm.display()))?;
             json!({ "hash": client.upload_bundle(bytes).await? })
         }
-        Cmd::App(AppCmd::Create { name, bundle, opts }) => {
-            json!({ "appId": client.create_app(name, bundle, app_body(opts)?).await? })
+        Cmd::Install {
+            package_or_file,
+            version,
+        } => {
+            let path = std::path::Path::new(package_or_file);
+            if path.extension().is_some_and(|e| e == "mpk") || path.is_file() {
+                let bytes = std::fs::read(path).wrap_err_with(|| format!("{}", path.display()))?;
+                client.upload_package(bytes).await?
+            } else {
+                let version = version
+                    .as_deref()
+                    .ok_or_else(|| eyre::eyre!("name the release to install: --version"))?;
+                client.install_package(package_or_file, version).await?
+            }
         }
-        Cmd::App(AppCmd::List) => client.get("apps").await?,
+        Cmd::Package(PackageCmd::List) => client.packages().await?,
+        Cmd::Package(PackageCmd::Get { package }) => client.package(package).await?,
+        Cmd::Package(PackageCmd::Uninstall { package, version }) => {
+            client
+                .uninstall_package(package, version.as_deref())
+                .await?
+        }
+        Cmd::App(AppCmd::Create {
+            name,
+            bundle,
+            package,
+            version,
+            service,
+            opts,
+        }) => {
+            let mut body = app_body(opts)?;
+            if let Some(b) = body.as_object_mut() {
+                let _prev = b.insert("name".into(), json!(name));
+                let _prev = b.insert("bundle".into(), json!(bundle));
+                let _prev = b.insert("package".into(), json!(package));
+                let _prev = b.insert("version".into(), json!(version));
+                let _prev = b.insert("service".into(), json!(service));
+            }
+            client.post("apps", body).await?
+        }
+        Cmd::App(AppCmd::List { package }) => match package {
+            Some(p) => client.get(&format!("apps?package={p}")).await?,
+            None => client.get("apps").await?,
+        },
         Cmd::App(AppCmd::Get { app }) => client.get(&format!("apps/{app}")).await?,
+        Cmd::App(AppCmd::Delete { app }) => client.delete_app(app).await?,
         Cmd::App(AppCmd::Upgrade {
             app,
             bundle,
+            version,
             migrate,
         }) => {
             client
                 .post(
                     &format!("apps/{app}/upgrade"),
-                    json!({ "bundle": bundle, "migrate": migrate }),
+                    json!({ "bundle": bundle, "version": version, "migrate": migrate }),
                 )
                 .await?
         }

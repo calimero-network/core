@@ -26,6 +26,22 @@ architecture spec.
   records only `{hash, size}`. A node missing a blob fetches it from a peer
   (`internal/blob/get`) on first use. Log entries are capped at
   `calimero_log::MAX_ENTRY_BYTES` (1 MiB): openraft gives each append one heartbeat.
+- **Packages** (`packages.rs`, `system::PackageRecord`): signed `.mpk` releases, v1's
+  install model. `POST /packages/install { package, version }` fetches from the
+  operator's registry (`--registry-url`, `calimero-app-downloader`'s `HttpRegistry`);
+  `POST /packages` takes an uploaded file. Before `InstallPackage` is logged the
+  node checks the publisher signature and every artifact digest
+  (`calimero_bundle::VerifiedBundle`), `minRuntimeVersion` (build.rs's
+  `CALIMERO_RELEASE_VERSION`), the package's pinned signer (first release wins,
+  `apply` re-checks) and that each service's WASM compiles. The log keeps the
+  `.mpk`'s hash; a node that runs a release it does not hold fetches it itself
+  (`Node::release_wasm`: the registry for a registry release, never a peer; a peer
+  for an upload), refuses bytes whose hash differs, and verifies them again.
+  `POST /apps { package, version?, service? }` creates from a release (installing
+  it from the registry first); upgrade takes `{ version }`; `DELETE /apps/{app}`;
+  `DELETE /packages/{p}[/{v}]` is refused while an app runs the release (a WASM
+  another release ships stays). Raw `POST /bundles` is development only
+  (`allow_unsigned_bundles`, on with `--dev`).
 - **Ops replica moves** run on the app group's leader; any other replica answers
   `421 NOT_LEADER` with `details.leaderUrl` before writing anything.
 - **Forwards are bounded**: a call or read forwarded to an app's leader waits at most

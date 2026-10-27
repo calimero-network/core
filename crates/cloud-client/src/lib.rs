@@ -296,14 +296,14 @@ impl Client {
 
     // ------------------------------------------------------------ apps
 
-    /// Upload a WASM bundle; returns its hash.
-    pub async fn upload_bundle(&self, wasm: Vec<u8>) -> Result<String> {
-        let url = self.base.join("bundles").map_err(eyre::Report::from)?;
+    /// POST raw bytes (a bundle or a package) to `path`.
+    async fn upload(&self, path: &str, content_type: &str, bytes: Vec<u8>) -> Result<Value> {
+        let url = self.base.join(path).map_err(eyre::Report::from)?;
         let mut req = self
             .http
             .post(url)
-            .header("content-type", "application/wasm")
-            .body(wasm);
+            .header("content-type", content_type)
+            .body(bytes);
         if let Some(token) = self.auth.read().await.as_deref() {
             req = req.bearer_auth(token);
         }
@@ -318,10 +318,65 @@ impl Client {
                 status,
                 code: v["error"].as_str().unwrap_or("ERROR").to_owned(),
                 message: v["message"].as_str().unwrap_or_default().to_owned(),
-                details: Value::Null,
+                details: v.get("details").cloned().unwrap_or(Value::Null),
             });
         }
+        Ok(v)
+    }
+
+    /// Upload a raw WASM bundle (development nodes only); returns its hash.
+    pub async fn upload_bundle(&self, wasm: Vec<u8>) -> Result<String> {
+        let v = self.upload("bundles", "application/wasm", wasm).await?;
         Ok(v["hash"].as_str().unwrap_or_default().to_owned())
+    }
+
+    /// Install a signed `.mpk` package file.
+    pub async fn upload_package(&self, mpk: Vec<u8>) -> Result<Value> {
+        self.upload("packages", "application/octet-stream", mpk)
+            .await
+    }
+
+    /// Install `package@version` from the node's registry.
+    pub async fn install_package(&self, package: &str, version: &str) -> Result<Value> {
+        self.post(
+            "packages/install",
+            json!({ "package": package, "version": version }),
+        )
+        .await
+    }
+
+    /// Installed packages and their versions.
+    pub async fn packages(&self) -> Result<Value> {
+        Ok(self.get("packages").await?["packages"].clone())
+    }
+
+    /// One installed package and its versions.
+    pub async fn package(&self, package: &str) -> Result<Value> {
+        self.get(&format!("packages/{}", path_segment(package)))
+            .await
+    }
+
+    /// Uninstall one version of a package, or all of it.
+    pub async fn uninstall_package(&self, package: &str, version: Option<&str>) -> Result<Value> {
+        match version {
+            Some(v) => {
+                self.delete(&format!(
+                    "packages/{}/{}",
+                    path_segment(package),
+                    path_segment(v)
+                ))
+                .await
+            }
+            None => {
+                self.delete(&format!("packages/{}", path_segment(package)))
+                    .await
+            }
+        }
+    }
+
+    /// Delete an app instance.
+    pub async fn delete_app(&self, app: &str) -> Result<Value> {
+        self.delete(&format!("apps/{}", path_segment(app))).await
     }
 
     /// Upload a blob for app `app`; answers `{ blobId, id, size }` (`blobId`
@@ -531,4 +586,18 @@ impl Client {
             .map_err(eyre::Report::from)?;
         Ok(doc)
     }
+}
+
+/// One URL path segment: everything but unreserved characters escaped, so an
+/// id cannot reach another route.
+fn path_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }

@@ -1,8 +1,13 @@
+pub mod archive;
 mod frontend;
 #[cfg(feature = "html")]
 mod html;
 mod signature;
 
+pub use archive::{
+    extract_bundle_manifest, is_bundle_blob, validate_artifact_path, validate_path_component,
+    VerifiedBundle, VerifiedContents, VerifiedWasm, MAX_ARCHIVE_BYTES,
+};
 pub use frontend::{
     mime_type, verify_frontend_file, BundleFrontend, FrontendError, FRONTEND_ROOT,
     MAX_FRONTEND_BYTES,

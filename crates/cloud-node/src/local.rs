@@ -35,6 +35,7 @@ pub async fn start(
     dir: &Path,
     ops_token: &str,
     origins: Vec<String>,
+    registry: Option<String>,
 ) -> eyre::Result<LocalCluster> {
     let ports: Vec<u16> = (1..=n)
         .map(|i| base_port + u16::try_from(i).unwrap_or(u16::MAX))
@@ -73,6 +74,8 @@ pub async fn start(
             tee_release: None,
             tee_profile: None,
             peer_measurements: calimero_cloud_client::Measurements::None,
+            registry: registry.clone(),
+            allow_unsigned_bundles: true,
         };
         nodes.push(run(config).await?);
     }

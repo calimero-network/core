@@ -87,6 +87,12 @@ struct Args {
     /// The oldest mero-tee release a peer may run.
     #[arg(long, env = "MEROD_PEER_MIN_RELEASE")]
     peer_min_release: Option<String>,
+    /// The package registry nodes fetch signed releases from.
+    #[arg(long, env = "MEROD_REGISTRY_URL")]
+    registry_url: Option<String>,
+    /// Accept raw WASM uploads, which carry no publisher signature (default: only with --dev).
+    #[arg(long, env = "MEROD_ALLOW_UNSIGNED_BUNDLES")]
+    allow_unsigned_bundles: bool,
 }
 
 /// `merod-v2 local`: a development cluster in this process.
@@ -108,6 +114,9 @@ struct LocalArgs {
     /// The Ops API token (default: a new random one, printed).
     #[arg(long, env = "MEROD_OPS_TOKEN")]
     ops_token: Option<String>,
+    /// The package registry the cluster installs from.
+    #[arg(long, env = "MEROD_REGISTRY_URL")]
+    registry_url: Option<String>,
     /// Origins allowed to run passkey ceremonies.
     #[arg(
         long,
@@ -130,6 +139,7 @@ async fn local(args: LocalArgs) -> eyre::Result<()> {
         &args.dir,
         &token,
         args.origins,
+        args.registry_url,
     )
     .await?;
     println!(
@@ -237,6 +247,8 @@ async fn main() -> eyre::Result<()> {
         tee_release: args.tee_release,
         tee_profile: args.tee_profile,
         peer_measurements,
+        registry: args.registry_url,
+        allow_unsigned_bundles: args.allow_unsigned_bundles || args.dev,
     };
     let running = run(config).await?;
     tokio::signal::ctrl_c().await?;

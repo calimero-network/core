@@ -182,7 +182,7 @@ fn test_is_bundle_blob_random_bytes() {
 
 #[test]
 fn test_extract_manifest_not_a_tar() {
-    let result = bundle::extract_bundle_manifest(b"not a tar");
+    let result = bundle::extract_bundle_manifest(b"not a tar", &bundle::runtime_version());
     assert!(result.is_err());
 }
 
@@ -198,7 +198,7 @@ fn test_extract_manifest_empty_tar() {
     encoder.write_all(&[0u8; 1024]).unwrap();
     let data = encoder.finish().unwrap();
 
-    let result = bundle::extract_bundle_manifest(&data);
+    let result = bundle::extract_bundle_manifest(&data, &bundle::runtime_version());
     assert!(
         result.is_err(),
         "empty tar should fail with 'manifest.json not found'"
@@ -211,6 +211,7 @@ fn test_extract_manifest_empty_tar() {
 
 #[test]
 fn test_verified_bundle_rejects_non_tar() {
-    let result = bundle::VerifiedBundle::open(Arc::from(b"garbage".as_slice()));
+    let result =
+        bundle::VerifiedBundle::open(Arc::from(b"garbage".as_slice()), &bundle::runtime_version());
     assert!(result.is_err());
 }

@@ -67,6 +67,11 @@ pub struct Config {
     pub tee_profile: Option<String>,
     /// Which TD images a peer's real quote may come from.
     pub peer_measurements: calimero_cloud_client::Measurements,
+    /// The package registry every node fetches releases from (`--registry-url`).
+    pub registry: Option<String>,
+    /// Take raw WASM uploads (`POST /bundles`), which carry no publisher
+    /// signature. Development only; production installs signed packages.
+    pub allow_unsigned_bundles: bool,
 }
 
 /// Request to run a method.
@@ -663,6 +668,10 @@ impl Node {
         }
         if !self.sys(|s| s.bundles.contains_key(hash)) {
             return Err(ApiError::not_found("bundle not replicated here yet"));
+        }
+        // A package release is fetched from where it lives and verified again.
+        if let Some(release) = self.release_of(hash) {
+            return self.release_wasm(hash, &release).await;
         }
         let peers: Vec<String> = self.sys(|s| {
             s.nodes

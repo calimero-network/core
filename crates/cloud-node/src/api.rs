@@ -690,6 +690,11 @@ async fn apikey_revoke(
 
 async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Body) -> ApiResult {
     let account = signed_in(&node, &headers).await?.account()?;
+    if !node.config.allow_unsigned_bundles {
+        return Err(ApiError::forbidden(
+            "this node takes signed packages only (POST /packages); raw WASM is for development",
+        ));
+    }
     if body.len() > 16 * 1024 * 1024 {
         return Err(ApiError::new(
             413,
@@ -714,12 +719,144 @@ async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Bod
     Ok(Json(json!({ "hash": hash })))
 }
 
+/// Install an uploaded, signed `.mpk`.
+async fn package_upload(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    body: Body,
+) -> ApiResult {
+    let account = signed_in(&node, &headers).await?.account()?;
+    Ok(Json(
+        node.install_upload(Arc::from(body.to_vec()), &account)
+            .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+struct InstallBody {
+    package: String,
+    version: String,
+}
+
+/// Install `package@version` from the registry: verified here, then fetched
+/// and verified again by every node that runs it.
+async fn package_install(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<InstallBody>,
+) -> ApiResult {
+    let account = signed_in(&node, &headers).await?.account()?;
+    Ok(Json(
+        node.install_from_registry(&body.package, &body.version, &account)
+            .await?,
+    ))
+}
+
+fn package_json(p: &crate::system::PackageRecord) -> Value {
+    let mut versions: Vec<&crate::system::PackageVersion> = p.versions.values().collect();
+    versions.sort_by(|a, b| crate::system::compare_versions(&a.version, &b.version));
+    json!({
+        "package": p.name,
+        "signerId": p.signer_id,
+        "owner": p.owner,
+        "latest": p.latest().map(|v| v.version.clone()),
+        "versions": versions.iter().map(|v| json!({
+            "version": v.version,
+            "mpk": v.mpk,
+            "size": v.mpk_size,
+            "source": v.source,
+            "services": v.services,
+            "metadata": v.metadata,
+            "outbound": v.outbound,
+            "installedBy": v.installed_by,
+            "installedAt": v.installed_at,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+async fn package_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    let _p = signed_in(&node, &headers).await?;
+    let packages: Vec<Value> = node.sys(|s| s.packages.values().map(package_json).collect());
+    Ok(Json(json!({ "packages": packages })))
+}
+
+async fn package_get(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(package): Path<String>,
+) -> ApiResult {
+    let _p = signed_in(&node, &headers).await?;
+    node.sys(|s| s.packages.get(&package).map(package_json))
+        .map(Json)
+        .ok_or_else(|| ApiError::not_found("no such package"))
+}
+
+async fn package_uninstall(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(package): Path<String>,
+) -> ApiResult {
+    let account = person(&node, &headers).await?.account()?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::UninstallPackage {
+            package,
+            version: None,
+            actor: account,
+        })
+        .await?,
+    ))
+}
+
+async fn package_version_uninstall(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((package, version)): Path<(String, String)>,
+) -> ApiResult {
+    let account = person(&node, &headers).await?.account()?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::UninstallPackage {
+            package,
+            version: Some(version),
+            actor: account,
+        })
+        .await?,
+    ))
+}
+
+/// The bundle a create or upgrade names: a bundle hash, or a package release
+/// (installed from the registry first if the fleet lacks it).
+async fn bundle_named(
+    node: &Node,
+    bundle: Option<String>,
+    package: Option<&str>,
+    version: Option<&str>,
+    service: Option<&str>,
+    actor: &str,
+) -> Result<String, ApiError> {
+    match (bundle, package) {
+        (Some(b), None) => Ok(b),
+        (None, Some(p)) => node.resolve_release(p, version, service, actor).await,
+        _ => Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "name either a bundle or a package",
+        )),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateAppBody {
     #[serde(default)]
     name: String,
-    bundle: String,
+    /// A bundle hash (a raw upload), or `package` (+ `version`, `service`).
+    #[serde(default)]
+    bundle: Option<String>,
+    #[serde(default)]
+    package: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    service: Option<String>,
     #[serde(default)]
     org: Option<String>,
     #[serde(default)]
@@ -741,6 +878,15 @@ async fn app_create(
         return Err(ApiError::forbidden("read-only API key"));
     }
     let owner = p.account()?;
+    let bundle = bundle_named(
+        &node,
+        body.bundle,
+        body.package.as_deref(),
+        body.version.as_deref(),
+        body.service.as_deref(),
+        &owner,
+    )
+    .await?;
     let replicas = node.place();
     if replicas.is_empty() {
         return Err(ApiError::unavailable("no nodes registered yet"));
@@ -757,7 +903,7 @@ async fn app_create(
                 app_id: app_id.clone(),
                 name: body.name,
                 group: 0,
-                bundle: body.bundle,
+                bundle,
                 owner,
                 org: body.org,
                 access,
@@ -825,7 +971,21 @@ fn init_state(state: &crate::app::AppState) -> Option<Result<(), Value>> {
     }
 }
 
-async fn app_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+#[derive(Deserialize)]
+struct AppListQuery {
+    /// Only instances of this package (any version).
+    #[serde(default)]
+    package: Option<String>,
+    /// Only instances running this bundle.
+    #[serde(default)]
+    bundle: Option<String>,
+}
+
+async fn app_list(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Query(q): Query<AppListQuery>,
+) -> ApiResult {
     let p = principal(&node, &headers).await?;
     let account = p
         .as_ref()
@@ -835,10 +995,48 @@ async fn app_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResul
             .values()
             .filter(|a| a.access != Access::Public || account.as_deref() == Some(a.owner.as_str()))
             .filter(|a| s.may_reach(a, account.as_deref()))
-            .map(|a| json!({ "appId": a.app_id, "name": a.name, "owner": a.owner, "org": a.org, "bundle": a.bundle }))
+            .filter(|a| q.bundle.as_ref().is_none_or(|b| *b == a.bundle))
+            .filter(|a| {
+                q.package.as_ref().is_none_or(|p| {
+                    s.bundles
+                        .get(&a.bundle)
+                        .and_then(|b| b.package.as_ref())
+                        .is_some_and(|r| r.package == *p)
+                })
+            })
+            .map(|a| {
+                let release = s.bundles.get(&a.bundle).and_then(|b| b.package.clone());
+                json!({
+                    "appId": a.app_id,
+                    "name": a.name,
+                    "owner": a.owner,
+                    "org": a.org,
+                    "bundle": a.bundle,
+                    "package": release.as_ref().map(|r| &r.package),
+                    "version": release.as_ref().map(|r| &r.version),
+                })
+            })
             .collect()
     });
     Ok(Json(json!({ "apps": apps })))
+}
+
+/// Delete an app instance: its owner, or an admin of its organization.
+async fn app_delete(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let account = person(&node, &headers).await?.account()?;
+    let _app = node.app(&app_id).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::DeleteApp {
+            app_id: app_id.clone(),
+            actor: account,
+        })
+        .await?;
+    Ok(Json(json!({ "appId": app_id, "deleted": true })))
 }
 
 async fn app_get(
@@ -1215,7 +1413,15 @@ async fn events(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpgradeBody {
-    bundle: String,
+    /// A bundle hash, or a `version` of the app's package (or another `package`).
+    #[serde(default)]
+    bundle: Option<String>,
+    #[serde(default)]
+    package: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    service: Option<String>,
     /// The bundle's migration export, if the state shape changed.
     #[serde(default)]
     migrate: Option<String>,
@@ -1245,14 +1451,34 @@ async fn app_upgrade(
             "only the owner or an org admin may upgrade",
         ));
     }
-    if !node.sys(|s| s.bundles.contains_key(&body.bundle)) {
+    // A version alone means the app's own package and service.
+    let current = node.release_of(&app.bundle);
+    let package = body.package.clone().or_else(|| {
+        body.version
+            .as_ref()
+            .and(current.as_ref().map(|r| r.at.package.clone()))
+    });
+    let service = body
+        .service
+        .clone()
+        .or_else(|| current.as_ref().and_then(|r| r.at.service.clone()));
+    let bundle = bundle_named(
+        &node,
+        body.bundle.clone(),
+        package.as_deref(),
+        body.version.as_deref(),
+        service.as_deref(),
+        &account,
+    )
+    .await?;
+    if !node.sys(|s| s.bundles.contains_key(&bundle)) {
         return Err(crate::node::rejected("unknown bundle"));
     }
     let applied = node
         .call(&CallRequest::new(
             app_id.clone(),
             "__upgrade".into(),
-            json!({ "bundle": body.bundle, "migrate": body.migrate }),
+            json!({ "bundle": bundle, "migrate": body.migrate }),
             Caller::Account {
                 account: account.clone(),
             },
@@ -1263,7 +1489,7 @@ async fn app_upgrade(
         let _ok = node
             .sys_write(&SystemCmd::UpgradeApp {
                 app_id,
-                bundle: body.bundle,
+                bundle,
                 actor: account,
             })
             .await?;
@@ -2140,8 +2366,12 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/auth/apikeys", post(apikey_create).get(apikey_list))
         .route("/auth/apikeys/{key}", delete(apikey_revoke))
         .route("/bundles", post(bundle_put))
+        .route("/packages", post(package_upload).get(package_list))
+        .route("/packages/install", post(package_install))
+        .route("/packages/{package}", get(package_get).delete(package_uninstall))
+        .route("/packages/{package}/{version}", delete(package_version_uninstall))
         .route("/apps", post(app_create).get(app_list))
-        .route("/apps/{app}", get(app_get))
+        .route("/apps/{app}", get(app_get).delete(app_delete))
         .route("/apps/{app}/intents", post(intents))
         .route("/apps/{app}/views", post(views))
         .route("/apps/{app}/events", get(events))

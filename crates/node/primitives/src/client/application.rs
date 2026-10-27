@@ -122,7 +122,7 @@ impl NodeClient {
             return Ok(Some(vec![None]));
         }
         let names = tokio::task::spawn_blocking(move || -> eyre::Result<Vec<Option<String>>> {
-            let verified = bundle::VerifiedBundle::open(blob_bytes)?;
+            let verified = bundle::VerifiedBundle::open(blob_bytes, &bundle::runtime_version())?;
             Ok(verified
                 .manifest()
                 .wasm_artifacts()
@@ -148,7 +148,8 @@ impl NodeClient {
             return Ok(None);
         }
         let manifest = tokio::task::spawn_blocking(move || {
-            bundle::VerifiedBundle::open(blob_bytes).map(|v| v.manifest().clone())
+            bundle::VerifiedBundle::open(blob_bytes, &bundle::runtime_version())
+                .map(|v| v.manifest().clone())
         })
         .await
         .map_err(|e| eyre::eyre!("bundle manifest read task failed: {e}"))??;
@@ -240,7 +241,8 @@ impl NodeClient {
             let size = blob_bytes.len() as u64;
             if Self::is_bundle_blob(&blob_bytes) {
                 let manifest = match tokio::task::spawn_blocking(move || {
-                    bundle::VerifiedBundle::open(blob_bytes).map(|v| v.manifest().clone())
+                    bundle::VerifiedBundle::open(blob_bytes, &bundle::runtime_version())
+                        .map(|v| v.manifest().clone())
                 })
                 .await
                 {
@@ -305,7 +307,8 @@ impl NodeClient {
                 return Err(eyre::Report::new(NotABundle)
                     .wrap_err(format!("{blob_id} is raw wasm, which never runs")));
             }
-            bundle::VerifiedBundle::open(blob_bytes)?.wasm(service.as_deref())
+            bundle::VerifiedBundle::open(blob_bytes, &bundle::runtime_version())?
+                .wasm(service.as_deref())
         })
         .await??;
         Ok(Some(wasm))

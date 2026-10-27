@@ -11,6 +11,7 @@ cargo-fuzz = true
 [dependencies]
 borsh = "*"
 calimero-account = { path = "../crates/account" }
+calimero-bundle = { path = "../crates/bundle" }
 calimero-context-config = { path = "../crates/context/config" }
 calimero-governance-store = { path = "../crates/governance-store", features = ["testing"] }
 calimero-governance-types = { path = "../crates/governance-types" }
@@ -26,6 +27,7 @@ hex = "*"
 libfuzzer-sys = "0.4"
 libp2p = { version = "*", features = ["ed25519"] }
 mero-sign = { path = "../tools/mero-sign" }
+semver = "*"
 serde_json = "*"
 sha2 = "*"
 tar = "*"

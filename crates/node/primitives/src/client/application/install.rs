@@ -34,7 +34,7 @@ pub(super) async fn derive_bundle_id(bundle_data: Arc<[u8]>) -> eyre::Result<App
         if !bundle::is_bundle_blob(&bundle_data) {
             return Err(NotABundle.into());
         }
-        let verified = bundle::VerifiedBundle::open(bundle_data)?;
+        let verified = bundle::VerifiedBundle::open(bundle_data, &bundle::runtime_version())?;
         ApplicationId::for_bundle(&verified.manifest().package, verified.signer_id())
     })
     .await?
@@ -58,7 +58,7 @@ impl NodeClient {
         // Every artifact, including the unnamed single-service one, so substituted
         // bytes are refused before first execution; a bad frontend is refused here too.
         let (verified, contents) = tokio::task::spawn_blocking(move || -> eyre::Result<_> {
-            let verified = bundle::VerifiedBundle::open(bundle_data)?;
+            let verified = bundle::VerifiedBundle::open(bundle_data, &bundle::runtime_version())?;
             let contents = verified.contents()?;
             Ok((verified, contents))
         })

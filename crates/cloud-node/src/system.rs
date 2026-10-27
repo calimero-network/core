@@ -57,6 +57,85 @@ pub struct BundleRecord {
     /// The WASM itself lives in each node's blob store, under `hash`.
     pub size: u64,
     pub uploaded_by: AccountId,
+    /// The package release this WASM came out of; `None` for a raw upload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<PackageRef>,
+}
+
+/// One service of one package release.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageRef {
+    pub package: String,
+    pub version: String,
+    /// The service's name; `None` for a single-service bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+}
+
+/// Where a release's `.mpk` came from, so a node that needs it knows where to get it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BundleSource {
+    /// The operator's registry (`--registry-url`): every node fetches it from there.
+    Registry,
+    /// Uploaded as a file: held by a majority of nodes, fetched from a peer.
+    Upload,
+}
+
+/// A package: one publisher key, any number of releases.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageRecord {
+    pub name: String,
+    /// The publisher's key (`did:key`), pinned by the first release. Every
+    /// later release must be signed by it (v1's `(package, signer)` identity).
+    pub signer_id: String,
+    /// Who installed the first release; may uninstall releases.
+    pub owner: AccountId,
+    pub versions: BTreeMap<String, PackageVersion>,
+}
+
+/// One release of a package, as its signed manifest describes it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageVersion {
+    pub version: String,
+    /// `hex(SHA-256)` of the `.mpk`: what a node that fetches it checks first.
+    pub mpk: String,
+    pub mpk_size: u64,
+    pub source: BundleSource,
+    /// Service name (`""` for a single-service bundle) -> the WASM's bundle hash.
+    pub services: BTreeMap<String, String>,
+    /// The manifest's display metadata (name, description, icon, ...).
+    #[serde(default)]
+    pub metadata: Value,
+    /// URL prefixes the app may call out to (the manifest's signed `outbound`).
+    #[serde(default)]
+    pub outbound: Vec<String>,
+    pub installed_by: AccountId,
+    pub installed_at: u64,
+}
+
+impl PackageRecord {
+    /// The highest release by semver (a version that does not parse sorts first).
+    #[must_use]
+    pub fn latest(&self) -> Option<&PackageVersion> {
+        self.versions
+            .values()
+            .max_by(|a, b| compare_versions(&a.version, &b.version))
+    }
+}
+
+/// Semver order, falling back to the strings for a version that does not parse.
+#[must_use]
+pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    match (semver::Version::parse(a), semver::Version::parse(b)) {
+        (Ok(a), Ok(b)) => a.cmp(&b),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Greater,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Less,
+        (Err(_), Err(_)) => a.cmp(b),
+    }
 }
 
 /// Everything the system group replicates.
@@ -81,6 +160,9 @@ pub struct SystemState {
     pub invites: BTreeMap<String, Invite>,
     #[serde(default)]
     pub quotas: Quotas,
+    /// Installed packages by name.
+    #[serde(default)]
+    pub packages: BTreeMap<String, PackageRecord>,
 }
 
 impl SystemState {
@@ -151,6 +233,19 @@ pub enum SystemCmd {
     PutBundle {
         hash: String,
         size: u64,
+        actor: AccountId,
+    },
+    /// Record a verified package release. The node that verified the `.mpk`
+    /// proposes it; `apply` re-checks the signer pin and the quota.
+    InstallPackage {
+        package: String,
+        signer_id: String,
+        release: PackageVersion,
+    },
+    /// Remove a release (or every release) of a package no app runs.
+    UninstallPackage {
+        package: String,
+        version: Option<String>,
         actor: AccountId,
     },
     CreateApp {
@@ -372,8 +467,141 @@ impl SystemMachine {
                     hash: hash.clone(),
                     size,
                     uploaded_by: actor,
+                    package: None,
                 });
                 Ok(json!({ "hash": hash }))
+            }
+            SystemCmd::InstallPackage {
+                package,
+                signer_id,
+                release,
+            } => {
+                let actor = release.installed_by.clone();
+                if !s.accounts.contains_key(&actor) {
+                    return Err("unknown account");
+                }
+                if let Some(p) = s.packages.get(&package) {
+                    if p.signer_id != signer_id {
+                        return Err("the package is published under another key");
+                    }
+                    if let Some(v) = p.versions.get(&release.version) {
+                        // The same release again is a no-op; other bytes under
+                        // its version are a different, conflicting release.
+                        return if v.mpk == release.mpk {
+                            Ok(json!({ "package": package, "version": release.version }))
+                        } else {
+                            Err("that version is installed with other contents")
+                        };
+                    }
+                }
+                let used: u64 = s
+                    .bundles
+                    .values()
+                    .filter(|b| b.uploaded_by == actor)
+                    .map(|b| b.size)
+                    .sum();
+                if used + release.mpk_size > s.quotas.max_bundle_bytes_per_account {
+                    return Err("quota exceeded: bundle storage");
+                }
+                for (service, hash) in &release.services {
+                    let at = PackageRef {
+                        package: package.clone(),
+                        version: release.version.clone(),
+                        service: (!service.is_empty()).then(|| service.clone()),
+                    };
+                    let b = s.bundles.entry(hash.clone()).or_insert(BundleRecord {
+                        hash: hash.clone(),
+                        size: release.mpk_size,
+                        uploaded_by: actor.clone(),
+                        package: None,
+                    });
+                    // A raw upload of the same WASM gains the release it ships in.
+                    if b.package.is_none() {
+                        b.package = Some(at);
+                    }
+                }
+                let version = release.version.clone();
+                let _prev = s
+                    .packages
+                    .entry(package.clone())
+                    .or_insert_with(|| PackageRecord {
+                        name: package.clone(),
+                        signer_id,
+                        owner: actor,
+                        versions: BTreeMap::new(),
+                    })
+                    .versions
+                    .insert(version.clone(), release);
+                Ok(json!({ "package": package, "version": version }))
+            }
+            SystemCmd::UninstallPackage {
+                package,
+                version,
+                actor,
+            } => {
+                let p = s.packages.get(&package).ok_or("no such package")?;
+                if p.owner != actor {
+                    return Err("only the account that installed the package may uninstall it");
+                }
+                let gone: Vec<String> = match &version {
+                    Some(v) if !p.versions.contains_key(v) => return Err("no such version"),
+                    Some(v) => vec![v.clone()],
+                    None => p.versions.keys().cloned().collect(),
+                };
+                let hashes: BTreeSet<String> = gone
+                    .iter()
+                    .filter_map(|v| p.versions.get(v))
+                    .flat_map(|v| v.services.values().cloned())
+                    .collect();
+                // Two releases may ship the same WASM: a hash another release
+                // still provides stays, recorded under that release.
+                let provider = |s: &SystemState, h: &str| -> Option<PackageRef> {
+                    s.packages.iter().find_map(|(name, p)| {
+                        p.versions.iter().find_map(|(v, r)| {
+                            let gone_here = *name == package && gone.contains(v);
+                            (!gone_here)
+                                .then(|| r.services.iter().find(|(_, x)| x.as_str() == h))
+                                .flatten()
+                                .map(|(svc, _)| PackageRef {
+                                    package: name.clone(),
+                                    version: v.clone(),
+                                    service: (!svc.is_empty()).then(|| svc.clone()),
+                                })
+                        })
+                    })
+                };
+                let mut keep = BTreeMap::new();
+                for h in &hashes {
+                    if let Some(r) = provider(s, h) {
+                        let _prev = keep.insert(h.clone(), r);
+                    }
+                }
+                if s.apps
+                    .values()
+                    .any(|a| hashes.contains(&a.bundle) && !keep.contains_key(&a.bundle))
+                {
+                    return Err("an app still runs that release; delete or upgrade it first");
+                }
+                for h in &hashes {
+                    match keep.remove(h) {
+                        Some(r) => {
+                            if let Some(b) = s.bundles.get_mut(h) {
+                                b.package = Some(r);
+                            }
+                        }
+                        None => {
+                            let _prev = s.bundles.remove(h);
+                        }
+                    }
+                }
+                let p = s.packages.get_mut(&package).ok_or("no such package")?;
+                for v in &gone {
+                    let _prev = p.versions.remove(v);
+                }
+                if p.versions.is_empty() {
+                    let _prev = s.packages.remove(&package);
+                }
+                Ok(json!({ "removed": gone }))
             }
             SystemCmd::CreateApp { mut app } => {
                 if !s.bundles.contains_key(&app.bundle) {
@@ -445,8 +673,14 @@ impl SystemMachine {
             }
             SystemCmd::DeleteApp { app_id, actor } => {
                 let app = s.apps.get(&app_id).ok_or("no such app")?;
-                if app.owner != actor {
-                    return Err("only the owner may delete");
+                let admin = app.org.as_ref().is_some_and(|o| {
+                    s.orgs
+                        .get(o)
+                        .and_then(|o| o.role(&actor))
+                        .is_some_and(|r| r >= OrgRole::Admin)
+                });
+                if app.owner != actor && !admin {
+                    return Err("only the owner or an org admin may delete");
                 }
                 let _prev = s.apps.remove(&app_id);
                 Ok(Value::Null)

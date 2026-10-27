@@ -99,6 +99,8 @@ impl Cluster {
                 tee_release: None,
                 tee_profile: None,
                 peer_measurements: calimero_cloud_client::Measurements::None,
+                registry: None,
+                allow_unsigned_bundles: true,
             };
             configure(&mut config);
             nodes.push(Some(run(config).await.unwrap()));
@@ -1544,4 +1546,368 @@ async fn upgrades_plan_and_run_the_apps_migration_and_its_check() {
         alice.get(&format!("apps/{app}")).await.unwrap()["bundle"],
         json!(f1)
     );
+}
+
+// ---------------------------------------------------------------- packages
+
+/// A signed single-service `.mpk`, the shape `cargo mero bundle` produces.
+fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u8> {
+    use sha2::Digest;
+    let manifest = calimero_bundle::BundleManifest {
+        version: "1.0".to_owned(),
+        package: package.to_owned(),
+        app_version: version.to_owned(),
+        signer_id: Some(calimero_bundle::derive_signer_id_did_key(
+            key.verifying_key().as_bytes(),
+        )),
+        min_runtime_version: "0.1.0".to_owned(),
+        metadata: None,
+        handlers: None,
+        build_info: None,
+        interfaces: None,
+        wasm: Some(calimero_bundle::BundleArtifact {
+            path: "app.wasm".to_owned(),
+            hash: hex::encode(sha2::Sha256::digest(wasm)),
+            size: wasm.len() as u64,
+        }),
+        abi: None,
+        links: None,
+        frontend: None,
+        frontend_aliases: Vec::new(),
+        outbound: Vec::new(),
+        services: None,
+        signature: None,
+    };
+    let mut manifest = serde_json::to_value(&manifest).unwrap();
+    calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();
+    pack(&[
+        ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
+        ("app.wasm", wasm.to_vec()),
+    ])
+}
+
+fn pack(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+        Vec::new(),
+        flate2::Compression::default(),
+    ));
+    for (name, bytes) in entries {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(name).unwrap();
+        header.set_size(bytes.len() as u64);
+        header.set_cksum();
+        tar.append(&header, bytes.as_slice()).unwrap();
+    }
+    tar.into_inner().unwrap().finish().unwrap()
+}
+
+/// `wasm` with a custom section named `tag`: another module that runs the same.
+fn variant(wasm: &[u8], tag: &str) -> Vec<u8> {
+    let mut out = wasm.to_vec();
+    let body_len = 1 + tag.len();
+    out.push(0);
+    out.push(u8::try_from(body_len).unwrap());
+    out.push(u8::try_from(tag.len()).unwrap());
+    out.extend_from_slice(tag.as_bytes());
+    out
+}
+
+/// A registry serving `{base}/artifacts/{package}/{version}/{package}-{version}.mpk`,
+/// counting what it is asked for.
+#[derive(Clone, Default)]
+struct FakeRegistry {
+    files: std::sync::Arc<std::sync::Mutex<BTreeMap<String, Vec<u8>>>>,
+    hits: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl FakeRegistry {
+    fn publish(&self, package: &str, version: &str, mpk: Vec<u8>) {
+        let _prev = self
+            .files
+            .lock()
+            .unwrap()
+            .insert(format!("{package}@{version}"), mpk);
+    }
+
+    fn hits(&self, release: &str) -> usize {
+        self.hits
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|h| *h == release)
+            .count()
+    }
+
+    async fn serve(&self) -> String {
+        use axum::extract::Path;
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+        let reg = self.clone();
+        let app = axum::Router::new().route(
+            "/artifacts/{package}/{version}/{file}",
+            axum::routing::get(
+                move |Path((package, version, _file)): Path<(String, String, String)>| {
+                    let reg = reg.clone();
+                    async move {
+                        let key = format!("{package}@{version}");
+                        reg.hits.lock().unwrap().push(key.clone());
+                        match reg.files.lock().unwrap().get(&key) {
+                            Some(b) => (StatusCode::OK, b.clone()).into_response(),
+                            None => StatusCode::NOT_FOUND.into_response(),
+                        }
+                    }
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _serving = tokio::spawn(async move { axum::serve(listener, app).await });
+        format!("http://{addr}/")
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy() {
+    let registry = FakeRegistry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.registry = Some(url.clone());
+        cfg.allow_unsigned_bundles = false;
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let kv = kv_wasm();
+    registry.publish(
+        "com.test.kv",
+        "1.0.0",
+        mpk("com.test.kv", "1.0.0", &kv, &publisher),
+    );
+
+    // Production nodes take no raw WASM: it carries no publisher signature.
+    let e = alice.upload_bundle(kv.clone()).await.unwrap_err();
+    assert!(e.to_string().starts_with("403"), "{e}");
+
+    // Install by name; the node that installs it verifies it first.
+    let installed = alice.install_package("com.test.kv", "1.0.0").await.unwrap();
+    assert_eq!(installed["version"], json!("1.0.0"));
+    assert_eq!(
+        installed["signerId"],
+        json!(calimero_bundle::derive_signer_id_did_key(
+            publisher.verifying_key().as_bytes()
+        ))
+    );
+    let created = alice
+        .post(
+            "apps",
+            json!({ "name": "kv", "package": "com.test.kv", "version": "1.0.0" }),
+        )
+        .await
+        .unwrap();
+    let app = created["appId"].as_str().unwrap().to_owned();
+    let _ = alice
+        .call(&app, "set", json!({ "key": "k", "value": "v1" }), None)
+        .await
+        .unwrap();
+
+    // Each node runs the app from its own copy, fetched from the registry
+    // (never pushed by a peer) and verified again: one fetch per node.
+    let session = alice.session().await.unwrap();
+    for i in 0..3 {
+        let cl = c.client(i);
+        cl.use_session(session.clone()).await;
+        let v = cl
+            .view(
+                &app,
+                "get",
+                json!({ "key": "k" }),
+                Consistency::Stale { min_index: 0 },
+            )
+            .await
+            .unwrap();
+        assert_eq!(v.result, json!("v1"), "node {i}");
+    }
+    assert_eq!(registry.hits("com.test.kv@1.0.0"), 3);
+
+    // The package is pinned to its publisher: another key cannot release it.
+    let intruder = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    registry.publish(
+        "com.test.kv",
+        "1.1.0",
+        mpk("com.test.kv", "1.1.0", &kv, &intruder),
+    );
+    let e = alice
+        .install_package("com.test.kv", "1.1.0")
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("403"), "{e}");
+
+    // Bytes that do not match the signed manifest are refused.
+    let mut tampered = mpk("com.test.kv", "1.2.0", &kv, &publisher);
+    let manifest_and_bad_wasm = {
+        let good = mpk("com.test.kv", "1.2.0", &kv, &publisher);
+        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(&good[..]));
+        let mut entries = Vec::new();
+        for e in archive.entries().unwrap() {
+            let mut e = e.unwrap();
+            let name = e.path().unwrap().to_string_lossy().into_owned();
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut e, &mut bytes).unwrap();
+            if name == "app.wasm" {
+                bytes = variant(&bytes, "evil");
+            }
+            entries.push((name, bytes));
+        }
+        entries
+    };
+    tampered.clear();
+    tampered.extend(pack(
+        &manifest_and_bad_wasm
+            .iter()
+            .map(|(n, b)| (n.as_str(), b.clone()))
+            .collect::<Vec<_>>(),
+    ));
+    registry.publish("com.test.kv", "1.2.0", tampered);
+    let e = alice
+        .install_package("com.test.kv", "1.2.0")
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_PACKAGE"), "{e}");
+
+    // Upgrade by version, within the package.
+    let v101 = variant(&kv, "v101");
+    registry.publish(
+        "com.test.kv",
+        "1.0.1",
+        mpk("com.test.kv", "1.0.1", &v101, &publisher),
+    );
+    let up = alice
+        .post(
+            &format!("apps/{app}/upgrade"),
+            json!({ "version": "1.0.1" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(up["status"], json!("ok"), "{up}");
+    let listed = alice.get("apps?package=com.test.kv").await.unwrap();
+    assert_eq!(listed["apps"][0]["version"], json!("1.0.1"), "{listed}");
+    let v = alice
+        .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!("v1"), "state survives the upgrade");
+
+    // A release some node fetches later must be the one the fleet installed:
+    // a registry that swaps the bytes is refused, never run.
+    let v2 = variant(&kv, "two");
+    registry.publish(
+        "com.test.kv",
+        "2.0.0",
+        mpk("com.test.kv", "2.0.0", &v2, &publisher),
+    );
+    let _ = alice.install_package("com.test.kv", "2.0.0").await.unwrap();
+    let created = alice
+        .post(
+            "apps",
+            json!({ "name": "kv2", "package": "com.test.kv", "version": "2.0.0" }),
+        )
+        .await
+        .unwrap();
+    let app2 = created["appId"].as_str().unwrap().to_owned();
+    let swapped = variant(&kv, "swap");
+    registry.publish(
+        "com.test.kv",
+        "2.0.0",
+        mpk("com.test.kv", "2.0.0", &swapped, &publisher),
+    );
+    let mut refused = 0;
+    for i in 0..3 {
+        let cl = c.client(i);
+        cl.use_session(session.clone()).await;
+        match cl
+            .view(
+                &app2,
+                "get",
+                json!({ "key": "k" }),
+                Consistency::Stale { min_index: 0 },
+            )
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                assert!(e.to_string().contains("differs"), "node {i}: {e}");
+                refused += 1;
+            }
+        }
+    }
+    assert!(
+        refused >= 1,
+        "a node without a copy must refuse the swapped release"
+    );
+
+    // Uninstall: refused while an app runs the release, done once none does.
+    let e = alice
+        .uninstall_package("com.test.kv", Some("1.0.1"))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("still runs"), "{e}");
+    let _ = alice
+        .uninstall_package("com.test.kv", Some("1.0.0"))
+        .await
+        .unwrap();
+    let _ = alice.delete_app(&app).await.unwrap();
+    let _ = alice.delete_app(&app2).await.unwrap();
+    let e = alice
+        .call(&app, "set", json!({ "key": "k", "value": "x" }), None)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("404"), "{e}");
+    let _ = alice.uninstall_package("com.test.kv", None).await.unwrap();
+    assert_eq!(alice.packages().await.unwrap(), json!([]));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_uploaded_package_is_verified_and_reaches_the_other_nodes() {
+    let c = Cluster::start_with(3, |cfg| cfg.allow_unsigned_bundles = false).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let kv = kv_wasm();
+
+    // An unsigned archive is refused.
+    let unsigned = pack(&[("app.wasm", kv.clone())]);
+    let e = alice.upload_package(unsigned).await.unwrap_err();
+    assert_eq!(e.code(), Some("BAD_PACKAGE"), "{e}");
+
+    let installed = alice
+        .upload_package(mpk("com.test.up", "0.1.0", &kv, &publisher))
+        .await
+        .unwrap();
+    assert_eq!(installed["package"], json!("com.test.up"));
+    let created = alice
+        .post("apps", json!({ "name": "up", "package": "com.test.up" }))
+        .await
+        .unwrap();
+    let app = created["appId"].as_str().unwrap().to_owned();
+    let _ = alice
+        .call(&app, "set", json!({ "key": "a", "value": "b" }), None)
+        .await
+        .unwrap();
+    let session = alice.session().await.unwrap();
+    for i in 0..3 {
+        let cl = c.client(i);
+        cl.use_session(session.clone()).await;
+        let v = cl
+            .view(
+                &app,
+                "get",
+                json!({ "key": "a" }),
+                Consistency::Stale { min_index: 0 },
+            )
+            .await
+            .unwrap();
+        assert_eq!(v.result, json!("b"), "node {i}");
+    }
+    let p = alice.package("com.test.up").await.unwrap();
+    assert_eq!(p["latest"], json!("0.1.0"));
+    assert_eq!(p["versions"][0]["source"], json!("upload"));
 }
