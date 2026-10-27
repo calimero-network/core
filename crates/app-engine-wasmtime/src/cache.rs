@@ -21,6 +21,7 @@ use eyre::Result as EyreResult;
 use ring::hmac;
 use sha2::Digest;
 use sha2::Sha256;
+use subtle::ConstantTimeEq;
 use wasmtime::component::Component;
 use wasmtime::Engine;
 
@@ -98,8 +99,9 @@ impl Cache {
         let expected = hex::decode(fs::read_to_string(sidecar).ok()?.trim()).ok()?;
         let tag = self.mac(artifact, &bytes);
         // `hmac::verify` takes the whole message in one slice, which would copy the
-        // artifact; the tag is computed over its parts and compared in constant time.
-        if !constant_time_eq(tag.as_ref(), &expected) {
+        // artifact; the tag is computed over its parts and compared in constant time
+        // (`subtle`; `ring::constant_time` is deprecated in the ring this tree uses).
+        if !bool::from(tag.as_ref().ct_eq(expected.as_slice())) {
             return None;
         }
         // SAFETY: `Component::deserialize` trusts its input to be an artifact this engine
@@ -119,11 +121,6 @@ impl Cache {
             hex::encode(self.mac(artifact, bytes).as_ref()).as_bytes(),
         )
     }
-}
-
-/// Equal length and contents, in time independent of where they differ.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> EyreResult<()> {

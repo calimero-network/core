@@ -18,6 +18,7 @@ eyre.workspace = true
 hex.workspace = true
 ring.workspace = true
 sha2.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 # Only what the engine uses: no `cache`, `gc`, `wat`, `threads`, `component-model-async`,
