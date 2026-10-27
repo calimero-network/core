@@ -52,6 +52,17 @@ pub(crate) fn apply(
     // Captured here (not re-read after the mutation) so we can use the
     // role to gate the role-scoped `TeeMemberRemoved` follow-up event
     // emitted alongside `MemberRemoved` at the bottom of this function.
+    // Read before any write, so the tree is the one the op's cut shows.
+    let tree = crate::private_space::Tree::at_cut(
+        store,
+        ctx.authorizer(),
+        group_id,
+        ctx.cut(),
+        crate::TreeReads {
+            chains: &[*group_id],
+            subtrees: &[*group_id],
+        },
+    )?;
     let leaver_role = match MembershipRepository::new(store).role_of(group_id, member)? {
         Some(role) => role,
         None => bail!(MembershipError::MemberNotDirect(hex::encode(
@@ -169,16 +180,6 @@ pub(crate) fn apply(
 
     cascade_remove_member_from_group_tree(store, group_id, member)?;
     MembershipRepository::new(store).remove_member(group_id, member)?;
-    let tree = crate::private_space::Tree::at_cut(
-        store,
-        ctx.authorizer(),
-        group_id,
-        ctx.cut(),
-        crate::TreeReads {
-            chains: &[*group_id],
-            subtrees: &[*group_id],
-        },
-    )?;
     super::member_removed::end_rows_in_space_folders(store, &tree, group_id, member)?;
     // Deny-list the leaver on this group too. See
     // `MemberRemoved` for the same rationale.
