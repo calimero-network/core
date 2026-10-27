@@ -1951,14 +1951,14 @@ impl SystemMachine {
                 }
                 let t = o.teams.get_mut(&team).ok_or("no such team")?;
                 let _prev = t.members.remove(&account);
-                let was_read_only = t.read_only.remove(&account);
+                let _was = t.read_only.remove(&account);
                 let _caps = t.capabilities.remove(&account);
-                // A removal keeps them from coming back by inheritance, and so
-                // does leaving while read-only: leaving must not shed the role
-                // (v1). Leaving otherwise is one's own business.
-                if actor != account || was_read_only {
-                    let _new = t.removed.insert(account);
-                }
+                // A removal, and a leave too (v1's `MemberLeft`), keeps them from
+                // coming back by inheritance: an open team would otherwise put a
+                // leaver straight back, and a read-only leaver would shed the
+                // role. They return only when a lead re-adds them or an invite
+                // names the team.
+                let _new = t.removed.insert(account);
                 Ok(Value::Null)
             }
             SystemCmd::CreateInvite {
@@ -2119,6 +2119,58 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// v1's `MemberLeft`: leaving an open team sticks. Inheritance would put the
+    /// leaver straight back, so leaving would change nothing; they come back
+    /// only by an explicit act, a lead re-adding them, never by themselves.
+    #[test]
+    fn leaving_an_open_team_sticks_until_someone_lets_you_back_in() {
+        let mut m = SystemMachine::default();
+        let _ok = m.run(genesis(all(Authority::Owner))).unwrap();
+        for who in ["alice", "bob"] {
+            let _ok = m.run(account(who)).unwrap();
+        }
+        let _prev = m.state.orgs.insert(
+            "org".into(),
+            serde_json::from_value(json!({
+                "orgId": "org", "name": "Docs",
+                "members": { "alice": "owner", "bob": "member" },
+                "teams": { "open": {
+                    "teamId": "open", "name": "Open", "join": "everyone",
+                    "members": { "alice": true, "bob": false }
+                } }
+            }))
+            .unwrap(),
+        );
+        let reaches = |m: &SystemMachine| m.state.orgs["org"].in_team("bob", "open");
+        let join = |actor: &str| SystemCmd::SetTeamMember {
+            org: "org".into(),
+            team: "open".into(),
+            account: "bob".into(),
+            lead: false,
+            role: None,
+            capabilities: None,
+            actor: actor.into(),
+        };
+        assert!(reaches(&m), "a direct row");
+
+        let _ok = m
+            .run(SystemCmd::RemoveTeamMember {
+                org: "org".into(),
+                team: "open".into(),
+                account: "bob".into(),
+                actor: "bob".into(),
+            })
+            .unwrap();
+        assert!(!reaches(&m), "inheritance does not put a leaver back");
+        assert!(
+            m.run(join("bob")).is_err(),
+            "nor may they rejoin themselves"
+        );
+
+        let _ok = m.run(join("alice")).unwrap();
+        assert!(reaches(&m), "a lead re-adds them");
     }
 
     /// v1's `MANAGE_APPLICATION`: in an organization, an admin or a member

@@ -78,6 +78,7 @@
   "apps/scaffolding-e2e/workflows/group-late-joiner.yml",
   "apps/scaffolding-e2e/workflows/group-leave-member.yml",
   "apps/scaffolding-e2e/workflows/group-leave-namespace.yml",
+  "apps/scaffolding-e2e/workflows/group-leave-then-rejoin-via-inheritance.yml",
   "apps/scaffolding-e2e/workflows/group-list-subgroups-restricted-hidden.yml",
   "apps/scaffolding-e2e/workflows/group-member-channel-lifecycle.yml",
   "apps/scaffolding-e2e/workflows/group-membership.yml",

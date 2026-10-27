@@ -48,7 +48,7 @@ Members have one role each, ordered `guest < member < admin < owner`:
 | `guest` | Reach the organization's `org`-access apps |
 | `member` | Also own apps in the organization and create top-level teams if they hold `CREATE_TEAM` |
 | `admin` | Manage members and their roles (below owner), capabilities, teams, organization metadata; delete the organization's apps |
-| `owner` | Everything, plus ownership, release and outbound approvals, organization-wide upgrades, and deleting the organization |
+| `owner` | Everything, plus ownership, release approvals, and deleting the organization. Upgrades and outbound approvals are also open to `MANAGE_APPLICATION` holders (see Capabilities) |
 
 There is exactly one owner. `SetOrgRole { role: owner }` by the owner moves
 ownership and makes the previous owner an admin; the owner cannot be removed,
@@ -79,9 +79,11 @@ A team's creator leads it. Whoever leads a team, or an ancestor team, or is an
 organization admin, **manages** it: renames it, adds and removes members,
 creates teams under it, moves it within what they manage, and deletes it.
 
-- A member a manager removed from a team does not come back by inheritance
-  until someone adds them again (`Team::removed`), so removing someone from an
-  open team sticks.
+- A member who leaves a team, or whom a manager removes, does not come back by
+  inheritance (`Team::removed`, v1's `MemberLeft` and `MemberRemoved`), so
+  leaving an open team sticks. They return only when a manager adds them again
+  or they redeem an invite that names the team; they cannot rejoin by
+  themselves.
 - A member may join an open team they already reach as a plain member row, or
   leave any team themselves.
 - Deleting a team deletes the teams below it and the apps deployed to them.
