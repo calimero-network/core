@@ -2473,7 +2473,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     );
 
     // -----------------------------------------------------------------
-    // Fix A — namespace-root MemberRemoved of T cascades onto T's own rows.
+    // Fix A - namespace-root MemberRemoved of T cascades onto T's own rows.
     // -----------------------------------------------------------------
 
     // Quiesce the process-global auto-follow handler before driving the cascade.
@@ -2574,7 +2574,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
             )
             .unwrap(),
         Some(GroupMemberRole::Member),
-        "Fix A: the cascade takes only T's rows — regular Member must survive in \
+        "Fix A: the cascade takes only T's rows - regular Member must survive in \
          restricted_sub"
     );
 
