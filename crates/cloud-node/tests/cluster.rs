@@ -2423,6 +2423,44 @@ async fn the_nodes_own_commands_cannot_be_called_as_methods() {
     );
 }
 
+/// An upgrade that turns an identity-gated field (an `AuthoredMap`) into a
+/// plain one (an `UnorderedMap`) would strip every entry's authorship, so it
+/// is refused and the app stays where it was, as v1's identity-downgrade gate
+/// refused it (#2587; v1 workflow app-migration/22).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_upgrade_that_strips_authorship_is_refused() {
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let v1 = alice
+        .upload_bundle(mero_wasm(
+            "migrations/scenario-identity-downgrade-v1",
+            "scenario_identity_downgrade_v1",
+        ))
+        .await
+        .unwrap();
+    let app = alice.create_app("wiki", &v1, json!({})).await.unwrap();
+    let v2 = alice
+        .upload_bundle(mero_wasm(
+            "migrations/scenario-identity-downgrade-v2",
+            "scenario_identity_downgrade_v2",
+        ))
+        .await
+        .unwrap();
+    let out = alice
+        .upgrade_app(&app, json!({ "bundle": v2 }), &mut pk)
+        .await;
+    match &out {
+        Ok(v) => assert_ne!(v["status"], "ok", "the downgrade was applied: {v}"),
+        Err(e) => assert!(e.to_string().contains("authorship"), "{e}"),
+    }
+    let a = alice.get(&format!("apps/{app}")).await.unwrap();
+    assert_eq!(
+        a["bundle"],
+        json!(v1),
+        "the app stays on the release it ran"
+    );
+}
+
 /// A write too large for one log entry is refused at once as `413
 /// TOO_LARGE`, whichever node takes it: the leader's own refusal is not a
 /// "no leader yet" to retry.

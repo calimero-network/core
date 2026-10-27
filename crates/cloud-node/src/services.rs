@@ -315,6 +315,19 @@ pub fn plan_upgrade(current: &[u8], target: &[u8]) -> Result<Option<String>, Str
         (None, Some(_)) => return Err("the current bundle embeds no ABI to plan from".into()),
         (Some(_), None) => return Err("the target bundle embeds no ABI to plan from".into()),
     };
+    // v1's identity-downgrade gate (#2587): a field that loses identity-gated
+    // semantics (an `AuthoredMap` that becomes an `UnorderedMap`) would strip
+    // every entry's authorship or writer set for everyone.
+    if let Some(d) = calimero_wasm_abi::downgrade::identity_downgrades(&cur, &tgt)
+        .into_iter()
+        .next()
+    {
+        return Err(format!(
+            "identity downgrade forbidden: field '{}' {} -> {} strips authorship (rewrite it \
+             under the owner instead)",
+            d.field, d.from, d.to
+        ));
+    }
     let (from, to) = (
         cur.state_version_or_default(),
         tgt.state_version_or_default(),

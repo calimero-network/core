@@ -122,7 +122,9 @@ is its command line.
 - **Upgrades plan their migration from the ABIs** (`services::plan_upgrade`, v1's
   `plan_upgrade`): without a named `migrate`, an upgrade one state version up runs
   the target's `#[app::migrate]` edge; a downgrade, a jump or a missing edge is
-  refused. Bundles without an ABI upgrade code-only. The migration runs as v1's
+  refused, and so is a target whose ABI strips authorship from a field
+  (`calimero_wasm_abi::downgrade::identity_downgrades`, v1's L1 gate; regression:
+  `an_upgrade_that_strips_authorship_is_refused`). Bundles without an ABI upgrade code-only. The migration runs as v1's
   does (`Executor::migrate`): the export returns the new root state, the app's
   `__calimero_migration_check` must pass, and the host writes the root entry
   (`write_root_state`). The directory records the new bundle only once the

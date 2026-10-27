@@ -2251,11 +2251,13 @@ async fn run_upgrade(
     // error, not a 200 a client can mistake for success.
     if applied.status != Status::Ok {
         note_failed_upgrade(node, &app_id, &bundle, &who, applied.error.clone()).await;
-        return Err(
-            ApiError::new(422, "UPGRADE_FAILED", "the upgrade did not run").with_details(
-                json!({ "index": applied.index, "status": applied.status, "error": applied.error }),
-            ),
+        let why = applied.error.as_str().map_or_else(
+            || "the upgrade did not run".to_owned(),
+            |e| format!("the upgrade did not run: {e}"),
         );
+        return Err(ApiError::new(422, "UPGRADE_FAILED", &why).with_details(
+            json!({ "index": applied.index, "status": applied.status, "error": applied.error }),
+        ));
     }
     // The app now runs the new bundle: the directory says so too.
     let _ok = node
