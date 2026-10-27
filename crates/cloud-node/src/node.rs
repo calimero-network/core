@@ -853,10 +853,34 @@ impl Node {
             .await
             .map_err(|e| ApiError::internal(&e.to_string()))?
             .map_err(|e| ApiError::new(422, BAD_BUNDLE, &e.to_string()))?;
+        // Components no app uses any more (an upgrade's old bundle, a deleted app)
+        // are dropped as a new one comes in, so `prepared` stays bounded by the live
+        // apps. Dropping one only costs a prepare from the disk cache if it returns.
+        let mut live = self.live_bundles();
+        let _new = live.insert(bundle.to_owned());
         if let Ok(mut m) = self.prepared.lock() {
+            m.retain(|hash, _| live.contains(hash));
             let _prev = m.insert(bundle.to_owned(), prepared.clone());
         }
         Ok(prepared)
+    }
+
+    /// The bundles some app uses: the directory's records and what the app groups
+    /// hosted here run (an upgrade switches the group before the directory).
+    fn live_bundles(&self) -> HashSet<String> {
+        let mut live: HashSet<String> =
+            self.sys(|s| s.apps.values().map(|a| a.bundle.clone()).collect());
+        let groups: Vec<Arc<Group<AppMachine>>> = self
+            .apps
+            .read()
+            .map(|a| a.values().cloned().collect())
+            .unwrap_or_default();
+        live.extend(
+            groups
+                .iter()
+                .filter_map(|g| g.read_local(|m, _| m.state.bundle.clone())),
+        );
+        live
     }
 
     fn budget(&self) -> Budget {
@@ -901,10 +925,16 @@ impl Node {
     /// this node's last entry before the proposal was built). The counter continues
     /// from the larger of this node's memory and the log, so a node that leads the
     /// same term again after a restart never reissues an id.
+    ///
+    /// A poisoned lock is recovered, not answered with a fixed pair (which every later
+    /// run would share): the map holds plain counters, each changed by one assignment,
+    /// so a panic cannot leave one behind an id already issued, and the counter
+    /// continues from the log's highest pair anyway.
     fn next_id(&self, group: GroupId, term: u64, logged: (u64, u64)) -> (u64, u64) {
-        let Ok(mut ids) = self.id_seqs.lock() else {
-            return (term, u64::MAX);
-        };
+        let mut ids = self
+            .id_seqs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = ids.entry(group).or_insert((term, 0));
         if entry.0 != term {
             *entry = (term, 0);
