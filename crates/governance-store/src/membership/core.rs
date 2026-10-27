@@ -707,10 +707,8 @@ impl<'a> MembershipRepository<'a> {
         bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH))
     }
 
-    /// Whether `identity` is an admin of `group_id`: an `Admin` row, the creator slot
-    /// unless the creator has left or been removed from the workspace, or - for a folder
-    /// with neither - its [successor](Self::is_leaderless). The successor acts as admin
-    /// over the folder's Open children like an explicit one.
+    /// An explicit admin, or the folder's [successor](Self::is_leaderless), which acts
+    /// as admin like an explicit one.
     pub fn is_admin(&self, group_id: &ContextGroupId, identity: &AccountId) -> EyreResult<bool> {
         if self.is_explicit_admin(group_id, identity)? {
             return Ok(true);
@@ -718,8 +716,8 @@ impl<'a> MembershipRepository<'a> {
         Ok(self.successor(group_id)? == Some(*identity))
     }
 
-    /// The lowest-account `Member` of a non-root `group_id` that has no `Admin` row and no
-    /// creator slot in force and is still in the workspace: the account that runs it.
+    /// For an adminless non-root folder, the lowest workspace `Member`, else the lowest
+    /// workspace `ReadOnly`.
     fn successor(&self, group_id: &ContextGroupId) -> EyreResult<Option<AccountId>> {
         let root = NamespaceRepository::new(self.store).resolve(group_id)?;
         if root == *group_id {
@@ -737,21 +735,21 @@ impl<'a> MembershipRepository<'a> {
                 return Ok(None);
             }
         }
-        let root_meta = MetaRepository::new(self.store).load(&root)?;
-        let mut lowest = None;
-        for (account, role) in &members {
-            let in_workspace = self.role_of(&root, account)?.is_some()
-                || root_meta.as_ref().is_some_and(|meta| {
-                    meta.admin_identity == *account || meta.owner_identity == *account
-                });
-            if *role == GroupMemberRole::Member
-                && in_workspace
-                && lowest.is_none_or(|l| l > *account)
-            {
-                lowest = Some(*account);
+        let mut in_workspace = Vec::new();
+        for (account, role) in members {
+            if self.role_of(&root, &account)?.is_some() {
+                in_workspace.push((account, role));
             }
         }
-        Ok(lowest)
+        Ok([GroupMemberRole::Member, GroupMemberRole::ReadOnly]
+            .into_iter()
+            .find_map(|tier| {
+                in_workspace
+                    .iter()
+                    .filter(|(_, role)| *role == tier)
+                    .map(|(account, _)| *account)
+                    .min()
+            }))
     }
 
     /// Does `group_id` have no admin of its own, so its successor runs it? Such a folder
@@ -760,7 +758,7 @@ impl<'a> MembershipRepository<'a> {
         Ok(self.successor(group_id)?.is_some())
     }
 
-    /// An `Admin` row, or the creator slot unless the creator has left or been removed from the workspace.
+    /// An `Admin` row, or the creator slot unless its holder left the workspace.
     pub(crate) fn is_explicit_admin(
         &self,
         group_id: &ContextGroupId,

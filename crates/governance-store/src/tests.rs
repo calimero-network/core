@@ -12996,6 +12996,70 @@ mod self_leave_rotation {
     }
 
     #[test]
+    fn a_root_meta_identity_without_a_root_row_is_not_in_the_workspace() {
+        let (f, [(_, low), _]) = leaderless_folder();
+        let outsider = AccountId::from([0x01; 32]);
+        let repo = MembershipRepository::new(&f.store);
+        repo.add_member(&f.sub_gid, &outsider, GroupMemberRole::Member)
+            .unwrap();
+        let mut root_meta = MetaRepository::new(&f.store)
+            .load(&f.ns_gid)
+            .unwrap()
+            .expect("root meta");
+        root_meta.owner_identity = outsider;
+        MetaRepository::new(&f.store)
+            .save(&f.ns_gid, &root_meta)
+            .unwrap();
+
+        assert!(!repo.is_admin(&f.sub_gid, &outsider).unwrap());
+        assert!(repo.is_admin(&f.sub_gid, &low).unwrap());
+    }
+
+    #[test]
+    fn a_read_only_member_runs_a_folder_with_no_other_candidate() {
+        let f = fixture();
+        let repo = MembershipRepository::new(&f.store);
+        let mut meta = sample_meta_with_admin(f.leaver);
+        meta.admin_identity = f.leaver;
+        MetaRepository::new(&f.store)
+            .save(&f.sub_gid, &meta)
+            .unwrap();
+        repo.remove_member(&f.sub_gid, &f.admin).unwrap();
+        repo.add_member(&f.sub_gid, &f.leaver, GroupMemberRole::Admin)
+            .unwrap();
+        let sks = [0x71u8, 0x72].map(|seed| PrivateKey::from([seed; 32]));
+        let mut ro = sks.map(|sk| {
+            let account = enrol_member(&f.store, &f.ns_gid, &sk.public_key());
+            repo.add_member(&f.ns_gid, &account, GroupMemberRole::Member)
+                .unwrap();
+            repo.add_member(&f.sub_gid, &account, GroupMemberRole::ReadOnly)
+                .unwrap();
+            (sk, account)
+        });
+        ro.sort_by_key(|(_, account)| *account);
+
+        apply_root_removal(&f);
+
+        let repo = MembershipRepository::new(&f.store);
+        let (stand_in_sk, stand_in) = &ro[0];
+        assert!(repo.is_admin(&f.sub_gid, stand_in).unwrap());
+        assert!(!repo.is_admin(&f.sub_gid, &ro[1].1).unwrap());
+        let rotate = SignedGroupOp::sign(
+            stand_in_sk,
+            f.sub_gid.to_bytes().into(),
+            vec![],
+            1,
+            GroupOp::GroupKeyRotated { departed: f.leaver },
+        )
+        .expect("sign GroupKeyRotated");
+        apply_local_signed_group_op(&f.store, &rotate)
+            .expect("the stand-in discharges the pending rotation");
+        assert!(!PendingRotationRepository::new(&f.store)
+            .is_pending(&f.sub_gid, &f.leaver)
+            .unwrap());
+    }
+
+    #[test]
     fn a_member_who_left_the_workspace_is_never_the_successor() {
         let (f, [(_, low), (_, high)]) = leaderless_folder();
         MembershipRepository::new(&f.store)
