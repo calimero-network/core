@@ -176,6 +176,67 @@ impl Rooms {
         Ok(())
     }
 
+    /// Tells a team that `id` was released.
+    pub fn announce_team(&mut self, team: String, id: String) -> app::Result<()> {
+        env::emit(Event::Released { id }, Audience::Team(team))?;
+        Ok(())
+    }
+
+    /// `len` random bytes (seeded in a logged run).
+    pub fn roll(&mut self, len: u64) -> app::Result<Vec<u8>> {
+        Ok(env::random_bytes(len as usize))
+    }
+
+    /// A fresh unique id.
+    pub fn new_id(&mut self) -> app::Result<String> {
+        Ok(env::unique_id())
+    }
+
+    /// Writes, then fails with an app error.
+    pub fn write_then_fail(&mut self) -> app::Result<()> {
+        self.titles.insert(&"k".to_owned(), &"v".to_owned())?;
+        app::bail!(Error::NotFound);
+    }
+
+    /// Writes, then traps.
+    pub fn write_then_trap(&mut self) -> app::Result<()> {
+        self.titles.insert(&"k".to_owned(), &"v".to_owned())?;
+        panic!("boom");
+    }
+
+    /// Sets a title (for `flaky`).
+    pub fn put_title(&mut self, key: String, value: String) -> app::Result<()> {
+        self.titles.insert(&key, &value)?;
+        Ok(())
+    }
+
+    /// Removes a title.
+    pub fn clear_title(&mut self, key: String) -> app::Result<()> {
+        self.titles.remove(&key)?;
+        Ok(())
+    }
+
+    /// The time the host serves.
+    #[app::view]
+    pub fn now(&self) -> app::Result<u64> {
+        Ok(env::time_now())
+    }
+
+    /// A timer that fails while the title `fail` is set.
+    #[app::every("1m")]
+    pub fn flaky(&mut self) -> app::Result<String> {
+        if self.titles.get(&"fail".to_owned())?.is_some() {
+            app::bail!(Error::Invalid("flaky".into()));
+        }
+        let Some(tick) = env::timer() else {
+            app::bail!(Error::NotFound);
+        };
+        Ok(match tick.previous {
+            Some(p) => format!("{}/{p}", tick.scheduled),
+            None => format!("{}/-", tick.scheduled),
+        })
+    }
+
     /// Reports the tick it ran for as `<scheduled>/<previous or ->`.
     #[app::every("1m")]
     pub fn tick_info(&mut self) -> app::Result<String> {

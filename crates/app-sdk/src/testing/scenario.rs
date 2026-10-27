@@ -7,6 +7,8 @@
 //! ```
 //!
 //! `as` is an account, `"@anonymous"` or `"@system"`; `"confirmed": true` adds the step-up.
+//! `expect` may also be `{ "confirmRequired": true }` or `{ "error": code, "fields": {..} }` (fields compared exactly).
+//! A `tick` always runs as the system: `as` on a tick is refused.
 //! `op` is `call`, `view`, `tick` (`method` names the timer), `advance` (`args` is the ms)
 //! or `removeMember` (`args` is the account). After a step, `events` lists for each account
 //! the names of all events it receives so far, in order.
@@ -54,7 +56,12 @@ fn run_step(t: &mut TestApp, step: &Value) -> Result<()> {
                 caller.view(method, args)
             }
         }
-        "tick" => t.tick(str_of(step, "method")?),
+        "tick" => {
+            if step.get("as").is_some() {
+                bail!("a tick always runs as the system; drop `as`");
+            }
+            t.tick(str_of(step, "method")?)
+        }
         "advance" => {
             t.advance(
                 args.as_u64()
@@ -103,9 +110,20 @@ fn check_expect(expect: Option<&Value>, result: &Result<Value, Failure>) -> Resu
             other => bail!("expected ok {want}, got {other:?}"),
         };
     }
+    if expect.get("confirmRequired").and_then(Value::as_bool) == Some(true) {
+        return match result {
+            Err(Failure::ConfirmRequired) => Ok(()),
+            other => bail!("expected confirmRequired, got {other:?}"),
+        };
+    }
     if let Some(code) = expect.get("error").and_then(Value::as_str) {
         return match result {
-            Err(Failure::App { code: got, .. }) if got == code => Ok(()),
+            Err(Failure::App { code: got, fields }) if got == code => match expect.get("fields") {
+                Some(want) if want != fields => {
+                    bail!("expected error {code} with fields {want}, got {fields}")
+                }
+                _ => Ok(()),
+            },
             other => bail!("expected error {code}, got {other:?}"),
         };
     }

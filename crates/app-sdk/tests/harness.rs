@@ -9,6 +9,13 @@ use calimero_app_build::build_component;
 use calimero_app_sdk::testing::{run_scenario, Failure, Org, TestApp};
 use serde_json::{json, Value};
 
+fn app_code(r: Result<Value, Failure>) -> String {
+    match r {
+        Err(Failure::App { code, .. }) => code,
+        other => panic!("expected an app failure, got {other:?}"),
+    }
+}
+
 const T0: u64 = 1_700_000_000_000;
 
 fn component() -> &'static [u8] {
@@ -148,4 +155,143 @@ fn scenario_file_runs() {
     ]);
     std::fs::write(&path, steps.to_string()).unwrap();
     run_scenario(&mut t, &path).unwrap();
+}
+
+fn roll(seed: u64) -> Value {
+    let mut t = app();
+    t.seed(seed);
+    let a = t.as_("bob").call("roll", json!({ "len": "16" })).unwrap();
+    let b = t.as_("bob").call("roll", json!({ "len": "16" })).unwrap();
+    assert_ne!(a, b, "two runs draw different bytes");
+    json!([a, b])
+}
+
+#[test]
+fn seed_makes_randomness_repeat() {
+    assert_eq!(roll(7), roll(7));
+    assert_ne!(roll(7), roll(8));
+}
+
+#[test]
+fn failed_calls_leave_state_unchanged() {
+    let mut t = app();
+    book(&mut t, "bob", "10").unwrap();
+    let before = t.export_state();
+    assert_eq!(
+        app_code(t.as_("bob").call("writeThenFail", json!({}))),
+        "NotFound"
+    );
+    assert_eq!(t.export_state(), before, "app error");
+    let r = t.as_("bob").call("writeThenTrap", json!({}));
+    assert!(matches!(r, Err(Failure::Trap(_))), "{r:?}");
+    assert_eq!(t.export_state(), before, "trap");
+}
+
+#[test]
+fn views_see_the_last_entry_time() {
+    let mut t = app();
+    let now = |t: &mut TestApp| t.as_("bob").view("now", json!({})).unwrap();
+    assert_eq!(now(&mut t), json!(T0.to_string()), "init is the last entry");
+    t.set_time(T0 + 500);
+    assert_eq!(
+        now(&mut t),
+        json!(T0.to_string()),
+        "set_time alone moves nothing"
+    );
+    book(&mut t, "bob", "10").unwrap();
+    assert_eq!(now(&mut t), json!((T0 + 500).to_string()));
+    t.advance(1_000);
+    assert_eq!(now(&mut t), json!((T0 + 500).to_string()), "no new entry");
+}
+
+#[test]
+fn unique_ids_differ_between_calls() {
+    let mut t = app();
+    let a = t.as_("bob").call("newId", json!({})).unwrap();
+    let b = t.as_("bob").call("newId", json!({})).unwrap();
+    assert_ne!(a, b);
+}
+
+#[test]
+fn failed_tick_still_advances_previous() {
+    let mut t = app();
+    t.set_time(T0 + 60_000);
+    assert_eq!(t.tick("flaky"), Ok(json!(format!("{}/-", T0 + 60_000))));
+    t.as_("ada")
+        .call("putTitle", json!({ "key": "fail", "value": "x" }))
+        .unwrap();
+    t.advance(60_000);
+    assert_eq!(app_code(t.tick("flaky")), "Invalid");
+    t.as_("ada")
+        .call("clearTitle", json!({ "key": "fail" }))
+        .unwrap();
+    t.advance(60_000);
+    assert_eq!(
+        t.tick("flaky"),
+        Ok(json!(format!("{}/{}", T0 + 180_000, T0 + 120_000)))
+    );
+}
+
+#[test]
+fn org_events_skip_guests() {
+    let mut t = TestApp::new(
+        component(),
+        Org::new().admins(["ada"]).members(["bob"]).guests(["gus"]),
+        T0,
+    );
+    t.as_("ada").call("announce", json!({ "id": "x" })).unwrap();
+    assert_eq!(t.events_for("ada").len(), 1);
+    assert_eq!(t.events_for("bob").len(), 1);
+    assert_eq!(t.events_for("gus").len(), 0);
+}
+
+#[test]
+fn team_events_reach_team_members() {
+    let mut t = TestApp::new(
+        component(),
+        Org::new()
+            .members(["bob", "cy"])
+            .teams([("sales", ["bob"])]),
+        T0,
+    );
+    let args = json!({ "team": "sales", "id": "x" });
+    t.as_("cy").call("announceTeam", args).unwrap();
+    assert_eq!(t.events_for("bob").len(), 1);
+    assert_eq!(t.events_for("cy").len(), 0);
+    let unknown = json!({ "team": "nope", "id": "x" });
+    assert!(t.as_("cy").call("announceTeam", unknown).is_err());
+    t.remove_member("bob");
+    t.as_("cy")
+        .call("announceTeam", json!({ "team": "sales", "id": "y" }))
+        .unwrap();
+    assert_eq!(t.events_for("bob").len(), 1, "bob left before the second");
+}
+
+#[test]
+fn caller_checks_come_before_confirmation() {
+    let mut t = app();
+    let r = t.anonymous().call("adminRelease", json!({ "id": "x" }));
+    assert_eq!(app_code(r), "LoginRequired");
+}
+
+#[test]
+fn scenario_expectations() {
+    let run = |steps: Value| {
+        let mut t = app();
+        let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("scenario2.json");
+        std::fs::write(&path, steps.to_string()).unwrap();
+        run_scenario(&mut t, &path)
+    };
+    run(json!([
+        { "as": "ada", "op": "call", "method": "adminRelease", "args": { "id": "x" },
+          "expect": { "confirmRequired": true } },
+        { "as": "ada", "confirmed": true, "op": "call", "method": "adminRelease",
+          "args": { "id": "x" }, "expect": { "error": "NotFound", "fields": {} } },
+    ]))
+    .unwrap();
+    let wrong = json!([{ "as": "ada", "confirmed": true, "op": "call", "method": "adminRelease",
+        "args": { "id": "x" }, "expect": { "error": "NotFound", "fields": { "a": 1 } } }]);
+    assert!(run(wrong).is_err());
+    let tick_as = json!([{ "as": "bob", "op": "tick", "method": "tickInfo" }]);
+    assert!(format!("{:#}", run(tick_as).unwrap_err()).contains("always runs as the system"));
 }

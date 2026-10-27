@@ -51,9 +51,11 @@ The macros convert exactly these types, at the top level of a parameter, a resul
 - `TestApp::new(component, Org, now_ms)` prepares the component on the real `WasmtimeEngine` (one engine and compile cache per test process) and runs `init` as `"owner"`. `t.as_(a)` / `anonymous()` / `system()` / `api_key(id, account)` give an `As` with `call`, `view`, `confirmed()`; `Failure` is `App { code, fields }`, `Trap(TrapKind)` or `ConfirmRequired`.
 - It plays the executor: the diff is applied only on `Ok`; each logged invocation gets a fresh `id_seq` (`id_term` 1) and a seed derived from `t.seed(n)`; views see the last logged entry's timestamp (D19). Before running it applies the ABI checks a node makes: a `confirm` method needs `.confirmed()` (else `ConfirmRequired`) and is never a view (`NotAView`); a non-`public` method refuses anonymous (`LoginRequired`), a method without `allowSystem` refuses `system()` (`Forbidden`).
 - `t.tick(method)` runs the timer as `System` for the slot at the current time; `previous` is the last tick of the same method. A tick that does not time out counts as applied (D34).
-- Events: `events_for(account)` resolves audiences when asked (R9); `remove_member` first fixes who org events so far reached, so earlier events stay with the leaver and later ones do not reach it. Team audiences reach nobody (no teams in the harness).
+- Events: `events_for(account)` resolves audiences when asked (R9); `remove_member` first fixes who org events so far reached, so earlier events stay with the leaver and later ones do not reach it. 
 - `export_state()` is deterministic CBOR (RFC 8949 4.2.1): a map of stored key (generation prefix included) to value, byte strings, ordered by encoded key bytes. The TypeScript harness must produce the same bytes.
-- `run_scenario(t, path)` runs the neutral JSON scenario (format in `testing/scenario.rs`).
+- What the harness org supports: one org (`ORG_ID`) with the owner (`"owner"`, role Owner), `admins`, `members`, `guests` (role checks, `org_role`, `orgs_of`), and `Org::teams([("id", ["acct", ..])])` (`in_team`, `team_exists`, `Team` audiences; a team needs no org role). `Org` audiences reach members, admins and the owner, not guests; `OrgAdmins` reaches admins and the owner. No partner orgs, no second org.
+- Timeouts are not logged (D23): they consume no `id_seq` and do not move the last entry time. A result or event payload that is not JSON gives `Failure::BadOutput` and applies nothing.
+- `run_scenario(t, path)` runs the neutral JSON scenario (format in `testing/scenario.rs`; `expect` takes `ok`, `error` (+ exact `fields`), `trap` or `confirmRequired`; a tick always runs as System and refuses `as`).
 - Not yet: actions, `mock_http`, migrations (`upgrade_to`).
 
 ## Verify

@@ -33,6 +33,8 @@ pub enum Failure {
     App { code: String, fields: Value },
     /// The invocation trapped.
     Trap(TrapKind),
+    /// The guest's result or an event's data was not valid JSON; the invocation is not applied.
+    BadOutput(String),
     /// A `confirm` method was called without `.confirmed()`.
     ConfirmRequired,
 }
@@ -193,14 +195,23 @@ impl TestApp {
         self.events
             .iter()
             .filter(|e| match &e.audience {
-                HostAudience::OrgMembers(_) | HostAudience::OrgAdmins(_) if e.frozen.is_some() => e
-                    .frozen
-                    .as_ref()
-                    .is_some_and(|f| f.iter().any(|a| a == account)),
+                HostAudience::OrgMembers(_)
+                | HostAudience::OrgAdmins(_)
+                | HostAudience::Team(_)
+                    if e.frozen.is_some() =>
+                {
+                    e.frozen
+                        .as_ref()
+                        .is_some_and(|f| f.iter().any(|a| a == account))
+                }
                 HostAudience::All => true,
                 HostAudience::Caller => e.emitter.as_deref() == Some(account),
                 HostAudience::Accounts(list) => list.iter().any(|a| a == account),
-                HostAudience::Team(_) => false,
+                HostAudience::Team(team) => self
+                    .org
+                    .teams
+                    .get(team)
+                    .is_some_and(|m| m.contains(account)),
                 HostAudience::OrgMembers(org) => {
                     org == ORG_ID && role.is_some_and(|r| r >= OrgRole::Member)
                 }
@@ -212,14 +223,18 @@ impl TestApp {
             .collect()
     }
 
-    /// Removes the account from the org. Org events emitted so far stay with the accounts
+    /// Removes the account from the org. Org and team events emitted so far stay with the accounts
     /// that were in the audience when it changed; later ones no longer reach `account`.
     pub fn remove_member(&mut self, account: &str) {
         let org = self.org.clone();
         for e in self.events.iter_mut().filter(|e| e.frozen.is_none()) {
-            let min = match e.audience {
+            let min = match &e.audience {
                 HostAudience::OrgMembers(_) => OrgRole::Member,
                 HostAudience::OrgAdmins(_) => OrgRole::Admin,
+                HostAudience::Team(team) => {
+                    e.frozen = Some(org.team_members(team));
+                    continue;
+                }
                 _ => continue,
             };
             let reached = org
@@ -293,6 +308,7 @@ impl TestApp {
         timer: Option<TimerCtx>,
     ) -> Result<Value, Failure> {
         let is_view = kind == InvocationKind::View;
+        let (seq_before, entry_before) = (self.seq, self.last_entry_ms);
         if !is_view {
             self.seq += 1;
         }
@@ -332,7 +348,17 @@ impl TestApp {
         };
         let out = self.engine.invoke(&self.prepared, host, budget);
         self.usage = out.usage;
-        if !is_view {
+        if matches!(
+            out.status,
+            Status::Trap {
+                kind: TrapKind::Timeout,
+                ..
+            }
+        ) {
+            // A timeout is not logged (D23): it consumes no `id_seq` and moves no entry time.
+            self.seq = seq_before;
+            self.last_entry_ms = entry_before;
+        } else if !is_view {
             self.last_entry_ms = self.now_ms;
         }
         self.finish(is_view, emitter, out)
@@ -346,6 +372,19 @@ impl TestApp {
     ) -> Result<Value, Failure> {
         match out.status {
             Status::Ok => {
+                let result = if out.result.is_empty() {
+                    Value::Null
+                } else {
+                    serde_json::from_slice(&out.result)
+                        .map_err(|e| Failure::BadOutput(format!("result is not JSON: {e}")))?
+                };
+                let mut events = Vec::new();
+                for e in out.events {
+                    let data = serde_json::from_slice(&e.data).map_err(|err| {
+                        Failure::BadOutput(format!("event {} data is not JSON: {err}", e.name))
+                    })?;
+                    events.push((e, data));
+                }
                 if !is_view {
                     for w in out.diff {
                         match w.value {
@@ -353,8 +392,7 @@ impl TestApp {
                             None => self.state.remove(&w.key),
                         };
                     }
-                    for e in out.events {
-                        let data = serde_json::from_slice(&e.data).unwrap_or(Value::Null);
+                    for (e, data) in events {
                         self.events.push(Logged {
                             name: e.name,
                             data,
@@ -364,10 +402,7 @@ impl TestApp {
                         });
                     }
                 }
-                if out.result.is_empty() {
-                    return Ok(Value::Null);
-                }
-                Ok(serde_json::from_slice(&out.result).unwrap_or(Value::Null))
+                Ok(result)
             }
             Status::AppError { code, message } => Err(Failure::App {
                 code,
@@ -399,12 +434,10 @@ impl TestApp {
             // Timers and `init` are refused by the guest with `WrongKind`.
             return None;
         }
-        if m.confirm && !confirmed {
-            return Some(Failure::ConfirmRequired);
-        }
         match caller {
             HostCaller::Public if !m.public => refuse("LoginRequired"),
             HostCaller::System if !m.allow_system => refuse("Forbidden"),
+            _ if m.confirm && !confirmed => Some(Failure::ConfirmRequired),
             _ => None,
         }
     }

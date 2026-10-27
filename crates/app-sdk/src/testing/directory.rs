@@ -1,6 +1,6 @@
 //! The harness org and the `Directory` the host core asks about it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use calimero_app_host::{Directory, OrgRole};
 
@@ -15,6 +15,7 @@ pub struct Org {
     pub(crate) admins: BTreeSet<String>,
     pub(crate) members: BTreeSet<String>,
     pub(crate) guests: BTreeSet<String>,
+    pub(crate) teams: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl Org {
@@ -57,7 +58,35 @@ impl Org {
         self
     }
 
+    /// Adds teams: `Org::new().teams([("sales", ["bob"])])`. A team needs no org role.
+    #[must_use]
+    pub fn teams<I, T, J, S>(mut self, teams: I) -> Self
+    where
+        I: IntoIterator<Item = (T, J)>,
+        T: Into<String>,
+        J: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        for (team, accounts) in teams {
+            self.teams
+                .entry(team.into())
+                .or_default()
+                .extend(accounts.into_iter().map(Into::into));
+        }
+        self
+    }
+
+    pub(crate) fn team_members(&self, team: &str) -> Vec<String> {
+        self.teams
+            .get(team)
+            .map(|m| m.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn remove(&mut self, account: &str) {
+        for members in self.teams.values_mut() {
+            members.remove(account);
+        }
         self.admins.remove(account);
         self.members.remove(account);
         self.guests.remove(account);
@@ -99,12 +128,12 @@ impl Directory for HarnessDir {
         self.0.role(account)
     }
 
-    fn in_team(&self, _account: &str, _team: &str) -> bool {
-        false
+    fn in_team(&self, account: &str, team: &str) -> bool {
+        self.0.teams.get(team).is_some_and(|m| m.contains(account))
     }
 
-    fn team_exists(&self, _team: &str) -> bool {
-        false
+    fn team_exists(&self, team: &str) -> bool {
+        self.0.teams.contains_key(team)
     }
 
     fn orgs_of(&self, account: &str) -> Vec<(String, OrgRole)> {
