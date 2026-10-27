@@ -192,3 +192,14 @@ pub struct BlobInfo {
     pub sha256: Vec<u8>,
     pub mime: String,
 }
+
+/// An invocation `HostCore::new` refuses.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum InvalidInvocation {
+    /// A `Timer` invocation without its `TimerCtx` (D34).
+    #[error("a timer invocation needs its timer slot")]
+    TimerWithoutSlot,
+    /// A `TimerCtx` on an invocation that is not a timer tick.
+    #[error("only a timer invocation carries a timer slot")]
+    SlotOutsideTimer,
+}

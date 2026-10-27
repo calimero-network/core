@@ -43,5 +43,5 @@ pub trait Engine: Send + Sync {
     fn prepare(&self, bundle_hash: &str, component: &[u8]) -> Result<Prepared, PrepareError>;
 
     /// Run `handle` for `host.invocation()` in a fresh instance under `budget`.
-    fn invoke(&self, app: &Prepared, host: HostCore<'_>, budget: Budget) -> Outcome;
+    fn invoke(&self, app: &Prepared, host: HostCore, budget: Budget) -> Outcome;
 }

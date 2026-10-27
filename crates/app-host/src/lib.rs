@@ -16,7 +16,7 @@ pub use core::{CursorId, HostCore, MAX_LOG_BYTES, MAX_OPEN_CURSORS, MAX_RANGE_BA
 pub use engine::{Engine, PrepareError, Prepared};
 pub use state::{app_key, KeyValue, StateView, GENERATION};
 pub use types::{
-    Audience, BlobInfo, Budget, Caller, Directory, Event, HostDenied, Invocation, InvocationKind,
-    OrgRole, Outcome, Status, TimerCtx, TrapKind, Usage, Write, CALL_WALL_CLOCK, DEFAULT_FUEL,
-    DEFAULT_MEMORY_PAGES,
+    Audience, BlobInfo, Budget, Caller, Directory, Event, HostDenied, InvalidInvocation,
+    Invocation, InvocationKind, OrgRole, Outcome, Status, TimerCtx, TrapKind, Usage, Write,
+    CALL_WALL_CLOCK, DEFAULT_FUEL, DEFAULT_MEMORY_PAGES,
 };

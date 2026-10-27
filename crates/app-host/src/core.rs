@@ -2,6 +2,7 @@
 //! decides what an invocation may do (spec section 3). Engines map WIT calls onto it.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use ciborium::value::Integer;
 use ciborium::Value;
@@ -12,8 +13,8 @@ use crate::overlay::{Cursor, Overlay};
 use crate::state::{app_key, KeyValue, StateView, GENERATION};
 use crate::time;
 use crate::types::{
-    BlobInfo, Caller, Directory, Event, HostDenied, Invocation, InvocationKind, OrgRole, Outcome,
-    Status, Usage,
+    BlobInfo, Caller, Directory, Event, HostDenied, InvalidInvocation, Invocation, InvocationKind,
+    OrgRole, Outcome, Status, Usage,
 };
 
 /// Writes per run: `put`, `delete` and `add` count one each; the next one is refused.
@@ -35,12 +36,15 @@ const LOG_TRUNCATED: &str = "[log truncated]";
 pub struct CursorId(pub u32);
 
 /// The host side of one invocation. Built per run, consumed by `finish`.
-pub struct HostCore<'a> {
+///
+/// It owns or shares everything it reads, so it is `Send + 'static` and can be a
+/// wasmtime `Store`'s data.
+pub struct HostCore {
     app_id: String,
-    state: &'a dyn StateView,
+    state: Arc<dyn StateView>,
     applied_index: u64,
-    inv: &'a Invocation,
-    dir: &'a dyn Directory,
+    inv: Invocation,
+    dir: Arc<dyn Directory>,
     overlay: Overlay,
     writes: u32,
     events: Vec<Event>,
@@ -48,23 +52,29 @@ pub struct HostCore<'a> {
     log_bytes: usize,
     unique_ids: u64,
     rng: ChaCha20Rng,
-    cursors: BTreeMap<u32, Cursor<'a>>,
+    cursors: BTreeMap<u32, Cursor>,
     next_cursor: u32,
     peak_buffered: usize,
 }
 
-impl<'a> HostCore<'a> {
+impl HostCore {
     /// `state` is the committed state at `applied_index`: the leader's latest for calls,
-    /// the index the view reads at for views (D46).
-    #[must_use]
+    /// the index the view reads at for views (D46). A timer invocation must carry its
+    /// slot and no other kind may.
     pub fn new(
         app_id: &str,
-        state: &'a dyn StateView,
+        state: Arc<dyn StateView>,
         applied_index: u64,
-        inv: &'a Invocation,
-        dir: &'a dyn Directory,
-    ) -> Self {
-        Self {
+        inv: Invocation,
+        dir: Arc<dyn Directory>,
+    ) -> Result<Self, InvalidInvocation> {
+        match (inv.kind == InvocationKind::Timer, inv.timer.is_some()) {
+            (true, false) => return Err(InvalidInvocation::TimerWithoutSlot),
+            (false, true) => return Err(InvalidInvocation::SlotOutsideTimer),
+            _ => {}
+        }
+        let rng = time::entropy(&inv);
+        Ok(Self {
             app_id: app_id.to_owned(),
             state,
             applied_index,
@@ -76,17 +86,17 @@ impl<'a> HostCore<'a> {
             logs: Vec::new(),
             log_bytes: 0,
             unique_ids: 0,
-            rng: time::entropy(inv),
+            rng,
             cursors: BTreeMap::new(),
             next_cursor: 0,
             peak_buffered: 0,
-        }
+        })
     }
 
     /// The invocation being run; the engine reads kind, method and args from it.
     #[must_use]
     pub fn invocation(&self) -> &Invocation {
-        self.inv
+        &self.inv
     }
 
     // --- storage ---------------------------------------------------------------------
@@ -151,15 +161,12 @@ impl<'a> HostCore<'a> {
         } else {
             app_key(GENERATION, end)
         };
-        let base = self.state.range(&start, &end, reverse);
         let id = self.next_cursor;
         self.next_cursor = self
             .next_cursor
             .checked_add(1)
             .ok_or_else(|| HostDenied::new("cursor ids exhausted"))?;
-        let _ = self
-            .cursors
-            .insert(id, Cursor::new(start, end, reverse, base));
+        let _ = self.cursors.insert(id, Cursor::new(start, end, reverse));
         Ok(CursorId(id))
     }
 
@@ -170,7 +177,7 @@ impl<'a> HostCore<'a> {
             return Err(HostDenied::new("unknown cursor"));
         };
         let max = max.min(MAX_RANGE_BATCH) as usize;
-        let batch = cursor.next_batch(&self.overlay, max, &mut self.peak_buffered);
+        let batch = cursor.next_batch(&*self.state, &self.overlay, max, &mut self.peak_buffered);
         Ok(batch
             .into_iter()
             .map(|(key, value)| (key[GENERATION_PREFIX..].to_vec(), value))
@@ -286,12 +293,14 @@ impl<'a> HostCore<'a> {
 
     // --- events, xcall, blobs, action ------------------------------------------------
 
-    pub fn emit(&mut self, event: Event) -> Result<(), HostDenied> {
+    /// Queues an event, delivered only if the run ends `Ok`. The inner result is the WIT
+    /// `result<_, string>`; a policy refusal is the outer `HostDenied`.
+    pub fn emit(&mut self, event: Event) -> Result<Result<(), String>, HostDenied> {
         if !self.is_logged_write() {
             return Err(self.denied("emit"));
         }
         self.events.push(event);
-        Ok(())
+        Ok(Ok(()))
     }
 
     pub fn xcall_send(
@@ -335,12 +344,12 @@ impl<'a> HostCore<'a> {
 
     #[must_use]
     pub fn wall_ms(&self) -> u64 {
-        time::wall_ms(self.inv)
+        time::wall_ms(&self.inv)
     }
 
     #[must_use]
     pub fn monotonic_ns(&self) -> u64 {
-        time::monotonic_ns(self.inv)
+        time::monotonic_ns(&self.inv)
     }
 
     pub fn random_fill(&mut self, buf: &mut [u8]) {
