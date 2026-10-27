@@ -225,12 +225,6 @@ pub(crate) fn apply(
         );
     }
 
-    // The creator, for good: only it may later open the subgroup if it is
-    // Restricted, and every namespace member must be able to tell who that is
-    // without the subgroup's own (sealed) history. Recorded whether or not the
-    // handler pre-populated the meta above.
-    crate::group_creator::GroupCreatorRepository::new(store).record(&gid, &creator)?;
-
     // Ordered writes — NOT a single RocksDB atomic batch. Each call
     // below opens its own store handle. A crash between any two steps
     // leaves partial state. Recovery path: re-applying the same
@@ -287,6 +281,12 @@ pub(crate) fn apply(
         };
         caps.set_subgroup_visibility(&gid, visibility)?;
     }
+
+    // The creator, for good: only it may later open the subgroup if it is Restricted, and every
+    // namespace member must be able to tell who that is without the subgroup's own (sealed)
+    // history. Written last: a replay reads this row as "folded", so a crash before it leaves
+    // the create to be finished.
+    crate::group_creator::GroupCreatorRepository::new(store).record(&gid, &creator)?;
 
     ctx.queue_event(OpEvent::SubgroupCreated {
         namespace_id,
