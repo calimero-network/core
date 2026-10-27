@@ -138,3 +138,14 @@ fn stamp_time_now_and_new_id_follow_the_entry() {
     assert_ne!(a, b);
     assert!(a.as_str().unwrap().ends_with(".0"), "{a}");
 }
+
+#[test]
+fn put_writes_without_an_event() {
+    let mut t = app();
+    t.as_("owner")
+        .call("put", json!({ "key": "a", "value": "x".repeat(20_000) }))
+        .unwrap();
+    assert!(t.events_for("owner").is_empty());
+    let v = t.as_("owner").view("get", json!({ "key": "a" })).unwrap();
+    assert_eq!(v.as_str().unwrap().len(), 20_000);
+}

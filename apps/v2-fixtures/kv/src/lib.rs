@@ -42,8 +42,14 @@ impl Kv {
 
     /// Sets `key`; emits `Inserted` for a new key, `Updated` for an existing one.
     pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
-        let event = self.put(&key, &value)?;
+        let event = self.upsert(&key, &value)?;
         env::emit(event, Audience::All)?;
+        Ok(())
+    }
+
+    /// Sets `key` without an event (for values over the 16 KiB event limit).
+    pub fn put(&mut self, key: String, value: String) -> app::Result<()> {
+        let _event = self.upsert(&key, &value)?;
         Ok(())
     }
 
@@ -51,7 +57,7 @@ impl Kv {
     pub fn fill(&mut self, n: u32, size: u32) -> app::Result<()> {
         let value = "x".repeat(size as usize);
         for i in 0..n {
-            let event = self.put(&format!("fill-{i}"), &value)?;
+            let event = self.upsert(&format!("fill-{i}"), &value)?;
             env::emit(event, Audience::All)?;
         }
         Ok(())
@@ -132,7 +138,7 @@ impl Kv {
         self.remove_all()
     }
 
-    fn put(&mut self, key: &str, value: &str) -> app::Result<Event> {
+    fn upsert(&mut self, key: &str, value: &str) -> app::Result<Event> {
         let fresh = !self.entries.contains(key)?;
         self.entries.upsert(Entry {
             key: key.to_owned(),
