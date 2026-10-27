@@ -12877,6 +12877,10 @@ mod self_leave_rotation {
         let mid = AccountId::from([0x80; 32]);
         repo.add_member(&f.sub_gid, &mid, GroupMemberRole::Member)
             .unwrap();
+        for account in [&low, &mid, &high] {
+            repo.add_member(&f.ns_gid, account, GroupMemberRole::Member)
+                .unwrap();
+        }
         let mut meta = sample_meta_with_admin(f.leaver);
         meta.admin_identity = f.leaver;
         MetaRepository::new(&f.store)

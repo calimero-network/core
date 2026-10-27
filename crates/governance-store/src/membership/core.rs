@@ -719,9 +719,10 @@ impl<'a> MembershipRepository<'a> {
     }
 
     /// The lowest-account `Member` of a non-root `group_id` that has no `Admin` row and no
-    /// creator slot in force: the account that runs it, read from state alone.
+    /// creator slot in force and is still in the workspace: the account that runs it.
     fn successor(&self, group_id: &ContextGroupId) -> EyreResult<Option<AccountId>> {
-        if NamespaceRepository::new(self.store).resolve(group_id)? == *group_id {
+        let root = NamespaceRepository::new(self.store).resolve(group_id)?;
+        if root == *group_id {
             return Ok(None);
         }
         let members = self.list(group_id, 0, usize::MAX)?;
@@ -736,11 +737,21 @@ impl<'a> MembershipRepository<'a> {
                 return Ok(None);
             }
         }
-        Ok(members
-            .iter()
-            .filter(|(_, role)| *role == GroupMemberRole::Member)
-            .map(|(account, _)| *account)
-            .min())
+        let root_meta = MetaRepository::new(self.store).load(&root)?;
+        let mut lowest = None;
+        for (account, role) in &members {
+            let in_workspace = self.role_of(&root, account)?.is_some()
+                || root_meta.as_ref().is_some_and(|meta| {
+                    meta.admin_identity == *account || meta.owner_identity == *account
+                });
+            if *role == GroupMemberRole::Member
+                && in_workspace
+                && lowest.is_none_or(|l| l > *account)
+            {
+                lowest = Some(*account);
+            }
+        }
+        Ok(lowest)
     }
 
     /// Does `group_id` have no admin of its own, so its successor runs it? Such a folder

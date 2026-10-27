@@ -257,20 +257,24 @@ impl AclView {
     }
 
     /// The lowest-account `Member` of a non-root `group` that has no `Admin` row and no
-    /// creator slot in force: the account that runs it, read from state alone.
+    /// creator slot in force and is still in the workspace: the account that runs it.
     fn successor(&self, group: ContextGroupId) -> Option<AccountId> {
         let members = self.groups.get(&group)?;
         let creator_serves = self
             .group_admin
             .get(&group)
             .is_some_and(|creator| self.holds_creator_slot(creator, group));
-        let is_root = self.group_and_ancestors(group).last().unwrap_or(group) == group;
-        if is_root || creator_serves || members.values().any(|r| *r == GroupMemberRole::Admin) {
+        let root = self.group_and_ancestors(group).last().unwrap_or(group);
+        if root == group || creator_serves || members.values().any(|r| *r == GroupMemberRole::Admin)
+        {
             return None;
         }
         members
             .iter()
-            .filter(|(_, role)| **role == GroupMemberRole::Member)
+            .filter(|(account, role)| {
+                **role == GroupMemberRole::Member
+                    && (self.is_root_admin(account) || self.holds_direct_row(account, root))
+            })
             .map(|(account, _)| *account)
             .min()
     }

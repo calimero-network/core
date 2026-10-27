@@ -91,7 +91,7 @@ fn a_folder_left_without_an_admin_is_run_by_its_lowest_account() {
         (account(0x05), GroupMemberRole::ReadOnly),
         (account(0x06), GroupMemberRole::ReadOnlyTee),
     ];
-    let v = departed_view(creator, &[], &rows);
+    let v = departed_view(creator, &rows, &rows);
 
     assert!(v.is_group_admin(&account(0x40), folder()));
     assert!(!v.is_group_admin(&account(0x90), folder()));
@@ -106,7 +106,7 @@ fn a_folder_with_an_admin_has_no_stand_in() {
         (account(0x90), GroupMemberRole::Admin),
         (account(0x40), GroupMemberRole::Member),
     ];
-    let v = departed_view(creator, &[], &rows);
+    let v = departed_view(creator, &rows, &rows);
 
     assert!(v.is_group_admin(&account(0x90), folder()));
     assert!(!v.is_group_admin(&account(0x40), folder()));
@@ -152,7 +152,7 @@ fn a_folder_without_an_admin_refuses_an_add_until_its_successor_promotes_itself(
         |v: AclView| super::support::bind_test_devices(super::support::bind_account(v, newcomer));
     let leaderless = bound(departed_view(
         creator,
-        &[],
+        &[(successor, GroupMemberRole::Member)],
         &[(successor, GroupMemberRole::Member)],
     ));
 
