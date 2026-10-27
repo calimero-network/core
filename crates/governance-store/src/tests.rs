@@ -12759,7 +12759,7 @@ mod self_leave_rotation {
     }
 
     #[test]
-    fn a_capability_only_member_cannot_remove_someone_who_administers_a_subgroup() {
+    fn a_capability_holder_removing_a_member_from_the_namespace_reaches_a_subgroup_admin_seat() {
         let f = fixture();
         MembershipRepository::new(&f.store)
             .add_member(&f.sub_gid, &f.leaver, GroupMemberRole::Admin)
@@ -12785,22 +12785,15 @@ mod self_leave_rotation {
         )
         .expect("sign MemberRemoved");
 
-        let _ = apply_local_signed_group_op(&f.store, &op)
-            .expect_err("a capability holder must not strip a sub-folder admin seat");
+        apply_local_signed_group_op(&f.store, &op)
+            .expect("a MANAGE_MEMBERS holder's workspace removal is accepted");
 
         assert_eq!(
             MembershipRepository::new(&f.store)
                 .role_of(&f.sub_gid, &f.leaver)
                 .unwrap(),
-            Some(GroupMemberRole::Admin)
-        );
-        apply_root_removal(&f);
-        assert_eq!(
-            MembershipRepository::new(&f.store)
-                .role_of(&f.sub_gid, &f.leaver)
-                .unwrap(),
             None,
-            "a root admin may"
+            "the removal reaches the sub-folder admin seat"
         );
     }
 

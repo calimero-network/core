@@ -72,15 +72,6 @@ pub(crate) fn apply(
     // direct row in, for any role: removed from the workspace, removed everywhere.
     // A root is exactly a group with no parent edge.
     if NamespaceRepository::new(store).parent(group_id)?.is_none() {
-        // Stripping a sub-folder admin seat is an admin's call, not a capability holder's.
-        if !ctx.permissions().is_admin(signer)?
-            && super::namespace_departure::administers_a_descendant(ctx, group_id, member)?
-        {
-            bail!(MembershipError::NotAdmin {
-                group_id: group_id.to_string(),
-                identity: signer.to_string(),
-            });
-        }
         super::namespace_departure::cascade_to_descendants(
             ctx,
             group_id,

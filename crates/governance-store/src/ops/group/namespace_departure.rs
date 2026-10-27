@@ -4,7 +4,7 @@ use super::context::GroupApplyCtx;
 use crate::pending_rotation::group_rotates_on_departure;
 use crate::{
     cascade_remove_member_from_group_tree, DenyListRepository, MembershipRepository,
-    MetaRepository, NamespaceRepository, PendingRotationRepository, ReentryRepository,
+    NamespaceRepository, PendingRotationRepository, ReentryRepository,
 };
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
@@ -59,24 +59,4 @@ pub(super) fn cascade_to_descendants(
         }
     }
     Ok(())
-}
-
-/// Whether `member` holds an `Admin` row, or the creator slot, in any descendant of `root`.
-pub(super) fn administers_a_descendant(
-    ctx: &GroupApplyCtx<'_>,
-    root: &ContextGroupId,
-    member: &AccountId,
-) -> EyreResult<bool> {
-    let store = ctx.store();
-    let membership = MembershipRepository::new(store);
-    for sub in &NamespaceRepository::new(store).collect_descendants(root)? {
-        if membership.is_direct_admin(sub, member)?
-            || MetaRepository::new(store)
-                .load(sub)?
-                .is_some_and(|meta| meta.admin_identity == *member)
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
