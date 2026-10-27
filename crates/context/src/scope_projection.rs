@@ -3967,11 +3967,18 @@ fn loss_order(walked: &CutAncestry<'_>, root: ContextGroupId) -> Option<LossOrde
     Some(LossOrder { before, after })
 }
 
-/// The admin rows that founding a space by a flip writes for its maker, as ops the fold reads
-/// beside the flip, so a later removal, leave or root loss ends them like any row. A flip seats
-/// its maker only if it was valid at its own cut by the same at-cut view as everywhere else:
-/// not void, the group open then, the maker an admin or a holder of `CAN_MANAGE_VISIBILITY`.
-fn space_maker_rows(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<Vec<Op>> {
+/// A valid flip's seat: the group it founded and the maker it made that group's first admin.
+type Makers = HashMap<[u8; 32], (ContextGroupId, AccountId)>;
+
+/// The flips that were valid at their own cut by the same at-cut view as everywhere else: not
+/// void, the group open then, the maker an admin or a holder of `CAN_MANAGE_VISIBILITY`, and
+/// holding no row there already. Each verdict is computed once, earliest flips first so a later
+/// one sees the earlier seats, and charged against `budget`; `None` past it.
+fn valid_space_makers(
+    walked: &CutAncestry<'_>,
+    base: AuthorityBase,
+    budget: usize,
+) -> Option<Makers> {
     let flips: Vec<(&Op, ContextGroupId)> = walked
         .ops()
         .iter()
@@ -3986,17 +3993,30 @@ fn space_maker_rows(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<Vec
             _ => None,
         })
         .collect();
+    let mut makers = Makers::new();
     if flips.is_empty() {
-        return Some(Vec::new());
+        return Some(makers);
     }
     let log: Vec<Op> = walked.ops().iter().map(|op| (*op).clone()).collect();
-    let mut rows = Vec::new();
+    let mut work = log.len();
+    let mut ordered: Vec<(usize, &Op, ContextGroupId)> = Vec::with_capacity(flips.len());
     for (flip, group) in flips {
+        let cut = ScopeState::cut_ancestry_with_void(&log, &flip.parents, walked.void_ids());
+        work = work.saturating_add(cut.ops().len() + 1);
+        if work > budget {
+            return None;
+        }
+        ordered.push((cut.ops().len(), flip, group));
+    }
+    ordered.sort_by_key(|(size, flip, _)| (*size, flip.id()));
+    for (_, flip, group) in ordered {
+        let cut = ScopeState::cut_ancestry_with_void(&log, &flip.parents, walked.void_ids());
+        work = work.saturating_add(cut.ops().len() + 1);
+        if work > budget {
+            return None;
+        }
         let maker = flip.authorship.account;
-        let at_flip = at_cut_view(
-            &ScopeState::cut_ancestry_with_void(&log, &flip.parents, walked.void_ids()),
-            base,
-        )?;
+        let at_flip = fold_view(&cut, base, &makers)?;
         let valid = at_flip.private_space(group).is_none()
             && admin_or_capability_in_view(
                 &at_flip,
@@ -4012,22 +4032,46 @@ fn space_maker_rows(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<Vec
                 .get(&group)
                 .is_some_and(|members| members.contains_key(&maker));
         if valid {
-            rows.push(Op::new(
-                flip.scope,
-                flip.parents.clone(),
-                flip.authorship.clone(),
-                flip.hlc,
-                OpPayload::MemberAdded {
-                    group,
-                    member: maker,
-                    role: GroupMemberRole::Admin,
-                },
-                [0u8; 32],
-                [0u8; 64],
-            ));
+            let _ = makers.insert(flip.id(), (group, maker));
         }
     }
-    Some(rows)
+    Some(makers)
+}
+
+/// Whether `group`'s `maker` left or was removed after `flip`, which ends the seat the flip wrote.
+fn exited_since(
+    walked: &CutAncestry<'_>,
+    live: &[&Op],
+    flip: &Op,
+    group: ContextGroupId,
+    maker: AccountId,
+) -> bool {
+    let parents: HashMap<[u8; 32], &Vec<[u8; 32]>> = walked
+        .ops()
+        .iter()
+        .map(|op| (op.id(), &op.parents))
+        .collect();
+    live.iter()
+        .filter(|op| {
+            matches!(
+                folded_payload_of(op),
+                OpPayload::MemberRemoved { group: g, member: m } | OpPayload::MemberLeft { group: g, member: m }
+                    if *g == group && *m == maker
+            )
+        })
+        .any(|exit| {
+            let mut seen: HashSet<[u8; 32]> = HashSet::new();
+            let mut queue = vec![exit.id()];
+            while let Some(id) = queue.pop() {
+                if id == flip.id() {
+                    return true;
+                }
+                if let Some(held) = parents.get(&id) {
+                    queue.extend(held.iter().copied().filter(|p| seen.insert(*p)));
+                }
+            }
+            false
+        })
 }
 
 /// Drops the admin seat of a creator who left or was removed from the group after it was
@@ -4102,14 +4146,15 @@ fn folded_payload_of(op: &Op) -> &OpPayload {
 /// rejoined, and all of them for an account with no root row, bar a TEE that never
 /// held one. The owner is exempt. `None` when the cut is too large to decide.
 fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero_authz::AclView> {
-    let makers = space_maker_rows(walked, base)?;
-    if makers.is_empty() {
-        return fold_view(walked, base);
-    }
-    fold_view(&walked.with_ops(&makers), base)
+    let makers = valid_space_makers(walked, base, calimero_projection::MAX_FOLD_WORK)?;
+    fold_view(walked, base, &makers)
 }
 
-fn fold_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero_authz::AclView> {
+fn fold_view(
+    walked: &CutAncestry<'_>,
+    base: AuthorityBase,
+    makers: &Makers,
+) -> Option<calimero_authz::AclView> {
     let view = ScopeState::acl_view_from_ancestry(walked);
     let Some((root, founder)) = base.root else {
         return Some(view);
@@ -4133,7 +4178,14 @@ fn fold_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero_a
     for op in &live {
         let before = order.before.get(&op.id()).unwrap_or(&none);
         let after = order.after.get(&op.id()).unwrap_or(&none);
-        for write in row_writes(op) {
+        // A valid flip also writes its maker's seat, at the flip's own causal position.
+        let seat = makers.get(&op.id()).map(|(group, account)| RowWrite {
+            group: *group,
+            account: *account,
+            whole: false,
+            seat: false,
+        });
+        for write in row_writes(op).into_iter().chain(seat) {
             if write.group == root {
                 let _ = held_root.insert(write.account);
                 continue;
@@ -4156,6 +4208,19 @@ fn fold_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero_a
     } else {
         ScopeState::acl_view_from_ancestry(&walked.without(&stale))
     };
+    for op in &live {
+        let Some((group, maker)) = makers.get(&op.id()) else {
+            continue;
+        };
+        if !exited_since(walked, &live, op, *group, *maker) {
+            let _ = view
+                .groups
+                .entry(*group)
+                .or_default()
+                .entry(*maker)
+                .or_insert(GroupMemberRole::Admin);
+        }
+    }
     for write in &ended {
         let (group, account) = (write.group, write.account);
         if write.seat {
@@ -5941,6 +6006,83 @@ mod tests {
     }
 
     #[test]
+    fn a_maker_that_lost_and_regained_the_root_after_its_flip_holds_no_seat() {
+        let (root, space) = (ContextGroupId::from([3; 32]), ContextGroupId::from([4; 32]));
+        let who = AccountId::from([7; 32]);
+        let caps = |parents: usize| {
+            (
+                1u8,
+                vec![parents],
+                OpPayload::MemberCapabilitySet {
+                    group: root,
+                    member: who,
+                    capabilities:
+                        calimero_context_config::MemberCapabilities::CAN_MANAGE_VISIBILITY,
+                },
+            )
+        };
+        let view = dag_view(
+            root,
+            vec![
+                (1, vec![], open_space(space, root)),
+                (1, vec![0], member_op(root, 7, GroupMemberRole::Member)),
+                caps(1),
+                (1, vec![2], removed_op(root, 7)),
+                (1, vec![3], member_op(root, 7, GroupMemberRole::Member)),
+                caps(4),
+                (7, vec![5], make_private(space)),
+                (1, vec![6], removed_op(root, 7)),
+                (1, vec![7], member_op(root, 7, GroupMemberRole::Member)),
+            ],
+            &[8],
+        );
+
+        assert!(holds_row(&view, root, 7));
+        assert!(!holds_row(&view, space, 7));
+    }
+
+    #[test]
+    fn the_flip_verdicts_stay_linear_in_the_flips_and_give_up_past_the_budget() {
+        let root = ContextGroupId::from([3; 32]);
+        let mut log: Vec<Op> = Vec::new();
+        let mut push = |who: u8, payload: OpPayload| {
+            let parents = log.last().map(Op::id).into_iter().collect();
+            log.push(Op::new(
+                ScopeId::from(root.to_bytes()),
+                parents,
+                calimero_op::Authorship {
+                    account: AccountId::from([who; 32]),
+                    device: calimero_account::DeviceId::from([who; 32]),
+                    device_key: PublicKey::from([who; 32]),
+                },
+                hlc(log.len() as u64),
+                payload,
+                [0u8; 32],
+                [0u8; 64],
+            ));
+        };
+        for n in 0..40u8 {
+            let space = ContextGroupId::from([0x20 + n; 32]);
+            push(1, open_space(space, root));
+            push(1, make_private(space));
+        }
+        let head = [log.last().expect("ops").id()];
+        let base = AuthorityBase {
+            root: Some((root, AccountId::from([1u8; 32]))),
+            default_cap_base: 0,
+        };
+        let walked = ScopeState::cut_ancestry(&log, &head);
+
+        assert_eq!(
+            valid_space_makers(&walked, base, usize::MAX)
+                .expect("decided")
+                .len(),
+            40
+        );
+        assert!(valid_space_makers(&walked, base, 10).is_none());
+    }
+
+    #[test]
     fn a_maker_that_left_its_space_holds_no_seat_at_a_later_cut() {
         let (root, space) = (ContextGroupId::from([3; 32]), ContextGroupId::from([4; 32]));
         let view = dag_view(
@@ -5961,6 +6103,10 @@ mod tests {
         );
 
         assert!(!holds_row(&view, space, 1));
+        assert_ne!(
+            view.group_admin.get(&space),
+            Some(&AccountId::from([1; 32]))
+        );
     }
 
     #[test]

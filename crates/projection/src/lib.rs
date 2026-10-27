@@ -385,23 +385,6 @@ impl<'a> CutAncestry<'a> {
         &self.void
     }
 
-    /// This ancestry with `extra` ops folded in beside its own.
-    #[must_use]
-    pub fn with_ops<'b>(&'b self, extra: &'b [Op]) -> CutAncestry<'b> {
-        let mut ops: Vec<&'b Op> = self.ops.to_vec();
-        ops.extend(extra.iter());
-        let mut reached = self.reached.clone();
-        reached.extend(extra.iter().map(Op::id));
-        CutAncestry {
-            ops,
-            reached,
-            missing: self.missing,
-            opaque: self.opaque,
-            void: self.void.clone(),
-            undecidable: self.undecidable,
-        }
-    }
-
     /// Did the void set exceed its fold budget?
     #[must_use]
     pub fn is_undecidable(&self) -> bool {
