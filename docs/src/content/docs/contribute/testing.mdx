@@ -35,7 +35,8 @@ cargo build -p kv-store -p org-gated -p outbound-probe \
 PATH="$(scripts/setup-cargo-mero.sh):$PATH"
 for a in blobs kv-store-with-handlers search-chat xcall-example tee-cards tee-dice \
   migrations/migration-suite-v1 migrations/migration-suite-v2-add-field \
-  migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2; do
+  migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2 \
+  migrations/scenario-identity-downgrade-v1 migrations/scenario-identity-downgrade-v2; do
   cargo mero build --manifest-path "apps/$a/Cargo.toml"
 done
 ```

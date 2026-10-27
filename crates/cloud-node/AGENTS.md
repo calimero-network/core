@@ -290,7 +290,8 @@ cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release   
 # fixtures whose ABI the node reads (handlers, timers, xcall, search, blobs):
 for a in blobs kv-store-with-handlers search-chat xcall-example tee-cards tee-dice \
   migrations/migration-suite-v1 migrations/migration-suite-v2-add-field \
-  migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2; do
+  migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2 \
+  migrations/scenario-identity-downgrade-v1 migrations/scenario-identity-downgrade-v2; do
   cargo mero build --manifest-path apps/$a/Cargo.toml; done
 cargo test -p calimero-cloud-node    # 3-node cluster in process, sealed, real WASM
 cargo run -p merod -- --help
