@@ -3588,6 +3588,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_workspace_removal_ends_the_members_sub_folder_seats() {
+        let root = ContextGroupId::from([0u8; 32]);
+        let minutes = ContextGroupId::from(JOINED_GROUP);
+        let member = joiner();
+        let added = |at, group, role| {
+            op(
+                at,
+                OpPayload::MemberAdded {
+                    group,
+                    member,
+                    role,
+                },
+            )
+        };
+        let mut ops = vec![
+            added(1, root, GroupMemberRole::Member),
+            added(2, minutes, GroupMemberRole::Admin),
+            op(
+                3,
+                OpPayload::MemberRemoved {
+                    group: root,
+                    member,
+                },
+            ),
+        ];
+        assert_eq!(joiner_role(&ops), None);
+
+        ops.push(added(4, minutes, GroupMemberRole::Admin));
+        assert_eq!(joiner_role(&ops), Some(GroupMemberRole::Admin));
+    }
+
     /// More joins than the fold keeps in the root group and a subgroup, with
     /// removals, leaves of either, adds, TEE admissions and relay seats between
     /// them at clocks that collide: every arrival order folds to one state.

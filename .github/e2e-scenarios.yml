@@ -71,6 +71,10 @@ scenarios:
   - workflow: public-intents
     file: workflows/public-intents.yml
     app: scaffolding-e2e
+  - workflow: private-folder-workspace-removal-reaches-child
+    file: workflows/private-folder-workspace-removal-reaches-child.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
   # A node holding no account root joins and writes under a certificate signed elsewhere - the
   # cold-storage posture the account/device split exists for. Needs merobox >= 0.6.67.
   - workflow: offline-account-root
