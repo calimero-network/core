@@ -172,8 +172,13 @@ per-app storage keys (section 9), and the deferred features above.
 
 ```bash
 cargo test --release -p calimero-cloud-node   # 3-node cluster in process, sealed, real components
-# the cluster fixtures (apps/v2-fixtures/{kv,org-gated}) are built on first use by
-# tests/common/mod.rs into target/app-components (needs the wasm32-wasip2 target)
+# the cluster fixtures (apps/v2-fixtures/{kv,org-gated}) and Rooms (apps/rooms) are built on
+# first use by tests/common/mod.rs into target/app-components (needs the wasm32-wasip2 target);
+# tests/common/mod.rs also holds the in-process `Cluster` the cluster and rooms tests share
+cargo test --release -p calimero-cloud-node --test rooms   # Rooms A1 (shared scenario), A3, A5
+# A4, the fault test (merod-v2 --dev processes on ports 3600-3699; needs the release
+# merod-v2 and calimero-cloud --features cli binaries and the cached Rooms component)
+python3 -I crates/cloud-node/tests/fault/rooms_fault.py --iterations 200 --seed 1
 cargo run -p calimero-cloud-node --bin merod-v2 -- --help
 cargo run -p calimero-cloud-node --bin merod-v2 -- local   # dev cluster: 3 nodes on :2501-2503 (`local.rs`)
 ```

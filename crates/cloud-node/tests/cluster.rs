@@ -4,18 +4,14 @@
 
 mod common;
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use calimero_cloud_client::{Client, Consistency, Policy};
-use calimero_cloud_node::attest::Mode;
-use calimero_cloud_node::{run, Config, Running};
 use calimero_identity::testing::SoftAuthenticator;
+use common::{signed_up, Cluster, ORIGIN};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
-
-const ORIGIN: &str = "http://localhost:3000";
 
 fn kv_wasm() -> Vec<u8> {
     common::component("kv")
@@ -23,153 +19,6 @@ fn kv_wasm() -> Vec<u8> {
 
 fn wasm(name: &str) -> Vec<u8> {
     common::component(name)
-}
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-struct Cluster {
-    nodes: Vec<Option<Running>>,
-    urls: Vec<String>,
-    configs: Vec<Config>,
-    _dirs: Vec<tempfile::TempDir>,
-}
-
-impl Cluster {
-    async fn start(n: u64) -> Self {
-        Self::start_with(n, |_| {}).await
-    }
-
-    async fn start_with(n: u64, configure: impl Fn(&mut Config)) -> Self {
-        let ports: Vec<u16> = (0..n).map(|_| free_port()).collect();
-        let urls: Vec<String> = ports
-            .iter()
-            .map(|p| format!("http://127.0.0.1:{p}/"))
-            .collect();
-        let peers: BTreeMap<u64, String> = urls
-            .iter()
-            .enumerate()
-            .map(|(i, u)| (i as u64 + 1, u.clone()))
-            .collect();
-        let mut nodes = Vec::new();
-        let mut dirs = Vec::new();
-        let mut configs = Vec::new();
-        for (i, port) in ports.iter().enumerate() {
-            let dir = tempfile::tempdir().unwrap();
-            let mut config = Config {
-                node_id: i as u64 + 1,
-                public_url: urls[i].clone(),
-                listen: format!("127.0.0.1:{port}").parse().unwrap(),
-                data_dir: dir.path().to_owned(),
-                peers: peers.clone(),
-                bootstrap: i == 0,
-                cluster: "test".into(),
-                storage_key: [42; 32],
-                attestation: Mode::Mock,
-                allow_mock_peers: true,
-                sealed_required: true,
-                rp_id: "localhost".into(),
-                origins: vec![ORIGIN.into()],
-                release: "test".into(),
-                ops_token: Some("ops-secret".into()),
-                replicas: 3,
-                backup_dir: Some(dir.path().join("backups")),
-                raft: calimero_log::Config {
-                    heartbeat_ms: 100,
-                    election_min_ms: 500,
-                    election_max_ms: 1000,
-                    snapshot_every: 200,
-                },
-                session_key_rotation_secs: 6 * 3600,
-                tee_release: None,
-                tee_profile: None,
-                peer_measurements: calimero_cloud_client::Measurements::None,
-                clock_offset_ms: 0,
-                budget: None,
-            };
-            configure(&mut config);
-            configs.push(config.clone());
-            nodes.push(Some(run(config).await.unwrap()));
-            dirs.push(dir);
-        }
-        let c = Self {
-            nodes,
-            urls,
-            configs,
-            _dirs: dirs,
-        };
-        // Wait for the system group to elect, register nodes and mint a session key.
-        for _ in 0..100 {
-            let ready = c.nodes[0]
-                .as_ref()
-                .unwrap()
-                .node
-                .sys(|s| s.nodes.len() == n as usize && !s.session_keys.is_empty());
-            if ready {
-                return c;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        panic!("cluster did not form");
-    }
-
-    fn client(&self, i: usize) -> Client {
-        Client::connect(
-            &self.urls[i],
-            Policy {
-                allow_mock: true,
-                ..Policy::default()
-            },
-        )
-        .unwrap()
-    }
-
-    async fn stop(&mut self, i: usize) {
-        if let Some(r) = self.nodes[i].take() {
-            r.stop().await;
-        }
-    }
-
-    /// Start node `i` again from its data directory, its configuration changed by `configure`.
-    async fn restart(&mut self, i: usize, configure: impl Fn(&mut Config)) {
-        self.stop(i).await;
-        let mut config = self.configs[i].clone();
-        config.bootstrap = false;
-        configure(&mut config);
-        // The stopped node's tasks may hold its log open for a moment.
-        for _ in 0..50 {
-            match run(config.clone()).await {
-                Ok(r) => {
-                    self.nodes[i] = Some(r);
-                    return;
-                }
-                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
-            }
-        }
-        panic!("node {i} did not restart");
-    }
-
-    fn app_leader(&self, app: &str) -> Option<usize> {
-        self.nodes.iter().enumerate().find_map(|(i, r)| {
-            let r = r.as_ref()?;
-            r.node
-                .hosted(app)
-                .filter(|g| g.status().is_leader)
-                .map(|_| i)
-        })
-    }
-}
-
-async fn signed_up(c: &Cluster, i: usize, name: &str) -> (Client, SoftAuthenticator) {
-    let client = c.client(i);
-    let mut pk = SoftAuthenticator::new("localhost", ORIGIN);
-    let _s = client.sign_up(&mut pk, name).await.unwrap();
-    (client, pk)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2086,26 +1935,6 @@ const HOUR: i64 = 3_600_000;
 
 /// One applied `beat` tick: `(scheduled, previous, at)`.
 type BeatRow = (u64, Option<u64>, u64);
-
-impl Cluster {
-    /// Moves the app clock of every running node by `ms`.
-    fn advance_all(&self, ms: i64) {
-        for r in self.nodes.iter().flatten() {
-            r.node.advance_clock(ms);
-        }
-    }
-
-    /// The applied index of `app` on node `i`.
-    fn applied_on(&self, i: usize, app: &str) -> u64 {
-        self.nodes[i]
-            .as_ref()
-            .unwrap()
-            .node
-            .hosted(app)
-            .unwrap()
-            .applied()
-    }
-}
 
 async fn beats(cl: &Client, app: &str) -> Vec<BeatRow> {
     let v = cl
