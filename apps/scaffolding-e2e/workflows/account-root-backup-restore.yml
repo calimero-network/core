@@ -630,6 +630,8 @@ steps:
     path: /admin-api/namespaces
     where:
       namespaceId: '{{shared_namespace}}'
+    match:
+      targetApplicationId: '{{app_id}}'
     retries: 45
     interval: 2
 
