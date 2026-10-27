@@ -200,3 +200,18 @@ fn a_member_who_left_the_workspace_is_never_the_successor() {
     assert!(!v.is_group_admin(&stale, folder()));
     assert!(v.is_group_admin(&current, folder()));
 }
+
+#[test]
+fn a_folder_with_only_read_only_members_is_run_by_the_lowest_of_them() {
+    let creator = account(0x10);
+    let rows = [
+        (account(0x90), GroupMemberRole::ReadOnly),
+        (account(0x40), GroupMemberRole::ReadOnly),
+        (account(0x05), GroupMemberRole::ReadOnlyTee),
+    ];
+    let v = departed_view(creator, &rows, &rows);
+
+    assert!(v.is_group_admin(&account(0x40), folder()));
+    assert!(!v.is_group_admin(&account(0x90), folder()));
+    assert!(!v.is_group_admin(&account(0x05), folder()));
+}

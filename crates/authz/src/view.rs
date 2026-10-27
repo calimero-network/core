@@ -239,10 +239,8 @@ impl AclView {
         self.may(author, object, OpMask::ADMIN)
     }
 
-    /// Is `author` an `Admin` of `group` at the cut? An `Admin` row, the creator slot
-    /// unless the creator left the workspace, or - for a folder with neither - its
-    /// [successor](Self::is_leaderless). The successor acts as admin over the folder's
-    /// Open children like an explicit one.
+    /// An `Admin` row, the creator slot, or the folder's [successor](Self::is_leaderless),
+    /// which acts as admin like an explicit one.
     #[must_use]
     pub fn is_group_admin(&self, author: &AccountId, group: ContextGroupId) -> bool {
         if self.holds_creator_slot(author, group) {
@@ -256,27 +254,34 @@ impl AclView {
         self.successor(group) == Some(*author)
     }
 
-    /// The lowest-account `Member` of a non-root `group` that has no `Admin` row and no
-    /// creator slot in force and is still in the workspace: the account that runs it.
+    /// For an adminless non-root folder, the lowest workspace `Member`, else the lowest
+    /// workspace `ReadOnly`.
     fn successor(&self, group: ContextGroupId) -> Option<AccountId> {
         let members = self.groups.get(&group)?;
         let creator_serves = self
             .group_admin
             .get(&group)
             .is_some_and(|creator| self.holds_creator_slot(creator, group));
-        let root = self.group_and_ancestors(group).last().unwrap_or(group);
+        let root = self.root_of(group);
         if root == group || creator_serves || members.values().any(|r| *r == GroupMemberRole::Admin)
         {
             return None;
         }
-        members
-            .iter()
-            .filter(|(account, role)| {
-                **role == GroupMemberRole::Member
-                    && (self.is_root_admin(account) || self.holds_direct_row(account, root))
-            })
-            .map(|(account, _)| *account)
-            .min()
+        let lowest = |tier| {
+            members
+                .iter()
+                .filter(|(account, role)| {
+                    **role == tier
+                        && (self.is_root_admin(account) || self.holds_direct_row(account, root))
+                })
+                .map(|(account, _)| *account)
+                .min()
+        };
+        lowest(GroupMemberRole::Member).or_else(|| lowest(GroupMemberRole::ReadOnly))
+    }
+
+    fn root_of(&self, group: ContextGroupId) -> ContextGroupId {
+        self.group_and_ancestors(group).last().unwrap_or(group)
     }
 
     /// Does `group` have no admin of its own, so its [successor](Self::is_group_admin)
@@ -304,7 +309,7 @@ impl AclView {
         if !self.namespace_departed.contains(author) {
             return true;
         }
-        let root = self.group_and_ancestors(group).last().unwrap_or(group);
+        let root = self.root_of(group);
         root == group
             || self
                 .groups
