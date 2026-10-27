@@ -64,7 +64,7 @@ const NAMESPACE_KEY_TAG: &[u8] = b"calimero/account-namespace-key/v1"; // the na
 pub struct AccountNamespaceFounder {
     pub signer: PrivateKey,
     pub credential: Box<calimero_context_client::local_governance::JoinAccountCredential>,
-    pub group_key: [u8; 32],
+    pub group_key: Zeroizing<[u8; 32]>,
 }
 
 /// This node's account root — the one key that survives losing every device.
@@ -133,14 +133,14 @@ impl AccountRoot {
     /// only that namespace's members hold, and reveals nothing about the secret.
     #[must_use]
     pub fn account_namespace_salt(&self) -> [u8; calimero_account::NAMESPACE_SALT_LEN] {
-        self.derive(ACCOUNT_NAMESPACE_SALT_TAG)
+        *self.derive(ACCOUNT_NAMESPACE_SALT_TAG)
     }
 
-    fn derive(&self, tag: &[u8]) -> [u8; 32] {
+    fn derive(&self, tag: &[u8]) -> Zeroizing<[u8; 32]> {
         let mut input = Zeroizing::new(Vec::with_capacity(tag.len() + 32));
         input.extend_from_slice(tag);
         input.extend_from_slice(self.secret.as_bytes());
-        *Hash::new(&input)
+        Zeroizing::new(*Hash::new(&input))
     }
 
     /// The signer, credential and first group key of this account's namespace genesis.
@@ -151,11 +151,11 @@ impl AccountRoot {
     /// # Errors
     /// Only if signing the device certificate fails.
     pub fn account_namespace_founder(&self) -> EyreResult<AccountNamespaceFounder> {
-        let signer = PrivateKey::from(self.derive(FOUNDER_SIGNER_TAG));
+        let signer = PrivateKey::from(*self.derive(FOUNDER_SIGNER_TAG));
         let device_nonce: [u8; 16] = self.derive(FOUNDER_DEVICE_TAG)[..16]
             .try_into()
             .expect("a 32-byte hash has a 16-byte prefix");
-        let kem = X25519SecretKey::from(self.derive(FOUNDER_KEM_TAG)).public_key();
+        let kem = X25519SecretKey::from(*self.derive(FOUNDER_KEM_TAG)).public_key();
         let account = self.account();
         let statement = DeviceCert::sign(
             &self.secret,

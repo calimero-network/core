@@ -30,7 +30,7 @@ fn holder_known_cert(
             warn!(
                 ?err,
                 ?namespace_id,
-                "could not build this device's credential, so the holder is not in its own registry"
+                "could not build this device's credential, so it cannot be recorded in its account namespace"
             );
             return None;
         }
@@ -59,36 +59,65 @@ fn holder_known_cert(
 }
 
 /// Binds the holder's node in the namespace its genesis does not name, so what the node
-/// signs next is accepted. Signed by the root-derived founder; a no-op once bound.
-async fn bind_holder_node(
+/// signs next is accepted. Endorsed by the root-derived founder; a no-op once bound, and
+/// never fails the caller: the next ensure repairs it.
+pub(crate) async fn bind_holder_node(
     datastore: &Store,
     node_client: &NodeClient,
     ack_router: &AckRouter,
     namespace_id: ContextGroupId,
-    signer_pk: &PublicKey,
+    signer_sk: &PrivateKey,
     root: &AccountRoot,
-) -> EyreResult<()> {
-    let bound = NodeDeviceRepository::new(datastore)
-        .get()?
-        .map_or(Ok(false), |own| {
+) {
+    let signer_pk = signer_sk.public_key();
+    let bound = NodeDeviceRepository::new(datastore).get().and_then(|own| {
+        own.map_or(Ok(false), |own| {
             AccountBindingRepository::new(datastore).is_device_linked(&namespace_id, own.device())
-        })?;
-    if bound {
-        return Ok(());
+        })
+    });
+    match bound {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(err) => {
+            warn!(
+                ?err,
+                ?namespace_id,
+                "could not read whether this node is bound"
+            );
+            return;
+        }
     }
-    let Some(known) = holder_known_cert(datastore, namespace_id, signer_pk, root) else {
-        eyre::bail!("could not certify this node's device to bind it in its account namespace");
+    let Some(known) = holder_known_cert(datastore, namespace_id, &signer_pk, root) else {
+        return;
     };
-    let founder = root.account_namespace_founder()?;
-    calimero_governance_store::link_holder_device(
+    let founder = match root.account_namespace_founder() {
+        Ok(founder) => founder,
+        Err(err) => {
+            warn!(
+                ?err,
+                ?namespace_id,
+                "could not derive the account namespace's founder"
+            );
+            return;
+        }
+    };
+    if let Err(err) = calimero_governance_store::link_holder_device(
         datastore,
         node_client,
         ack_router,
         &namespace_id,
+        signer_sk,
         &founder.signer,
         &known,
     )
     .await
+    {
+        warn!(
+            ?err,
+            ?namespace_id,
+            "this node was not bound in its account namespace"
+        );
+    }
 }
 
 /// The holder's own registry row, published whenever it is missing: a device
@@ -199,10 +228,10 @@ pub(crate) async fn ensure_account_namespace(
         context_client.node_client(),
         context_client.ack_router(),
         namespace_id,
-        &signer_pk,
+        &signer_sk,
         &root,
     )
-    .await?;
+    .await;
 
     if !exists {
         // Seed the set with what this node already takes part in, so a device

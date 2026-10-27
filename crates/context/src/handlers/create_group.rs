@@ -401,7 +401,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     // covers the group (`key_covering_group`); no reader may serve this row.
                     let group_key: [u8; 32] = account_founder
                         .as_ref()
-                        .map_or_else(|| rand::rng().random(), |founder| founder.group_key);
+                        .map_or_else(|| rand::rng().random(), |founder| *founder.group_key);
                     let key_id = GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
                     group_key_id = Some(key_id);
                     tracing::debug!(
@@ -438,7 +438,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     );
                 }
 
-                let signer_sk = account_founder.as_ref().map_or_else(
+                let signer_sk = PrivateKey::from(sk_bytes);
+                let genesis_sk = account_founder.as_ref().map_or_else(
                     || PrivateKey::from(sk_bytes),
                     |founder| PrivateKey::from(*founder.signer.as_bytes()),
                 );
@@ -544,7 +545,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         &node_client,
                         &ack_router,
                         namespace_id.to_bytes().into(),
-                        &signer_sk,
+                        &genesis_sk,
                         genesis_op,
                     )
                     .await
@@ -713,6 +714,24 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     // long predates this, so they apply it as they always have.
                     // That is the whole reason this is an op rather than a wider
                     // `NamespaceCreated`, which would have been a wire change.
+                    // The genesis names no node, so bind it before it signs anything else.
+                    if account_founder.is_some() {
+                        if let Ok(root) =
+                            calimero_governance_store::NodeDeviceRepository::new(&datastore)
+                                .require_account_root()
+                        {
+                            crate::handlers::ensure_account_namespace::bind_holder_node(
+                                &datastore,
+                                &node_client,
+                                &ack_router,
+                                namespace_id,
+                                &signer_sk,
+                                &root,
+                            )
+                            .await;
+                        }
+                    }
+
                     if parent_group_id.is_none() {
                         match calimero_governance_store::sign_apply_and_publish(
                             &datastore,

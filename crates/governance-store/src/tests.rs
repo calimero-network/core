@@ -16179,7 +16179,7 @@ mod account_plane_apply {
             other.account_namespace_founder().expect("derive"),
         );
         assert_ne!(a.signer.public_key(), b.signer.public_key());
-        assert_ne!(a.group_key, b.group_key);
+        assert_ne!(*a.group_key, *b.group_key);
     }
 
     /// A re-run before the op-log dedup names the signer at the op's cut, so a self-descope

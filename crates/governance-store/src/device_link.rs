@@ -92,8 +92,9 @@ fn link_op(signer_sk: &PrivateKey, known: &KnownDeviceCert) -> EyreResult<GroupO
     })
 }
 
-/// Bind the holder's own device in the account namespace it just founded, signed by
-/// the root-derived founder: the genesis names no node, so this is the node's way in.
+/// Bind the holder's own device in the account namespace it just founded. The op is signed
+/// by the node, as peers will read it, and endorsed by the root-derived founder: the
+/// genesis names no node, so the endorsement is the node's way in.
 ///
 /// # Errors
 /// Propagates a signing or local apply failure.
@@ -102,12 +103,13 @@ pub async fn link_holder_device(
     node_client: &NodeClient,
     ack_router: &AckRouter,
     namespace: &ContextGroupId,
+    node_sk: &PrivateKey,
     founder_sk: &PrivateKey,
     known: &KnownDeviceCert,
 ) -> EyreResult<()> {
     let link = link_op(founder_sk, known)?;
     let _report =
-        crate::sign_apply_and_publish(store, node_client, ack_router, namespace, founder_sk, link)
+        crate::sign_apply_and_publish(store, node_client, ack_router, namespace, node_sk, link)
             .await?;
     Ok(())
 }

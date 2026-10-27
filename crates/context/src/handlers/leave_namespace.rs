@@ -540,7 +540,10 @@ mod tests {
                 ..
             } = event
             {
-                announced.push((n, purge));
+                // The bus is process-wide, so a parallel test's leave lands here too.
+                if n == namespace {
+                    announced.push((n, purge));
+                }
             }
         }
         assert_eq!(
