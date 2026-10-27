@@ -3900,6 +3900,25 @@ fn root_loss(op: &Op, root: ContextGroupId) -> Option<AccountId> {
     }
 }
 
+/// Work left to one verdict's folds, shared by every pass so no stage can restart the allowance.
+struct FoldBudget(std::cell::Cell<usize>);
+
+impl FoldBudget {
+    fn new(allowed: usize) -> Self {
+        Self(std::cell::Cell::new(allowed))
+    }
+
+    fn for_ops(ops: usize) -> Self {
+        Self::new(calimero_projection::fold_budget_for(ops))
+    }
+
+    /// Spend `work`; `None` when that overruns what is left.
+    fn charge(&self, work: usize) -> Option<()> {
+        self.0.set(self.0.get().checked_sub(work)?);
+        Some(())
+    }
+}
+
 /// Where each op stands to the root losses of the accounts: `before` holds, per op, the
 /// accounts with a loss it precedes, `after` those with a loss that precedes it.
 struct LossOrder {
@@ -3909,7 +3928,11 @@ struct LossOrder {
 
 /// Both orders in two passes over every op (void ones included); `None` past the fold
 /// budget.
-fn loss_order(walked: &CutAncestry<'_>, root: ContextGroupId) -> Option<LossOrder> {
+fn loss_order(
+    walked: &CutAncestry<'_>,
+    root: ContextGroupId,
+    budget: &FoldBudget,
+) -> Option<LossOrder> {
     let ops = walked.ops();
     let known: HashSet<[u8; 32]> = ops.iter().map(|op| op.id()).collect();
     let by_id: HashMap<[u8; 32], &Op> = ops.iter().map(|op| (op.id(), *op)).collect();
@@ -3927,16 +3950,12 @@ fn loss_order(walked: &CutAncestry<'_>, root: ContextGroupId) -> Option<LossOrde
         .filter(|id| !waiting.contains_key(id))
         .collect();
     let mut order: Vec<[u8; 32]> = Vec::with_capacity(ops.len());
-    let mut work = 0usize;
     while let Some(id) = ready.pop() {
         order.push(id);
         let op = by_id[&id];
         let mut passed = before.get(&id).cloned().unwrap_or_default();
         passed.extend(loss_of(op));
-        work += passed.len() + 1;
-        if work > calimero_projection::MAX_FOLD_WORK {
-            return None;
-        }
+        budget.charge(passed.len() + 1)?;
         for parent in op.parents.iter().filter(|p| known.contains(*p)) {
             before
                 .entry(*parent)
@@ -3958,10 +3977,7 @@ fn loss_order(walked: &CutAncestry<'_>, root: ContextGroupId) -> Option<LossOrde
             seen.extend(after.get(parent).into_iter().flatten().copied());
             seen.extend(loss_of(by_id[parent]));
         }
-        work += seen.len() + 1;
-        if work > calimero_projection::MAX_FOLD_WORK {
-            return None;
-        }
+        budget.charge(seen.len() + 1)?;
         let _ = after.insert(*id, seen);
     }
     Some(LossOrder { before, after })
@@ -3977,7 +3993,7 @@ type Makers = HashMap<[u8; 32], (ContextGroupId, AccountId)>;
 fn valid_space_makers(
     walked: &CutAncestry<'_>,
     base: AuthorityBase,
-    budget: usize,
+    budget: &FoldBudget,
 ) -> Option<Makers> {
     let flips: Vec<(&Op, ContextGroupId)> = walked
         .ops()
@@ -3998,25 +4014,18 @@ fn valid_space_makers(
         return Some(makers);
     }
     let log: Vec<Op> = walked.ops().iter().map(|op| (*op).clone()).collect();
-    let mut work = log.len();
-    let mut ordered: Vec<(usize, &Op, ContextGroupId)> = Vec::with_capacity(flips.len());
+    budget.charge(log.len())?;
+    // Each flip's cut is built once and kept for the verdict pass.
+    let mut ordered = Vec::with_capacity(flips.len());
     for (flip, group) in flips {
         let cut = ScopeState::cut_ancestry_with_void(&log, &flip.parents, walked.void_ids());
-        work = work.saturating_add(cut.ops().len() + 1);
-        if work > budget {
-            return None;
-        }
-        ordered.push((cut.ops().len(), flip, group));
+        budget.charge(cut.ops().len() + 1)?;
+        ordered.push((flip, group, cut));
     }
-    ordered.sort_by_key(|(size, flip, _)| (*size, flip.id()));
-    for (_, flip, group) in ordered {
-        let cut = ScopeState::cut_ancestry_with_void(&log, &flip.parents, walked.void_ids());
-        work = work.saturating_add(cut.ops().len() + 1);
-        if work > budget {
-            return None;
-        }
+    ordered.sort_by_key(|(flip, _, cut)| (cut.ops().len(), flip.id()));
+    for (flip, group, cut) in ordered {
         let maker = flip.authorship.account;
-        let at_flip = fold_view(&cut, base, &makers)?;
+        let at_flip = fold_view(&cut, base, &makers, budget)?;
         let valid = at_flip.private_space(group).is_none()
             && admin_or_capability_in_view(
                 &at_flip,
@@ -4045,6 +4054,7 @@ fn end_seats_after_exits(
     live: &[&Op],
     root: ContextGroupId,
     view: &mut calimero_authz::AclView,
+    budget: &FoldBudget,
 ) -> Option<()> {
     let exits: Vec<(&Op, ContextGroupId, AccountId)> = live
         .iter()
@@ -4066,28 +4076,36 @@ fn end_seats_after_exits(
         .iter()
         .map(|op| (op.id(), &op.parents))
         .collect();
-    let mut work = 0usize;
+    let mut seat_ops: HashMap<(ContextGroupId, AccountId), HashSet<[u8; 32]>> = HashMap::new();
+    for op in live {
+        for write in row_writes(op).iter().filter(|w| w.seat) {
+            let _ = seat_ops
+                .entry((write.group, write.account))
+                .or_default()
+                .insert(op.id());
+        }
+    }
     for (exit, group, member) in exits {
+        let Some(seats) = seat_ops.get(&(group, member)) else {
+            continue;
+        };
+        // Stops as soon as every seat is found before the exit.
+        let mut missing = seats.len();
         let mut before: HashSet<[u8; 32]> = HashSet::new();
         let mut queue = vec![exit.id()];
         while let Some(id) = queue.pop() {
-            work += 1;
-            if work > calimero_projection::MAX_FOLD_WORK {
-                return None;
+            if missing == 0 {
+                break;
             }
-            if let Some(held) = parents.get(&id) {
-                queue.extend(held.iter().copied().filter(|p| before.insert(*p)));
+            budget.charge(1)?;
+            for parent in parents.get(&id).into_iter().flat_map(|held| held.iter()) {
+                if before.insert(*parent) {
+                    missing -= usize::from(seats.contains(parent));
+                    queue.push(*parent);
+                }
             }
         }
-        let seats: Vec<&&Op> = live
-            .iter()
-            .filter(|op| {
-                row_writes(op)
-                    .iter()
-                    .any(|w| w.seat && w.group == group && w.account == member)
-            })
-            .collect();
-        if !seats.is_empty() && seats.iter().all(|op| before.contains(&op.id())) {
+        if missing == 0 {
             let _ = view.group_admin.remove(&group);
         }
     }
@@ -4110,14 +4128,16 @@ fn folded_payload_of(op: &Op) -> &OpPayload {
 /// rejoined, and all of them for an account with no root row, bar a TEE that never
 /// held one. The owner is exempt. `None` when the cut is too large to decide.
 fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero_authz::AclView> {
-    let makers = valid_space_makers(walked, base, calimero_projection::MAX_FOLD_WORK)?;
-    fold_view(walked, base, &makers)
+    let budget = FoldBudget::for_ops(walked.ops().len());
+    let makers = valid_space_makers(walked, base, &budget)?;
+    fold_view(walked, base, &makers, &budget)
 }
 
 fn fold_view(
     walked: &CutAncestry<'_>,
     base: AuthorityBase,
     makers: &Makers,
+    budget: &FoldBudget,
 ) -> Option<calimero_authz::AclView> {
     let seated = walked.with_seats(makers.keys().copied());
     let walked = &seated;
@@ -4134,7 +4154,7 @@ fn fold_view(
         .copied()
         .filter(|op| !walked.is_void(op))
         .collect();
-    let order = loss_order(walked, root)?;
+    let order = loss_order(walked, root, budget)?;
     let lost: BTreeSet<AccountId> = live.iter().filter_map(|op| root_loss(op, root)).collect();
     let mut held_root: BTreeSet<AccountId> = BTreeSet::new();
     let mut stale: BTreeSet<[u8; 32]> = BTreeSet::new();
@@ -4189,7 +4209,7 @@ fn fold_view(
             let _ = view.member_caps.remove(&(group, account));
         }
     }
-    end_seats_after_exits(walked, &live, root, &mut view)?;
+    end_seats_after_exits(walked, &live, root, &mut view, budget)?;
     let in_root: BTreeSet<AccountId> = view
         .groups
         .get(&root)
@@ -6027,12 +6047,55 @@ mod tests {
         let walked = ScopeState::cut_ancestry(&log, &head);
 
         assert_eq!(
-            valid_space_makers(&walked, base, usize::MAX)
+            valid_space_makers(&walked, base, &FoldBudget::new(usize::MAX))
                 .expect("decided")
                 .len(),
             40
         );
-        assert!(valid_space_makers(&walked, base, 10).is_none());
+        assert!(valid_space_makers(&walked, base, &FoldBudget::new(10)).is_none());
+    }
+
+    #[test]
+    fn a_large_log_of_honest_flips_and_departures_stays_decidable() {
+        let root = ContextGroupId::from([3; 32]);
+        let mut log: Vec<Op> = Vec::new();
+        let mut push = |who: u8, payload: OpPayload| {
+            let parents = log.last().map(Op::id).into_iter().collect();
+            log.push(Op::new(
+                ScopeId::from(root.to_bytes()),
+                parents,
+                calimero_op::Authorship {
+                    account: AccountId::from([who; 32]),
+                    device: calimero_account::DeviceId::from([who; 32]),
+                    device_key: PublicKey::from([who; 32]),
+                },
+                hlc(log.len() as u64),
+                payload,
+                [0u8; 32],
+                [0u8; 64],
+            ));
+        };
+        for n in 0..1000u16 {
+            let mut id = [0x20; 32];
+            id[..2].copy_from_slice(&n.to_be_bytes());
+            let space = ContextGroupId::from(id);
+            push(1, open_space(space, root));
+            push(1, make_private(space));
+            push(
+                1,
+                OpPayload::MemberLeft {
+                    group: space,
+                    member: AccountId::from([1; 32]),
+                },
+            );
+        }
+        let head = [log.last().expect("ops").id()];
+        let base = AuthorityBase {
+            root: Some((root, AccountId::from([1u8; 32]))),
+            default_cap_base: 0,
+        };
+
+        assert!(at_cut_view(&ScopeState::cut_ancestry(&log, &head), base).is_some());
     }
 
     #[test]
