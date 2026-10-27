@@ -150,6 +150,16 @@ jobs:
           cp target/e2e/merod target/e2e/merod-next
           printf '\0' >> target/e2e/merod-next
 
+      # outbound-probe's outbound.yml drives every outbound gate through the
+      # test build's in-process `.test` echo (`[outbound.testing]` in its
+      # cluster.settings), which only this feature compiles; a plain merod
+      # refuses those settings. The shards hand it over as MEROD_OUTBOUND_BINARY.
+      - name: Build merod with outbound-testing
+        run: |
+          set -euo pipefail
+          cargo build -p merod --features calimero-cloud-node/outbound-testing
+          cp "$CARGO_TARGET_DIR/debug/merod" target/e2e/merod-outbound
+
       - name: Upload them
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -206,10 +216,12 @@ jobs:
       - name: Workflows of shard ${{ matrix.shard }}
         env:
           MEROD_BINARY: ${{ github.workspace }}/target/e2e/merod
+          # The feature build a workflow names by `cluster.binary` (outbound.yml).
+          MEROD_OUTBOUND_BINARY: ${{ github.workspace }}/target/e2e/merod-outbound
           MEROBOX_FUZZY_SECONDS: ${{ (github.event_name == 'schedule' || inputs.nightly) && '900' || inputs.soak_seconds || '30' }}
           MEROBOX_SOAK_REPORT: ${{ github.workspace }}/target/e2e/soak-${{ matrix.shard }}.json
         run: |
-          chmod +x "$MEROD_BINARY"
+          chmod +x "$MEROD_BINARY" "$MEROD_OUTBOUND_BINARY"
           python3 scripts/cloud-v2-workflows.py --shard ${{ matrix.shard }}/4 \
             --json target/e2e/workflows-${{ matrix.shard }}.json
 

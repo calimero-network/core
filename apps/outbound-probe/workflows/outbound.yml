@@ -13,7 +13,7 @@ description: "An app method asks its node for one HTTPS request (`env::http_requ
   \ a URL prefix covering it, the app's namespace approved that prefix for the app's publisher, and the\
   \ run writes state on this node. A secret the request names is filled in by the node and removed from\
   \ the answer.\nThe probe's node (outbound-a) starts with outbound off, then its operator turns it on.\
-  \ Its peer (outbound-b) never does. `.test` hosts are answered in-process by the test build's echo (`[context.outbound.testing]`),\
+  \ Its peer (outbound-b) never does. `.test` hosts are answered in-process by the test build's echo (`[outbound.testing]`),\
   \ which sees exactly what the node would have sent, after every gate.\nWHAT GOES RED, AND WHY:\n  *\
   \ Off by default: before the operator's config, `probe` traps.\n  * The namespace approves: with the\
   \ operator's config but no approval, a\n    declared URL is refused `NotApproved`; after an admin approves\
@@ -25,15 +25,37 @@ description: "An app method asks its node for one HTTPS request (`env::http_requ
   \ and the write made\n    before it is not committed.\n  * Views never reach the network: `probe_in_view`\
   \ traps.\n  * The request runs once, on the executing node: outbound-b holds the same\n    stored outcome\
   \ after sync, logs no request of its own, and its own\n    `probe` traps because its operator never\
-  \ turned outbound on.\n\nNODES MUST BE BUILT WITH `--features mock-attestation` (the test image), which\
-  \ compiles `[context.outbound.testing]`. No `login` steps: the script talks to the admin API with no\
-  \ Authorization header.\nRun locally, with a mock-attestation merod:\n  cargo build -p merod --release\
-  \ --features mock-attestation\n  cd apps/outbound-probe\n  merobox bootstrap run workflows/outbound.yml\
-  \ \\\n    --image merod:local-mock-tee --e2e-mode\n"
+  \ turned outbound on.\n\nMEROD MUST BE BUILT WITH `--features calimero-cloud-node/outbound-testing`,\
+  \ which compiles `[outbound.testing]`; every node starts with `cluster.settings` below (`merod run\
+  \ --settings`), and a build without the feature refuses it.\nRun locally, with an outbound-testing merod:\n\
+  \  cargo build -p merod --features calimero-cloud-node/outbound-testing\n  python3 scripts/build-cloud-v2-fixtures.py\
+  \ outbound-probe\n  MEROD_OUTBOUND_BINARY=target/debug/merod python3 scripts/cloud-v2-workflows.py \\\n  \
+  \  apps/outbound-probe/workflows/outbound.yml\n"
 backend: cloud-v2
 cluster:
   nodes: 3
   base_port: 3860
+  # A merod built with `--features calimero-cloud-node/outbound-testing`
+  # (e2e.yml's fixtures build it), else MEROD_BINARY's, which refuses the
+  # settings below.
+  binary: '{{env.MEROD_OUTBOUND_BINARY ?? env.MEROD_BINARY}}'
+  # Every node's `--settings`: outbound on for the echo host, the test
+  # build's in-process echo for `.test` hosts, and ECHO_KEY for the probe's
+  # package as `cargo mero bundle --dev` signs it (the well-known dev key,
+  # tools/mero-sign's DEV_SEED).
+  settings: |
+    [outbound]
+    enabled = true
+    hosts = ["echo.outbound.test"]
+
+    [outbound.testing]
+    echo = true
+
+    [outbound.testing.secrets.ECHO_KEY]
+    value = "s3cr3t-e2e"
+    packages = ["com.calimero.outbound-probe"]
+    signers = ["did:key:z6MknF3p5L5FDHJQ7FREUapuX4Wmp4MtF6WrHYaXS2B3eZQd"]
+    hosts = ["echo.outbound.test"]
 accounts:
 - outbound-a
 - outbound-b
