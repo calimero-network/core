@@ -33,7 +33,6 @@ CASES = [
     ("mero-abi reaches the app builds, which check every wasm with it", ["tools/calimero-abi/src/main.rs"], R | {"wasm_size", "cargo_mero_e2e", "apps"}),
     ("the app cache action reaches the app builds", [".github/actions/wasm-apps/action.yml"], R | {"apps"}),
     ("the ABI check reaches the app builds", ["scripts/check-embedded-abi.sh"], R | {"apps"}),
-    ("the e2e workflow sharing the app cache reaches the app builds", [".github/workflows/e2e-rust-apps.yml"], {"apps"}),
     ("its own script reaches the storage gate", ["scripts/check-storage-cost.sh"], R | {"storage_cost"}),
     ("a lint script runs the workspace jobs", ["scripts/check-naming.sh"], R),
     ("a file no job reads runs nothing", ["scripts/profiling/collect.sh", ".github/workflows/fuzz.yml"], set()),

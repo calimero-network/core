@@ -48,7 +48,7 @@ outputs:
 runs:
   using: composite
   steps:
-    # Git tree ids, the merod-binaries / setup-cargo-mero pattern: a tar or an mtime
+    # Git tree ids, the setup-cargo-mero pattern: a tar or an mtime
     # changes on every checkout, a tree id only when the content does. The trees:
     # every package under the root and every workspace dir they are built from
     # (path-dep-closure.py, build-dependencies included); cargo-mero, which builds,

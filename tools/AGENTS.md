@@ -1,16 +1,15 @@
 # tools/ - Development Tools
 
-Development and debugging tools for Calimero infrastructure.
+Development tools for Calimero apps and the storage layer. A stopped node's
+store is inspected with `merod inspect` (`crates/merod`), which replaces v1's `merodb`.
 
 ## Available Tools
 
 | Tool           | Binary     | Purpose                                      |
 | -------------- | ---------- | -------------------------------------------- |
 | `cargo-mero`   | `cargo-mero` | App toolchain: scaffold, build, test, and bundle a signed `.mpk` |
-| `merodb`       | `merodb`    | RocksDB debugging, inspection, and migration |
 | `calimero-abi` | `mero-abi`  | ABI extraction and inspection from WASM      |
 | `mero-sign`    | `mero-sign` | Sign Calimero bundle manifests (Ed25519)     |
-| `search-bench` | `search-bench` | Engine benchmarks for `calimero-search` and the host-time fit behind search gas (`README.md` holds the results) |
 | `storage-cost` | `storage-cost` | Deterministic cost gate for `calimero-storage`: rows touched and SHA-256 work per workload, diffed against `storage-costs.json` (see `docs/benchmarking.md`) |
 | `state-disk-cost` | `state-disk-cost` | On-disk RocksDB bytes per state entry (kv, chat) under candidate column-family options (`README.md` holds the results) |
 | `storage-compare` | `storage-compare` | State bytes, delta bytes and per-call time for kv and chat workloads, built at any commit to compare two of them (`RESULTS.md` holds the before/after results) |
@@ -121,92 +120,6 @@ cargo-mero/
 - `cargo-mero` has a lib target (`src/lib.rs`), not just a binary: `main.rs` is a one-line `cargo_mero::run()` call, and `manifest`/`meta` are `pub mod` so `tests/*.rs` can drive them directly instead of spawning a subprocess.
 - `manifest::render` builds `calimero_bundle::BundleManifest` directly, with no `..Default::default()` and no `..` in the node's `BundleManifest::artifacts()` destructure - a new field on that type is a compile error here until handled, not silent drift.
 
-## merodb - Database Tool
-
-### Commands
-
-```bash
-# Build
-cargo build -p merodb
-
-# With GUI feature
-cargo build -p merodb --features gui
-
-# Run
-cargo run -p merodb -- [options]
-```
-
-### Features
-
-| Feature           | Purpose                             |
-| ----------------- | ----------------------------------- |
-| Schema inspection | View RocksDB column families        |
-| Data export       | Export database to JSON             |
-| DAG visualization | Export DAG structure                |
-| Validation        | Check database integrity            |
-| Migration         | Database migrations with YAML specs |
-| GUI               | Interactive browser-based interface |
-
-### Usage
-
-```bash
-# View schema
-cargo run -p merodb -- --db-path ~/.calimero/node1/data --schema
-
-# Export all data
-cargo run -p merodb -- --db-path ~/.calimero/node1/data \
-    --export --all \
-    --wasm-file ./target/wasm32-unknown-unknown/release/my_app.wasm \
-    --output export.json
-
-# Validate database
-cargo run -p merodb -- --db-path ~/.calimero/node1/data --validate
-
-# Export DAG
-cargo run -p merodb -- --db-path ~/.calimero/node1/data \
-    --export-dag --output dag.json
-
-# Launch GUI
-cargo run -p merodb --features gui -- --gui
-```
-
-### File Organization
-
-```
-merodb/
-├── Cargo.toml
-├── README.md
-├── MIGRATIONS.md             # Migration documentation
-├── src/
-│   ├── main.rs               # CLI entry point
-│   ├── schema.rs             # Schema inspection
-│   ├── export.rs             # Data export
-│   ├── export/
-│   │   └── cli.rs            # Export CLI
-│   ├── dag.rs                # DAG operations
-│   ├── dag/
-│   │   └── cli.rs            # DAG CLI
-│   ├── validation.rs         # Validation logic
-│   ├── validation/
-│   │   └── cli.rs            # Validation CLI
-│   ├── migration/            # Migration system
-│   │   ├── cli.rs            # Migration CLI
-│   │   ├── loader.rs         # YAML loader
-│   │   ├── execute.rs        # Migration execution
-│   │   └── ...
-│   ├── gui/                  # Browser GUI
-│   │   ├── mod.rs
-│   │   ├── server.rs         # HTTP server
-│   │   ├── index.html        # Main page
-│   │   └── static/           # JS/CSS assets
-│   ├── deserializer.rs       # Data deserializers
-│   ├── types.rs              # Types
-│   └── abi.rs                # ABI utilities
-└── examples/
-    ├── 01-basic-copy.yaml    # Migration examples
-    └── ...
-```
-
 ## mero-abi - ABI Tool
 
 ### Commands
@@ -256,48 +169,21 @@ calimero-abi/
 ## JIT Index
 
 ```bash
-# Find merodb commands
-rg -n "#\[derive.*Parser\]" merodb/src/
-
-# Find export formats
-rg -n "pub fn export" merodb/src/
-
 # Find ABI extraction logic
 rg -n "pub fn " calimero-abi/src/
-
-# Find GUI endpoints
-rg -n "\.route\(" merodb/src/gui/
+# Find cargo-mero subcommands
+rg -n "enum .*Command" cargo-mero/src/lib.rs
 ```
 
 ## Common Debugging Workflows
 
-### Inspect Database After Test
-
 ```bash
-# After running tests, inspect state
-cargo run -p merodb -- --db-path ~/.calimero/test-node/data --schema
-cargo run -p merodb -- --db-path ~/.calimero/test-node/data --export --all
-```
-
-### Debug WASM ABI
-
-```bash
-# Check if ABI is correctly generated
-cargo run -p mero-abi -- extract ./target/wasm32-unknown-unknown/release/kv_store.wasm
-```
-
-### Visualize DAG
-
-```bash
-# Export DAG for debugging sync issues
-cargo run -p merodb -- --db-path ~/.calimero/node1/data \
-    --export-dag --output dag.json
-# Open dag.json to trace delta parent relationships
+# Check that an app's ABI is embedded
+cargo run -p mero-abi -- extract ./target/wasm32-unknown-unknown/app-release/kv_store.wasm
+# A stopped node's store (apps, keys, log) - v1's merodb
+cargo run -p merod -- --node n1 inspect --help
 ```
 
 ## Common Gotchas
 
-- merodb requires `--db-path` for most operations
-- GUI feature requires `--features gui` at build time
-- ABI extraction works on compiled WASM, not source
-- Database must not be in use by running node
+- ABI extraction works on compiled WASM, not source; build apps with `cargo mero build` so the ABI is embedded.

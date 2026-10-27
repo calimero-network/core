@@ -48,7 +48,7 @@ Neither ever fails the PR. On a fork PR the comparison runs but cannot comment (
 
 ## Tier 3 - macro
 
-`.github/workflows/fuzzy-load-test.yml` runs CPU and memory flamegraphs as a nightly soak.
+`.github/workflows/e2e.yml` runs the fuzzy loads (`workflows/cloud-v2/fuzzy-tests/`) for 15 minutes each as a nightly soak against `merod`; v1's flamegraph capture went with its Docker nodes.
 The document-ceiling probes in `crates/runtime/tests/{chat,rga,fugue}_wall.rs` are `#[ignore]`d by design; they answer "how big can one document get", which Tier 1's row counts cannot.
 
 ## Adding a bench
