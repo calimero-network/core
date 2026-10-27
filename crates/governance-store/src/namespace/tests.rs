@@ -4745,8 +4745,9 @@ fn a_replay_does_not_bring_back_a_deleted_group_whose_delete_it_cannot_decide() 
     }
 }
 
-/// A create that stopped after writing the parent edge is finished by the next apply: the
-/// creator row, which a replay reads as "folded", is the last thing written.
+/// A create that stopped after writing the parent edge, or the edge and the visibility, is
+/// finished by the next apply: the creator row, which a replay reads as "folded", commits with
+/// the visibility.
 #[test]
 fn a_half_made_group_is_finished_by_the_next_create() {
     for with_visibility in [false, true] {
@@ -4781,10 +4782,15 @@ fn a_half_made_group_is_finished(with_visibility: bool) {
     let space = ContextGroupId::from(crate::test_fixtures::derived_group_id(
         &admin, ns_id, true, 1,
     ));
-    // The state a crash after the edge leaves.
+    // The state a crash after the edge leaves, or after the edge and the visibility.
     NamespaceRepository::new(&store)
         .nest(&ns_gid, &space)
         .unwrap();
+    if with_visibility {
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&space, calimero_context_config::VisibilityMode::Restricted)
+            .unwrap();
+    }
     assert_eq!(
         crate::group_creator::GroupCreatorRepository::new(&store)
             .creator(&space)
