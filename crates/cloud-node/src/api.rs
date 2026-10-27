@@ -740,6 +740,9 @@ async fn app_create(
     if replicas.is_empty() {
         return Err(ApiError::unavailable("no nodes registered yet"));
     }
+    if serde_json::to_vec(&body.init_args).map_or(0, |a| a.len()) > crate::node::MAX_ARGS_BYTES {
+        return Err(crate::node::args_too_large());
+    }
     let app_id = b64url(&random::<16>());
     let access = body.access.unwrap_or(if body.org.is_some() {
         Access::Org

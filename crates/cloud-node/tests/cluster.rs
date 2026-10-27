@@ -1860,3 +1860,221 @@ async fn a_system_caller_is_refused_where_the_abi_does_not_allow_it() {
         .unwrap();
     assert_eq!(v.result, json!(0));
 }
+
+/// `(id_term, id_seq, n)` of a `unique_id` (D52).
+fn id_parts(v: &Value) -> (u64, u64, u64) {
+    let parts: Vec<u64> = v
+        .as_str()
+        .unwrap()
+        .split('.')
+        .map(|p| p.parse().unwrap())
+        .collect();
+    (parts[0], parts[1], parts[2])
+}
+
+/// A node that leads the same term again after a restart (a one-replica group:
+/// openraft restores it as leader without an election) must not issue an
+/// `id_seq` it issued before (D52, Ruling 29).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unique_ids_survive_a_restart_into_the_same_term() {
+    let mut c = Cluster::start(1).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let mut before = Vec::new();
+    for _ in 0..3 {
+        let r = alice.call(&app, "newId", json!({}), None).await.unwrap();
+        before.push(id_parts(&r.result));
+    }
+    let term = before[0].0;
+
+    c.restart(0, |_| {}).await;
+    let cl = c.client(0);
+    let mut signed = false;
+    for _ in 0..40 {
+        if cl.sign_in(&mut pk).await.is_ok() {
+            signed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(signed, "no sign-in after the restart");
+    let mut after = Vec::new();
+    for _ in 0..3 {
+        let mut got = None;
+        for _ in 0..40 {
+            if let Ok(r) = cl.call(&app, "newId", json!({}), None).await {
+                got = Some(id_parts(&r.result));
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        after.push(got.expect("no call after the restart"));
+    }
+    // The test proves what it claims only if the restart kept the term.
+    assert!(
+        after.iter().all(|a| a.0 == term),
+        "{before:?} then {after:?}"
+    );
+    for a in &after {
+        assert!(!before.contains(a), "id reused: {before:?} then {after:?}");
+    }
+}
+
+/// Args over 512 KiB are refused before anything runs (Ruling 30).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oversized_args_are_refused_before_running() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let first = id_parts(
+        &alice
+            .call(&app, "newId", json!({}), None)
+            .await
+            .unwrap()
+            .result,
+    );
+    let leader = c.app_leader(&app).unwrap();
+    let applied = || {
+        c.nodes[leader]
+            .as_ref()
+            .unwrap()
+            .node
+            .hosted(&app)
+            .unwrap()
+            .applied()
+    };
+    let at = applied();
+    let e = alice
+        .call(
+            &app,
+            "put",
+            json!({ "key": "big", "value": "x".repeat(600 * 1024) }),
+            Some("big-1"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("ARGS_TOO_LARGE"), "{e}");
+    assert_eq!(applied(), at, "a refused call was logged");
+    // Nothing ran: the next execution takes the next id_seq.
+    let next = id_parts(
+        &alice
+            .call(&app, "newId", json!({}), None)
+            .await
+            .unwrap()
+            .result,
+    );
+    assert_eq!(
+        (next.0, next.1),
+        (first.0, first.1 + 1),
+        "{first:?} then {next:?}"
+    );
+}
+
+/// Args within the limit whose writes push the entry over 1 MiB: the call is
+/// logged as `Trap(HostDenied)` "entry too large", and the log moves on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn large_args_whose_entry_overflows_are_host_denied() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let e = alice
+        .call(
+            &app,
+            "put",
+            json!({ "key": "big", "value": "x".repeat(450 * 1024) }),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("TRAP"), "{e}");
+    assert_eq!(e.details().unwrap()["kind"], "HostDenied", "{e}");
+    assert_eq!(e.details().unwrap()["detail"], "entry too large", "{e}");
+    let _r = alice
+        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .await
+        .unwrap();
+}
+
+/// The node refuses what the ABI does not offer (Ruling 31): an unknown method,
+/// and `init` through `/intents` or `/views`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unknown_methods_and_init_are_refused_by_the_node() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let leader = c.app_leader(&app).unwrap();
+    let applied = || {
+        c.nodes[leader]
+            .as_ref()
+            .unwrap()
+            .node
+            .hosted(&app)
+            .unwrap()
+            .applied()
+    };
+    let at = applied();
+    let e = alice.call(&app, "nope", json!({}), None).await.unwrap_err();
+    assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
+    assert_eq!(e.details().unwrap()["code"], "UnknownMethod", "{e}");
+    let e = alice.call(&app, "init", json!({}), None).await.unwrap_err();
+    assert_eq!(e.details().unwrap()["code"], "WrongKind", "{e}");
+    let e = alice
+        .view(&app, "init", json!({}), Consistency::Strong)
+        .await
+        .unwrap_err();
+    assert_eq!(e.details().unwrap()["code"], "WrongKind", "{e}");
+    assert_eq!(applied(), at, "a refused call was logged");
+}
+
+/// Upgrades switch the bundle, code only; a named migration is refused (D38).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upgrades_switch_the_bundle_and_refuse_migrations() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let v1 = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &v1, json!({})).await.unwrap();
+    let _r = alice
+        .call(&app, "set", json!({ "key": "a", "value": "kept" }), None)
+        .await
+        .unwrap();
+    // The same app with a custom section: another bundle hash.
+    let mut wasm = kv_wasm();
+    wasm.extend_from_slice(&[0, 4, 3, b'v', b'2', b'!']);
+    let v2 = alice.upload_bundle(wasm).await.unwrap();
+    assert_ne!(v1, v2);
+
+    let refused = alice
+        .post(
+            &format!("apps/{app}/upgrade"),
+            json!({ "bundle": v2, "migrate": "migrate_v2" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refused["status"], "appError", "{refused}");
+    assert_eq!(
+        refused["error"]["code"], "MigrationsNotSupported",
+        "{refused}"
+    );
+    assert_eq!(
+        alice.get(&format!("apps/{app}")).await.unwrap()["bundle"],
+        json!(v1)
+    );
+
+    let up = alice
+        .post(&format!("apps/{app}/upgrade"), json!({ "bundle": v2 }))
+        .await
+        .unwrap();
+    assert_eq!(up["status"], "ok", "{up}");
+    assert_eq!(
+        alice.get(&format!("apps/{app}")).await.unwrap()["bundle"],
+        json!(v2)
+    );
+    assert_eq!(
+        strong_view(&alice, &app, "get", json!({ "key": "a" })).await,
+        json!("kept")
+    );
+}

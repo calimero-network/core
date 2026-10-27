@@ -191,6 +191,9 @@ pub enum AppCmd {
         bundle: String,
         base_index: u64,
         ts_ms: u64,
+        /// The ids `init` ran with (D52), as for a call.
+        id_term: u64,
+        id_seq: u64,
         outcome: Box<Outcome>,
     },
     Call(Box<CallEntry>),
@@ -281,6 +284,11 @@ pub struct AppState {
     /// after it, and views see it (D19).
     #[serde(default)]
     pub last_ts_ms: u64,
+    /// The highest `(id_term, id_seq)` any logged run carried, conflicted ones
+    /// included (D52, Ruling 29): a node leading the same term again after a
+    /// restart continues after it instead of reusing an id.
+    #[serde(default)]
+    pub last_id: (u64, u64),
     /// Host records, never in `kv` (D39).
     #[serde(default)]
     idempotency: BTreeMap<String, IdemRecord>,
@@ -406,6 +414,10 @@ impl AppMachine {
         self.state.idempotency_order.push_back((index, id));
     }
 
+    fn note_id(&mut self, term: u64, seq: u64) {
+        self.state.last_id = self.state.last_id.max((term, seq));
+    }
+
     /// Forget records older than the last [`IDEMPOTENCY_ENTRIES`] entries.
     fn expire(&mut self, index: u64) {
         while let Some((at, _)) = self.state.idempotency_order.front() {
@@ -429,12 +441,21 @@ impl AppMachine {
 
 impl Machine for AppMachine {
     fn apply(&mut self, index: u64, command: &[u8]) -> Vec<u8> {
-        let applied = match serde_json::from_slice::<AppCmd>(command) {
+        let cmd = serde_json::from_slice::<AppCmd>(command);
+        match &cmd {
+            Ok(AppCmd::Init {
+                id_term, id_seq, ..
+            }) => self.note_id(*id_term, *id_seq),
+            Ok(AppCmd::Call(call)) => self.note_id(call.id_term, call.id_seq),
+            _ => {}
+        }
+        let applied = match cmd {
             Ok(AppCmd::Init {
                 bundle,
                 base_index,
                 ts_ms,
                 outcome,
+                ..
             }) => {
                 let a = self.apply_outcome(index, base_index, ts_ms, &outcome, None);
                 if !a.conflict {
@@ -600,6 +621,23 @@ mod tests {
             },
         })))
         .unwrap()
+    }
+
+    #[test]
+    fn the_highest_id_is_kept_even_from_a_conflicted_entry() {
+        let mut m = AppMachine::new("app".into());
+        let mut cmd: AppCmd = serde_json::from_slice(&call(0, None, Vec::new())).unwrap();
+        if let AppCmd::Call(c) = &mut cmd {
+            c.id_term = 5;
+            c.id_seq = 9;
+            c.base_index = 7; // not the applied index: a conflict
+        }
+        let out: Applied =
+            serde_json::from_slice(&m.apply(1, &serde_json::to_vec(&cmd).unwrap())).unwrap();
+        assert!(out.conflict);
+        assert_eq!(m.state.last_id, (5, 9));
+        let _a = m.apply(2, &call(1, None, Vec::new()));
+        assert_eq!(m.state.last_id, (5, 9), "a lower id does not lower it");
     }
 
     #[test]

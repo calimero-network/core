@@ -16,17 +16,24 @@ architecture spec.
 - **State** (`AppState.kv`, D46): `Arc<BTreeMap<stored key, value>>`, keys carrying the
   8-byte generation prefix (D39, generation 0). A run gets the current `Arc` as its
   `StateView`; apply uses `Arc::make_mut`, so it copies only while a view still holds
-  the old version. Views run outside the machine's lock. Host records (idempotency,
-  `last_ts_ms`) are `AppState` fields, never keys in `kv`.
+  the old version. Calls run inside `Group::propose_led` (serialized per app, on the
+  machine's read lock, so the diff is built on exactly the state it applies to); views
+  run outside the lock on a blocking thread (`spawn_blocking`). Host records
+  (idempotency, `last_ts_ms`, `last_id`) are `AppState` fields, never keys in `kv`.
 - **Outcomes and statuses** (spec section 5, D23, D36): `Ok` → 200; `AppError` →
   `422 APP_ERROR` with `details.{code, fields}`; `Trap` → `422 TRAP` with
   `details.{kind, detail}` (`OutOfFuel`, `OutOfMemory`, `StackOverflow`, `Fault`,
   `HostDenied`); `Timeout` (deadline or no free instance) → `503 TIMEOUT` with
   `details.retryAfter`, never logged, key not spent. An entry whose JSON is over
   `calimero_log::MAX_ENTRY_BYTES` becomes, before proposing, the same call trapped
-  `HostDenied` "entry too large" with nothing in it (D50).
-- **ABI checks in the host** (`Node::abi_gate`, from `Prepared.abi`, S5): a
-  `confirm` method is never a view (`ConfirmNotAView`) and a call of one needs a
+  `HostDenied` "entry too large" with nothing in it (D50). Call and `init` arguments
+  over `MAX_ARGS_BYTES` (512 KiB) are refused first, `413 ARGS_TOO_LARGE`, not run
+  (Ruling 30), so that replacement always fits; a `TooLarge` from the log is a `500`,
+  never retried.
+- **ABI checks in the host** (`Node::abi_gate`, from `Prepared.abi`, S5), default-deny
+  (Ruling 31): a method the ABI does not name is `UnknownMethod`, `init` and timers
+  are never reached through `/intents` or `/views` (`WrongKind`); a `confirm` method
+  is never a view (`ConfirmNotAView`) and a call of one needs a
   consent; only views run as views (`NotAView`); anonymous callers reach `public`
   methods only (`LoginRequired`), `Caller::System` `allowSystem` ones only
   (`Forbidden`); all `422 APP_ERROR` before anything runs. `kind = action` is refused
@@ -36,9 +43,15 @@ architecture spec.
   It stamps entries (`max(last_ts_ms + 1, app now)`) and, later, timer slots; nothing
   else. Sessions, tokens, challenges and API keys use `types::now_*`; Raft timers use
   `Instant`. A view sees `last_ts_ms`, the last applied entry's time.
-- **Unique ids** (D52): `id_term` is the app group's Raft term while this node leads
-  the call, `id_seq` this node's per-term counter (`Node::next_id`), bumped for every
-  execution including conflicted re-runs. Both are logged with the call.
+- **Unique ids** (D52, Ruling 29): `id_term` is the term the leadership check that
+  admitted the proposal found (`calimero_log::Leadership`, read from the Raft core),
+  `id_seq` this node's per-term counter (`Node::next_id`), bumped for every execution
+  including conflicted re-runs. Both are logged with every call and `init`, and
+  `AppState::last_id` keeps the highest pair applied (conflicted entries included).
+  `propose_led` applies the leader's whole log before building, and the counter
+  continues from `max(memory, last_id)`: a node restored as leader of the same term
+  (openraft does this without an election, e.g. a one-replica group) never reissues
+  an id.
 - **Idempotency** (D16): records live for the last `IDEMPOTENCY_ENTRIES` (100,000)
   entries of the app, by log index, not wall time.
 - **Identity inside the app**: the host core asks `app::SysDirectory`, which reads

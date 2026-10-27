@@ -234,6 +234,37 @@ pub const NOT_REACHED: &str = "no such app";
 /// The code of a component the engine refuses.
 pub const BAD_BUNDLE: &str = "BAD_BUNDLE";
 
+/// The largest call or `init` arguments a node runs (Ruling 30): well under
+/// `MAX_ENTRY_BYTES`, so the entry that logs a refused run always fits.
+pub const MAX_ARGS_BYTES: usize = 512 * 1024;
+
+/// `413 ARGS_TOO_LARGE`: arguments over [`MAX_ARGS_BYTES`], refused before running.
+#[must_use]
+pub fn args_too_large() -> ApiError {
+    ApiError::new(
+        413,
+        "ARGS_TOO_LARGE",
+        &format!("arguments are limited to {MAX_ARGS_BYTES} bytes"),
+    )
+}
+
+/// `503 TIMEOUT`: the run hit its deadline; not logged, the key not spent (D23, D36).
+#[must_use]
+pub fn timeout_error() -> ApiError {
+    ApiError::new(
+        503,
+        "TIMEOUT",
+        "the run hit its deadline; retry with the same key",
+    )
+    .with_details(json!({ "retryAfter": 1 }))
+}
+
+/// A run whose entry the log refused as too large: a node bug (the host-denied
+/// replacement always fits), never retried.
+fn entry_refused(e: &WriteError) -> ApiError {
+    ApiError::internal(&format!("the log refused the entry: {e}"))
+}
+
 /// The method name `POST /apps/{app}/upgrade` travels under.
 pub const UPGRADE: &str = "__upgrade";
 
@@ -801,15 +832,22 @@ impl Node {
         }
     }
 
-    /// The next `(id_term, id_seq)` for a run this node leads in `term` (D52): the
-    /// counter restarts in a new term and is never reused within one.
-    fn next_id(&self, group: GroupId, term: u64) -> (u64, u64) {
+    /// The next `(id_term, id_seq)` for a run this node leads in `term` (D52,
+    /// Ruling 29). `term` comes from the leadership check that admitted the
+    /// proposal; `logged` is the highest pair the app's log carries (applied up to
+    /// this node's last entry before the proposal was built). The counter continues
+    /// from the larger of this node's memory and the log, so a node that leads the
+    /// same term again after a restart never reissues an id.
+    fn next_id(&self, group: GroupId, term: u64, logged: (u64, u64)) -> (u64, u64) {
         let Ok(mut ids) = self.id_seqs.lock() else {
             return (term, u64::MAX);
         };
         let entry = ids.entry(group).or_insert((term, 0));
         if entry.0 != term {
             *entry = (term, 0);
+        }
+        if logged.0 == term {
+            entry.1 = entry.1.max(logged.1);
         }
         entry.1 += 1;
         (term, entry.1)
@@ -843,13 +881,17 @@ impl Node {
             account: app.owner.clone(),
         };
         let args = args_bytes(&app.init_args);
+        if args.len() > MAX_ARGS_BYTES {
+            return Err(args_too_large());
+        }
+        let mut timed_out = false;
         let p = g
-            .propose(|m, applied| {
+            .propose_led(|m, applied, leadership| {
                 if m.state.initialized || m.state.bundle.is_some() {
                     return Proposal::Reply(Vec::new());
                 }
                 let ts_ms = self.stamp(m);
-                let (id_term, id_seq) = self.next_id(g.id(), g.status().term);
+                let (id_term, id_seq) = self.next_id(g.id(), leadership.term, m.state.last_id);
                 let outcome = match &prepared {
                     Ok(prepared) => self.run(
                         prepared,
@@ -872,12 +914,15 @@ impl Node {
                 };
                 if outcome.is_timeout() {
                     // Not logged (D23): reconcile runs init again.
+                    timed_out = true;
                     return Proposal::Reply(Vec::new());
                 }
                 let mut cmd = AppCmd::Init {
                     bundle: app.bundle.clone(),
                     base_index: applied,
                     ts_ms,
+                    id_term,
+                    id_seq,
                     outcome: Box::new(outcome),
                 };
                 let mut bytes = serde_json::to_vec(&cmd).unwrap_or_default();
@@ -891,8 +936,11 @@ impl Node {
             })
             .await
             .map_err(|e| status_of(&e))?;
+        if timed_out {
+            return Err(timeout_error());
+        }
         if !p.appended {
-            return Err(ApiError::conflict("already initialized or not yet run"));
+            return Err(ApiError::conflict("already initialized"));
         }
         serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))
     }
@@ -916,7 +964,8 @@ impl Node {
         let app = self.sys(|s| s.apps.get(&req.app_id).cloned());
         // The node that took the request checked the caller reaches the app on its
         // own replica, which may not have applied a removal yet: the leader checks
-        // again (fresh), before anything runs.
+        // again on its replica, and only when that refuses does it wait for a fresh
+        // system state (a read index) and check once more, before anything runs.
         if let (Some(app), Some(account)) = (&app, req.caller.account()) {
             if !self.sys(|s| s.may_reach(app, Some(account))) {
                 self.sys_fresh().await;
@@ -940,14 +989,14 @@ impl Node {
         };
         let args = args_bytes(&req.args);
         let p = g
-            .propose(|m, applied| {
+            .propose_led(|m, applied, leadership| {
                 if let Some(key) = &req.idempotency_key {
                     if let Some(prev) = m.replay(&req.caller, key) {
                         return Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default());
                     }
                 }
                 let ts_ms = self.stamp(m);
-                let (id_term, id_seq) = self.next_id(g.id(), g.status().term);
+                let (id_term, id_seq) = self.next_id(g.id(), leadership.term, m.state.last_id);
                 let outcome = self.run(
                     &prepared,
                     &req.app_id,
@@ -1045,12 +1094,13 @@ impl Node {
     }
 
     /// The ABI checks the host makes before invoking (S5, D13), from the bundle's
-    /// own ABI: a `confirm` method never runs as a view (`ConfirmNotAView`) and a
-    /// call to one needs a consent; only views run as views (`NotAView`);
-    /// anonymous callers reach only `public` methods (`LoginRequired`) and the
-    /// System caller only `allowSystem` ones (`Forbidden`). A method the ABI does
-    /// not name, and `init` or timers, are left to the guest (`UnknownMethod`,
-    /// `WrongKind`); `kind = action` never reaches here: `prepare` refuses it.
+    /// own ABI, default-deny (Ruling 31): a method the ABI does not name is
+    /// `UnknownMethod`; `init` and timers are never reached this way (`WrongKind`);
+    /// a `confirm` method never runs as a view (`ConfirmNotAView`) and a call to
+    /// one needs a consent; only views run as views (`NotAView`); anonymous
+    /// callers reach only `public` methods (`LoginRequired`) and the System caller
+    /// only `allowSystem` ones (`Forbidden`). `kind = action` never reaches here:
+    /// `prepare` refuses it.
     pub async fn abi_gate(
         &self,
         app: &AppRecord,
@@ -1064,16 +1114,16 @@ impl Node {
         }
         let prepared = self.prepared_for(&app.bundle).await?;
         let Some(m) = prepared.abi.methods.get(method) else {
-            return Ok(());
+            return Err(app_refusal("UnknownMethod"));
         };
+        if !matches!(m.kind, MethodKind::Call | MethodKind::View) {
+            return Err(app_refusal("WrongKind"));
+        }
         if view && m.confirm {
             return Err(app_refusal("ConfirmNotAView"));
         }
         if view && m.kind != MethodKind::View {
             return Err(app_refusal("NotAView"));
-        }
-        if !matches!(m.kind, MethodKind::Call | MethodKind::View) {
-            return Ok(());
         }
         match caller {
             Caller::Public if !m.public => Err(app_refusal("LoginRequired")),
@@ -1100,6 +1150,9 @@ impl Node {
             keyed = r;
             &keyed
         };
+        if args_bytes(&req.args).len() > MAX_ARGS_BYTES {
+            return Err(args_too_large());
+        }
         let app = self.app(&req.app_id).await?;
         self.abi_gate(&app, &req.method, &req.caller, false, req.consent.is_some())
             .await?;
@@ -1111,6 +1164,7 @@ impl Node {
                 match self.call_local(&g, req).await {
                     Ok(a) if a.conflict => None,
                     Ok(a) => return Ok(a),
+                    Err(e @ WriteError::TooLarge { .. }) => return Err(entry_refused(&e)),
                     Err(WriteError::NotLeader {
                         leader: Some((id, addr)),
                     }) if id != self.config.node_id && !addr.is_empty() => Some(addr),
@@ -1144,6 +1198,9 @@ impl Node {
 
     /// Answer an internal call (from a peer): run it here, without forwarding further.
     pub async fn call_here(&self, req: &CallRequest) -> Result<Applied, ApiError> {
+        if args_bytes(&req.args).len() > MAX_ARGS_BYTES {
+            return Err(args_too_large());
+        }
         let app = self.app(&req.app_id).await?;
         self.abi_gate(&app, &req.method, &req.caller, false, req.consent.is_some())
             .await?;
@@ -1163,6 +1220,7 @@ impl Node {
                     .map_err(|e| ApiError::unavailable(&e.to_string()))?;
                 serde_json::from_value(v).map_err(|e| ApiError::internal(&e.to_string()))
             }
+            Err(e @ WriteError::TooLarge { .. }) => Err(entry_refused(&e)),
             Err(e) => Err(status_of(&e)),
         }
     }
@@ -1180,11 +1238,14 @@ impl Node {
         // machine's lock; it sees the last applied entry's time (D19).
         let (state, applied, ts_ms) =
             g.read_local(|m, applied| (m.view(), applied, m.state.last_ts_ms));
-        let out = self.run(
-            &prepared,
-            &req.app_id,
-            state,
-            applied,
+        let node = self
+            .this
+            .lock()
+            .ok()
+            .and_then(|w| w.upgrade())
+            .ok_or_else(|| ApiError::unavailable("the node is shutting down"))?;
+        let (app_id, invocation) = (
+            req.app_id.clone(),
             Invocation {
                 kind: InvocationKind::View,
                 method: req.method.clone(),
@@ -1197,6 +1258,12 @@ impl Node {
                 timer: None,
             },
         );
+        // A view may run up to its deadline: off the async workers.
+        let out = tokio::task::spawn_blocking(move || {
+            node.run(&prepared, &app_id, state, applied, invocation)
+        })
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
         Ok(ViewAnswer {
             index: applied,
             timeout: out.is_timeout(),
