@@ -4608,6 +4608,67 @@ fn a_folder_created_inside_a_space_gives_its_creator_no_row() {
     );
 }
 
+/// A space made by an account whose workspace row is gone at the op's cut seats no one: a removal
+/// concurrent with the create ends with no row, in either arrival order.
+#[test]
+fn a_space_created_past_its_creators_removal_seats_no_one() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+    let ns_id = [0xA8u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let admin = enrol_member(&store, &ns_gid, &admin_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
+        .unwrap();
+    let op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id.into(),
+        crate::test_fixtures::TEST_CUT.to_vec(),
+        1,
+        seal_for_test(
+            &store,
+            ns_gid,
+            crate::test_fixtures::group_created(admin, ns_id, true, 0x01),
+        ),
+    )
+    .expect("sign");
+
+    NamespaceGovernance::new(&store, ns_id.into())
+        .with_apply_auth(
+            &crate::test_fixtures::TEST_CUT,
+            &crate::test_fixtures::NoWorkspaceRow,
+        )
+        .apply_signed_op(&op)
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
+        .expect("the space is created");
+
+    let space = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+        &admin, ns_id, true, 1,
+    ));
+    assert!(MetaRepository::new(&store).load(&space).unwrap().is_some());
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&space, &admin)
+            .unwrap(),
+        None
+    );
+}
+
 /// An open folder that moves into a space keeps no direct row: its seats become the space's.
 #[test]
 fn an_open_folder_moving_into_a_space_loses_its_direct_rows() {
@@ -4761,6 +4822,127 @@ fn a_folder_owner_without_a_seat_cannot_delete_it_by_a_namespace_op() {
     rows.add_member(&space, &owner, GroupMemberRole::Member)
         .unwrap();
     delete(2).expect("with a seat in the space the owner deletes its folder");
+}
+
+/// A TEE attestation whose cut shows no workspace row seats nothing in the space.
+#[test]
+fn a_tee_attested_past_its_removal_from_the_workspace_gets_no_row() {
+    use calimero_context_client::local_governance::SignedGroupOp;
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let namespace_id = [0x91u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let parent = ContextGroupId::from([0x92u8; 32]);
+    let subgroup = ContextGroupId::from([0x93u8; 32]);
+    let ((verifier_sk, verifier_pk), verifier) =
+        bootstrap_namespace_with_admin_account(&store, namespace_id);
+    for group in [parent, subgroup] {
+        MetaRepository::new(&store)
+            .save(&group, &sample_meta_with_admin(verifier))
+            .unwrap();
+    }
+    nest_for_test(&store, &ns_gid, &parent);
+    nest_for_test(&store, &parent, &subgroup);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&parent, VisibilityMode::Restricted)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&parent, &verifier, GroupMemberRole::Admin)
+        .unwrap();
+    GroupKeyring::new(&store, subgroup)
+        .store_key(&[0x94; 32])
+        .unwrap();
+
+    // The admission policy is read from the op log, so it is applied as a real op.
+    let ns_key = [0x95u8; 32];
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&ns_key)
+        .unwrap();
+    let policy = GroupKeyring::encrypt_op(
+        &ns_key,
+        &crate::test_fixtures::guarded_group_op(
+            &store,
+            &ns_gid,
+            &verifier_pk,
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec!["m1".to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec!["r1".to_owned()],
+                allowed_rtmr2: vec!["r2".to_owned()],
+                allowed_rtmr3: vec!["r3".to_owned()],
+                allowed_tcb_statuses: vec!["ok".to_owned()],
+                accept_mock: true,
+            },
+        ),
+    )
+    .unwrap();
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let head = gov.read_head_record().unwrap();
+    gov.apply_signed_op(
+        &SignedNamespaceOp::sign(
+            &verifier_sk,
+            namespace_id.into(),
+            head.parent_hashes.clone(),
+            head.next_nonce,
+            NamespaceOp::Group {
+                group_id: namespace_id.into(),
+                key_id: key_id.into(),
+                encrypted: policy,
+                key_rotation: None,
+                registers: None,
+            },
+        )
+        .unwrap(),
+    )
+    .expect("the policy op applies");
+
+    // The TEE holds a direct row in the subgroup and inherits into it from the parent.
+    let tee_sk = PrivateKey::from([0x96u8; 32]);
+    let tee_pk = tee_sk.public_key();
+    let tee = enrol_member(&store, &ns_gid, &tee_pk);
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &parent,
+            &tee,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+
+    let signed = SignedGroupOp::sign(
+        &verifier_sk,
+        parent.to_bytes().into(),
+        crate::test_fixtures::TEST_CUT.to_vec(),
+        1,
+        GroupOp::MemberJoinedViaTeeAttestation {
+            member: tee,
+            quote_hash: [0x97; 32],
+            mrtd: "m1".to_owned(),
+            rtmr0: String::new(),
+            rtmr1: "r1".to_owned(),
+            rtmr2: "r2".to_owned(),
+            rtmr3: "r3".to_owned(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::ReadOnlyTee,
+        },
+    )
+    .unwrap();
+    crate::apply_local_signed_group_op_at_cut(
+        &store,
+        &signed,
+        &crate::test_fixtures::NoWorkspaceRow,
+    )
+    .expect("the attestation applies");
+
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&parent, &tee)
+            .unwrap(),
+        None
+    );
 }
 
 /// A TEE attestation join that targets a folder inside a private space is refused: seats are

@@ -75,6 +75,20 @@ pub(crate) fn apply(
     {
         return Ok(());
     }
+    // Below the root a seat needs a workspace row at this op's cut, or it is not written.
+    if crate::NamespaceRepository::new(store)
+        .parent(group_id)?
+        .is_some()
+        && !crate::private_space::holds_workspace_seat_at_cut(
+            store,
+            ctx.authorizer(),
+            group_id,
+            ctx.cut(),
+            member,
+        )?
+    {
+        return Ok(());
+    }
     ctx.membership_policy()
         .admit_or_convert_tee_member(member, role)?;
     // Not redundant with the deny-list retraction inside `add_member`:

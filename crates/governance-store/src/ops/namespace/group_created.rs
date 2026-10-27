@@ -244,7 +244,11 @@ pub(crate) fn apply(
         handle.put(&GroupChildIndex::new(parent_id, group_id), &())?;
     }
     // Members are rows of a space root; an open folder takes its members from the root or space.
-    if restricted {
+    if restricted
+        && crate::private_space::holds_workspace_seat_at_cut(
+            store, authorizer, &ns_gid, parents, &creator,
+        )?
+    {
         MembershipRepository::new(store).add_member(&gid, &creator, GroupMemberRole::Admin)?;
     }
 

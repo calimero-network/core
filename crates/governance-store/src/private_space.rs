@@ -252,6 +252,28 @@ pub fn is_tree_op(op: &GroupOp) -> bool {
     )
 }
 
+/// Whether `member` holds a workspace row at the cut and has no exit on record there: the only
+/// standing to be seated anywhere below the root. Decided at the op's own cut, so every replica
+/// agrees; a cut that defers reads the store.
+pub fn holds_workspace_seat_at_cut(
+    store: &Store,
+    authorizer: &dyn AtCutAuthorizer,
+    group: &ContextGroupId,
+    cut: &[[u8; 32]],
+    member: &calimero_account::AccountId,
+) -> EyreResult<bool> {
+    let root = NamespaceRepository::new(store).resolve(group)?;
+    let row = match authorizer.direct_role_at_cut(&root, member, cut) {
+        Some(role) => role,
+        None => crate::MembershipRepository::new(store).role_of(&root, member)?,
+    };
+    let exit = match authorizer.exit_at_cut(&root, member, cut) {
+        Some(exit) => exit,
+        None => crate::ReentryRepository::new(store).block_of(&root, member)?,
+    };
+    Ok(row.is_some() && exit.is_none())
+}
+
 /// An invitation admits to the workspace, so its target is the namespace root.
 pub fn require_root_invitation_target(
     namespace: &ContextGroupId,
