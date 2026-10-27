@@ -2700,3 +2700,52 @@ fn a_root_removal_cascades_but_a_subgroup_leave_does_not() {
     assert_eq!(removed_from_the_root, None);
     assert_eq!(left_another_subgroup, Some(GroupMemberRole::Admin));
 }
+
+/// A creator removed from the workspace loses the admin slot of the sub-folder it
+/// created, in every arrival order of the three ops.
+#[test]
+fn a_creator_removed_from_the_workspace_holds_no_admin_slot_in_any_order() {
+    let creator = Account::new(0x5A);
+    let device = creator.enroll(0x5B, 0);
+    let folder = ContextGroupId::from([0x35; 32]);
+    let ops = vec![
+        device.sign_op(
+            1,
+            vec![],
+            join_payload(root_group(), &creator, &device, GroupMemberRole::Member),
+        ),
+        device.sign_op(
+            2,
+            vec![],
+            OpPayload::SubgroupCreated {
+                child: ScopeId::from(folder.to_bytes()),
+                parent: scope(),
+                restricted: true,
+                admin: creator.id,
+            },
+        ),
+        device.sign_op(
+            3,
+            vec![],
+            OpPayload::MemberRemoved {
+                group: root_group(),
+                member: creator.id,
+            },
+        ),
+    ];
+
+    let mut order: Vec<usize> = (0..ops.len()).collect();
+    let mut checked = 0;
+    permute(&mut order, 0, &mut |perm| {
+        let mut s = ScopeState::default();
+        for &i in perm {
+            s.apply(&ops[i]);
+        }
+        assert!(
+            !s.acl_view().is_group_admin(&creator.id, folder),
+            "delivery order {perm:?} left the removed creator an admin"
+        );
+        checked += 1;
+    });
+    assert_eq!(checked, 6);
+}

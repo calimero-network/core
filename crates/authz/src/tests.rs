@@ -11,6 +11,7 @@
 
 mod support;
 
+mod admin_slot;
 mod authorize;
 mod inheritance;
 mod inheritance_climb;

@@ -12837,6 +12837,29 @@ mod self_leave_rotation {
             "the sub-folder key must rotate away from the removed member"
         );
     }
+
+    #[test]
+    fn a_creator_removed_from_the_namespace_is_no_longer_admin_of_their_subgroup() {
+        let f = fixture();
+        let creator = f.leaver;
+        let mut meta = sample_meta_with_admin(creator);
+        meta.admin_identity = creator;
+        MetaRepository::new(&f.store)
+            .save(&f.sub_gid, &meta)
+            .unwrap();
+        let repo = MembershipRepository::new(&f.store);
+        repo.remove_member(&f.sub_gid, &creator).unwrap();
+        assert!(repo.is_admin(&f.sub_gid, &creator).unwrap());
+
+        apply_root_removal(&f);
+
+        assert!(
+            !MembershipRepository::new(&f.store)
+                .is_admin(&f.sub_gid, &creator)
+                .unwrap(),
+            "the creator slot counts only while the creator is in the workspace"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------
