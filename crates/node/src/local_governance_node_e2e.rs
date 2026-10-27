@@ -2240,8 +2240,8 @@ async fn root_admitted_tee_auto_follows_open_subgroup_context() {
 ///   of that `ReadOnlyTee`, signed by the root owner `O`, cascades the TEE out
 ///   of descendant subgroups — INCLUDING a `Restricted` subgroup whose admin is
 ///   a DIFFERENT identity `M` than the namespace owner (the non-owner case). A
-///   normal `Member` in that same Restricted subgroup is NOT cascaded (TEE-
-///   scoped; Restricted autonomy / #2256 wall preserved).
+///   normal `Member` in that same Restricted subgroup is untouched: the
+///   cascade only takes the removed member's own rows.
 ///
 /// Topology (single node, owns all keys):
 /// ```text
@@ -2271,10 +2271,8 @@ async fn root_admitted_tee_auto_follows_open_subgroup_context() {
 ///   (pre-fix: no cascade ⇒ row survives ⇒ still `Some(ReadOnlyTee)`), and the
 ///   subgroup deny-list marks `T`.
 /// Control assertions (pass regardless of the fix, guarding scope/over-reach):
-/// * `regular`'s row in `restricted_sub` survives the `T` removal (cascade is
-///   TEE-scoped, not a blanket subtree wipe).
-/// * a separate root removal of `regular` does NOT cascade into `restricted_sub`
-///   (mirrors the gov-store control at the node level).
+/// * `regular`'s row in `restricted_sub` survives the `T` removal (the cascade
+///   takes only the removed member's rows, not a blanket subtree wipe).
 #[tokio::test]
 #[serial(boot_test_node)]
 async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
@@ -2475,7 +2473,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     );
 
     // -----------------------------------------------------------------
-    // Fix A — namespace-root MemberRemoved of T cascades, TEE-scoped.
+    // Fix A — namespace-root MemberRemoved of T cascades onto T's own rows.
     // -----------------------------------------------------------------
 
     // Quiesce the process-global auto-follow handler before driving the cascade.
@@ -2567,7 +2565,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     );
 
     // Scope guard: the regular Member is STILL a member of restricted_sub —
-    // the cascade is TEE-scoped, not a blanket subtree wipe.
+    // the cascade takes only T's rows, not a blanket subtree wipe.
     assert_eq!(
         calimero_governance_store::MembershipRepository::new(&node.store)
             .role_of(
@@ -2576,8 +2574,8 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
             )
             .unwrap(),
         Some(GroupMemberRole::Member),
-        "Fix A: the cascade is TEE-scoped — regular Member must survive in \
-         restricted_sub (Restricted autonomy / #2256 wall preserved)"
+        "Fix A: the cascade takes only T's rows — regular Member must survive in \
+         restricted_sub"
     );
 
     // Observe the per-subgroup `TeeMemberRemoved` the cascade emitted. We count
@@ -2603,19 +2601,6 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
         "Fix A: cascade must emit a per-subgroup TeeMemberRemoved for T in \
          restricted_sub"
     );
-
-    // Note on the non-TEE control: the mirror-image guard — a root removal of a
-    // regular `Member` does NOT cascade into a Restricted subgroup — is covered
-    // exhaustively by the gov-store unit test
-    // `member_removed_root_regular_member_cascades`, which seeds the same
-    // topology and asserts the subgroup row goes too. It is deliberately NOT
-    // re-driven here: this node fixture keeps process-global background workers
-    // (`auto_follow`'s `join_context` bootstrap) alive after the Fix-B join, and
-    // a SECOND root apply in the same test races their in-flight namespace work
-    // non-deterministically. The TEE-scoping is already proven above by the
-    // surviving `regular` Member row after the TEE removal — that assertion IS
-    // the node-level control (a blanket subtree wipe would have taken `regular`
-    // too), so the contract is covered without a redundant, flaky second apply.
 }
 
 /// End-to-end create-time path (proposal.md §12d, Phase 1): with a TEE node
