@@ -12974,6 +12974,18 @@ mod self_leave_rotation {
         assert!(repo.is_admin(&f.sub_gid, &low).unwrap());
         assert!(!repo.is_admin(&f.sub_gid, &newcomer).unwrap());
     }
+
+    #[test]
+    fn a_member_who_left_the_workspace_is_never_the_successor() {
+        let (f, [(_, low), (_, high)]) = leaderless_folder();
+        MembershipRepository::new(&f.store)
+            .remove_member(&f.ns_gid, &low)
+            .unwrap();
+
+        let repo = MembershipRepository::new(&f.store);
+        assert!(!repo.is_admin(&f.sub_gid, &low).unwrap());
+        assert!(repo.is_admin(&f.sub_gid, &high).unwrap());
+    }
 }
 
 // -----------------------------------------------------------------------

@@ -182,3 +182,21 @@ fn a_folder_without_an_admin_refuses_an_add_until_its_successor_promotes_itself(
     )
     .is_ok());
 }
+
+#[test]
+fn a_member_who_left_the_workspace_is_never_the_successor() {
+    let creator = account(0x10);
+    let stale = account(0x40);
+    let current = account(0x90);
+    let v = departed_view(
+        creator,
+        &[(current, GroupMemberRole::Member)],
+        &[
+            (stale, GroupMemberRole::Member),
+            (current, GroupMemberRole::Member),
+        ],
+    );
+
+    assert!(!v.is_group_admin(&stale, folder()));
+    assert!(v.is_group_admin(&current, folder()));
+}
