@@ -1,210 +1,70 @@
 # Crates Directory - AI Agent Guidance
 
-Core library crates for Calimero infrastructure. Each crate is conceptually separate.
+The crates of the Calimero cloud (release-v2). Each crate is conceptually separate;
+its own `AGENTS.md` (with a `CLAUDE.md` symlink beside it) explains it.
 
-## Crate Categories
+## Binaries
 
-### Binary Crates (executables)
+| Crate | Binary | Entry point | Purpose |
+| --- | --- | --- | --- |
+| `calimero-cloud-node` | `merod-v2` | `cloud-node/src/main.rs` | The cloud node; `merod-v2 local` runs a dev cluster, `merod-v2 kms disk-key` fetches a TEE disk key |
+| `calimero-cloud-client` | `calimero-cloud` | `cloud-client/src/bin/` | Client library and CLI |
 
-| Crate     | Binary         | Entry Point           | Purpose          |
-| --------- | -------------- | --------------------- | ---------------- |
-| `merod`   | `merod`        | `merod/src/main.rs`   | Node daemon      |
-| `meroctl` | `meroctl`      | `meroctl/src/main.rs` | CLI tool         |
-| `auth`    | `mero-auth`    | `auth/src/main.rs`    | Auth service     |
+## The cloud node and its parts
 
-### Core Library Crates
+| Crate | Purpose |
+| --- | --- |
+| [`calimero-cloud-node`](cloud-node/AGENTS.md) | System group, app groups, sealed API, follow-ups, timers, search, blobs |
+| [`calimero-log`](log/AGENTS.md) | Multi-group Raft log (openraft) |
+| [`calimero-identity`](identity/AGENTS.md) | Passkeys (WebAuthn), sessions, API keys, step-up consent |
+| [`calimero-sealed`](sealed/AGENTS.md) | Sealed HTTP transport to an attested node |
+| [`calimero-kms-client`](kms-client/AGENTS.md) | mero-kms client: release-policy-verified storage and disk keys |
+| [`calimero-tee-attestation`](tee-attestation/AGENTS.md) | TDX quote generation and verification |
+| [`calimero-tee-release`](tee-release/AGENTS.md) | Fetch and Sigstore-verify signed mero-tee release assets |
+| [`calimero-cloud-client`](cloud-client/AGENTS.md) | Rust client: attestation, sealed channel, passkeys, calls |
 
-| Crate              | Entry Point          | Purpose                   |
-| ------------------ | -------------------- | ------------------------- |
-| `calimero-node`    | `node/src/lib.rs`    | Node runtime coordination |
-| `calimero-runtime` | `runtime/src/lib.rs` | WASM execution (wasmer)   |
-| `calimero-storage` | `storage/src/lib.rs` | CRDT collections          |
-| `calimero-network` | `network/src/lib.rs` | P2P networking (libp2p)   |
-| `calimero-server`  | `server/src/lib.rs`  | HTTP/WS/SSE server        |
-| `calimero-context` | `context/src/lib.rs` | Context lifecycle         |
-| `calimero-dag`     | `dag/src/lib.rs`     | DAG causal ordering       |
-| `calimero-store`   | `store/src/lib.rs`   | KV store (RocksDB)        |
-| `calimero-sdk`     | `sdk/src/lib.rs`     | App development SDK       |
-| `calimero-search`  | `search/src/lib.rs`  | Node-local per-context full-text search (tantivy) |
-| `calimero-projection` | `projection/src/lib.rs` | Deterministic ScopeState projection of the op-log |
-| `calimero-authz`   | `authz/src/lib.rs`   | Authorization decision over the unified causal log |
-| `calimero-op-adapter` | `op-adapter/src/lib.rs` | Bridges per-plane ops onto the unified causal log |
-| `calimero-governance-store` | `governance-store/src/lib.rs` | Local group-governance apply pipeline & broadcast |
-| `calimero-tee-attestation` | `tee-attestation/src/lib.rs` | TEE (TDX) attestation generation & verification |
-| `calimero-tee-release` | `tee-release/src/lib.rs` | Fetch + Sigstore-verify signed mero-tee release assets |
-| `calimero-wasm-abi` | `wasm-abi/src/lib.rs` | WASM ABI schema: `AbiType`, validate, embed |
+## Apps: runtime and SDK
 
-### Support Crates
+| Crate | Purpose |
+| --- | --- |
+| [`calimero-runtime`](runtime/AGENTS.md) | WASM execution (wasmer); merod-v2 runs it with `Module::run_cloud` |
+| [`calimero-sdk`](sdk/AGENTS.md) | App SDK and proc macros |
+| [`calimero-storage`](storage/AGENTS.md) | CRDT collections and the storage interface |
+| [`calimero-storage-macros`](storage-macros/AGENTS.md) | Storage derive macros |
+| [`calimero-sys`](sys/AGENTS.md) | WASM host ABI types |
+| [`calimero-wasm-abi`](wasm-abi/AGENTS.md) | ABI schema: emit, validate, embed |
+| [`calimero-search`](search/AGENTS.md) | Full-text search (tantivy) |
+| [`calimero-prelude`](prelude/AGENTS.md) | Shared root-storage-key prelude |
+| [`calimero-bundle`](bundle/AGENTS.md) | `.mpk` manifest types, used by `cargo-mero` and `mero-sign` |
 
-| Crate                 | Purpose                                                         |
-| --------------------- | --------------------------------------------------------------- |
-| `calimero-primitives` | Shared types: `ContextId`, `ApplicationId`, `PublicKey`, `Hash` |
-| `calimero-app-downloader` | Application bytecode acquisition: `[registry]` config + mode, `ApplicationDownloader` |
-| `calimero-bundle`     | `.mpk` manifest types + signature canonicalization, shared by `calimero-node-primitives`, `cargo-mero`, `mero-sign` |
-| `calimero-crypto`     | Cryptographic utilities                                         |
-| `calimero-config`     | Configuration parsing                                           |
-| `calimero-client`     | HTTP/WS client for nodes                                        |
-| `calimero-account`    | Account/device identity primitive (ids, certs, key chains)      |
-| `calimero-op`         | Unified op envelope types + id/root hashing                     |
-| `calimero-governance-types` | Signed group-operation types (local governance)           |
+## Shared types
 
-## Patterns & Conventions
+| Crate | Purpose |
+| --- | --- |
+| [`calimero-primitives`](primitives/AGENTS.md) | Shared types: `ContextId`, `ApplicationId`, `PublicKey`, `Hash` |
+| [`calimero-crypto`](crypto/AGENTS.md) | Sealing to a root key (`seal_to_root`) |
+| [`calimero-build-utils`](build-utils/AGENTS.md) | build.rs version/git helpers |
+| [`calimero-git-hooks`](git-hooks/AGENTS.md) | Self-installing pre-commit hook |
+| `calimero-utils-fs` | File helpers for `mero-sign` |
 
-### Primitives Crates Pattern
+## Left from v1, still compiled
 
-Shared types go in `*-primitives` crates to avoid circular dependencies:
+v1's node, server, network, context and governance crates are gone. These remain
+because the runtime (its `NodeClient` blob path and `GovernanceParentEdge`) or
+`calimero-tee-attestation` (`server-primitives`' `Quote`) still name their types;
+taking the runtime's v1 path out lets them go too.
 
-```
-context/primitives/  → calimero-context-client
-node/primitives/     → calimero-node-primitives
-network/primitives/  → calimero-network-primitives
-server/primitives/   → calimero-server-primitives
-```
-
-### Config Crates Pattern
-
-Configuration types often in separate `*-config` crates:
-
-```
-context/config/      → calimero-context-config
-```
-
-### Actix Actors
-
-Node components use actix actor framework for async coordination:
-
-- ✅ See pattern: `node/src/handlers/network_event.rs`
-- ✅ Actor definitions: `node/src/lib.rs`
-
-### File Organization
-
-```rust
-// src/lib.rs - exports and top-level types
-pub mod handlers;
-pub mod sync;
-mod constants;
-mod utils;
-
-// Each handler in separate file
-// src/handlers/network_event.rs
-// src/handlers/state_delta.rs
-```
-
-## Common Dependencies
-
-```toml
-# Error handling
-eyre = "0.6"
-
-# Async runtime
-tokio = "1.47"
-actix = "0.13"
-
-# Serialization
-borsh = "1.3"      # Binary (storage)
-serde = "1.0"      # JSON (API)
-
-# Networking
-libp2p = "0.56"
-
-# WASM
-wasmer = "6.1"
-
-# Storage
-rocksdb = "0.24"
-```
+`calimero-node-primitives`, `calimero-context-client` (`context/primitives`),
+`calimero-context-config`, `calimero-network-primitives`, `calimero-server-primitives`,
+`calimero-store`, `calimero-blobstore` (`store/blobs`), `calimero-app-downloader`,
+`calimero-governance-types`, `calimero-account`, `calimero-utils-actix`.
 
 ## Commands
 
 ```bash
-# Build specific crate
-cargo build -p calimero-node
-
-# Test specific crate
-cargo test -p calimero-node
-
-# Test with output
-cargo test -p calimero-dag test_dag_out_of_order -- --nocapture
-
-# Run SDK macro tests (compile-time)
-cargo test -p calimero-sdk-macros
+cargo test -p calimero-cloud-node     # 3-node cluster in process (fixtures: cloud-node/AGENTS.md)
+cargo run -p calimero-cloud-node --bin merod-v2 -- local
+cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
 ```
 
-- Benchmarks and cost gates: see `docs/benchmarking.md`. Cost gates block; criterion never does.
-
-## JIT Index
-
-### Find Functions
-
-```bash
-# Find host functions
-rg -n "pub fn " runtime/src/logic/host_functions/
-
-# Find handlers
-rg -n "pub async fn handle" node/src/handlers/
-
-# Find API endpoints
-rg -n "pub async fn " server/src/admin/
-```
-
-### Find Types
-
-```bash
-# Find struct definitions
-rg -n "pub struct" primitives/src/
-
-# Find enums
-rg -n "pub enum" -A5 context/primitives/src/
-
-# Find trait definitions
-rg -n "pub trait" storage/src/
-```
-
-## Sub-Package AGENTS.md
-
-Every crate has its own `AGENTS.md`. Binaries and services:
-
-- [merod/AGENTS.md](merod/AGENTS.md) - Node daemon
-- [meroctl/AGENTS.md](meroctl/AGENTS.md) - CLI tool
-- [auth/AGENTS.md](auth/AGENTS.md) - `mero-auth` auth service
-
-Core libraries:
-
-- [node/AGENTS.md](node/AGENTS.md) - Node orchestration
-- [runtime/AGENTS.md](runtime/AGENTS.md) - WASM runtime
-- [storage/AGENTS.md](storage/AGENTS.md) - CRDT collections
-- [store/AGENTS.md](store/AGENTS.md) - RocksDB KV store (+ encryption, blobs)
-- [sdk/AGENTS.md](sdk/AGENTS.md) - App SDK
-- [server/AGENTS.md](server/AGENTS.md) - HTTP/WS server
-- [network/AGENTS.md](network/AGENTS.md) - P2P networking
-- [context/AGENTS.md](context/AGENTS.md) - Context lifecycle & local governance
-- [client/AGENTS.md](client/AGENTS.md) - HTTP/WS client for nodes
-- [dag/AGENTS.md](dag/AGENTS.md) - DAG causal ordering
-- [search/AGENTS.md](search/AGENTS.md) - Per-context full-text search
-
-Unified causal log & governance:
-
-- [account/AGENTS.md](account/AGENTS.md) - Account/device identity primitive
-- [op/AGENTS.md](op/AGENTS.md) - Unified op envelope + id/root hashing
-- [op-adapter/AGENTS.md](op-adapter/AGENTS.md) - Per-plane ops onto the unified log
-- [projection/AGENTS.md](projection/AGENTS.md) - Deterministic ScopeState projection
-- [authz/AGENTS.md](authz/AGENTS.md) - Authorization over the causal log
-- [governance-types/AGENTS.md](governance-types/AGENTS.md) - Signed group-op types
-- [governance-store/AGENTS.md](governance-store/AGENTS.md) - Local governance apply pipeline
-
-Foundations & support:
-
-- [primitives/AGENTS.md](primitives/AGENTS.md) - Shared types (`ContextId`, `PublicKey`, `Hash`)
-- [app-downloader/AGENTS.md](app-downloader/AGENTS.md) - Application bytecode acquisition (one configured source)
-- [bundle/AGENTS.md](bundle/AGENTS.md) - `.mpk` manifest types & signature canonicalization
-- [crypto/AGENTS.md](crypto/AGENTS.md) - ECDH shared-key encryption
-- [config/AGENTS.md](config/AGENTS.md) - Node configuration parsing
-- [sys/AGENTS.md](sys/AGENTS.md) - WASM host ABI types
-- [wasm-abi/AGENTS.md](wasm-abi/AGENTS.md) - WASM ABI schema emit/validate/embed
-- [tee-attestation/AGENTS.md](tee-attestation/AGENTS.md) - TEE (TDX) attestation
-- [tee-release/AGENTS.md](tee-release/AGENTS.md) - Signed mero-tee release assets
-- [prelude/AGENTS.md](prelude/AGENTS.md) - Shared root-storage-key prelude
-- [storage-macros/AGENTS.md](storage-macros/AGENTS.md) - Storage derive macros
-- [build-utils/AGENTS.md](build-utils/AGENTS.md) - build.rs version/git helpers
-- [git-hooks/AGENTS.md](git-hooks/AGENTS.md) - Self-installing pre-commit hook
-- [utils/AGENTS.md](utils/AGENTS.md) - `calimero-utils-actix` actor helpers
+Benchmarks and cost gates: see `docs/benchmarking.md`. Cost gates block; criterion never does.

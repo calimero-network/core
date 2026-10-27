@@ -26,9 +26,6 @@ calimero-storage.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
-tempfile.workspace = true
-camino.workspace = true
-calimero-store-rocksdb.workspace = true
 
 [lib]
 bench = false

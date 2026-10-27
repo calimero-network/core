@@ -281,7 +281,7 @@ self.with_logic_mut(|logic| {
 
 ```bash
 # Enable runtime tracing
-RUST_LOG=calimero_runtime=debug cargo run -p merod -- --node node1 run
+RUST_LOG=calimero_runtime=debug cargo run -p calimero-cloud-node --bin merod-v2 -- local
 
 # Enable host function traces
 RUST_LOG=runtime::host=trace cargo test -p calimero-runtime
@@ -319,4 +319,4 @@ cargo test -p calimero-runtime test_storage -- --nocapture
 | `calimero-sys` | Defines `sys::Buffer`, `sys::Event`, etc. used by host functions |
 | `calimero-storage` | CRDT collections, Merkle tree, used by `persist_root_state` |
 | `calimero-primitives` | Common types like `ContextId`, `PublicKey` |
-| `calimero-node` | Uses runtime to execute WASM in context execution |
+| `calimero-cloud-node` | Runs app calls, views, handlers and timers (`Module::run_cloud`) |

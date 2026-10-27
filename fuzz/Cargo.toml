@@ -12,9 +12,7 @@ cargo-fuzz = true
 borsh = "*"
 calimero-account = { path = "../crates/account" }
 calimero-context-config = { path = "../crates/context/config" }
-calimero-governance-store = { path = "../crates/governance-store", features = ["testing"] }
 calimero-governance-types = { path = "../crates/governance-types" }
-calimero-network = { path = "../crates/network" }
 calimero-network-primitives = { path = "../crates/network/primitives" }
 calimero-node-primitives = { path = "../crates/node/primitives" }
 calimero-primitives = { path = "../crates/primitives", features = ["borsh"] }
@@ -47,20 +45,6 @@ bench = false
 [[bin]]
 name = "wire_decode"
 path = "fuzz_targets/wire_decode.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "provider_record"
-path = "fuzz_targets/provider_record.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "governance_apply"
-path = "fuzz_targets/governance_apply.rs"
 test = false
 doc = false
 bench = false

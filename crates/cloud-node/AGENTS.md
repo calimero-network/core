@@ -114,9 +114,10 @@ architecture spec.
   runs as a strong view: it writes nothing and may search (v1's rule).
 - **Browsers**: `config.origins` are the CORS origins too (`lib.rs`, outermost layer).
 - **Storage key** (`kms.rs`): K_r = HKDF(KMS key, cluster). The KMS key comes from
-  merod's own client (`merod kms disk-key`: release-policy-verified KMS, key sealed
-  to the TD), run by merod-v2 (`--kms-url --kms-identity`) or by the boot script
-  (`--storage-key-file`). The cluster's nodes share the disk identity, so they share K_r.
+  `calimero-kms-client` (release-policy-verified KMS, key sealed to the TD), fetched
+  by merod-v2 itself (`--kms-url --kms-identity`) or by the boot script with
+  `merod-v2 kms disk-key` (`--storage-key-file`). The cluster's nodes share the disk
+  identity, so they share K_r.
 - **Peers' quotes** are judged like a client's (`calimero_cloud_client::Measurements`):
   in TDX mode the signed mero-tee release the peer names, profiles from
   `--peer-profiles` (default: this node's `MERO_TEE_PROFILE`), floor `--peer-min-release`.

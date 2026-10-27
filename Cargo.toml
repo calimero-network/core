@@ -99,39 +99,23 @@ exclude = [
 [workspace]
 resolver = "2"
 members = [
-    "./tools/storage-compare",
     "./crates/account",
     "./crates/app-downloader",
-    "./crates/auth",
     "./crates/build-utils",
     "./crates/bundle",
-    "./crates/config",
-    "./crates/context",
     "./crates/context/config",
     "./crates/context/primitives",
     "./crates/governance-types",
-    "./crates/governance-store",
     "./crates/crypto",
-    "./crates/dag",
     "./crates/git-hooks",
-    "./crates/meroctl",
-    "./crates/client",
-    "./crates/merod",
-    "./crates/network",
     "./crates/network/primitives",
-    "./crates/node",
     "./crates/node/primitives",
-    "./crates/op",
-    "./crates/authz",
-    "./crates/projection",
-    "./crates/op-adapter",
     "./crates/prelude",
     "./crates/primitives",
     "./crates/runtime",
     "./crates/search",
     "./crates/sdk",
     "./crates/sdk/macros",
-    "./crates/server",
     "./crates/server/primitives",
     "./crates/storage",
     "./crates/storage-macros",
@@ -145,8 +129,6 @@ members = [
 
     "./crates/store",
     "./crates/store/blobs",
-    "./crates/store/encryption",
-    "./crates/store/impl/rocksdb",
     "./crates/sys",
     "./crates/utils/actix",
     "./crates/utils/fs",
@@ -232,12 +214,10 @@ members = [
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
     "./tools/calimero-abi",
-    "./tools/merodb",
     "./tools/mero-sign",
     "./tools/cargo-mero",
     "./tools/storage-cost",
-    "./tools/state-disk-cost",
-    "./tools/search-bench",
+    "./crates/kms-client",
 ]
 
 [workspace.dependencies]
@@ -399,24 +379,14 @@ calimero-app-downloader = { path = "./crates/app-downloader" }
 calimero-build-utils = { path = "./crates/build-utils" }
 calimero-bundle = { path = "./crates/bundle" }
 calimero-blobstore = { path = "./crates/store/blobs" }
-calimero-client = { path = "./crates/client" }
-calimero-config = { path = "./crates/config" }
-calimero-context = { path = "./crates/context" }
 calimero-context-config = { path = "./crates/context/config", default-features = false }
 calimero-context-client = { path = "./crates/context/primitives" }
 calimero-governance-types = { path = "./crates/governance-types" }
-calimero-governance-store = { path = "./crates/governance-store" }
 calimero-crypto = { path = "./crates/crypto" }
-calimero-dag = { path = "./crates/dag" }
-calimero-network = { path = "./crates/network" }
 calimero-network-primitives = { path = "./crates/network/primitives" }
-calimero-node = { path = "./crates/node" }
 calimero-node-primitives = { path = "./crates/node/primitives" }
 calimero-account = { path = "./crates/account" }
-calimero-op = { path = "./crates/op" }
-calimero-op-adapter = { path = "./crates/op-adapter" }
-calimero-authz = { path = "./crates/authz" }
-calimero-projection = { path = "./crates/projection" }
+calimero-kms-client = { path = "./crates/kms-client" }
 calimero-prelude = { path = "./crates/prelude" }
 calimero-primitives = { path = "./crates/primitives" }
 calimero-runtime = { path = "./crates/runtime" }
@@ -428,13 +398,10 @@ calimero-cloud-client = { path = "./crates/cloud-client" }
 calimero-search = { path = "./crates/search" }
 calimero-sdk = { path = "./crates/sdk" }
 calimero-sdk-macros = { path = "./crates/sdk/macros" }
-calimero-server = { path = "./crates/server" }
 calimero-server-primitives = { path = "./crates/server/primitives" }
 calimero-storage = { path = "./crates/storage" }
 calimero-storage-macros = { path = "./crates/storage-macros" }
 calimero-store = { path = "./crates/store" }
-calimero-store-encryption = { path = "./crates/store/encryption" }
-calimero-store-rocksdb = { path = "./crates/store/impl/rocksdb" }
 calimero-sys = { path = "./crates/sys" }
 calimero-tee-attestation = { path = "./crates/tee-attestation" }
 calimero-tee-release = { path = "./crates/tee-release" }
@@ -442,7 +409,6 @@ calimero-utils-actix = { path = "./crates/utils/actix" }
 calimero-utils-fs = { path = "./crates/utils/fs" }
 calimero-wasm-abi = { path = "./crates/wasm-abi" }
 mero-abi = { path = "./tools/calimero-abi" }
-mero-auth = { path = "./crates/auth" }
 mero-sign = { path = "./tools/mero-sign" }
 kv-store = { path = "./apps/kv-store" }
 xcall-example = { path = "./apps/xcall-example" }

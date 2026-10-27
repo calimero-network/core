@@ -37,7 +37,7 @@ cargo build -p calimero-tee-attestation --features mock-attestation
 cargo test -p calimero-tee-attestation --features mock-attestation
 ```
 
-Consumers propagate it explicitly: `calimero-server/mock-attestation`, `calimero-node/mock-attestation`, `merod/mock-attestation` all fan out to `calimero-tee-attestation/mock-attestation`. **No shipped crate lists it in default features**, and `.github/workflows/release.yml` fails the release if `cargo tree -e features -i calimero-tee-attestation -p merod` resolves it.
+Consumers propagate it explicitly: `calimero-kms-client/mock-attestation` fans out to `calimero-tee-attestation/mock-attestation`. **No shipped crate lists it in default features.**
 
 > **External consumers (mero-tee):** enabling `mock-attestation` re-exposes `is_mock_quote` / `verify_mock_attestation`. A consumer that calls those symbols must enable the feature explicitly; with it off they will not resolve.
 
@@ -121,7 +121,7 @@ Mock quotes (`is_mock_quote`, magic header `MOCK_QUOTE_HEADER = b"MOCK_TDX_QUOTE
 
 ## Relationship to the KMS
 
-This crate has no KMS-specific code - it is a generic TDX quote generate/verify library. The KMS is mero-kms running as a GCP TDX cluster, and its client lives in `crates/merod/src/kms/mod.rs`: `merod` calls `generate_attestation` to produce its own quote when requesting a key, and calls `verify_attestation` / `verify_mock_attestation` to check the quote the KMS returns from `/attest` before trusting a fetched storage encryption key. Pinning that quote's MRTD and RTMR0-3 to the release policy, and the mock/real decision with its `accept_mock` enforcement (reject a mock quote unless explicitly allowed), are entirely the caller's responsibility - this crate just answers "is this quote's binding and signature valid," it never decides whether mock is acceptable.
+This crate has no KMS-specific code - it is a generic TDX quote generate/verify library. The KMS is mero-kms running as a GCP TDX cluster, and its client lives in `crates/kms-client/src/kms/mod.rs`: it calls `generate_attestation` to produce its own quote when requesting a key, and calls `verify_attestation` / `verify_mock_attestation` to check the quote the KMS returns from `/attest` before trusting a fetched storage encryption key. Pinning that quote's MRTD and RTMR0-3 to the release policy, and the mock/real decision with its `accept_mock` enforcement (reject a mock quote unless explicitly allowed), are entirely the caller's responsibility - this crate just answers "is this quote's binding and signature valid," it never decides whether mock is acceptable.
 
 ## Key Files
 
@@ -138,7 +138,7 @@ This crate has no KMS-specific code - it is a generic TDX quote generate/verify 
 
 ## Invariants and Gotchas
 
-- **A debug TD is never crypto-valid**: `TDATTRIBUTES.DEBUG` leaves MRTD and RTMRs unchanged but lets the host read the TD's memory, so no measurement allowlist can catch it. `verify_attestation` folds the check into `quote_verified`, which is what every caller builds on. Do not move it into `policy_valid` alone: the enforcement layers that use `is_valid()` directly (admission, merod's KMS check, mero-kms) would lose it.
+- **A debug TD is never crypto-valid**: `TDATTRIBUTES.DEBUG` leaves MRTD and RTMRs unchanged but lets the host read the TD's memory, so no measurement allowlist can catch it. `verify_attestation` folds the check into `quote_verified`, which is what every caller builds on. Do not move it into `policy_valid` alone: the enforcement layers that use `is_valid()` directly (the KMS client's check, mero-kms) would lose it.
 - **App hash binding is not optional at verify time**: both `verify_attestation` and `verify_mock_attestation` take `expected_app_hash: &[u8; 32]` as a required argument, never `Option`. If you're tempted to add a "verify without app hash" convenience function, don't - that would let an attestation for one application be replayed to authorize a different one.
 - **`is_mock` must be checked by every caller of `generate_attestation`**: *under the `mock-attestation` feature* the function silently returns a mock result on non-Linux instead of erroring, so code that assumes "if this returned Ok, it's a real TDX quote" is wrong on any non-Linux build with that feature on (dev laptops, the mock harness). Without the feature (the default, and every release build) the non-Linux body errors instead, so `is_mock` can never be `true` there - but keep the check: it is what makes the caller correct in both configurations.
 - **Mock quotes are format-tagged, not crypto-tagged**: `is_mock_quote` only checks for a 17-byte magic prefix (`MOCK_TDX_QUOTE_V1`). There is no signature distinguishing a mock from a real quote beyond this header - do not rely on it as a security boundary, only as a routing signal for which verify function to call.

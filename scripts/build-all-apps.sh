@@ -6,7 +6,6 @@
 # check added here also guards every restored set.
 #
 #   --list-bundled   print the app dirs bundled into dist/, one per line, and exit
-#                    (lint-e2e-bundle-coverage.py reads what dist/ holds from it)
 set -e
 
 APPS=(
@@ -46,8 +45,8 @@ APPS=(
     "apps/xcall-example/Cargo.toml"
 )
 
-# migration-suite v1..v5 bundle via workflows/app-migration/build-wasms.sh's
-# --app-version ladder; bundling them here too would collide on dist/.
+# migration-suite v1..v5 are one app at five versions; bundling them would
+# collide on dist/.
 BUILD_ONLY=(
     "apps/migrations/migration-suite-v1/Cargo.toml"
     "apps/migrations/migration-suite-v2-add-field/Cargo.toml"

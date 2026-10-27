@@ -27,5 +27,4 @@ calimero-store.workspace = true
 camino.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
-calimero-store-rocksdb.workspace = true
 

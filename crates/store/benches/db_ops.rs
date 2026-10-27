@@ -3,12 +3,9 @@
 
 use std::hint::black_box;
 
-use calimero_store::config::StoreConfig;
 use calimero_store::db::{Column, Database, InMemoryDB};
 use calimero_store::slice::Slice;
-use calimero_store_rocksdb::RocksDB;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use tempfile::TempDir;
 
 const KEY_LEN: usize = 48;
 const VALUE_LEN: usize = 128;
@@ -103,15 +100,5 @@ fn inmem(c: &mut Criterion) {
     sweep(c, "inmem", || (InMemoryDB::owned(), ()));
 }
 
-fn rocks(c: &mut Criterion) {
-    sweep(c, "rocks", || {
-        let dir = TempDir::new().expect("tempdir must create");
-        let path = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf())
-            .expect("tempdir path must be utf-8");
-        let db = RocksDB::open(&StoreConfig::new(path)).expect("rocksdb must open");
-        (db, dir)
-    });
-}
-
-criterion_group!(benches, inmem, rocks);
+criterion_group!(benches, inmem);
 criterion_main!(benches);

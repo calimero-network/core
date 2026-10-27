@@ -13,17 +13,17 @@ test or bundle, so it runs nothing. Markdown that IS read counts as code:
 anything named by include_str!/include_bytes! in a Rust source, and every
 `guide`/`readme` a Cargo manifest names (a bundle embeds its guide).
 
-A workflow that must report a required check on every PR (ci-checks.yml's `Rust`,
-release.yml's `Build Binaries`) runs on every PR and asks this for a whole-
+A workflow that must report a required check on every PR (ci-checks.yml's `Rust`)
+runs on every PR and asks this for a whole-
 workflow verdict instead of using a `paths:` filter, which would need a stub
-workflow to report the check whenever it skipped: `rust` and `build` are true
+workflow to report the check whenever it skipped: `rust` is true
 when any non-documentation file matches what that workflow used to filter on.
 
 Reads changed paths on stdin, one per line. Prints `<job>=true|false` for every
 job of the workflow, and the reasons on stderr. Fails closed: no input, an
 error, or a path it cannot place runs every job.
 
-Usage: ci-scope.py [--workflow ci-checks|release] < changed-paths
+Usage: ci-scope.py [--workflow ci-checks] < changed-paths
 """
 
 from __future__ import annotations
@@ -64,7 +64,6 @@ CARGO_MERO_SETUP = (".github/actions/setup-cargo-mero/*", "scripts/setup-cargo-m
 WASM_APPS = (
     ".github/actions/wasm-apps/*",
     ".github/actions/rust-toolchain/*",
-    ".github/workflows/e2e-rust-apps.yml",
     "scripts/check-embedded-abi.sh",
 )
 
@@ -77,7 +76,6 @@ WORKFLOWS = {
             *EVERY_JOB,
             "crates/*",
             "apps/*",
-            "e2e-tests/*",
             "tools/*",
             # Every script ci-checks.yml runs (ci-scope-test.py keeps this complete),
             # and what those scripts read.
@@ -87,8 +85,6 @@ WORKFLOWS = {
             "scripts/check-naming.sh",
             "scripts/check-no-user-data-at-info.py",
             "scripts/check-rust-cache-groups.py",
-            "scripts/check-scenario-coverage.py",
-            "scripts/scenario-coverage-baseline.json",
             "scripts/check-storage-cost.sh",
             "scripts/check-wasm-size.sh",
             "scripts/tests/check-like-ci.test.sh",
@@ -97,23 +93,6 @@ WORKFLOWS = {
             "scripts/tests/path-dep-closure-test.py",
             *CARGO_MERO_SETUP,
             ".github/actions/wasm-apps/*",
-        ),
-    ),
-    "release": (
-        "build",
-        (
-            "Cargo.lock",
-            "Cargo.toml",
-            "rust-toolchain.toml",
-            ".cargo/*",
-            "crates/*",
-            "tools/*",
-            ".github/workflows/release.yml",
-            ".github/workflows/deps/*",
-            ".github/actions/*",
-            # COPYed into the profiling image by prebuilt.profiling.Dockerfile.
-            "scripts/profiling/*",
-            "scripts/ci-scope.py",
         ),
     ),
 }

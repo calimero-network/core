@@ -19,7 +19,7 @@ SCRIPT = ROOT / "scripts" / "path-dep-closure.py"
 # cache is keyed for, and every test suite scripts/ci-scope.py scopes a job on.
 PACKAGES = [
     ("cargo-mero", "tools/cargo-mero", False),
-    ("merod", "crates/merod", False),
+    ("calimero-cloud-node", "crates/cloud-node", False),
     ("cargo-mero", "tools/cargo-mero", True),
     ("storage-cost", "tools/storage-cost", True),
 ]

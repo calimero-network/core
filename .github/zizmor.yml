@@ -21,10 +21,4 @@ rules:
   dangerous-triggers:
     ignore:
       - comment.yml
-      - e2e-rust-apps-release.yml
-      - fuzzy-load-test.yml
       - new-issue-or-pr.yml
-  # The consumer checkout keeps its token to push the bump branch.
-  artipacked:
-    ignore:
-      - fleet-bump.yml:118

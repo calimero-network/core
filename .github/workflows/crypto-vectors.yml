@@ -14,7 +14,6 @@ on:
       - "Cargo.toml"
       - "crates/crypto/**"
       - "crates/primitives/**"
-      - "crates/store/encryption/**"
       - ".github/workflows/crypto-vectors.yml"
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
@@ -47,4 +46,4 @@ jobs:
           save-if: false
 
       - name: Known-answer vectors
-        run: cargo test -p calimero-store-encryption -p calimero-crypto -p calimero-primitives --all-features
+        run: cargo test -p calimero-crypto -p calimero-primitives --all-features

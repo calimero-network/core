@@ -1,6 +1,6 @@
 # Calimero Core - AI Agent Guidance
 
-Peer-to-peer platform for building collaborative apps with automatic conflict-free (CRDT) sync, encrypted P2P networking, and group-based access control. Apps are written in Rust or JavaScript and compiled to WASM; every node runs the same logic over state that converges automatically.
+The Calimero confidential cloud: collaborative apps written in Rust or JavaScript and compiled to WASM run on attested TEE nodes (`merod-v2`, [crates/cloud-node](crates/cloud-node/AGENTS.md)), one Raft log per app, with passkey identity, organizations and teams.
 
 ## Where to read
 
@@ -10,7 +10,7 @@ Peer-to-peer platform for building collaborative apps with automatic conflict-fr
 - **Intent**: before changing a flow that spans crates, read the [protocol overview](docs/src/content/docs/protocol/overview.mdx) and the chapters it names, all under `docs/src/content/docs/protocol/`.
 - **Directory**: before working in a crate, app or tool, read the `AGENTS.md` in its directory (the `CLAUDE.md` beside it is a symlink); [crates/AGENTS.md](crates/AGENTS.md) indexes the crates and [architecture](docs/src/content/docs/contribute/architecture.mdx) shows how they connect.
 - **Glossary**: when a protocol term (namespace, group, context, scope, operation) is unclear, read the [glossary](docs/src/content/docs/protocol/glossary.mdx).
-- **Nodes**: before running `merod` by hand, read [Run local nodes](docs/src/content/docs/contribute/development.mdx#run-local-nodes).
+- **Nodes**: for a local cluster run `cargo run -p calimero-cloud-node --bin merod-v2 -- local`; see [crates/cloud-node/AGENTS.md](crates/cloud-node/AGENTS.md).
 - **Tests**: before writing a test or merobox scenario, reading node logs, or debugging a CI failure, read [Testing strategy](docs/src/content/docs/contribute/testing.mdx).
 - **Issues**: before filing an engineering issue, fill in the [`technical_issue`](.github/ISSUE_TEMPLATE/technical_issue.md) template.
 

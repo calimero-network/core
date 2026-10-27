@@ -58,10 +58,10 @@ struct Args {
     /// the previous key must outlive the 15-minute sessions it signed).
     #[arg(long, env = "MEROD_SESSION_KEY_ROTATION", default_value_t = 6 * 3600)]
     session_key_rotation_secs: u64,
-    /// A file holding the key `merod kms disk-key` fetched (written by the boot script).
+    /// A file holding the key `merod-v2 kms disk-key` fetched (written by the boot script).
     #[arg(long, env = "MEROD_STORAGE_KEY_FILE", conflicts_with_all = ["storage_key", "kms_url"])]
     storage_key_file: Option<PathBuf>,
-    /// Fetch the storage key from mero-kms by running `merod kms disk-key`.
+    /// Fetch the storage key from mero-kms (needs `--kms-identity`).
     #[arg(
         long,
         env = "MEROD_KMS_URL",
@@ -72,9 +72,6 @@ struct Args {
     /// The cluster's disk identity (shared by its nodes, so they derive one key).
     #[arg(long, env = "MEROD_KMS_IDENTITY")]
     kms_identity: Option<PathBuf>,
-    /// The merod binary that runs the KMS exchange.
-    #[arg(long, env = "MEROD_BIN", default_value = "merod")]
-    merod_bin: PathBuf,
     /// The mero-tee release this image is (names the signed measurements).
     #[arg(long, env = "MERO_TEE_VERSION")]
     tee_release: Option<String>,
@@ -115,6 +112,13 @@ struct LocalArgs {
         default_value = "http://localhost:3000,http://localhost:5173"
     )]
     origins: Vec<String>,
+}
+
+/// `merod-v2 kms disk-key`: fetch the data-disk key (for the boot script).
+#[derive(Debug, Parser)]
+#[command(name = "merod-v2 kms")]
+enum KmsArgs {
+    DiskKey(calimero_kms_client::disk_key::KmsDiskKeyCommand),
 }
 
 async fn local(args: LocalArgs) -> eyre::Result<()> {
@@ -170,6 +174,10 @@ async fn main() -> eyre::Result<()> {
     if is_local {
         return local(LocalArgs::parse_from(std::env::args().skip(1))).await;
     }
+    if std::env::args().nth(1).as_deref() == Some("kms") {
+        let KmsArgs::DiskKey(cmd) = KmsArgs::parse_from(std::env::args().skip(1));
+        return cmd.run().await;
+    }
     let args = Args::parse();
     let mut peers = BTreeMap::new();
     for p in &args.peers {
@@ -185,7 +193,7 @@ async fn main() -> eyre::Result<()> {
     } else if let Some(path) = &args.storage_key_file {
         kms::derive_storage_key(&kms::read_key_file(path)?, &args.cluster)
     } else if let (Some(url), Some(identity)) = (&args.kms_url, &args.kms_identity) {
-        let material = kms::fetch_with_merod(&args.merod_bin, url, identity).await?;
+        let material = kms::fetch(url, identity).await?;
         kms::derive_storage_key(&material, &args.cluster)
     } else if args.dev {
         calimero_identity::sha256(format!("calimero-dev-storage-key|{}", args.cluster).as_bytes())

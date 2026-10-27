@@ -77,15 +77,3 @@ fn run(store: Store) {
 fn searches_survive_merges_and_writer_close_in_memory() {
     run(Store::new(Arc::new(InMemoryDB::owned())));
 }
-
-#[test]
-fn searches_survive_merges_and_writer_close_on_rocksdb() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
-    run(
-        Store::open::<calimero_store_rocksdb::RocksDB>(&calimero_store::config::StoreConfig::new(
-            path,
-        ))
-        .unwrap(),
-    );
-}
