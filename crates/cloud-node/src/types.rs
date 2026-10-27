@@ -215,6 +215,10 @@ pub struct Team {
     /// What the app stores about the team (a folder's name and colour).
     #[serde(default)]
     pub metadata: serde_json::Value,
+    /// Members a manager removed: they do not come back by inheritance, only
+    /// when someone adds them again (v1's removal from an `Open` subgroup).
+    #[serde(default)]
+    pub removed: std::collections::BTreeSet<AccountId>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -255,7 +259,7 @@ impl Org {
         if t.members.contains_key(account) {
             return true;
         }
-        if t.join != TeamJoin::Everyone {
+        if t.join != TeamJoin::Everyone || t.removed.contains(account) {
             return false;
         }
         match &t.parent {

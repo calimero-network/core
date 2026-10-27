@@ -1277,6 +1277,23 @@ async fn teams_work_like_v1_subgroups() {
     let open_app = app_in(open.clone()).await;
     set(&bob, &open_app, "bob").await.unwrap();
 
+    // Removed from an open folder, Bob does not come back by inheritance;
+    // added again, he is back.
+    let _ok = alice
+        .delete(&format!("orgs/{org}/teams/{open}/members/{bob_id}"))
+        .await
+        .unwrap();
+    let err = set(&bob, &open_app, "x").await.unwrap_err();
+    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/teams/{open}/members"),
+            json!({ "account": bob_id }),
+        )
+        .await
+        .unwrap();
+    set(&bob, &open_app, "back").await.unwrap();
+
     // A restricted folder is a wall, invisible to Bob until he is added.
     let secret = team("Secret", "invite", None).await;
     let secret_app = app_in(secret.clone()).await;
@@ -1312,6 +1329,12 @@ async fn teams_work_like_v1_subgroups() {
         .unwrap();
     let err = set(&bob, &child_app, "ro").await.unwrap_err();
     assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
+    // A call that writes nothing still runs for him.
+    let read = bob
+        .call(&child_app, "len", json!({}), None)
+        .await
+        .unwrap();
+    assert_eq!(read.result, json!(1));
     set(&bob, &secret_app, "still writes the parent")
         .await
         .unwrap();

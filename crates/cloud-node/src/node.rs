@@ -190,6 +190,9 @@ impl Transport for PeerTransport {
     }
 }
 
+/// The error of a call a read-only member made that would have written.
+pub const READ_ONLY: &str = "read-only in this team: the call would write";
+
 /// How long a forwarded call or read waits for the leader before retrying.
 pub const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -987,6 +990,12 @@ impl Node {
             }
         };
         let input = req.input_bytes();
+        // A read-only member's call runs, but one that would write is refused
+        // (v1 discarded such writes; a client is told).
+        let read_only = match self.sys(|s| s.apps.get(&req.app_id).cloned()) {
+            Some(app) => crate::api::read_only_in(self, &app, req.caller.account()).await,
+            None => false,
+        };
         let mut fresh_blobs = Vec::new();
         let p = g
             .propose(|m, applied| {
@@ -1017,6 +1026,20 @@ impl Node {
                             &m.state.kv,
                             &env,
                         );
+                        if read_only && (!outcome.diff.is_empty() || !outcome.new_blobs.is_empty())
+                        {
+                            let refused = Applied {
+                                index: applied,
+                                status: Status::AppError,
+                                result: Value::Null,
+                                error: Value::String(READ_ONLY.into()),
+                                events: Vec::new(),
+                                conflict: false,
+                            };
+                            return Proposal::Reply(
+                                serde_json::to_vec(&refused).unwrap_or_default(),
+                            );
+                        }
                         self.keep_blobs(&outcome);
                         fresh_blobs.clone_from(&outcome.new_blobs);
                         outcome

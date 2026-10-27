@@ -851,6 +851,33 @@ async fn app_get(
 }
 
 /// The caller, if they may reach `app` with this request kind.
+/// Whether `account` holds a read-only row in the team `app` belongs to
+/// (checked again against the latest system state before saying yes).
+pub async fn read_only_in(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    account: Option<&str>,
+) -> bool {
+    let (crate::types::Access::Team { team }, Some(a)) = (&app.access, account) else {
+        return false;
+    };
+    if a == app.owner {
+        return false;
+    }
+    let check = || {
+        node.sys(|s| {
+            app.org
+                .as_ref()
+                .and_then(|o| s.orgs.get(o))
+                .is_some_and(|o| !o.writes_team(a, team))
+        })
+    };
+    check() && {
+        node.sys_fresh().await;
+        check()
+    }
+}
+
 async fn gate(
     node: &Node,
     headers: &HeaderMap,
@@ -875,24 +902,10 @@ async fn gate(
             ApiError::not_found("no such app")
         });
     }
-    if write {
-        if let (crate::types::Access::Team { team }, Some(a)) = (&app.access, account) {
-            let read_only = || {
-                node.sys(|s| {
-                    app.org
-                        .as_ref()
-                        .and_then(|o| s.orgs.get(o))
-                        .is_some_and(|o| !o.writes_team(a, team))
-                })
-            };
-            let read_only = read_only() && {
-                node.sys_fresh().await;
-                read_only()
-            };
-            if read_only && a != app.owner {
-                return Err(ApiError::forbidden("read-only in this team"));
-            }
-        }
+    // A read-only row refuses what writes: a blob upload here, a call that
+    // would write at commit (`Node::call_local`), as v1 discarded its writes.
+    if write && method == "__blob" && read_only_in(node, app, account).await {
+        return Err(ApiError::forbidden("read-only in this team"));
     }
     if let Some(k) = p.as_ref().and_then(|p| p.api_key.as_ref()) {
         if write && k.read_only {
@@ -1012,6 +1025,9 @@ fn answer(a: Applied) -> Response {
             "the call raced a leader change; retry with the same idempotency key",
         )
         .into_response();
+    }
+    if a.error.as_str() == Some(crate::node::READ_ONLY) {
+        return ApiError::forbidden(crate::node::READ_ONLY).into_response();
     }
     match a.status {
         Status::Ok => Json(json!({ "index": a.index, "result": a.result, "events": a.events.iter().map(|(k, d)| json!({ "kind": k, "data": d })).collect::<Vec<_>>() })).into_response(),

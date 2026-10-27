@@ -748,6 +748,7 @@ impl SystemMachine {
                         read_only: Default::default(),
                         capabilities: Default::default(),
                         metadata: Value::Null,
+                        removed: Default::default(),
                     },
                 );
                 Ok(json!({ "teamId": team_id }))
@@ -792,6 +793,7 @@ impl SystemMachine {
                     .copied()
                     .unwrap_or(o.default_capabilities);
                 if let Some(t) = o.teams.get_mut(&team) {
+                    let _was = t.removed.remove(&account);
                     let _prev = t.members.insert(account.clone(), role == TeamRole::Lead);
                     if role == TeamRole::ReadOnly {
                         let _new = t.read_only.insert(account.clone());
@@ -952,6 +954,11 @@ impl SystemMachine {
                 let _prev = t.members.remove(&account);
                 let _was = t.read_only.remove(&account);
                 let _caps = t.capabilities.remove(&account);
+                // Leaving is one's own; a removal also keeps them from coming
+                // back by inheritance.
+                if actor != account {
+                    let _new = t.removed.insert(account);
+                }
                 Ok(Value::Null)
             }
             SystemCmd::CreateInvite {

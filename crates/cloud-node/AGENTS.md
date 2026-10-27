@@ -89,7 +89,9 @@ architecture spec.
   member, read-only) and capabilities (`caps`, v1's `MemberCapabilities` bits;
   the organization keeps a default). An app deployed with `access: team` is
   reached by the team's members; a member whose direct row there is read-only
-  is refused writes (`403`). A team's creator leads it. Reads are filtered: a
+  runs calls, but one that would write is refused (`403`, `node::READ_ONLY`;
+  v1 discarded the writes). A team's creator leads it. A member a manager
+  removed does not come back by inheritance until added again (`Team::removed`). Reads are filtered: a
   team one neither reaches nor manages is not listed (`GET /orgs/{org}`) and
   answers `404` (`GET /orgs/{org}/teams/{team}`). `DeleteTeam` takes the teams
   below it and their apps. Metadata (`POST /orgs/{org}/teams/{team}`) is the
