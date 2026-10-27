@@ -137,7 +137,7 @@ steps:
     group_id: '{{team_group}}'
     members:
       - identity: '{{account_node1}}'
-        role: Member
+        role: Admin
 
   - name: Node-2 creates the inner folder
     type: create_group_in_namespace
