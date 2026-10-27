@@ -106,6 +106,24 @@ pub(crate) fn apply(
         ));
     }
     let gid = ContextGroupId::from(group_id);
+    // A folder of a space has the space's members, so its inherited join is no op and is not
+    // announced to the workspace.
+    let (parents, authorizer) = ctx.apply_auth();
+    let tree = crate::private_space::Tree::at_cut(
+        store,
+        authorizer,
+        &ns_gid,
+        parents,
+        crate::TreeReads {
+            chains: &[gid],
+            subtrees: &[],
+        },
+    )?;
+    if tree.below_a_space_root(&gid)? {
+        eyre::bail!(crate::PrivateSpaceError::InheritedJoinInsideSpace(
+            gid.to_string()
+        ));
+    }
     // Cross-namespace forgery guard: without this check, an attacker
     // on namespace A could publish a MemberJoinedOpen naming a
     // `group_id` from namespace B; `check_group_membership_path`

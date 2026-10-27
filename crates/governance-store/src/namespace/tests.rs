@@ -10127,7 +10127,7 @@ fn link_device(
 }
 
 #[test]
-fn a_member_removed_from_an_open_group_cannot_join_its_child() {
+fn an_inherited_join_into_a_folder_of_a_space_needs_no_op() {
     use super::super::test_fixtures::{kicked_from_open, InheritsAtCut, TEST_CUT};
     use super::NamespaceGovernance;
 
@@ -10150,17 +10150,18 @@ fn a_member_removed_from_an_open_group_cannot_join_its_child() {
             .and_then(crate::ApplyNamespaceOpResult::verdict)
     };
 
-    let err = join(&f.kicked.0).expect_err("a removal from an ancestor ends inheritance");
-    assert!(
-        err.chain().any(|c| matches!(
-            c.downcast_ref::<crate::ApplyError>(),
-            Some(crate::ApplyError::MemberJoinedOpenRejected(
-                crate::MemberJoinedOpenRejection::ReentryBlocked { .. }
-            ))
-        )),
-        "{err:?}"
-    );
-    join(&f.honest.0).expect("an honest inheritor still joins");
+    // The chain sits inside a private space, whose members are every folder's: an inherited
+    // join there is no op, for the kicked and the honest alike.
+    for (who, what) in [(&f.kicked.0, "kicked"), (&f.honest.0, "honest")] {
+        let err = join(who).expect_err("an inherited join into a space's folder is no op");
+        assert!(
+            err.chain().any(|c| matches!(
+                c.downcast_ref::<crate::PrivateSpaceError>(),
+                Some(crate::PrivateSpaceError::InheritedJoinInsideSpace(_))
+            )),
+            "{what}: {err:?}"
+        );
+    }
 }
 
 #[test]

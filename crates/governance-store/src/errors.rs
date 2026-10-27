@@ -74,6 +74,9 @@ pub enum PrivateSpaceError {
         "group {0} is neither the namespace root nor a private space root; members are added there"
     )]
     MemberRowOutsideSpaceRoot(String),
+
+    #[error("group {0} is a folder of a private space, whose members are the space's: no join op")]
+    InheritedJoinInsideSpace(String),
 }
 
 /// Errors raised by `MembershipRepository` and the membership-policy

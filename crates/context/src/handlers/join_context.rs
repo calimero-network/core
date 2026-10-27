@@ -483,8 +483,20 @@ impl Handler<JoinContextRequest> for ContextManager {
                     // same way a few lines below: warn and skip the publish. The
                     // joiner then waits on key delivery exactly as it did before
                     // joins carried a credential at all.
-                    match crate::join_credential::build(&datastore, &ns_id, &joiner_identity) {
-                    Err(err) => warn!(
+                    // A folder of a private space has the space's members: no join op, which
+                    // would also name the folder to the whole workspace.
+                    let inside_space = calimero_governance_store::private_space::Tree::live(
+                        &datastore,
+                        &ns_id.to_bytes().into(),
+                    )
+                    .and_then(|tree| tree.below_a_space_root(&group_id))
+                    .unwrap_or(false);
+                    match (
+                        inside_space,
+                        crate::join_credential::build(&datastore, &ns_id, &joiner_identity),
+                    ) {
+                    (true, _) => {}
+                    (false, Err(err)) => warn!(
                         ?err,
                         %joiner_identity,
                         %context_id,
@@ -492,7 +504,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                          MemberJoinedOpen publish; the join stands, but key delivery to this \
                          inherited joiner waits for an admin to add_group_members them"
                     ),
-                    Ok(join_account) => {
+                    (false, Ok(join_account)) => {
                     // Sealed under the NAMESPACE key, which this publisher holds:
                     // it is an inherited member joining an Open SUBGROUP, so the
                     // key it lacks -- and that this op asks a peer for -- is the

@@ -175,6 +175,19 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                 // where they can author group ops but peers can't tell
                 // them apart from any other inherited member — caller
                 // wouldn't know to retry.
+                // A folder of a private space has the space's members: no join op.
+                if calimero_governance_store::private_space::Tree::live(
+                    &datastore,
+                    &ns_id.to_bytes().into(),
+                )?
+                .below_a_space_root(&group_id)?
+                {
+                    return Ok(JoinSubgroupInheritanceResponse {
+                        group_id,
+                        member_public_key: joiner_identity,
+                        was_inherited: true,
+                    });
+                }
                 let join_account = crate::join_credential::build(
                     &datastore,
                     &ns_id.to_bytes().into(),

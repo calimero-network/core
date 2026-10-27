@@ -506,3 +506,28 @@ fn a_namespace_admin_who_is_not_the_owner_cannot_move_a_space_root() {
     s.root_op(moves).expect("its owner moves it");
     assert_eq!(s.parent(space), Some(target));
 }
+
+/// A folder in a space has the space's members, so an inherited join into it needs no op, and
+/// one that names it is refused rather than announced to the workspace.
+#[test]
+fn an_inherited_join_into_a_folder_of_a_space_is_refused() {
+    let s = Space::new();
+    let space = s.private(NS);
+    let folder = s.open(space);
+    let sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+    let account = enrol_member(&s.store, &ContextGroupId::from(NS), &sk.public_key());
+    crate::MembershipRepository::new(&s.store)
+        .add_member(&NS.into(), &account, GroupMemberRole::Member)
+        .unwrap();
+    let join = RootOp::MemberJoinedOpen {
+        member: account,
+        group_id: folder.into(),
+        account: crate::test_fixtures::real_join_account(&sk.public_key()),
+    };
+
+    let refused = s.root_op_as(&sk, join).expect_err("refused");
+    assert!(
+        format!("{refused:#}").contains("private space"),
+        "{refused:#}"
+    );
+}
