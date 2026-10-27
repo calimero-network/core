@@ -262,6 +262,22 @@ impl Client {
         self.json(Method::GET, path, None).await
     }
 
+    /// `GET path` answered as text (`/ops/metrics`).
+    pub async fn get_text(&self, path: &str) -> Result<String> {
+        let resp = self.send(Method::GET, path, None).await?;
+        let status = resp.status().as_u16();
+        let text = resp.text().await.map_err(eyre::Report::from)?;
+        if status >= 400 {
+            return Err(Error::Api {
+                status,
+                code: "ERROR".into(),
+                message: text,
+                details: Value::Null,
+            });
+        }
+        Ok(text)
+    }
+
     pub async fn delete(&self, path: &str) -> Result<Value> {
         self.json(Method::DELETE, path, None).await
     }

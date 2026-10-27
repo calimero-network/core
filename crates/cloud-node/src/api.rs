@@ -3562,19 +3562,137 @@ async fn internal_events(
 // ---------------------------------------------------------------- ops (mdma)
 
 fn operator(node: &Node, headers: &HeaderMap) -> Result<(), ApiError> {
-    let Some(expected) = node.config.ops_token.as_deref() else {
-        return Err(ApiError::forbidden("the Ops API is disabled on this node"));
-    };
     let given = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or_default();
-    if ct_eq(given.as_bytes(), expected.as_bytes()) {
+    // The token itself, or (`--ops-token-sha256`) only its hash, so the
+    // machine's metadata need not hold a usable credential.
+    let ok = match (&node.config.ops_token, &node.config.ops_token_sha256) {
+        (Some(expected), _) => ct_eq(given.as_bytes(), expected.as_bytes()),
+        (None, Some(hash)) => ct_eq(
+            hex::encode(sha256(given.as_bytes())).as_bytes(),
+            hash.to_ascii_lowercase().as_bytes(),
+        ),
+        (None, None) => return Err(ApiError::forbidden("the Ops API is disabled on this node")),
+    };
+    if ok {
         Ok(())
     } else {
         Err(ApiError::forbidden("operator credential required"))
     }
+}
+
+/// Prometheus metrics (v1's `/metrics`), behind the operator token: counts,
+/// this node's groups and its streams. Never names, state or credentials.
+async fn ops_metrics(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    use std::fmt::Write as _;
+    operator(&node, &headers)?;
+    let (nodes, apps, accounts, orgs, packages, bundle_bytes) = node.sys(|s| {
+        (
+            s.nodes.len(),
+            s.apps.len(),
+            s.accounts.len(),
+            s.orgs.len(),
+            s.packages.len(),
+            s.bundles.values().map(|b| b.size).sum::<u64>(),
+        )
+    });
+    let system = node.system.status();
+    let hosted: Vec<(String, calimero_log::Status)> = node
+        .sys(|s| s.apps.keys().cloned().collect::<Vec<_>>())
+        .into_iter()
+        .filter_map(|a| node.hosted(&a).map(|g| (a, g.status())))
+        .collect();
+    let mut out = String::new();
+    let mut gauge = |name: &str, help: &str, value: u64| {
+        let _r = writeln!(
+            out,
+            "# HELP {name} {help}\n# TYPE {name} gauge\n{name} {value}"
+        );
+    };
+    gauge(
+        "calimero_cluster_nodes",
+        "Nodes in the directory.",
+        nodes as u64,
+    );
+    gauge(
+        "calimero_apps",
+        "App instances in the directory.",
+        apps as u64,
+    );
+    gauge("calimero_accounts", "Accounts.", accounts as u64);
+    gauge("calimero_orgs", "Organizations.", orgs as u64);
+    gauge("calimero_packages", "Installed packages.", packages as u64);
+    gauge(
+        "calimero_bundle_bytes",
+        "Bytes of uploaded bundles.",
+        bundle_bytes,
+    );
+    gauge(
+        "calimero_hosted_groups",
+        "App groups this node holds a replica of.",
+        hosted.len() as u64,
+    );
+    gauge(
+        "calimero_leading_groups",
+        "App groups this node leads.",
+        hosted.iter().filter(|(_, s)| s.is_leader).count() as u64,
+    );
+    gauge(
+        "calimero_event_streams",
+        "Event and presence streams open on this node.",
+        node.event_streams
+            .load(std::sync::atomic::Ordering::Relaxed) as u64,
+    );
+    gauge(
+        "calimero_system_applied",
+        "The system group's applied index here.",
+        system.applied,
+    );
+    gauge(
+        "calimero_system_leader",
+        "1 when this node leads the system group.",
+        u64::from(system.is_leader),
+    );
+    gauge(
+        "calimero_system_voters",
+        "System group voters.",
+        system.voters.len() as u64,
+    );
+    gauge(
+        "calimero_system_learners",
+        "System group learners.",
+        system.learners.len() as u64,
+    );
+    let _r = writeln!(
+        out,
+        "# HELP calimero_group_applied An app group's applied index here.\n# TYPE calimero_group_applied gauge"
+    );
+    for (_app, s) in &hosted {
+        let _r = writeln!(
+            out,
+            "calimero_group_applied{{group=\"{}\"}} {}",
+            s.group, s.applied
+        );
+    }
+    let _r = writeln!(
+        out,
+        "# HELP calimero_build_info This node's release.\n# TYPE calimero_build_info gauge\ncalimero_build_info{{release=\"{}\"}} 1",
+        node.own_release().replace('"', "")
+    );
+    Ok((
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4",
+        )],
+        out,
+    )
+        .into_response())
 }
 
 async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
@@ -4010,6 +4128,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/app-ready", post(internal_app_ready))
         .route("/internal/events", get(internal_events))
         .route("/ops/status", get(ops_status))
+        .route("/ops/metrics", get(ops_metrics))
         .route("/ops/nodes", post(ops_register_node))
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))
         .route("/ops/backup", post(ops_backup))

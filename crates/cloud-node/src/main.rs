@@ -51,6 +51,10 @@ struct Args {
     origins: Vec<String>,
     #[arg(long, env = "MEROD_OPS_TOKEN")]
     ops_token: Option<String>,
+    /// The ops token's hex SHA-256 instead of the token: the machine's
+    /// configuration then holds nothing an operator can sign in with.
+    #[arg(long, env = "MEROD_OPS_TOKEN_SHA256", conflicts_with = "ops_token")]
+    ops_token_sha256: Option<String>,
     #[arg(long, env = "MEROD_REPLICAS", default_value_t = 3)]
     replicas: usize,
     #[arg(long, env = "MEROD_BACKUP_DIR")]
@@ -300,6 +304,7 @@ async fn main() -> eyre::Result<()> {
         origins: args.origins,
         release: env!("CARGO_PKG_VERSION").to_owned(),
         ops_token: args.ops_token,
+        ops_token_sha256: args.ops_token_sha256,
         replicas: args.replicas,
         backup_dir: args.backup_dir,
         raft: calimero_log::Config::default(),

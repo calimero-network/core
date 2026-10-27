@@ -45,6 +45,47 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// Node `id`'s configuration in a test cluster of `peers`, stored in `dir`.
+fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path) -> Config {
+    let url = peers[&id].clone();
+    let port = url::Url::parse(&url).unwrap().port().unwrap();
+    Config {
+        node_id: id,
+        public_url: url,
+        listen: format!("127.0.0.1:{port}").parse().unwrap(),
+        data_dir: dir.to_owned(),
+        peers: peers.clone(),
+        bootstrap: id == 1,
+        cluster: "test".into(),
+        storage_key: [42; 32],
+        attestation: Mode::Mock,
+        allow_mock_peers: true,
+        sealed_required: true,
+        rp_id: "localhost".into(),
+        origins: vec![ORIGIN.into()],
+        release: "test".into(),
+        ops_token: Some("ops-secret".into()),
+        ops_token_sha256: None,
+        replicas: 3,
+        backup_dir: Some(dir.join("backups")),
+        raft: calimero_log::Config {
+            heartbeat_ms: 100,
+            election_min_ms: 500,
+            election_max_ms: 1000,
+            snapshot_every: 200,
+        },
+        session_key_rotation_secs: 6 * 3600,
+        tee_release: None,
+        tee_profile: None,
+        peer_measurements: calimero_cloud_client::Measurements::None,
+        registry: None,
+        allow_unsigned_bundles: true,
+        outbound: None,
+        governance: Default::default(),
+        apps_domain: None,
+    }
+}
+
 struct Cluster {
     nodes: Vec<Option<Running>>,
     urls: Vec<String>,
@@ -54,6 +95,26 @@ struct Cluster {
 impl Cluster {
     async fn start(n: u64) -> Self {
         Self::start_with(n, |_| {}).await
+    }
+
+    /// Start one more node, not a founder: it knows the cluster's addresses
+    /// but joins only once the operator registers it (`/ops/nodes`).
+    async fn join(&mut self) -> usize {
+        let id = self.urls.len() as u64 + 1;
+        let url = format!("http://127.0.0.1:{}/", free_port());
+        self.urls.push(url);
+        let peers: BTreeMap<u64, String> = self
+            .urls
+            .iter()
+            .enumerate()
+            .map(|(i, u)| (i as u64 + 1, u.clone()))
+            .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = node_config(id, &peers, dir.path());
+        config.bootstrap = false;
+        self.nodes.push(Some(run(config).await.unwrap()));
+        self._dirs.push(dir);
+        self.nodes.len() - 1
     }
 
     async fn start_with(n: u64, configure: impl Fn(&mut Config)) -> Self {
@@ -69,42 +130,9 @@ impl Cluster {
             .collect();
         let mut nodes = Vec::new();
         let mut dirs = Vec::new();
-        for (i, port) in ports.iter().enumerate() {
+        for i in 0..ports.len() {
             let dir = tempfile::tempdir().unwrap();
-            let mut config = Config {
-                node_id: i as u64 + 1,
-                public_url: urls[i].clone(),
-                listen: format!("127.0.0.1:{port}").parse().unwrap(),
-                data_dir: dir.path().to_owned(),
-                peers: peers.clone(),
-                bootstrap: i == 0,
-                cluster: "test".into(),
-                storage_key: [42; 32],
-                attestation: Mode::Mock,
-                allow_mock_peers: true,
-                sealed_required: true,
-                rp_id: "localhost".into(),
-                origins: vec![ORIGIN.into()],
-                release: "test".into(),
-                ops_token: Some("ops-secret".into()),
-                replicas: 3,
-                backup_dir: Some(dir.path().join("backups")),
-                raft: calimero_log::Config {
-                    heartbeat_ms: 100,
-                    election_min_ms: 500,
-                    election_max_ms: 1000,
-                    snapshot_every: 200,
-                },
-                session_key_rotation_secs: 6 * 3600,
-                tee_release: None,
-                tee_profile: None,
-                peer_measurements: calimero_cloud_client::Measurements::None,
-                registry: None,
-                allow_unsigned_bundles: true,
-                outbound: None,
-                governance: Default::default(),
-                apps_domain: None,
-            };
+            let mut config = node_config(i as u64 + 1, &peers, dir.path());
             configure(&mut config);
             nodes.push(Some(run(config).await.unwrap()));
             dirs.push(dir);
@@ -3097,4 +3125,129 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
         .create_api_key(json!({ "label": "k" }))
         .await
         .is_ok());
+}
+
+// ---------------------------------------------------------------- joining nodes
+
+/// A node registered with `/ops/nodes` after the cluster started joins the
+/// system group as a learner, learns the directory, and can host replicas
+/// (mdma's `test_a_node_added_to_a_running_cluster_hosts_replicas`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_node_added_to_a_running_cluster_hosts_replicas() {
+    let mut c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let _ = alice
+        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .await
+        .unwrap();
+    let new = c.join().await;
+    let new_id = new as u64 + 1;
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ = ops
+        .post(
+            "ops/nodes",
+            json!({ "id": new_id, "addr": c.urls[new], "zone": "b" }),
+        )
+        .await
+        .unwrap();
+
+    // It joins the system group and learns the directory.
+    let joined = &c.nodes[new].as_ref().unwrap().node;
+    let mut knows = false;
+    for _ in 0..200 {
+        if joined.sys(|s| s.apps.contains_key(&app)) {
+            knows = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(knows, "the new node never learned the directory");
+    let leader_node = (0..3)
+        .find(|i| c.nodes[*i].as_ref().unwrap().node.system.status().is_leader)
+        .unwrap();
+    let status = c.nodes[leader_node].as_ref().unwrap().node.system.status();
+    assert!(status.learners.contains(&new_id), "{status:?}");
+
+    // The operator moves a replica onto it, and it serves the app.
+    let replicas: Vec<u64> = alice.get(&format!("apps/{app}")).await.unwrap()["replicas"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    let new_set: Vec<u64> = replicas[1..].iter().copied().chain([new_id]).collect();
+    let app_leader = c.app_leader(&app).unwrap();
+    let ops_leader = c.client(app_leader);
+    ops_leader.use_api_key("ops-secret").await;
+    let _ = ops_leader
+        .post(
+            &format!("ops/apps/{app}/replicas"),
+            json!({ "replicas": new_set }),
+        )
+        .await
+        .unwrap();
+    let session = alice.session().await.unwrap();
+    let cl = c.client(new);
+    cl.use_session(session).await;
+    let mut served = Value::Null;
+    for _ in 0..100 {
+        if let Ok(v) = cl
+            .view(
+                &app,
+                "get",
+                json!({ "key": "a" }),
+                Consistency::Stale { min_index: 0 },
+            )
+            .await
+        {
+            if v.result == json!("1") {
+                served = v.result;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(served, json!("1"), "the new replica never served the app");
+    assert!(c.nodes[new].as_ref().unwrap().node.hosted(&app).is_some());
+}
+
+/// `--ops-token-sha256`: the node holds only the token's hash, and the token
+/// (not the hash) opens the Ops API; and its Prometheus metrics.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_ops_token_can_be_given_as_a_hash_and_metrics_count() {
+    use sha2::Digest;
+    let hash = hex::encode(sha2::Sha256::digest(b"hashed-secret"));
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.ops_token = None;
+        cfg.ops_token_sha256 = Some(hash.clone());
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (_app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let ops = c.client(0);
+    ops.use_api_key("hashed-secret").await;
+    assert!(ops.get("ops/status").await.is_ok());
+    let wrong = c.client(0);
+    wrong.use_api_key(&hash).await;
+    assert!(
+        wrong.get("ops/status").await.is_err(),
+        "the hash is not the credential"
+    );
+    wrong.use_api_key("ops-secret").await;
+    assert!(wrong.get("ops/status").await.is_err());
+
+    let metrics = ops.get_text("ops/metrics").await.unwrap();
+    assert!(metrics.contains("calimero_apps 1"), "{metrics}");
+    assert!(metrics.contains("calimero_accounts 1"), "{metrics}");
+    assert!(metrics.contains("calimero_system_voters 3"), "{metrics}");
+    assert!(
+        metrics.contains("# TYPE calimero_hosted_groups gauge"),
+        "{metrics}"
+    );
+    assert!(
+        alice.get_text("ops/metrics").await.is_err(),
+        "operators only"
+    );
 }

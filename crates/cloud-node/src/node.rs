@@ -81,6 +81,9 @@ pub struct Config {
     pub release: String,
     /// Bearer token for the Ops API (mdma's operator credential).
     pub ops_token: Option<String>,
+    /// Hex SHA-256 of the ops token, when only that is given
+    /// (`--ops-token-sha256`); ignored when `ops_token` is set.
+    pub ops_token_sha256: Option<String>,
     /// Replicas per app.
     pub replicas: usize,
     /// Where encrypted snapshots go (object storage stand-in), if anywhere.
@@ -207,6 +210,8 @@ pub struct Node {
     pub presence: crate::presence::Presence,
     /// Release frontends opened for `app_host`.
     pub frontends: crate::app_host::FrontendCache,
+    /// Nodes being added to the system group now.
+    joining: Mutex<std::collections::HashSet<NodeId>>,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
     /// Full-text search over the apps hosted here.
@@ -317,6 +322,7 @@ impl Node {
             event_streams: std::sync::Arc::default(),
             presence: crate::presence::Presence::default(),
             frontends: crate::app_host::FrontendCache::default(),
+            joining: Mutex::default(),
             peer_releases: Mutex::new(HashMap::new()),
             starting: tokio::sync::Mutex::new(()),
             search: Search::default(),
@@ -685,6 +691,51 @@ impl Node {
         Ok(g)
     }
 
+    /// On the system leader: every registered node that is not yet in the
+    /// system group joins it as a learner (a node `/ops/nodes` added to a
+    /// running cluster), and catches up from the log or a snapshot; then it
+    /// knows the directory and can host app replicas. Runs in the background,
+    /// one join per node at a time.
+    fn admit_registered_nodes(&self) {
+        let Some(me) = self.this.lock().ok().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        let status = self.system.status();
+        let members: std::collections::BTreeSet<NodeId> = status
+            .voters
+            .iter()
+            .chain(status.learners.iter())
+            .copied()
+            .collect();
+        let newcomers: Vec<(NodeId, String)> = self.sys(|s| {
+            s.nodes
+                .values()
+                .filter(|n| !members.contains(&n.id))
+                .map(|n| (n.id, n.addr.clone()))
+                .collect()
+        });
+        for (id, addr) in newcomers {
+            let fresh = self
+                .joining
+                .lock()
+                .map(|mut j| j.insert(id))
+                .unwrap_or(false);
+            if !fresh {
+                continue;
+            }
+            let node = Arc::clone(&me);
+            drop(tokio::spawn(async move {
+                match node.system.add_learner(id, addr).await {
+                    Ok(()) => info!(node = id, "a registered node joined the system group"),
+                    Err(e) => warn!(node = id, error = %e, "a registered node could not join yet"),
+                }
+                if let Ok(mut j) = node.joining.lock() {
+                    let _was = j.remove(&id);
+                }
+            }));
+        }
+    }
+
     /// Bring hosted groups in line with the system state.
     pub async fn reconcile(&self) {
         // The cluster's first leader fixes its governance, registers the
@@ -713,6 +764,7 @@ impl Node {
             for node in missing {
                 let _r = self.sys_write(&SystemCmd::RegisterNode { node }).await;
             }
+            self.admit_registered_nodes();
             // The first session key, then a new one whenever the current one is old enough.
             let current = self.sys(|s| s.session_keys.last().map(|k| (k.version, k.created_at)));
             let now = crate::types::now_secs();

@@ -53,6 +53,10 @@ merod-v2 --node-id 1 --listen 0.0.0.0:2501 --public-url https://n1.eu1.example/ 
 
 ## The Ops API
 
+`--ops-token-sha256 HEX` instead of `--ops-token` gives a node only the token's
+hash. `GET /ops/metrics` answers Prometheus text. A node started without
+`--bootstrap` joins the running cluster once `POST /ops/nodes` registers it.
+
 Bearer `--ops-token`, inside the sealed channel. mdma's `OpsClient` and
 `calimero-cloud ops` use it.
 

@@ -87,6 +87,15 @@ architecture spec.
 - **Access is judged fresh**: every request carrying a credential, every gated request and every client call's leader
   read the system state through `sys_fresh` (a read index), so a removal committed
   elsewhere holds before the next request.
+- **Joining nodes**: a node started without `--bootstrap` waits; once
+  `/ops/nodes` registers it, the system leader adds it to the system group as a
+  learner (`Node::admit_registered_nodes`, from `reconcile`), it catches up and
+  learns the directory, and replica moves (`/ops/apps/{app}/replicas`) can put
+  apps on it.
+- **Ops credentials and metrics**: `--ops-token-sha256` gives the node only the
+  token's hash (machine metadata then holds nothing usable); `GET /ops/metrics`
+  is Prometheus text (directory counts, this node's groups, streams, system
+  membership, build release), never names or state.
 - **Ops replica moves** run on the app group's leader; any other replica answers
   `421 NOT_LEADER` with `details.leaderUrl` before writing anything.
 - **Forwards are bounded**: a call or read forwarded to an app's leader waits at most

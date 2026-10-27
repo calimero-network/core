@@ -67,6 +67,7 @@ pub async fn start(
             origins: origins.clone(),
             release: env!("CARGO_PKG_VERSION").into(),
             ops_token: Some(ops_token.to_owned()),
+            ops_token_sha256: None,
             replicas: usize::try_from(n.min(3))?,
             backup_dir: Some(dir.join("backups")),
             raft: calimero_log::Config::default(),
