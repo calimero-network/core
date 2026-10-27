@@ -643,6 +643,93 @@ impl Storage for Overlay<'_> {
     }
 }
 
+/// Write `state` (borsh of the app's state) as the app's root entry, with the
+/// Merkle index updated, as v1's `write_migration_state` does. The storage
+/// layer's callbacks outlive any borrow, so they work over a copy of the state
+/// and the writes are carried back into `overlay`.
+fn write_root_state(
+    overlay: &mut Overlay<'_>,
+    base: &BTreeMap<Bytes, Bytes>,
+    context: [u8; 32],
+    executor: [u8; 32],
+    state: &[u8],
+) -> Result<(), String> {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use calimero_prelude::ROOT_STORAGE_ENTRY_ID;
+    use calimero_storage::address::Id;
+    use calimero_storage::entities::Metadata;
+    use calimero_storage::env::{with_runtime_env, RuntimeEnv};
+    use calimero_storage::index::Index;
+    use calimero_storage::store::{Key as SKey, MainStorage};
+    use calimero_storage::Interface;
+
+    let mut view: BTreeMap<Vec<u8>, Option<Vec<u8>>> = base
+        .iter()
+        .map(|(k, v)| (k.0.clone(), Some(v.0.clone())))
+        .collect();
+    for (k, v) in &overlay.writes {
+        let _prev = view.insert(k.clone(), v.clone());
+    }
+    let view = Rc::new(RefCell::new(view));
+    let written = Rc::new(RefCell::new(Vec::<(Vec<u8>, Option<Vec<u8>>)>::new()));
+    let read = {
+        let view = Rc::clone(&view);
+        Rc::new(move |k: &SKey| view.borrow().get(&k.to_bytes().to_vec()).cloned().flatten())
+            as Rc<dyn Fn(&SKey) -> Option<Vec<u8>>>
+    };
+    let write = {
+        let (view, written) = (Rc::clone(&view), Rc::clone(&written));
+        Rc::new(move |k: SKey, v: &[u8]| {
+            let k = k.to_bytes().to_vec();
+            let _prev = view.borrow_mut().insert(k.clone(), Some(v.to_vec()));
+            written.borrow_mut().push((k, Some(v.to_vec())));
+            true
+        }) as Rc<dyn Fn(SKey, &[u8]) -> bool>
+    };
+    let remove = {
+        let (view, written) = (Rc::clone(&view), Rc::clone(&written));
+        Rc::new(move |k: &SKey| {
+            let k = k.to_bytes().to_vec();
+            let _prev = view.borrow_mut().insert(k.clone(), None);
+            written.borrow_mut().push((k, None));
+            true
+        }) as Rc<dyn Fn(&SKey) -> bool>
+    };
+    let env = RuntimeEnv::new(read, write, remove, context, executor, executor);
+    let root = Id::new(ROOT_STORAGE_ENTRY_ID);
+    let mut entry = state.to_vec();
+    entry.extend_from_slice(&ROOT_STORAGE_ENTRY_ID);
+    with_runtime_env(env, || -> Result<(), String> {
+        // Stamped after whatever the root entry holds now, so it wins.
+        let at = Index::<MainStorage>::get_index(root)
+            .map_err(|e| e.to_string())?
+            .map_or(u64::MAX / 2, |i| {
+                i.metadata
+                    .updated_at()
+                    .max(i.metadata.created_at())
+                    .saturating_add(1)
+            });
+        let result = Interface::<MainStorage>::write_migrated_root_state(
+            root,
+            &entry,
+            Metadata::new(at, at),
+        )
+        .map(drop)
+        .map_err(|e| e.to_string());
+        calimero_storage::delta::clear_pending_delta();
+        result
+    })?;
+    for (k, v) in written.take() {
+        let _prev = match v {
+            Some(v) => overlay.set(k, v),
+            None => overlay.remove(&k),
+        };
+    }
+    Ok(())
+}
+
 /// What the node gives one run besides its call.
 #[derive(Clone, Debug, Default)]
 pub struct RunEnv {
@@ -730,6 +817,115 @@ impl Executor {
             .map_err(|e| eyre::eyre!("{e}"))?
             .insert(hash.to_owned(), Arc::clone(&module));
         Ok(module)
+    }
+
+    /// Run a migration export the way v1 does (`calimero-context`'s
+    /// `update_application`): the export reads the old state and returns the
+    /// new root state (borsh), the app's `__calimero_migration_check`, if it
+    /// exports one, must pass over it, and the host writes it as the app's root
+    /// entry. Never fails: errors become the outcome's status. A module without
+    /// the export upgrades code-only.
+    #[must_use]
+    pub fn migrate(
+        module: &calimero_runtime::Module,
+        app_id: &str,
+        caller: &Caller,
+        method: &str,
+        base: &BTreeMap<Bytes, Bytes>,
+        env: &RunEnv,
+    ) -> Outcome {
+        use calimero_runtime::errors::{FunctionCallError, MethodResolutionError};
+        let mut overlay = Overlay::new(base);
+        let context = calimero_identity::sha256(app_id.as_bytes());
+        let account = calimero_account::AccountId::from(caller.account_bytes());
+        let cloud = || calimero_runtime::CloudRun {
+            caller_org: env.org.clone(),
+            blobs: env.blobs.clone(),
+            ..Default::default()
+        };
+        let out = match module.run_cloud(
+            context.into(),
+            account,
+            caller.account_bytes().into(),
+            method,
+            &[],
+            &mut overlay,
+            None,
+            cloud(),
+        ) {
+            Ok(out) => out,
+            Err(e) => return Outcome::trap(&format!("{e:?}")),
+        };
+        let state = match out.returns {
+            Ok(Some(state)) => state,
+            Ok(None) => {
+                return Outcome {
+                    status: Status::AppError,
+                    error: Value::String(format!("{method} returned no state")),
+                    logs: out.logs,
+                    ..Outcome::default()
+                }
+            }
+            Err(FunctionCallError::MethodResolutionError(
+                MethodResolutionError::MethodNotFound { .. },
+            )) => return Outcome::default(),
+            Err(e) => {
+                return Outcome {
+                    status: Status::AppError,
+                    error: Value::String(format!("migration failed: {e:?}")),
+                    logs: out.logs,
+                    ..Outcome::default()
+                }
+            }
+        };
+        // The check reads the migrated state; whatever it writes is dropped.
+        if module.exports_function("__calimero_migration_check") {
+            let input =
+                borsh::to_vec(&(state.clone(), out.migration_witness.clone())).unwrap_or_default();
+            let (writes, order) = (overlay.writes.clone(), overlay.order.clone());
+            let verdict = module.run_cloud(
+                context.into(),
+                account,
+                caller.account_bytes().into(),
+                "__calimero_migration_check",
+                &input,
+                &mut overlay,
+                None,
+                cloud(),
+            );
+            overlay.writes = writes;
+            overlay.order = order;
+            // A check that trapped or answered anything but `true` refuses.
+            let passed = matches!(
+                &verdict,
+                Ok(v) if matches!(&v.returns, Ok(Some(bytes)) if borsh::from_slice::<bool>(bytes).is_ok_and(|ok| ok))
+            );
+            if !passed {
+                return Outcome {
+                    status: Status::AppError,
+                    error: Value::String("the migration check refused the migrated state".into()),
+                    logs: out.logs,
+                    ..Outcome::default()
+                };
+            }
+        }
+        if let Err(e) =
+            write_root_state(&mut overlay, base, context, caller.account_bytes(), &state)
+        {
+            return Outcome::trap(&format!("writing the migrated state: {e}"));
+        }
+        let events = out
+            .events
+            .iter()
+            .map(|e| (e.kind.clone(), json_or_string(&e.data)))
+            .collect();
+        Outcome {
+            status: Status::Ok,
+            diff: overlay.into_diff(),
+            events,
+            logs: out.logs,
+            ..Outcome::default()
+        }
     }
 
     /// Run `method` against `base` as `caller`, with JSON `args`. Never fails:

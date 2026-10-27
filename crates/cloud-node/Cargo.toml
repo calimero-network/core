@@ -41,6 +41,7 @@ calimero-account.workspace = true
 calimero-cloud-client.workspace = true
 calimero-identity.workspace = true
 calimero-log.workspace = true
+calimero-prelude.workspace = true
 calimero-primitives.workspace = true
 calimero-runtime.workspace = true
 calimero-search.workspace = true

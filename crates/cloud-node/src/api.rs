@@ -1229,21 +1229,45 @@ async fn app_upgrade(
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     let account = person(&node, &headers).await?.account()?;
-    let _ok = node
-        .sys_write(&SystemCmd::UpgradeApp {
-            app_id: app_id.clone(),
-            bundle: body.bundle.clone(),
-            actor: account.clone(),
-        })
-        .await?;
+    // Who may upgrade is the system log's rule (`UpgradeApp`); asked first, so
+    // a refused or failed upgrade records nothing.
+    let app = node.app(&app_id).await?;
+    let may = app.owner == account
+        || node.sys(|s| {
+            app.org
+                .as_ref()
+                .and_then(|o| s.orgs.get(o))
+                .and_then(|o| o.role(&account))
+                .is_some_and(|r| r >= OrgRole::Admin)
+        });
+    if !may {
+        return Err(crate::node::rejected(
+            "only the owner or an org admin may upgrade",
+        ));
+    }
+    if !node.sys(|s| s.bundles.contains_key(&body.bundle)) {
+        return Err(crate::node::rejected("unknown bundle"));
+    }
     let applied = node
         .call(&CallRequest::new(
-            app_id,
+            app_id.clone(),
             "__upgrade".into(),
             json!({ "bundle": body.bundle, "migrate": body.migrate }),
-            Caller::Account { account },
+            Caller::Account {
+                account: account.clone(),
+            },
         ))
         .await?;
+    // The app now runs the new bundle: the directory says so too.
+    if applied.status == Status::Ok {
+        let _ok = node
+            .sys_write(&SystemCmd::UpgradeApp {
+                app_id,
+                bundle: body.bundle,
+                actor: account,
+            })
+            .await?;
+    }
     Ok(Json(
         json!({ "index": applied.index, "status": applied.status, "error": applied.error }),
     ))

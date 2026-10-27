@@ -39,7 +39,11 @@ architecture spec.
 - **Upgrades plan their migration from the ABIs** (`services::plan_upgrade`, v1's
   `plan_upgrade`): without a named `migrate`, an upgrade one state version up runs
   the target's `#[app::migrate]` edge; a downgrade, a jump or a missing edge is
-  refused. Bundles without an ABI upgrade code-only.
+  refused. Bundles without an ABI upgrade code-only. The migration runs as v1's
+  does (`Executor::migrate`): the export returns the new root state, the app's
+  `__calimero_migration_check` must pass, and the host writes the root entry
+  (`write_root_state`). The directory records the new bundle only once the
+  upgrade succeeded.
 - **Devices**: a person is their account, and each passkey is a device: the
   session names the one it was opened with (`SessionClaims::passkey`,
   `passkeyId` in `/auth/me`); `auth/passkeys/add` adds one.
@@ -134,7 +138,9 @@ deletion, search indexes that survive a restart (rebuilt from state now).
 ```bash
 cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release   # test fixture
 # fixtures whose ABI the node reads (handlers, timers, xcall, search, blobs):
-for a in blobs kv-store-with-handlers search-chat xcall-example tee-cards tee-dice; do
+for a in blobs kv-store-with-handlers search-chat xcall-example tee-cards tee-dice \
+  migrations/migration-suite-v1 migrations/migration-suite-v2-add-field \
+  migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2; do
   cargo mero build --manifest-path apps/$a/Cargo.toml; done
 cargo test -p calimero-cloud-node    # 3-node cluster in process, sealed, real WASM
 cargo run -p calimero-cloud-node --bin merod-v2 -- --help

@@ -1131,12 +1131,11 @@ impl Node {
             .propose(|m, applied| {
                 let outcome = match &migrate {
                     Some(method) => {
-                        let outcome = Executor::run(
+                        let outcome = Executor::migrate(
                             &module,
                             &req.app_id,
                             &req.caller,
                             method,
-                            &Value::Null,
                             &m.state.kv,
                             &env,
                         );

@@ -1231,6 +1231,7 @@ dependencies = [
  "calimero-cloud-client",
  "calimero-identity",
  "calimero-log",
+ "calimero-prelude",
  "calimero-primitives",
  "calimero-runtime",
  "calimero-sealed",

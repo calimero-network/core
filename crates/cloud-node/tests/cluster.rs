@@ -1452,3 +1452,96 @@ async fn a_second_passkey_is_another_device_of_the_same_account() {
     assert_ne!(a["passkeyId"], b["passkeyId"]);
     assert_eq!(b["passkeys"].as_array().unwrap().len(), 2);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn upgrades_plan_and_run_the_apps_migration_and_its_check() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let upgrade = |app: String, bundle: String| {
+        let alice = &alice;
+        async move {
+            alice
+                .post(&format!("apps/{app}/upgrade"), json!({ "bundle": bundle }))
+                .await
+                .unwrap()
+        }
+    };
+
+    // v1 -> v2 adds a field: the node finds the migration in v2's ABI, runs
+    // it, and v1's data reads under v2 beside the new field's default.
+    let v1 = alice
+        .upload_bundle(mero_wasm(
+            "migrations/migration-suite-v1",
+            "migration_suite_v1",
+        ))
+        .await
+        .unwrap();
+    let app = alice.create_app("suite", &v1, json!({})).await.unwrap();
+    let _ok = alice
+        .call(
+            &app,
+            "set_item",
+            json!({ "key": "a", "value": "kept" }),
+            None,
+        )
+        .await
+        .unwrap();
+    let v2 = alice
+        .upload_bundle(mero_wasm(
+            "migrations/migration-suite-v2-add-field",
+            "migration_suite_v2_add_field",
+        ))
+        .await
+        .unwrap();
+    let up = upgrade(app.clone(), v2.clone()).await;
+    assert_eq!(up["status"], "ok", "{up}");
+    assert_eq!(
+        strong_view(&alice, &app, "get_item", json!({ "key": "a" })).await,
+        json!("kept")
+    );
+    assert_eq!(
+        strong_view(&alice, &app, "get_notes", json!({})).await,
+        json!("added in v2")
+    );
+    // Down again is refused, and the app stays on v2.
+    let down = upgrade(app.clone(), v1).await;
+    assert_eq!(down["status"], "appError", "{down}");
+    assert_eq!(
+        strong_view(&alice, &app, "get_notes", json!({})).await,
+        json!("added in v2")
+    );
+
+    // A migration its own check refuses leaves the app on v1, data intact.
+    let f1 = alice
+        .upload_bundle(mero_wasm(
+            "migrations/scenario-migration-check-fail-v1",
+            "scenario_migration_check_fail_v1",
+        ))
+        .await
+        .unwrap();
+    let app = alice.create_app("checked", &f1, json!({})).await.unwrap();
+    for k in ["x", "y"] {
+        let _ok = alice
+            .call(&app, "set_item", json!({ "key": k, "value": k }), None)
+            .await
+            .unwrap();
+    }
+    let f2 = alice
+        .upload_bundle(mero_wasm(
+            "migrations/scenario-migration-check-fail-v2",
+            "scenario_migration_check_fail_v2",
+        ))
+        .await
+        .unwrap();
+    let refused = upgrade(app.clone(), f2.clone()).await;
+    assert_eq!(refused["status"], "appError", "{refused}");
+    assert_eq!(
+        strong_view(&alice, &app, "item_count", json!({})).await,
+        json!(2)
+    );
+    // The directory still names the bundle the app runs.
+    assert_eq!(
+        alice.get(&format!("apps/{app}")).await.unwrap()["bundle"],
+        json!(f1)
+    );
+}
