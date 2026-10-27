@@ -12,7 +12,7 @@
 //! cargo run -p state-disk-cost --release -- --contexts 4 --kv 25000 --chat 10000
 //! ```
 //!
-//! Every variant starts from `calimero_store_rocksdb::{table_options,
+//! Every variant starts from `calimero_log::tuning::{table_options,
 //! column_options}`, the options a node opens `State` with, so the `node`
 //! row is the production configuration byte for byte.
 
@@ -443,9 +443,9 @@ struct Measured {
 }
 
 fn open(path: &Path, cache: &Cache, variant: &Variant) -> EyreResult<DB> {
-    let mut table = calimero_store_rocksdb::table_options(cache);
+    let mut table = calimero_log::tuning::table_options(cache);
     (variant.table)(&mut table);
-    let mut cf = calimero_store_rocksdb::column_options(&table)?;
+    let mut cf = calimero_log::tuning::column_options(&table)?;
     (variant.column)(&mut cf);
 
     let mut db_options = Options::default();

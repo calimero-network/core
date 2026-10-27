@@ -104,7 +104,7 @@ Two properties carry over from the library and matter more here, because the con
 | `TeeInfo` | struct | `cloud_provider: String`, `os_image: String`, `mrtd: String` (hex) |
 | `AttestationError` | enum | `NotSupported`, `QuoteGenerationFailed`, `QuoteParsingFailed`, `QuoteConversionFailed`, `QuoteVerificationFailed`, `CollateralFetchFailed`, `InvalidNonce`, `InvalidApplicationHash`, `NonceMismatch { expected, actual }`, `ApplicationHashMismatch { expected, actual }`, `InfoRetrievalFailed`, `SystemTimeError` - all carry `String` context, no source-error chaining |
 
-`Quote`/`QuoteHeader`/`QuoteBody`/`CertificationData`/`QeReportCertificationDataInfo` are re-exported through `calimero_server_primitives::admin`, not defined in this crate - this crate only builds and consumes them (`Quote: TryFrom<tdx_quote::Quote>`).
+`Quote`/`QuoteHeader`/`QuoteBody`/`CertificationData`/`QeReportCertificationDataInfo` are defined here (`quote.rs`, moved from v1's `calimero_server_primitives::admin`, same wire shape) with `Quote: TryFrom<tdx_quote::Quote>`; mero-kms and the gates in mero-tee import them from `calimero_tee_attestation` once they move past core rev 23cf02c.
 
 ## Mental Model: Generate vs Verify
 

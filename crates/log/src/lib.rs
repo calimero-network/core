@@ -27,6 +27,7 @@ pub mod machine;
 mod migration_tests;
 pub mod network;
 pub mod store;
+pub mod tuning;
 pub mod types;
 
 pub use legacy::MigrationReport;

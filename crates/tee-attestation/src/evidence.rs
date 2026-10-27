@@ -16,7 +16,7 @@
 
 use dcap_qvl::QuoteCollateralV3;
 
-use calimero_server_primitives::admin::Quote;
+use crate::quote::Quote;
 
 use crate::error::AttestationError;
 #[cfg(feature = "mock-attestation")]

@@ -1,15 +1,11 @@
 //! A reader must keep working across the writer's merges and garbage
 //! collection: segment files a live searcher still reads must not vanish.
 
-use std::sync::Arc;
-
 use calimero_primitives::search::{
     SearchDoc, SearchFieldKind, SearchFieldSchema, SearchIndexSchema, SearchMode, SearchOrder,
     SearchRequest, SearchValue,
 };
-use calimero_search::{SearchConfig, SearchService};
-use calimero_store::db::InMemoryDB;
-use calimero_store::Store;
+use calimero_search::index::{ContextIndex, SchemaOptions};
 
 fn schema() -> SearchIndexSchema {
     SearchIndexSchema {
@@ -25,9 +21,7 @@ fn schema() -> SearchIndexSchema {
     }
 }
 
-fn run(store: Store) {
-    let service = SearchService::new(store, SearchConfig::default());
-    let (index, _) = service.open_index(&[7; 32], &schema()).unwrap();
+fn run(index: ContextIndex) {
     // One document up front that the first batch then replaces: the replace
     // is a delete, so segments carry delete files through the merges.
     let first = SearchDoc {
@@ -70,22 +64,11 @@ fn run(store: Store) {
     };
     assert_eq!(index.search(&q).unwrap().total, 12_000);
     drop(index);
-    drop(service);
 }
 
 #[test]
-fn searches_survive_merges_and_writer_close_in_memory() {
-    run(Store::new(Arc::new(InMemoryDB::owned())));
-}
-
-#[test]
-fn searches_survive_merges_and_writer_close_on_rocksdb() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
-    run(
-        Store::open::<calimero_store_rocksdb::RocksDB>(&calimero_store::config::StoreConfig::new(
-            path,
-        ))
-        .unwrap(),
-    );
+fn searches_survive_merges_and_writer_close() {
+    let dir = Box::new(tantivy::directory::RamDirectory::create());
+    let (index, _state) = ContextIndex::open(dir, &schema(), SchemaOptions::default()).unwrap();
+    run(index.expect("a new index opens fresh"));
 }

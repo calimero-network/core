@@ -1550,7 +1550,6 @@ name = "calimero-log"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
- "calimero-store-rocksdb",
  "eyre",
  "openraft",
  "redb",
@@ -1823,20 +1822,15 @@ version = "0.0.0"
 dependencies = [
  "assert-json-diff",
  "borsh",
- "bytes",
  "calimero-account",
- "calimero-context-config",
  "calimero-crypto",
- "calimero-node-primitives",
  "calimero-primitives",
  "calimero-storage",
- "calimero-store",
  "calimero-sys",
  "criterion",
  "ed25519-dalek 3.0.0",
  "eyre",
  "fragile 3.0.0",
- "futures-util",
  "ouroboros",
  "owo-colors",
  "rand 0.10.2",
@@ -1845,8 +1839,6 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
- "tokio",
- "tokio-stream",
  "toml",
  "tracing",
  "tracing-subscriber",
@@ -1919,19 +1911,11 @@ dependencies = [
 name = "calimero-search"
 version = "0.0.0"
 dependencies = [
- "async-trait",
- "borsh",
  "calimero-primitives",
- "calimero-store",
- "calimero-store-rocksdb",
- "camino",
  "eyre",
  "serde",
  "serde_json",
  "tantivy",
- "tempfile",
- "tokio",
- "tracing",
  "unicode-normalization",
  "unicode-segmentation",
 ]
@@ -2110,12 +2094,12 @@ name = "calimero-tee-attestation"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
- "calimero-server-primitives",
  "configfs-tsm",
  "dcap-qvl",
  "eyre",
  "hex",
  "reqwest 0.12.28",
+ "serde",
  "serde_json",
  "sha2 0.11.1",
  "tdx-quote",
@@ -10413,8 +10397,8 @@ name = "state-disk-cost"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "calimero-log",
  "calimero-storage",
- "calimero-store-rocksdb",
  "eyre",
  "rocksdb",
  "tempfile",
@@ -10439,8 +10423,8 @@ name = "storage-compare"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "calimero-log",
  "calimero-storage",
- "calimero-store-rocksdb",
  "rocksdb",
  "tempfile",
 ]

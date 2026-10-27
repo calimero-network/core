@@ -314,8 +314,8 @@ impl Db {
         let snapshot_dir = dir.join("snapshots");
         std::fs::create_dir_all(&snapshot_dir)?;
         let cache = Cache::new_lru_cache(BLOCK_CACHE_BYTES);
-        let table = calimero_store_rocksdb::table_options(&cache);
-        let mut options = calimero_store_rocksdb::column_options(&table)?;
+        let table = crate::tuning::table_options(&cache);
+        let mut options = crate::tuning::column_options(&table)?;
         options.create_if_missing(true);
         options.create_missing_column_families(true);
         options.set_max_open_files(256);
@@ -326,7 +326,7 @@ impl Db {
             .map(|c| {
                 Ok(ColumnFamilyDescriptor::new(
                     c.name(),
-                    calimero_store_rocksdb::column_options(&table)?,
+                    crate::tuning::column_options(&table)?,
                 ))
             })
             .collect::<eyre::Result<Vec<_>>>()?;

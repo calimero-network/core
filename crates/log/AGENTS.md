@@ -7,7 +7,7 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
 - `Group::propose` serializes proposals per group and confirms leadership, so a
   command built from the applied state applies to exactly that state.
 - Storage (`store.rs`): one RocksDB per node (`<data-dir>/store`), opened with
-  `calimero-store-rocksdb`'s column and table options (one bounded block cache,
+  `tuning`'s column and table options (moved from v1's `calimero-store-rocksdb`) (one bounded block cache,
   `BLOCK_CACHE_BYTES`). Column families `log`, `meta`, `state`, `blobs`. Every value
   is sealed with AES-256-GCM under the storage key, bound to its column, group and
   key. A machine can hide a key (`StateTx::put_hidden`): the row is keyed by an HMAC
