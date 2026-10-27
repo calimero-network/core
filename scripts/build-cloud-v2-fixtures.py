@@ -1,37 +1,122 @@
 #!/usr/bin/env python3
-"""Build what the release-v2 ports of core's workflows install, into
-target/cloud-v2-wasm/ (override with CORE_WASM_DIR).
+"""Build what the release-v2 workflows (workflows/**, apps/*/workflows/**)
+install, into target/cloud-v2-wasm/ (override with CORE_WASM_DIR), which the
+workflows name as `{{env.CORE_WASM_DIR}}`:
 
-- `dist/<package>-<version>.mpk`: every bundle
-  `workflows/app-migration/build-wasms.sh` makes (`cargo mero bundle --dev`,
+- `dist/<package>-<version>.mpk`: every migration fixture
+  `workflows/app-migration/build-wasms.sh` bundles (`cargo mero bundle --dev`,
   same `--package` / `--app-version`, the no-ABI bundle and the
-  frontend-release pair), plus its `app.wasm` as `<crate>.wasm`;
-- `<crate>.wasm` for kv-store, kv-store-with-handlers and scaffolding-e2e
-  (`cargo mero build`, so each carries its ABI, which the node reads).
+  frontend-release pair), plus its `app.wasm` as `<crate>.wasm`: a workflow
+  installs the signed release by name and upgrades by version;
+- `<crate>.wasm` for every app under apps/ (`cargo mero build`, so each carries
+  its ABI, which the node reads): a workflow uploads it as a bundle;
+- `dist/<package>-1.0.0.mpk` for a multi-service manifest
+  (scaffolding-e2e-multi): its services name the crates they run, built above
+  as themselves, and the signed release is what a workflow installs to deploy
+  a service by name.
 
-The list comes from scripts/cloud-v2-wasm-map.py, so the two agree. Each
-crate's res/ is left as it was (a bundle build rewrites it).
+Each crate's res/ is left as it was (a bundle build rewrites it).
 Usage: scripts/build-cloud-v2-fixtures.py [--force] [name-filter ...]
 """
 
 import gzip
-import importlib.util
 import io
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = Path(os.environ.get("CORE_WASM_DIR") or ROOT / "target/cloud-v2-wasm")
+BUILD_WASMS = ROOT / "workflows/app-migration/build-wasms.sh"
 
-spec = importlib.util.spec_from_file_location(
-    "wasm_map", Path(__file__).with_name("cloud-v2-wasm-map.py")
-)
-wasm_map = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(wasm_map)
+#: Crates under apps/ that are not apps a workflow installs, with why.
+NOT_APPS = {
+    "abi_conformance_resolved": "an ABI generator fixture (its ABI is what is tested)",
+    "state-schema-conformance": "a state-schema generator fixture",
+    "migration-harness-example": "an rlib: a `#[app::migrate]` example run by TestHost",
+    "migrations": "the migration fixtures (FIXTURES, built by build-wasms.sh's list)",
+}
+
+
+def _cargo(app_dir: Path) -> dict:
+    return tomllib.loads((app_dir / "Cargo.toml").read_text())
+
+
+def apps() -> list[dict]:
+    """Every app under apps/ a workflow can install: its directory, crate,
+    package id and services (a multi-service manifest builds no crate of its
+    own: each service names the crate it runs)."""
+    out = []
+    for cargo in sorted(ROOT.glob("apps/*/Cargo.toml")):
+        d = cargo.parent
+        if d.name in NOT_APPS:
+            continue
+        data = _cargo(d)
+        pkg = data["package"]
+        meta = pkg.get("metadata", {}).get("calimero", {})
+        services = {s["name"]: s.get("crate", pkg["name"]) for s in meta.get("services", [])}
+        if "cdylib" not in data.get("lib", {}).get("crate-type", []) and not services:
+            continue
+        out.append(
+            {
+                "app": d.name,
+                "crate": None if services else pkg["name"],
+                "package": meta.get("package") or f"com.calimero.{d.name}",
+                "services": services,
+            }
+        )
+    return out
+
+
+def crate_of(app_dir: Path) -> str:
+    return tomllib.loads((app_dir / "Cargo.toml").read_text())["package"]["name"]
+
+
+def fixtures() -> list[dict]:
+    """Every bundle build-wasms.sh makes: package, version, crate, dist name."""
+    out = []
+    suites = re.findall(r'^\s*"(apps/migrations/[^"]+)"', BUILD_WASMS.read_text(), re.M)
+    for suite in suites:
+        name = Path(suite).name
+        base = re.sub(r"-v[0-9].*$", "", name)
+        version = re.sub(r".*-v([0-9]+).*", r"\1", name)
+        out.append(
+            {
+                "dir": suite,
+                "crate": crate_of(ROOT / suite),
+                "package": f"com.calimero.{base}",
+                "version": f"{version}.0.0",
+            }
+        )
+    out.append(
+        {
+            "dir": "apps/migrations/migration-suite-v2-add-field",
+            "crate": "migration-suite-noabi",
+            "package": "com.calimero.migration-suite-noabi",
+            "version": "2.0.0",
+            "no_abi": True,
+        }
+    )
+    for v in (1, 2):
+        out.append(
+            {
+                "dir": "apps/migrations/migration-suite-v1",
+                "crate": f"frontend-release-v{v}",
+                "package": "com.calimero.frontend-release",
+                "version": f"{v}.0.0",
+                "frontend_dir": f"apps/migrations/frontend-release/v{v}",
+            }
+        )
+    for f in out:
+        f["mpk"] = f"dist/{f['package']}-{f['version']}.mpk"
+    return out
+
+
 
 
 def extract_wasm(mpk: Path, dest: Path) -> None:
@@ -56,7 +141,7 @@ def main() -> int:
     force = "--force" in sys.argv
     (OUT / "dist").mkdir(parents=True, exist_ok=True)
     failed = []
-    for f in wasm_map.fixtures():
+    for f in fixtures():
         label = f"{f['package']}@{f['version']}"
         if args and not any(a in label or a in f["dir"] for a in args):
             continue
@@ -94,10 +179,10 @@ def main() -> int:
             failed.append(label)
             continue
         extract_wasm(mpk, dest)
-    for app in wasm_map.PLAIN_APPS:
+    for app in [a["app"] for a in apps() if a["crate"]]:
         if args and not any(a in app for a in args):
             continue
-        crate = wasm_map.crate_of(ROOT / "apps" / app).replace("-", "_")
+        crate = crate_of(ROOT / "apps" / app).replace("-", "_")
         dest = OUT / f"{crate}.wasm"
         if dest.exists() and not force:
             print(f"have {app}", flush=True)
@@ -108,6 +193,23 @@ def main() -> int:
             failed.append(app)
             continue
         shutil.copy2(manifest.parent / "res" / f"{crate}.wasm", dest)
+    # A multi-service manifest as the signed release it is, so a workflow
+    # installs it and deploys each service by name.
+    for a in apps():
+        if a["crate"] or (args and not any(x in a["app"] for x in args)):
+            continue
+        mpk = OUT / "dist" / f"{a['package']}-1.0.0.mpk"
+        if mpk.exists() and not force:
+            print(f"have {a['app']}", flush=True)
+            continue
+        print(f"bundling {a['app']} (services: {', '.join(a['services'])})", flush=True)
+        cmd = [
+            "cargo", "mero", "bundle", "--dev", "--no-icon", "--no-logo",
+            "--manifest-path", f"apps/{a['app']}/Cargo.toml",
+            "--app-version", "1.0.0", "-o", str(mpk),
+        ]  # fmt: skip
+        if not (run(cmd) and mpk.exists()):
+            failed.append(a["app"])
     if failed:
         print(f"failed: {', '.join(failed)}", file=sys.stderr)
         return 1
