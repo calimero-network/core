@@ -40,8 +40,18 @@ Pair it with a Criterion sweep over the same shape in Tier 2, which shows the tr
     cargo bench -p calimero-storage --bench child_trie -- --test    # run once, assert nothing
     cargo bench -p storage-cost --bench collections                 # every registry workload, timed
     cargo bench -p storage-cost --bench indexed_map_indexes         # write cost per declared index
+    cargo bench -p calimero-log --bench log                         # append + commit, 1 vs 3 nodes; one synced RocksDB write
+    cargo bench -p calimero-sealed --bench sealed                   # a request sealed vs plain, 1 KiB / 64 KiB / 1 MiB
 
 Criterion compiles benches with release optimisations; never read numbers from a debug build.
+
+Two benches are not criterion, and run as their own jobs of the same workflow:
+
+    cargo run --release -p search-bench -- --sizes 10000,100000 --out search-bench.md     # tools/search-bench
+    cargo bench -p calimero-cloud-node --bench cluster_throughput -- --secs 20 --out cluster-throughput.json
+
+- `tools/search-bench`: `calimero-search`'s engine (index size, query latency, memory, the search-gas fit) as a markdown report, uploaded as `search-bench-<sha>`. Its `README.md` holds the reference run.
+- `crates/cloud-node/benches/cluster_throughput.rs`: calls per second and p50/p99 through a 3-node cluster in one process (the real node, sealed channels, the kv-store wasm, merod's Raft timing): 1 app with 1 and 64 calls in flight, and 2 apps with 64 each, led by one node and by two. It needs `kv_store.wasm` built first (`cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release`) and writes JSON, uploaded as `cluster-throughput-<sha>`; the `compare` job adds a table of it against the base commit's to the PR comment. The [testing page](src/content/docs/contribute/testing.mdx#benchmarks-and-cost-gates) has a reference run.
 
 `master` saves a baseline per commit, and a PR compares against it with `critcmp` (`.github/workflows/benchmarks.yml`): a PR benches only while it carries the `run-benchmarks` label, and then benches every crate, again on each push. A storage change without the label is covered by the deterministic storage cost gate in `ci-checks.yml` instead.
 Neither ever fails the PR. On a fork PR the comparison runs but cannot comment (its token is read-only), so read the `compare` job's log.
@@ -59,6 +69,7 @@ The document-ceiling probes in `crates/runtime/tests/{chat,rga,fugue}_wall.rs` a
 4. Never copy a private function's body; add a `pub(crate)` seam instead.
 5. Run `cargo bench --workspace --benches --no-run` before pushing.
 6. For a crate's *first* `[[bench]]`, add the crate to the `all` list in the `plan` job of `.github/workflows/benchmarks.yml`, or it silently gets no `master` baseline.
+   A bench that is not criterion (no baseline for `critcmp`) gets its own job there instead, uploading its report as an artifact named with the commit, as `search-bench` and `cluster` do.
 
 ## Reading the comparison
 

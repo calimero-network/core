@@ -35,7 +35,7 @@ jobs:
           LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'run-benchmarks') }}
         run: |
           # A crate's first `[[bench]]` goes here, or it gets no master baseline.
-          all='["storage-cost","calimero-storage","calimero-store","calimero-blobstore","calimero-crypto","calimero-runtime"]'
+          all='["storage-cost","calimero-storage","calimero-store","calimero-blobstore","calimero-crypto","calimero-runtime","calimero-log","calimero-sealed"]'
           if [ "$EVENT" = push ]; then
             crates="$all"
           elif [ "$ACTION" = labeled ]; then
@@ -89,6 +89,81 @@ jobs:
           path: target/criterion
           retention-days: 30
 
+  # Not criterion: one report of index size, query latency, memory and the
+  # search gas fit (tools/search-bench), uploaded as markdown. Runs when the
+  # criterion jobs do; its README holds the reference run.
+  search-bench:
+    name: Search engine bench
+    needs: plan
+    if: needs.plan.outputs.crates != '[]'
+    continue-on-error: true
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: bench
+          save-if: false
+
+      # The profile of the README's reference run (LTO off), set on this step
+      # only, so the cache step above hashes what the criterion jobs do.
+      - name: Run the search engine bench
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"
+        run: cargo run --release -p search-bench -- --sizes 10000,100000 --out search-bench.md
+
+      - name: Upload the report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: search-bench-${{ github.sha }}
+          path: search-bench.md
+          retention-days: 30
+
+  # Not criterion: calls per second and p50/p99 through a 3-node cluster in
+  # one process (crates/cloud-node/benches/cluster_throughput.rs, the real
+  # node and kv-store wasm), one row per load shape, written as JSON. The
+  # compare job diffs it against the base commit's.
+  cluster:
+    name: Cluster throughput
+    needs: plan
+    if: needs.plan.outputs.crates != '[]'
+    continue-on-error: true
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: bench
+          save-if: false
+          targets: wasm32-unknown-unknown
+
+      - name: Build the kv-store fixture
+        run: cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
+
+      - name: Run the cluster bench
+        run: cargo bench -p calimero-cloud-node --bench cluster_throughput -- --secs 20 --out cluster-throughput.json
+
+      - name: Upload the report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cluster-throughput-${{ github.sha }}
+          path: cluster-throughput.json
+          retention-days: 30
+
   # Reads only artifacts: this run's (data the PR's benches wrote, parsed by
   # critcmp, never executed) and the base commit's from a master push run. On a
   # fork PR the token is read-only whatever this asks for, so the comment step
@@ -96,7 +171,7 @@ jobs:
   # failing the PR.
   compare:
     name: Compare against master
-    needs: criterion
+    needs: [criterion, cluster]
     if: github.event_name == 'pull_request'
     continue-on-error: true
     runs-on: ubuntu-24.04-8cpu
@@ -146,6 +221,25 @@ jobs:
           github-token: ${{ github.token }}
         continue-on-error: true
 
+      # The cluster bench's JSON, this run's and the base commit's, beside the
+      # criterion baselines (data only; read by the comparison below).
+      - name: Download this run's cluster report
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cluster-throughput-${{ github.sha }}
+          path: cluster/head
+        continue-on-error: true
+
+      - name: Download master's cluster report
+        if: steps.master-run.outputs.run_id != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cluster-throughput-${{ github.event.pull_request.base.sha }}
+          path: cluster/base
+          run-id: ${{ steps.master-run.outputs.run_id }}
+          github-token: ${{ github.token }}
+        continue-on-error: true
+
       - name: Install critcmp
         run: cargo install critcmp --version 0.1.8 --locked
 
@@ -163,6 +257,31 @@ jobs:
           cat /tmp/critcmp.txt
         env:
           STEPS_MASTER_RUN_OUTPUTS_RUN_ID: ${{ steps.master-run.outputs.run_id }}
+
+      - name: Compare the cluster bench
+        run: |
+          python3 - <<'PY' | tee -a /tmp/critcmp.txt
+          import json, pathlib
+          def load(side):
+              path = pathlib.Path("cluster", side, "cluster-throughput.json")
+              return json.loads(path.read_text()) if path.is_file() else None
+          head, base = load("head"), load("base")
+          print("\n### Cluster throughput (calls/s, p50 / p99 ms)\n")
+          if head is None:
+              print("no cluster report for this commit (see the `Cluster throughput` job log)")
+              raise SystemExit
+          rows = {r["name"]: r for r in (base or {}).get("rows", [])}
+          print("| scenario | base calls/s | this calls/s | change | this p50 / p99 |")
+          print("|---|---|---|---|---|")
+          for r in head["rows"]:
+              b = rows.get(r["name"])
+              was = f'{b["callsPerSecond"]:.1f}' if b else "-"
+              change = f'{(r["callsPerSecond"] / b["callsPerSecond"] - 1) * 100:+.0f}%' if b and b["callsPerSecond"] else "-"
+              print(f'| {r["name"]} | {was} | {r["callsPerSecond"]:.1f} | {change} | {r["p50Ms"]:.1f} / {r["p99Ms"]:.1f} |')
+          print(f'\nOne synced RocksDB write on this runner: {head["syncedWriteMedianMs"]:.3f} ms (median).')
+          if base is None:
+              print("No base report: the base commit has no successful run, or its artifact expired.")
+          PY
 
       - name: Post the comparison
         uses: thollander/actions-comment-pull-request@24bffb9b452ba05a4f3f77933840a6a841d1b32b # v3.0.1

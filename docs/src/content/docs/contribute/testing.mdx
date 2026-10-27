@@ -178,6 +178,54 @@ the `log.redb` store.
 
 Storage cost gates, scaling guards and criterion benches are described in
 [`docs/benchmarking.md`](https://github.com/calimero-network/core/blob/master/docs/benchmarking.md).
+`.github/workflows/benchmarks.yml` runs them on every master push and on a PR
+labelled `run-benchmarks`: the criterion benches per crate (`calimero-log`'s
+append and commit, `calimero-sealed`'s request round trip, the storage and
+runtime benches), compared against the base commit with `critcmp`, plus two
+reports that are not criterion: `tools/search-bench` (the search engine) and
+the cluster throughput bench, whose JSON the comparison also diffs.
+
+### Cluster throughput
+
+`crates/cloud-node/benches/cluster_throughput.rs` drives a 3-node cluster in
+one process (the harness of `tests/cluster.rs`, in `tests/harness/cluster.rs`,
+with merod's Raft timing) through the sealed client, calling the kv-store
+fixture's `set` on the app's leader:
+
+```bash
+cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
+cargo bench -p calimero-cloud-node --bench cluster_throughput -- --secs 15 --out cluster.json
+```
+
+Two runs on a 4-vCPU Linux container (bench profile with LTO off; the machine
+was shared with other work, so treat rows as ±25%):
+
+| Scenario | Calls/s | Per app | p50 | p99 |
+| --- | --- | --- | --- | --- |
+| (a) 1 app, 1 in flight | 148 / 185 | | 6.3 / 5.2 ms | 15 / 8 ms |
+| (b) 1 app, 64 in flight | 205 / 250 | | 285 / 253 ms | 519 / 317 ms |
+| (c) 2 apps, 64 each, one leader node | 322 / 349 | 160 + 162 / 176 + 173 | 348 / 340 ms | 780 / 495 ms |
+| (c') 2 apps, 64 each, two leader nodes | 264 / 298 | 119 + 146 / 139 + 159 | 436 / 423 ms | 2963 / 3671 ms |
+
+One synced RocksDB write (`rocksdb_write/synced` in `calimero-log`'s bench, and
+timed again by this bench) took 0.16 to 0.19 ms on this disk; unsynced, 2 µs.
+
+- **The limit is per app, not per node.** A group proposes one call at a time
+  (`propose_lock` in `Group::propose` is held while the leader runs the WASM
+  and until the entry commits), so 64 calls in flight on one app only queue:
+  (b) is 1.35x (a), and its p50 is about 50 times (a)'s. A second app on the same
+  leader node adds its own stream: (c) is 1.4 to 1.6x (b) (2x in an earlier
+  run), and the two apps share it evenly; a per-node limit would hold (c)
+  at about 1x. Two leader nodes did no better than one here, and their p99
+  was seconds: 4 cores ran all three nodes and 128 callers.
+- **The disk is not the limit.** A call needs the leader's synced append and a
+  follower's (in parallel), so about 2 syncs: 1 ÷ (2 × 0.17 ms) is about 3,000
+  calls/s per app, against the 150 to 250 measured. A call's 5 to 7 ms is the
+  sealed HTTP round trip, the fresh system read, the WASM run and the Raft
+  round trips, all inside the propose lock. On a disk whose sync takes 10 to
+  25 ms (macOS, where Rust's `sync_data` is `F_FULLFSYNC`, which redb ran on
+  every commit), the same formula gives 20 to 50 writes/s per app, the range
+  of the ~38/s a macOS build on redb reported.
 
 <Aside type="caution" title="Fuzzing">
   `fuzz/` still depends on deleted v1 crates (`calimero-governance-store`,
