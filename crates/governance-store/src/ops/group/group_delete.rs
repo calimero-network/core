@@ -22,17 +22,6 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>) -> EyreResult<()> {
             group_id.to_bytes()
         )));
     }
-    // Ownership is recorded against an account, so the signing key is resolved
-    // before the comparison. An unresolvable key is not the owner.
-    let owner = crate::group_owner::owner_at_cut(store, group_id, ctx.cut(), ctx.authorizer())?;
-    if ctx
-        .signer_account()?
-        .is_none_or(|signer| Some(signer) != owner)
-    {
-        bail!(MembershipError::OnlyOwnerCanDelete(hex::encode(
-            group_id.to_bytes()
-        )));
-    }
     let tree = Tree::at_cut(
         store,
         ctx.authorizer(),
@@ -43,6 +32,14 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>) -> EyreResult<()> {
             subtrees: &[*group_id],
         },
     )?;
+    // Ownership is recorded against an account, so the signing key is resolved
+    // before the comparison. An unresolvable key is not the owner.
+    let space_root = tree.space_of(group_id)? == Some(*group_id);
+    if !ctx.signer_owns(space_root)? {
+        bail!(MembershipError::OnlyOwnerCanDelete(hex::encode(
+            group_id.to_bytes()
+        )));
+    }
     // Owning an inner folder is no standing without a seat in its space, read at the cut; a
     // space root's owner needs none.
     if let (Some(space), Some(signer)) = (tree.space_of(group_id)?, ctx.signer_account()?) {

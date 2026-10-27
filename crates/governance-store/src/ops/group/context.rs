@@ -190,6 +190,33 @@ impl<'a> GroupApplyCtx<'a> {
         self.permissions.account_for_signer(self.signer)
     }
 
+    /// Whether the signer owns the group at the cut. A space root's owner must also still stand
+    /// in the workspace at the cut, which the space's own rows cannot show.
+    pub(crate) fn signer_owns(&self, space_root: bool) -> EyreResult<bool> {
+        let owner = crate::group_owner::owner_at_cut(
+            self.store,
+            self.group_id,
+            self.parents,
+            self.authorizer,
+        )?;
+        if !space_root {
+            return Ok(self
+                .signer_account()?
+                .is_some_and(|signer| Some(signer) == owner));
+        }
+        let ns_gid = NamespaceRepository::new(self.store).resolve(self.group_id)?;
+        let workspace = PermissionChecker::new(self.store, ns_gid)
+            .with_apply_auth(self.parents, self.authorizer)
+            .with_principal(self.permissions.principal());
+        let Some(owner) = owner else {
+            return Ok(false);
+        };
+        Ok(
+            workspace.account_for_signer_at_cut(self.signer)? == Some(owner)
+                && workspace.effective_role_at_cut(&owner)?.is_some(),
+        )
+    }
+
     /// Whether the op's signer is acting on their own behalf — the shared
     /// self-check behind every "admin or self" gate. See
     /// [`signer_account`](Self::signer_account) for why `None` refuses.

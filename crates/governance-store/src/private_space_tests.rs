@@ -555,6 +555,46 @@ fn a_removed_owner_deletes_or_moves_nothing() {
     assert!(s.root_op(moves).is_err());
 }
 
+/// A space whose owner the workspace has since removed, and an admin to hand it to.
+fn space_of_a_removed_owner() -> (Space, [u8; 32], AccountId) {
+    let s = Space::new();
+    let space = s.private(NS);
+    let sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+    let accomplice = enrol_member(&s.store, &ContextGroupId::from(NS), &sk.public_key());
+    crate::MembershipRepository::new(&s.store)
+        .add_member(&NS.into(), &accomplice, GroupMemberRole::Admin)
+        .unwrap();
+    crate::MembershipRepository::new(&s.store)
+        .remove_member(&NS.into(), &s.admin)
+        .unwrap();
+    (s, space, accomplice)
+}
+
+fn guarded(s: &Space, space: [u8; 32], op: GroupOp) -> GroupOp {
+    crate::test_fixtures::guarded_group_op(&s.store, &space.into(), &s.sk.public_key(), op)
+}
+
+#[test]
+fn a_removed_owner_does_not_transfer_its_space_by_group_op() {
+    let (s, space, accomplice) = space_of_a_removed_owner();
+    let transfer = guarded(
+        &s,
+        space,
+        GroupOp::TransferOwnership {
+            new_owner: accomplice,
+        },
+    );
+    assert!(s.group_op(space, transfer).is_err());
+}
+
+#[test]
+fn a_removed_owner_does_not_delete_its_space_by_group_op() {
+    let (s, space, _) = space_of_a_removed_owner();
+    let delete = guarded(&s, space, GroupOp::GroupDelete);
+    assert!(s.group_op(space, delete).is_err());
+    assert!(s.exists(space));
+}
+
 /// Making a folder private founds a space with its signer as the first admin: another member
 /// can then be removed without tripping the last-admin guard.
 #[test]

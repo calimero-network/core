@@ -17,13 +17,20 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, new_owner: &AccountId) -> EyreR
         .load(group_id)?
         .ok_or_else(|| MembershipError::UnknownGroup(hex::encode(group_id.to_bytes())))?;
 
-    // Ownership names an account; the signer presents a key. Resolve, then
-    // compare — an unresolvable key owns nothing.
-    let owner = crate::group_owner::owner_at_cut(store, group_id, ctx.cut(), ctx.authorizer())?;
-    if ctx
-        .signer_account()?
-        .is_none_or(|signer| Some(signer) != owner)
-    {
+    let ns_gid = crate::NamespaceRepository::new(store).resolve(group_id)?;
+    let space_root = crate::private_space::Tree::at_cut(
+        store,
+        ctx.authorizer(),
+        group_id,
+        ctx.cut(),
+        crate::TreeReads {
+            chains: &[*group_id],
+            subtrees: &[],
+        },
+    )?
+    .space_of(group_id)?
+        == Some(*group_id);
+    if !ctx.signer_owns(space_root)? {
         bail!(MembershipError::OnlyOwnerCanTransfer(hex::encode(
             group_id.to_bytes()
         )));
@@ -42,19 +49,6 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, new_owner: &AccountId) -> EyreR
     //     promote then transfer if needed.
     // A space root's ownership is a board fact, decided where the space's rows cannot be read:
     // its heir need only stand in the workspace, and becomes the space's admin by the transfer.
-    let ns_gid = crate::NamespaceRepository::new(store).resolve(group_id)?;
-    let space_root = crate::private_space::Tree::at_cut(
-        store,
-        ctx.authorizer(),
-        group_id,
-        ctx.cut(),
-        crate::TreeReads {
-            chains: &[*group_id],
-            subtrees: &[],
-        },
-    )?
-    .space_of(group_id)?
-        == Some(*group_id);
     if space_root {
         if crate::PermissionChecker::new(store, ns_gid)
             .with_apply_auth(ctx.cut(), ctx.authorizer())
