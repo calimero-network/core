@@ -7,14 +7,17 @@
 //!   exists and nothing reaches the node's file system.
 //! - this module: `clocks/wall-clock` and `clocks/monotonic-clock` (fixed per invocation;
 //!   a sleep is ready at once and never blocks a node thread), `random/random` (the host
-//!   core's RNG) and `http/outgoing-handler` (always refused in this milestone).
-//! - wasmtime-wasi-http: only `http/types`; nothing in it can send a request without the
-//!   outgoing handler.
+//!   core's RNG).
+//! - `http/types` and `http/outgoing-handler`: every function a component imports from
+//!   them is linked per component as a stub that traps `HostDenied`, and every resource
+//!   as an opaque host type nobody can construct (Ruling 20). Actions are off in this
+//!   milestone, so no store gets real HTTP; wasmtime-wasi-http's implementation is not
+//!   linked at all, because its body streams can block a node thread past the epoch
+//!   deadline. Real `http/types` will be linked only into action stores.
 //!
 //! `wasi:sockets` and `wasi:random/insecure*` are never linked, and `prepare` refuses any
 //! component importing them.
 
-use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -26,11 +29,15 @@ use std::task::Poll;
 use bytes::Bytes;
 use calimero_app_host::{HostDenied, InvocationKind, MAX_LOG_BYTES};
 use tokio::io::AsyncWrite;
+use wasmtime::component::types::ComponentItem;
+use wasmtime::component::Component;
 use wasmtime::component::HasData;
 use wasmtime::component::HasSelf;
 use wasmtime::component::Linker;
 use wasmtime::component::Resource;
 use wasmtime::component::ResourceTable;
+use wasmtime::component::ResourceType;
+use wasmtime::Engine;
 use wasmtime::Result;
 use wasmtime_wasi::cli::IsTerminal;
 use wasmtime_wasi::cli::StdoutStream;
@@ -47,8 +54,6 @@ use wasmtime_wasi::p2::DynPollable;
 use wasmtime_wasi::p2::OutputStream;
 use wasmtime_wasi::p2::Pollable;
 use wasmtime_wasi::p2::StreamResult;
-use wasmtime_wasi_http::p2::bindings::LinkOptions as HttpLinkOptions;
-use wasmtime_wasi_http::{WasiBody, WasiHttp, WasiHttpHooks, WasiHttpView};
 
 use crate::errors::denied;
 use crate::StoreData;
@@ -61,8 +66,8 @@ const CLOCK_RESOLUTION_NS: u64 = 1_000_000;
 /// the run's log is full, never refused (a full log must not fail the app).
 const LOG_WRITE_PERMIT: usize = 64 * 1024;
 
-/// The interface the world imports; the linker serves older 0.2 patches through it.
-const OUTGOING_HANDLER: &str = "wasi:http/outgoing-handler@0.2.12";
+/// Imports under this prefix are stubbed per component (Ruling 20).
+const HTTP_PREFIX: &str = "wasi:http/";
 const HTTP_OUTSIDE_ACTION: &str = "outgoing http is only allowed in actions";
 const HTTP_DISABLED: &str = "outgoing http is not enabled";
 
@@ -93,18 +98,6 @@ pub(crate) fn add_to_linker(linker: &mut Linker<StoreData>) -> Result<()> {
     )?;
     filesystem::preopens::add_to_linker::<StoreData, WasiFilesystem>(l, StoreData::filesystem)?;
 
-    let options = HttpLinkOptions::default();
-    wasmtime_wasi_http::p2::bindings::sync::http::types::add_to_linker::<StoreData, WasiHttp>(
-        l,
-        &(&options).into(),
-        StoreData::http,
-    )?;
-    // Defined dynamically: the generated `outgoing-handler` trait requires all of
-    // `http/types` on the same type, and this function never reads its arguments.
-    l.instance(OUTGOING_HANDLER)?
-        .func_new("handle", |store, _ty, _params, _results| {
-            Err(denied(HostDenied(outgoing_refusal(store.data()).into())))
-        })?;
     Ok(())
 }
 
@@ -201,24 +194,57 @@ fn outgoing_refusal(data: &StoreData) -> &'static str {
     }
 }
 
-/// `http/types` hooks. `send_request` is reached only through the outgoing handler, which
-/// never calls it; it refuses anyway so no code path in this engine opens a connection.
-pub(crate) struct DenyHooks;
+/// The opaque host type behind every stubbed `wasi:http` resource; never constructed.
+struct HttpStub;
 
-type SendResult = wasmtime_wasi_http::Result<(
-    http::Response<WasiBody>,
-    Box<dyn Future<Output = wasmtime_wasi_http::Result<()>> + Send>,
-)>;
-
-impl WasiHttpHooks for DenyHooks {
-    fn send_request(
-        &mut self,
-        _request: http::Request<WasiBody>,
-        _options: Option<wasmtime_wasi_http::RequestOptions>,
-        _fut: Box<dyn Future<Output = wasmtime_wasi_http::Result<()>> + Send>,
-    ) -> Box<dyn Future<Output = SendResult> + Send> {
-        Box::new(async { Err(wasmtime_wasi_http::Error::HttpRequestDenied) })
+/// Defines every function and resource `component` imports from `wasi:http/*` on
+/// `linker`: functions trap `HostDenied`, resources are `HttpStub`, which no function
+/// ever creates. Done per component so any 0.2 patch it imports is covered.
+pub(crate) fn stub_http(
+    linker: &mut Linker<StoreData>,
+    engine: &Engine,
+    component: &Component,
+) -> Result<()> {
+    let component_type = component.component_type();
+    let imports: Vec<_> = component_type.imports(engine).collect();
+    // Resources `http/types` re-exports from `wasi:io` (streams, pollable) are io's own,
+    // already linked; only resources the http interfaces define get the stub type.
+    let foreign: Vec<_> = imports
+        .iter()
+        .filter(|(name, _)| !name.starts_with(HTTP_PREFIX))
+        .filter_map(|(_, item)| match &item.ty {
+            ComponentItem::ComponentInstance(instance) => Some(instance.exports(engine)),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|(_, item)| match item.ty {
+            ComponentItem::Resource(resource) => Some(resource),
+            _ => None,
+        })
+        .collect();
+    for (name, item) in &imports {
+        if !name.starts_with(HTTP_PREFIX) {
+            continue;
+        }
+        let ComponentItem::ComponentInstance(instance) = &item.ty else {
+            continue;
+        };
+        let mut defined = linker.instance(name)?;
+        for (export, item) in instance.exports(engine) {
+            match item.ty {
+                ComponentItem::ComponentFunc(_) => {
+                    defined.func_new(export, |store, _ty, _params, _results| {
+                        Err(denied(HostDenied(outgoing_refusal(store.data()).into())))
+                    })?;
+                }
+                ComponentItem::Resource(resource) if !foreign.contains(&resource) => {
+                    defined.resource(export, ResourceType::host::<HttpStub>(), |_, _| Ok(()))?;
+                }
+                _ => {}
+            }
+        }
     }
+    Ok(())
 }
 
 // --- stdout and stderr into the owner-only app log -------------------------------------

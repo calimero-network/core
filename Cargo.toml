@@ -391,9 +391,8 @@ velcro = "0.5.4"
 wasmer = "6.1.0"
 wasmer-types = "6.1.0"
 wasmer-middlewares = "6.1.0"
-wasmtime = "50.0.0"
+wasmtime = { version = "50.0.0", default-features = false }
 wasmtime-wasi = { version = "50.0.0", default-features = false }
-wasmtime-wasi-http = { version = "50.0.0", default-features = false }
 wasm-opt = "0.116"
 wasmparser = "0.262"
 wat = "1.243.0"

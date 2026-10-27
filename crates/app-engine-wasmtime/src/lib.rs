@@ -22,6 +22,8 @@ use calimero_app_host::{
 };
 use calimero_app_wit::{allowed_imports, stubbed_imports};
 use eyre::Result as EyreResult;
+use wasmparser::Parser;
+use wasmparser::Payload;
 use wasmtime::component::Component;
 use wasmtime::component::Linker;
 use wasmtime::component::ResourceTable;
@@ -32,13 +34,11 @@ use wasmtime::ResourceLimiter;
 use wasmtime::Store;
 use wasmtime::StoreLimits;
 use wasmtime::StoreLimitsBuilder;
+use wasmtime::WasmFeatures;
 use wasmtime_wasi::WasiCtx;
 use wasmtime_wasi::WasiCtxBuilder;
 use wasmtime_wasi::WasiCtxView;
 use wasmtime_wasi::WasiView;
-use wasmtime_wasi_http::WasiHttpCtx;
-use wasmtime_wasi_http::WasiHttpCtxView;
-use wasmtime_wasi_http::WasiHttpView;
 
 mod bindings;
 mod cache;
@@ -47,8 +47,8 @@ mod wasi;
 
 use bindings::AppPre;
 use cache::Cache;
-use errors::{classify, GrowRefused, HostPanic};
-use wasi::{DenyHooks, LogPipe, SharedLog};
+use errors::{classify, GrowRefused, HostPanic, Phase};
+use wasi::{LogPipe, SharedLog};
 
 /// Wasm stack per call, as in the v1 runtime (spec section 5).
 pub const MAX_WASM_STACK: usize = 200 * 1024;
@@ -57,6 +57,15 @@ pub const MAX_TABLE_ELEMENTS: usize = 100_000;
 /// Core instances per store: a `wasm32-wasip2` component instantiates several core
 /// modules (Ruling 18); memory stays bounded by the page limit.
 pub const MAX_INSTANCES: usize = 20;
+/// Linear memories per store, measured (Ruling 21): a Rust `wasm32-wasip2` guest and a
+/// componentize-js 0.23 guest each define exactly one. Checked statically at `prepare`
+/// and again by the store's limiter.
+pub const MAX_MEMORIES: usize = 1;
+/// Tables per store, measured the same way: both toolchains define two (the module's
+/// indirect-call table and the component shim's).
+pub const MAX_TABLES: usize = 2;
+/// Host resources (streams, pollables, cursors' backing entries) one store may hold.
+pub const MAX_RESOURCES: usize = 4_096;
 /// How often the ticker thread advances the engine's epoch.
 pub const EPOCH_TICK: Duration = Duration::from_millis(10);
 
@@ -66,9 +75,31 @@ const MAX_MEMORY_BYTES: usize = DEFAULT_MEMORY_PAGES as usize * WASM_PAGE_BYTES;
 /// Component instances alive at once across the node, and the core instances, memories
 /// and tables the pool reserves for them.
 const POOL_COMPONENT_INSTANCES: u32 = 256;
-const POOL_CORE_INSTANCES: u32 = POOL_COMPONENT_INSTANCES * MAX_INSTANCES as u32;
-const POOL_MEMORIES: u32 = POOL_COMPONENT_INSTANCES * 2;
-const POOL_TABLES: u32 = POOL_CORE_INSTANCES;
+const POOL_CORE_INSTANCES_PER_INSTANCE: u32 = MAX_INSTANCES as u32;
+const POOL_MEMORIES_PER_INSTANCE: u32 = MAX_MEMORIES as u32;
+const POOL_TABLES_PER_INSTANCE: u32 = MAX_TABLES as u32;
+
+/// Proposals refused at compile time (Ruling 21). Several are compiled out with the crate
+/// features anyway; naming them keeps the set explicit if a feature is turned back on.
+const DISABLED_FEATURES: WasmFeatures = WasmFeatures::THREADS
+    .union(WasmFeatures::SHARED_EVERYTHING_THREADS)
+    .union(WasmFeatures::MULTI_MEMORY)
+    .union(WasmFeatures::MEMORY64)
+    .union(WasmFeatures::GC)
+    .union(WasmFeatures::FUNCTION_REFERENCES)
+    .union(WasmFeatures::EXCEPTIONS)
+    .union(WasmFeatures::LEGACY_EXCEPTIONS)
+    .union(WasmFeatures::STACK_SWITCHING)
+    .union(WasmFeatures::TAIL_CALL)
+    .union(WasmFeatures::WIDE_ARITHMETIC)
+    .union(WasmFeatures::CUSTOM_PAGE_SIZES)
+    .union(WasmFeatures::RELAXED_SIMD)
+    .union(WasmFeatures::CM_ASYNC)
+    .union(WasmFeatures::CM_MORE_ASYNC_BUILTINS)
+    .union(WasmFeatures::CM_ASYNC_STACKFUL)
+    .union(WasmFeatures::CM_THREADING)
+    .union(WasmFeatures::CM_ERROR_CONTEXT)
+    .union(WasmFeatures::CM_GC);
 
 /// WASI interfaces are pinned to 0.2.12 (D43); an import of an older 0.2 patch links
 /// through semver matching (Ruling 15).
@@ -87,12 +118,23 @@ impl WasmtimeEngine {
     /// One engine for every app, caching compiled components under `cache_dir`, with a
     /// ticker thread advancing the epoch every `EPOCH_TICK`.
     pub fn new(cache_dir: PathBuf) -> EyreResult<Self> {
+        Self::build(cache_dir, POOL_COMPONENT_INSTANCES)
+    }
+
+    /// An engine whose pool holds only `instances` component instances, so tests can
+    /// exhaust it.
+    #[cfg(feature = "testing")]
+    pub fn with_pool_size(cache_dir: PathBuf, instances: u32) -> EyreResult<Self> {
+        Self::build(cache_dir, instances)
+    }
+
+    fn build(cache_dir: PathBuf, instances: u32) -> EyreResult<Self> {
         let mut pool = PoolingAllocationConfig::default();
         let _ = pool
-            .total_component_instances(POOL_COMPONENT_INSTANCES)
-            .total_core_instances(POOL_CORE_INSTANCES)
-            .total_memories(POOL_MEMORIES)
-            .total_tables(POOL_TABLES)
+            .total_component_instances(instances)
+            .total_core_instances(instances.saturating_mul(POOL_CORE_INSTANCES_PER_INSTANCE))
+            .total_memories(instances.saturating_mul(POOL_MEMORIES_PER_INSTANCE))
+            .total_tables(instances.saturating_mul(POOL_TABLES_PER_INSTANCE))
             .max_memory_size(MAX_MEMORY_BYTES)
             .table_elements(MAX_TABLE_ELEMENTS);
         let mut config = Config::new();
@@ -100,7 +142,10 @@ impl WasmtimeEngine {
             .consume_fuel(true)
             .epoch_interruption(true)
             .max_wasm_stack(MAX_WASM_STACK)
-            .wasm_threads(false)
+            // The feature set is pinned (Ruling 21): what Rust wasip2 and componentize-js
+            // output needs (MVP, bulk memory, reference types, multi-value, SIMD, sign
+            // extension, saturating conversions, the component model), nothing else.
+            .wasm_features(DISABLED_FEATURES, false)
             .wasm_component_model(true)
             .memory_reservation(MAX_MEMORY_BYTES as u64)
             .allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
@@ -148,11 +193,17 @@ impl Engine for WasmtimeEngine {
             .map_err(|e| PrepareError::BadAbi(e.to_string()))?
             .ok_or(PrepareError::NoAbi)?;
         let abi = Abi::from_json(&abi)?;
+        let memories = defined_memories(component)?;
+        if memories > MAX_MEMORIES {
+            return Err(PrepareError::Compile(format!(
+                "component defines {memories} memories; at most {MAX_MEMORIES}"
+            )));
+        }
 
         let compiled: Component = self.cache.load_or_compile(&self.engine, component)?;
-        let pre = self
-            .linker
-            .instantiate_pre(&compiled)
+        let mut linker = self.linker.clone();
+        let pre = wasi::stub_http(&mut linker, &self.engine, &compiled)
+            .and_then(|()| linker.instantiate_pre(&compiled))
             .and_then(AppPre::new)
             .map_err(|e| PrepareError::Compile(e.to_string()))?;
         Ok(Prepared {
@@ -180,10 +231,16 @@ impl Engine for WasmtimeEngine {
             .max(1);
         store.set_epoch_deadline(u64::try_from(ticks).unwrap_or(u64::MAX));
         let started = Instant::now();
+        let mut phase = Phase::Instantiate;
         let ran = store.set_fuel(budget.fuel).and_then(|()| {
-            // A host panic unwinds out of the wasm frames to here (S6).
+            // A host panic unwinds out of the wasm frames to here (S6). Asserting unwind
+            // safety is sound because a panic always ends the run as `Trap(Fault)`, and
+            // `HostCore::finish` drops the diff and the events of any status but `Ok`, so
+            // state a panic left half-updated never reaches the log; only the app log,
+            // which is kept, is read afterwards.
             catch_unwind(AssertUnwindSafe(|| {
                 let instance = pre.instantiate(&mut store)?;
+                phase = Phase::Call;
                 instance.call_handle(&mut store, kind, &method, &args)
             }))
             .unwrap_or_else(|_| Err(wasmtime::Error::new(HostPanic)))
@@ -209,7 +266,7 @@ impl Engine for WasmtimeEngine {
                 Vec::new(),
             ),
             Err(error) => {
-                let (kind, detail) = classify(&error);
+                let (kind, detail) = classify(&error, phase);
                 (Status::Trap { kind, detail }, Vec::new())
             }
         };
@@ -249,6 +306,18 @@ fn import_allowed(import: &str) -> bool {
     })
 }
 
+/// Linear memories the component's core modules define, counted before compiling.
+fn defined_memories(component: &[u8]) -> Result<usize, PrepareError> {
+    let mut count = 0usize;
+    for payload in Parser::new(0).parse_all(component) {
+        let payload = payload.map_err(|e| PrepareError::Compile(e.to_string()))?;
+        if let Payload::MemorySection(section) = payload {
+            count = count.saturating_add(section.count() as usize);
+        }
+    }
+    Ok(count)
+}
+
 /// The patch number of a `wasi:*@0.2.<patch>` version.
 fn wasi_patch(interface: &str, version: &str) -> Option<u32> {
     if !interface.starts_with(WASI_PREFIX) {
@@ -262,8 +331,6 @@ pub(crate) struct StoreData {
     pub(crate) host: HostCore,
     table: ResourceTable,
     wasi: WasiCtx,
-    http: WasiHttpCtx,
-    hooks: DenyHooks,
     limits: Limits,
     max_random_bytes: usize,
 }
@@ -277,17 +344,19 @@ impl StoreData {
             .stdout(LogPipe::stdout(log))
             .stderr(LogPipe::stderr(log))
             .build();
+        let mut table = ResourceTable::new();
+        table.set_max_capacity(MAX_RESOURCES);
         Self {
             host,
-            table: ResourceTable::new(),
+            table,
             wasi,
-            http: WasiHttpCtx::new(),
-            hooks: DenyHooks,
             limits: Limits(
                 StoreLimitsBuilder::new()
                     .memory_size(memory_bytes)
                     .table_elements(MAX_TABLE_ELEMENTS)
                     .instances(MAX_INSTANCES)
+                    .memories(MAX_MEMORIES)
+                    .tables(MAX_TABLES)
                     .build(),
             ),
             max_random_bytes: memory_bytes,
@@ -300,16 +369,6 @@ impl WasiView for StoreData {
         WasiCtxView {
             ctx: &mut self.wasi,
             table: &mut self.table,
-        }
-    }
-}
-
-impl WasiHttpView for StoreData {
-    fn http(&mut self) -> WasiHttpCtxView<'_> {
-        WasiHttpCtxView {
-            hooks: &mut self.hooks,
-            table: &mut self.table,
-            ctx: &mut self.http,
         }
     }
 }

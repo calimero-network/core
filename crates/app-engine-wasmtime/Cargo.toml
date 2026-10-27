@@ -16,13 +16,27 @@ calimero-app-host.workspace = true
 calimero-app-wit.workspace = true
 eyre.workspace = true
 hex.workspace = true
-http.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-wasmtime.workspace = true
+# Only what the engine uses: no `cache`, `gc`, `wat`, `threads`, `component-model-async`,
+# profiling or debug support (Ruling 21).
+wasmtime = { workspace = true, features = [
+    "component-model",
+    "cranelift",
+    "parallel-compilation",
+    "pooling-allocator",
+    "runtime",
+    "std",
+] }
+wasmparser.workspace = true
 wasmtime-wasi = { workspace = true, features = ["p2"] }
-wasmtime-wasi-http = { workspace = true, features = ["p2"] }
+
+[features]
+# Exposes `WasmtimeEngine::with_pool_size` to integration tests.
+testing = []
 
 [dev-dependencies]
+calimero-app-engine-wasmtime = { path = ".", features = ["testing"] }
 tempfile.workspace = true
+wat.workspace = true

@@ -486,3 +486,135 @@ fn leb(bytes: &[u8]) -> (usize, usize) {
     }
     panic!("bad leb")
 }
+
+// --- fix round 1 regressions --------------------------------------------------------
+
+#[test]
+fn an_undrained_http_body_cannot_wedge_a_node_thread() {
+    let fx = fixture();
+    let app = prepare(&fx, "clock_reader");
+    for (kind, budget) in [
+        (InvocationKind::Call, Budget::call()),
+        (InvocationKind::View, Budget::view()),
+    ] {
+        let start = Instant::now();
+        let out = fx
+            .engine
+            .invoke(&app, host(kind, "body_write", b""), budget);
+        assert_eq!(
+            trap_kind(&out),
+            Some(TrapKind::HostDenied),
+            "{:?}",
+            out.status
+        );
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+}
+
+#[test]
+fn a_store_cannot_hold_unbounded_host_resources() {
+    let fx = fixture();
+    let app = prepare(&fx, "clock_reader");
+    let out = fx.engine.invoke(
+        &app,
+        host(InvocationKind::Call, "pollables", b""),
+        Budget::call(),
+    );
+    match &out.status {
+        Status::Trap {
+            kind: TrapKind::HostDenied,
+            detail,
+        } => assert!(detail.contains("resource table"), "{detail}"),
+        other => panic!("expected HostDenied, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_extra_memory_is_refused_at_prepare() {
+    let fx = fixture();
+    let one_module_two_memories =
+        "(component (core module $m (memory 1) (memory 1)) (core instance (instantiate $m)))";
+    let two_modules_one_memory_each = "(component
+        (core module $a (memory 1)) (core module $b (memory 1))
+        (core instance (instantiate $a)) (core instance (instantiate $b)))";
+    for text in [one_module_two_memories, two_modules_one_memory_each] {
+        let component = with_abi(wat::parse_str(text).expect("wat"));
+        match fx.engine.prepare("mm", &component) {
+            Err(PrepareError::Compile(reason)) => {
+                assert!(reason.contains("2 memories"), "{reason}");
+            }
+            Err(other) => panic!("expected a compile refusal, got {other}"),
+            Ok(_) => panic!("expected a compile refusal, got a prepared app"),
+        }
+    }
+}
+
+#[test]
+fn an_exhausted_instance_pool_is_a_retryable_timeout() {
+    let cache = tempfile::tempdir().expect("tempdir");
+    let engine = WasmtimeEngine::with_pool_size(cache.path().to_path_buf(), 1).expect("engine");
+    let spin = engine.prepare("spin", &guest("spin")).expect("spin");
+    let counter = engine
+        .prepare("gc", &guest("global_counter"))
+        .expect("counter");
+    let holding = Budget {
+        fuel: u64::MAX,
+        wall_clock: Duration::from_millis(1_500),
+        ..Budget::call()
+    };
+    std::thread::scope(|scope| {
+        let busy =
+            scope.spawn(|| engine.invoke(&spin, host(InvocationKind::Call, "spin", b""), holding));
+        std::thread::sleep(Duration::from_millis(300));
+        let out = engine.invoke(
+            &counter,
+            host(InvocationKind::Call, "bump", b""),
+            Budget::call(),
+        );
+        assert_eq!(
+            out.status,
+            Status::Trap {
+                kind: TrapKind::Timeout,
+                detail: "instance pool exhausted".to_owned(),
+            }
+        );
+        let busy = busy.join().expect("busy thread");
+        assert_eq!(trap_kind(&busy), Some(TrapKind::Timeout));
+    });
+    let out = engine.invoke(
+        &counter,
+        host(InvocationKind::Call, "bump", b""),
+        Budget::call(),
+    );
+    assert_eq!(out.status, Status::Ok, "the slot is free again");
+}
+
+/// Appends a top-level `calimero:abi` custom section with a minimal valid ABI.
+fn with_abi(mut component: Vec<u8>) -> Vec<u8> {
+    let name = calimero_app_build::ABI_SECTION.as_bytes();
+    let data = br#"{"abiVersion":1,"methods":{}}"#;
+    let mut content = leb_bytes(name.len());
+    content.extend_from_slice(name);
+    content.extend_from_slice(data);
+    component.push(0);
+    component.extend(leb_bytes(content.len()));
+    component.extend(content);
+    component
+}
+
+fn leb_bytes(mut value: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return out;
+        }
+        out.push(byte | 0x80);
+    }
+}

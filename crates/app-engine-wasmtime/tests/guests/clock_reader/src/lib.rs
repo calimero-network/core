@@ -13,7 +13,7 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.0","methods":{"wall":{"kind":"view"},"monotonic":{"kind":"view"},"random":{"kind":"call"},"org":{"kind":"view"},"print":{"kind":"call"},"fetch":{"kind":"call"}}}"#;
+const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.0","methods":{"wall":{"kind":"view"},"monotonic":{"kind":"view"},"random":{"kind":"call"},"org":{"kind":"view"},"print":{"kind":"call"},"fetch":{"kind":"call"},"body_write":{"kind":"call"},"pollables":{"kind":"call"}}}"#;
 
 #[link_section = "calimero:abi"]
 #[used]
@@ -63,8 +63,32 @@ impl Guest for App {
                     Err(_) => Err(AppError { code: "HttpError".into(), message: String::new() }),
                 }
             }
+            "body_write" => {
+                // An outgoing body whose stream nobody drains: with wasmtime-wasi-http's
+                // implementation the third flush would block the host thread.
+                let response = types::OutgoingResponse::new(types::Fields::new());
+                let body = response.body().map_err(|()| http_error())?;
+                let stream = body.write().map_err(|()| http_error())?;
+                for _ in 0..3 {
+                    let _ = stream.blocking_write_and_flush(b"x");
+                }
+                Ok(b"written".to_vec())
+            }
+            "pollables" => {
+                for _ in 0..10_000 {
+                    std::mem::forget(monotonic_clock::subscribe_duration(0));
+                }
+                Ok(b"leaked".to_vec())
+            }
             _ => Err(AppError { code: "NoMethod".into(), message: String::new() }),
         }
+    }
+}
+
+fn http_error() -> AppError {
+    AppError {
+        code: "HttpError".into(),
+        message: String::new(),
     }
 }
 
