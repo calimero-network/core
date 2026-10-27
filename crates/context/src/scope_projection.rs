@@ -3967,17 +3967,15 @@ fn loss_order(walked: &CutAncestry<'_>, root: ContextGroupId) -> Option<LossOrde
     Some(LossOrder { before, after })
 }
 
-/// Seats, as its first admin, whoever made a group private by a flip that was valid at its own cut:
-/// not void, the group open then, and its maker an admin or a holder of `CAN_MANAGE_VISIBILITY`.
-/// A row the maker already holds is kept.
-fn seat_space_makers(
-    walked: &CutAncestry<'_>,
-    live: &[&Op],
-    base: AuthorityBase,
-    view: &mut calimero_authz::AclView,
-) {
-    let flips: Vec<(&Op, ContextGroupId)> = live
+/// The admin rows that founding a space by a flip writes for its maker, as ops the fold reads
+/// beside the flip, so a later removal, leave or root loss ends them like any row. A flip seats
+/// its maker only if it was valid at its own cut by the same at-cut view as everywhere else:
+/// not void, the group open then, the maker an admin or a holder of `CAN_MANAGE_VISIBILITY`.
+fn space_maker_rows(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<Vec<Op>> {
+    let flips: Vec<(&Op, ContextGroupId)> = walked
+        .ops()
         .iter()
+        .filter(|op| !walked.is_void(op))
         .filter_map(|op| match folded_payload_of(op) {
             OpPayload::SubgroupVisibilitySet {
                 scope,
@@ -3989,14 +3987,16 @@ fn seat_space_makers(
         })
         .collect();
     if flips.is_empty() {
-        return;
+        return Some(Vec::new());
     }
     let log: Vec<Op> = walked.ops().iter().map(|op| (*op).clone()).collect();
+    let mut rows = Vec::new();
     for (flip, group) in flips {
         let maker = flip.authorship.account;
-        let Ok(at_flip) = ScopeState::acl_view_at_with_base(&log, &flip.parents, base) else {
-            continue;
-        };
+        let at_flip = at_cut_view(
+            &ScopeState::cut_ancestry_with_void(&log, &flip.parents, walked.void_ids()),
+            base,
+        )?;
         let valid = at_flip.private_space(group).is_none()
             && admin_or_capability_in_view(
                 &at_flip,
@@ -4006,12 +4006,28 @@ fn seat_space_makers(
                 base.root,
                 base.default_cap_base,
                 true,
-            );
+            )
+            && !at_flip
+                .groups
+                .get(&group)
+                .is_some_and(|members| members.contains_key(&maker));
         if valid {
-            let rows = view.groups.entry(group).or_default();
-            let _ = rows.entry(maker).or_insert(GroupMemberRole::Admin);
+            rows.push(Op::new(
+                flip.scope,
+                flip.parents.clone(),
+                flip.authorship.clone(),
+                flip.hlc,
+                OpPayload::MemberAdded {
+                    group,
+                    member: maker,
+                    role: GroupMemberRole::Admin,
+                },
+                [0u8; 32],
+                [0u8; 64],
+            ));
         }
     }
+    Some(rows)
 }
 
 /// Drops the admin seat of a creator who left or was removed from the group after it was
@@ -4086,6 +4102,14 @@ fn folded_payload_of(op: &Op) -> &OpPayload {
 /// rejoined, and all of them for an account with no root row, bar a TEE that never
 /// held one. The owner is exempt. `None` when the cut is too large to decide.
 fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero_authz::AclView> {
+    let makers = space_maker_rows(walked, base)?;
+    if makers.is_empty() {
+        return fold_view(walked, base);
+    }
+    fold_view(&walked.with_ops(&makers), base)
+}
+
+fn fold_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero_authz::AclView> {
     let view = ScopeState::acl_view_from_ancestry(walked);
     let Some((root, founder)) = base.root else {
         return Some(view);
@@ -4148,7 +4172,6 @@ fn at_cut_view(walked: &CutAncestry<'_>, base: AuthorityBase) -> Option<calimero
         }
     }
     end_seats_after_exits(walked, &live, root, &mut view)?;
-    seat_space_makers(walked, &live, base, &mut view);
     let in_root: BTreeSet<AccountId> = view
         .groups
         .get(&root)
@@ -5867,6 +5890,105 @@ mod tests {
             default_cap_base: 0,
         };
         at_cut_view(&ScopeState::cut_ancestry(&log, &head), base).expect("decided")
+    }
+
+    /// A log from `(author, parents, payload)` steps, `parents` naming earlier steps by index;
+    /// the view at the cut of `heads`.
+    fn dag_view(
+        root: ContextGroupId,
+        steps: Vec<(u8, Vec<usize>, OpPayload)>,
+        heads: &[usize],
+    ) -> calimero_authz::AclView {
+        let mut log: Vec<Op> = Vec::new();
+        for (who, parents, payload) in steps {
+            let parents = parents.iter().map(|i| log[*i].id()).collect();
+            log.push(Op::new(
+                ScopeId::from(root.to_bytes()),
+                parents,
+                calimero_op::Authorship {
+                    account: AccountId::from([who; 32]),
+                    device: calimero_account::DeviceId::from([who; 32]),
+                    device_key: PublicKey::from([who; 32]),
+                },
+                hlc(log.len() as u64),
+                payload,
+                [0u8; 32],
+                [0u8; 64],
+            ));
+        }
+        let heads: Vec<[u8; 32]> = heads.iter().map(|i| log[*i].id()).collect();
+        let base = AuthorityBase {
+            root: Some((root, AccountId::from([1u8; 32]))),
+            default_cap_base: 0,
+        };
+        at_cut_view(&ScopeState::cut_ancestry(&log, &heads), base).expect("decided")
+    }
+
+    fn make_private(space: ContextGroupId) -> OpPayload {
+        OpPayload::SubgroupVisibilitySet {
+            scope: ScopeId::from(space.to_bytes()),
+            restricted: true,
+        }
+    }
+
+    fn open_space(space: ContextGroupId, root: ContextGroupId) -> OpPayload {
+        OpPayload::SubgroupCreated {
+            child: ScopeId::from(space.to_bytes()),
+            parent: ScopeId::from(root.to_bytes()),
+            restricted: false,
+            admin: AccountId::from([1; 32]),
+        }
+    }
+
+    #[test]
+    fn a_maker_that_left_its_space_holds_no_seat_at_a_later_cut() {
+        let (root, space) = (ContextGroupId::from([3; 32]), ContextGroupId::from([4; 32]));
+        let view = dag_view(
+            root,
+            vec![
+                (1, vec![], open_space(space, root)),
+                (1, vec![0], make_private(space)),
+                (
+                    1,
+                    vec![1],
+                    OpPayload::MemberLeft {
+                        group: space,
+                        member: AccountId::from([1; 32]),
+                    },
+                ),
+            ],
+            &[2],
+        );
+
+        assert!(!holds_row(&view, space, 1));
+    }
+
+    #[test]
+    fn a_flip_whose_maker_lost_the_root_concurrently_seats_nobody() {
+        let (root, space) = (ContextGroupId::from([3; 32]), ContextGroupId::from([4; 32]));
+        let who = AccountId::from([7; 32]);
+        let view = dag_view(
+            root,
+            vec![
+                (1, vec![], open_space(space, root)),
+                (1, vec![0], member_op(root, 7, GroupMemberRole::Member)),
+                (
+                    1,
+                    vec![1],
+                    OpPayload::MemberCapabilitySet {
+                        group: root,
+                        member: who,
+                        capabilities:
+                            calimero_context_config::MemberCapabilities::CAN_MANAGE_VISIBILITY,
+                    },
+                ),
+                (7, vec![2], make_private(space)),
+                (1, vec![2], removed_op(root, 7)),
+            ],
+            &[3, 4],
+        );
+
+        assert!(!holds_row(&view, space, 7));
     }
 
     #[test]
