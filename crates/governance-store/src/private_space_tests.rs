@@ -554,3 +554,41 @@ fn a_removed_owner_deletes_or_moves_nothing() {
     assert!(s.root_op(delete).is_err());
     assert!(s.root_op(moves).is_err());
 }
+
+/// Making a folder private founds a space with its signer as the first admin: another member
+/// can then be removed without tripping the last-admin guard.
+#[test]
+fn making_a_folder_private_seats_its_signer_as_the_spaces_admin() {
+    let s = Space::new();
+    let folder = s.open(NS);
+    s.set_visibility(folder, VisibilityMode::Restricted)
+        .expect("make the folder private");
+    let members = crate::MembershipRepository::new(&s.store);
+    assert_eq!(
+        members.role_of(&folder.into(), &s.admin).unwrap(),
+        Some(GroupMemberRole::Admin),
+    );
+
+    let sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+    let other = enrol_member(&s.store, &ContextGroupId::from(NS), &sk.public_key());
+    members
+        .add_member(&NS.into(), &other, GroupMemberRole::Member)
+        .unwrap();
+    s.group_op(
+        folder,
+        GroupOp::MemberAdded {
+            member: other,
+            role: GroupMemberRole::Admin,
+        },
+    )
+    .expect("add a second admin");
+    s.group_op(
+        folder,
+        GroupOp::MemberRemoved {
+            member: other,
+            expected_group_state_hash: [0u8; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+    )
+    .expect("the signer stays, so the guard does not trip");
+}

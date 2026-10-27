@@ -5,6 +5,7 @@ use super::context::GroupApplyCtx;
 use crate::private_space::Tree;
 use crate::TreeReads;
 use calimero_context_config::VisibilityMode;
+use calimero_primitives::context::GroupMemberRole;
 use eyre::Result as EyreResult;
 
 pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, mode: &VisibilityMode) -> EyreResult<()> {
@@ -25,6 +26,16 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, mode: &VisibilityMode) -> EyreR
         VisibilityMode::Open => tree.require_may_reopen(group_id)?,
     }
     ctx.settings().set_subgroup_visibility(signer, *mode)?;
+    // A new space starts with its maker as its first admin, so a later removal never leaves it
+    // without one.
+    if matches!(mode, VisibilityMode::Restricted) {
+        if let Some(maker) = ctx.signer_account()? {
+            let members = crate::MembershipRepository::new(ctx.store());
+            if members.role_of(group_id, &maker)?.is_none() {
+                members.add_member(group_id, &maker, GroupMemberRole::Admin)?;
+            }
+        }
+    }
     // Re-trigger inherited auto-follow for this subgroup's contexts. A
     // root-admitted member (e.g. a TEE) inherits membership only into
     // `Open` subgroups; a flip that applies after the contexts were registered
