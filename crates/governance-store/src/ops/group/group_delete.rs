@@ -33,17 +33,25 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>) -> EyreResult<()> {
             group_id.to_bytes()
         )));
     }
-    Tree::at_cut(
+    let tree = Tree::at_cut(
         store,
         ctx.authorizer(),
         group_id,
         ctx.cut(),
         TreeReads {
-            chains: &[],
+            chains: &[*group_id],
             subtrees: &[*group_id],
         },
-    )?
-    .require_may_delete(group_id)?;
+    )?;
+    // Owning a folder is no standing without a seat in its space.
+    if let (Some(space), Some(signer)) = (tree.space_of(group_id)?, ctx.signer_account()?) {
+        if !crate::MembershipRepository::new(store).is_member(&space, &signer)? {
+            bail!(MembershipError::OnlyOwnerCanDelete(hex::encode(
+                group_id.to_bytes()
+            )));
+        }
+    }
+    tree.require_may_delete(group_id)?;
     // A context anywhere below would be left in a group nobody can reach, so the
     // whole subtree must be empty; its groups then go with it, children first.
     let subtree = NamespaceRepository::new(store).collect_subtree_for_cascade(group_id)?;

@@ -93,6 +93,13 @@ pub(crate) fn apply(
         } else if let Some(space) = space {
             // An inner folder: its owner or the space's admin. The namespace's reach stops at the
             // open space.
+            // Owning a folder is no standing without a seat in the space.
+            let owns = match signer_account {
+                Some(signer) if owns => {
+                    crate::MembershipRepository::new(store).is_member(&space, &signer)?
+                }
+                _ => false,
+            };
             if !owns && !ctx.permissions_for(space).is_admin(&op.signer)? {
                 bail!(crate::MembershipError::NotAdmin {
                     group_id: space.to_string(),
