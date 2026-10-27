@@ -42,6 +42,28 @@ architecture spec.
   `DELETE /packages/{p}[/{v}]` is refused while an app runs the release (a WASM
   another release ships stays). Raw `POST /bundles` is development only
   (`allow_unsigned_bundles`, on with `--dev`).
+- **Owner approvals** (`system::ReleaseScope`, `Org/Account::approved_releases`): the
+  mero-tee releases that may hold an org's (or an account's own) apps; the one it
+  began on is approved at creation, others by the owner with a passkey assertion
+  (`POST /orgs/{org}/releases`, `/auth/releases`, logged as consent). Enforced by the
+  replicas that hold the data: `Node::may_send` refuses Raft entries/snapshots to a
+  peer whose attested release (`HttpAttestor::seen_release`) is not approved,
+  `Node::place` skips such nodes, `/ops/apps/{app}/replicas` refuses them. Upgrades
+  are the app's owner's (or its org's owner's), with a passkey assertion over the
+  exact upgrade (`consent` on `UpgradeApp`).
+- **Receipts**: every `/intents` and `/views` answer carries a `Receipt` signed by the
+  answering node's receipt key (Ed25519, in memory, made at start), over
+  `(app, index, SHA-256(JCS(result)), node)`. The key is attested on its own
+  (`GET /attestation?purpose=receipts`, report data `nonce || receipt_key_binding`),
+  and `GET /apps/{app}/attestation` gathers every replica's
+  (`Client::verify_app_cluster`).
+- **The host's key space** (`app::RESERVED`, `\0calimero.*`): private spaces, writer
+  sets, blob marks. App code's overlay answers nothing there and a run that tries is
+  refused; the host writes with `Overlay::set_host` and reads with
+  `Storage::host_get`. Rotations follow v1's host rules (`rotation_refusal`).
+- **Access is judged fresh**: every gated request and every client call's leader
+  read the system state through `sys_fresh` (a read index), so a removal committed
+  elsewhere holds before the next request.
 - **Ops replica moves** run on the app group's leader; any other replica answers
   `421 NOT_LEADER` with `details.leaderUrl` before writing anything.
 - **Forwards are bounded**: a call or read forwarded to an app's leader waits at most
@@ -136,7 +158,8 @@ architecture spec.
 - **Declared views**: a call (`/intents`) of a method the ABI declares `#[app::view]`
   runs as a strong view: it writes nothing and may search (v1's rule).
 - **Browsers**: `config.origins` are the CORS origins too (`lib.rs`, outermost layer).
-- **Storage key** (`kms.rs`): K_r = HKDF(KMS key, cluster). The KMS key comes from
+- **Storage key** (`kms.rs`): K_r = HKDF(KMS key, cluster). A TDX node takes it from
+  mero-kms only (`kms::key_source`: `--storage-key`/`--storage-key-file` need `--dev`). The KMS key comes from
   merod's own client (`merod kms disk-key`: release-policy-verified KMS, key sealed
   to the TD), run by merod-v2 (`--kms-url --kms-identity`) or by the boot script
   (`--storage-key-file`). The cluster's nodes share the disk identity, so they share K_r.
@@ -152,7 +175,8 @@ architecture spec.
 
 ## Not done yet (prototype)
 
-rollback counter, placement across zones, snapshot restore into a
+rollback counter (proposed: a mero-kms epoch, restored nodes rejoin as learners),
+per-app keys from mero-kms, placement across zones, snapshot restore into a
 running cluster, event audiences, pruning of revoked session ids, blob
 deletion, search indexes that survive a restart (rebuilt from state now).
 

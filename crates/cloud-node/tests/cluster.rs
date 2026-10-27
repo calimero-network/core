@@ -2118,3 +2118,31 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
         .unwrap();
     assert_eq!(v.result, json!("v1"), "the new write never reached node 3");
 }
+
+/// A user can check that an answer came from a genuine TEE cluster: every
+/// replica of the app attests its receipt key, and each answer carries a
+/// receipt signed by one of those keys over that exact result.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn answers_carry_receipts_from_attested_replicas() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _ctx) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let keys = alice.verify_app_cluster(&app).await.unwrap();
+    assert_eq!(keys.len(), 3, "every replica attests");
+
+    let call = alice
+        .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap();
+    let receipt = call.receipt.clone().unwrap();
+    assert!(receipt.verify(&keys[&receipt.node], &call.result));
+
+    let view = alice
+        .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+        .await
+        .unwrap();
+    let receipt = view.receipt.clone().unwrap();
+    assert_eq!(receipt.index, view.index);
+    assert!(receipt.verify(&keys[&receipt.node], &view.result));
+    assert!(!receipt.verify(&keys[&receipt.node], &json!("forged")));
+}

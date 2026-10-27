@@ -37,6 +37,86 @@ pub struct AttestationDoc {
     pub cluster: String,
     pub node: u64,
     pub mock: bool,
+    /// The node's receipt-signing key (Ed25519, hex), when the attestation was
+    /// asked for it (`purpose=receipts`): then the quote binds this key, not
+    /// the transport key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt_key: Option<String>,
+}
+
+/// What a receipt-key attestation's report data binds after the nonce.
+#[must_use]
+pub fn receipt_key_binding(receipt_key: &[u8; 32]) -> [u8; 32] {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(b"calimero.tee-attest.receipt-key.v1");
+    h.update(receipt_key);
+    h.finalize().into()
+}
+
+/// A node's signed statement that `app`'s entry `index` produced the result
+/// whose canonical JSON (RFC 8785) hashes to `result_hash`. The signing key is
+/// the node's attested receipt key, so anyone holding the node's attestation
+/// can check a receipt later, offline.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Receipt {
+    pub app: String,
+    pub index: u64,
+    /// `hex(SHA-256(JCS(result)))`.
+    pub result_hash: String,
+    pub node: u64,
+    /// The receipt key, hex.
+    pub key: String,
+    /// Ed25519 over [`Receipt::message`], hex.
+    pub signature: String,
+}
+
+impl Receipt {
+    /// The bytes signed.
+    #[must_use]
+    pub fn message(app: &str, index: u64, result_hash: &str, node: u64) -> Vec<u8> {
+        let mut m = b"calimero.receipt.v1\0".to_vec();
+        m.extend_from_slice(app.as_bytes());
+        m.push(0);
+        m.extend_from_slice(&index.to_be_bytes());
+        m.extend_from_slice(result_hash.as_bytes());
+        m.push(0);
+        m.extend_from_slice(&node.to_be_bytes());
+        m
+    }
+
+    /// The hash a receipt names for `result`.
+    #[must_use]
+    pub fn hash_result(result: &serde_json::Value) -> String {
+        use sha2::Digest;
+        let canonical = serde_json_canonicalizer::to_vec(result).unwrap_or_default();
+        hex::encode(sha2::Sha256::digest(&canonical))
+    }
+
+    /// Whether this receipt is signed by `key` (an attested receipt key) and
+    /// names `result`.
+    #[must_use]
+    pub fn verify(&self, key: &[u8; 32], result: &serde_json::Value) -> bool {
+        use ed25519_dalek::Verifier;
+        let Ok(vk) = ed25519_dalek::VerifyingKey::from_bytes(key) else {
+            return false;
+        };
+        let Some(sig) = hex::decode(&self.signature)
+            .ok()
+            .and_then(|b| <[u8; 64]>::try_from(b).ok())
+        else {
+            return false;
+        };
+        hex::encode(key) == self.key
+            && Self::hash_result(result) == self.result_hash
+            && vk
+                .verify(
+                    &Self::message(&self.app, self.index, &self.result_hash, self.node),
+                    &ed25519_dalek::Signature::from_bytes(&sig),
+                )
+                .is_ok()
+    }
 }
 
 /// Build the 64 bytes of report data.
@@ -161,12 +241,43 @@ pub async fn verify(
     nonce: &[u8; 32],
     policy: &Policy,
 ) -> eyre::Result<[u8; 32]> {
-    let quote = STANDARD.decode(&doc.quote)?;
     let transport_key = hex32(&doc.transport_key)?;
     let app_hash = policy
         .app_hash
         .unwrap_or_else(|| hex32(&doc.app_hash).unwrap_or([0; 32]));
     let expected = report_data(nonce, &app_hash, &transport_key);
+    verify_report(doc, nonce, policy, &expected).await?;
+    Ok(transport_key)
+}
+
+/// Verify a receipt-key attestation (`purpose=receipts`): the same checks as
+/// [`verify`], over a quote that binds the node's receipt key. Answers the key.
+pub async fn verify_receipt_key(
+    doc: &AttestationDoc,
+    nonce: &[u8; 32],
+    policy: &Policy,
+) -> eyre::Result<[u8; 32]> {
+    let key = hex32(
+        doc.receipt_key
+            .as_deref()
+            .ok_or_else(|| eyre::eyre!("the attestation names no receipt key"))?,
+    )?;
+    let mut expected = [0; 64];
+    expected[..32].copy_from_slice(nonce);
+    expected[32..].copy_from_slice(&receipt_key_binding(&key));
+    verify_report(doc, nonce, policy, &expected).await?;
+    Ok(key)
+}
+
+/// The quote is genuine (or an allowed mock), from a trusted image, and its
+/// report data is `expected`.
+async fn verify_report(
+    doc: &AttestationDoc,
+    nonce: &[u8; 32],
+    policy: &Policy,
+    expected: &[u8; 64],
+) -> eyre::Result<()> {
+    let quote = STANDARD.decode(&doc.quote)?;
     if quote.starts_with(MOCK_QUOTE_HEADER) {
         if !policy.allow_mock {
             eyre::bail!("mock quote refused: this client only trusts real TEEs");
@@ -176,9 +287,9 @@ pub async fn verify(
             .get(start..start + 64)
             .ok_or_else(|| eyre::eyre!("short mock quote"))?;
         if report != expected {
-            eyre::bail!("the quote does not bind this transport key, app and nonce");
+            eyre::bail!("the quote does not bind this key, app and nonce");
         }
-        return Ok(transport_key);
+        return Ok(());
     }
     // Refuse what no policy could admit before reaching for the network.
     let release = match &policy.measurements {
@@ -244,7 +355,7 @@ pub async fn verify(
     result
         .policy_valid(&verifier_policy(&profile, &policy.allowed_tcb_statuses))
         .map_err(|r| eyre::eyre!("quote refused: {r:?}"))?;
-    Ok(transport_key)
+    Ok(())
 }
 
 /// Attests a node's transport key over HTTP, for the sealed client.
@@ -313,7 +424,33 @@ mod tests {
             cluster: "c".into(),
             node: 1,
             mock: false,
+            receipt_key: None,
         }
+    }
+
+    /// A receipt holds for its result and key only.
+    #[test]
+    fn receipts_bind_their_result_and_key() {
+        use ed25519_dalek::Signer;
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let key = sk.verifying_key().to_bytes();
+        let result = serde_json::json!({ "b": 1, "a": [1, 2] });
+        let hash = Receipt::hash_result(&result);
+        let r = Receipt {
+            app: "app".into(),
+            index: 7,
+            result_hash: hash.clone(),
+            node: 2,
+            key: hex::encode(key),
+            signature: hex::encode(sk.sign(&Receipt::message("app", 7, &hash, 2)).to_bytes()),
+        };
+        assert!(r.verify(&key, &result));
+        // Key order does not matter (canonical JSON), the values do.
+        assert!(r.verify(&key, &serde_json::json!({ "a": [1, 2], "b": 1 })));
+        assert!(!r.verify(&key, &serde_json::json!({ "a": [1, 2], "b": 2 })));
+        assert!(!r.verify(&[9; 32], &result));
+        let moved = Receipt { index: 8, ..r };
+        assert!(!moved.verify(&key, &result));
     }
 
     #[tokio::test]

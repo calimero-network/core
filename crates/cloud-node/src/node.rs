@@ -153,8 +153,11 @@ pub struct Node {
     apps: RwLock<HashMap<GroupId, Arc<Group<AppMachine>>>>,
     pub executor: Executor,
     pub transport: Arc<calimero_sealed::SealedTransport>,
+    /// Signs receipts for the results this node returns. Made in memory at
+    /// start, never stored; its public half is attested (`purpose=receipts`).
+    receipt_key: ed25519_dalek::SigningKey,
     peers: Mutex<HashMap<String, Arc<calimero_sealed::client::SealedTransport>>>,
-    http: reqwest::Client,
+    pub(crate) http: reqwest::Client,
     cluster_secret: String,
     pub challenges: Mutex<HashMap<String, crate::api::Pending>>,
     /// The release each peer's verified attestation named, by address.
@@ -262,6 +265,7 @@ impl Node {
             apps: RwLock::new(HashMap::new()),
             executor: Executor::default(),
             transport: sealed,
+            receipt_key: ed25519_dalek::SigningKey::from_bytes(&calimero_identity::random::<32>()),
             peers: Mutex::new(HashMap::new()),
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
@@ -513,6 +517,34 @@ impl Node {
         }
         let release = self.release_at(addr);
         self.sys(|s| s.release_may_hold(&app, release.as_deref()))
+    }
+
+    /// This node's receipt key (Ed25519 public).
+    #[must_use]
+    pub fn receipt_public(&self) -> [u8; 32] {
+        self.receipt_key.verifying_key().to_bytes()
+    }
+
+    /// A receipt for `result`, entry `index` of `app_id`, signed by this node.
+    #[must_use]
+    pub fn receipt(
+        &self,
+        app_id: &str,
+        index: u64,
+        result: &Value,
+    ) -> calimero_cloud_client::attest::Receipt {
+        use calimero_cloud_client::attest::Receipt;
+        use ed25519_dalek::Signer;
+        let result_hash = Receipt::hash_result(result);
+        let msg = Receipt::message(app_id, index, &result_hash, self.config.node_id);
+        Receipt {
+            app: app_id.to_owned(),
+            index,
+            result_hash,
+            node: self.config.node_id,
+            key: hex::encode(self.receipt_public()),
+            signature: hex::encode(self.receipt_key.sign(&msg).to_bytes()),
+        }
     }
 
     /// The mero-tee release this node runs, as its attestation names it.

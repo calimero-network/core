@@ -96,6 +96,10 @@ pub struct CallResult {
     pub result: Value,
     #[serde(default)]
     pub events: Vec<Value>,
+    /// The answering node's signed receipt for `result` ([`Client::verify_app_cluster`]
+    /// gives the keys to check it with).
+    #[serde(default)]
+    pub receipt: Option<attest::Receipt>,
 }
 
 /// A read.
@@ -103,6 +107,8 @@ pub struct CallResult {
 pub struct ViewResult {
     pub index: u64,
     pub result: Value,
+    #[serde(default)]
+    pub receipt: Option<attest::Receipt>,
 }
 
 /// How fresh a read must be.
@@ -119,6 +125,7 @@ pub enum Consistency {
 pub struct Client {
     base: Url,
     http: reqwest::Client,
+    policy: Policy,
     sealed: Arc<SealedTransport>,
     auth: RwLock<Option<String>>,
     session: RwLock<Option<Session>>,
@@ -139,17 +146,50 @@ impl Client {
             base.clone(),
             http.clone(),
             Arc::new(HttpAttestor {
-                policy,
+                policy: policy.clone(),
                 seen_release: Arc::default(),
             }),
         ));
         Ok(Self {
             base,
             http,
+            policy,
             sealed,
             auth: RwLock::new(None),
             session: RwLock::new(None),
         })
+    }
+
+    /// Verify every replica of `app`: each one's quote over a fresh nonce,
+    /// held to this client's policy, binding its receipt key. Answers the
+    /// attested receipt key per node; a receipt from any other key, or from a
+    /// node not in this map, is not one to trust.
+    pub async fn verify_app_cluster(
+        &self,
+        app: &str,
+    ) -> Result<std::collections::BTreeMap<u64, [u8; 32]>> {
+        let nonce: [u8; 32] = calimero_identity::random::<32>();
+        let v = self
+            .get(&format!(
+                "apps/{}/attestation?nonce={}",
+                path_segment(app),
+                hex::encode(nonce)
+            ))
+            .await?;
+        let mut keys = std::collections::BTreeMap::new();
+        for r in v["replicas"].as_array().cloned().unwrap_or_default() {
+            let node = r["node"].as_u64().unwrap_or_default();
+            let doc: attest::AttestationDoc = serde_json::from_value(r["attestation"].clone())
+                .map_err(|e| eyre::eyre!("replica {node} gave no attestation: {e}"))?;
+            if doc.node != node {
+                return Err(eyre::eyre!("replica {node} answered as node {}", doc.node).into());
+            }
+            let key = attest::verify_receipt_key(&doc, &nonce, &self.policy)
+                .await
+                .map_err(|e| eyre::eyre!("replica {node}: {e:#}"))?;
+            let _prev = keys.insert(node, key);
+        }
+        Ok(keys)
     }
 
     /// Use an API key for every request.

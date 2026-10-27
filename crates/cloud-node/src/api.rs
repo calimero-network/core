@@ -295,6 +295,9 @@ struct AttestQuery {
     app: Option<String>,
     #[serde(default)]
     app_hash: Option<String>,
+    /// `receipts`: attest this node's receipt key instead of its transport key.
+    #[serde(default)]
+    purpose: Option<String>,
 }
 
 async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>) -> ApiResult {
@@ -317,7 +320,17 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         (None, None) => [0; 32],
     };
     let transport_key = node.transport.public_key();
-    let report = report_data(&nonce, &app_hash, &transport_key);
+    let receipts = q.purpose.as_deref() == Some("receipts");
+    let report = if receipts {
+        let mut r = [0; 64];
+        r[..32].copy_from_slice(&nonce);
+        r[32..].copy_from_slice(&calimero_cloud_client::attest::receipt_key_binding(
+            &node.receipt_public(),
+        ));
+        r
+    } else {
+        report_data(&nonce, &app_hash, &transport_key)
+    };
     let q =
         quote(node.config.attestation, report).map_err(|e| ApiError::internal(&e.to_string()))?;
     let doc = AttestationDoc {
@@ -340,8 +353,52 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         cluster: node.config.cluster.clone(),
         node: node.config.node_id,
         mock: node.config.attestation == crate::attest::Mode::Mock,
+        receipt_key: receipts.then(|| hex::encode(node.receipt_public())),
     };
     Ok(Json(serde_json::to_value(doc).unwrap_or_default()))
+}
+
+/// Every replica of an app attests its receipt key over `nonce`: what a user
+/// checks to know the whole group holding the app is genuine, and which keys
+/// sign its receipts.
+async fn app_attestation(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+    Query(q): Query<AttestQuery>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let _p = gate(&node, &headers, &app, "*", false).await?;
+    let mut replicas = Vec::new();
+    for id in &app.replicas {
+        let Some(addr) = node.sys(|s| s.nodes.get(id).map(|n| n.addr.clone())) else {
+            continue;
+        };
+        let doc: Result<Value, String> = async {
+            let mut url: url::Url = addr.parse().map_err(|e| format!("{e}"))?;
+            url = url.join("attestation").map_err(|e| format!("{e}"))?;
+            let _q = url
+                .query_pairs_mut()
+                .append_pair("nonce", &q.nonce)
+                .append_pair("purpose", "receipts");
+            node.http
+                .get(url)
+                .send()
+                .await
+                .and_then(reqwest::Response::error_for_status)
+                .map_err(|e| e.to_string())?
+                .json::<Value>()
+                .await
+                .map_err(|e| e.to_string())
+        }
+        .await;
+        replicas.push(match doc {
+            Ok(d) => json!({ "node": id, "attestation": d }),
+            Err(e) => json!({ "node": id, "error": e }),
+        });
+    }
+    Ok(Json(json!({ "appId": app_id, "replicas": replicas })))
 }
 
 // ---------------------------------------------------------------- auth
@@ -1393,7 +1450,7 @@ async fn consent(
     Ok(serde_json::to_value(&confirm.assertion).unwrap_or_default())
 }
 
-fn answer(a: Applied) -> Response {
+fn answer(node: &Node, app_id: &str, a: Applied) -> Response {
     if a.conflict {
         return ApiError::unavailable(
             "the call raced a leader change; retry with the same idempotency key",
@@ -1404,7 +1461,18 @@ fn answer(a: Applied) -> Response {
         return ApiError::forbidden(crate::node::READ_ONLY).into_response();
     }
     match a.status {
-        Status::Ok => Json(json!({ "index": a.index, "result": a.result, "events": a.events.iter().map(|(k, d)| json!({ "kind": k, "data": d })).collect::<Vec<_>>() })).into_response(),
+        Status::Ok => {
+            let receipt = node.receipt(app_id, a.index, &a.result);
+            Json(json!({
+                "index": a.index,
+                "result": a.result,
+                "events": a.events.iter().map(|(k, d)| json!({ "kind": k, "data": d })).collect::<Vec<_>>(),
+                // Signed by this node's attested receipt key (requirement: show
+                // the end user the answer came from a genuine TEE cluster).
+                "receipt": receipt,
+            }))
+            .into_response()
+        }
         Status::AppError => ApiError::new(422, "APP_ERROR", "the app refused the call")
             .with_details(json!({ "index": a.index, "error": a.error }))
             .into_response(),
@@ -1428,7 +1496,7 @@ async fn intents(
     if node.facts(&app.bundle).await.views.contains(&body.method) {
         let a = node
             .view(&ViewRequest {
-                app_id,
+                app_id: app_id.clone(),
                 method: body.method,
                 args: body.args,
                 caller: p.caller,
@@ -1436,14 +1504,18 @@ async fn intents(
                 min_index: 0,
             })
             .await?;
-        return Ok(answer(Applied {
-            index: a.index,
-            status: a.status,
-            result: a.result,
-            error: a.error,
-            events: Vec::new(),
-            conflict: false,
-        }));
+        return Ok(answer(
+            &node,
+            &app_id,
+            Applied {
+                index: a.index,
+                status: a.status,
+                result: a.result,
+                error: a.error,
+                events: Vec::new(),
+                conflict: false,
+            },
+        ));
     }
     let consent_value = if app.confirm_methods.iter().any(|m| m == &body.method) {
         Some(consent(&node, &p, &app_id, &body.method, &body.args, body.confirm).await?)
@@ -1454,10 +1526,10 @@ async fn intents(
         .call(&CallRequest {
             idempotency_key: body.idempotency_key,
             consent: consent_value,
-            ..CallRequest::new(app_id, body.method, body.args, p.caller)
+            ..CallRequest::new(app_id.clone(), body.method, body.args, p.caller)
         })
         .await?;
-    Ok(answer(applied))
+    Ok(answer(&node, &app_id, applied))
 }
 
 #[derive(Deserialize)]
@@ -1492,7 +1564,7 @@ async fn views(
     }
     let a = node
         .view(&ViewRequest {
-            app_id,
+            app_id: app_id.clone(),
             method: body.method,
             args: body.args,
             caller: p.caller,
@@ -1501,7 +1573,11 @@ async fn views(
         })
         .await?;
     Ok(match a.status {
-        Status::Ok => Json(json!({ "index": a.index, "result": a.result })).into_response(),
+        Status::Ok => {
+            let receipt = node.receipt(&app_id, a.index, &a.result);
+            Json(json!({ "index": a.index, "result": a.result, "receipt": receipt }))
+                .into_response()
+        }
         Status::AppError => ApiError::new(422, "APP_ERROR", "the app refused the read")
             .with_details(json!({ "index": a.index, "error": a.error }))
             .into_response(),
@@ -2608,6 +2684,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps", post(app_create).get(app_list))
         .route("/apps/{app}", get(app_get).delete(app_delete))
         .route("/apps/{app}/intents", post(intents))
+        .route("/apps/{app}/attestation", get(app_attestation))
         .route("/apps/{app}/views", post(views))
         .route("/apps/{app}/events", get(events))
         .route("/apps/{app}/upgrade", post(app_upgrade))
