@@ -6,6 +6,10 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
 - `Engine` hosts every group of one node; `Group<M>` is one group with state machine `M: Machine`.
 - `Group::propose` serializes proposals per group and confirms leadership, so a
   command built from the applied state applies to exactly that state.
+  `Group::propose_led` also hands the builder the `Leadership` (the term, read from
+  the Raft core after the check, not the metrics watch) and first waits, up to
+  `CATCH_UP`, until this node applied its whole log, so a node restored as leader of
+  its old term sees everything it appended before.
 - Storage: one redb file per node; every value sealed with AES-256-GCM under the node's storage key (`store.rs`).
 - Entries are capped at `MAX_ENTRY_BYTES` (1 MiB; `WriteError::TooLarge`): openraft
   gives each append RPC one heartbeat interval, so a huge entry would never reach a

@@ -81,6 +81,16 @@ pub enum Proposal {
     Reply(Vec<u8>),
 }
 
+/// How long a new leader waits to apply its own log before building a proposal.
+pub const CATCH_UP: Duration = Duration::from_secs(2);
+
+/// What the leadership check that admitted a proposal found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Leadership {
+    /// The term this node leads in.
+    pub term: u64,
+}
+
 /// The result of a proposal.
 #[derive(Debug)]
 pub struct Proposed {
@@ -166,15 +176,33 @@ impl<M: Machine> Group<M> {
     where
         F: FnOnce(&M, u64) -> Proposal,
     {
+        self.propose_led(|m, applied, _| build(m, applied)).await
+    }
+
+    /// [`Self::propose`], handing the builder the [`Leadership`] the check that
+    /// admitted the proposal found. Before building, this node has applied every
+    /// entry in its log (waiting up to [`CATCH_UP`]), so the builder sees what any
+    /// earlier leadership of this node appended, committed since or not.
+    pub async fn propose_led<F>(&self, build: F) -> Result<Proposed, WriteError>
+    where
+        F: FnOnce(&M, u64, Leadership) -> Proposal,
+    {
         let _guard = self.propose_lock.lock().await;
         self.confirm_leader().await?;
+        let leadership = self.leadership().await?;
+        let last_log = self.raft.metrics().borrow().last_log_index.unwrap_or(0);
+        if !self.wait_applied(last_log, CATCH_UP).await {
+            return Err(WriteError::Unavailable(
+                "the leader has not applied its own log yet".into(),
+            ));
+        }
         let (proposal, applied) = {
             let st = self
                 .shared
                 .read()
                 .map_err(|e| WriteError::Unavailable(e.to_string()))?;
             let applied = st.applied_index();
-            (build(&st.machine, applied), applied)
+            (build(&st.machine, applied, leadership), applied)
         };
         match proposal {
             Proposal::Reply(output) => Ok(Proposed {
@@ -188,6 +216,38 @@ impl<M: Machine> Group<M> {
                     index,
                     output,
                     appended: true,
+                })
+            }
+        }
+    }
+
+    /// The term this node leads in, read from the Raft core (not the metrics
+    /// watch); `NotLeader` when it no longer leads.
+    async fn leadership(&self) -> Result<Leadership, WriteError> {
+        let read = self
+            .raft
+            .with_raft_state(|st| {
+                (
+                    st.server_state == ServerState::Leader,
+                    st.vote_ref().leader_id().get_term(),
+                )
+            })
+            .await
+            .map_err(|e| WriteError::Unavailable(e.to_string()))?;
+        match read {
+            (true, term) => Ok(Leadership { term }),
+            (false, _) => {
+                let status = self.status();
+                Err(WriteError::NotLeader {
+                    leader: status.leader.and_then(|id| {
+                        self.raft
+                            .metrics()
+                            .borrow()
+                            .membership_config
+                            .membership()
+                            .get_node(&id)
+                            .map(|n| (id, n.addr.clone()))
+                    }),
                 })
             }
         }
