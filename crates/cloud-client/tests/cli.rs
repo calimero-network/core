@@ -1,20 +1,29 @@
 //! `calimero-cloud` against a local cluster (`merod-v2 local`'s launcher, in process).
 //!
-//! Needs `kv_store.wasm`: `cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release`.
+//! Deploys the v2 `kv` fixture (`apps/v2-fixtures/kv`), built on first use into
+//! `target/app-components`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
 
-fn kv_wasm() -> PathBuf {
-    std::env::var("KV_STORE_WASM").map_or_else(
-        |_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/wasm32-unknown-unknown/app-release/kv_store.wasm")
-        },
-        PathBuf::from,
+/// The `kv` fixture component, written to `dir` for the CLI to deploy.
+fn kv_wasm(dir: &Path) -> PathBuf {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let component = calimero_app_build::build_component_cached(
+        &root.join("apps/v2-fixtures/kv"),
+        &[
+            &root.join("crates/app-sdk"),
+            &root.join("crates/app-sdk-macros"),
+            &root.join("crates/app-wit"),
+        ],
+        &root.join("target/app-components"),
     )
+    .unwrap_or_else(|e| panic!("build the kv fixture: {e}"));
+    let path = dir.join("kv.wasm");
+    std::fs::write(&path, component).unwrap();
+    path
 }
 
 fn free_base_port() -> u16 {
@@ -62,7 +71,7 @@ async fn deploy_call_view_and_operate_from_the_command_line() {
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let passkey = dir.path().join("dev-passkey.json");
-    let wasm = kv_wasm();
+    let wasm = kv_wasm(dir.path());
     let (url2, home2, passkey2, wasm2) = (url.clone(), home.clone(), passkey.clone(), wasm.clone());
 
     // The CLI blocks, so it runs off the runtime the cluster serves on.

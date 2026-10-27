@@ -28,6 +28,7 @@ calimero-tee-attestation.workspace = true
 calimero-tee-release.workspace = true
 
 [dev-dependencies]
+calimero-app-build.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 calimero-cloud-node.workspace = true
 tempfile.workspace = true
