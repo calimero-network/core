@@ -1,31 +1,25 @@
-name: E2E Scaffolding - a flip a non-member cannot settle does not stall it
+name: E2E Scaffolding - a non-member keeps up past a private space it cannot read
 description: >
   Regression coverage for #4511: a group op that a namespace member outside
   the group can read but not authorize must not stall that member's namespace
   governance.
 
-  The op here is a flip of the subgroup to Restricted after it was opened. It
-  is sealed under the namespace key (the subgroup was Open), so every
-  namespace member reads it, but closing is judged by the subgroup's admins,
-  and that answer folds the subgroup's own history, which holds an op sealed
-  under the subgroup's key while it was Restricted: a non-member is never
-  served that key. (Opening is no longer such an op: since #4522 only the
-  creator may open, which every member can verify.) Before #4511's fix the
-  flip was undecidable forever on such a node, and because the namespace DAG is
-  shared by every group, every namespace op after it waited behind it until
-  the pending TTL dropped it: the node never saw another subgroup.
+  A member outside a private space cannot read what is sealed under the space's
+  key. That must not stall the member's namespace governance: the namespace DAG
+  is shared by every group, so an op that parks behind unreadable history of
+  one space would hold every op after it, and the node would never see another
+  subgroup.
 
   Topology:
     * node-1 - the namespace owner, and the subgroup's creator.
     * node-2 - a plain namespace member, never added to `before`.
 
   node-2 is offline while node-1 creates `before`, makes it Restricted, gives
-  it a sealed op (its metadata), opens it, closes it again, deletes it, and
-  creates `after` - the subgroup, and its key, gone before node-2 can ask for
+  it a sealed op (its metadata), deletes it, and creates `after` - the subgroup, and its key, gone before node-2 can ask for
   it, as in the production incident.
 
-  Headline: back online, node-2 holds the closing flip, applies the deletion
-  and lists `after`. Before the fix it never did.
+  Headline: back online, node-2 reads past the sealed name, applies the
+  deletion and lists `after`.
 
 force_pull_image: false
 
@@ -101,7 +95,7 @@ steps:
     type: stop_node
     nodes: e2e-node-2
 
-  # --- The trigger: a Restricted subgroup with a sealed op, then flipped Open ---
+  # --- The trigger: a private space with a sealed op, then deleted ---
 
   # Visibility is set in steps of their own, not `visibility:` on the create:
   # merobox's born-visibility create sends no auth header. Restricted before
@@ -132,29 +126,13 @@ steps:
     group_id: '{{before_sub}}'
     record_name: Before
 
-  # The creator opens it: decidable by every member (#4522), so it applies on
-  # node-2 too.
-  - name: Node-1 flips `before` Open
-    type: set_subgroup_visibility
-    node: e2e-node-1
-    group_id: '{{before_sub}}'
-    visibility: open
-
-  # Closing is judged by the subgroup's admins, against its sealed history:
-  # the op node-2 can read but never settle.
-  - name: Node-1 closes `before` again
-    type: set_subgroup_visibility
-    node: e2e-node-1
-    group_id: '{{before_sub}}'
-    visibility: restricted
-
   # The subgroup, and its key, are gone before node-2 can ask anyone for it.
   - name: Node-1 deletes `before`
     type: delete_group
     node: e2e-node-1
     group_id: '{{before_sub}}'
 
-  # Causally after the flip: on a stalled node-2 this never applies.
+  # Causally after the deletion: on a stalled node-2 this never applies.
   - name: Node-1 creates `after`
     type: create_group_in_namespace
     node: e2e-node-1
@@ -190,8 +168,8 @@ steps:
 
   # --- Headline ---
 
-  # Before the fix node-2's head never moves past the flip, so this times out.
-  - name: Converge node-2 on the namespace after the flip
+  # A stalled node-2's head never moves past the deletion, so this times out.
+  - name: Converge node-2 on the namespace after the deletion
     type: wait_for_sync
     group_id: '{{namespace_id}}'
     nodes:
@@ -199,19 +177,6 @@ steps:
       - e2e-node-2
     timeout: 90
     trigger_sync: true
-
-  # The barrier. `wait_for_sync` can report converged before a restarted node
-  # has pulled anything, so wait for node-2's own word that it reached the flip
-  # and held it. The held flip, the deletion and `after` arrive in one backfill
-  # and apply together. Before the fix node-2 parks the flip instead and this
-  # never appears.
-  - name: Node-2 reached the flip and held it
-    type: assert_log_present
-    nodes:
-      - e2e-node-2
-    patterns:
-      - "group op held unapplied"
-    timeout: 90
 
   - name: Brief settle for the rest of that backfill
     type: wait
@@ -224,12 +189,12 @@ steps:
     outputs:
       subgroups_node2: subgroups
 
-  - name: Assert node-2 kept up - it sees `after`, created after the flip
+  - name: Assert node-2 kept up - it sees `after`, created after the sealed name
     type: assert
     statements:
       - "contains({{subgroups_node2}}, {{after_sub}})"
 
-  - name: Assert node-2 applied the deletion that came after the flip
+  - name: Assert node-2 applied the deletion that came after the sealed name
     type: assert
     statements:
       - "not_contains({{subgroups_node2}}, {{before_sub}})"

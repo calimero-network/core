@@ -926,6 +926,49 @@ mod held_ops {
         }
     }
 
+    /// The sequence of `group-held-flip-nonmember-keeps-up`: a space with a name sealed under its
+    /// key, then its deletion and a new folder. The node outside keeps up through all of it.
+    #[actix::test]
+    async fn a_node_outside_a_space_keeps_up_past_its_sealed_name_and_deletion() {
+        let f = unauthorized_op_under_the_namespace_key().await;
+        let owner = f.world.actor(ActorState::Owner);
+        let delete = sign_next(
+            &f.inside,
+            &f.world.namespace,
+            &f.world.owner_sk,
+            seal_for_test(
+                &f.inside,
+                f.world.namespace,
+                calimero_governance_types::RootOp::GroupDeleted {
+                    root_group_id: f.subgroup.to_bytes().into(),
+                    cascade_group_ids: Vec::new(),
+                    cascade_context_ids: Vec::new(),
+                },
+            ),
+        );
+        for store in [&f.inside, &f.outside] {
+            apply(store, &delete).await.expect("the deletion applies");
+        }
+        let after = sign_next(
+            &f.inside,
+            &f.world.namespace,
+            &f.world.owner_sk,
+            seal_for_test(
+                &f.inside,
+                f.world.namespace,
+                group_created(owner.account, f.world.namespace.to_bytes(), false, 0x79),
+            ),
+        );
+        for (node, store) in [("inside", &f.inside), ("outside", &f.outside)] {
+            let applied = apply(store, &after).await;
+            assert!(applied.is_ok(), "{node} stalled: {applied:?}");
+        }
+        assert_eq!(
+            SealedSubgroup::heads(&f.inside, f.world),
+            SealedSubgroup::heads(&f.outside, f.world)
+        );
+    }
+
     #[actix::test]
     async fn a_node_that_gets_the_key_later_reaches_the_inside_verdict() {
         let f = unauthorized_op_under_the_namespace_key().await;
