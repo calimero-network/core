@@ -1177,8 +1177,8 @@ impl Node {
                 }
             }
         }
-        // A read-only member's call runs, but one that would write is refused
-        // (v1 discarded such writes; a client is told).
+        // A read-only member's call runs, but one that would write keys or emit
+        // events is refused (v1 discarded such writes; a client is told).
         let read_only = match &app {
             Some(app) => crate::api::read_only_in(self, app, req.caller.account()).await,
             None => false,
@@ -1223,7 +1223,9 @@ impl Node {
                     let a = Applied::unlogged(applied, outcome);
                     return Proposal::Reply(serde_json::to_vec(&a).unwrap_or_default());
                 }
-                if read_only && !outcome.diff.is_empty() {
+                // Events are logged side effects too (Ruling 41): an emit-only call
+                // is refused like one that writes keys.
+                if read_only && (!outcome.diff.is_empty() || !outcome.events.is_empty()) {
                     let refused = Applied {
                         index: applied,
                         status: Status::AppError,

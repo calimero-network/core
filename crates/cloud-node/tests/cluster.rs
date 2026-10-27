@@ -2549,3 +2549,72 @@ async fn the_abi_gate_reads_the_bundle_the_app_runs() {
         json!("1")
     );
 }
+
+/// I3 (Ruling 41): a read-only team member's call that only emits events is refused, like
+/// one that writes keys; nothing is logged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_only_members_emit_only_call_is_refused() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let org = s(
+        alice.post("orgs", json!({ "name": "Docs" })).await.unwrap(),
+        "orgId",
+    );
+    let token = s(
+        alice
+            .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+            .await
+            .unwrap(),
+        "token",
+    );
+    let _r = bob
+        .post(&format!("invites/{token}/redeem"), json!({}))
+        .await
+        .unwrap();
+    let bob_id = s(bob.me().await.unwrap(), "accountId");
+    let team = s(
+        alice
+            .post(
+                &format!("orgs/{org}/teams"),
+                json!({ "name": "Team", "join": "everyone" }),
+            )
+            .await
+            .unwrap(),
+        "teamId",
+    );
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/teams/{team}/members"),
+            json!({ "account": bob_id, "role": "readOnly" }),
+        )
+        .await
+        .unwrap();
+    let bundle = alice.upload_bundle(wasm("org-gated")).await.unwrap();
+    let app = alice
+        .create_app(
+            "notes",
+            &bundle,
+            json!({ "org": org, "access": { "kind": "team", "team": team } }),
+        )
+        .await
+        .unwrap();
+    let leader = c.app_leader(&app).unwrap();
+    let before = c.applied_on(leader, &app);
+    let e = bob
+        .call(&app, "announce", json!({ "text": "hi" }), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+    assert_eq!(
+        c.applied_on(leader, &app),
+        before,
+        "the refused call was logged"
+    );
+    // Alice (no read-only row) announces as before.
+    let _r = alice
+        .call(&app, "announce", json!({ "text": "hi" }), None)
+        .await
+        .unwrap();
+}
