@@ -1711,14 +1711,14 @@ impl ScopeState {
 
     /// The steps of `cell` in `context` and `group` that `walked` reached, with the cell's steps in
     /// their pasts. Only genesis-anchored steps by an `ADMIN` of their prior count, and none that is
-    /// void in `walked`; `Err` past the budget.
+    /// void in `walked`; `Err` past the budget, including when `signer_of` runs out of it.
     pub fn shared_writer_steps<'a>(
         walked: &CutAncestry<'a>,
         group: ContextGroupId,
         context: ContextId,
         cell: Id,
         key_hint: impl Fn(&PublicKey) -> Option<AccountId>,
-        mut signer_of: impl FnMut(&Op) -> Option<AccountId>,
+        mut signer_of: impl FnMut(&Op) -> Result<Option<AccountId>, OverBudget>,
     ) -> Result<Vec<(&'a Op, RotationStep)>, OverBudget> {
         // A step whose signer was removed, demoted or revoked concurrently carries no
         // authority (see [`Self::void_ops`]), so it is no step at all.
@@ -1759,7 +1759,7 @@ impl ScopeState {
             let OpPayload::SharedWritersRotated { prior, .. } = &op.payload else {
                 continue;
             };
-            if let Some(account) = signer_of(op).filter(|account| admin_in(prior, account)) {
+            if let Some(account) = signer_of(op)?.filter(|account| admin_in(prior, account)) {
                 let _ = chosen.insert(op.id(), account);
             }
         }

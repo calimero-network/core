@@ -3308,7 +3308,7 @@ impl ScopeProjections {
         // As for the fold, standing is read at the step's own parents, so the group's
         // ancestors there must be readable too.
         let root_group = ContextGroupId::from(namespace_id);
-        let budget = FoldBudget::for_ops(walked.ops().len());
+        let budget = FoldBudget::for_step_cuts(walked.ops().len());
         let mut relevant = deciding_groups(
             &at_cut_view_within(&walked, base, &budget)?,
             &self.whole_tree(&scope),
@@ -3441,8 +3441,9 @@ impl ScopeProjections {
         let standing = Self::standing_reader(store, group, namespace_id);
         // Standing is read at each step's own parents, where the group's ancestors
         // may differ from the cut's, so every one of them must be readable.
-        let budget = FoldBudget::for_ops(walked.ops().len());
-        let head_view = at_cut_view_within(&walked, base, &budget).ok_or(cut)?;
+        let budget = FoldBudget::for_step_cuts(walked.ops().len());
+        let head_view =
+            at_cut_view_within(&walked, base, &budget).ok_or(WritersUnavailable::OverBudget)?;
         let mut relevant = deciding_groups(&head_view, &self.whole_tree(&scope), group, root_group);
         let mut views: std::collections::HashMap<Vec<[u8; 32]>, calimero_authz::AclView> =
             std::collections::HashMap::new();
@@ -3460,7 +3461,8 @@ impl ScopeProjections {
                         &self.walk(&scope, log, &op.parents, base),
                         base,
                         &budget,
-                    )?;
+                    )
+                    .ok_or(OverBudget)?;
                     let _ = views.insert(parents.clone(), folded);
                 }
                 let view = &views[&parents];
@@ -3470,7 +3472,7 @@ impl ScopeProjections {
                     group,
                     root_group,
                 ));
-                standing(view, op.device_key())
+                Ok(standing(view, op.device_key()))
             },
         )
         .map_err(|OverBudget| WritersUnavailable::OverBudget)?
@@ -3917,6 +3919,12 @@ impl FoldBudget {
 
     fn for_ops(ops: usize) -> Self {
         Self::new(calimero_projection::fold_budget_for(ops))
+    }
+
+    /// For folding up to a cell's step limit of cuts, each as long as the log: linear in both.
+    fn for_step_cuts(ops: usize) -> Self {
+        let cuts = calimero_storage::shared_writers::MAX_STEPS_PER_CELL + 1;
+        Self::for_ops(ops.saturating_mul(cuts))
     }
 
     /// Spend `work`; `None` when that overruns what is left.
@@ -7207,6 +7215,41 @@ mod tests {
             None,
             "an ancestor of the context's group is unreadable"
         );
+    }
+
+    /// A long honest chain of rotations stays decidable: every step folds its own cut.
+    #[test]
+    fn a_long_chain_of_honest_rotations_stays_decidable() {
+        let (mut w, ..) = rotations();
+        let (joins, admin, group) = (w.joins.clone(), w.admin_pk, w.group);
+        let other: std::collections::BTreeMap<_, _> = [
+            (w.accounts[&admin], OpMask::FULL),
+            (AccountId::from([0x77; 32]), OpMask::WRITE),
+        ]
+        .into();
+        let sets = [w.rotated.clone(), other];
+        let mut prior = w.genesis.clone();
+        let mut parents = joins;
+        let mut last = [0u8; 32];
+        for n in 0..200u16 {
+            let new = sets[usize::from(n % 2)].clone();
+            let mut id = [0xA0; 32];
+            id[..2].copy_from_slice(&n.to_be_bytes());
+            w.step(
+                admin,
+                group,
+                id,
+                &parents,
+                prior,
+                u64::from(n) + 1,
+                new.clone(),
+            );
+            prior = new;
+            parents = vec![id];
+            last = id;
+        }
+
+        assert!(matches!(w.at(&[last]), Some(CellWriters::Rotated(_))));
     }
 
     fn ever_at(w: &Rotations, heads: &[[u8; 32]]) -> Result<CellWriters, WritersUnavailable> {

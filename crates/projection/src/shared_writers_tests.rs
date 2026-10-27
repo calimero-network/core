@@ -76,7 +76,7 @@ fn writers_at(log: &[Op], cut: &[&Op], cell: Id) -> Option<BTreeMap<AccountId, O
         ContextId::from(CONTEXT),
         cell,
         |key| Some(account(key.digest()[0] ^ 0xA5)),
-        |op| Some(op.author()),
+        |op| Ok(Some(op.author())),
     )
     .expect("within the budget")
     .into_iter()
@@ -333,7 +333,7 @@ fn steps_at(log: &[Op], cut: &[&Op], cell: Id) -> usize {
         ContextId::from(CONTEXT),
         cell,
         |key| Some(account(key.digest()[0] ^ 0xA5)),
-        |op| Some(op.author()),
+        |op| Ok(Some(op.author())),
     )
     .map_or(usize::MAX, |steps| steps.len())
 }
@@ -429,7 +429,7 @@ fn steps_by_a_signer_without_admin_in_the_prior_set_are_not_collected() {
         ContextId::from(CONTEXT),
         cell,
         |key| Some(account(key.digest()[0] ^ 0xA5)),
-        |op| Some(op.author()),
+        |op| Ok(Some(op.author())),
     )
     .expect("within the budget");
     let ids: Vec<[u8; 32]> = steps.iter().map(|(op, _)| op.id()).collect();
@@ -474,9 +474,28 @@ fn a_flood_of_steps_by_one_member_without_admin_does_not_freeze_the_cell() {
         ContextId::from(CONTEXT),
         cell,
         |key| Some(account(key.digest()[0] ^ 0xA5)),
-        |op| Some(op.author()),
+        |op| Ok(Some(op.author())),
     )
     .expect("a member's flood does not use up the budget");
     let ids: Vec<[u8; 32]> = steps.iter().map(|(op, _)| op.id()).collect();
     assert_eq!(ids, vec![genuine.id()]);
+}
+
+#[test]
+fn a_signer_lookup_that_runs_out_of_budget_fails_the_steps_rather_than_dropping_one() {
+    let cell = cell(&[ALICE]);
+    let add = step(ALICE, cell, &[ALICE], &[ALICE, BOB], 1, vec![]);
+    let log = [add.clone()];
+    let walked = ScopeState::cut_ancestry(&log, &[add.id()]);
+
+    let outcome = ScopeState::shared_writer_steps(
+        &walked,
+        ContextGroupId::from(GROUP),
+        ContextId::from(CONTEXT),
+        cell,
+        |_| None,
+        |_| Err(shared_writers::OverBudget),
+    );
+
+    assert!(outcome.is_err());
 }
