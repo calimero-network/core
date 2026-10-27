@@ -17,6 +17,9 @@ use crate::types::{
     InvocationKind, OrgRole, Outcome, Status, Usage,
 };
 
+/// Bytes of an app key (before the generation prefix). Values have no separate cap: the
+/// executor's 1 MiB entry check bounds them.
+pub const MAX_KEY_BYTES: usize = 1_024;
 /// Writes per run: `put`, `delete` and `add` count one each; the next one is refused.
 pub const MAX_WRITES: u32 = 10_000;
 /// Entries one `range_next` returns at most.
@@ -119,11 +122,13 @@ impl HostCore {
 
     pub fn storage_get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, HostDenied> {
         self.may_read()?;
+        check_key(key)?;
         Ok(self.current(&app_key(GENERATION, key)))
     }
 
     pub fn storage_put(&mut self, key: &[u8], value: &[u8]) -> Result<(), HostDenied> {
         self.check_write()?;
+        check_key(key)?;
         self.overlay.put(app_key(GENERATION, key), value.to_vec());
         self.writes += 1;
         Ok(())
@@ -131,6 +136,7 @@ impl HostCore {
 
     pub fn storage_delete(&mut self, key: &[u8]) -> Result<(), HostDenied> {
         self.check_write()?;
+        check_key(key)?;
         self.overlay.delete(app_key(GENERATION, key));
         self.writes += 1;
         Ok(())
@@ -140,6 +146,7 @@ impl HostCore {
     /// guest reading it (D47). One write; a non-integer value or an overflow is refused.
     pub fn storage_add(&mut self, key: &[u8], delta: i64) -> Result<(), HostDenied> {
         self.check_write()?;
+        check_key(key)?;
         let key = app_key(GENERATION, key);
         let current = match self.current(&key) {
             None => 0,
@@ -156,8 +163,8 @@ impl HostCore {
         Ok(())
     }
 
-    /// Opens a cursor over `[start, end)` (an empty `end` is the end of the keyspace),
-    /// seeing this run's writes.
+    /// Opens a cursor over `[start, end)` (an empty `end` is the end of the keyspace). It
+    /// reads the state as of opening: committed state plus the writes made before now.
     pub fn range_open(
         &mut self,
         start: &[u8],
@@ -165,6 +172,8 @@ impl HostCore {
         reverse: bool,
     ) -> Result<CursorId, HostDenied> {
         self.may_read()?;
+        check_key(start)?;
+        check_key(end)?;
         if self.cursors.len() >= MAX_OPEN_CURSORS {
             return Err(HostDenied::new("too many open cursors"));
         }
@@ -285,13 +294,17 @@ impl HostCore {
         self.applied_index
     }
 
-    /// `"<entry index>.<n>"`, `n` counting this run's calls from 0 (D47). Only in
-    /// invocations that become log entries with a fixed index.
+    /// `"<id_term>.<id_seq>.<n>"`, `n` counting this run's calls from 0 (D47, Ruling 12).
+    /// Unique across runs because the leader never repeats `(term, seq)`; deterministic
+    /// for a given invocation. Only in invocations that become log entries.
     pub fn unique_id(&mut self) -> Result<String, HostDenied> {
         if !self.is_logged_write() {
             return Err(self.denied("unique_id"));
         }
-        let id = format!("{}.{}", self.inv.entry_index, self.unique_ids);
+        let id = format!(
+            "{}.{}.{}",
+            self.inv.id_term, self.inv.id_seq, self.unique_ids
+        );
         self.unique_ids += 1;
         Ok(id)
     }
@@ -513,6 +526,14 @@ impl HostCore {
             HostDenied::new("rebuild is only available while migrating")
         }
     }
+}
+
+/// Refuses an app key over `MAX_KEY_BYTES`.
+fn check_key(key: &[u8]) -> Result<(), HostDenied> {
+    if key.len() > MAX_KEY_BYTES {
+        return Err(HostDenied::new("key longer than 1 KiB"));
+    }
+    Ok(())
 }
 
 /// Bytes of the generation prefix on every stored key.

@@ -7,16 +7,8 @@ use serde_json::{Map, Value};
 
 use crate::engine::PrepareError;
 
-const TOP_LEVEL_KEYS: &[&str] = &["world", "state", "methods", "errors", "events"];
-const METHOD_KEYS: &[&str] = &[
-    "kind",
-    "params",
-    "returns",
-    "confirm",
-    "public",
-    "every",
-    "allowSystem",
-];
+/// ABI versions this host reads. A bundle declares its own in `abiVersion`.
+pub const SUPPORTED_ABI_VERSIONS: &[u64] = &[1];
 
 /// What a method is for; timers are the only methods with an interval.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,11 +40,22 @@ pub struct Abi {
 }
 
 impl Abi {
-    /// Reads the `calimero:abi` JSON. Unknown keys are refused, so an attribute the host
-    /// does not understand can't be silently ignored.
+    /// Reads the `calimero:abi` JSON. `abiVersion` is required and must be supported.
+    /// Unknown keys, top level or per method, are ignored so newer builds stay readable
+    /// (Ruling 14); a known key with a value of the wrong shape is refused.
     pub fn from_json(json: &Value) -> Result<Self, PrepareError> {
         let top = object(json, "abi")?;
-        closed(top, TOP_LEVEL_KEYS, "abi")?;
+        let version = match top.get("abiVersion") {
+            None => return Err(PrepareError::MissingAbiVersion),
+            Some(Value::Number(n)) => n
+                .as_u64()
+                .filter(|v| *v > 0)
+                .ok_or_else(|| bad(format!("abiVersion is not a positive integer: {n}")))?,
+            Some(other) => return Err(bad(format!("abiVersion is not a number: {other}"))),
+        };
+        if !SUPPORTED_ABI_VERSIONS.contains(&version) {
+            return Err(PrepareError::UnsupportedAbiVersion(version));
+        }
         let Some(methods) = top.get("methods") else {
             return Err(bad("abi has no methods"));
         };
@@ -66,7 +69,6 @@ impl Abi {
 
 fn method_abi(name: &str, json: &Value) -> Result<MethodAbi, PrepareError> {
     let fields = object(json, name)?;
-    closed(fields, METHOD_KEYS, name)?;
     let kind = match fields.get("kind").and_then(Value::as_str) {
         Some("init") => MethodKind::Init,
         Some("call") => MethodKind::Call,
@@ -121,13 +123,6 @@ fn flag(fields: &Map<String, Value>, key: &str, name: &str) -> Result<bool, Prep
 fn object<'v>(json: &'v Value, what: &str) -> Result<&'v Map<String, Value>, PrepareError> {
     json.as_object()
         .ok_or_else(|| bad(format!("{what} is not an object")))
-}
-
-fn closed(fields: &Map<String, Value>, allowed: &[&str], what: &str) -> Result<(), PrepareError> {
-    match fields.keys().find(|key| !allowed.contains(&key.as_str())) {
-        Some(key) => Err(bad(format!("{what}: unknown key {key:?}"))),
-        None => Ok(()),
-    }
 }
 
 fn bad(reason: impl Into<String>) -> PrepareError {

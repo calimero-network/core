@@ -7,10 +7,10 @@ use std::time::Instant;
 
 use calimero_app_host::{
     app_key, Abi, Audience, Caller, Directory, Event, HostCore, HostDenied, InvalidInvocation,
-    Invocation, InvocationKind, KeyValue, MethodKind, OrgRole, Status, TimerCtx, Usage,
-    EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE, EMIT_FOREIGN_ORG, EMIT_NAME_TOO_LONG, EMIT_TOO_MANY,
-    EMIT_UNKNOWN_TEAM, GENERATION, MAX_EVENTS, MAX_EVENT_DATA_BYTES, MAX_EVENT_NAME_BYTES,
-    MAX_WRITES,
+    Invocation, InvocationKind, KeyValue, MethodKind, OrgRole, PrepareError, Status, TimerCtx,
+    Usage, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE, EMIT_FOREIGN_ORG, EMIT_NAME_TOO_LONG,
+    EMIT_TOO_MANY, EMIT_UNKNOWN_TEAM, GENERATION, MAX_EVENTS, MAX_EVENT_DATA_BYTES,
+    MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES, MAX_WRITES, SUPPORTED_ABI_VERSIONS,
 };
 use serde_json::json;
 
@@ -44,7 +44,8 @@ fn inv(kind: InvocationKind) -> Invocation {
         args: Vec::new(),
         caller: Caller::Account("ada".to_owned()),
         entry_ts_ms: 1_000,
-        entry_index: 42,
+        id_term: 3,
+        id_seq: 42,
         seed: [7; 32],
         timer: None,
     }
@@ -238,13 +239,13 @@ fn add_refuses_a_non_shortest_integer() {
 }
 
 #[test]
-fn unique_ids_are_index_and_position() {
+fn unique_ids_are_term_seq_and_position() {
     let state = base(&[]);
     let call = inv(InvocationKind::Call);
     let mut host = core_for(&state, &call);
-    assert_eq!(host.unique_id().unwrap(), "42.0");
-    assert_eq!(host.unique_id().unwrap(), "42.1");
-    assert_eq!(host.unique_id().unwrap(), "42.2");
+    assert_eq!(host.unique_id().unwrap(), "3.42.0");
+    assert_eq!(host.unique_id().unwrap(), "3.42.1");
+    assert_eq!(host.unique_id().unwrap(), "3.42.2");
 
     for kind in [
         InvocationKind::View,
@@ -365,6 +366,7 @@ fn context_comes_from_the_invocation_and_directory() {
 #[test]
 fn abi_reads_method_attributes() {
     let abi = Abi::from_json(&json!({
+        "abiVersion": 1,
         "world": "calimero:app@0.5.0",
         "methods": {
             "init": { "kind": "init", "params": [], "returns": null },
@@ -384,13 +386,52 @@ fn abi_reads_method_attributes() {
     assert!(tick.allow_system);
 
     assert!(
-        Abi::from_json(&json!({ "methods": { "x": { "kind": "call", "bogus": 1 } } })).is_err()
+        Abi::from_json(&json!({ "abiVersion": 1, "methods": { "x": { "kind": "timer" } } }))
+            .is_err()
     );
-    assert!(Abi::from_json(&json!({ "methods": { "x": { "kind": "timer" } } })).is_err());
-    assert!(
-        Abi::from_json(&json!({ "methods": { "x": { "kind": "call", "every": "1m" } } })).is_err()
-    );
-    assert!(Abi::from_json(&json!({})).is_err());
+    assert!(Abi::from_json(
+        &json!({ "abiVersion": 1, "methods": { "x": { "kind": "call", "every": "1m" } } })
+    )
+    .is_err());
+    assert!(Abi::from_json(&json!({ "abiVersion": 1 })).is_err());
+}
+
+#[test]
+fn abi_ignores_unknown_keys_and_refuses_bad_known_ones() {
+    let abi = Abi::from_json(&json!({
+        "abiVersion": 1,
+        "futureTopLevel": { "anything": true },
+        "methods": { "x": { "kind": "call", "futureAttribute": 7 } }
+    }))
+    .unwrap();
+    assert_eq!(abi.methods["x"].kind, MethodKind::Call);
+
+    for bad in [
+        json!({ "abiVersion": 1, "methods": { "x": { "kind": "call", "confirm": "yes" } } }),
+        json!({ "abiVersion": 1, "methods": { "x": { "kind": 3 } } }),
+        json!({ "abiVersion": 1, "methods": [] }),
+        json!({ "abiVersion": "1", "methods": {} }),
+        json!({ "abiVersion": 0, "methods": {} }),
+    ] {
+        assert!(
+            matches!(Abi::from_json(&bad), Err(PrepareError::BadAbi(_))),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn abi_version_is_required_and_checked() {
+    assert_eq!(SUPPORTED_ABI_VERSIONS, &[1]);
+    assert!(Abi::from_json(&json!({ "abiVersion": 1, "methods": {} })).is_ok());
+    assert!(matches!(
+        Abi::from_json(&json!({ "abiVersion": 2, "methods": {} })),
+        Err(PrepareError::UnsupportedAbiVersion(2))
+    ));
+    assert!(matches!(
+        Abi::from_json(&json!({ "methods": {} })),
+        Err(PrepareError::MissingAbiVersion)
+    ));
 }
 
 fn keys(batch: Vec<KeyValue>) -> Vec<Vec<u8>> {
@@ -864,4 +905,98 @@ fn cursor_sees_committed_value_overwritten_after_open() {
         host.range_next(cursor, 10).unwrap(),
         vec![(b"k".to_vec(), b"committed".to_vec())]
     );
+}
+
+fn ids(id_term: u64, id_seq: u64) -> Vec<String> {
+    let state = base(&[(b"k", b"v")]);
+    let mut inv = inv(InvocationKind::Call);
+    inv.id_term = id_term;
+    inv.id_seq = id_seq;
+    let mut host = core_for(&state, &inv);
+    (0..3).map(|_| host.unique_id().unwrap()).collect()
+}
+
+#[test]
+fn unique_ids_differ_across_runs_on_the_same_base() {
+    // Two calls run against the same base and applied index, as two runs before either
+    // commits would: the executor gives them different sequence numbers.
+    let first = ids(3, 42);
+    let second = ids(3, 43);
+    assert!(
+        first.iter().all(|id| !second.contains(id)),
+        "{first:?} {second:?}"
+    );
+    assert_eq!(
+        ids(3, 42),
+        first,
+        "the same term, seq and position are stable"
+    );
+    let next_term = ids(4, 42);
+    assert!(first.iter().all(|id| !next_term.contains(id)));
+}
+
+#[test]
+fn keys_are_capped_at_one_kib() {
+    let state = base(&[]);
+    let inv = inv(InvocationKind::Call);
+    let mut host = core_for(&state, &inv);
+    let fits = vec![b'k'; MAX_KEY_BYTES];
+    let over = vec![b'k'; MAX_KEY_BYTES + 1];
+    assert_eq!(MAX_KEY_BYTES, 1_024);
+    assert_eq!(host.storage_put(&fits, b"v"), Ok(()));
+    assert_eq!(host.storage_get(&fits), Ok(Some(b"v".to_vec())));
+    assert!(matches!(host.storage_put(&over, b"v"), Err(HostDenied(_))));
+    assert!(matches!(host.storage_get(&over), Err(HostDenied(_))));
+    assert!(matches!(host.storage_delete(&over), Err(HostDenied(_))));
+    assert!(matches!(host.storage_add(&over, 1), Err(HostDenied(_))));
+    assert!(matches!(
+        host.range_open(&over, b"", false),
+        Err(HostDenied(_))
+    ));
+    assert!(matches!(
+        host.range_open(b"", &over, false),
+        Err(HostDenied(_))
+    ));
+}
+
+/// Drains a cursor one entry at a time.
+fn drain_one_by_one(host: &mut HostCore, reverse: bool) -> Vec<KeyValue> {
+    let cursor = host.range_open(b"", b"", reverse).unwrap();
+    let mut all = Vec::new();
+    loop {
+        let batch = host.range_next(cursor, 1).unwrap();
+        assert!(batch.len() <= 1);
+        let Some(entry) = batch.into_iter().next() else {
+            return all;
+        };
+        all.push(entry);
+    }
+}
+
+#[test]
+fn single_entry_batches_merge_puts_and_tombstones() {
+    let state = base(&[(b"b", b"B"), (b"d", b"D"), (b"f", b"F"), (b"h", b"H")]);
+    let inv = inv(InvocationKind::Call);
+    let mut host = core_for(&state, &inv);
+    host.storage_put(b"a", b"a").unwrap(); // before every committed key
+    host.storage_delete(b"d").unwrap(); // hides a committed key
+    host.storage_put(b"e", b"e").unwrap(); // between committed keys
+    host.storage_put(b"f", b"F2").unwrap(); // overwrites a committed key
+    host.storage_delete(b"g").unwrap(); // tombstone with no committed key
+    host.storage_put(b"z", b"z").unwrap(); // after every committed key
+    let expected: Vec<KeyValue> = [
+        (b"a", &b"a"[..]),
+        (b"b", b"B"),
+        (b"e", b"e"),
+        (b"f", b"F2"),
+        (b"h", b"H"),
+        (b"z", b"z"),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_vec(), v.to_vec()))
+    .collect();
+    assert_eq!(drain_one_by_one(&mut host, false), expected);
+    let mut reversed = expected;
+    reversed.reverse();
+    assert_eq!(drain_one_by_one(&mut host, true), reversed);
 }

@@ -11,11 +11,12 @@ mod state;
 mod time;
 mod types;
 
-pub use abi::{Abi, MethodAbi, MethodKind};
+pub use abi::{Abi, MethodAbi, MethodKind, SUPPORTED_ABI_VERSIONS};
 pub use core::{
     CursorId, HostCore, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE, EMIT_FOREIGN_ORG,
     EMIT_NAME_TOO_LONG, EMIT_TOO_MANY, EMIT_UNKNOWN_TEAM, MAX_EVENTS, MAX_EVENT_DATA_BYTES,
-    MAX_EVENT_NAME_BYTES, MAX_LOG_BYTES, MAX_OPEN_CURSORS, MAX_RANGE_BATCH, MAX_WRITES,
+    MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES, MAX_LOG_BYTES, MAX_OPEN_CURSORS, MAX_RANGE_BATCH,
+    MAX_WRITES,
 };
 pub use engine::{Engine, PrepareError, Prepared};
 pub use state::{app_key, KeyValue, StateView, GENERATION};

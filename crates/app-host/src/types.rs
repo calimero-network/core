@@ -42,8 +42,11 @@ pub struct TimerCtx {
 
 /// One invocation of an app method.
 ///
-/// `entry_index` is the index the entry will get, computed by the proposer under the
-/// propose lock; a conflicted re-run recomputes it. `entry_ts_ms` is the entry timestamp
+/// `id_term` is the leader's Raft term while it runs the invocation and `id_seq` the
+/// leader's per-term execution counter, assigned by the executor, incremented for every
+/// execution (re-runs included) and never repeated within a term; together they make
+/// `unique_id` unique without knowing the log index, which is assigned only at proposal
+/// (D47, Ruling 12). `entry_ts_ms` is the entry timestamp
 /// for calls, timers, init, migrate and xcall delivery, and the timestamp of the applied
 /// entry being read for views (D19). `seed` is the leader's fresh seed for the run; views
 /// and actions ignore it and draw from the node's CSPRNG.
@@ -54,7 +57,8 @@ pub struct Invocation {
     pub args: Vec<u8>,
     pub caller: Caller,
     pub entry_ts_ms: u64,
-    pub entry_index: u64,
+    pub id_term: u64,
+    pub id_seq: u64,
     pub seed: [u8; 32],
     pub timer: Option<TimerCtx>,
 }

@@ -18,9 +18,15 @@ pub enum PrepareError {
     /// The component carries no `calimero:abi` section.
     #[error("component has no calimero:abi section")]
     NoAbi,
-    /// The ABI is malformed or carries an attribute the host does not know.
+    /// A known ABI key holds a value of the wrong shape.
     #[error("bad abi: {0}")]
     BadAbi(String),
+    /// The ABI has no `abiVersion`.
+    #[error("abi has no abiVersion")]
+    MissingAbiVersion,
+    /// The ABI's `abiVersion` is not in `SUPPORTED_ABI_VERSIONS`.
+    #[error("unsupported abiVersion {0}")]
+    UnsupportedAbiVersion(u64),
     /// The engine refused or failed to compile the component.
     #[error("compile failed: {0}")]
     Compile(String),
