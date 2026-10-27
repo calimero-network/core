@@ -67,7 +67,10 @@ async fn deploy_call_view_and_operate_from_the_command_line() {
 
     // The CLI blocks, so it runs off the runtime the cluster serves on.
     tokio::task::spawn_blocking(move || {
-        let cli = Cli { url: &url2, home: &home2 };
+        let cli = Cli {
+            url: &url2,
+            home: &home2,
+        };
         let pk = passkey2.to_str().unwrap();
 
         // A real-only client refuses the dev cluster's mock quote.
@@ -80,20 +83,35 @@ async fn deploy_call_view_and_operate_from_the_command_line() {
         assert!(String::from_utf8_lossy(&refused.stderr).contains("mock quote refused"));
 
         // Sign up with a new file passkey, then sign in with it again.
-        let first = cli.run(&["login", "--dev-passkey", pk, "--name", "dev"]).unwrap();
+        let first = cli
+            .run(&["login", "--dev-passkey", pk, "--name", "dev"])
+            .unwrap();
         let again = cli.run(&["login", "--dev-passkey", pk]).unwrap();
         assert_eq!(first["accountId"], again["accountId"]);
-        assert_eq!(cli.run(&["whoami"]).unwrap()["accountId"], first["accountId"]);
+        assert_eq!(
+            cli.run(&["whoami"]).unwrap()["accountId"],
+            first["accountId"]
+        );
 
         let deployed = cli
-            .run(&["deploy", wasm2.to_str().unwrap(), "--name", "kv", "--confirm", "clear"])
+            .run(&[
+                "deploy",
+                wasm2.to_str().unwrap(),
+                "--name",
+                "kv",
+                "--confirm",
+                "clear",
+            ])
             .unwrap();
         let app = deployed["appId"].as_str().unwrap().to_owned();
         let call = cli
             .run(&["call", &app, "set", r#"{"key":"a","value":"1"}"#])
             .unwrap();
         assert!(call["index"].as_u64().unwrap() > 0);
-        assert_eq!(cli.run(&["view", &app, "get", r#"{"key":"a"}"#]).unwrap()["result"], "1");
+        assert_eq!(
+            cli.run(&["view", &app, "get", r#"{"key":"a"}"#]).unwrap()["result"],
+            "1"
+        );
         let listed = cli.run(&["app", "list"]).unwrap();
         assert!(listed.to_string().contains(&app));
 
@@ -106,18 +124,33 @@ async fn deploy_call_view_and_operate_from_the_command_line() {
             .args(["view", &app, "get", r#"{"key":"a"}"#])
             .output()
             .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         // Events as JSON lines.
         let ev = Command::new(env!("CARGO_BIN_EXE_calimero-cloud"))
             .env("XDG_CONFIG_HOME", &home2)
-            .args(["--url", &url2, "--allow-mock", "events", &app, "--limit", "1"])
+            .args([
+                "--url",
+                &url2,
+                "--allow-mock",
+                "events",
+                &app,
+                "--limit",
+                "1",
+            ])
             .output()
             .unwrap();
         assert!(String::from_utf8_lossy(&ev.stdout).contains("\"kind\""));
 
         // Ops: counts, and a refused call without the token.
-        assert!(cli.run(&["ops", "status"]).unwrap_err().contains("--ops-token"));
+        assert!(cli
+            .run(&["ops", "status"])
+            .unwrap_err()
+            .contains("--ops-token"));
         let status = cli
             .run(&["--ops-token", "ops-token", "ops", "status"])
             .unwrap_or_else(|e| panic!("{e}"));

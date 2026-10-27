@@ -310,6 +310,56 @@ impl Client {
         Ok(v["hash"].as_str().unwrap_or_default().to_owned())
     }
 
+    /// Upload a blob for app `app`; answers `{ blobId, id, size }` (`blobId`
+    /// base58, as apps print it; `id` hex).
+    pub async fn upload_blob(&self, app: &str, bytes: Vec<u8>) -> Result<Value> {
+        let url = self
+            .base
+            .join(&format!("apps/{app}/blobs"))
+            .map_err(eyre::Report::from)?;
+        let mut req = self
+            .http
+            .post(url)
+            .header("content-type", "application/octet-stream")
+            .body(bytes);
+        if let Some(token) = self.auth.read().await.as_deref() {
+            req = req.bearer_auth(token);
+        }
+        let resp = self
+            .sealed
+            .execute(req.build().map_err(eyre::Report::from)?)
+            .await?;
+        let status = resp.status().as_u16();
+        let v: Value = resp.json().await.unwrap_or(Value::Null);
+        if status >= 400 {
+            return Err(Error::Api {
+                status,
+                code: v["error"].as_str().unwrap_or("ERROR").to_owned(),
+                message: v["message"].as_str().unwrap_or_default().to_owned(),
+                details: v.get("details").cloned().unwrap_or(Value::Null),
+            });
+        }
+        Ok(v)
+    }
+
+    /// One of an app's blobs, by id (base58 or hex).
+    pub async fn download_blob(&self, app: &str, id: &str) -> Result<Vec<u8>> {
+        let resp = self
+            .send(Method::GET, &format!("apps/{app}/blobs/{id}"), None)
+            .await?;
+        let status = resp.status().as_u16();
+        if status >= 400 {
+            let v: Value = resp.json().await.unwrap_or(Value::Null);
+            return Err(Error::Api {
+                status,
+                code: v["error"].as_str().unwrap_or("ERROR").to_owned(),
+                message: v["message"].as_str().unwrap_or_default().to_owned(),
+                details: v.get("details").cloned().unwrap_or(Value::Null),
+            });
+        }
+        Ok(resp.bytes().await.map_err(eyre::Report::from)?.to_vec())
+    }
+
     /// Create an app instance from a bundle; `options` may set `org`, `access`, `confirmMethods`.
     pub async fn create_app(&self, name: &str, bundle: &str, options: Value) -> Result<String> {
         let mut body = json!({ "name": name, "bundle": bundle });

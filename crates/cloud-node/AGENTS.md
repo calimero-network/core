@@ -41,7 +41,7 @@ architecture spec.
 - **Identity inside the app**: `env::account_id` and `env::executor_id` are both the
   caller's account (no devices in release-v2); the context id is `SHA-256(app_id)`.
   `env::caller_org` is the caller's role and teams in the app's organization
-  (`app::caller_org`, passed through `Module::run_with_caller_org`).
+  (`app::caller_org`, passed through `Module::run_cloud`).
 - **Private storage** (`env::private_storage_*`): v1 kept it on the member's node,
   unsynced. Here it is the caller's own space in the app's state (`app::private_prefix`):
   replicated and sealed, but a run is handed only its caller's space.
@@ -49,6 +49,39 @@ architecture spec.
   (`app::writers_key`), written with the run that rotated it; v1 published governance ops.
 - **Context ids**: an app answers to its context id (`hex(SHA-256(app_id))`, what the app
   sees as `env::context_id()`) wherever the API takes an app id (`Node::canonical_app_id`).
+- **Blobs** (`env::blob_*`, `POST/GET /apps/{app}/blobs[/{id}]`): bytes live in the
+  cluster's blob store (`hex(SHA-256)`, a majority before the answer, a missing one
+  fetched from a peer), and the app's state marks which are its own
+  (`app::blob_key`). A run's blob host is `services::AppBlobs`: a run writes blobs
+  onto its outcome (never through the host), the leader stores them before
+  proposing and spreads them after the entry commits; a run opens only blobs its
+  app's state marks. An upload commits `AppCmd::Blob`. Ids are base58 (what apps
+  print, v1's `BlobId`) or hex in the API.
+- **Search** (`services::Search`): v1's per-context tantivy indexes, in memory per
+  app and built from the app's `__calimero_search_*` exports. A view brings them
+  up to the very state it reads first: from the entities entries touched
+  (`Outcome::touched`, from the run's `StorageDelta`; kept for the last
+  `TOUCHED_RING` entries), else a full scan. Derived, never replicated.
+- **Follow-ups** (`AppState::pending`): an entry's event handlers
+  (`app::emit!((e, "handler"))`, `tee:` for a TEE handler) and its `xcall`s are
+  queued when it applies; the leader runs them (`Node::drive`, woken by `kick`)
+  as entries that consume them (`Trigger::FollowUp`), or, for an xcall, calls
+  the target with an idempotency key and then commits `AppCmd::Done`. A new
+  leader neither skips nor repeats one. v1's rules hold: only `#[app::handler]`
+  methods run for an event; an xcall reaches only `#[app::xcall]` entry points
+  (`from_same_app`: the same bundle), only within the caller's organization
+  (outside one: its owner), as `Caller::App` with `env::xcall_origin`; cascades
+  stop at `MAX_FOLLOWUP_DEPTH`. Handlers and xcalls run once, not per replica.
+- **Timers and the TEE**: the cluster is every app's TEE. The leader fires each
+  `#[app::tee(every = "..")]` method once per period (`Trigger::Timer`, the
+  last tick per method in `AppState::timer_ticks`). Such a run and a `tee:`
+  handler author as `AccountId::TEE_AUTHORITY` with `tee_trigger`, open and
+  seal with the app's TEE key (`backup::tee_key`, from K_r), and seal a
+  member's share to the key the node keeps for them (`backup::member_key`):
+  their account is their one device (`SealingContext::stand_ins`), and only
+  their own runs open with it. ABI facts (timers, handlers, xcall entry
+  points) come from the bundle's embedded ABI (`services::BundleFacts`), so
+  apps are built with `cargo mero build`; a bundle without one gets none.
 - **Browsers**: `config.origins` are the CORS origins too (`lib.rs`, outermost layer).
 - **Storage key** (`kms.rs`): K_r = HKDF(KMS key, cluster). The KMS key comes from
   merod's own client (`merod kms disk-key`: release-policy-verified KMS, key sealed
@@ -67,12 +100,16 @@ architecture spec.
 ## Not done yet (prototype)
 
 rollback counter, placement across zones, snapshot restore into a
-running cluster, event audiences, pruning of revoked session ids.
+running cluster, event audiences, pruning of revoked session ids, blob
+deletion, search indexes that survive a restart (rebuilt from state now).
 
 ## Commands
 
 ```bash
 cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release   # test fixture
+# fixtures whose ABI the node reads (handlers, timers, xcall, search, blobs):
+for a in blobs kv-store-with-handlers search-chat xcall-example tee-cards tee-dice; do
+  cargo mero build --manifest-path apps/$a/Cargo.toml; done
 cargo test -p calimero-cloud-node    # 3-node cluster in process, sealed, real WASM
 cargo run -p calimero-cloud-node --bin merod-v2 -- --help
 cargo run -p calimero-cloud-node --bin merod-v2 -- local   # dev cluster: 3 nodes on :2501-2503 (`local.rs`)

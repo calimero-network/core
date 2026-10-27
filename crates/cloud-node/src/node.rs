@@ -16,9 +16,12 @@ use serde_json::{json, Value};
 use tracing::{debug, info, warn};
 use url::Url;
 
-use crate::app::{AppCmd, AppMachine, Applied, CallEntry, Executor, Status};
+use crate::app::{
+    AppCmd, AppMachine, Applied, CallEntry, Executor, FollowUp, Outcome, RunEnv, Status, Trigger,
+};
 use crate::attest::{HttpAttestor, Mode, Policy};
 use crate::error::ApiError;
+use crate::services::{AppBlobs, BundleFacts, Search};
 use crate::system::{output, SystemCmd, SystemMachine, SystemState};
 use crate::types::{now_ms, AppRecord, Caller, NodeRecord};
 
@@ -79,6 +82,38 @@ pub struct CallRequest {
     pub idempotency_key: Option<String>,
     #[serde(default)]
     pub consent: Option<Value>,
+    /// Raw input instead of `args` (an event handler's event, an xcall's params).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<calimero_log::Bytes>,
+    /// Why the node runs it itself; `None` for a request. Peers pass it along
+    /// on `internal/call`, which only peers reach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<Trigger>,
+}
+
+impl CallRequest {
+    /// A request a client made.
+    #[must_use]
+    pub fn new(app_id: String, method: String, args: Value, caller: Caller) -> Self {
+        Self {
+            app_id,
+            method,
+            args,
+            caller,
+            idempotency_key: None,
+            consent: None,
+            input: None,
+            trigger: None,
+        }
+    }
+
+    fn input_bytes(&self) -> Vec<u8> {
+        match &self.input {
+            Some(b) => b.0.clone(),
+            None if self.args.is_null() => Vec::new(),
+            None => serde_json::to_vec(&self.args).unwrap_or_default(),
+        }
+    }
 }
 
 /// Request to run a read-only method.
@@ -119,6 +154,14 @@ pub struct Node {
     pub challenges: Mutex<HashMap<String, crate::api::Pending>>,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
+    /// Full-text search over the apps hosted here.
+    pub search: Search,
+    /// ABI facts per bundle hash.
+    facts: Mutex<HashMap<String, Arc<BundleFacts>>>,
+    /// Wakes the follow-up driver: an entry may have queued work.
+    pub kick: tokio::sync::Notify,
+    /// This node, for what a run is handed (its blob host).
+    this: Mutex<Weak<Node>>,
 }
 
 /// Raft RPCs to peers, over their sealed channels.
@@ -208,8 +251,13 @@ impl Node {
                 .build()?,
             challenges: Mutex::new(HashMap::new()),
             starting: tokio::sync::Mutex::new(()),
+            search: Search::default(),
+            facts: Mutex::new(HashMap::new()),
+            kick: tokio::sync::Notify::new(),
+            this: Mutex::new(Weak::new()),
         });
         *peer_transport.node.lock().map_err(|e| eyre::eyre!("{e}"))? = Arc::downgrade(&node);
+        *node.this.lock().map_err(|e| eyre::eyre!("{e}"))? = Arc::downgrade(&node);
 
         let weak = Arc::downgrade(&node);
         engine.set_group_factory(move |gid| {
@@ -513,6 +561,9 @@ impl Node {
                     debug!(app = %app.app_id, error = %e.message, "init not yet possible");
                 }
             }
+            if g.status().is_leader {
+                self.drive(&g, &app).await;
+            }
         }
         // Stop groups this node no longer replicates.
         let hosted: Vec<GroupId> = self
@@ -527,6 +578,14 @@ impl Node {
                     .any(|a| a.group == group && a.replicas.contains(&self.config.node_id))
             });
             if !keep {
+                if let Some(app) = self.sys(|s| {
+                    s.apps
+                        .values()
+                        .find(|a| a.group == group)
+                        .map(|a| a.app_id.clone())
+                }) {
+                    self.search.drop_app(&app);
+                }
                 let _g = self.apps.write().ok().and_then(|mut a| a.remove(&group));
                 let _r = self.engine.remove_group(group).await;
                 info!(group, "stopped hosting app group");
@@ -608,6 +667,181 @@ impl Node {
         Err(ApiError::unavailable("no peer holds the bundle"))
     }
 
+    /// What a run of `app_id` by `caller` is handed besides its call.
+    fn env(&self, app_id: &str, caller: &Caller) -> RunEnv {
+        let opener = caller.account().map(|a| {
+            Arc::new(calimero_primitives::identity::PrivateKey::from(
+                crate::backup::member_key(&self.config.storage_key, app_id, a),
+            ))
+        });
+        RunEnv {
+            org: self.sys(|s| crate::app::caller_org(s, app_id, caller)),
+            blobs: Some(Arc::new(AppBlobs {
+                node: self.this.lock().map(|w| w.clone()).unwrap_or_default(),
+            })),
+            sealing: calimero_runtime::logic::SealingContext {
+                opener,
+                ..Default::default()
+            },
+            ..RunEnv::default()
+        }
+    }
+
+    /// The sealing keys of a run the node fires as the app's TEE: it opens
+    /// with the app's TEE key, seals to it, and seals a member's share to the
+    /// key standing for that member (every account that may reach the app).
+    fn tee_sealing(&self, app_id: &str) -> calimero_runtime::logic::SealingContext {
+        use calimero_primitives::identity::PrivateKey;
+        let tee = PrivateKey::from(crate::backup::tee_key(&self.config.storage_key, app_id));
+        let accounts: Vec<String> = self.sys(|s| {
+            let Some(app) = s.apps.get(app_id) else {
+                return Vec::new();
+            };
+            let mut out: Vec<String> = vec![app.owner.clone()];
+            match &app.access {
+                crate::types::Access::Accounts { accounts } => out.extend(accounts.iter().cloned()),
+                crate::types::Access::Org => {
+                    if let Some(org) = app.org.as_ref().and_then(|o| s.orgs.get(o)) {
+                        out.extend(org.members.keys().cloned());
+                    }
+                }
+                _ => {}
+            }
+            out.sort();
+            out.dedup();
+            out
+        });
+        // A member's one "device" is their account, which is what their runs
+        // see as `env::device_id()`; sealing to it seals to their member key.
+        let mut account_devices = BTreeMap::new();
+        let mut stand_ins = BTreeMap::new();
+        for a in &accounts {
+            let key = PrivateKey::from(crate::backup::member_key(
+                &self.config.storage_key,
+                app_id,
+                a,
+            ));
+            let id = Caller::Account { account: a.clone() }.account_bytes();
+            let _prev = account_devices.insert(id, vec![id]);
+            let _prev = stand_ins.insert(id, *AsRef::<[u8; 32]>::as_ref(&key.public_key()));
+        }
+        calimero_runtime::logic::SealingContext {
+            tee_authority_keys: vec![*AsRef::<[u8; 32]>::as_ref(&tee.public_key())],
+            opener: Some(Arc::new(tee)),
+            vault_keys: Vec::new(),
+            account_devices,
+            stand_ins,
+        }
+    }
+
+    /// What a bundle's ABI declares that the node acts on.
+    pub async fn facts(&self, bundle: &str) -> Arc<BundleFacts> {
+        if let Some(f) = self.facts.lock().ok().and_then(|f| f.get(bundle).cloned()) {
+            return f;
+        }
+        let facts = Arc::new(
+            self.bundle_wasm(bundle)
+                .await
+                .map(|w| BundleFacts::of(&w))
+                .unwrap_or_default(),
+        );
+        if let Ok(mut f) = self.facts.lock() {
+            let _prev = f.insert(bundle.to_owned(), Arc::clone(&facts));
+        }
+        facts
+    }
+
+    /// Store a blob here and on the other nodes; `Ok` once a majority holds it.
+    /// Its id is `hex(SHA-256(bytes))`, the key the store files it under.
+    pub async fn store_blob(&self, bytes: &[u8]) -> Result<String, ApiError> {
+        let id = hex::encode(calimero_identity::sha256(bytes));
+        self.engine
+            .put_blob(&id, bytes)
+            .map_err(|e| ApiError::internal(&e.to_string()))?;
+        self.spread_blob(&id, bytes).await?;
+        Ok(id)
+    }
+
+    /// Hand a blob this node holds to every other node; `Ok` once a majority holds it.
+    async fn spread_blob(&self, id: &str, bytes: &[u8]) -> Result<(), ApiError> {
+        let peers: Vec<String> = self.sys(|s| {
+            s.nodes
+                .values()
+                .filter(|n| n.id != self.config.node_id)
+                .map(|n| n.addr.clone())
+                .collect()
+        });
+        let body = json!({ "hash": id, "wasm": calimero_log::Bytes(bytes.to_vec()) });
+        let results = futures_util::future::join_all(
+            peers
+                .iter()
+                .map(|addr| self.peer_post(addr, "internal/blob", &body)),
+        )
+        .await;
+        let held = 1 + results.iter().filter(|r| r.is_ok()).count();
+        if held * 2 <= peers.len() + 1 {
+            return Err(ApiError::unavailable(
+                "the blob could not reach a majority of nodes",
+            ));
+        }
+        Ok(())
+    }
+
+    /// A blob's bytes from a peer (this node missed it), kept here after.
+    pub async fn fetch_blob(&self, id: &str) -> Result<Vec<u8>, ApiError> {
+        let peers: Vec<String> = self.sys(|s| {
+            s.nodes
+                .values()
+                .filter(|n| n.id != self.config.node_id)
+                .map(|n| n.addr.clone())
+                .collect()
+        });
+        for addr in peers {
+            let Ok(v) = self
+                .peer_post(&addr, "internal/blob/get", &json!({ "hash": id }))
+                .await
+            else {
+                continue;
+            };
+            let Ok(bytes) = serde_json::from_value::<calimero_log::Bytes>(v["wasm"].clone()) else {
+                continue;
+            };
+            if hex::encode(calimero_identity::sha256(&bytes.0)) == id {
+                self.engine
+                    .put_blob(id, &bytes.0)
+                    .map_err(|e| ApiError::internal(&e.to_string()))?;
+                return Ok(bytes.0);
+            }
+        }
+        Err(ApiError::unavailable("no peer holds the blob"))
+    }
+
+    /// Whether `id` is one of `app`'s blobs. A replica that has not applied
+    /// the upload yet says no, so the others are asked too.
+    pub async fn blob_held(&self, app: &AppRecord, id: &[u8; 32]) -> Result<bool, ApiError> {
+        if let Some(g) = self.replica_group(app) {
+            if g.read_local(|m, _| m.holds_blob(id)) {
+                return Ok(true);
+            }
+        }
+        let others: Vec<String> = self.sys(|s| {
+            app.replicas
+                .iter()
+                .filter(|r| **r != self.config.node_id)
+                .filter_map(|r| s.nodes.get(r).map(|n| n.addr.clone()))
+                .collect()
+        });
+        let body = json!({ "app": app.app_id, "id": hex::encode(id) });
+        for addr in others {
+            if let Ok(v) = self.peer_forward(&addr, "internal/blob/held", &body).await {
+                if v["held"].as_bool() == Some(true) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
     async fn module_for(&self, bundle: &str) -> Result<Arc<calimero_runtime::Module>, ApiError> {
         let wasm = self.bundle_wasm(bundle).await?;
         self.executor
@@ -623,7 +857,7 @@ impl Node {
         let bundle = app.bundle.clone();
         let app_id = app.app_id.clone();
         let init_args = app.init_args.clone();
-        let org = self.sys(|s| crate::app::caller_org(s, &app.app_id, &owner));
+        let env = self.env(&app.app_id, &owner);
         let p = g
             .propose(|m, applied| {
                 if m.state.initialized || m.state.bundle.is_some() {
@@ -636,8 +870,9 @@ impl Node {
                     "init",
                     &init_args,
                     &m.state.kv,
-                    org.as_deref(),
+                    &env,
                 );
+                self.keep_blobs(&outcome);
                 let cmd = AppCmd::Init {
                     bundle: bundle.clone(),
                     base_index: applied,
@@ -650,7 +885,27 @@ impl Node {
         if !p.appended {
             return Err(ApiError::conflict("already initialized"));
         }
+        self.kick.notify_one();
         serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))
+    }
+
+    /// Keep the blobs a run wrote here, before its entry is proposed; the
+    /// leader hands them to the other nodes once the entry commits.
+    fn keep_blobs(&self, outcome: &Outcome) {
+        for (id, bytes) in &outcome.new_blobs {
+            if let Err(e) = self.engine.put_blob(id, bytes) {
+                warn!(blob = %id, error = %e, "blob not stored");
+            }
+        }
+    }
+
+    /// After a run's entry committed: its blobs to the other nodes.
+    async fn spread_blobs(&self, blobs: Vec<(String, Vec<u8>)>) {
+        for (id, bytes) in blobs {
+            if let Err(e) = self.spread_blob(&id, &bytes).await {
+                warn!(blob = %id, error = %e.message, "blob held by too few nodes");
+            }
+        }
     }
 
     /// Run a call on this node, which must be the app group's leader.
@@ -668,7 +923,50 @@ impl Node {
         if req.method == "__upgrade" {
             return self.upgrade_local(g, req).await;
         }
-        let org = self.sys(|s| crate::app::caller_org(s, &req.app_id, &req.caller));
+        if req.method == "__blob" {
+            let cmd = AppCmd::Blob {
+                id: req.args["id"].as_str().unwrap_or_default().to_owned(),
+                size: req.args["size"].as_u64().unwrap_or_default(),
+            };
+            let bytes = serde_json::to_vec(&cmd).unwrap_or_default();
+            let (_index, out) = g.write(bytes).await?;
+            return serde_json::from_slice(&out)
+                .map_err(|e| WriteError::Unavailable(e.to_string()));
+        }
+        let mut env = self.env(&req.app_id, &req.caller);
+        // Who may reach this method, when the node runs it itself.
+        let facts = match bundle.as_deref() {
+            Some(b) => self.facts(b).await,
+            None => Arc::new(BundleFacts::default()),
+        };
+        let refused: Option<String> = match &req.trigger {
+            None => None,
+            Some(Trigger::Timer { .. }) => {
+                env.tee_trigger = true;
+                env.sealing = self.tee_sealing(&req.app_id);
+                None
+            }
+            Some(Trigger::FollowUp { seq }) => {
+                let tee = g.read_local(|m, _| {
+                    matches!(
+                        m.state.pending.get(seq).map(|p| &p.followup),
+                        Some(FollowUp::Handler { tee: true, .. })
+                    )
+                });
+                env.tee_trigger = tee;
+                if tee {
+                    env.sealing = self.tee_sealing(&req.app_id);
+                }
+                (!tee && !facts.handlers.iter().any(|h| h == &req.method))
+                    .then(|| format!("{} is not an #[app::handler]", req.method))
+            }
+            Some(Trigger::XCall { origin, .. }) => {
+                env.xcall_origin = Some(calimero_identity::sha256(origin.as_bytes()));
+                self.xcall_refusal(&facts, origin, &req.app_id, &req.method)
+            }
+        };
+        let input = req.input_bytes();
+        let mut fresh_blobs = Vec::new();
         let p = g
             .propose(|m, applied| {
                 if let Some(key) = &req.idempotency_key {
@@ -676,24 +974,33 @@ impl Node {
                         return Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default());
                     }
                 }
-                let outcome = match &module {
-                    Some(module) => Executor::run(
-                        module,
-                        &req.app_id,
-                        &req.caller,
-                        &req.method,
-                        &req.args,
-                        &m.state.kv,
-                        org.as_deref(),
-                    ),
-                    None => crate::app::Outcome {
-                        status: Status::Trap,
-                        result: Value::Null,
-                        error: Value::String("the app is not initialized yet".into()),
-                        diff: Vec::new(),
-                        events: Vec::new(),
-                        logs: Vec::new(),
+                // A follow-up already run (a replayed driver pass) is not run twice.
+                if let Some(Trigger::FollowUp { seq }) = &req.trigger {
+                    if !m.state.pending.contains_key(seq) {
+                        return Proposal::Reply(Vec::new());
+                    }
+                }
+                let outcome = match (&module, &refused) {
+                    (_, Some(why)) => Outcome {
+                        status: Status::AppError,
+                        error: Value::String(why.clone()),
+                        ..Outcome::default()
                     },
+                    (Some(module), None) => {
+                        let (outcome, _ret) = Executor::run_bytes(
+                            module,
+                            &req.app_id,
+                            &req.caller,
+                            &req.method,
+                            &input,
+                            &m.state.kv,
+                            &env,
+                        );
+                        self.keep_blobs(&outcome);
+                        fresh_blobs.clone_from(&outcome.new_blobs);
+                        outcome
+                    }
+                    (None, None) => Outcome::trap("the app is not initialized yet"),
                 };
                 let cmd = AppCmd::Call(Box::new(CallEntry {
                     method: req.method.clone(),
@@ -704,11 +1011,29 @@ impl Node {
                     ts_ms: now,
                     base_index: applied,
                     outcome,
+                    trigger: req.trigger.clone(),
                 }));
                 Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
             })
             .await?;
-        serde_json::from_slice(&p.output).map_err(|e| WriteError::Unavailable(e.to_string()))
+        if p.output.is_empty() {
+            // A follow-up someone already ran: nothing to answer.
+            return Ok(Applied {
+                index: 0,
+                status: Status::Ok,
+                result: Value::Null,
+                error: Value::Null,
+                events: Vec::new(),
+                conflict: false,
+            });
+        }
+        let applied: Applied = serde_json::from_slice(&p.output)
+            .map_err(|e| WriteError::Unavailable(e.to_string()))?;
+        if p.appended && !applied.conflict {
+            self.kick.notify_one();
+            self.spread_blobs(fresh_blobs).await;
+        }
+        Ok(applied)
     }
 
     /// Switch an app to a new bundle, running its migration export if named.
@@ -732,27 +1057,24 @@ impl Node {
             .module_for(&bundle)
             .await
             .map_err(|e| WriteError::Unavailable(e.message))?;
-        let org = self.sys(|s| crate::app::caller_org(s, &req.app_id, &req.caller));
+        let env = self.env(&req.app_id, &req.caller);
         let p = g
             .propose(|m, applied| {
                 let outcome = match &migrate {
-                    Some(method) => Executor::run(
-                        &module,
-                        &req.app_id,
-                        &req.caller,
-                        method,
-                        &Value::Null,
-                        &m.state.kv,
-                        org.as_deref(),
-                    ),
-                    None => crate::app::Outcome {
-                        status: Status::Ok,
-                        result: Value::Null,
-                        error: Value::Null,
-                        diff: Vec::new(),
-                        events: Vec::new(),
-                        logs: Vec::new(),
-                    },
+                    Some(method) => {
+                        let outcome = Executor::run(
+                            &module,
+                            &req.app_id,
+                            &req.caller,
+                            method,
+                            &Value::Null,
+                            &m.state.kv,
+                            &env,
+                        );
+                        self.keep_blobs(&outcome);
+                        outcome
+                    }
+                    None => Outcome::default(),
                 };
                 let cmd = AppCmd::Upgrade {
                     bundle: bundle.clone(),
@@ -763,6 +1085,156 @@ impl Node {
             })
             .await?;
         serde_json::from_slice(&p.output).map_err(|e| WriteError::Unavailable(e.to_string()))
+    }
+
+    /// Why an `xcall` from app `origin` may not run `method` of app `target`,
+    /// if it may not (v1's rules): the method must be an `#[app::xcall]` entry
+    /// point, `from_same_app` admits only the same bundle, and the two apps
+    /// must share their organization (or, outside one, their owner).
+    fn xcall_refusal(
+        &self,
+        target_facts: &BundleFacts,
+        origin: &str,
+        target: &str,
+        method: &str,
+    ) -> Option<String> {
+        let Some(callers) = target_facts.xcalls.get(method) else {
+            return Some(format!(
+                "xcall denied: {method} is not an #[app::xcall] entry point"
+            ));
+        };
+        let (source, dest) =
+            self.sys(|s| (s.apps.get(origin).cloned(), s.apps.get(target).cloned()));
+        let (Some(source), Some(dest)) = (source, dest) else {
+            return Some("xcall denied: unknown app".into());
+        };
+        let same_boundary = match (&source.org, &dest.org) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => source.owner == dest.owner,
+            _ => false,
+        };
+        if !same_boundary {
+            return Some("xcall denied: the apps are not in the same organization".into());
+        }
+        if *callers == calimero_wasm_abi::schema::XCallCallers::SameApp
+            && source.bundle != dest.bundle
+        {
+            return Some(format!("xcall denied: {method} admits only the same app"));
+        }
+        None
+    }
+
+    /// The leader's work for an app beyond requests: timer methods whose period
+    /// came, and follow-ups (event handlers, xcalls) the log queued. Each runs
+    /// as an entry that also records it done, so a new leader neither skips
+    /// nor repeats one.
+    pub async fn drive(&self, g: &Group<AppMachine>, app: &AppRecord) {
+        let (bundle, initialized) =
+            g.read_local(|m, _| (m.state.bundle.clone(), m.state.initialized));
+        let (Some(bundle), true) = (bundle, initialized) else {
+            return;
+        };
+        let facts = self.facts(&bundle).await;
+        let app_caller = Caller::App {
+            app: app.app_id.clone(),
+        };
+        let now = crate::types::now_secs();
+        for (method, every) in &facts.timers {
+            let tick = now / every;
+            let last = g.read_local(|m, _| m.state.timer_ticks.get(method).copied());
+            if last.is_some_and(|l| l >= tick) {
+                continue;
+            }
+            let mut req = CallRequest::new(
+                app.app_id.clone(),
+                method.clone(),
+                Value::Null,
+                app_caller.clone(),
+            );
+            req.trigger = Some(Trigger::Timer {
+                method: method.clone(),
+                tick,
+            });
+            match self.call_local(g, &req).await {
+                Ok(a) if a.status != Status::Ok => {
+                    warn!(app = %app.app_id, %method, error = %a.error, "timer method failed");
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    debug!(app = %app.app_id, %method, error = %e, "timer not fired");
+                    return;
+                }
+            }
+        }
+        let pending: Vec<(u64, crate::app::Pending)> = g.read_local(|m, _| {
+            m.state
+                .pending
+                .iter()
+                .take(64)
+                .map(|(k, v)| (*k, v.clone()))
+                .collect()
+        });
+        for (seq, p) in pending {
+            match p.followup {
+                FollowUp::Handler { method, input, .. } => {
+                    let mut req = CallRequest::new(
+                        app.app_id.clone(),
+                        method,
+                        Value::Null,
+                        app_caller.clone(),
+                    );
+                    req.input = Some(input);
+                    req.trigger = Some(Trigger::FollowUp { seq });
+                    match self.call_local(g, &req).await {
+                        Ok(a) if a.status != Status::Ok => {
+                            warn!(app = %app.app_id, method = %req.method, error = %a.error, "event handler failed");
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            debug!(app = %app.app_id, seq, error = %e, "handler not run");
+                            return;
+                        }
+                    }
+                }
+                FollowUp::XCall {
+                    context,
+                    method,
+                    input,
+                } => {
+                    let target = self.canonical_app_id(&context);
+                    let mut req =
+                        CallRequest::new(target.clone(), method, Value::Null, app_caller.clone());
+                    req.input = Some(input);
+                    req.idempotency_key = Some(format!("xcall:{}:{seq}", app.app_id));
+                    req.trigger = Some(Trigger::XCall {
+                        origin: app.app_id.clone(),
+                        depth: p.depth + 1,
+                    });
+                    let known = self.sys(|s| s.apps.contains_key(&target));
+                    if known {
+                        match self.call(&req).await {
+                            Ok(a) if a.status != Status::Ok => {
+                                warn!(from = %app.app_id, to = %target, error = %a.error, "xcall refused");
+                            }
+                            Ok(_) => {}
+                            Err(e) if e.code == "UNAVAILABLE" => {
+                                debug!(to = %target, error = %e.message, "xcall waits for its target");
+                                return;
+                            }
+                            Err(e) => warn!(to = %target, error = %e.message, "xcall failed"),
+                        }
+                    } else {
+                        warn!(from = %app.app_id, to = %context, "xcall to an unknown app dropped");
+                    }
+                    let done =
+                        serde_json::to_vec(&AppCmd::Done { seqs: vec![seq] }).unwrap_or_default();
+                    if let Err(e) = g.write(done).await {
+                        debug!(error = %e, "xcall not yet marked done");
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     /// Run a call wherever the app's leader is.
@@ -854,8 +1326,10 @@ impl Node {
             .read_local(|m, _| m.state.bundle.clone())
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
         let module = self.module_for(&bundle).await?;
-        let org = self.sys(|s| crate::app::caller_org(s, &req.app_id, &req.caller));
+        let mut env = self.env(&req.app_id, &req.caller);
         Ok(g.read_local(|m, applied| {
+            // Search answers from indexes brought up to this very state.
+            env.search = self.search.for_view(&module, &bundle, m, applied);
             let out = Executor::run(
                 &module,
                 &req.app_id,
@@ -863,7 +1337,7 @@ impl Node {
                 &req.method,
                 &req.args,
                 &m.state.kv,
-                org.as_deref(),
+                &env,
             );
             ViewAnswer {
                 index: applied,

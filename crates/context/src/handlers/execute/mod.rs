@@ -3373,6 +3373,7 @@ fn sealing_context(
         tee_authority_keys,
         vault_keys: vault.held.into_iter().map(std::sync::Arc::new).collect(),
         account_devices,
+        stand_ins: std::collections::BTreeMap::new(),
     })
 }
 

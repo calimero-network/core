@@ -22,6 +22,10 @@ pub enum Caller {
     ApiKey { key: String, account: AccountId },
     /// Nobody in particular (public apps).
     Public,
+    /// The app itself: the node running an event handler, a timer, or an
+    /// `xcall` from app `app` (then the caller is the calling app). Never from
+    /// a client: the API builds callers from credentials.
+    App { app: AppId },
 }
 
 impl Caller {
@@ -29,13 +33,17 @@ impl Caller {
     pub fn account(&self) -> Option<&str> {
         match self {
             Self::Account { account } | Self::ApiKey { account, .. } => Some(account),
-            Self::Public => None,
+            Self::Public | Self::App { .. } => None,
         }
     }
 
     /// The 32 bytes the runtime exposes as `env::account_id()`.
     #[must_use]
     pub fn account_bytes(&self) -> [u8; 32] {
+        // An app calls as its context id, what it sees as `env::context_id()`.
+        if let Self::App { app } = self {
+            return calimero_identity::sha256(app.as_bytes());
+        }
         let mut out = [0; 32];
         if let Some(a) = self.account() {
             if let Ok(b) = calimero_identity::from_b64url(a) {

@@ -1013,12 +1013,9 @@ async fn intents(
     };
     let applied = node
         .call(&CallRequest {
-            app_id,
-            method: body.method,
-            args: body.args,
-            caller: p.caller,
             idempotency_key: body.idempotency_key,
             consent: consent_value,
+            ..CallRequest::new(app_id, body.method, body.args, p.caller)
         })
         .await?;
     Ok(answer(applied))
@@ -1169,14 +1166,12 @@ async fn app_upgrade(
         })
         .await?;
     let applied = node
-        .call(&CallRequest {
+        .call(&CallRequest::new(
             app_id,
-            method: "__upgrade".into(),
-            args: json!({ "bundle": body.bundle, "migrate": body.migrate }),
-            caller: Caller::Account { account },
-            idempotency_key: None,
-            consent: None,
-        })
+            "__upgrade".into(),
+            json!({ "bundle": body.bundle, "migrate": body.migrate }),
+            Caller::Account { account },
+        ))
         .await?;
     Ok(Json(
         json!({ "index": applied.index, "status": applied.status, "error": applied.error }),
@@ -1498,6 +1493,107 @@ async fn internal_blob_get(
     Ok(Json(json!({ "wasm": calimero_log::Bytes(wasm) })))
 }
 
+/// A blob id as a client gives it: base58 (what apps print, v1's `BlobId`) or hex.
+fn parse_blob_id(id: &str) -> Result<[u8; 32], ApiError> {
+    if let Ok(raw) = hex::decode(id) {
+        if let Ok(b) = <[u8; 32]>::try_from(raw.as_slice()) {
+            return Ok(b);
+        }
+    }
+    id.parse::<calimero_primitives::blobs::BlobId>()
+        .map(|b| *b.as_ref())
+        .map_err(|_| ApiError::bad_request("BAD_REQUEST", "not a blob id"))
+}
+
+fn blob_json(id: &[u8; 32], size: u64) -> Value {
+    json!({
+        "blobId": calimero_primitives::blobs::BlobId::from(*id).to_string(),
+        "id": hex::encode(id),
+        "size": size,
+    })
+}
+
+/// Upload a blob for an app: the body is its bytes. Anyone who may call the
+/// app may add one; its runs then open it by id.
+async fn blob_upload(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+    body: axum::body::Bytes,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let p = gate(&node, &headers, &app, "__blob", true).await?;
+    if p.caller.account().is_none() {
+        return Err(ApiError::unauthenticated("sign in to upload"));
+    }
+    let id = node.store_blob(&body).await?;
+    let size = body.len() as u64;
+    let a = node
+        .call(&CallRequest::new(
+            app_id,
+            "__blob".into(),
+            json!({ "id": id, "size": size }),
+            p.caller,
+        ))
+        .await?;
+    let raw = parse_blob_id(&id)?;
+    let mut out = blob_json(&raw, size);
+    out["index"] = json!(a.index);
+    Ok(Json(out))
+}
+
+/// Download one of an app's blobs.
+async fn blob_download(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, id)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let _p = gate(&node, &headers, &app, "__blob", false).await?;
+    let raw = parse_blob_id(&id)?;
+    if !node.blob_held(&app, &raw).await? {
+        return Err(ApiError::not_found("no such blob in this app"));
+    }
+    let hex_id = hex::encode(raw);
+    let bytes = match node
+        .engine
+        .get_blob(&hex_id)
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+    {
+        Some(b) => b,
+        None => node.fetch_blob(&hex_id).await?,
+    };
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+        bytes,
+    )
+        .into_response())
+}
+
+#[derive(Deserialize)]
+struct HeldBody {
+    app: String,
+    id: String,
+}
+
+async fn internal_blob_held(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<HeldBody>,
+) -> ApiResult {
+    peer_only(&node, &headers)?;
+    let app = node.app(&body.app).await?;
+    let raw = parse_blob_id(&body.id)?;
+    let g = node
+        .hosted(&app.app_id)
+        .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
+    Ok(Json(
+        json!({ "held": g.read_local(|m, _| m.holds_blob(&raw)) }),
+    ))
+}
+
 async fn internal_call(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -1774,6 +1870,8 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/apps/{app}/events", get(events))
         .route("/apps/{app}/upgrade", post(app_upgrade))
         .route("/apps/{app}/access", post(app_access))
+        .route("/apps/{app}/blobs", post(blob_upload))
+        .route("/apps/{app}/blobs/{id}", get(blob_download))
         .route("/orgs", post(org_create))
         .route("/orgs/{org}", get(org_get))
         .route("/orgs/{org}/members", post(org_set_member))
@@ -1791,6 +1889,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/call", post(internal_call))
         .route("/internal/blob", post(internal_blob_put))
         .route("/internal/blob/get", post(internal_blob_get))
+        .route("/internal/blob/held", post(internal_blob_held))
         .route("/internal/view", post(internal_view))
         .route("/internal/app-ready", post(internal_app_ready))
         .route("/internal/events", get(internal_events))

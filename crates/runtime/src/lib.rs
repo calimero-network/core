@@ -390,6 +390,24 @@ impl Engine {
     }
 }
 
+/// What a release-v2 cloud node gives one run, beyond the call itself.
+#[derive(Clone, Debug, Default)]
+pub struct CloudRun {
+    /// The caller's organization standing, as `env::caller_org` reads it.
+    pub caller_org: Option<Vec<u8>>,
+    /// Full-text search over the app's own indexes (views only).
+    pub search: Option<Arc<dyn logic::SearchHost>>,
+    /// The app's blob store.
+    pub blobs: Option<Arc<dyn logic::BlobHost>>,
+    /// The context that dispatched this run with `xcall`, as `env::xcall_origin`.
+    pub xcall_origin: Option<ContextId>,
+    /// The node fired this run itself (an `#[app::tee]` timer); the cluster
+    /// is the app's TEE authority.
+    pub tee_trigger: bool,
+    /// The keys behind the sealing host functions for this run.
+    pub sealing: logic::SealingContext,
+}
+
 /// A compiled WASM module ready for execution.
 ///
 /// Cheap to clone: `wasmer::Engine` and `wasmer::Module` are both
@@ -513,14 +531,14 @@ impl Module {
             outbound,
             remote_delta,
             None,
+            None,
         )
     }
 
-    /// [`Self::run`] for the release-v2 cloud node, which also tells the app
-    /// the caller's organization standing (`env::caller_org`) and gives it the
-    /// caller's private storage.
+    /// [`Self::run`] for the release-v2 cloud node: the caller's private
+    /// storage, and what [`CloudRun`] gives the run.
     #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
-    pub fn run_with_caller_org<'a>(
+    pub fn run_cloud<'a>(
         &'a self,
         context: ContextId,
         account: AccountId,
@@ -529,8 +547,16 @@ impl Module {
         input: &'a [u8],
         storage: &'a mut dyn Storage,
         private_storage: Option<&'a mut dyn Storage>,
-        caller_org: Option<Vec<u8>>,
+        cloud: CloudRun,
     ) -> RuntimeResult<Outcome> {
+        let CloudRun {
+            caller_org,
+            search,
+            blobs,
+            xcall_origin,
+            tee_trigger,
+            sealing,
+        } = cloud;
         self.run_inner(
             context,
             account,
@@ -540,13 +566,14 @@ impl Module {
             storage,
             private_storage,
             None,
-            None,
-            false,
-            logic::SealingContext::default(),
-            None,
+            xcall_origin,
+            tee_trigger,
+            sealing,
+            search,
             None,
             false,
             caller_org,
+            blobs,
         )
     }
 
@@ -568,6 +595,7 @@ impl Module {
         outbound: Option<Arc<dyn logic::OutboundHost>>,
         remote_delta: bool,
         caller_org: Option<Vec<u8>>,
+        blobs: Option<Arc<dyn logic::BlobHost>>,
     ) -> RuntimeResult<Outcome> {
         let context_id = context;
         debug!(%context_id, method, "Running WASM method");
@@ -576,6 +604,7 @@ impl Module {
         let mut context = VMContext::new(input.into(), *context_id, *executor, account);
         context.xcall_origin = xcall_origin.map(|origin| *origin);
         context.caller_org = caller_org;
+        context.blobs = blobs;
         context.tee_trigger = tee_trigger;
         context.sealing = sealing;
         context.search = search;

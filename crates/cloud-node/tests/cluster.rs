@@ -893,3 +893,309 @@ async fn an_app_answers_to_its_context_id_too() {
         .unwrap();
     assert_eq!(v.result, json!("1"));
 }
+
+/// A core fixture app built with `cargo mero build` (so its ABI is embedded:
+/// handlers, timers and xcall entry points come from it).
+fn mero_wasm(app: &str, name: &str) -> Vec<u8> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps")
+        .join(app)
+        .join("res")
+        .join(format!("{name}.wasm"));
+    std::fs::read(&path).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e}; build it with cargo mero build --manifest-path apps/{app}/Cargo.toml",
+            path.display()
+        )
+    })
+}
+
+/// Deploy `wasm` as a new app owned by `cl`; answers (app id, context id).
+async fn deploy(cl: &Client, name: &str, wasm: Vec<u8>, options: Value) -> (String, String) {
+    let bundle = cl.upload_bundle(wasm).await.unwrap();
+    let mut body = json!({ "name": name, "bundle": bundle });
+    if let (Some(o), Some(b)) = (options.as_object(), body.as_object_mut()) {
+        b.extend(o.clone());
+    }
+    let created = cl.post("apps", body).await.unwrap();
+    (
+        created["appId"].as_str().unwrap().to_owned(),
+        created["contextId"].as_str().unwrap().to_owned(),
+    )
+}
+
+/// Poll a strong view until `done` holds (follow-ups run after their entry).
+async fn eventually(
+    cl: &Client,
+    app: &str,
+    method: &str,
+    args: Value,
+    done: impl Fn(&Value) -> bool,
+) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..100 {
+        if let Ok(v) = cl
+            .view(app, method, args.clone(), Consistency::Strong)
+            .await
+        {
+            if done(&v.result) {
+                return v.result;
+            }
+            last = v.result;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("{method} never got there; last answer {last}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn blobs_are_the_apps_own_and_reach_every_node() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (files, _) = deploy(&alice, "files", mero_wasm("blobs", "blobs"), json!({})).await;
+    let (other, _) = deploy(&alice, "other", mero_wasm("blobs", "blobs"), json!({})).await;
+
+    let pdf = b"%PDF-1.7 an agreement".repeat(1000);
+    let up = alice.upload_blob(&files, pdf.clone()).await.unwrap();
+    let blob_id = up["blobId"].as_str().unwrap().to_owned();
+    assert_eq!(up["size"], json!(pdf.len()));
+
+    // The app records it and announces it (a no-op here, but it must not fail).
+    let file = alice
+        .call(
+            &files,
+            "upload_file",
+            json!({ "name": "a.pdf", "blob_id": blob_id, "size": pdf.len(), "mime_type": "application/pdf" }),
+            None,
+        )
+        .await
+        .unwrap();
+    let file_id = file.result.as_str().unwrap().to_owned();
+    let record = strong_view(&alice, &files, "get_file", json!({ "file_id": file_id })).await;
+    assert_eq!(record["blob_id"], json!(blob_id));
+
+    // Any node serves it, by either id form.
+    for i in 0..3 {
+        let cl = c.client(i);
+        cl.use_session(alice.session().await.unwrap()).await;
+        assert_eq!(cl.download_blob(&files, &blob_id).await.unwrap(), pdf);
+    }
+    let hex_id = up["id"].as_str().unwrap();
+    assert_eq!(alice.download_blob(&files, hex_id).await.unwrap(), pdf);
+
+    // Another app does not hold it, whatever it knows of the id.
+    let err = alice.download_blob(&other, &blob_id).await.unwrap_err();
+    assert_eq!(err.code(), Some("NOT_FOUND"));
+    let err = alice
+        .call(
+            &other,
+            "upload_file",
+            json!({ "name": "a.pdf", "blob_id": blob_id, "size": 1, "mime_type": "x" }),
+            None,
+        )
+        .await;
+    // The blobs app only logs a failed announce; the record lands, the bytes don't.
+    assert!(err.is_ok());
+    assert!(alice.download_blob(&other, &blob_id).await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn event_handlers_run_once_after_the_entry_that_emitted_them() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (kv, _) = deploy(
+        &alice,
+        "kv",
+        mero_wasm("kv-store-with-handlers", "kv_store_with_handlers"),
+        json!({}),
+    )
+    .await;
+    for (k, v) in [("a", "1"), ("a", "2"), ("b", "3")] {
+        let _ = alice
+            .call(&kv, "set", json!({ "key": k, "value": v }), None)
+            .await
+            .unwrap();
+    }
+    let _ = eventually(&alice, &kv, "get_handler_execution_count", json!({}), |v| {
+        v == &json!(3)
+    })
+    .await;
+    // Once each, not once per replica.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        strong_view(&alice, &kv, "get_handler_execution_count", json!({})).await,
+        json!(3)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn xcalls_reach_only_declared_entry_points_in_the_same_organization() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let xcall = || mero_wasm("xcall-example", "xcall_example");
+    let (ping, _) = deploy(&alice, "ping", xcall(), json!({})).await;
+    let (pong, pong_ctx) = deploy(&alice, "pong", xcall(), json!({})).await;
+    let (stranger, stranger_ctx) = deploy(&bob, "stranger", xcall(), json!({})).await;
+
+    let _ = alice
+        .call(&ping, "ping", json!({ "target_context": pong_ctx }), None)
+        .await
+        .unwrap();
+    let _ = eventually(&alice, &pong, "get_counter", json!({}), |v| v == &json!(1)).await;
+
+    // `secret` is not an #[app::xcall] entry point.
+    let _ = alice
+        .call(
+            &ping,
+            "ping_secret",
+            json!({ "target_context": pong_ctx }),
+            None,
+        )
+        .await
+        .unwrap();
+    // Bob's app is another owner's, outside any shared organization.
+    let _ = alice
+        .call(
+            &ping,
+            "ping",
+            json!({ "target_context": stranger_ctx }),
+            None,
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        strong_view(&alice, &pong, "get_secret_counter", json!({})).await,
+        json!(0)
+    );
+    assert_eq!(
+        strong_view(&bob, &stranger, "get_counter", json!({})).await,
+        json!(0)
+    );
+    assert_eq!(
+        strong_view(&alice, &pong, "get_counter", json!({})).await,
+        json!(1)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn tee_handlers_and_timers_run_as_the_apps_tee() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (dice, _) = deploy(&alice, "dice", mero_wasm("tee-dice", "tee_dice"), json!({})).await;
+    let _ = alice
+        .call(&dice, "roll", json!({ "roll_id": "r1", "sides": 6 }), None)
+        .await
+        .unwrap();
+    let face = eventually(&alice, &dice, "get_roll", json!({ "roll_id": "r1" }), |v| {
+        !v.is_null()
+    })
+    .await;
+    let face = face.as_u64().unwrap();
+    assert!((1..=6).contains(&face), "{face}");
+    // A member cannot resolve a roll itself.
+    let err = alice
+        .call(
+            &dice,
+            "resolve_roll",
+            json!({ "roll_id": "r2", "sides": 6 }),
+            None,
+        )
+        .await;
+    assert!(err.is_err(), "{err:?}");
+
+    // `reshuffle` is `#[app::tee(every = "1m")]`: the current tick fires at once.
+    let (cards, _) = deploy(
+        &alice,
+        "cards",
+        mero_wasm("tee-cards", "tee_cards"),
+        json!({}),
+    )
+    .await;
+    let _ = eventually(&alice, &cards, "cards_left", json!({}), |v| !v.is_null()).await;
+
+    // A card the TEE deals is sealed to its player: Alice reads hers, nobody
+    // else's run can open it.
+    let _ = alice.call(&cards, "sit", json!({}), None).await.unwrap();
+    let _ = alice.call(&cards, "draw", json!({}), None).await.unwrap();
+    let hand = eventually(&alice, &cards, "my_hand", json!({}), |v| {
+        v.as_array().is_some_and(|h| h.len() == 1)
+    })
+    .await;
+    let card = hand[0].as_u64().unwrap();
+    assert!(card < 52, "{card}");
+    let left = strong_view(&alice, &cards, "cards_left", json!({})).await;
+    assert_eq!(left, json!(51));
+    let _ = alice
+        .post(
+            &format!("apps/{cards}/access"),
+            json!({ "access": "public" }),
+        )
+        .await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    if let Ok(v) = bob
+        .view(&cards, "my_hand", json!({}), Consistency::Strong)
+        .await
+    {
+        assert_eq!(v.result, json!([]));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn views_search_the_apps_own_index_as_it_changes() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (chat, _) = deploy(
+        &alice,
+        "chat",
+        mero_wasm("search-chat", "search_chat"),
+        json!({}),
+    )
+    .await;
+    for (id, text) in [
+        ("m1", "the quarterly report is late"),
+        ("m2", "lunch at noon"),
+    ] {
+        let _ = alice
+            .call(
+                &chat,
+                "post",
+                json!({ "id": id, "sender": "alice", "text": text, "ts": 1 }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let hits = |v: &Value| v["hits"].as_array().map_or(0, Vec::len);
+    let page = strong_view(&alice, &chat, "search", json!({ "query": "report" })).await;
+    assert_eq!(hits(&page), 1, "{page}");
+    // An edit is searched as it is now, on any node.
+    let _ = alice
+        .call(
+            &chat,
+            "edit",
+            json!({ "id": "m2", "text": "the report again" }),
+            None,
+        )
+        .await
+        .unwrap();
+    for i in 0..3 {
+        let cl = c.client(i);
+        cl.use_session(alice.session().await.unwrap()).await;
+        let page = strong_view(&cl, &chat, "search", json!({ "query": "report" })).await;
+        assert_eq!(hits(&page), 2, "node {i}: {page}");
+    }
+    let page = strong_view(&alice, &chat, "search", json!({ "query": "lunch" })).await;
+    assert_eq!(hits(&page), 0, "{page}");
+    // A write may not search (v1 rule: search is for views).
+    assert!(alice
+        .call(
+            &chat,
+            "search_in_a_write",
+            json!({ "query": "report" }),
+            None
+        )
+        .await
+        .is_err());
+}

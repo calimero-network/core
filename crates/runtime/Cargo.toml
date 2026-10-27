@@ -17,6 +17,7 @@ fragile.workspace = true
 futures-util = { workspace = true, features = ["io"] }
 ouroboros.workspace = true
 rand.workspace = true
+sha2.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt"] }
