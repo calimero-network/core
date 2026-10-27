@@ -1,0 +1,819 @@
+# Ported from fuzzy-test.yml by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   wait_for_sync x2: replication is synchronous: a read sees every committed write
+name: Scaffolding E2E Fuzzy Load Test
+description: Long-running fuzzy load test for the comprehensive scaffolding-e2e application
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 3470
+accounts:
+- fuzzy-e2e-node-1
+- fuzzy-e2e-node-2
+- fuzzy-e2e-node-3
+- fuzzy-e2e-node-4
+steps:
+- name: Install Scaffolding E2E on Node 1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  outputs:
+    e2e_app_id_bundle: hash
+  account: fuzzy-e2e-node-1
+- type: set
+  values:
+    e2e_app_id: '{{e2e_app_id_bundle}}'
+- name: Create Mesh for Scaffolding E2E
+  type: create_org
+  account: fuzzy-e2e-node-1
+  org_name: mesh
+  outputs:
+    namespace_id: orgId
+- type: invite
+  account: fuzzy-e2e-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: fuzzy-e2e-node-2
+  token: '{{_mesh_invite}}'
+- type: invite
+  account: fuzzy-e2e-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: fuzzy-e2e-node-3
+  token: '{{_mesh_invite}}'
+- type: invite
+  account: fuzzy-e2e-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: fuzzy-e2e-node-4
+  token: '{{_mesh_invite}}'
+- name: Create Mesh for Scaffolding E2E
+  type: deploy
+  account: fuzzy-e2e-node-1
+  org: '{{namespace_id}}'
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Create Mesh for Scaffolding E2E
+  outputs:
+    e2e_context_id: contextId
+    node1_key: memberPublicKey
+- name: Verify all nodes synced
+  type: assert
+  statements:
+  - is_set({{e2e_context_id}})
+  - is_set({{node1_key}})
+  - is_set({{public_key_fuzzy-e2e-node-2}})
+  - is_set({{public_key_fuzzy-e2e-node-3}})
+  - is_set({{public_key_fuzzy-e2e-node-4}})
+- name: Seed initial KV data
+  type: repeat
+  count: 10
+  steps:
+  - type: call
+    app: '{{e2e_context_id}}'
+    method: set
+    args:
+      key: seed_key_{{iteration}}
+      value: seed_value_{{iteration}}
+    account: fuzzy-e2e-node-1
+    as_key: '{{node1_key}}'
+- name: Seed initial CRDT counters
+  type: repeat
+  count: 5
+  steps:
+  - type: call
+    app: '{{e2e_context_id}}'
+    method: increment_g_counter
+    args:
+      key: perf_counter_{{iteration}}
+    account: fuzzy-e2e-node-1
+    as_key: '{{node1_key}}'
+- name: Seed initial metrics vector
+  type: repeat
+  count: 3
+  steps:
+  - type: call
+    app: '{{e2e_context_id}}'
+    method: push_metric
+    args:
+      value: 1
+    account: fuzzy-e2e-node-1
+    as_key: '{{node1_key}}'
+- name: Seed AuthoredMap entry 0
+  type: call
+  app: '{{e2e_context_id}}'
+  method: authored_insert
+  args:
+    key: authored_seed_0
+    value: authored_val_0
+  account: fuzzy-e2e-node-1
+  as_key: '{{node1_key}}'
+- name: Seed AuthoredMap entry 1
+  type: call
+  app: '{{e2e_context_id}}'
+  method: authored_insert
+  args:
+    key: authored_seed_1
+    value: authored_val_1
+  account: fuzzy-e2e-node-1
+  as_key: '{{node1_key}}'
+- name: Seed AuthoredMap entry 2
+  type: call
+  app: '{{e2e_context_id}}'
+  method: authored_insert
+  args:
+    key: authored_seed_2
+    value: authored_val_2
+  account: fuzzy-e2e-node-1
+  as_key: '{{node1_key}}'
+- name: Seed AuthoredMap entry 3
+  type: call
+  app: '{{e2e_context_id}}'
+  method: authored_insert
+  args:
+    key: authored_seed_3
+    value: authored_val_3
+  account: fuzzy-e2e-node-1
+  as_key: '{{node1_key}}'
+- name: Seed AuthoredMap entry 4
+  type: call
+  app: '{{e2e_context_id}}'
+  method: authored_insert
+  args:
+    key: authored_seed_4
+    value: authored_val_4
+  account: fuzzy-e2e-node-1
+  as_key: '{{node1_key}}'
+- name: Account of node-2
+  type: call
+  app: '{{e2e_context_id}}'
+  method: my_account
+  args: {}
+  account: fuzzy-e2e-node-2
+  outputs:
+    acct_node2: result
+- name: Account of node-3
+  type: call
+  app: '{{e2e_context_id}}'
+  method: my_account
+  args: {}
+  account: fuzzy-e2e-node-3
+  outputs:
+    acct_node3: result
+- name: Account of node-4
+  type: call
+  app: '{{e2e_context_id}}'
+  method: my_account
+  args: {}
+  account: fuzzy-e2e-node-4
+  outputs:
+    acct_node4: result
+- name: Add node-2 as shared writer
+  type: call
+  app: '{{e2e_context_id}}'
+  method: shared_add_writer
+  args:
+    writer: '{{acct_node2}}'
+  account: fuzzy-e2e-node-1
+  as_key: '{{node1_key}}'
+- name: Add node-3 as shared writer
+  type: call
+  app: '{{e2e_context_id}}'
+  method: shared_add_writer
+  args:
+    writer: '{{acct_node3}}'
+  account: fuzzy-e2e-node-1
+  as_key: '{{node1_key}}'
+- name: Add node-4 as shared writer
+  type: call
+  app: '{{e2e_context_id}}'
+  method: shared_add_writer
+  args:
+    writer: '{{acct_node4}}'
+  account: fuzzy-e2e-node-1
+  as_key: '{{node1_key}}'
+- name: Seed initial shared storage value
+  type: call
+  app: '{{e2e_context_id}}'
+  method: shared_set
+  args:
+    value: shared_initial
+  account: fuzzy-e2e-node-1
+  as_key: '{{node1_key}}'
+- name: Scaffolding E2E Fuzzy Load Test
+  type: fuzzy_test
+  operations:
+  - name: write_burst
+    weight: 25
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 5000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-e2e-node-1
+      outputs:
+        w1: rpc
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 5000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-e2e-node-2
+      outputs:
+        w2: rpc
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 5000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-e2e-node-3
+      outputs:
+        w3: rpc
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 5000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-e2e-node-4
+      outputs:
+        w4: rpc
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 5000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-e2e-node-1
+      outputs:
+        w5: rpc
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 5000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-e2e-node-2
+      outputs:
+        w6: rpc
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 5000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-e2e-node-3
+      outputs:
+        w7: rpc
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 5000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-e2e-node-4
+      outputs:
+        w8: rpc
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 5000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-e2e-node-1
+      outputs:
+        w9: rpc
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 5000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-e2e-node-2
+      outputs:
+        w10: rpc
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 5000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-e2e-node-3
+      outputs:
+        w11: rpc
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 5000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-e2e-node-4
+      outputs:
+        w12: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{w1}})
+      - is_set({{w2}})
+      - is_set({{w3}})
+      - is_set({{w4}})
+      - is_set({{w5}})
+      - is_set({{w6}})
+      - is_set({{w7}})
+      - is_set({{w8}})
+      - is_set({{w9}})
+      - is_set({{w10}})
+      - is_set({{w11}})
+      - is_set({{w12}})
+  - name: kv_write_read
+    weight: 20
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 5000)}}
+        value: value_{{uuid}}_{{timestamp}}
+      account: '{{random_account}}'
+      outputs:
+        kv_set_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{kv_set_result}})
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: get
+      args:
+        key: '{{fuzzy_key}}'
+      account: '{{random_account}}'
+      outputs:
+        kv_get_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{kv_get_result}})
+      - contains({{kv_get_result}}, {{fuzzy_value}})
+  - name: kv_handler_write_read
+    weight: 10
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set_with_handler
+      args:
+        key: hkey_{{random_int(1, 5000)}}
+        value: hvalue_{{uuid}}_{{timestamp}}
+      account: '{{random_account}}'
+      outputs:
+        h_set_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{h_set_result}})
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: get
+      args:
+        key: '{{fuzzy_key}}'
+      account: '{{random_account}}'
+      outputs:
+        h_get_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{h_get_result}})
+  - name: g_counter_ops
+    weight: 6
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: increment_g_counter
+      args:
+        key: perf_counter_{{random_int(0, 4)}}
+      account: '{{random_account}}'
+      outputs:
+        g_counter_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{g_counter_result}})
+  - name: pn_counter_ops
+    weight: 4
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: increment_pn_counter
+      args:
+        key: balance_{{random_int(0, 10)}}
+      account: '{{random_account}}'
+      outputs:
+        pn_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{pn_result}})
+  - name: register_ops
+    weight: 8
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set_register
+      args:
+        key: reg_{{random_int(0, 20)}}
+        value: val_{{uuid}}
+      account: '{{random_account}}'
+      outputs:
+        reg_set_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{reg_set_result}})
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: get_register
+      args:
+        key: '{{fuzzy_key}}'
+      account: '{{random_account}}'
+      outputs:
+        reg_get_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{reg_get_result}})
+  - name: user_storage_ops
+    weight: 6
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set_user_simple
+      args:
+        value: profile_{{uuid}}
+      account: fuzzy-e2e-node-1
+      outputs:
+        user_set_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{user_set_result}})
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: get_user_simple
+      args: {}
+      account: fuzzy-e2e-node-1
+      outputs:
+        user_get_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{user_get_result}})
+  - name: metadata_ops
+    weight: 4
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set_metadata
+      args:
+        outer_key: entity_{{random_int(0, 20)}}
+        inner_key: field_{{random_int(0, 5)}}
+        value: data_{{uuid}}
+      account: '{{random_account}}'
+      outputs:
+        meta_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{meta_result}})
+  - name: tag_ops
+    weight: 4
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: add_tag
+      args:
+        key: category_{{random_int(0, 10)}}
+        tag: tag_{{random_int(0, 50)}}
+      account: '{{random_account}}'
+      outputs:
+        tag_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{tag_result}})
+  - name: rga_text_ops
+    weight: 3
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: rga_append_text
+      args:
+        text: x
+      account: '{{random_account}}'
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: rga_get_length
+      args: {}
+      account: '{{random_account}}'
+      outputs:
+        rga_len_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{rga_len_result}})
+  - name: cross_node_kv_sync
+    weight: 2
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set
+      args:
+        key: sync_check_{{uuid}}
+        value: sync_val_{{timestamp}}
+      account: fuzzy-e2e-node-1
+    - type: wait
+      seconds: 2.0
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: get
+      args:
+        key: '{{fuzzy_key}}'
+      account: fuzzy-e2e-node-4
+      outputs:
+        sync_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - statement: contains({{sync_result}}, {{fuzzy_value}})
+        message: Cross-node value should propagate within 2s
+  - name: kv_entries_scan
+    weight: 4
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: entries
+      args: {}
+      account: '{{random_account}}'
+      outputs:
+        entries_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{entries_result}})
+  - name: vector_ops
+    weight: 3
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: push_metric
+      args:
+        value: 1
+      account: '{{random_account}}'
+      outputs:
+        vec_len: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{vec_len}})
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: get_metric
+      args:
+        index: 0
+      account: '{{random_account}}'
+      outputs:
+        vec_val: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{vec_val}})
+  - name: frozen_ops
+    weight: 4
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: add_frozen
+      args:
+        value: frozen_{{uuid}}
+      account: '{{random_account}}'
+      outputs:
+        frozen_hash: result
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{frozen_hash}})
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: get_frozen
+      args:
+        hash_hex: '{{frozen_hash}}'
+      account: '{{random_account}}'
+      outputs:
+        frozen_val: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{frozen_val}})
+  - name: nested_user_ops
+    weight: 3
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: set_user_nested
+      args:
+        key: nested_field
+        value: nval_{{uuid}}
+      account: fuzzy-e2e-node-1
+      outputs:
+        nest_set: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{nest_set}})
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: get_user_nested
+      args:
+        key: nested_field
+      account: fuzzy-e2e-node-1
+      outputs:
+        nest_get: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{nest_get}})
+  - name: authored_insert_get
+    weight: 5
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: authored_insert
+      args:
+        key: authored_{{uuid}}
+        value: aval_{{uuid}}_{{timestamp}}
+      account: '{{random_account}}'
+      outputs:
+        authored_ins_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{authored_ins_result}})
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: authored_get
+      args:
+        key: '{{fuzzy_key}}'
+      account: '{{random_account}}'
+      outputs:
+        authored_get_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{authored_get_result}})
+  - name: authored_update_seed
+    weight: 3
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: authored_update
+      args:
+        key: authored_seed_{{random_int(0, 4)}}
+        value: updated_{{uuid}}
+      account: fuzzy-e2e-node-1
+      outputs:
+        authored_upd_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{authored_upd_result}})
+  - name: authored_vec_push_get
+    weight: 3
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: authored_vec_push
+      args:
+        value: vec_{{uuid}}_{{timestamp}}
+      account: '{{random_account}}'
+      outputs:
+        vec_push_index: result
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{vec_push_index}})
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: authored_vec_len
+      args: {}
+      account: '{{random_account}}'
+      outputs:
+        vec_len_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{vec_len_result}})
+  - name: shared_write_read
+    weight: 4
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: shared_set
+      args:
+        value: shared_{{uuid}}_{{timestamp}}
+      account: '{{random_account}}'
+      outputs:
+        shared_set_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{shared_set_result}})
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: shared_get
+      args: {}
+      account: '{{random_account}}'
+      outputs:
+        shared_get_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{shared_get_result}})
+  - name: shared_cross_read
+    weight: 1
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: shared_set
+      args:
+        value: shared_cross_{{timestamp}}
+      account: fuzzy-e2e-node-1
+    - type: wait
+      seconds: 1.0
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: shared_get
+      args: {}
+      account: fuzzy-e2e-node-4
+      outputs:
+        shared_cross_val: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - statement: is_set({{shared_cross_val}})
+        message: Shared value should propagate to node-4 within 1s
+  - name: pn_decrement_ops
+    weight: 3
+    steps:
+    - type: call
+      app: '{{e2e_context_id}}'
+      method: decrement_pn_counter
+      args:
+        key: balance_{{random_int(0, 10)}}
+      account: '{{random_account}}'
+      outputs:
+        pn_dec_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{pn_dec_result}})
+  accounts:
+  - fuzzy-e2e-node-1
+  - fuzzy-e2e-node-2
+  - fuzzy-e2e-node-3
+  - fuzzy-e2e-node-4
+  duration_minutes: 15
+  success_threshold: 98.0
+  operation_delay_ms: 0
+- name: Get final KV entry count
+  type: call
+  app: '{{e2e_context_id}}'
+  method: len
+  args: {}
+  account: fuzzy-e2e-node-1
+  as_key: '{{node1_key}}'
+  outputs:
+    final_kv_count: rpc
+- name: Get final handler execution count
+  type: call
+  app: '{{e2e_context_id}}'
+  method: get_handler_execution_count
+  args: {}
+  account: fuzzy-e2e-node-1
+  as_key: '{{node1_key}}'
+  outputs:
+    final_handler_count: rpc
+- name: Log final statistics
+  type: assert
+  statements:
+  - is_set({{final_kv_count}})
+  - is_set({{final_handler_count}})

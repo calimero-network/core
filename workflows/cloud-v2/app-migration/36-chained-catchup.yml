@@ -1,0 +1,250 @@
+# Ported from 36-chained-catchup.yml by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   assert_log_absent x1: v1 node logs
+#   assert_log_present x2: v1 node logs
+#   assert_migration_complete x1: v1 group migration
+#   get_migration_status output (v1 per-member rollup) x8: checks what the dropped steps did
+#   json_assert statement on a dropped step's output x8: checks what the dropped steps did
+#   wait_for_sync x2: replication is synchronous: a read sees every committed write
+# FIXED by scripts/cloud-v2-port-fixups.py (converter bugs): a cascade
+# upgrade_group upgrades every app in the namespace's teams; of
+# get_migration_status only the outputs that mean the same here are kept.
+name: 36 - Chained catch-up via the upgrade ladder (v2 → v3 → v4, 2-node)
+description: 'A member left behind for SEVERAL releases catches up in one access by replaying the group''s
+  upgrade ladder - each hop in THAT release''s own bytecode, methods resolved per hop from the two blobs''
+  embedded ABIs.
+
+  Both nodes activate v2 once (their contexts gain the v2 activation marker). The admin then upgrades
+  the subgroup v2 -> v3 -> v4 while NO context is accessed anywhere: every context is now two rungs below
+  the group. A single read on each node must run migrate_v2_to_v3 inside the v3 binary and then migrate_v3_to_v4
+  inside the v4 binary - never the group-level (last-hop) method against v2 state - landing on the v4
+  schema with all data carried through the chain. Node 2 never installs anything: it pulls each rung''s
+  blob over BlobShare as it replays.
+
+  '
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 3310
+accounts:
+- app-migration-chained-1
+- app-migration-chained-2
+not_applicable: the port keeps 7 of v1's 21 checks; the rest checked what has no release-v2 counterpart
+steps:
+- name: Install migration-suite-v1 on node 1
+  type: install_package
+  mpk: '{{env.CORE_WASM_DIR}}/dist/com.calimero.migration-suite-1.0.0.mpk'
+  outputs:
+    app_v1: package
+    app_v1_version: version
+  account: app-migration-chained-1
+- name: Create namespace (v1) on node 1
+  type: create_org
+  org_name: Create namespace (v1) on node 1
+  outputs:
+    namespace_id: orgId
+  account: app-migration-chained-1
+- name: Create Open subgroup under namespace
+  type: create_team
+  org: '{{namespace_id}}'
+  team_name: chained-catchup-subgroup
+  join: invite
+  outputs:
+    group_id: teamId
+  account: app-migration-chained-1
+- name: Mark subgroup as Open
+  type: team_update
+  org: '{{namespace_id}}'
+  team: '{{group_id}}'
+  join: everyone
+  account: app-migration-chained-1
+- name: Create context in subgroup on node 1 (v1)
+  type: deploy
+  account: app-migration-chained-1
+  package: '{{app_v1}}'
+  version: '{{app_v1_version}}'
+  app_name: Create context in subgroup on node 1 (v1)
+  org: '{{namespace_id}}'
+  access:
+    kind: team
+    team: '{{group_id}}'
+  outputs:
+    ctx_id: contextId
+- name: Create namespace invitation for node 2
+  type: invite
+  org: '{{namespace_id}}'
+  role: member
+  account: app-migration-chained-1
+  outputs:
+    namespace_invitation: token
+- name: Node 2 joins namespace
+  type: redeem_invite
+  token: '{{namespace_invitation}}'
+  account: app-migration-chained-2
+- name: Node 2 materialises subgroup membership via inheritance
+  type: team_join
+  org: '{{namespace_id}}'
+  team: '{{group_id}}'
+  account: app-migration-chained-2
+- name: Write v1 description
+  type: call
+  app: '{{ctx_id}}'
+  method: set_description
+  args:
+    description: chained-catchup
+  account: app-migration-chained-1
+- name: Increment counter (1/2)
+  type: call
+  app: '{{ctx_id}}'
+  method: increment_counter
+  args: {}
+  account: app-migration-chained-1
+- name: Increment counter (2/2)
+  type: call
+  app: '{{ctx_id}}'
+  method: increment_counter
+  args: {}
+  account: app-migration-chained-1
+- name: Write item to v1 map
+  type: call
+  app: '{{ctx_id}}'
+  method: set_item
+  args:
+    key: k1
+    value: v1-value
+  account: app-migration-chained-1
+- name: Install migration-suite-v2 on node 1
+  type: install_package
+  mpk: '{{env.CORE_WASM_DIR}}/dist/com.calimero.migration-suite-2.0.0.mpk'
+  outputs:
+    app_v2: package
+    app_v2_version: version
+  account: app-migration-chained-1
+- name: Upgrade subgroup v1 -> v2
+  type: upgrade_app
+  app: '{{ctx_id}}'
+  version: '{{app_v2_version}}'
+  account: app-migration-chained-1
+- name: Wait for v2 upgrade meta to gossip to node 2
+  type: wait
+  seconds: 15.0
+- name: Activate v2 on node 1
+  type: call
+  app: '{{ctx_id}}'
+  method: schema_info
+  args: {}
+  account: app-migration-chained-1
+  outputs:
+    v2_schema_node1: rpc
+- name: Activate v2 on node 2
+  type: call
+  app: '{{ctx_id}}'
+  method: schema_info
+  args: {}
+  account: app-migration-chained-2
+  outputs:
+    v2_schema_node2: rpc
+- name: Assert both nodes activated v2
+  type: json_assert
+  statements:
+  - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0"}})'
+  - 'json_subset({{v2_schema_node2}}, {"output": {"schema_version": "2.0.0"}})'
+- name: Install migration-suite-v3 on node 1
+  type: install_package
+  mpk: '{{env.CORE_WASM_DIR}}/dist/com.calimero.migration-suite-3.0.0.mpk'
+  outputs:
+    app_v3: package
+    app_v3_version: version
+  account: app-migration-chained-1
+- name: Upgrade subgroup v2 -> v3 (no access follows)
+  type: upgrade_app
+  app: '{{ctx_id}}'
+  version: '{{app_v3_version}}'
+  account: app-migration-chained-1
+- name: Wait for v3 upgrade meta to gossip
+  type: wait
+  seconds: 10.0
+- name: Install migration-suite-v4 on node 1
+  type: install_package
+  mpk: '{{env.CORE_WASM_DIR}}/dist/com.calimero.migration-suite-4.0.0.mpk'
+  outputs:
+    app_v4: package
+    app_v4_version: version
+  account: app-migration-chained-1
+- name: Upgrade subgroup v3 -> v4 (no access follows)
+  type: upgrade_app
+  app: '{{ctx_id}}'
+  version: '{{app_v4_version}}'
+  account: app-migration-chained-1
+- name: Wait for v4 upgrade meta to gossip to node 2
+  type: wait
+  seconds: 15.0
+- name: Single read on node 2 chains both hops
+  type: call
+  app: '{{ctx_id}}'
+  method: schema_info
+  args: {}
+  account: app-migration-chained-2
+  outputs:
+    v4_schema_node2: rpc
+- name: Single read on node 1 chains both hops
+  type: call
+  app: '{{ctx_id}}'
+  method: schema_info
+  args: {}
+  account: app-migration-chained-1
+  outputs:
+    v4_schema_node1: rpc
+- name: Assert v4 schema with data carried through the chain
+  type: json_assert
+  statements:
+  - 'json_subset({{v4_schema_node2}}, {"output": {"schema_version": "4.0.0", "details": "chained-catchup",
+    "counter": "2"}})'
+  - 'json_subset({{v4_schema_node1}}, {"output": {"schema_version": "4.0.0", "details": "chained-catchup",
+    "counter": "2"}})'
+- name: Assert map data survived the chain on node 2
+  type: call
+  app: '{{ctx_id}}'
+  method: get_item
+  args:
+    key: k1
+  account: app-migration-chained-2
+  outputs:
+    item_node2: rpc
+- name: Assert item value
+  type: json_assert
+  statements:
+  - 'json_subset({{item_node2}}, {"output": "v1-value"})'
+- name: Read the migration-status rollup on node 1 (admin)
+  type: migration_status
+  apps:
+  - '{{ctx_id}}'
+  account: app-migration-chained-1
+  outputs:
+    mig_failed: failed
+- name: Assert both members finished the ladder rather than stalling on a rung
+  type: json_assert
+  statements:
+  - equal({{mig_failed}}, 0)
+- name: Write post-catchup item on node 1
+  type: call
+  app: '{{ctx_id}}'
+  method: set_item
+  args:
+    key: k2
+    value: post-catchup
+  account: app-migration-chained-1
+- name: Read post-catchup item on node 2
+  type: call
+  app: '{{ctx_id}}'
+  method: get_item
+  args:
+    key: k2
+  account: app-migration-chained-2
+  outputs:
+    item2_node2: rpc
+- name: Assert post-catchup convergence
+  type: json_assert
+  statements:
+  - 'json_subset({{item2_node2}}, {"output": "post-catchup"})'

@@ -103,7 +103,7 @@ restart or upgrade nodes and check the app keeps its data and answers within a
 time budget.
 
 ```bash
-MEROD_V2_BINARY=target/debug/merod \
+MEROD_BINARY=target/debug/merod \
 KV_STORE_WASM=target/wasm32-unknown-unknown/app-release/kv_store.wasm \
 merobox cloud run workflow-examples/cloud-v2/frozen-leader.yml
 ```
@@ -113,12 +113,40 @@ The scenarios and their step reference are in merobox's
 processes (the bounded forward to a frozen leader is the example) gets its
 regression scenario there.
 
+### Core's ported scenarios
+
+`workflows/cloud-v2/` holds v1's scenarios (`workflows/`: app migrations, auth,
+sync, fuzzy loads) ported to the `cloud-v2` backend by `merobox cloud port`:
+`scripts/port-workflows-to-cloud-v2.sh` regenerates them, and
+`scripts/cloud-v2-port-fixups.py` fixes the steps the converter mistranslates,
+each fix with its reason. A port whose subject has no release-v2 counterpart
+says so in `not_applicable` and is skipped. Run them against a build:
+
+```bash
+python3 scripts/build-cloud-v2-fixtures.py      # the apps they deploy
+MEROD_BINARY=target/debug/merod python3 scripts/cloud-v2-workflows.py [FILE...]
+```
+
+`scripts/cloud-v2-workflows-baseline.json` lists the ports that pass; one of
+them failing fails CI. Add a port to it once it passes. The v1 files under
+`workflows/` stay as the converter's input; they do not run.
+
+### In CI
+
+`.github/workflows/e2e.yml` runs on every PR that touches code:
+
+- job `merobox cloud-v2`: core's ported scenarios, then merobox's examples
+  (merobox at `MEROBOX_REF`); nightly, the fuzzy loads run 15 minutes each;
+- job `clients against merod`: mero-js's `test:cloud-v2` and
+  calimero-client-py's cluster tests against this tree's `merod`. A change that
+  breaks a client goes green with the client's fix: a same-named branch there,
+  or `sdk-ref: <ref>` (mero-js) / `py-ref: <ref>` (Python) in the PR body.
+
 <Aside type="caution" title="Older scenario files">
-  The YAML files under `apps/*/workflows/` and `workflows/` in this repository
-  were written for v1's node and merobox's Docker backend (`merobox bootstrap
-  run`). They exercise v1 concepts (gossip sync, key delivery, namespace
-  governance) that release-v2 does not have; do not take them as release-v2
-  coverage.
+  The YAML files under `apps/*/workflows/` were written for v1's node and
+  merobox's Docker backend (`merobox bootstrap run`) and are not ported. They
+  exercise v1 concepts (gossip sync, key delivery, namespace governance) that
+  release-v2 does not have; do not take them as release-v2 coverage.
 </Aside>
 
 ## What scenario tests cannot catch

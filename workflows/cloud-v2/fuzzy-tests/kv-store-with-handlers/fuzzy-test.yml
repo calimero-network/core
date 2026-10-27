@@ -1,0 +1,324 @@
+# Ported from fuzzy-test.yml by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   wait_for_sync x1: replication is synchronous: a read sees every committed write
+name: KV Store with Handlers Fuzzy Load Test
+description: Long-running fuzzy load test for kv-store-with-handlers application
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 3450
+accounts:
+- fuzzy-handlers-node-1
+- fuzzy-handlers-node-2
+- fuzzy-handlers-node-3
+- fuzzy-handlers-node-4
+steps:
+- name: Install KV Store with Handlers on Node 1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/kv_store_with_handlers.wasm'
+  outputs:
+    handlers_app_id_bundle: hash
+  account: fuzzy-handlers-node-1
+- type: set
+  values:
+    handlers_app_id: '{{handlers_app_id_bundle}}'
+- name: Create Mesh for Handlers App
+  type: create_org
+  account: fuzzy-handlers-node-1
+  org_name: mesh
+  outputs:
+    namespace_id: orgId
+- type: invite
+  account: fuzzy-handlers-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: fuzzy-handlers-node-2
+  token: '{{_mesh_invite}}'
+- type: invite
+  account: fuzzy-handlers-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: fuzzy-handlers-node-3
+  token: '{{_mesh_invite}}'
+- type: invite
+  account: fuzzy-handlers-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: fuzzy-handlers-node-4
+  token: '{{_mesh_invite}}'
+- name: Create Mesh for Handlers App
+  type: deploy
+  account: fuzzy-handlers-node-1
+  org: '{{namespace_id}}'
+  wasm: '{{env.CORE_WASM_DIR}}/kv_store_with_handlers.wasm'
+  app_name: Create Mesh for Handlers App
+  outputs:
+    handlers_context_id: contextId
+    handlers_node1_key: memberPublicKey
+- name: Verify handlers mesh synced
+  type: assert
+  statements:
+  - is_set({{handlers_context_id}})
+  - is_set({{handlers_node1_key}})
+  - is_set({{public_key_fuzzy-handlers-node-2}})
+  - is_set({{public_key_fuzzy-handlers-node-3}})
+  - is_set({{public_key_fuzzy-handlers-node-4}})
+- name: KV Store with Handlers Fuzzy Load Test
+  type: fuzzy_test
+  operations:
+  - name: set_and_verify_handler
+    weight: 35
+    steps:
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: set
+      args:
+        key: hkey_{{random_int(1, 10000)}}
+        value: hvalue_{{uuid}}_{{timestamp}}
+      account: '{{random_account}}'
+      outputs:
+        hset_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{hset_result}})
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: get
+      args:
+        key: '{{fuzzy_key}}'
+      account: '{{random_account}}'
+      outputs:
+        hget_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{hget_result}})
+      - contains({{hget_result}}, {{fuzzy_value}})
+  - name: write_burst
+    weight: 25
+    steps:
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: set
+      args:
+        key: hkey_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-handlers-node-1
+      outputs:
+        w1: rpc
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: set
+      args:
+        key: hkey_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-handlers-node-2
+      outputs:
+        w2: rpc
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: set
+      args:
+        key: hkey_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-handlers-node-3
+      outputs:
+        w3: rpc
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: set
+      args:
+        key: hkey_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-handlers-node-4
+      outputs:
+        w4: rpc
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: set
+      args:
+        key: hkey_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-handlers-node-1
+      outputs:
+        w5: rpc
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: set
+      args:
+        key: hkey_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-handlers-node-2
+      outputs:
+        w6: rpc
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: set
+      args:
+        key: hkey_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-handlers-node-3
+      outputs:
+        w7: rpc
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: set
+      args:
+        key: hkey_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-handlers-node-4
+      outputs:
+        w8: rpc
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: set
+      args:
+        key: hkey_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-handlers-node-1
+      outputs:
+        w9: rpc
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: set
+      args:
+        key: hkey_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-handlers-node-2
+      outputs:
+        w10: rpc
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: set
+      args:
+        key: hkey_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-handlers-node-3
+      outputs:
+        w11: rpc
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: set
+      args:
+        key: hkey_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-handlers-node-4
+      outputs:
+        w12: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{w1}})
+      - is_set({{w2}})
+      - is_set({{w3}})
+      - is_set({{w4}})
+      - is_set({{w5}})
+      - is_set({{w6}})
+      - is_set({{w7}})
+      - is_set({{w8}})
+      - is_set({{w9}})
+      - is_set({{w10}})
+      - is_set({{w11}})
+      - is_set({{w12}})
+  - name: random_read_handler
+    weight: 15
+    steps:
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: get
+      args:
+        key: hkey_{{random_int(1, 10000)}}
+      account: '{{random_account}}'
+      outputs:
+        hget_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{hget_result}})
+  - name: list_handler_entries
+    weight: 8
+    steps:
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: entries
+      args: {}
+      account: '{{random_account}}'
+      outputs:
+        hentries_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{hentries_result}})
+  - name: remove_with_handler
+    weight: 10
+    steps:
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: remove
+      args:
+        key: hkey_{{random_int(1, 10000)}}
+      account: '{{random_account}}'
+      outputs:
+        hremove_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{hremove_result}})
+  - name: check_handler_count
+    weight: 4
+    steps:
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: get_handler_execution_count
+      args: {}
+      account: '{{random_account}}'
+      outputs:
+        handler_count: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{handler_count}})
+  - name: cross_node_handler_check
+    weight: 3
+    steps:
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: set
+      args:
+        key: handler_consistency_{{uuid}}
+        value: hcheck_{{timestamp}}
+      account: fuzzy-handlers-node-2
+    - type: wait
+      seconds: 2.0
+    - type: call
+      app: '{{handlers_context_id}}'
+      method: get
+      args:
+        key: '{{fuzzy_key}}'
+      account: fuzzy-handlers-node-4
+      outputs:
+        hconsistency_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - statement: contains({{hconsistency_result}}, {{fuzzy_value}})
+        message: Cross-node value should match the set value
+  accounts:
+  - fuzzy-handlers-node-1
+  - fuzzy-handlers-node-2
+  - fuzzy-handlers-node-3
+  - fuzzy-handlers-node-4
+  duration_minutes: 15
+  success_threshold: 99.0
+  operation_delay_ms: 0

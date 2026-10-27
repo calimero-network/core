@@ -1,0 +1,247 @@
+name: E2E
+
+# merobox's release-v2 backend (one `merod` process per node) against this
+# tree's node:
+#
+#   - core's scenarios, ported from v1's (workflows/cloud-v2/: app migrations,
+#     auth, sync, fuzzy loads), gated by scripts/cloud-v2-workflows-baseline.json:
+#     a scenario on that list that fails is a regression;
+#   - merobox's own cloud-v2 examples: a crash and a frozen node, a frozen
+#     leader under a latency budget, organizations and keys, signed packages
+#     from a registry, and a rolling upgrade of every node;
+#   - the clients (job `clients`, v1's sdk-e2e): mero-js's and
+#     calimero-client-py's cluster tests against this tree's `merod`. Pair a
+#     breaking change with its client fix by a same-named branch, or by
+#     `sdk-ref: <ref>` / `py-ref: <ref>` in the PR body
+#     (scripts/resolve-paired-ref.sh).
+#
+# It replaces v1's e2e-rust-apps, e2e-rust-apps-release, sdk-e2e,
+# app-migration-e2e, sync-regression, fuzzy-load-test and wire-contract, which
+# drove v1 nodes in Docker. The nightly run is the soak: the fuzzy loads for
+# their full duration.
+
+on:
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "crates/**"
+      - "apps/**"
+      - "tools/cargo-mero/**"
+      - "workflows/cloud-v2/**"
+      - "scripts/cloud-v2-*"
+      - "scripts/build-cloud-v2-fixtures.py"
+      - "scripts/port-workflows-to-cloud-v2.sh"
+      - "scripts/resolve-paired-ref.sh"
+      - ".github/workflows/e2e.yml"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py), but
+      # these files are code: a bundle embeds them or a build reads them.
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "apps/kv-store/GUIDE.md"
+      - "tools/cargo-mero/README.md"
+      - "tools/cargo-mero/tests/fixtures/demo-app/GUIDE.md"
+      - "tools/cargo-mero/tests/fixtures/multi-app/GUIDE.md"
+  push:
+    branches: ["master"]
+  merge_group:
+  schedule:
+    - cron: "23 3 * * *" # nightly soak, off the hour
+  workflow_dispatch:
+    inputs:
+      soak_seconds:
+        description: How long each fuzzy_test step runs (the scenarios' own value applies when empty)
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # The merobox revision whose cloud-v2 backend and examples this runs.
+  MEROBOX_REF: release-v2-parity
+
+jobs:
+  scenarios:
+    name: merobox cloud-v2
+    runs-on: big-machine
+    timeout-minutes: 120
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Checkout merobox
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: calimero-network/merobox
+          ref: ${{ env.MEROBOX_REF }}
+          path: merobox
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          targets: wasm32-unknown-unknown
+          shared-key: ci-checks
+          save-if: false
+
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # merobox pulls calimero-client-py, built from source against core.
+      - name: Install merobox
+        run: pip install ./merobox
+
+      - name: Build merod
+        run: |
+          cargo build -p merod
+          echo "MEROD_BINARY=$CARGO_TARGET_DIR/debug/merod" >> "$GITHUB_ENV"
+
+      - name: Build the fixtures
+        run: |
+          set -euo pipefail
+          cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
+          python3 scripts/build-cloud-v2-fixtures.py
+          # Two signed releases of kv-store for merobox's packages example.
+          mkdir -p target/e2e
+          for v in 1.0.0 1.1.0; do
+            (cd apps/kv-store && cargo mero bundle --dev --no-icon --app-version "$v")
+            cp "dist/com.calimero.kv-store-$v.mpk" target/e2e/
+          done
+          # A second, different build of merod, for the rolling upgrade.
+          cp "$MEROD_BINARY" target/e2e/merod-next
+          printf '\0' >> target/e2e/merod-next
+
+      - name: Core's scenarios
+        env:
+          MEROBOX_FUZZY_SECONDS: ${{ github.event_name == 'schedule' && '900' || inputs.soak_seconds || '30' }}
+        run: python3 scripts/cloud-v2-workflows.py --json target/e2e/core-scenarios.json
+
+      - name: merobox's examples
+        if: ${{ !cancelled() }}
+        env:
+          KV_STORE_WASM: ${{ github.workspace }}/target/wasm32-unknown-unknown/app-release/kv_store.wasm
+          KV_STORE_MPK: ${{ github.workspace }}/target/e2e/com.calimero.kv-store-1.0.0.mpk
+          KV_STORE_MPK_NEXT: ${{ github.workspace }}/target/e2e/com.calimero.kv-store-1.1.0.mpk
+          MEROD_V2_UPGRADE_BINARY: ${{ github.workspace }}/target/e2e/merod-next
+        run: |
+          set -uo pipefail
+          export MEROD_V2_BINARY="$MEROD_BINARY"
+          failed=0
+          for wf in merobox/workflow-examples/cloud-v2/*.yml; do
+            echo "::group::$wf"
+            merobox cloud run "$wf" || { echo "::error::$wf failed"; failed=1; }
+            echo "::endgroup::"
+          done
+          exit "$failed"
+
+      - name: Upload the results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-results
+          path: target/e2e/core-scenarios.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  clients:
+    name: clients against merod
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Test the ref pairing
+        run: bash scripts/tests/resolve-paired-ref.test.sh
+
+      - name: Resolve the client refs (paired)
+        id: refs
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          js="$(scripts/resolve-paired-ref.sh master)"
+          py="$(SDK_REPO=https://github.com/calimero-network/calimero-client-py.git \
+            REF_KEY=py-ref scripts/resolve-paired-ref.sh master)"
+          echo "js=$js" >> "$GITHUB_OUTPUT"
+          echo "py=$py" >> "$GITHUB_OUTPUT"
+          echo "mero-js@$js, calimero-client-py@$py"
+
+      - name: Checkout mero-js
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: calimero-network/mero-js
+          ref: ${{ steps.refs.outputs.js }}
+          path: _mero-js
+          persist-credentials: false
+
+      - name: Checkout calimero-client-py
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: calimero-network/calimero-client-py
+          ref: ${{ steps.refs.outputs.py }}
+          path: _client-py
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          targets: wasm32-unknown-unknown
+          shared-key: ci-checks
+          save-if: false
+
+      - name: Build merod and the kv-store fixture
+        run: |
+          set -euo pipefail
+          cargo build -p merod
+          cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
+          echo "MEROD_BINARY=$CARGO_TARGET_DIR/debug/merod" >> "$GITHUB_ENV"
+          echo "KV_STORE_WASM=$CARGO_TARGET_DIR/wasm32-unknown-unknown/app-release/kv_store.wasm" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: mero-js cluster tests
+        working-directory: _mero-js
+        run: |
+          npm install -g pnpm
+          pnpm install --frozen-lockfile
+          pnpm test:cloud-v2
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: ${{ !cancelled() }}
+        with:
+          python-version: "3.12"
+
+      # The client builds against the core its Cargo.toml pins; what this job
+      # tests is that client against this tree's node.
+      - name: calimero-client-py cluster tests
+        if: ${{ !cancelled() }}
+        working-directory: _client-py
+        run: |
+          set -euo pipefail
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install maturin==1.15.0
+          pip install -e ".[dev]"
+          pytest tests/test_cloud_v2.py tests/test_cloud_v2_api.py -v --tb=short

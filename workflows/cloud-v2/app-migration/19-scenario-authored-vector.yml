@@ -1,0 +1,225 @@
+# Ported from 19-scenario-authored-vector.yml by `merobox cloud port`.
+# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no release-v2 counterpart):
+#   assert_log_present x2: v1 node logs
+#   assert_migration_complete x1: v1 group migration
+#   delete_context (unknown) x1: checks what the dropped steps did
+#   delete_namespace x1: v1 namespace deletion
+#   uninstall_application (unknown) x1: checks what the dropped steps did
+#   wait_for_sync x1: replication is synchronous: a read sees every committed write
+# FIXED by scripts/cloud-v2-port-fixups.py (converter bugs): a cascade
+# upgrade_group upgrades every app in the namespace's teams; of
+# get_migration_status only the outputs that mean the same here are kept.
+name: 19 — Scenario "authored-vector" (v1 → v2 carry-through, 2-node)
+description: '2-node per-context migration for an `AuthoredVector`-typed field. v1 holds `entries: AuthoredVector<LwwRegister<String>>`
+  whose every element records the executor that pushed it. v2 carries the vector THROUGH the migrate unchanged
+  (owners AND order preserved) and adds a `migration_note` register. The migrate does NOT re-push: `AuthoredVector::push`
+  stamps `env::executor_id()` as owner, and since each node self-migrates independently, re-pushing would
+  stamp each node''s own identity and diverge the owners. Carrying preserves the v1 owner stamps byte-for-byte.
+
+  Discriminating assertion: `owner_of(0)` read on BOTH nodes after each self-migrates must be IDENTICAL
+  (the original writer, node 1) — proving authorship round-trips through migrate and stays convergent
+  cross-node.
+
+  Per-context upgrade on the subgroup (cascade=false).
+
+  '
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 3190
+accounts:
+- app-migration-authvec-1
+- app-migration-authvec-2
+steps:
+- name: Install scenario-authored-vector-v1 on node 1
+  type: install_package
+  mpk: '{{env.CORE_WASM_DIR}}/dist/com.calimero.scenario-authored-vector-1.0.0.mpk'
+  outputs:
+    app_v1: package
+    app_v1_version: version
+  account: app-migration-authvec-1
+- name: Create namespace (v1) on node 1
+  type: create_org
+  org_name: Create namespace (v1) on node 1
+  outputs:
+    namespace_id: orgId
+  account: app-migration-authvec-1
+- name: Create Open subgroup under namespace
+  type: create_team
+  org: '{{namespace_id}}'
+  team_name: authored-vector-scenario-subgroup
+  join: invite
+  outputs:
+    group_id: teamId
+  account: app-migration-authvec-1
+- name: Mark subgroup as Open
+  type: team_update
+  org: '{{namespace_id}}'
+  team: '{{group_id}}'
+  join: everyone
+  account: app-migration-authvec-1
+- name: Create context in subgroup on node 1 (v1)
+  type: deploy
+  account: app-migration-authvec-1
+  package: '{{app_v1}}'
+  version: '{{app_v1_version}}'
+  app_name: Create context in subgroup on node 1 (v1)
+  org: '{{namespace_id}}'
+  access:
+    kind: team
+    team: '{{group_id}}'
+  outputs:
+    ctx_id: contextId
+- name: Create namespace invitation for node 2
+  type: invite
+  org: '{{namespace_id}}'
+  role: member
+  account: app-migration-authvec-1
+  outputs:
+    namespace_invitation: token
+- name: Node 2 joins namespace
+  type: redeem_invite
+  token: '{{namespace_invitation}}'
+  account: app-migration-authvec-2
+- name: Node 2 materialises subgroup membership via inheritance
+  type: team_join
+  org: '{{namespace_id}}'
+  team: '{{group_id}}'
+  account: app-migration-authvec-2
+- name: Write v1 title
+  type: call
+  app: '{{ctx_id}}'
+  method: set_title
+  args:
+    title: authored-feed
+  account: app-migration-authvec-1
+- name: Push entry 0 (owned by node 1)
+  type: call
+  app: '{{ctx_id}}'
+  method: push_entry
+  args:
+    value: alpha
+  account: app-migration-authvec-1
+- name: Push entry 1 (owned by node 1)
+  type: call
+  app: '{{ctx_id}}'
+  method: push_entry
+  args:
+    value: beta
+  account: app-migration-authvec-1
+- name: Capture pre-migration owner of entry 0 on node 1
+  type: call
+  app: '{{ctx_id}}'
+  method: owner_of
+  args:
+    index: 0
+  account: app-migration-authvec-1
+  outputs:
+    owner_pre_node1: rpc
+- name: Assert v1 schema on node 1
+  type: call
+  app: '{{ctx_id}}'
+  method: schema_info
+  args: {}
+  account: app-migration-authvec-1
+  outputs:
+    v1_schema: rpc
+- name: Assert v1 schema shape
+  type: json_assert
+  statements:
+  - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "title": "authored-feed", "entry_count":
+    2}})'
+- name: Negative — migration_note is not exported by v1
+  type: call
+  app: '{{ctx_id}}'
+  method: migration_note
+  args: {}
+  account: app-migration-authvec-1
+  expected_failure: true
+- name: Install scenario-authored-vector-v2 on node 1
+  type: install_package
+  mpk: '{{env.CORE_WASM_DIR}}/dist/com.calimero.scenario-authored-vector-2.0.0.mpk'
+  outputs:
+    app_v2: package
+    app_v2_version: version
+  account: app-migration-authvec-1
+- name: Assert both versions share one application id (bundle same-id)
+  type: json_assert
+  statements:
+  - equal("{{app_v1}}", "{{app_v2}}")
+- name: Upgrade subgroup v1 → v2 (per-context)
+  type: upgrade_app
+  app: '{{ctx_id}}'
+  version: '{{app_v2_version}}'
+  account: app-migration-authvec-1
+- name: Wait for upgrade + migration to apply + log flush
+  type: wait
+  seconds: 15.0
+- name: Read post-migration schema_info on node 1 (triggers lazy migration)
+  type: call
+  app: '{{ctx_id}}'
+  method: schema_info
+  args: {}
+  account: app-migration-authvec-1
+  outputs:
+    v2_schema_node1: rpc
+- name: Read post-migration schema_info on node 2 (triggers lazy migration)
+  type: call
+  app: '{{ctx_id}}'
+  method: schema_info
+  args: {}
+  account: app-migration-authvec-2
+  outputs:
+    v2_schema_node2: rpc
+- name: Assert v2 schema on node 1 (v1 data preserved + note seeded)
+  type: json_assert
+  statements:
+  - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0", "title": "authored-feed",
+    "entry_count": 2, "migration_note": "migrated-v1-to-v2"}})'
+- name: Assert v2 schema on node 2 (same shape — migration reached node 2)
+  type: json_assert
+  statements:
+  - 'json_subset({{v2_schema_node2}}, {"output": {"schema_version": "2.0.0", "title": "authored-feed",
+    "entry_count": 2, "migration_note": "migrated-v1-to-v2"}})'
+- name: Read preserved value of entry 0 on node 2
+  type: call
+  app: '{{ctx_id}}'
+  method: get_entry
+  args:
+    index: 0
+  account: app-migration-authvec-2
+  outputs:
+    entry0_value_node2: rpc
+- name: Assert v1 value preserved through migrate (node 2)
+  type: json_assert
+  statements:
+  - 'json_equal({{entry0_value_node2}}, {"output": "alpha"})'
+- name: Read owner of entry 0 on node 1 (post-migrate)
+  type: call
+  app: '{{ctx_id}}'
+  method: owner_of
+  args:
+    index: 0
+  account: app-migration-authvec-1
+  outputs:
+    owner_post_node1: rpc
+- name: Read owner of entry 0 on node 2 (post-migrate)
+  type: call
+  app: '{{ctx_id}}'
+  method: owner_of
+  args:
+    index: 0
+  account: app-migration-authvec-2
+  outputs:
+    owner_post_node2: rpc
+- name: Assert ownership survived migrate AND is convergent cross-node
+  type: json_assert
+  statements:
+  - json_equal({{owner_pre_node1}}, {{owner_post_node1}})
+  - json_equal({{owner_post_node1}}, {{owner_post_node2}})
+- name: Delete subgroup
+  type: team_delete
+  org: '{{namespace_id}}'
+  team: '{{group_id}}'
+  account: app-migration-authvec-1
