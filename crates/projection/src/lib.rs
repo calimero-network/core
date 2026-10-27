@@ -342,6 +342,8 @@ pub struct CutAncestry<'a> {
     /// Ops of the walk with no authority (see [`ScopeState::void_ops`]): kept in `ops`
     /// so causal depth runs through them, but the view folds none.
     void: BTreeSet<[u8; 32]>,
+    /// Flips that also seat their maker as the founded space's admin.
+    seated: BTreeSet<[u8; 32]>,
     /// The void set could not be decided within budget, so no answer from this cut stands.
     undecidable: bool,
 }
@@ -376,6 +378,7 @@ impl<'a> CutAncestry<'a> {
             opaque: self.opaque,
             void: self.void.union(ids).copied().collect(),
             undecidable: self.undecidable,
+            seated: self.seated.clone(),
         }
     }
 
@@ -383,6 +386,23 @@ impl<'a> CutAncestry<'a> {
     #[must_use]
     pub fn void_ids(&self) -> &BTreeSet<[u8; 32]> {
         &self.void
+    }
+
+    /// This ancestry with the flips in `flips` also writing their maker's admin seat: a row write
+    /// at the flip's own stamp, settled against removals and leaves like any other.
+    #[must_use]
+    pub fn with_seats(&self, flips: impl IntoIterator<Item = [u8; 32]>) -> Self {
+        let mut seated = self.seated.clone();
+        seated.extend(flips);
+        Self {
+            ops: self.ops.clone(),
+            reached: self.reached.clone(),
+            missing: self.missing,
+            opaque: self.opaque,
+            void: self.void.clone(),
+            undecidable: self.undecidable,
+            seated,
+        }
     }
 
     /// Did the void set exceed its fold budget?
@@ -576,6 +596,23 @@ impl ScopeState {
     pub fn apply_with_generation(&mut self, op: &Op, generation: u32) {
         let stamp: Stamp = (op.hlc, generation, op.id());
         self.fold_payload(op, &op.payload, stamp);
+    }
+
+    /// A flip to Restricted that founded its space also seats its maker as the first admin: a row
+    /// write at the flip's stamp.
+    fn seat_flip_maker(&mut self, op: &Op, generation: u32) {
+        if let OpPayload::SubgroupVisibilitySet {
+            scope,
+            restricted: true,
+        } = &op.payload
+        {
+            self.fold_member_added(
+                ContextGroupId::from(*scope.as_bytes()),
+                op.authorship.account,
+                &GroupMemberRole::Admin,
+                (op.hlc, generation, op.id()),
+            );
+        }
     }
 
     /// Fold `payload` as `op`'s change, at `stamp`.
@@ -1569,6 +1606,7 @@ impl ScopeState {
             opaque,
             void: void.clone(),
             undecidable: false,
+            seated: BTreeSet::new(),
         }
     }
 
@@ -1662,7 +1700,11 @@ impl ScopeState {
             if walked.void.contains(&op.id()) {
                 continue;
             }
-            state.apply_with_generation(op, generation.get(&op.id()).copied().unwrap_or(0));
+            let generation = generation.get(&op.id()).copied().unwrap_or(0);
+            state.apply_with_generation(op, generation);
+            if walked.seated.contains(&op.id()) {
+                state.seat_flip_maker(op, generation);
+            }
         }
         state.acl_view()
     }

@@ -4038,42 +4038,6 @@ fn valid_space_makers(
     Some(makers)
 }
 
-/// Whether `group`'s `maker` left or was removed after `flip`, which ends the seat the flip wrote.
-fn exited_since(
-    walked: &CutAncestry<'_>,
-    live: &[&Op],
-    flip: &Op,
-    group: ContextGroupId,
-    maker: AccountId,
-) -> bool {
-    let parents: HashMap<[u8; 32], &Vec<[u8; 32]>> = walked
-        .ops()
-        .iter()
-        .map(|op| (op.id(), &op.parents))
-        .collect();
-    live.iter()
-        .filter(|op| {
-            matches!(
-                folded_payload_of(op),
-                OpPayload::MemberRemoved { group: g, member: m } | OpPayload::MemberLeft { group: g, member: m }
-                    if *g == group && *m == maker
-            )
-        })
-        .any(|exit| {
-            let mut seen: HashSet<[u8; 32]> = HashSet::new();
-            let mut queue = vec![exit.id()];
-            while let Some(id) = queue.pop() {
-                if id == flip.id() {
-                    return true;
-                }
-                if let Some(held) = parents.get(&id) {
-                    queue.extend(held.iter().copied().filter(|p| seen.insert(*p)));
-                }
-            }
-            false
-        })
-}
-
 /// Drops the admin seat of a creator who left or was removed from the group after it was
 /// seated, unless a seat was written again beyond that exit. `None` past the fold budget.
 fn end_seats_after_exits(
@@ -4155,6 +4119,8 @@ fn fold_view(
     base: AuthorityBase,
     makers: &Makers,
 ) -> Option<calimero_authz::AclView> {
+    let seated = walked.with_seats(makers.keys().copied());
+    let walked = &seated;
     let view = ScopeState::acl_view_from_ancestry(walked);
     let Some((root, founder)) = base.root else {
         return Some(view);
@@ -4208,19 +4174,6 @@ fn fold_view(
     } else {
         ScopeState::acl_view_from_ancestry(&walked.without(&stale))
     };
-    for op in &live {
-        let Some((group, maker)) = makers.get(&op.id()) else {
-            continue;
-        };
-        if !exited_since(walked, &live, op, *group, *maker) {
-            let _ = view
-                .groups
-                .entry(*group)
-                .or_default()
-                .entry(*maker)
-                .or_insert(GroupMemberRole::Admin);
-        }
-    }
     for write in &ended {
         let (group, account) = (write.group, write.account);
         if write.seat {
@@ -6080,6 +6033,28 @@ mod tests {
             40
         );
         assert!(valid_space_makers(&walked, base, 10).is_none());
+    }
+
+    #[test]
+    fn a_removal_concurrent_with_the_flip_settles_the_seat_by_stamp() {
+        let (root, space) = (ContextGroupId::from([3; 32]), ContextGroupId::from([4; 32]));
+        let steps = |removal_first: bool| {
+            let flip = (1u8, vec![0usize], make_private(space));
+            let removal = (1u8, vec![0usize], removed_op(space, 1));
+            let mut steps = vec![(1u8, vec![], open_space(space, root))];
+            if removal_first {
+                steps.extend([removal, flip]);
+            } else {
+                steps.extend([flip, removal]);
+            }
+            steps
+        };
+
+        // The later stamp wins, whichever order the two arrive in.
+        let flip_wins = dag_view(root, steps(true), &[1, 2]);
+        let removal_wins = dag_view(root, steps(false), &[1, 2]);
+        assert!(holds_row(&flip_wins, space, 1));
+        assert!(!holds_row(&removal_wins, space, 1));
     }
 
     #[test]

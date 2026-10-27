@@ -34,7 +34,8 @@ pub(crate) fn owner_at_cut(
     authorizer: &dyn AtCutAuthorizer,
 ) -> EyreResult<Option<AccountId>> {
     if !parents.is_empty() {
-        match owner_in_log(store, group, parents, true)? {
+        // A transfer rides the workspace key, so an op this node cannot read is none of them.
+        match owner_in_log(store, group, parents, false)? {
             Logged::Owner(owner) => return Ok(Some(owner)),
             // No transfer moved the live row, whatever the cut lacks.
             Logged::NeverTransferred => {}
