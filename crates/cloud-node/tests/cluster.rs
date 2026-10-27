@@ -940,7 +940,10 @@ async fn an_upload_past_the_sealed_cap_is_answered_413() {
     let (files, _) = deploy(&alice, "files", mero_wasm("blobs", "blobs"), json!({})).await;
     let cap = calimero_sealed::server::MAX_SEALED_BYTES;
     for size in [cap + 1, 100 << 20] {
-        let e = alice.upload_blob(&files, vec![7u8; size]).await.unwrap_err();
+        let e = alice
+            .upload_blob(&files, vec![7u8; size])
+            .await
+            .unwrap_err();
         let Error::Api {
             status, message, ..
         } = &e
