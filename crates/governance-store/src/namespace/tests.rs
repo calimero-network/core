@@ -8617,6 +8617,96 @@ fn a_tee_removed_from_the_workspace_is_served_no_space_key() {
     );
 }
 
+/// A request for a folder of a space is a request for the space's key: judged by a seat in the
+/// space, served from its keyring, and an explicit key id outside that keyring is refused.
+#[test]
+fn a_folders_key_request_is_judged_and_served_from_its_space() {
+    use crate::group_keys::GroupKeyring;
+    use crate::{build_group_key_delivery, KeyRequester};
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let namespace_id = [0xF8u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let space_id = [0xF9u8; 32];
+    let space = ContextGroupId::from(space_id);
+    let folder_id = [0xFBu8; 32];
+    let folder = ContextGroupId::from(folder_id);
+    let responder_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let responder_sk = PrivateKey::from(responder_sk_bytes);
+    let responder_account = crate::test_fixtures::account_for(&responder_sk.public_key());
+    let joiner_pk = PrivateKey::from([0x5Au8; 32]).public_key();
+
+    let store = test_store();
+    let (joiner_account, joiner_device, credential) =
+        crate::test_fixtures::enrol_local_device(&store, &ns_gid, &joiner_pk);
+    crate::test_fixtures::record_credential(&store, &ns_gid, &credential);
+    let _ = enrol_member(&store, &ns_gid, &responder_sk.public_key());
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &responder_sk.public_key(), &responder_sk_bytes)
+        .unwrap();
+    for group in [&ns_gid, &space, &folder] {
+        MetaRepository::new(&store)
+            .save(group, &sample_meta_with_admin(responder_account))
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &space)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&space, &folder)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&folder, calimero_context_config::VisibilityMode::Open)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&space, calimero_context_config::VisibilityMode::Restricted)
+        .unwrap();
+    let space_key_id = GroupKeyring::new(&store, space)
+        .store_key(&[0x6Cu8; 32])
+        .unwrap();
+    // A key the folder was minted at birth, which nothing is sealed under.
+    let folder_key_id = GroupKeyring::new(&store, folder)
+        .store_key(&[0x6Du8; 32])
+        .unwrap();
+
+    let serve = |key_id: Option<[u8; 32]>| {
+        build_group_key_delivery(
+            &store,
+            namespace_id.into(),
+            folder_id,
+            KeyRequester {
+                identity: joiner_pk,
+                device: Some(joiner_device),
+            },
+            key_id,
+        )
+        .unwrap()
+        .0
+    };
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &joiner_account, GroupMemberRole::Member)
+        .unwrap();
+    assert!(
+        serve(Some(folder_key_id)).is_empty(),
+        "no seat in the space, no key"
+    );
+    assert!(serve(Some(space_key_id)).is_empty());
+
+    MembershipRepository::new(&store)
+        .add_member(&space, &joiner_account, GroupMemberRole::Member)
+        .unwrap();
+    assert!(
+        !serve(Some(space_key_id)).is_empty(),
+        "control: a seat in the space is served the space's key"
+    );
+    assert!(
+        serve(Some(folder_key_id)).is_empty(),
+        "the folder's own key row is never served"
+    );
+}
+
 /// A space row that outlived the account's workspace row is no standing to be served the
 /// space's key; with the workspace row back, it is.
 #[test]
@@ -14470,23 +14560,6 @@ fn a_member_is_served_no_subgroup_key_while_the_namespace_key_covers_it() {
     assert!(
         !subgroup_key_served(&f, requester),
         "a subgroup covered by the namespace key must not hand out its own key"
-    );
-
-    let (key_id, _) = GroupKeyring::new(&f.store, parent)
-        .load_current_key()
-        .unwrap()
-        .expect("the space holds a key row");
-    let (bytes, _) = crate::build_group_key_delivery(
-        &f.store,
-        f.namespace_id.into(),
-        parent.to_bytes(),
-        requester,
-        Some(key_id),
-    )
-    .unwrap();
-    assert!(
-        !bytes.is_empty(),
-        "control: a key named by id, as a buffered op from a Restricted era names it, is served"
     );
 }
 

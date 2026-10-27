@@ -1801,6 +1801,19 @@ impl<'a> NamespaceGovernance<'a> {
             NamespaceRepository::new(self.store).resolve(&group_gid),
             Ok(ns) if ns.to_bytes() == self.namespace_id.to_bytes()
         );
+        // One key covers a space and its folders: a request for a folder is a request for the
+        // space's key, judged and served from the space root. The workspace key covers an open
+        // group and is not served here.
+        let group_gid = if group_in_namespace {
+            match crate::key_covering_group(self.store, &group_gid)? {
+                covering if covering == ns_gid && group_gid != ns_gid => {
+                    return Ok((Vec::new(), requester.identity));
+                }
+                covering => covering,
+            }
+        } else {
+            group_gid
+        };
         // The requester names itself by key; membership is recorded against the
         // account that key speaks for. A key bound to no account here is served
         // nothing — exactly as a non-member is.
@@ -1834,11 +1847,6 @@ impl<'a> NamespaceGovernance<'a> {
                 group_key
             }
             None => {
-                // Under the namespace key the group's own current row encrypts nothing
-                // yet, and is not for members who only inherit the group.
-                if crate::key_covering_group(self.store, &group_gid)? != group_gid {
-                    return Ok((Vec::new(), requester.identity));
-                }
                 let Some((_key_id, group_key)) =
                     GroupKeyring::new(self.store, group_gid).load_current_key()?
                 else {
