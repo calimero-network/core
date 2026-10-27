@@ -9,6 +9,7 @@ use std::process::Command;
 use std::process::Stdio;
 
 use eyre::Result as EyreResult;
+use fs4::fs_std::FileExt;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use wasmparser::ComponentTypeRef;
@@ -89,17 +90,36 @@ pub fn build_component_cached(
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| eyre::eyre!("{} has no name", crate_dir.display()))?;
+    let cached = |key: &str| cache_dir.join(format!("{name}-{key}.wasm"));
+    if let Ok(bytes) = std::fs::read(cached(&cache_key(crate_dir, also_hash)?)) {
+        return Ok(bytes);
+    }
+    // A miss builds under an exclusive lock per (crate, target dir), held across
+    // processes (nextest runs each test in its own): the first builds and writes the
+    // cache, the others wait, find it, and reuse it. The key is computed again under
+    // the lock, since the first build may have changed what it hashes.
+    let target_dir = cache_dir.join("target").join(name);
+    std::fs::create_dir_all(&target_dir)?;
+    let lock_path = cache_dir.join("target").join(format!("{name}.build.lock"));
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| eyre::eyre!("{}: {e}", lock_path.display()))?;
+    FileExt::lock_exclusive(&lock).map_err(|e| eyre::eyre!("{}: {e}", lock_path.display()))?;
     let key = cache_key(crate_dir, also_hash)?;
-    let cached = cache_dir.join(format!("{name}-{key}.wasm"));
+    let cached = cached(&key);
     if let Ok(bytes) = std::fs::read(&cached) {
         return Ok(bytes);
     }
-    std::fs::create_dir_all(cache_dir)?;
-    let built = build_component(crate_dir, &cache_dir.join("target").join(name))?;
-    // Write beside, then rename: a concurrent reader never sees half a file.
+    let built = build_component(crate_dir, &target_dir)?;
+    // Write beside, then rename: a reader that skips the lock never sees half a file.
     let tmp = cache_dir.join(format!("{name}-{key}.{}.tmp", std::process::id()));
     std::fs::write(&tmp, &built.component)?;
     std::fs::rename(&tmp, &cached)?;
+    // Dropping `lock` closes it, which releases the lock.
+    drop(lock);
     Ok(built.component)
 }
 
@@ -128,7 +148,13 @@ pub fn cache_key(crate_dir: &Path, also_hash: &[&Path]) -> EyreResult<String> {
         files.sort();
         for file in files {
             let rel = file.strip_prefix(root).unwrap_or(&file);
-            let bytes = std::fs::read(&file).map_err(|e| eyre::eyre!("{}: {e}", file.display()))?;
+            // A file another process removed while this walked (a temp file) is not part
+            // of the tree.
+            let bytes = match std::fs::read(&file) {
+                Ok(bytes) => bytes,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => eyre::bail!("{}: {e}", file.display()),
+            };
             part(&format!("{i}:{}", rel.to_string_lossy()), &bytes);
         }
     }
@@ -161,7 +187,11 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> EyreResult<()> {
         Err(e) => eyre::bail!("{}: {e}", dir.display()),
     };
     for entry in entries {
-        let path = entry?.path();
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => eyre::bail!("{}: {e}", dir.display()),
+        };
         if path.is_dir() {
             if path.file_name().is_some_and(|n| n == "target") {
                 continue;
