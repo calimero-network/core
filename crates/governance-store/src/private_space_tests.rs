@@ -640,3 +640,58 @@ fn an_unauthorized_flip_seats_nobody() {
         None,
     );
 }
+
+/// A node outside a space holds the space's own ops as unread; the owner's deletion of the space,
+/// a workspace-sealed board op, still applies there from cleartext alone.
+#[test]
+fn an_outsider_applies_a_space_roots_delete_past_the_spaces_sealed_ops() {
+    let s = Space::new();
+    let space = s.private(NS);
+    let ns = ContextGroupId::from(NS);
+    let key = [0x66u8; 32];
+    let keyring = crate::GroupKeyring::new(&s.store, space.into());
+    let key_id = keyring.store_key(&key).unwrap();
+    let rename = GroupOp::GroupMetadataSet {
+        name: Some("sealed".to_owned()),
+        data: std::collections::BTreeMap::new(),
+    };
+    let sealed = NamespaceOp::Group {
+        group_id: space.into(),
+        key_id: key_id.into(),
+        encrypted: crate::GroupKeyring::encrypt_op(&key, &rename).unwrap(),
+        key_rotation: None,
+        registers: None,
+    };
+    let head = crate::NamespaceDagService::new(&s.store, NS.into())
+        .read_head_record()
+        .unwrap();
+    let name =
+        SignedNamespaceOp::sign(&s.sk, NS.into(), head.parent_hashes, s.next_nonce(), sealed)
+            .unwrap();
+    keyring.delete_key_by_id(&key_id).unwrap();
+    let applied = NamespaceGovernance::new(&s.store, NS.into())
+        .apply_signed_op(&name)
+        .expect("an op the node cannot read does not stall it");
+    assert!(applied.refused.is_none());
+
+    let head = crate::NamespaceDagService::new(&s.store, NS.into())
+        .read_head_record()
+        .unwrap();
+    let delete = seal_for_test(
+        &s.store,
+        ns,
+        RootOp::GroupDeleted {
+            root_group_id: space.into(),
+            cascade_group_ids: vec![space.into()],
+            cascade_context_ids: vec![],
+        },
+    );
+    let signed =
+        SignedNamespaceOp::sign(&s.sk, NS.into(), head.parent_hashes, s.next_nonce(), delete)
+            .unwrap();
+    let applied = NamespaceGovernance::new(&s.store, NS.into())
+        .apply_signed_op(&signed)
+        .expect("the owner's deletion applies without the space's key");
+    assert!(applied.refused.is_none(), "{:?}", applied.refused);
+    assert!(!s.exists(space));
+}
