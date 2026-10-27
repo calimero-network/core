@@ -188,6 +188,36 @@
   }
  },
  {
+  "as": "ada",
+  "op": "view",
+  "method": "adminRelease",
+  "args": {
+   "id": "x",
+   "reason": "y"
+  },
+  "expect": {
+   "error": "ConfirmNotAView"
+  }
+ },
+ {
+  "as": "ada",
+  "op": "view",
+  "method": "releaseNoShows",
+  "args": {},
+  "expect": {
+   "error": "WrongKind"
+  }
+ },
+ {
+  "as": "ada",
+  "op": "call",
+  "method": "releaseNoShows",
+  "args": {},
+  "expect": {
+   "error": "WrongKind"
+  }
+ },
+ {
   "as": "gus",
   "op": "view",
   "method": "availability",

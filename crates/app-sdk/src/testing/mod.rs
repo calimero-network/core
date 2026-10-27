@@ -44,6 +44,10 @@ pub enum Failure {
 }
 
 const APP_ID: &str = "test-app";
+/// The largest call arguments a node runs (`node::MAX_ARGS_BYTES`, Ruling 30).
+const MAX_ARGS_BYTES: usize = 512 * 1024;
+/// Method names the node keeps for the platform (`node::RESERVED_PREFIX`).
+const RESERVED_PREFIX: &str = "__";
 const TERM: u64 = 1;
 
 struct Logged {
@@ -423,14 +427,18 @@ impl TestApp {
     /// platform's access gate: the harness app is an org app, so an account the org does not
     /// hold (never in it, or removed) is `404 NOT_FOUND`, and every anonymous caller is
     /// `401 UNAUTHENTICATED`, whatever the method's `public` flag (on a node only a public app
-    /// lets anonymous callers reach the ABI). Then the ABI's (confirm, allowSystem).
+    /// lets anonymous callers reach the ABI). Then the ABI's, as the node makes them: a method
+    /// the ABI does not name (or a reserved `__` name) `UnknownMethod`, `init` and timers
+    /// `WrongKind`, a `confirm` method as a view `ConfirmNotAView`, any other non-view as a
+    /// view `NotAView`, `Forbidden` for System without `allowSystem`, `ConfirmRequired`.
     fn gate(
         &self,
         method: &str,
         caller: &HostCaller,
         confirmed: bool,
-        view: bool,
+        call_args: Option<&[u8]>,
     ) -> Option<Failure> {
+        let view = call_args.is_none();
         if let HostCaller::Account(a) | HostCaller::ApiKey { account: a, .. } = caller {
             if self.org.role(a).is_none() {
                 return Some(Failure::Refused {
@@ -445,23 +453,41 @@ impl TestApp {
                 code: "UNAUTHENTICATED".to_owned(),
             });
         }
-        let m = self.prepared.abi.methods.get(method)?;
+        // A call's arguments over the node's cap are refused before anything runs.
+        if call_args.is_some_and(|a| a.len() > MAX_ARGS_BYTES) {
+            return Some(Failure::Refused {
+                status: 413,
+                code: "ARGS_TOO_LARGE".to_owned(),
+            });
+        }
+        // The node's ABI checks (`node::abi_check`), in its order and with its codes.
         let refuse = |code: &str| {
             Some(Failure::App {
                 code: code.to_owned(),
                 fields: Value::Object(serde_json::Map::new()),
             })
         };
-        if view && (m.confirm || m.kind != MethodKind::View) {
-            return refuse("NotAView");
-        }
+        let Some(m) = self
+            .prepared
+            .abi
+            .methods
+            .get(method)
+            .filter(|_| !method.starts_with(RESERVED_PREFIX))
+        else {
+            return refuse("UnknownMethod");
+        };
         if !matches!(m.kind, MethodKind::Call | MethodKind::View) {
-            // Timers and `init` are refused by the guest with `WrongKind`.
-            return None;
+            return refuse("WrongKind");
+        }
+        if view && m.confirm {
+            return refuse("ConfirmNotAView");
+        }
+        if view && m.kind != MethodKind::View {
+            return refuse("NotAView");
         }
         match caller {
             HostCaller::System if !m.allow_system => refuse("Forbidden"),
-            _ if m.confirm && !confirmed => Some(Failure::ConfirmRequired),
+            _ if m.confirm && !view && !confirmed => Some(Failure::ConfirmRequired),
             _ => None,
         }
     }
@@ -494,14 +520,18 @@ impl As<'_> {
     ///
     /// The call's `Failure`.
     pub fn call(&mut self, method: &str, args: Value) -> Result<Value, Failure> {
-        if let Some(f) = self.app.gate(method, &self.caller, self.confirmed, false) {
+        let args = args_bytes(&args);
+        if let Some(f) = self
+            .app
+            .gate(method, &self.caller, self.confirmed, Some(&args))
+        {
             return Err(f);
         }
         self.app.run(
             InvocationKind::Call,
             self.caller.clone(),
             method,
-            args_bytes(&args),
+            args,
             None,
         )
     }
@@ -512,7 +542,7 @@ impl As<'_> {
     ///
     /// The view's `Failure`.
     pub fn view(&mut self, method: &str, args: Value) -> Result<Value, Failure> {
-        if let Some(f) = self.app.gate(method, &self.caller, self.confirmed, true) {
+        if let Some(f) = self.app.gate(method, &self.caller, self.confirmed, None) {
             return Err(f);
         }
         self.app.run(

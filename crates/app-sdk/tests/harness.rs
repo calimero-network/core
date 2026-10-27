@@ -77,11 +77,35 @@ fn confirm_needs_confirmed() {
         t.as_("ada").confirmed().call("adminRelease", args.clone()),
         Ok(Value::Null)
     );
-    // A confirm method is never a view.
-    let Err(Failure::App { code, .. }) = t.as_("ada").confirmed().view("adminRelease", args) else {
-        panic!("confirm method ran as a view");
+    // A confirm method is never a view, with the node's code; nor is a timer or `init`
+    // reached by a client, as a view or a call (`WrongKind`), nor a reserved name.
+    let refused = |code: &str| {
+        Err(Failure::App {
+            code: code.to_owned(),
+            fields: json!({}),
+        })
     };
-    assert_eq!(code, "NotAView");
+    assert_eq!(
+        t.as_("ada").confirmed().view("adminRelease", args),
+        refused("ConfirmNotAView")
+    );
+    for method in ["releaseNoShows", "init"] {
+        assert_eq!(t.as_("ada").view(method, json!({})), refused("WrongKind"));
+        assert_eq!(t.as_("ada").call(method, json!({})), refused("WrongKind"));
+    }
+    assert_eq!(
+        t.as_("ada").call("__upgrade", json!({})),
+        refused("UnknownMethod")
+    );
+    // Call arguments over the node's 512 KiB are refused before running.
+    assert_eq!(
+        t.as_("ada")
+            .call("adminRelease", json!({ "id": "x".repeat(512 * 1024) })),
+        Err(Failure::Refused {
+            status: 413,
+            code: "ARGS_TOO_LARGE".to_owned()
+        })
+    );
     // Host-side ABI checks: public and allowSystem.
     assert_eq!(
         t.anonymous()
