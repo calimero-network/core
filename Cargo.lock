@@ -1080,6 +1080,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-app-build"
+version = "0.0.0"
+dependencies = [
+ "calimero-app-wit",
+ "eyre",
+ "serde_json",
+ "tempfile",
+ "wasmparser 0.262.0",
+]
+
+[[package]]
 name = "calimero-app-downloader"
 version = "0.0.0"
 dependencies = [

@@ -1,0 +1,22 @@
+[package]
+name = "calimero-app-build"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Builds Rust guests into calimero:app components"
+publish = false
+
+[[bin]]
+name = "mero-app-build"
+path = "src/main.rs"
+
+[dependencies]
+eyre.workspace = true
+serde_json.workspace = true
+wasmparser.workspace = true
+
+[dev-dependencies]
+calimero-app-wit.workspace = true
+tempfile.workspace = true

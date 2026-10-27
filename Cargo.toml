@@ -102,6 +102,7 @@ members = [
     "./tools/storage-compare",
     "./crates/account",
     "./crates/app-downloader",
+    "./crates/app-build",
     "./crates/app-wit",
     "./crates/auth",
     "./crates/build-utils",
@@ -403,6 +404,7 @@ pyo3 = "0.20"
 
 calimero-app-downloader = { path = "./crates/app-downloader" }
 calimero-app-wit = { path = "./crates/app-wit" }
+calimero-app-build = { path = "./crates/app-build" }
 calimero-build-utils = { path = "./crates/build-utils" }
 calimero-bundle = { path = "./crates/bundle" }
 calimero-blobstore = { path = "./crates/store/blobs" }
