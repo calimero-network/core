@@ -43,12 +43,25 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>) -> EyreResult<()> {
             subtrees: &[*group_id],
         },
     )?;
-    // Owning a folder is no standing without a seat in its space.
+    // Owning an inner folder is no standing without a seat in its space, read at the cut; a
+    // space root's owner needs none.
     if let (Some(space), Some(signer)) = (tree.space_of(group_id)?, ctx.signer_account()?) {
-        if !crate::MembershipRepository::new(store).is_member(&space, &signer)? {
-            bail!(MembershipError::OnlyOwnerCanDelete(hex::encode(
-                group_id.to_bytes()
-            )));
+        if space != *group_id {
+            let seated = match ctx
+                .authorizer()
+                .effective_role_at_cut(&space, &signer, ctx.cut())
+            {
+                Some(role) => role.is_some(),
+                None => {
+                    ctx.ensure_live_fallback_is_sound(ctx.signer())?;
+                    crate::MembershipRepository::new(store).is_member(&space, &signer)?
+                }
+            };
+            if !seated {
+                bail!(MembershipError::OnlyOwnerCanDelete(hex::encode(
+                    group_id.to_bytes()
+                )));
+            }
         }
     }
     tree.require_may_delete(group_id)?;
