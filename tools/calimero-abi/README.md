@@ -107,7 +107,7 @@ A dedicated guard already runs in CI: the identity-downgrade steps in
 `state-schema.json`, runs `mero-abi diff v2 v1`, and **fails the build** unless
 the tool exits `1` with an `UNSAFE_IDENTITY_DOWNGRADE` finding - proving the lint
 catches a real, app-produced downgrade. The node refuses the same upgrade
-(`plan_upgrade`; scenario `workflows/cloud-v2/app-migration/22-scenario-identity-downgrade.yml`).
+(`plan_upgrade`; scenario `workflows/app-migration/22-scenario-identity-downgrade.yml`).
 
 Generalising this to **every** app - diffing each build against its previous
 release's schema and failing on any `BREAKING`-without-migration or
