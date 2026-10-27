@@ -22,7 +22,15 @@ tokio = { workspace = true, features = ["sync", "time", "rt", "fs", "io-util"] }
 tracing.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 hex.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lib]
+bench = false
+
+[[bench]]
+name = "log"
+harness = false
 

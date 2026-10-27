@@ -14,3 +14,8 @@ Removed relative to the server copy: forward-auth, admin-path inner scopes and
 prometheus metrics (plain atomic counters instead).
 
 Tests: `cargo test -p calimero-sealed` (round trip, SSE frames, stale key, required mode).
+
+Bench: `cargo bench -p calimero-sealed --bench sealed` (`benches/sealed.rs`): one
+request sealed and opened both ways over loopback, at 1 KiB, 64 KiB and 1 MiB,
+beside the same request sent plain to the same server (the envelope's cost, not
+HTTP's). The session is opened before timing, as one lasts.

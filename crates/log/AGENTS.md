@@ -35,3 +35,9 @@ Tests: `cargo test -p calimero-log` runs a 3-node cluster in one process
 (replication, failover, restart from disk, learner catch-up, no plaintext on disk,
 a disk machine restarting without replay, a ~6 MiB state streamed to a new node) and
 the redb migration (`migration_tests.rs`).
+
+Bench: `cargo bench -p calimero-log --bench log` (`benches/log.rs`): a proposal
+appended, committed and applied on one group, on 1 node and on a 3-node group
+over the in-memory transport, 1 and 64 in flight (64 only queue behind the
+propose lock); and one RocksDB write synced and unsynced on the same disk, the
+unit a commit's latency is made of.
