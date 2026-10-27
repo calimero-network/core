@@ -243,8 +243,8 @@ pub(crate) fn apply(
         handle.put(&GroupParentRef::new(group_id), &parent_id)?;
         handle.put(&GroupChildIndex::new(parent_id, group_id), &())?;
     }
-    // Inside a space the creator's seat is its seat in the space, with no row of its own.
-    if tree.space_of(&parent_gid)?.is_none() {
+    // Members are rows of a space root; an open folder takes its members from the root or space.
+    if restricted {
         MembershipRepository::new(store).add_member(&gid, &creator, GroupMemberRole::Admin)?;
     }
 

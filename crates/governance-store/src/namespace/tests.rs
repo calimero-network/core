@@ -4599,6 +4599,83 @@ fn a_folder_created_inside_a_space_gives_its_creator_no_row() {
         "the space root seats its creator"
     );
     assert_eq!(rows.role_of(&folder, &admin).unwrap(), None);
+
+    let open = create(3, ns_id, false, 0x03);
+    assert_eq!(
+        rows.role_of(&open, &admin).unwrap(),
+        None,
+        "an open folder takes its members from the root"
+    );
+}
+
+/// An open folder that moves into a space keeps no direct row: its seats become the space's.
+#[test]
+fn an_open_folder_moving_into_a_space_loses_its_direct_rows() {
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk_bytes: [u8; 32] = rand::RngExt::random(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+    let ns_id = [0xA7u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let admin = enrol_member(&store, &ns_gid, &admin_pk);
+    let dave = enrol_member(&store, &ns_gid, &PrivateKey::from([0xD7; 32]).public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
+        .unwrap();
+    let gov = NamespaceGovernance::new(&store, ns_id.into());
+    let publish = |nonce: u64, op: RootOp| {
+        let signed = SignedNamespaceOp::sign(
+            &admin_sk,
+            ns_id.into(),
+            vec![],
+            nonce,
+            seal_for_test(&store, ns_gid, op),
+        )
+        .expect("sign");
+        gov.apply_signed_op(&signed)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
+            .expect("apply");
+    };
+    publish(
+        1,
+        crate::test_fixtures::group_created(admin, ns_id, true, 0x01),
+    );
+    publish(
+        2,
+        crate::test_fixtures::group_created(admin, ns_id, false, 0x02),
+    );
+    let space = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+        &admin, ns_id, true, 1,
+    ));
+    let folder = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+        &admin, ns_id, false, 2,
+    ));
+    let rows = MembershipRepository::new(&store);
+    rows.add_member(&folder, &dave, GroupMemberRole::Member)
+        .unwrap();
+
+    publish(
+        3,
+        RootOp::GroupReparented {
+            child_group_id: folder.to_bytes().into(),
+            new_parent_id: space.to_bytes().into(),
+        },
+    );
+
+    assert_eq!(rows.role_of(&folder, &dave).unwrap(), None);
 }
 
 /// The owner of a folder inside a space, with no seat in the space, cannot delete it by a

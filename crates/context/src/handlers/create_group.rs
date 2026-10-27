@@ -367,11 +367,15 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 let mut group_key_id: Option<[u8; 32]> = None;
                 let write_local_rows = (|| -> eyre::Result<[u8; 32]> {
                     MetaRepository::new(&datastore).save(&group_id, &meta)?;
-                    MembershipRepository::new(&datastore).add_member(
-                        &group_id,
-                        &admin_account,
-                        GroupMemberRole::Admin,
-                    )?;
+                    // Members are rows of a space root; an open folder takes its members from
+                    // the root or space.
+                    if restricted || parent_group_id.is_none() {
+                        MembershipRepository::new(&datastore).add_member(
+                            &group_id,
+                            &admin_account,
+                            GroupMemberRole::Admin,
+                        )?;
+                    }
 
                     CapabilitiesRepository::new(&datastore).set_default_capabilities(
                         &group_id,
