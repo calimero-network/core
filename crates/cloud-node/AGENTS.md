@@ -82,6 +82,21 @@ architecture spec.
   their own runs open with it. ABI facts (timers, handlers, xcall entry
   points) come from the bundle's embedded ABI (`services::BundleFacts`), so
   apps are built with `cargo mero build`; a bundle without one gets none.
+- **Teams are v1's subgroups** (`types::Org`): nested (`parent`, moved with
+  `UpdateTeam`), open (`TeamJoin::Everyone`: whoever reaches the parent, the
+  organization at the top, is a member, unless denied `caps::JOIN_OPEN_TEAMS`)
+  or restricted (direct rows only). A direct row has a role (`TeamRole`: lead,
+  member, read-only) and capabilities (`caps`, v1's `MemberCapabilities` bits;
+  the organization keeps a default). An app deployed with `access: team` is
+  reached by the team's members; a member whose direct row there is read-only
+  is refused writes (`403`). A team's creator leads it. Reads are filtered: a
+  team one neither reaches nor manages is not listed (`GET /orgs/{org}`) and
+  answers `404` (`GET /orgs/{org}/teams/{team}`). `DeleteTeam` takes the teams
+  below it and their apps. Metadata (`POST /orgs/{org}/teams/{team}`) is the
+  app's (a folder's name and colour).
+- **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
+  its applied index, `internal/system/index`; this replica waits for it). Org
+  and team reads use it, and so does an access check before it refuses.
 - **Declared views**: a call (`/intents`) of a method the ABI declares `#[app::view]`
   runs as a strong view: it writes nothing and may search (v1's rule).
 - **Browsers**: `config.origins` are the CORS origins too (`lib.rs`, outermost layer).

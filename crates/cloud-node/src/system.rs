@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use crate::types::{
     Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Invite, NodeRecord, Org, OrgId,
-    OrgRole, RefreshRecord, Team, TeamId, TeamJoin,
+    OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -119,6 +119,11 @@ impl SystemState {
                 .as_ref()
                 .and_then(|o| self.orgs.get(o))
                 .is_some_and(|o| o.role(a).is_some()),
+            (Access::Team { team }, Some(a)) => app
+                .org
+                .as_ref()
+                .and_then(|o| self.orgs.get(o))
+                .is_some_and(|o| o.in_team(a, team)),
         }
     }
 
@@ -249,6 +254,49 @@ pub enum SystemCmd {
         team: TeamId,
         account: AccountId,
         lead: bool,
+        /// The row's role; `lead` alone answers for rows written before roles.
+        #[serde(default)]
+        role: Option<TeamRole>,
+        /// The row's capabilities; a new row takes the organization's default.
+        #[serde(default)]
+        capabilities: Option<u32>,
+        actor: AccountId,
+    },
+    /// Change a team: its name, whether it is open, where it hangs (`parent`:
+    /// `Some(None)` moves it to the top), what the app keeps about it.
+    UpdateTeam {
+        org: OrgId,
+        team: TeamId,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        join: Option<TeamJoin>,
+        #[serde(default)]
+        parent: Option<Option<TeamId>>,
+        #[serde(default)]
+        metadata: Option<Value>,
+        actor: AccountId,
+    },
+    /// Delete a team, the teams below it and their apps (v1's cascading
+    /// `delete_group`).
+    DeleteTeam {
+        org: OrgId,
+        team: TeamId,
+        actor: AccountId,
+    },
+    /// A member's capabilities, organization-wide (`team: None`) or in a team.
+    SetCapabilities {
+        org: OrgId,
+        #[serde(default)]
+        team: Option<TeamId>,
+        account: AccountId,
+        capabilities: u32,
+        actor: AccountId,
+    },
+    /// The capabilities members hold unless set for them.
+    SetDefaultCapabilities {
+        org: OrgId,
+        capabilities: u32,
         actor: AccountId,
     },
     RemoveTeamMember {
@@ -344,6 +392,14 @@ impl SystemMachine {
                         return Err("owner is not a member of the organization");
                     }
                 }
+                if let Access::Team { team } = &app.access {
+                    let o = app.org.as_ref().and_then(|o| s.orgs.get(o));
+                    // A team's app is created by someone who writes the team
+                    // (v1: a context in a group its creator belongs to).
+                    if !o.is_some_and(|o| o.writes_team(&app.owner, team)) {
+                        return Err("not a member of that team");
+                    }
+                }
                 s.next_group = s.next_group.max(1) + 1;
                 app.group = s.next_group;
                 let out =
@@ -405,10 +461,21 @@ impl SystemMachine {
                 access,
                 actor,
             } => {
-                let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
+                let app = s.apps.get(&app_id).ok_or("no such app")?;
                 if app.owner != actor {
                     return Err("only the owner may change access");
                 }
+                if let Access::Team { team } = &access {
+                    let in_org = app
+                        .org
+                        .as_ref()
+                        .and_then(|o| s.orgs.get(o))
+                        .is_some_and(|o| o.teams.contains_key(team));
+                    if !in_org {
+                        return Err("no such team in the app's organization");
+                    }
+                }
+                let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
                 app.access = access;
                 Ok(Value::Null)
             }
@@ -581,6 +648,8 @@ impl SystemMachine {
                         name,
                         members,
                         teams: BTreeMap::new(),
+                        default_capabilities: crate::types::caps::DEFAULT,
+                        capabilities: BTreeMap::new(),
                     },
                 );
                 Ok(json!({ "orgId": org_id }))
@@ -633,8 +702,11 @@ impl SystemMachine {
                     return Err("only admins remove members");
                 }
                 let _prev = o.members.remove(&account);
+                let _caps = o.capabilities.remove(&account);
                 for t in o.teams.values_mut() {
                     let _prev = t.members.remove(&account);
+                    let _was = t.read_only.remove(&account);
+                    let _caps = t.capabilities.remove(&account);
                 }
                 Ok(Value::Null)
             }
@@ -647,13 +719,24 @@ impl SystemMachine {
                 actor,
             } => {
                 let o = self.org_mut(&org)?;
+                if o.teams.contains_key(&team_id) {
+                    return Err("team exists");
+                }
+                // An admin anywhere, a team's lead below it; a member with
+                // CREATE_TEAM at the top (v1: CAN_CREATE_SUBGROUP, root only).
                 let allowed = match &parent {
                     Some(p) => o.teams.contains_key(p) && o.manages_team(&actor, p),
-                    None => o.role(&actor).is_some_and(|r| r >= OrgRole::Admin),
+                    None => {
+                        o.role(&actor).is_some_and(|r| r >= OrgRole::Member)
+                            && o.may(&actor, None, crate::types::caps::CREATE_TEAM)
+                    }
                 };
                 if !allowed {
                     return Err("not allowed to create this team");
                 }
+                // Its creator leads it (v1: the creator is the subgroup's admin).
+                let mut members = BTreeMap::new();
+                let _prev = members.insert(actor.clone(), true);
                 let _prev = o.teams.insert(
                     team_id.clone(),
                     Team {
@@ -661,7 +744,10 @@ impl SystemMachine {
                         name,
                         parent,
                         join,
-                        members: BTreeMap::new(),
+                        members,
+                        read_only: Default::default(),
+                        capabilities: Default::default(),
+                        metadata: Value::Null,
                     },
                 );
                 Ok(json!({ "teamId": team_id }))
@@ -671,27 +757,185 @@ impl SystemMachine {
                 team,
                 account,
                 lead,
+                role,
+                capabilities,
                 actor,
             } => {
                 let o = self.org_mut(&org)?;
                 if !o.teams.contains_key(&team) {
                     return Err("no such team");
                 }
+                let role = role.unwrap_or(if lead {
+                    TeamRole::Lead
+                } else {
+                    TeamRole::Member
+                });
+                // Joining an open team one reaches anyway writes one's own row.
                 let joins_self = actor == account
-                    && !lead
+                    && role == TeamRole::Member
                     && o.teams
                         .get(&team)
                         .is_some_and(|t| t.join == TeamJoin::Everyone)
-                    && o.role(&actor).is_some_and(|r| r >= OrgRole::Member);
-                if !joins_self && !o.manages_team(&actor, &team) {
+                    && o.in_team(&actor, &team);
+                let manages = o.manages_team(&actor, &team)
+                    || (role != TeamRole::Lead
+                        && o.may(&actor, Some(&team), crate::types::caps::MANAGE_MEMBERS));
+                if !joins_self && !manages {
                     return Err("not allowed to manage this team");
                 }
                 if o.role(&account).is_none() {
                     return Err("only organization members join teams");
                 }
+                let default = o
+                    .capabilities
+                    .get(&account)
+                    .copied()
+                    .unwrap_or(o.default_capabilities);
                 if let Some(t) = o.teams.get_mut(&team) {
-                    let _prev = t.members.insert(account, lead);
+                    let _prev = t.members.insert(account.clone(), role == TeamRole::Lead);
+                    if role == TeamRole::ReadOnly {
+                        let _new = t.read_only.insert(account.clone());
+                    } else {
+                        let _was = t.read_only.remove(&account);
+                    }
+                    match capabilities {
+                        Some(c) => {
+                            let _prev = t.capabilities.insert(account, c);
+                        }
+                        None => {
+                            let _kept = t.capabilities.entry(account).or_insert(default);
+                        }
+                    }
                 }
+                Ok(Value::Null)
+            }
+            SystemCmd::UpdateTeam {
+                org,
+                team,
+                name,
+                join,
+                parent,
+                metadata,
+                actor,
+            } => {
+                let o = self.org_mut(&org)?;
+                if !o.teams.contains_key(&team) {
+                    return Err("no such team");
+                }
+                use crate::types::caps;
+                if name.is_some() && !o.manages_team(&actor, &team) {
+                    return Err("not allowed to rename this team");
+                }
+                if join.is_some() && !o.may(&actor, Some(&team), caps::MANAGE_VISIBILITY) {
+                    return Err("not allowed to change this team's visibility");
+                }
+                if metadata.is_some() && !o.may(&actor, Some(&team), caps::MANAGE_METADATA) {
+                    return Err("not allowed to change this team's metadata");
+                }
+                if let Some(to) = &parent {
+                    let may_move = o.manages_team(&actor, &team)
+                        && match to {
+                            Some(p) => o.teams.contains_key(p) && o.manages_team(&actor, p),
+                            None => {
+                                o.role(&actor).is_some_and(|r| r >= OrgRole::Admin)
+                                    || o.may(&actor, None, caps::CREATE_TEAM)
+                            }
+                        };
+                    if !may_move {
+                        return Err("not allowed to move this team there");
+                    }
+                    if let Some(p) = to {
+                        if o.subtree(&team).contains(p) {
+                            return Err("a team cannot move under itself");
+                        }
+                    }
+                }
+                let t = o.teams.get_mut(&team).ok_or("no such team")?;
+                if let Some(n) = name {
+                    t.name = n;
+                }
+                if let Some(j) = join {
+                    t.join = j;
+                }
+                if let Some(p) = parent {
+                    t.parent = p;
+                }
+                if let Some(m) = metadata {
+                    t.metadata = m;
+                }
+                Ok(Value::Null)
+            }
+            SystemCmd::DeleteTeam { org, team, actor } => {
+                let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
+                if !o.teams.contains_key(&team) {
+                    return Err("no such team");
+                }
+                if !o.manages_team(&actor, &team)
+                    && !o.may(&actor, None, crate::types::caps::DELETE_TEAM)
+                {
+                    return Err("not allowed to delete this team");
+                }
+                let gone = o.subtree(&team);
+                for t in &gone {
+                    let _removed = o.teams.remove(t);
+                }
+                let apps: Vec<String> = s
+                    .apps
+                    .values()
+                    .filter(|a| {
+                        a.org.as_deref() == Some(org.as_str())
+                            && matches!(&a.access, Access::Team { team } if gone.contains(team))
+                    })
+                    .map(|a| a.app_id.clone())
+                    .collect();
+                for a in &apps {
+                    let _removed = s.apps.remove(a);
+                }
+                Ok(json!({ "teams": gone, "apps": apps }))
+            }
+            SystemCmd::SetCapabilities {
+                org,
+                team,
+                account,
+                capabilities,
+                actor,
+            } => {
+                let o = self.org_mut(&org)?;
+                if o.role(&account).is_none() {
+                    return Err("not a member");
+                }
+                match team {
+                    Some(t) => {
+                        if !o.manages_team(&actor, &t)
+                            && !o.may(&actor, Some(&t), crate::types::caps::MANAGE_MEMBERS)
+                        {
+                            return Err("not allowed to manage this team");
+                        }
+                        let rec = o.teams.get_mut(&t).ok_or("no such team")?;
+                        if !rec.members.contains_key(&account) {
+                            return Err("not a member of this team");
+                        }
+                        let _prev = rec.capabilities.insert(account, capabilities);
+                    }
+                    None => {
+                        if !o.role(&actor).is_some_and(|r| r >= OrgRole::Admin) {
+                            return Err("only admins manage members");
+                        }
+                        let _prev = o.capabilities.insert(account, capabilities);
+                    }
+                }
+                Ok(Value::Null)
+            }
+            SystemCmd::SetDefaultCapabilities {
+                org,
+                capabilities,
+                actor,
+            } => {
+                let o = self.org_mut(&org)?;
+                if !o.role(&actor).is_some_and(|r| r >= OrgRole::Admin) {
+                    return Err("only admins manage members");
+                }
+                o.default_capabilities = capabilities;
                 Ok(Value::Null)
             }
             SystemCmd::RemoveTeamMember {
@@ -706,6 +950,8 @@ impl SystemMachine {
                 }
                 let t = o.teams.get_mut(&team).ok_or("no such team")?;
                 let _prev = t.members.remove(&account);
+                let _was = t.read_only.remove(&account);
+                let _caps = t.capabilities.remove(&account);
                 Ok(Value::Null)
             }
             SystemCmd::CreateInvite {

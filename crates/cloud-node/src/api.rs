@@ -860,12 +860,39 @@ async fn gate(
 ) -> Result<Principal, ApiError> {
     let p = principal(node, headers).await?;
     let account = p.as_ref().and_then(|p| p.caller.account());
-    if !node.sys(|s| s.may_reach(app, account)) {
+    // A refusal is checked again against the cluster's latest system state:
+    // a membership granted through another node may not have reached this
+    // replica yet.
+    let mut reaches = node.sys(|s| s.may_reach(app, account));
+    if !reaches {
+        node.sys_fresh().await;
+        reaches = node.sys(|s| s.may_reach(app, account));
+    }
+    if !reaches {
         return Err(if p.is_none() {
             ApiError::unauthenticated("sign in to use this app")
         } else {
             ApiError::not_found("no such app")
         });
+    }
+    if write {
+        if let (crate::types::Access::Team { team }, Some(a)) = (&app.access, account) {
+            let read_only = || {
+                node.sys(|s| {
+                    app.org
+                        .as_ref()
+                        .and_then(|o| s.orgs.get(o))
+                        .is_some_and(|o| !o.writes_team(a, team))
+                })
+            };
+            let read_only = read_only() && {
+                node.sys_fresh().await;
+                read_only()
+            };
+            if read_only && a != app.owner {
+                return Err(ApiError::forbidden("read-only in this team"));
+            }
+        }
     }
     if let Some(k) = p.as_ref().and_then(|p| p.api_key.as_ref()) {
         if write && k.read_only {
@@ -1253,13 +1280,19 @@ async fn org_get(
     Path(org): Path<String>,
 ) -> ApiResult {
     let account = signed_in(&node, &headers).await?.account()?;
+    node.sys_fresh().await;
     let o = node
         .sys(|s| s.orgs.get(&org).cloned())
         .ok_or_else(|| ApiError::not_found("no such organization"))?;
     if o.role(&account).is_none() {
         return Err(ApiError::not_found("no such organization"));
     }
-    Ok(Json(serde_json::to_value(o).unwrap_or_default()))
+    // Teams a member does not see are left out, as if they did not exist.
+    let mut v = serde_json::to_value(&o).unwrap_or_default();
+    if let Some(teams) = v.get_mut("teams").and_then(Value::as_object_mut) {
+        teams.retain(|id, _| o.sees_team(&account, id));
+    }
+    Ok(Json(v))
 }
 
 #[derive(Deserialize)]
@@ -1335,6 +1368,10 @@ struct TeamMemberBody {
     account: String,
     #[serde(default)]
     lead: bool,
+    #[serde(default)]
+    role: Option<crate::types::TeamRole>,
+    #[serde(default)]
+    capabilities: Option<u32>,
 }
 
 async fn team_set_member(
@@ -1350,9 +1387,170 @@ async fn team_set_member(
             team,
             account: body.account,
             lead: body.lead,
+            role: body.role,
+            capabilities: body.capabilities,
             actor,
         })
         .await?;
+    Ok(Json(json!({})))
+}
+
+/// A team as `account` may see it: its record, its members with their roles,
+/// the teams below it they see, and its apps. `None` when they may not see it
+/// (a restricted team they are not in looks like no team at all).
+fn team_view(
+    s: &crate::system::SystemState,
+    o: &crate::types::Org,
+    team: &str,
+    account: &str,
+) -> Option<Value> {
+    if !o.sees_team(account, team) {
+        return None;
+    }
+    let t = o.teams.get(team)?;
+    let members: Vec<Value> = t
+        .members
+        .keys()
+        .map(|a| {
+            json!({
+                "account": a,
+                "role": o.team_role(a, team),
+                "capabilities": t.capabilities.get(a).copied().unwrap_or(o.default_capabilities),
+            })
+        })
+        .collect();
+    let children: Vec<&String> = o
+        .teams
+        .values()
+        .filter(|c| c.parent.as_deref() == Some(team) && o.sees_team(account, &c.team_id))
+        .map(|c| &c.team_id)
+        .collect();
+    let apps: Vec<Value> = s
+        .apps
+        .values()
+        .filter(|a| {
+            a.org.as_deref() == Some(o.org_id.as_str())
+                && matches!(&a.access, Access::Team { team: t } if t == team)
+        })
+        .map(|a| json!({ "appId": a.app_id, "name": a.name, "contextId": hex::encode(sha256(a.app_id.as_bytes())) }))
+        .collect();
+    Some(json!({
+        "teamId": t.team_id,
+        "name": t.name,
+        "parent": t.parent,
+        "join": t.join,
+        "metadata": t.metadata,
+        "members": members,
+        "children": children,
+        "apps": apps,
+        "myRole": o.team_role(account, team),
+        "member": o.in_team(account, team),
+    }))
+}
+
+async fn team_get(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((org, team)): Path<(String, String)>,
+) -> ApiResult {
+    let account = signed_in(&node, &headers).await?.account()?;
+    node.sys_fresh().await;
+    let v = node
+        .sys(|s| {
+            let o = s.orgs.get(&org)?;
+            o.role(&account)?;
+            team_view(s, o, &team, &account)
+        })
+        .ok_or_else(|| ApiError::not_found("no such team"))?;
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TeamUpdateBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    join: Option<TeamJoin>,
+    /// Present (even `null`) to move the team; `null` moves it to the top.
+    #[serde(default, deserialize_with = "present")]
+    parent: Option<Option<String>>,
+    #[serde(default)]
+    metadata: Option<Value>,
+}
+
+/// A field that may be present as `null`, told apart from an absent one.
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(d).map(Some)
+}
+
+async fn team_update(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((org, team)): Path<(String, String)>,
+    Json(body): Json<TeamUpdateBody>,
+) -> ApiResult {
+    let actor = person(&node, &headers).await?.account()?;
+    let _ok = node
+        .sys_write(&SystemCmd::UpdateTeam {
+            org,
+            team,
+            name: body.name,
+            join: body.join,
+            parent: body.parent,
+            metadata: body.metadata,
+            actor,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+async fn team_delete(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((org, team)): Path<(String, String)>,
+) -> ApiResult {
+    let actor = person(&node, &headers).await?.account()?;
+    let v = node
+        .sys_write(&SystemCmd::DeleteTeam { org, team, actor })
+        .await?;
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CapabilitiesBody {
+    #[serde(default)]
+    account: Option<String>,
+    #[serde(default)]
+    team: Option<String>,
+    capabilities: u32,
+}
+
+/// A member's capabilities (`account`, organization-wide or in `team`), or,
+/// without an account, the organization's default.
+async fn org_capabilities(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<CapabilitiesBody>,
+) -> ApiResult {
+    let actor = person(&node, &headers).await?.account()?;
+    let cmd = match body.account {
+        Some(account) => SystemCmd::SetCapabilities {
+            org,
+            team: body.team,
+            account,
+            capabilities: body.capabilities,
+            actor,
+        },
+        None => SystemCmd::SetDefaultCapabilities {
+            org,
+            capabilities: body.capabilities,
+            actor,
+        },
+    };
+    let _ok = node.sys_write(&cmd).await?;
     Ok(Json(json!({})))
 }
 
@@ -1614,6 +1812,17 @@ async fn internal_blob_held(
     Ok(Json(
         json!({ "held": g.read_local(|m, _| m.holds_blob(&raw)) }),
     ))
+}
+
+/// The system leader's applied index, once it confirmed it leads.
+async fn internal_system_index(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    peer_only(&node, &headers)?;
+    let index = node
+        .system
+        .read_strong(|_, applied| applied)
+        .await
+        .map_err(|e| ApiError::unavailable(&e.to_string()))?;
+    Ok(Json(json!({ "index": index })))
 }
 
 async fn internal_call(
@@ -1899,6 +2108,8 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/orgs/{org}/members", post(org_set_member))
         .route("/orgs/{org}/members/{account}", delete(org_remove_member))
         .route("/orgs/{org}/teams", post(team_create))
+        .route("/orgs/{org}/teams/{team}", get(team_get).post(team_update).delete(team_delete))
+        .route("/orgs/{org}/capabilities", post(org_capabilities))
         .route("/orgs/{org}/teams/{team}/members", post(team_set_member))
         .route(
             "/orgs/{org}/teams/{team}/members/{account}",
@@ -1908,6 +2119,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/invites/{token}/redeem", post(invite_redeem))
         .route("/internal/raft", post(internal_raft))
         .route("/internal/system", post(internal_system))
+        .route("/internal/system/index", post(internal_system_index))
         .route("/internal/call", post(internal_call))
         .route("/internal/blob", post(internal_blob_put))
         .route("/internal/blob/get", post(internal_blob_get))

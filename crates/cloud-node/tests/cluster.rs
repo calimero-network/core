@@ -809,7 +809,16 @@ async fn apps_see_the_callers_organization_role_and_teams() {
         .unwrap_err();
     assert_eq!(err.code(), Some("APP_ERROR"), "{err}");
 
-    // Team members write their team's note; alice (owner, not in the team) cannot.
+    // Team members write their team's note; alice (owner, who left the team
+    // she created and led) cannot.
+    let alice_id = alice.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ok = alice
+        .delete(&format!("orgs/{org}/teams/{team}/members/{alice_id}"))
+        .await
+        .unwrap();
     let _ok = bob
         .call(
             &app,
@@ -1204,4 +1213,186 @@ async fn views_search_the_apps_own_index_as_it_changes() {
         )
         .await
         .is_err());
+}
+
+async fn set(cl: &Client, app: &str, v: &str) -> Result<(), Box<calimero_cloud_client::Error>> {
+    cl.call(app, "set", json!({ "key": "k", "value": v }), None)
+        .await
+        .map(drop)
+        .map_err(Box::new)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn teams_work_like_v1_subgroups() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let org = s(
+        alice.post("orgs", json!({ "name": "Docs" })).await.unwrap(),
+        "orgId",
+    );
+    let token = s(
+        alice
+            .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+            .await
+            .unwrap(),
+        "token",
+    );
+    let _r = bob
+        .post(&format!("invites/{token}/redeem"), json!({}))
+        .await
+        .unwrap();
+    let bob_id = s(bob.me().await.unwrap(), "accountId");
+    let team = |name: &str, join: &str, parent: Option<&str>| {
+        let body = json!({ "name": name, "join": join, "parent": parent });
+        let (alice, org) = (&alice, &org);
+        async move {
+            s(
+                alice
+                    .post(&format!("orgs/{org}/teams"), body)
+                    .await
+                    .unwrap(),
+                "teamId",
+            )
+        }
+    };
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app_in = |team: String| {
+        let (alice, org, bundle) = (&alice, &org, &bundle);
+        async move {
+            alice
+                .create_app(
+                    "folder",
+                    bundle,
+                    json!({ "org": org, "access": { "kind": "team", "team": team } }),
+                )
+                .await
+                .unwrap()
+        }
+    };
+
+    // An open folder: Bob reaches it through the organization and writes.
+    let open = team("Open", "everyone", None).await;
+    let open_app = app_in(open.clone()).await;
+    set(&bob, &open_app, "bob").await.unwrap();
+
+    // A restricted folder is a wall, invisible to Bob until he is added.
+    let secret = team("Secret", "invite", None).await;
+    let secret_app = app_in(secret.clone()).await;
+    let err = set(&bob, &secret_app, "x").await.unwrap_err();
+    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+    assert!(bob
+        .get(&format!("orgs/{org}/teams/{secret}"))
+        .await
+        .is_err());
+    let listed = bob.get(&format!("orgs/{org}")).await.unwrap();
+    assert!(listed["teams"].get(&secret).is_none(), "{listed}");
+    assert!(listed["teams"].get(&open).is_some(), "{listed}");
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/teams/{secret}/members"),
+            json!({ "account": bob_id, "role": "member" }),
+        )
+        .await
+        .unwrap();
+    set(&bob, &secret_app, "in").await.unwrap();
+
+    // Nested open teams inherit through their parent; a direct read-only row
+    // refuses writes there and nowhere else.
+    let child = team("Child", "everyone", Some(&secret)).await;
+    let child_app = app_in(child.clone()).await;
+    set(&bob, &child_app, "inherited").await.unwrap();
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/teams/{child}/members"),
+            json!({ "account": bob_id, "role": "readOnly" }),
+        )
+        .await
+        .unwrap();
+    let err = set(&bob, &child_app, "ro").await.unwrap_err();
+    assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
+    set(&bob, &secret_app, "still writes the parent")
+        .await
+        .unwrap();
+    let v = bob
+        .view(
+            &child_app,
+            "get",
+            json!({ "key": "k" }),
+            Consistency::Strong,
+        )
+        .await;
+    assert_eq!(v.unwrap().result, json!("inherited"));
+
+    // Metadata and visibility belong to the team; moving it under a team Bob
+    // is not in hides it from him.
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/teams/{child}"),
+            json!({ "metadata": { "name": "Child", "color": "#f00" } }),
+        )
+        .await
+        .unwrap();
+    let seen = bob.get(&format!("orgs/{org}/teams/{child}")).await.unwrap();
+    assert_eq!(seen["metadata"]["color"], "#f00");
+    assert_eq!(seen["myRole"], "readOnly");
+    let board = team("Board", "invite", None).await;
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/teams/{child}"),
+            json!({ "parent": board, "join": "invite" }),
+        )
+        .await
+        .unwrap();
+    // Still a direct member of Child, Bob sees it but not Board above it.
+    assert!(bob.get(&format!("orgs/{org}/teams/{child}")).await.is_ok());
+    assert!(bob.get(&format!("orgs/{org}/teams/{board}")).await.is_err());
+    let err = alice
+        .post(
+            &format!("orgs/{org}/teams/{board}"),
+            json!({ "parent": child }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("REJECTED"), "{err}");
+
+    // A member creates top-level teams only with the capability.
+    let err = bob
+        .post(
+            &format!("orgs/{org}/teams"),
+            json!({ "name": "Mine", "join": "everyone" }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("REJECTED"), "{err}");
+    let _ok = alice
+        .post(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "capabilities": 37 }),
+        )
+        .await
+        .unwrap();
+    let mine = s(
+        bob.post(
+            &format!("orgs/{org}/teams"),
+            json!({ "name": "Mine", "join": "everyone" }),
+        )
+        .await
+        .unwrap(),
+        "teamId",
+    );
+    assert_eq!(
+        bob.get(&format!("orgs/{org}/teams/{mine}")).await.unwrap()["myRole"],
+        "lead"
+    );
+
+    // Deleting a team deletes what is under it, apps included.
+    let gone = alice
+        .delete(&format!("orgs/{org}/teams/{board}"))
+        .await
+        .unwrap();
+    assert_eq!(gone["teams"].as_array().unwrap().len(), 2, "{gone}");
+    assert_eq!(gone["apps"], json!([child_app]));
+    assert!(alice.get(&format!("apps/{child_app}")).await.is_err());
 }

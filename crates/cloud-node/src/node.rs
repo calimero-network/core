@@ -420,6 +420,27 @@ impl Node {
         })
     }
 
+    /// Bring this node's system replica up to what the cluster has committed,
+    /// so a read here sees every write acknowledged anywhere (a read index:
+    /// the leader confirms it leads and names its applied index, this node
+    /// waits to apply it). Best effort: on no answer the read goes ahead.
+    pub async fn sys_fresh(&self) {
+        let index = match self.system.read_strong(|_, applied| applied).await {
+            Ok(i) => Some(i),
+            Err(WriteError::NotLeader {
+                leader: Some((id, addr)),
+            }) if id != self.config.node_id && !addr.is_empty() => self
+                .peer_forward(&addr, "internal/system/index", &json!({}))
+                .await
+                .ok()
+                .and_then(|v| v["index"].as_u64()),
+            Err(_) => None,
+        };
+        if let Some(i) = index {
+            let _caught_up = self.system.wait_applied(i, Duration::from_secs(2)).await;
+        }
+    }
+
     /// Read the system state, waiting up to two seconds for `f` to find
     /// something: a write committed through another node may not have been
     /// applied here yet (read-your-writes across nodes).
