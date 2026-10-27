@@ -4749,6 +4749,12 @@ fn a_replay_does_not_bring_back_a_deleted_group_whose_delete_it_cannot_decide() 
 /// creator row, which a replay reads as "folded", is the last thing written.
 #[test]
 fn a_half_made_group_is_finished_by_the_next_create() {
+    for with_visibility in [false, true] {
+        a_half_made_group_is_finished(with_visibility);
+    }
+}
+
+fn a_half_made_group_is_finished(with_visibility: bool) {
     use calimero_context_client::local_governance::SignedNamespaceOp;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;

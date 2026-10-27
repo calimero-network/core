@@ -2269,11 +2269,11 @@ impl<'a> NamespaceGovernance<'a> {
     /// Whether `root` is a `GroupCreated` (bare or delegated) for a group this
     /// node has already folded.
     ///
-    /// Folded means the parent edge and the birth visibility are both on disk:
-    /// the create writes the visibility last, so a fold cut short by a crash
-    /// still reads as unfolded and the next pass finishes it. The id is derived
-    /// from the create, so an existing group with that id is this op's group,
-    /// wherever it has been moved since.
+    /// Folded means the creator row is on disk. The create writes it in one batch with the birth
+    /// visibility, after the parent edge, so a fold cut short by a crash reads as unfolded and the
+    /// next pass finishes it. The row outlives the group, so a group created here and since
+    /// deleted is folded too. The id is derived from the create, so an existing group with that
+    /// id is this op's group, wherever it has been moved since.
     fn group_created_already_folded(&self, root: &RootOp) -> EyreResult<bool> {
         let group_id = match root {
             RootOp::OnBehalf { op, .. } | RootOp::RootGuarded { op, .. } => {
@@ -2282,17 +2282,9 @@ impl<'a> NamespaceGovernance<'a> {
             RootOp::GroupCreated { group_id, .. } => ContextGroupId::from(group_id.to_bytes()),
             _ => return Ok(false),
         };
-        // The creator row outlives the group, so a group created here and since deleted is folded.
-        Ok(
-            crate::group_creator::GroupCreatorRepository::new(self.store)
-                .creator(&group_id)?
-                .is_some()
-                || (NamespaceRepository::new(self.store)
-                    .parent(&group_id)?
-                    .is_some()
-                    && CapabilitiesRepository::new(self.store)
-                        .has_subgroup_visibility(&group_id)?),
-        )
+        crate::group_creator::GroupCreatorRepository::new(self.store)
+            .creator(&group_id)
+            .map(|creator| creator.is_some())
     }
 
     pub(crate) fn retry_encrypted_ops_for_group(

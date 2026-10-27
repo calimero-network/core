@@ -128,13 +128,25 @@ impl<'a> CapabilitiesRepository<'a> {
         group_id: &ContextGroupId,
         mode: VisibilityMode,
     ) -> EyreResult<()> {
-        let mut handle = self.store.handle();
-        let key = GroupSubgroupVis::new(group_id.to_bytes());
+        let mut batch = calimero_store::StoreBatch::new(self.store);
+        Self::stage_subgroup_visibility(&mut batch, group_id, mode)?;
+        batch.commit()
+    }
+
+    /// Stage the visibility of `group_id` onto `batch`, to commit with other rows.
+    pub(crate) fn stage_subgroup_visibility(
+        batch: &mut calimero_store::StoreBatch<'_>,
+        group_id: &ContextGroupId,
+        mode: VisibilityMode,
+    ) -> EyreResult<()> {
         let mode_byte = match mode {
             VisibilityMode::Open => 0u8,
             VisibilityMode::Restricted => 1u8,
         };
-        handle.put(&key, &GroupSubgroupVisValue { mode: mode_byte })?;
+        let _ = batch.put(
+            &GroupSubgroupVis::new(group_id.to_bytes()),
+            &GroupSubgroupVisValue { mode: mode_byte },
+        )?;
         Ok(())
     }
 

@@ -273,20 +273,23 @@ pub(crate) fn apply(
     // (originator and remote alike) and false on every replay. This mirrors
     // the idempotent-seed discipline used for the meta write above.
     let caps = CapabilitiesRepository::new(store);
+    // The visibility and the creator row commit together: a replay reads the creator row as
+    // "folded", so no crash may leave one without the other.
+    let creators = crate::group_creator::GroupCreatorRepository::new(store);
+    let mut batch = calimero_store::StoreBatch::new(store);
     if !caps.has_subgroup_visibility(&gid)? {
         let visibility = if restricted {
             calimero_context_config::VisibilityMode::Restricted
         } else {
             calimero_context_config::VisibilityMode::Open
         };
-        caps.set_subgroup_visibility(&gid, visibility)?;
+        CapabilitiesRepository::stage_subgroup_visibility(&mut batch, &gid, visibility)?;
     }
-
-    // The creator, for good: only it may later open the subgroup if it is Restricted, and every
-    // namespace member must be able to tell who that is without the subgroup's own (sealed)
-    // history. Written last: a replay reads this row as "folded", so a crash before it leaves
-    // the create to be finished.
-    crate::group_creator::GroupCreatorRepository::new(store).record(&gid, &creator)?;
+    // The creator, for good: only it may later open the subgroup if it
+    // is Restricted, and every namespace member must be able to tell who that is without the
+    // subgroup's own (sealed) history.
+    creators.stage_record(&mut batch, &gid, &creator)?;
+    batch.commit()?;
 
     ctx.queue_event(OpEvent::SubgroupCreated {
         namespace_id,

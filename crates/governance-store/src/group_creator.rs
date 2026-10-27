@@ -46,6 +46,21 @@ impl<'a> GroupCreatorRepository<'a> {
         Ok(())
     }
 
+    /// Stage [`Self::record`] onto `batch`, to commit with other rows. The first creator stays.
+    pub(crate) fn stage_record(
+        &self,
+        batch: &mut calimero_store::StoreBatch<'_>,
+        group: &ContextGroupId,
+        creator: &AccountId,
+    ) -> EyreResult<()> {
+        if self.creator(group)?.is_some() {
+            return Ok(());
+        }
+        let data = GenericData::from(Slice::from(creator.as_bytes().to_vec()));
+        let _ = batch.put(&Self::key(group), &data)?;
+        Ok(())
+    }
+
     /// The account that created `group`, or `None` when this node has not
     /// applied its `GroupCreated` (or it is a namespace root, which no
     /// `GroupCreated` makes).
