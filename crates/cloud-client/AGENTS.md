@@ -19,6 +19,15 @@ Errors: `Error::Api` is the node's answer (`{ error, message, details }`);
 refusal is an answer too: a sealed request past `MAX_SEALED_BYTES` comes back
 `413` in the clear, and `sealed_error` makes it `Error::Api { 413, TOO_LARGE }`.
 
+Calls are retried with the same key (D70): `Client::call` always sends an
+idempotency key (the caller's, else a new `node:c-…` key, which the node keeps
+in its short-lived class, 10 minutes) and sends the call again with that key
+while the node answers `503` or cannot be reached (`Error::is_unavailable`;
+200 ms doubling to 2 s, 6 retries). A call that did commit is answered from its
+record. Confirm calls (`call_confirmed`) are not retried: their challenge is
+single-use. Tests: `retry_tests`, and `calls_without_a_key_each_run_once` in
+`crates/cloud-node/tests/cluster.rs`.
+
 The command line over this client is `meroctl` (`crates/meroctl`).
 
 ```bash

@@ -35,6 +35,44 @@ pub enum Error {
     Transport(#[from] eyre::Report),
 }
 
+/// How often [`Client::call`] sends a call again while the node is unavailable,
+/// and how long it waits first: 200 ms, doubling, at most 2 s (about 9 s in
+/// all, past a leader election).
+const CALL_RETRIES: u32 = 6;
+const CALL_RETRY_FIRST: std::time::Duration = std::time::Duration::from_millis(200);
+const CALL_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A new idempotency key for a call the caller gave none. It only has to
+/// outlive this client's own retries, so it takes the node's short-lived class:
+/// a key starting `node:` (`calimero_cloud_node::app::NODE_KEY_PREFIX`) is kept
+/// 10 minutes, a caller's own key 24 hours.
+fn new_call_key() -> String {
+    format!(
+        "node:c-{}",
+        calimero_identity::b64url(&calimero_identity::random::<16>())
+    )
+}
+
+/// Runs `attempt` until it succeeds, fails for good, or [`CALL_RETRIES`] retries
+/// are spent; only [`Error::is_unavailable`] is retried.
+async fn retry_unavailable<T, F, Fut>(mut attempt: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut wait = CALL_RETRY_FIRST;
+    for _ in 0..CALL_RETRIES {
+        match attempt().await {
+            Err(e) if e.is_unavailable() => {
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(CALL_RETRY_MAX);
+            }
+            done => return done,
+        }
+    }
+    attempt().await
+}
+
 /// What a request sealed and sent became: a refusal of its envelope as too
 /// large (`413`) is the answer a caller acts on, the same `TOO_LARGE` the node
 /// gives a body past its own limits, so it is an [`Error::Api`]. It comes back
@@ -58,6 +96,20 @@ impl Error {
         match self {
             Self::Api { code, .. } => Some(code),
             Self::Transport(_) => None,
+        }
+    }
+
+    /// Whether the same request may succeed if sent again (D70): the node
+    /// answered `503`, or it could not be reached or timed out. A refusal, an
+    /// attestation failure or a bad answer will not change on a retry.
+    #[must_use]
+    pub fn is_unavailable(&self) -> bool {
+        match self {
+            Self::Api { status, .. } => *status == 503,
+            Self::Transport(e) => e.chain().any(|c| {
+                c.downcast_ref::<reqwest::Error>()
+                    .is_some_and(|r| r.is_connect() || r.is_timeout())
+            }),
         }
     }
 
@@ -876,7 +928,10 @@ impl Client {
         .await
     }
 
-    /// Call a method. Retries with the same idempotency key are answered once.
+    /// Call a method. A call always carries an idempotency key (`idempotency_key`,
+    /// else a new short-lived one), and while the node answers `503` or cannot be reached
+    /// it is sent again with that same key (D70): a call that did commit is
+    /// answered from its record, never run twice.
     pub async fn call(
         &self,
         app: &str,
@@ -884,12 +939,10 @@ impl Client {
         args: Value,
         idempotency_key: Option<&str>,
     ) -> Result<CallResult> {
-        let v = self
-            .post(
-                &format!("apps/{app}/intents"),
-                json!({ "method": method, "args": args, "idempotencyKey": idempotency_key }),
-            )
-            .await?;
+        let key = idempotency_key.map_or_else(new_call_key, str::to_owned);
+        let body = json!({ "method": method, "args": args, "idempotencyKey": key });
+        let path = format!("apps/{app}/intents");
+        let v = retry_unavailable(|| self.post(&path, body.clone())).await?;
         Ok(serde_json::from_value(v).map_err(eyre::Report::from)?)
     }
 
@@ -1070,4 +1123,68 @@ fn path_segment(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use std::sync::Mutex;
+
+    use serde_json::Value;
+
+    use super::{retry_unavailable, Error, CALL_RETRIES};
+
+    fn api(status: u16) -> Error {
+        Error::Api {
+            status,
+            code: "X".into(),
+            message: String::new(),
+            details: Value::Null,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_503_is_sent_again_until_it_succeeds() {
+        let sent = Mutex::new(0);
+        let out = retry_unavailable(|| {
+            let n = {
+                let mut s = sent.lock().unwrap();
+                *s += 1;
+                *s
+            };
+            async move {
+                if n < 3 {
+                    Err(api(503))
+                } else {
+                    Ok(n)
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(out, 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refusal_is_not_sent_again() {
+        let sent = Mutex::new(0);
+        let out: Result<(), Error> = retry_unavailable(|| {
+            *sent.lock().unwrap() += 1;
+            async { Err(api(409)) }
+        })
+        .await;
+        assert!(matches!(out, Err(Error::Api { status: 409, .. })));
+        assert_eq!(*sent.lock().unwrap(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_retries_end() {
+        let sent = Mutex::new(0);
+        let out: Result<(), Error> = retry_unavailable(|| {
+            *sent.lock().unwrap() += 1;
+            async { Err(api(503)) }
+        })
+        .await;
+        assert!(matches!(out, Err(Error::Api { status: 503, .. })));
+        assert_eq!(*sent.lock().unwrap(), CALL_RETRIES + 1);
+    }
 }
