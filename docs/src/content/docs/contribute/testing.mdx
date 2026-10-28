@@ -127,19 +127,19 @@ reason. They are maintained by hand from here on. An app with no v1 workflow
 has at least one. Run them against a build:
 
 ```bash
-python3 scripts/build-cloud-v2-fixtures.py      # the releases and WASM they install
-MEROD_BINARY=target/debug/merod python3 scripts/cloud-v2-workflows.py [FILE...]
-python3 scripts/cloud-v2-workflows.py --shard 2/4 --list   # what CI's shard 2 runs
+python3 scripts/build-workflow-fixtures.py      # the releases and WASM they install
+MEROD_BINARY=target/debug/merod python3 scripts/run-workflows.py [FILE...]
+python3 scripts/run-workflows.py --shard 2/4 --list   # what CI's shard 2 runs
 ```
 
 Every workflow names its own `cluster.base_port` and no two overlap, so the four
 shards of one checkout can run side by side, each with its own `--json`. To run
 the same workflows from two checkouts at once, give each a band of its own with
-`--port-offset N` (or `CLOUD_V2_PORT_OFFSET`), e.g. 10000 and 20000.
+`--port-offset N` (or `WORKFLOW_PORT_OFFSET`), e.g. 10000 and 20000.
 
-`scripts/cloud-v2-workflows-baseline.json` lists the workflows that pass; one
+`scripts/workflows-baseline.json` lists the workflows that pass; one
 of them failing fails CI. Add a workflow to it once it passes, and its measured
-duration to `scripts/cloud-v2-workflows-durations.json` (the shards are packed
+duration to `scripts/workflows-durations.json` (the shards are packed
 by it). A workflow not on the baseline still runs and is reported, so a fix
 shows up as a pass.
 
@@ -209,14 +209,14 @@ than kept unrun. Each, and why nothing replaces it (or what does):
 
 `.github/workflows/e2e.yml` runs on every PR that touches code:
 
-- job `merobox cloud-v2 fixtures`: builds `merod`, the fixtures and merobox's
+- job `merobox fixtures`: builds `merod`, the fixtures and merobox's
   example inputs once, for the jobs below;
-- job `merobox cloud-v2 (K/4)`: every release-v2 workflow, core's and the
+- job `merobox workflows (K/4)`: every release-v2 workflow, core's and the
   apps', in four shards of about equal length (merobox at `MEROBOX_REF`);
   nightly, the fuzzy loads run 15 minutes each. Each shard's fuzzy load
   reports its latency and throughput (below) in the job summary and as the
   artifact `soak-metrics-K`;
-- job `merobox cloud-v2 examples`: merobox's own examples;
+- job `merobox examples`: merobox's own examples;
 - job `clients against merod`: mero-js's `test:cloud-v2` and
   calimero-client-py's cluster tests against this tree's `merod`. A change that
   breaks a client goes green with the client's fix: a same-named branch there,
@@ -231,15 +231,15 @@ with `docker create` and `docker cp`):
   the image). `Release Merod container` builds the amd64 image as it does for
   master, loads it instead of pushing it, and hands it on as the artifact
   `merod-image`; the job runs the smoke list,
-  `scripts/cloud-v2-workflows.py --smoke` (one workflow per area, listed with
-  the fixtures they need in `scripts/cloud-v2-workflows-smoke.json`, every one
+  `scripts/run-workflows.py --smoke` (one workflow per area, listed with
+  the fixtures they need in `scripts/workflows-smoke.json`, every one
   on the baseline; `check-scenario-coverage.py` checks), and merobox's
   `kv-store-failover` and `frozen-leader` examples against it, about four
   minutes after the image. `Image E2E fixtures` builds only the smoke list's
   fixtures, alongside the binaries.
 - **The latest release's image, nightly** (`e2e.yml`, jobs
-  `Latest release image`, `merobox cloud-v2 fixtures (release V)` and
-  `merobox cloud-v2 on release V (K/4)`; on demand with the `release_image`
+  `Latest release image`, `merobox fixtures (release V)` and
+  `merobox workflows on release V (K/4)`; on demand with the `release_image`
   input: `latest`, a tag of `ghcr.io/<owner>/merod` such as `release-v2-edge`,
   or an image reference). It pulls
   `ghcr.io/calimero-network/merod:<version>` for the newest published release
@@ -256,8 +256,8 @@ To run the smoke list against a binary taken out of an image locally:
 
 ```bash
 docker create --name m ghcr.io/calimero-network/merod:release-v2-edge && docker cp m:/usr/local/bin/merod /tmp/merod && docker rm m
-python3 scripts/build-cloud-v2-fixtures.py $(jq -r '.fixtures[]' scripts/cloud-v2-workflows-smoke.json)
-MEROD_BINARY=/tmp/merod python3 scripts/cloud-v2-workflows.py --smoke
+python3 scripts/build-workflow-fixtures.py $(jq -r '.fixtures[]' scripts/workflows-smoke.json)
+MEROD_BINARY=/tmp/merod python3 scripts/run-workflows.py --smoke
 ```
 
 ### Soak latency and throughput
@@ -272,7 +272,7 @@ which CI runs) prints it as a table:
 
 ```bash
 MEROD_BINARY=target/debug/merod MEROBOX_FUZZY_SECONDS=30 MEROBOX_SOAK_REPORT=soak.json \
-  python3 scripts/cloud-v2-workflows.py workflows/fuzzy-tests/kv-store/fuzzy-test.yml
+  python3 scripts/run-workflows.py workflows/fuzzy-tests/kv-store/fuzzy-test.yml
 merobox cloud soak-report soak.json
 ```
 

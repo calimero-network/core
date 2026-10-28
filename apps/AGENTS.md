@@ -333,7 +333,7 @@ Most were migrated from the app's v1 workflows by `merobox cloud port`; each
 one's header lists the v1 steps that have no release-v2 counterpart and any
 fix made in the migration. Every deployable app has at least one; CI runs them
 all (`.github/workflows/e2e.yml`, gated by
-`scripts/cloud-v2-workflows-baseline.json`). See
+`scripts/workflows-baseline.json`). See
 [Testing strategy](../docs/src/content/docs/contribute/testing.mdx#release-v2-workflows).
 
 ```yaml
@@ -355,8 +355,8 @@ steps:
 ```
 
 ```bash
-python3 scripts/build-cloud-v2-fixtures.py           # every app's WASM, into target/cloud-v2-wasm
-MEROD_BINARY=target/debug/merod python3 scripts/cloud-v2-workflows.py apps/<app>/workflows/<file>.yml
+python3 scripts/build-workflow-fixtures.py           # every app's WASM, into target/workflow-wasm
+MEROD_BINARY=target/debug/merod python3 scripts/run-workflows.py apps/<app>/workflows/<file>.yml
 ```
 
 A new workflow needs a `base_port` no other workflow uses (each runs its own

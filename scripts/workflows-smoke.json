@@ -1,5 +1,5 @@
 {
-  "about": "The release-v2 workflows release.yml's `E2E on the merod image` job runs against the merod inside a PR's Docker image (scripts/cloud-v2-workflows.py --smoke), and the scripts/build-cloud-v2-fixtures.py filters that build what they install. One per area: calls, bundles and invites, blobs, teams, devices, private data, xcalls, signed packages, CRDT editing, a fuzzy load, TEE apps, outbound gates. Every one must be on cloud-v2-workflows-baseline.json (scripts/check-scenario-coverage.py checks).",
+  "about": "The release-v2 workflows release.yml's `E2E on the merod image` job runs against the merod inside a PR's Docker image (scripts/run-workflows.py --smoke), and the scripts/build-workflow-fixtures.py filters that build what they install. One per area: calls, bundles and invites, blobs, teams, devices, private data, xcalls, signed packages, CRDT editing, a fuzzy load, TEE apps, outbound gates. Every one must be on workflows-baseline.json (scripts/check-scenario-coverage.py checks).",
   "workflows": [
     "apps/blobs/workflows/blobs.yml",
     "apps/fugue-collab/workflows/fugue-collab-restart-mid-edit.yml",

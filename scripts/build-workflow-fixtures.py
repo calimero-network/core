@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build what the release-v2 workflows (workflows/**, apps/*/workflows/**)
-install, into target/cloud-v2-wasm/ (override with CORE_WASM_DIR), which the
+install, into target/workflow-wasm/ (override with CORE_WASM_DIR), which the
 workflows name as `{{env.CORE_WASM_DIR}}`:
 
 - `dist/<package>-<version>.mpk`: every migration fixture
@@ -18,7 +18,7 @@ workflows name as `{{env.CORE_WASM_DIR}}`:
   a service by name.
 
 Each crate's res/ is left as it was (a bundle build rewrites it).
-Usage: scripts/build-cloud-v2-fixtures.py [--force] [name-filter ...]
+Usage: scripts/build-workflow-fixtures.py [--force] [name-filter ...]
 """
 
 import gzip
@@ -33,7 +33,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = Path(os.environ.get("CORE_WASM_DIR") or ROOT / "target/cloud-v2-wasm")
+OUT = Path(os.environ.get("CORE_WASM_DIR") or ROOT / "target/workflow-wasm")
 BUILD_WASMS = ROOT / "workflows/app-migration/build-wasms.sh"
 
 #: Crates under apps/ that are not apps a workflow installs, with why.

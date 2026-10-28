@@ -39,8 +39,8 @@ description: "An app method asks its node for one HTTPS request (`env::http_requ
   \ turned outbound on.\n\nMEROD MUST BE BUILT WITH `--features calimero-node/outbound-testing`,\
   \ which compiles `[outbound.testing]`; every node starts with `cluster.settings` below (`merod run\
   \ --settings`), and a build without the feature refuses it.\nRun locally, with an outbound-testing merod:\n\
-  \  cargo build -p merod --features calimero-node/outbound-testing\n  python3 scripts/build-cloud-v2-fixtures.py\
-  \ outbound-probe\n  MEROD_OUTBOUND_BINARY=target/debug/merod python3 scripts/cloud-v2-workflows.py \\\n  \
+  \  cargo build -p merod --features calimero-node/outbound-testing\n  python3 scripts/build-workflow-fixtures.py\
+  \ outbound-probe\n  MEROD_OUTBOUND_BINARY=target/debug/merod python3 scripts/run-workflows.py \\\n  \
   \  apps/outbound-probe/workflows/outbound.yml\n"
 backend: cloud-v2
 cluster:

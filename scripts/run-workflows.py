@@ -4,34 +4,34 @@
 
 Each runs on its own 3-node merod cluster through merobox's cloud-v2 backend
 (`merobox.cloud_v2.run_workflow_outcome`). Needs MEROD_BINARY (or merod on
-PATH) and the fixtures built (scripts/build-cloud-v2-fixtures.py: signed `.mpk`
+PATH) and the fixtures built (scripts/build-workflow-fixtures.py: signed `.mpk`
 releases and `cargo mero build` WASM, so each carries its ABI); CORE_WASM_DIR
-defaults to target/cloud-v2-wasm. The blobs size sweep's random fixtures
+defaults to target/workflow-wasm. The blobs size sweep's random fixtures
 (apps/blobs/scripts/gen-blob-fixtures.sh) are made when a workflow that reads
 them is selected.
 
-Usage: scripts/cloud-v2-workflows.py [--shard K/N | --smoke] [--json out.json]
+Usage: scripts/run-workflows.py [--shard K/N | --smoke] [--json out.json]
                                      [--port-offset N] [--verbose] [--list]
                                      [workflow.yml ...]
 
 Every workflow names its own `cluster.base_port`, and no two overlap, so the
 shards of one checkout run side by side on one machine. `--port-offset N`
-(default $CLOUD_V2_PORT_OFFSET, else 0) adds N to every base_port, so two
+(default $WORKFLOW_PORT_OFFSET, else 0) adds N to every base_port, so two
 checkouts (two worktrees, two agents) can run the same workflows at once; give
 each its own band, e.g. 10000 and 20000. A workflow's nodes are its only fixed
 ports: merobox's package registry binds port 0.
 
-`--smoke` runs the fixed list in cloud-v2-workflows-smoke.json (one workflow
+`--smoke` runs the fixed list in workflows-smoke.json (one workflow
 per area; release.yml runs it against the merod inside a PR's Docker image),
-whose `fixtures` are the build-cloud-v2-fixtures.py filters it needs.
+whose `fixtures` are the build-workflow-fixtures.py filters it needs.
 
 `--shard K/N` runs the K-th of N shards (1-based): the fuzzy loads (the nightly
 soak's long runs) are dealt one per shard, then the rest are packed by their
-measured durations (cloud-v2-workflows-durations.json, the default for one not
+measured durations (workflows-durations.json, the default for one not
 measured yet), longest first onto the shard with the least so far, so every
 shard is the same set on every run and about as long as the others.
 
-Exit status is non-zero when a workflow in cloud-v2-workflows-baseline.json
+Exit status is non-zero when a workflow in workflows-baseline.json
 (the paths that pass) fails. Many workflows were migrated from v1 by `merobox
 cloud port`; their headers list the v1 steps that have no release-v2
 counterpart.
@@ -50,9 +50,9 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BASELINE = Path(__file__).with_name("cloud-v2-workflows-baseline.json")
-DURATIONS = Path(__file__).with_name("cloud-v2-workflows-durations.json")
-SMOKE = Path(__file__).with_name("cloud-v2-workflows-smoke.json")
+BASELINE = Path(__file__).with_name("workflows-baseline.json")
+DURATIONS = Path(__file__).with_name("workflows-durations.json")
+SMOKE = Path(__file__).with_name("workflows-smoke.json")
 #: Seconds assumed for a workflow with no measured duration.
 DEFAULT_SECONDS = 20.0
 BLOB_FIXTURES = "static/generated/"
@@ -116,8 +116,8 @@ def main() -> int:
     ap.add_argument(
         "--port-offset",
         type=int,
-        default=int(os.environ.get("CLOUD_V2_PORT_OFFSET", "0")),
-        help="add N to every workflow's base_port (default $CLOUD_V2_PORT_OFFSET, else 0)",
+        default=int(os.environ.get("WORKFLOW_PORT_OFFSET", "0")),
+        help="add N to every workflow's base_port (default $WORKFLOW_PORT_OFFSET, else 0)",
     )
     ap.add_argument("--list", action="store_true", help="print the selection and exit")
     ap.add_argument("--verbose", action="store_true")
@@ -135,7 +135,7 @@ def main() -> int:
     if args.list:
         print(*files, sep="\n")
         return 0
-    os.environ.setdefault("CORE_WASM_DIR", str(ROOT / "target/cloud-v2-wasm"))
+    os.environ.setdefault("CORE_WASM_DIR", str(ROOT / "target/workflow-wasm"))
     # The soak (fuzzy_test) runs for its own duration nightly; here, briefly.
     os.environ.setdefault("MEROBOX_FUZZY_SECONDS", "30")
     if any(BLOB_FIXTURES in Path(f).read_text() for f in files):

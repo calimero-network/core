@@ -87,15 +87,15 @@ current `schema_version` plus the live field shape — the workflows pipe
 this through `json_assert` for post-upgrade verification.
 
 `build-wasms.sh` lists the bundles (each pair or chain shares one `--package`,
-so both versions are releases of one package); `scripts/build-cloud-v2-fixtures.py`
-builds them as signed `.mpk` releases into `target/cloud-v2-wasm/dist/`, which
+so both versions are releases of one package); `scripts/build-workflow-fixtures.py`
+builds them as signed `.mpk` releases into `target/workflow-wasm/dist/`, which
 the workflows install by name and upgrade by version.
 
 ## Running locally
 
 ```bash
-python3 scripts/build-cloud-v2-fixtures.py
-MEROD_BINARY=target/debug/merod python3 scripts/cloud-v2-workflows.py workflows/app-migration/00-single-group-migration-baseline.yml
+python3 scripts/build-workflow-fixtures.py
+MEROD_BINARY=target/debug/merod python3 scripts/run-workflows.py workflows/app-migration/00-single-group-migration-baseline.yml
 ```
 
 ## CI

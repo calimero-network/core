@@ -32,8 +32,8 @@ rules:
       - abi-contract.yml:85
       - ci-checks.yml:367
       - docs-ci.yml:29
-      - e2e.yml:526
-      - e2e.yml:673
+      - e2e.yml:529
+      - e2e.yml:676
   # The consumer checkout keeps its token to push the bump branch.
   artipacked:
     ignore:

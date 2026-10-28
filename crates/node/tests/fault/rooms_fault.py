@@ -401,14 +401,14 @@ def main():
     ap.add_argument("--wasm", default=None)
     ap.add_argument("--workdir", default=str(Path(__file__).resolve().parent / "work" / "rooms"))
     # 7600-7699 sits above every merobox workflow's base_port, so the two can run at
-    # once; CLOUD_V2_PORT_OFFSET shifts it as it shifts the workflows (two checkouts).
+    # once; WORKFLOW_PORT_OFFSET shifts it as it shifts the workflows (two checkouts).
     ap.add_argument("--base-port", type=int, default=7610)
     args = ap.parse_args()
-    offset = int(os.environ.get("CLOUD_V2_PORT_OFFSET", "0"))
+    offset = int(os.environ.get("WORKFLOW_PORT_OFFSET", "0"))
     if not (7600 <= args.base_port and args.base_port + 3 <= 7699):
-        raise SystemExit("ports 7600-7699 only (before CLOUD_V2_PORT_OFFSET)")
+        raise SystemExit("ports 7600-7699 only (before WORKFLOW_PORT_OFFSET)")
     if args.base_port + offset + 3 > 65535:
-        raise SystemExit(f"CLOUD_V2_PORT_OFFSET {offset} puts the nodes past port 65535")
+        raise SystemExit(f"WORKFLOW_PORT_OFFSET {offset} puts the nodes past port 65535")
     wasm = args.wasm or default_wasm()
     wd = Path(args.workdir)
     shutil.rmtree(wd, ignore_errors=True)

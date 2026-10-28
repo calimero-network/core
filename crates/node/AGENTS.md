@@ -461,7 +461,7 @@ cargo test -p calimero-node    # 3-node cluster in process, sealed, real WASM
 # tests/common/mod.rs into target/app-components (needs the wasm32-wasip2 target)
 cargo test --release -p calimero-node --test rooms   # Rooms A1 (shared scenario), A3, A5
 # A4, the fault test (merod run --dev processes on ports 7600-7699, above the merobox
-# workflows', shifted by CLOUD_V2_PORT_OFFSET when set; release merod and
+# workflows', shifted by WORKFLOW_PORT_OFFSET when set; release merod and
 # meroctl in RV2_BIN_DIR, default target/release; the cached Rooms component)
 python3 -I crates/node/tests/fault/rooms_fault.py --iterations 200 --seed 1
 # calls/s and p50/p99 through that cluster (harness: tests/harness/cluster.rs), as JSON:
