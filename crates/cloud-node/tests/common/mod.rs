@@ -71,71 +71,95 @@ impl Cluster {
     }
 
     pub async fn start_with(n: u64, configure: impl Fn(&mut Config)) -> Self {
-        let ports: Vec<u16> = (0..n).map(|_| free_port()).collect();
-        let urls: Vec<String> = ports
-            .iter()
-            .map(|p| format!("http://127.0.0.1:{p}/"))
-            .collect();
-        let peers: BTreeMap<u64, String> = urls
-            .iter()
-            .enumerate()
-            .map(|(i, u)| (i as u64 + 1, u.clone()))
-            .collect();
-        let mut nodes = Vec::new();
-        let mut dirs = Vec::new();
-        let mut configs = Vec::new();
-        let name = format!(
-            "test-{}-{}",
-            std::process::id(),
-            NEXT_CLUSTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        );
-        for (i, port) in ports.iter().enumerate() {
-            let dir = tempfile::tempdir().unwrap();
-            let mut config = Config {
-                node_id: i as u64 + 1,
-                public_url: urls[i].clone(),
-                listen: format!("127.0.0.1:{port}").parse().unwrap(),
-                data_dir: dir.path().to_owned(),
-                peers: peers.clone(),
-                bootstrap: i == 0,
-                cluster: name.clone(),
-                storage_key: [42; 32],
-                attestation: Mode::Mock,
-                allow_mock_peers: true,
-                sealed_required: true,
-                rp_id: "localhost".into(),
-                origins: vec![ORIGIN.into()],
-                release: "test".into(),
-                ops_token: Some("ops-secret".into()),
-                ops_token_sha256: None,
-                metrics_listen: None,
-                replicas: 3,
-                backup_dir: Some(dir.path().join("backups")),
-                raft: calimero_log::Config {
-                    heartbeat_ms: 100,
-                    election_min_ms: 500,
-                    election_max_ms: 1000,
-                    snapshot_every: 200,
-                },
-                session_key_rotation_secs: 6 * 3600,
-                read_wait: Duration::from_secs(2),
-                tee_release: None,
-                tee_profile: None,
-                peer_measurements: calimero_cloud_client::Measurements::None,
-                clock_offset_ms: 0,
-                budget: None,
-                registry: None,
-                // The component fixtures are raw uploads (`POST /bundles`), development only.
-                allow_unsigned_bundles: true,
-                outbound: None,
-                governance: Default::default(),
-                apps_domain: None,
-            };
-            configure(&mut config);
-            configs.push(config.clone());
-            nodes.push(Some(run(config).await.unwrap()));
-            dirs.push(dir);
-        }
+        // `free_port` hands the port back before a node binds it, so another test
+        // can take it meanwhile: a cluster that loses that race starts again on
+        // other ports, as `tests/harness/cluster.rs` does.
+        let mut attempt = 0;
+        let (nodes, urls, configs, dirs) = loop {
+            attempt += 1;
+            let ports: Vec<u16> = (0..n).map(|_| free_port()).collect();
+            let urls: Vec<String> = ports
+                .iter()
+                .map(|p| format!("http://127.0.0.1:{p}/"))
+                .collect();
+            let peers: BTreeMap<u64, String> = urls
+                .iter()
+                .enumerate()
+                .map(|(i, u)| (i as u64 + 1, u.clone()))
+                .collect();
+            let mut nodes = Vec::new();
+            let mut dirs = Vec::new();
+            let mut configs = Vec::new();
+            let name = format!(
+                "test-{}-{}",
+                std::process::id(),
+                NEXT_CLUSTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            );
+            let mut failed = None;
+            for (i, port) in ports.iter().enumerate() {
+                let dir = tempfile::tempdir().unwrap();
+                let mut config = Config {
+                    node_id: i as u64 + 1,
+                    public_url: urls[i].clone(),
+                    listen: format!("127.0.0.1:{port}").parse().unwrap(),
+                    data_dir: dir.path().to_owned(),
+                    peers: peers.clone(),
+                    bootstrap: i == 0,
+                    cluster: name.clone(),
+                    storage_key: [42; 32],
+                    attestation: Mode::Mock,
+                    allow_mock_peers: true,
+                    sealed_required: true,
+                    rp_id: "localhost".into(),
+                    origins: vec![ORIGIN.into()],
+                    release: "test".into(),
+                    ops_token: Some("ops-secret".into()),
+                    ops_token_sha256: None,
+                    metrics_listen: None,
+                    replicas: 3,
+                    backup_dir: Some(dir.path().join("backups")),
+                    raft: calimero_log::Config {
+                        heartbeat_ms: 100,
+                        election_min_ms: 500,
+                        election_max_ms: 1000,
+                        snapshot_every: 200,
+                    },
+                    session_key_rotation_secs: 6 * 3600,
+                    read_wait: Duration::from_secs(2),
+                    tee_release: None,
+                    tee_profile: None,
+                    peer_measurements: calimero_cloud_client::Measurements::None,
+                    clock_offset_ms: 0,
+                    budget: None,
+                    registry: None,
+                    // The component fixtures are raw uploads (`POST /bundles`), development only.
+                    allow_unsigned_bundles: true,
+                    outbound: None,
+                    governance: Default::default(),
+                    apps_domain: None,
+                };
+                configure(&mut config);
+                configs.push(config.clone());
+                match run(config).await {
+                    Ok(r) => nodes.push(Some(r)),
+                    Err(e) => {
+                        failed = Some(e);
+                        break;
+                    }
+                }
+                dirs.push(dir);
+            }
+            match failed {
+                None => break (nodes, urls, configs, dirs),
+                Some(e) if attempt < 3 => {
+                    eprintln!("cluster start failed ({e:#}); retrying on other ports");
+                    for r in nodes.into_iter().flatten() {
+                        r.stop().await;
+                    }
+                }
+                Some(e) => panic!("cluster did not start: {e:#}"),
+            }
+        };
         let c = Self {
             nodes,
             urls,
