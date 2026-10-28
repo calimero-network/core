@@ -15,7 +15,7 @@ through meroctl, and stops it.
 Needs release merod and meroctl (`cargo build --release -p merod -p meroctl`, or
 `--merod`/`--meroctl`), kv-store's WASM (`cargo build -p kv-store --target
 wasm32-unknown-unknown --profile app-release`) and, for `packages`, two signed
-releases of it (`(cd apps/kv-store && cargo mero bundle --dev --no-icon
+releases of it (`(cd apps/wasmer-fixtures/kv-store && cargo mero bundle --dev --no-icon
 --app-version 1.0.0)` and `1.1.0`, into `dist/`). See README.md beside this file.
 """
 
@@ -637,7 +637,7 @@ def main(argv=None):
         need(args.kv_wasm, "kv_store.wasm",
              "cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release, or --kv-wasm")
     if "packages" in names:
-        how = "(cd apps/kv-store && cargo mero bundle --dev --no-icon --app-version 1.0.0 / 1.1.0)"
+        how = "(cd apps/wasmer-fixtures/kv-store && cargo mero bundle --dev --no-icon --app-version 1.0.0 / 1.1.0)"
         need(args.kv_mpk, "kv-store 1.0.0 .mpk", how + ", or --kv-mpk")
         need(args.kv_mpk_next, "kv-store 1.1.0 .mpk", how + ", or --kv-mpk-next")
     if "rooms-fault" in names:
