@@ -13,7 +13,6 @@ APPS=(
     "apps/abi_conformance_resolved/Cargo.toml"
     "apps/blobs/Cargo.toml"
     "apps/collaborative-editor/Cargo.toml"
-    "apps/components-demo/Cargo.toml"
     "apps/fugue-collab/Cargo.toml"
     "apps/kv-store-init/Cargo.toml"
     "apps/kv-store-with-handlers/Cargo.toml"

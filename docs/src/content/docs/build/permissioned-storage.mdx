@@ -267,7 +267,7 @@ authorization. The no-op is the safe choice, not an oversight.
 
 ## `AccessControl`: named roles
 
-From `apps/components-demo`. The wrappers above bind capabilities to **keys** (a
+The wrappers above bind capabilities to **keys** (a
 writer set, an owner, per-key `OpMask`s). `AccessControl` adds a layer of
 indirection on top: capabilities bind to **named roles** (`"editor"`,
 `"moderator"`, …) and accounts are granted membership in those roles — the same
@@ -373,6 +373,29 @@ per-key masks you re-grant every account when a policy changes; with
 indirection is worth it when several objects share one role policy, or when
 membership churns; for a single object with a fixed writer set, the plain wrappers
 are simpler.
+
+### On the component SDK
+
+`apps/components-demo` shows all three patterns (an owned cell, a writer set, a
+role registry) on the component SDK (`calimero-app-sdk`). There is no merge
+plane to enforce them: every write runs on the app's leader and is replicated as
+a log entry, so a check in the method against `env::caller()` is the whole
+boundary. Each pattern is a table and that check:
+
+```rust
+#[derive(Record)]
+#[table(key = ["role", "account"])]
+pub struct Grant { pub role: String, pub account: String }
+
+pub fn grant_role(&mut self, role: String, who: String) -> app::Result<()> {
+    let me = guards::require_member()?;
+    if !self.admins.contains(&me)? {
+        app::bail!(Error::NotAdmin); // a refused call writes nothing anywhere
+    }
+    self.roles.upsert(Grant { role, account: who })?;
+    Ok(())
+}
+```
 
 ## The #1 gotcha
 
