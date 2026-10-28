@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-28
+
+The first stable 0.12 release. It carries every change shipped across
+0.12.0-rc.1 through 0.12.0-rc.3 and everything merged since, on top of
+0.11.1.
+
 ### Added
 
 - **A method can call an outside HTTPS service, off unless the node's
