@@ -86,11 +86,15 @@ leak the Ops API's credential), so bind it to an address only your collector
 reaches, such as the host's private interface. The text holds counts and this
 node's group indexes, never names or state.
 
-`deploy/prometheus/scrape.yml` is a scrape job for three nodes,
-`deploy/prometheus/alerts.yml` turns the table below into alert rules, and
-`deploy/grafana/merod-release-v2.json` is a Grafana dashboard over both
-(cluster, usage, latency, errors, Raft, disk), with a Prometheus data source
-and node as its variables.
+Calimero's own fleet keeps the collection outside this repository: the
+mero-tee node image starts merod with `MEROD_METRICS_LISTEN=127.0.0.1:9464`
+and its vmagent scrapes that as job `merod`
+([mero-tee](https://github.com/calimero-network/mero-tee),
+`roles/merotee`); the Grafana dashboard (cluster, usage, latency, errors,
+Raft, disk) and the alert rules for the table below are in
+[infrastructure](https://github.com/calimero-network/infrastructure), at
+`k8s/grafana-dashboards/chart/dashboards/merod-release-v2.json` and
+`k8s/calimero-bases/victoria-metrics-k8s-stack/components/merod-rules`.
 
 Without it, collect through a client that seals:
 `meroctl --api URL --tee-profiles PROFILE --ops-token TOKEN ops metrics`
