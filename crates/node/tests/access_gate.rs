@@ -386,3 +386,85 @@ async fn an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behi
         "{err}"
     );
 }
+
+/// A blob deleted through the app's leader is gone for a follower that has not
+/// applied the delete yet: a download there must not serve the bytes it still
+/// holds (the intermittent `release-v2-parity` CI failure in
+/// `blob_delete_through_one_node_is_gone_everywhere`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind() {
+    let c = ProxiedCluster::start().await;
+    let (alice, mut alice_pk) = signed_up(&c, c.system_leader(), "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let created = alice
+        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+        .await
+        .unwrap();
+    let app = created["appId"].as_str().unwrap().to_owned();
+    let mut leader = None;
+    for _ in 0..200 {
+        leader = (0..3).find(|i| {
+            c.nodes[*i]
+                .node
+                .hosted(&app)
+                .is_some_and(|g| g.status().is_leader)
+        });
+        if leader.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let leader = leader.expect("the app's group elects a leader");
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+
+    let blob = alice.upload_blob(&app, vec![7_u8; 4096]).await.unwrap();
+    let id = blob["id"].as_str().unwrap().to_owned();
+    let raw: [u8; 32] = hex::decode(&id).unwrap().try_into().unwrap();
+    // The follower holds the mark and the bytes before its appends are held.
+    let follower_group = c.nodes[follower].node.hosted(&app).unwrap();
+    for _ in 0..100 {
+        if follower_group.read_local(|m, _| m.holds_blob(&raw)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // Alice through the follower, and through the app's leader.
+    let at_follower = c.client(follower);
+    let _s = at_follower.sign_in(&mut alice_pk).await.unwrap();
+    let deleter = c.client(leader);
+    let _s = deleter.sign_in(&mut alice_pk).await.unwrap();
+    assert_eq!(
+        at_follower.download_blob(&app, &id).await.unwrap().len(),
+        4096,
+        "served before the delete"
+    );
+
+    // Hold the follower, delete through the leader: the other follower's ack
+    // commits it, and the bytes' deletion on the held follower waits.
+    c.hold[follower].send_replace(true);
+    let delete = tokio::spawn({
+        let (app, id) = (app.clone(), id.clone());
+        async move { deleter.delete_blob(&app, &id).await }
+    });
+    let leader_group = c.nodes[leader].node.hosted(&app).unwrap();
+    for _ in 0..200 {
+        if !leader_group.read_local(|m, _| m.holds_blob(&raw)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !leader_group.read_local(|m, _| m.holds_blob(&raw)),
+        "the delete committed on the leader"
+    );
+    assert!(
+        follower_group.read_local(|m, _| m.holds_blob(&raw)),
+        "the follower must still hold the mark"
+    );
+
+    let read = at_follower.download_blob(&app, &id).await.map(|b| b.len());
+    c.hold[follower].send_replace(false);
+    let _deleted = delete.await.unwrap();
+    let err = read.expect_err("a blob deleted before the request must not be served");
+    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+}

@@ -2752,7 +2752,7 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
         let proven = alice.verify_app_cluster(&app).await.unwrap();
         assert_eq!(proven.keys.len(), 3, "{g:?}");
         assert_eq!(proven.governance, g, "{g:?}");
-        let nonce = [5u8; 32];
+        let nonce = calimero_identity::random::<32>();
         let docs = alice
             .get(&format!(
                 "apps/{app}/attestation?nonce={}",

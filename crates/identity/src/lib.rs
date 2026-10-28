@@ -7,7 +7,7 @@
 
 use ring::digest::{digest, SHA256};
 use ring::hmac;
-use ring::rand::{SecureRandom, SystemRandom};
+use ring::rand::SystemRandom;
 use serde::{Deserialize, Serialize};
 
 pub mod webauthn;
@@ -37,11 +37,9 @@ pub enum Error {
 /// `n` random bytes.
 #[must_use]
 pub fn random<const N: usize>() -> [u8; N] {
-    let mut out = [0; N];
-    SystemRandom::new()
-        .fill(&mut out)
-        .expect("system randomness is available");
-    out
+    ring::rand::generate(&SystemRandom::new())
+        .expect("system randomness is available")
+        .expose()
 }
 
 /// base64url without padding.
@@ -258,8 +256,9 @@ mod tests {
         let (key, hash) = new_api_key();
         assert!(key.starts_with("cal_"));
         assert_eq!(api_key_hash(&key), hash);
-        let a = confirm_challenge("app", "transfer", b"{\"to\":1}", b"n");
-        let b = confirm_challenge("app", "transfer", b"{\"to\":2}", b"n");
+        let nonce = random::<16>();
+        let a = confirm_challenge("app", "transfer", b"{\"to\":1}", &nonce);
+        let b = confirm_challenge("app", "transfer", b"{\"to\":2}", &nonce);
         assert_ne!(a, b);
     }
 }

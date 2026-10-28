@@ -924,7 +924,9 @@ impl Node {
                 (created_at + self.config.session_key_rotation_secs <= now).then_some(version + 1)
             });
             if let Some(version) = due {
-                let key = calimero_identity::b64url(&calimero_identity::random::<32>());
+                let key = crate::system::SecretKey(calimero_identity::b64url(
+                    &calimero_identity::random::<32>(),
+                ));
                 let _r = self
                     .sys_write(&SystemCmd::AddSessionKey {
                         version,

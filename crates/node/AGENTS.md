@@ -232,7 +232,10 @@ is its command line.
   app's state marks. An upload commits `AppCmd::Blob`. Ids are base58 (what apps
   print, `BlobId`) or hex in the API. `GET /apps/{app}/blobs[/{id}/info]`
   list them from a scan of the app's state (`AppMachine::storage_stats`, on a
-  replica). `DELETE /apps/{app}/blobs/{id}` (owner or org admin) commits
+  replica). A download asks the app's leader whether the app still marks the
+  blob (`blob_held_strong`; 503 when no leader answers): a replica that has not
+  applied a delete still holds the mark and the bytes (regression:
+  `a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind`). `DELETE /apps/{app}/blobs/{id}` (owner or org admin) commits
   `AppCmd::BlobForget`, then `Node::collect_blob` deletes the bytes on every
   node (`internal/blob/delete`) unless another app still marks the same content
   (asked of each app's leader, `blob_held_strong`: a lagging replica could miss
