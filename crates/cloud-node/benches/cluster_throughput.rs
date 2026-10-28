@@ -14,14 +14,22 @@
 //! 1 ÷ (syncs per call × sync time).
 //!
 //! ```text
-//! cargo bench -p calimero-cloud-node --bench cluster_throughput -- [--secs 10] [--out FILE.json]
+//! cargo bench -p calimero-cloud-node --bench cluster_throughput -- [--secs 10] [--peer-rtt-ms 2] [--out FILE.json]
 //! ```
+//!
+//! `--peer-rtt-ms` puts a delay proxy in front of each node for the traffic
+//! its peers send it (Raft RPCs and forwards), half the round trip each way,
+//! so the rows approximate nodes on separate machines. Clients still reach
+//! the nodes directly. The nodes share this machine's cores and disk either way.
 //!
 //! Needs `kv_store.wasm` (see `tests/harness/cluster.rs`). Not a criterion
 //! bench: one run is a few seconds of load per row, reported once.
 
+use std::collections::HashMap;
+use std::io::{Read as _, Write as _};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use calimero_cloud_client::Client;
@@ -215,6 +223,88 @@ fn sync_time() -> (f64, f64, f64) {
     (synced, mean, unsynced)
 }
 
+/// A TCP proxy on a free local port that forwards to `upstream` (`host:port`),
+/// each byte arriving `one_way` later than it was sent, in both directions.
+/// Threads, not tasks: tokio's timer rounds sleeps up to whole milliseconds.
+fn delay_proxy(upstream: String, one_way: Duration) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("the proxy binds");
+    let port = listener.local_addr().expect("a local address").port();
+    let _accept = std::thread::spawn(move || {
+        for down in listener.incoming() {
+            let Ok(down) = down else { continue };
+            let Ok(up) = TcpStream::connect(&upstream) else {
+                continue;
+            };
+            let _ = down.set_nodelay(true);
+            let _ = up.set_nodelay(true);
+            pipe(
+                down.try_clone().expect("clones"),
+                up.try_clone().expect("clones"),
+                one_way,
+            );
+            pipe(up, down, one_way);
+        }
+    });
+    port
+}
+
+/// Copy `from` to `to`, holding each chunk until `delay` after it was read.
+fn pipe(mut from: TcpStream, mut to: TcpStream, delay: Duration) {
+    let (tx, rx) = mpsc::channel::<(Instant, Vec<u8>)>();
+    let _read = std::thread::spawn(move || {
+        let mut buf = vec![0_u8; 64 * 1024];
+        loop {
+            match from.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx
+                        .send((Instant::now() + delay, buf[..n].to_vec()))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    let _write = std::thread::spawn(move || {
+        for (due, bytes) in rx {
+            let now = Instant::now();
+            if due > now {
+                std::thread::sleep(due - now);
+            }
+            if to.write_all(&bytes).is_err() {
+                break;
+            }
+        }
+        let _ = to.shutdown(Shutdown::Write);
+    });
+}
+
+/// Point every node's peer URLs, except its own, at a delay proxy in front of
+/// that peer: `rtt` / 2 each way. One proxy per node, made the first time a
+/// node names it.
+fn delayed_peers(rtt: Duration) -> impl Fn(&mut calimero_cloud_node::Config) {
+    let proxies: Mutex<HashMap<String, String>> = Mutex::default();
+    move |cfg| {
+        let own = cfg.public_url.clone();
+        for url in cfg.peers.values_mut() {
+            if *url == own {
+                continue;
+            }
+            let mut proxies = proxies.lock().expect("not poisoned");
+            let proxied = proxies.entry(url.clone()).or_insert_with(|| {
+                let upstream = url
+                    .trim_start_matches("http://")
+                    .trim_end_matches('/')
+                    .to_owned();
+                format!("http://127.0.0.1:{}/", delay_proxy(upstream, rtt / 2))
+            });
+            url.clone_from(proxied);
+        }
+    }
+}
+
 async fn signed_in(
     c: &Cluster,
     pk: &mut calimero_identity::testing::SoftAuthenticator,
@@ -240,13 +330,27 @@ async fn main() {
             .expect("--secs is a number"),
     );
     let out = arg("--out");
+    let peer_rtt = Duration::from_secs_f64(
+        arg("--peer-rtt-ms")
+            .map_or(Ok(0.0), |s| s.parse::<f64>())
+            .expect("--peer-rtt-ms is a number")
+            / 1e3,
+    );
 
     let (sync_ms, sync_mean_ms, unsynced_ms) = sync_time();
     println!("one synced RocksDB write: median {sync_ms:.3} ms (mean {sync_mean_ms:.3} ms); unsynced {unsynced_ms:.3} ms");
 
     // merod's Raft timing, not the tests' faster one: under 128 calls in
     // flight the tests' 500 ms election timeout can fire on a busy machine.
-    let mut c = Cluster::start_with(3, |cfg| cfg.raft = calimero_log::Config::default()).await;
+    let delay = (!peer_rtt.is_zero()).then(|| delayed_peers(peer_rtt));
+    let mut c = Cluster::start_with(3, |cfg| {
+        cfg.raft = calimero_log::Config::default();
+        if let Some(delay) = &delay {
+            delay(cfg);
+        }
+    })
+    .await;
+    println!("peer round trip: {} ms", peer_rtt.as_secs_f64() * 1e3);
     let (owner, mut pk) = signed_up(&c, 0, "bench").await;
     let bundle = owner.upload_bundle(kv_wasm()).await.expect("uploads");
     let a = owner
@@ -333,6 +437,7 @@ async fn main() {
             "bench": "cluster_throughput",
             "nodes": 3,
             "secondsPerRow": secs.as_secs_f64(),
+            "peerRoundTripMs": peer_rtt.as_secs_f64() * 1e3,
             "cores": std::thread::available_parallelism().map_or(0, |n| n.get()),
             "syncedWriteMedianMs": sync_ms,
             "syncedWriteMeanMs": sync_mean_ms,
