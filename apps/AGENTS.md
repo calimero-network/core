@@ -27,7 +27,8 @@ cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 | ------------------------ | ---------------------- | ---------------------- |
 | `kv-store`               | Simple key-value store (component SDK) | `Table` + `Counter`, events, a typed error, a `confirm` method; `TestApp` tests and `scenarios/*.json`. Its wasmer build, the node tests' fixture, is `wasmer-fixtures/kv-store` |
 | `kv-store-init`          | KV with custom init    | `#[app::init]` pattern |
-| `org-gated`              | Org notes              | `env::caller_org()`: gate methods on the caller's organization role and teams |
+| `org-gated`              | Org notes (component SDK) | `env::org_role` / `env::in_team`: gate methods on the caller's organization role and teams; `scenarios/cluster/` changes a team mid-run |
+| `wasmer-fixtures/org-gated` | Org notes (v1 SDK)  | The wasmer fixture `crates/node/tests/cluster.rs` loads (`org_gated.wasm`) for `env::caller_org()` |
 | `kv-store-with-handlers` | KV with event handlers | Event handling         |
 | `sorted-kv-store`        | Ordered KV store       | `SortedMap`: range / prefix / page |
 | `authored-sorted-kv-store` | Shared noticeboard   | `AuthoredSortedMap`: per-entry ownership + prefix slices, and why the two go together |
@@ -55,6 +56,29 @@ cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 | `team-metrics-custom`    | Metrics custom impl    | Custom CRDT usage      |
 | `xcall-example`          | Cross-context calls    | XCall pattern          |
 | `outbound-probe`         | Outbound HTTPS         | `env::http_request` from each kind of run; E2E fixture for the outbound gates, against the test build's `.test` echo |
+
+## Component apps (`calimero-app-sdk`, `wasm32-wasip2`)
+
+`rooms`, `org-gated` and every app ported to the component SDK are standalone
+crates (`[workspace]` in their `Cargo.toml`, `calimero-app-sdk` by path), not
+members of the core workspace, so `cargo test --manifest-path apps/<app>/Cargo.toml`
+runs them (CI's "Cargo test (standalone v2 apps)" loop lists each). Storage is
+`Table<Record>`, `UnorderedMap` and `Counter`; ownership and permission rules are
+explicit checks against `env::caller()` / `env::org_role()`, stated in each app's
+doc comment. Their merobox workflows are replaced by scenario files:
+
+- `scenarios/<name>.json`: app-level steps in the format of
+  `crates/app-sdk/src/testing/scenario.rs`, run by the app's `tests/scenarios.rs`
+  in the harness; `scenarios/<name>.org.json` is the org it needs
+  (`{ "admins": [..], "members": [..], "guests": [..], "teams": {..} }`, the owner
+  is always `owner`).
+- `scenarios/cluster/<name>.json`: steps only a real cluster can run (teams
+  changed mid-run, packages, upgrades).
+
+```bash
+cargo test --manifest-path apps/org-gated/Cargo.toml   # harness tests + scenarios
+cargo run -p calimero-app-build -- apps/org-gated --out org-gated.wasm
+```
 
 ## App Structure
 

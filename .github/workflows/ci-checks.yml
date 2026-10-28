@@ -236,7 +236,7 @@ jobs:
         env:
           CARGO_TARGET_DIR: target/standalone-apps
         run: |
-          for app in apps/rooms apps/v2-fixtures/kv apps/v2-fixtures/org-gated apps/kv-store apps/kv-store-with-shared-storage apps/indexed-forum apps/permissions-showcase; do
+          for app in apps/rooms apps/v2-fixtures/kv apps/v2-fixtures/org-gated apps/kv-store apps/kv-store-with-shared-storage apps/indexed-forum apps/permissions-showcase apps/org-gated; do
             cargo test --manifest-path "$app/Cargo.toml"
           done
 

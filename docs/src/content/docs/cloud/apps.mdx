@@ -43,8 +43,9 @@ repository builds against the `release-v2` SDK and deploys unchanged
   }
   ```
 
-  `apps/org-gated` in core is a complete example; `TestHost::set_caller_org`
-  drives it in unit tests.
+  `apps/wasmer-fixtures/org-gated` in core is a complete example on this SDK
+  (`TestHost::set_caller_org` drives it in unit tests); `apps/org-gated` is the
+  same app on the component SDK, gated with `env::org_role` and `env::in_team`.
 - **Teams are v1's subgroups.** A team is open (whoever reaches its parent, or
   the organization at the top, is a member) or restricted (its members only),
   nests and moves, keeps the app's metadata (a folder's name and colour), and

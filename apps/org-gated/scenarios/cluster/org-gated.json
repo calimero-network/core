@@ -1,0 +1,21 @@
+{
+  "name": "Org-gated notes: a team change mid-run",
+  "description": "The part of the merobox workflow the harness cannot run: the owner makes a team after the app exists, adds Bob, then takes him out again; the app sees each change on the next call. Org setup (Bob a member, Carol an admin, Dave a guest) comes from ../org-gated.org.json without its teams. Steps keep merobox's step names and fields until the cluster runner's format (crates/node/tests/harness/scenario.rs) exists.",
+  "org": "../org-gated.org.json",
+  "orgTeams": false,
+  "steps": [
+    { "type": "call", "account": "owner", "method": "setPinned", "args": { "text": "welcome" } },
+    { "type": "create_team", "account": "owner", "team_name": "writers", "outputs": { "team": "teamId" } },
+    { "type": "team_add", "account": "owner", "team": "{{team}}", "members": ["bob"], "role": "member" },
+    { "type": "view", "account": "bob", "method": "whoami", "args": { "candidates": ["{{team}}"] }, "retry_for": 5,
+      "expect_subset": { "role": "member", "teams": ["{{team}}"] } },
+    { "type": "call", "account": "bob", "method": "setTeamNote", "args": { "team": "{{team}}", "text": "draft one" } },
+    { "type": "call", "account": "carol", "method": "setTeamNote", "args": { "team": "{{team}}", "text": "carol's edit" },
+      "expect": { "error": "TeamOnly" } },
+    { "type": "view", "account": "carol", "method": "teamNote", "args": { "team": "{{team}}" }, "expect": { "ok": "draft one" } },
+    { "type": "team_remove", "account": "owner", "team": "{{team}}", "members": ["bob"] },
+    { "type": "call", "account": "bob", "method": "setTeamNote", "args": { "team": "{{team}}", "text": "after leaving" },
+      "retry_for": 5, "expect": { "error": "TeamOnly" } },
+    { "type": "view", "account": "owner", "method": "teamNote", "args": { "team": "{{team}}" }, "expect": { "ok": "draft one" } }
+  ]
+}
