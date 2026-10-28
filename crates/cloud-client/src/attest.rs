@@ -451,9 +451,9 @@ impl calimero_sealed::client::Attest for HttpAttestor {
 }
 
 fn rand_nonce() -> [u8; 32] {
-    let mut n = [0; 32];
-    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut n).expect("randomness");
-    n
+    ring::rand::generate(&ring::rand::SystemRandom::new())
+        .expect("randomness")
+        .expose()
 }
 
 #[cfg(test)]

@@ -15,9 +15,6 @@ use calimero_tee_attestation::{is_mock_quote, verify_mock_attestation};
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{bail, Context, Result};
 use libp2p_identity::Keypair;
-use rand::rand_core::UnwrapErr;
-use rand::rngs::SysRng;
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -659,8 +656,7 @@ async fn verify_kms_attestation_from_release_policy(
 
     let client = build_kms_http_client(kms)?;
 
-    let mut nonce = [0u8; 32];
-    UnwrapErr(SysRng).fill_bytes(&mut nonce);
+    let nonce = random_nonce();
     let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce);
 
     let request = KmsAttestRequest {
@@ -1231,8 +1227,7 @@ async fn verify_kms_attestation(
         .join("attest")
         .context("Failed to build KMS attest endpoint URL")?;
 
-    let mut nonce = [0u8; 32];
-    UnwrapErr(SysRng).fill_bytes(&mut nonce);
+    let nonce = random_nonce();
 
     let request = KmsAttestRequest {
         nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
@@ -1326,8 +1321,7 @@ async fn request_unverified_transport_key(
     let attest_endpoint = base_url
         .join("attest")
         .context("Failed to build KMS attest endpoint URL")?;
-    let mut nonce = [0u8; 32];
-    UnwrapErr(SysRng).fill_bytes(&mut nonce);
+    let nonce = random_nonce();
     let request = KmsAttestRequest {
         nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
         binding_b64: None,
@@ -1880,6 +1874,13 @@ fn is_loopback_kms_host(kms_url: &Url) -> bool {
         Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
         _ => false,
     }
+}
+
+/// A fresh nonce for a KMS request, from the operating system's generator.
+fn random_nonce() -> [u8; 32] {
+    ring::rand::generate(&ring::rand::SystemRandom::new())
+        .expect("system randomness")
+        .expose()
 }
 
 #[cfg(test)]
