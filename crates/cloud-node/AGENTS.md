@@ -361,8 +361,15 @@ API and system group. What differs from the wasmer path:
   `range` scans, which hidden rows cannot answer); `apply` copies it only while a run
   still holds the previous one; `restore` (a restart, a snapshot install) reads it
   back from the rows. Host records (`ComponentHead`: `last_ts_ms`, `last_id`,
-  `install_ts_ms`, `timers`, the idempotency ring) live in the group's `Head`.
-  Idempotency (D16): `rows::CIDEM`, kept for `IDEMPOTENCY_ENTRIES` (100,000) entries.
+  `install_ts_ms`, `timers`, the idempotency rings) live in the group's `Head`.
+  Idempotency (D74, `idempotency.rs`, the one rule of both executors): records in
+  `rows::CIDEM`, a ring per class in `rows::corder`; a `node:` key (the node's own, or a
+  D70 client's `node:c-…`) is kept 10 minutes, a caller's own key 24 hours, expiring once
+  the newest applied entry's timestamp (D16) passes its own by that time, never by a
+  node's clock; at most 100,000 records per app, oldest first; the newest 10,000 caller
+  keys and 1,000 node keys stay whatever their age (parity's floors). Tests:
+  `idempotency_records_are_kept_by_time_class`, `the_idempotency_cap_drops_the_oldest_first`,
+  `replicas_drop_the_same_records`.
 - **Calls** (`Node::call_component`, routed by the API from the app's executor):
   inside `Group::propose_led`, off the async workers (`node::off_workers`, the one
   copy both executors use); `base_index` is the app's last entry

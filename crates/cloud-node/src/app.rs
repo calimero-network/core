@@ -24,23 +24,10 @@ use tokio::sync::broadcast;
 
 use crate::types::{now_ms, AppId, Caller, EventRecord};
 
-/// How long an idempotency key is remembered.
-pub const IDEMPOTENCY_TTL_MS: u64 = 24 * 60 * 60 * 1000;
-
-/// Keys the node itself gives a call that came without one, so a retried
-/// forward replays instead of running twice. They only need to outlive the
-/// retries, so they are kept briefly.
-pub const NODE_KEY_PREFIX: &str = "node:";
-const NODE_KEY_TTL_MS: u64 = 10 * 60 * 1000;
-
-/// The newest client idempotency records an app always keeps, whatever the
-/// clock says: time-based expiry reads the leader's clock, and a leader whose
-/// clock jumped ahead would otherwise forget acknowledged calls and run their
-/// retries again (Xil's review, issue 10). Past this many, a record goes once
-/// it is also older than its TTL.
-pub const IDEMPOTENCY_MIN_KEEP: u64 = 10_000;
-/// The same for the node's own retry keys (`node:…`).
-const NODE_KEY_MIN_KEEP: u64 = 1_000;
+/// Idempotency retention's classes and floors, shared by both executors
+/// (`crate::idempotency`, D74).
+pub use crate::idempotency::{IDEMPOTENCY_MIN_KEEP, IDEMPOTENCY_TTL_MS, NODE_KEY_PREFIX};
+use crate::idempotency::{NODE_KEY_MIN_KEEP, NODE_KEY_TTL_MS};
 /// The most records of one class an app keeps at all, whatever their age.
 const IDEMPOTENCY_MAX_KEEP: u64 = 1_000_000;
 /// Events kept for resuming subscriptions.
@@ -281,11 +268,12 @@ pub(crate) mod rows {
     pub const CKV: u8 = b'c';
     /// A component's idempotency records, by `caller|key`.
     pub const CIDEM: u8 = b'j';
-    /// A component's idempotency keys in the order they were recorded: `q ‖ n`.
+    /// A component's idempotency keys per class in the order they were recorded:
+    /// `q ‖ class ‖ n` (D74).
     pub const CORDER: u8 = b'q';
 
-    pub fn corder(n: u64) -> Vec<u8> {
-        let mut k = vec![CORDER];
+    pub fn corder(class: u8, n: u64) -> Vec<u8> {
+        let mut k = vec![CORDER, class];
         k.extend_from_slice(&n.to_be_bytes());
         k
     }
@@ -338,12 +326,7 @@ impl StateRead for KvView {
     }
 }
 
-/// The ring of idempotency keys of one TTL class, oldest first.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-struct Ring {
-    first: u64,
-    next: u64,
-}
+use crate::idempotency::Ring;
 
 /// What an app's state machine keeps besides its storage: small, rewritten
 /// with every entry.
@@ -485,6 +468,8 @@ pub struct AppMachine {
     /// part of the state, and not in a production build.
     #[cfg(feature = "testing")]
     pub ticks: crate::component::Ticks,
+    /// A component's idempotency floors and cap (D74's; tests scale them down).
+    pub(crate) idem_limits: crate::idempotency::Limits,
 }
 
 impl AppMachine {
@@ -500,6 +485,7 @@ impl AppMachine {
             idem_keep: [IDEMPOTENCY_MIN_KEEP, NODE_KEY_MIN_KEEP],
             #[cfg(feature = "testing")]
             ticks: crate::component::Ticks::new(),
+            idem_limits: crate::idempotency::Limits::default(),
         }
     }
 

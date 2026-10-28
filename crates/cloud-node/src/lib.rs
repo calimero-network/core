@@ -19,6 +19,7 @@ pub mod attest;
 pub mod backup;
 pub mod component;
 pub mod error;
+pub mod idempotency;
 pub mod inspect;
 pub mod kms;
 pub mod local;

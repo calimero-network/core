@@ -27,11 +27,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::app::{rows, AppMachine, Status, Write};
+use crate::idempotency;
 use crate::node::Node;
 use crate::types::{AppId, Audience, Caller, EventRecord};
-
-/// Idempotency records are kept for this many log entries of the app (D16).
-pub const IDEMPOTENCY_ENTRIES: u64 = 100_000;
 
 /// An event a run emitted, with its audience (R9).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -284,20 +282,29 @@ impl Applied {
     }
 }
 
+/// A component call's idempotency record: its answer, and when it expires (D74).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct IdemRecord {
     applied: Applied,
+    expires_ms: u64,
+}
+
+/// Where a component's idempotency records live (D74's rule, `crate::idempotency`).
+const IDEM_ROWS: idempotency::Rows = idempotency::Rows {
+    tag: rows::CIDEM,
+    ring: rows::corder,
+};
+
+/// `(expires_ms, index)` of a stored component record.
+fn stamps(raw: &[u8]) -> Option<(u64, u64)> {
+    serde_json::from_slice::<IdemRecord>(raw)
+        .ok()
+        .map(|r| (r.expires_ms, r.applied.index))
 }
 
 /// An app's stored keys and values, shared between the machine and the runs reading it.
 pub type Kv = Arc<BTreeMap<Vec<u8>, Vec<u8>>>;
-
-/// The ring of a component's idempotency keys, oldest first (`rows::corder`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Ring {
-    pub first: u64,
-    pub next: u64,
-}
 
 /// A component's host records (D39), kept in the group's `Head`, so a snapshot
 /// carries them like every other row.
@@ -319,9 +326,10 @@ pub struct ComponentHead {
     /// Each timer's last applied slot (D34).
     #[serde(default)]
     pub timers: BTreeMap<String, u64>,
-    /// The idempotency keys in the order they were recorded.
+    /// The idempotency keys of each class (caller, `node:`) in the order they were
+    /// recorded (D74).
     #[serde(default)]
-    pub idempotency: Ring,
+    pub idempotency: [idempotency::Ring; 2],
 }
 
 /// A component app's state on a replica: its host records, and its storage in
@@ -458,10 +466,12 @@ impl AppMachine {
         }
     }
 
+    /// Remember a call's answer under its idempotency key until its class's time
+    /// (D74) is past its entry's timestamp.
     fn remember_component(
         &mut self,
         tx: &mut StateTx<'_>,
-        index: u64,
+        ts_ms: u64,
         caller: &Caller,
         key: &str,
         applied: &Applied,
@@ -469,46 +479,31 @@ impl AppMachine {
         let id = idem_key(caller, key);
         let record = IdemRecord {
             applied: applied.clone(),
+            expires_ms: ts_ms.saturating_add(idempotency::ttl_ms(idempotency::class_of(&id))),
         };
         match serde_json::to_vec(&record) {
-            Ok(v) => tx.put_hidden(rows::CIDEM, id.as_bytes(), &v),
+            Ok(v) => idempotency::record(
+                tx,
+                &IDEM_ROWS,
+                &mut self.state.component.head.idempotency,
+                &id,
+                &v,
+            ),
             Err(e) => tx.fail(e),
         }
-        let ring = &mut self.state.component.head.idempotency;
-        match serde_json::to_vec(&(index, id)) {
-            Ok(v) => tx.put(rows::corder(ring.next), v),
-            Err(e) => tx.fail(e),
-        }
-        ring.next += 1;
     }
 
-    /// Forget records older than the last [`IDEMPOTENCY_ENTRIES`] entries.
-    fn expire_component(&mut self, tx: &mut StateTx<'_>, index: u64) {
-        let ring = &mut self.state.component.head.idempotency;
-        while ring.first < ring.next {
-            let slot = rows::corder(ring.first);
-            let Some((at, key)) = tx
-                .get(&slot)
-                .and_then(|raw| serde_json::from_slice::<(u64, String)>(&raw).ok())
-            else {
-                tx.delete(slot);
-                ring.first += 1;
-                continue;
-            };
-            if at + IDEMPOTENCY_ENTRIES > index {
-                break;
-            }
-            // A key reused later has a newer record; keep that one.
-            let current = tx
-                .get_hidden(rows::CIDEM, key.as_bytes())
-                .and_then(|r| serde_json::from_slice::<IdemRecord>(&r).ok())
-                .is_some_and(|r| r.applied.index == at);
-            if current {
-                tx.delete_hidden(rows::CIDEM, key.as_bytes());
-            }
-            tx.delete(slot);
-            ring.first += 1;
-        }
+    /// Forget what D74 lets go, by the newest applied entry's timestamp.
+    fn expire_component(&mut self, tx: &mut StateTx<'_>) {
+        let newest = self.state.component.head.last_ts_ms;
+        idempotency::expire(
+            tx,
+            &IDEM_ROWS,
+            &mut self.state.component.head.idempotency,
+            self.idem_limits,
+            newest,
+            stamps,
+        );
     }
 
     fn note_id(&mut self, term: u64, seq: u64) {
@@ -622,7 +617,7 @@ impl AppMachine {
                     call.caller.account(),
                 );
                 if let (Some(key), false) = (&call.idempotency_key, a.conflict) {
-                    self.remember_component(tx, index, &call.caller, key, &a);
+                    self.remember_component(tx, call.ts_ms, &call.caller, key, &a);
                 }
                 a
             }
@@ -637,7 +632,7 @@ impl AppMachine {
                 timeout: false,
             },
         };
-        self.expire_component(tx, index);
+        self.expire_component(tx);
         serde_json::to_vec(&applied).unwrap_or_default()
     }
 }
@@ -943,27 +938,113 @@ mod tests {
         assert_eq!(r.machine.view().get(b"k"), Some(b"2".to_vec()));
     }
 
+    fn with_ts(raw: &[u8], ts_ms: u64) -> Vec<u8> {
+        let mut cmd: ComponentCmd = serde_json::from_slice(raw).unwrap();
+        if let ComponentCmd::Call(c) = &mut cmd {
+            c.ts_ms = ts_ms;
+        }
+        serde_json::to_vec(&cmd).unwrap()
+    }
+
+    /// A keyed call at `ts_ms` on base `base`, as account `a`.
+    fn call_at(base: u64, key: &str, ts_ms: u64) -> Vec<u8> {
+        with_ts(&call(base, Some(key), Vec::new()), ts_ms)
+    }
+
+    fn honoured(r: &Rig, key: &str) -> bool {
+        r.machine
+            .component_replay(
+                &Caller::Account {
+                    account: "a".into(),
+                },
+                key,
+            )
+            .is_some()
+    }
+
+    /// D74 on a component: a `node:` key is honoured for 10 minutes of entry time, a
+    /// caller's own key for 24 hours, judged by the newest applied entry's timestamp
+    /// (with the per-class floors at zero, as for parity's own expiry test).
     #[test]
-    fn idempotency_records_are_kept_for_a_number_of_entries() {
+    fn idempotency_records_are_kept_by_time_class() {
+        const MIN: u64 = 60 * 1000;
+        const HOUR: u64 = 60 * MIN;
         let mut r = Rig::new();
-        let caller = Caller::Account {
-            account: "a".into(),
+        r.machine.idem_limits.keep = [0, 0];
+        let t0 = 1_000;
+        let _i = r.apply(1, &init(0));
+        let _a = r.apply(2, &call_at(1, "mine", t0));
+        let _a = r.apply(3, &call_at(2, "node:c-retry", t0));
+        assert!(honoured(&r, "mine") && honoured(&r, "node:c-retry"));
+        // Nine minutes on: both still honoured.
+        let _a = r.apply(4, &call_at(3, "x1", t0 + 9 * MIN));
+        assert!(honoured(&r, "node:c-retry"));
+        // Eleven minutes on, by an entry without a key: the node key is gone.
+        let _a = r.apply(5, &with_ts(&call(4, None, Vec::new()), t0 + 11 * MIN));
+        assert!(
+            !honoured(&r, "node:c-retry"),
+            "a node key outlived 10 minutes"
+        );
+        assert!(honoured(&r, "mine"));
+        // 23 hours on: the caller's key is still honoured; past 24 hours, gone.
+        let _a = r.apply(6, &call_at(5, "x2", t0 + 23 * HOUR));
+        assert!(honoured(&r, "mine"), "a caller key dropped before 24 hours");
+        let _a = r.apply(7, &call_at(6, "x3", t0 + 24 * HOUR + 1));
+        assert!(!honoured(&r, "mine"), "a caller key outlived 24 hours");
+        assert!(honoured(&r, "x3"));
+    }
+
+    /// D74's cap (scaled down here to 3 records through `Limits::cap`; the real one is
+    /// 100,000): past it the oldest record goes first, whatever its class.
+    #[test]
+    fn the_idempotency_cap_drops_the_oldest_first() {
+        let mut r = Rig::new();
+        r.machine.idem_limits = crate::idempotency::Limits {
+            keep: [0, 0],
+            cap: 3,
         };
         let _i = r.apply(1, &init(0));
-        let _a = r.apply(2, &call(1, Some("k"), Vec::new()));
-        assert!(r.machine.component_replay(&caller, "k").is_some());
-        // Entries without keys: the record lives until IDEMPOTENCY_ENTRIES later.
-        r.machine.state.last_index = IDEMPOTENCY_ENTRIES + 1;
-        let _a = r.apply(
-            IDEMPOTENCY_ENTRIES + 1,
-            &call(IDEMPOTENCY_ENTRIES + 1, None, Vec::new()),
+        for (n, key) in ["k1", "node:k2", "k3", "node:k4", "k5"].iter().enumerate() {
+            let index = n as u64 + 2;
+            let _a = r.apply(index, &call_at(index - 1, key, 1_000));
+        }
+        let kept: Vec<&str> = ["k1", "node:k2", "k3", "node:k4", "k5"]
+            .into_iter()
+            .filter(|k| honoured(&r, k))
+            .collect();
+        assert_eq!(kept, vec!["k3", "node:k4", "k5"]);
+    }
+
+    /// Retention is a function of the applied entries alone: two replicas fed the
+    /// same entries keep the same records (no node clock is read).
+    #[test]
+    fn replicas_drop_the_same_records() {
+        const MIN: u64 = 60 * 1000;
+        let feed = |r: &mut Rig| {
+            r.machine.idem_limits = crate::idempotency::Limits {
+                keep: [0, 0],
+                cap: 4,
+            };
+            let _i = r.apply(1, &init(0));
+            let keys = ["a", "node:b", "c", "node:d", "e", "f"];
+            for (n, key) in keys.iter().enumerate() {
+                let index = n as u64 + 2;
+                let _a = r.apply(index, &call_at(index - 1, key, 1_000 + n as u64 * 4 * MIN));
+            }
+            keys.iter()
+                .map(|k| (*k, honoured(r, k)))
+                .collect::<Vec<_>>()
+        };
+        let (mut one, mut two) = (Rig::new(), Rig::new());
+        let a = feed(&mut one);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let b = feed(&mut two);
+        assert_eq!(a, b);
+        assert_eq!(
+            one.machine.state.component.head.idempotency,
+            two.machine.state.component.head.idempotency
         );
-        assert!(r.machine.component_replay(&caller, "k").is_some());
-        let _a = r.apply(
-            IDEMPOTENCY_ENTRIES + 2,
-            &call(IDEMPOTENCY_ENTRIES + 1, None, Vec::new()),
-        );
-        assert!(r.machine.component_replay(&caller, "k").is_none());
+        assert!(a.iter().any(|(_, kept)| !kept), "nothing expired: {a:?}");
     }
 
     #[test]
