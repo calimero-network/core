@@ -55,7 +55,6 @@ on:
       # these files are code: a bundle embeds them or a build reads them.
       - "!**/*.md"
       - "!**/*.mdx"
-      - "apps/kv-store/GUIDE.md"
       - "apps/wasmer-fixtures/kv-store/GUIDE.md"
       - "tools/cargo-mero/README.md"
       - "tools/cargo-mero/tests/fixtures/demo-app/GUIDE.md"
