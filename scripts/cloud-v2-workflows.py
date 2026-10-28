@@ -11,7 +11,15 @@ defaults to target/cloud-v2-wasm. The blobs size sweep's random fixtures
 them is selected.
 
 Usage: scripts/cloud-v2-workflows.py [--shard K/N | --smoke] [--json out.json]
-                                     [--verbose] [--list] [workflow.yml ...]
+                                     [--port-offset N] [--verbose] [--list]
+                                     [workflow.yml ...]
+
+Every workflow names its own `cluster.base_port`, and no two overlap, so the
+shards of one checkout run side by side on one machine. `--port-offset N`
+(default $CLOUD_V2_PORT_OFFSET, else 0) adds N to every base_port, so two
+checkouts (two worktrees, two agents) can run the same workflows at once; give
+each its own band, e.g. 10000 and 20000. A workflow's nodes are its only fixed
+ports: merobox's package registry binds port 0.
 
 `--smoke` runs the fixed list in cloud-v2-workflows-smoke.json (one workflow
 per area; release.yml runs it against the merod inside a PR's Docker image),
@@ -48,6 +56,10 @@ SMOKE = Path(__file__).with_name("cloud-v2-workflows-smoke.json")
 #: Seconds assumed for a workflow with no measured duration.
 DEFAULT_SECONDS = 20.0
 BLOB_FIXTURES = "static/generated/"
+#: merobox's own defaults when a workflow names no base_port or node count
+#: (`merobox/cloud_v2/workflow.py`, `cluster.py`).
+MEROBOX_BASE_PORT = 2700
+MEROBOX_NODES = 3
 
 
 def all_workflows() -> list[str]:
@@ -77,12 +89,36 @@ def shard(files: list[str], k: int, n: int) -> list[str]:
     return sorted(picked[k - 1])
 
 
+def shift_ports(workflow, offset: int) -> None:
+    """Make merobox load every workflow with `offset` added to its cluster's
+    base_port. A port outside 1024..65535 for any of its nodes is refused."""
+    load = workflow.load_workflow
+
+    def shifted(path: str) -> dict:
+        wf = load(path)
+        spec = wf.get("cluster")
+        if spec is not None:
+            port = int(spec.get("base_port", MEROBOX_BASE_PORT)) + offset
+            if port < 1024 or port + int(spec.get("nodes", MEROBOX_NODES)) > 65535:
+                raise ValueError(f"--port-offset {offset} puts {path}'s nodes at {port}+")
+            spec["base_port"] = port
+        return wf
+
+    workflow.load_workflow = shifted
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("workflows", nargs="*")
     ap.add_argument("--shard", help="K/N: run the K-th of N shards")
     ap.add_argument("--smoke", action="store_true", help=f"run {SMOKE.name}'s list")
     ap.add_argument("--json", type=Path)
+    ap.add_argument(
+        "--port-offset",
+        type=int,
+        default=int(os.environ.get("CLOUD_V2_PORT_OFFSET", "0")),
+        help="add N to every workflow's base_port (default $CLOUD_V2_PORT_OFFSET, else 0)",
+    )
     ap.add_argument("--list", action="store_true", help="print the selection and exit")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
@@ -104,7 +140,11 @@ def main() -> int:
     os.environ.setdefault("MEROBOX_FUZZY_SECONDS", "30")
     if any(BLOB_FIXTURES in Path(f).read_text() for f in files):
         subprocess.run([ROOT / "apps/blobs/scripts/gen-blob-fixtures.sh"], check=True)
+    from merobox.cloud_v2 import workflow
     from merobox.cloud_v2.workflow import run_workflow_outcome
+
+    if args.port_offset:
+        shift_ports(workflow, args.port_offset)
 
     results = []
     for f in files:
