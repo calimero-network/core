@@ -44,20 +44,6 @@ PREREQS = [
         "    The step still runs; TEST_HOSTS just starts with an empty host. Install\n"
         "    net-tools for a faithful mirror of CI.",
     ),
-    (
-        lambda: not os.environ.get("CALIMERO_AUTH_FRONTEND_SRC")
-        and not os.environ.get("CALIMERO_AUTH_FRONTEND_FETCH_TOKEN"),
-        "mero-auth's build script fetches a frontend archive from GitHub. CI passes a\n"
-        "    token for it; locally the fetch may be blocked or rate-limited, which fails\n"
-        "    the build script rather than any check. Point CALIMERO_AUTH_FRONTEND_SRC at\n"
-        "    a local directory to skip the fetch.",
-    ),
-    (
-        lambda: not os.environ.get("CALIMERO_WEBUI_SRC")
-        and not os.environ.get("CALIMERO_WEBUI_FETCH_TOKEN"),
-        "calimero-server's build script fetches the admin dashboard the same way.\n"
-        "    Point CALIMERO_WEBUI_SRC at a local directory to skip that fetch.",
-    ),
 ]
 
 

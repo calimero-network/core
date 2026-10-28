@@ -82,6 +82,9 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        (status, axum::Json(self)).into_response()
+        let code = crate::metrics::ErrorCode(self.code.clone());
+        let mut response = (status, axum::Json(self)).into_response();
+        let _prev = response.extensions_mut().insert(code);
+        response
     }
 }
