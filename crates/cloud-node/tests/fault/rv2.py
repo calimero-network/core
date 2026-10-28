@@ -1,6 +1,7 @@
 """Black-box helpers for a release-v2 (`merod run --dev`) cluster, one process per node.
 
-Adapted from the release-v2 review's tests/raft/rv2.py. Ports 3600-3699 only. Plain HTTP
+Adapted from the release-v2 review's tests/raft/rv2.py. Ports 7600-7699, above every
+merobox workflow's, so a fault run and the workflows can share a machine. Plain HTTP
 is allowed by --dev (sealed_required = !dev, crates/merod/src/main.rs). Auth uses an
 API key minted through meroctl with a file passkey. The binaries are the workspace's
 release builds (in `RV2_BIN_DIR`, default `target/release`):
@@ -95,7 +96,7 @@ signal.signal(signal.SIGHUP, _on_signal)
 
 
 class Cluster:
-    def __init__(self, workdir: Path, base_port: int = 3600, n: int = 3, cluster: str = "rv2raft", log=True):
+    def __init__(self, workdir: Path, base_port: int = 7600, n: int = 3, cluster: str = "rv2raft", log=True):
         self.workdir = Path(workdir)
         self.base_port = base_port
         self.n = n

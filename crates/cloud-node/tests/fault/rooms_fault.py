@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 import shutil
 import sys
@@ -399,16 +400,21 @@ def main():
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--wasm", default=None)
     ap.add_argument("--workdir", default=str(Path(__file__).resolve().parent / "work" / "rooms"))
-    ap.add_argument("--base-port", type=int, default=3610)
+    # 7600-7699 sits above every merobox workflow's base_port, so the two can run at
+    # once; CLOUD_V2_PORT_OFFSET shifts it as it shifts the workflows (two checkouts).
+    ap.add_argument("--base-port", type=int, default=7610)
     args = ap.parse_args()
-    if not (3600 <= args.base_port and args.base_port + 3 <= 3699):
-        raise SystemExit("ports 3600-3699 only")
+    offset = int(os.environ.get("CLOUD_V2_PORT_OFFSET", "0"))
+    if not (7600 <= args.base_port and args.base_port + 3 <= 7699):
+        raise SystemExit("ports 7600-7699 only (before CLOUD_V2_PORT_OFFSET)")
+    if args.base_port + offset + 3 > 65535:
+        raise SystemExit(f"CLOUD_V2_PORT_OFFSET {offset} puts the nodes past port 65535")
     wasm = args.wasm or default_wasm()
     wd = Path(args.workdir)
     shutil.rmtree(wd, ignore_errors=True)
     wd.mkdir(parents=True)
     out = open(wd / "results.jsonl", "w")
-    c = Cluster(wd, base_port=args.base_port, cluster="roomsfault")
+    c = Cluster(wd, base_port=args.base_port + offset, cluster="roomsfault")
     t_start = time.time()
     total_fail = 0
     totals = {"ops": 0, "book_ok": 0, "book_info": 0, "book_fail": 0, "retried_ok": 0,
