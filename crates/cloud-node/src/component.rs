@@ -1039,9 +1039,10 @@ mod tests {
     }
 
     /// D74's cap (scaled down here to 3 records through `Limits::cap`; the real one is
-    /// 100,000): past it the oldest record goes first, whatever its class.
+    /// 100,000), spec v0.27: past it `node:` records go first, then the oldest
+    /// caller record.
     #[test]
-    fn the_idempotency_cap_drops_the_oldest_first() {
+    fn the_idempotency_cap_drops_node_keys_first_then_the_oldest() {
         let mut r = Rig::new();
         r.machine.idem_limits = crate::idempotency::Limits {
             keep: [0, 0],
@@ -1057,7 +1058,47 @@ mod tests {
             .into_iter()
             .filter(|k| honoured(&r, k))
             .collect();
-        assert_eq!(kept, vec!["k3", "node:k4", "k5"]);
+        assert_eq!(kept, vec!["k1", "k3", "k5"]);
+        // No `node:` record left: the oldest caller record goes.
+        let _a = r.apply(7, &call_at(6, "k6", 1_000));
+        let kept: Vec<&str> = ["k1", "k3", "k5", "k6"]
+            .into_iter()
+            .filter(|k| honoured(&r, k))
+            .collect();
+        assert_eq!(kept, vec!["k3", "k5", "k6"]);
+    }
+
+    /// D74 (v0.27): a burst of keyless calls (`node:` keys) past the cap never
+    /// evicts a caller's own record, even when the caller class is above its floor:
+    /// `node:` records go first (scaled: cap 6, floors 2 caller / 1 node, 4 caller
+    /// records, then 20 `node:` keys).
+    #[test]
+    fn a_burst_of_node_keys_does_not_evict_callers_records_above_their_floor() {
+        let mut r = Rig::new();
+        r.machine.idem_limits = crate::idempotency::Limits {
+            keep: [2, 1],
+            cap: 6,
+            ..crate::idempotency::Limits::default()
+        };
+        let _i = r.apply(1, &init(0));
+        let mine = ["c0", "c1", "c2", "c3"];
+        for (n, key) in mine.iter().enumerate() {
+            let index = n as u64 + 2;
+            let _a = r.apply(index, &call_at(index - 1, key, 1_000 + n as u64));
+        }
+        for n in 0..20u64 {
+            let index = n + 6;
+            let _a = r.apply(
+                index,
+                &call_at(index - 1, &format!("node:c-{n}"), 2_000 + n),
+            );
+        }
+        for key in mine {
+            assert!(
+                honoured(&r, key),
+                "{key}: a caller's record was evicted by node: keys"
+            );
+        }
     }
 
     /// D74 (v0.26): the cap never takes a class below its floor. A burst of keyless

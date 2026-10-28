@@ -148,8 +148,10 @@ pub fn record(
 /// is at or before `now_ms` (see [`expiry_now`]; `None` for an entry with no
 /// timestamp of its own, which expires nothing by time),
 /// but never one of the class's newest `limits.keep`; then, while the app holds
-/// more than `limits.cap`, the oldest record of a class still above its floor (the
-/// cap never takes a class below its floor, D74 in spec v0.26). Together they drop
+/// more than `limits.cap`, the oldest `node:` record while that class is above its
+/// floor, and only then the oldest caller record above its floor: a burst of keyless
+/// calls never evicts a caller's own record, and the cap never takes a class below
+/// its floor (D74 in spec v0.27). Together they drop
 /// at most `limits.step` records ([`EXPIRY_STEP`]); what's left waits for the next
 /// entries. `stamps` reads a
 /// stored record's `(expires_ms, index of the entry that wrote it)`.
@@ -190,29 +192,24 @@ pub fn expire(
         }
     }
     while rings[0].len() + rings[1].len() > limits.cap && budget > 0 {
-        // The front of each ring above its floor, with the index of the entry that
-        // wrote it (a slot whose record is gone counts as oldest). A ring at or
-        // below its floor is never evicted from (D74).
-        let front = |c: usize, ring: Ring| -> Option<(Vec<u8>, Option<Vec<u8>>, u64)> {
+        // The front of each ring above its floor; a ring at or below its floor is
+        // never evicted from (D74).
+        let front = |c: usize, ring: Ring| -> Option<(Vec<u8>, Option<Vec<u8>>)> {
             (ring.len() > limits.keep[c]).then(|| {
                 let slot = (rows.ring)(c as u8, ring.first);
                 let key = tx.get(&slot);
-                let index = key
-                    .as_ref()
-                    .and_then(|k| tx.get_hidden(rows.tag, k))
-                    .and_then(|r| stamps(&r))
-                    .map_or(0, |(_, index)| index);
-                (slot, key, index)
+                (slot, key)
             })
         };
+        // `node:` records go first: a burst of keyless calls never evicts a caller's
+        // own record while the `node:` class is above its floor (D74 in spec v0.27).
         let fronts = [front(0, rings[0]), front(1, rings[1])];
         let c = match (&fronts[0], &fronts[1]) {
-            (Some(a), Some(b)) => usize::from(b.2 < a.2),
+            (_, Some(_)) => 1,
             (Some(_), None) => 0,
-            (None, Some(_)) => 1,
             (None, None) => break,
         };
-        let Some((slot, key, _)) = fronts[c].clone() else {
+        let Some((slot, key)) = fronts[c].clone() else {
             break;
         };
         if let Some(key) = key {

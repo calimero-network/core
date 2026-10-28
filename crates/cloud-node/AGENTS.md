@@ -369,12 +369,14 @@ API and system group. What differs from the wasmer path:
   hours. A record expires once the earlier of the newest applied entry's timestamp and
   the applying entry's own (`expiry_now`) passes its own by that time, never by a node's
   clock, so every replica drops the same records and one entry stamped by a skewed
-  leader can't expire what follows it. At most 100,000 records per app, oldest first,
-  but the cap never takes a class below its floor (the newest 10,000 caller keys and
-  1,000 node keys stay whatever their age). Each entry drops at most `EXPIRY_STEP`
+  leader can't expire what follows it. At most 100,000 records per app: past the cap
+  `node:` records go first, then the oldest caller record, so a burst of keyless calls
+  never evicts a caller's own record; the cap never takes a class below its floor (the
+  newest 10,000 caller keys and 1,000 node keys stay whatever their age). Each entry drops at most `EXPIRY_STEP`
   (4,096) records; the rest carries over. Tests: `idempotency_records_are_kept_by_time_class`,
-  `the_idempotency_cap_drops_the_oldest_first`, `replicas_drop_the_same_records`,
+  `the_idempotency_cap_drops_node_keys_first_then_the_oldest`, `replicas_drop_the_same_records`,
   `a_burst_of_node_keys_does_not_evict_a_callers_record_below_its_floor`,
+  `a_burst_of_node_keys_does_not_evict_callers_records_above_their_floor`,
   `one_skewed_entry_does_not_expire_the_records_written_after_it`,
   `a_callers_key_containing_node_is_kept_24_hours`, and on wasmer the same with
   `_on_wasmer`, plus `records_over_the_new_cap_drain_a_bounded_number_per_entry`.

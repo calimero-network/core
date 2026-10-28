@@ -2102,9 +2102,10 @@ mod tests {
     }
 
     /// D74's cap on wasmer (scaled down to 3 through `Limits::cap`; the real one is
-    /// 100,000 per app): the oldest record goes first, whatever its class.
+    /// 100,000 per app), spec v0.27: past it `node:` records go first, then the
+    /// oldest caller record.
     #[test]
-    fn the_idempotency_cap_drops_the_oldest_first_on_wasmer() {
+    fn the_idempotency_cap_drops_node_keys_first_then_the_oldest_on_wasmer() {
         let dir = tempfile::tempdir().unwrap();
         let (_engine, mut m) = machine(&dir);
         m.idem_limits = crate::idempotency::Limits {
@@ -2124,7 +2125,47 @@ mod tests {
             .into_iter()
             .filter(|k| m.replay(&caller, k).is_some())
             .collect();
-        assert_eq!(kept, vec!["k3", "node:k4", "k5"]);
+        assert_eq!(kept, vec!["k1", "k3", "k5"]);
+        // No `node:` record left: the oldest caller record goes.
+        let cmd = call(&m, "k6", 1_000, &[], 0);
+        let _a = apply(&mut m, 6, &cmd);
+        let kept: Vec<&str> = ["k1", "k3", "k5", "k6"]
+            .into_iter()
+            .filter(|k| m.replay(&caller, k).is_some())
+            .collect();
+        assert_eq!(kept, vec!["k3", "k5", "k6"]);
+    }
+
+    /// D74 (v0.27) on wasmer: a burst of keyless calls (`node:` keys) past the cap
+    /// never evicts a caller's own record, even when the caller class is above its
+    /// floor: `node:` records go first.
+    #[test]
+    fn a_burst_of_node_keys_does_not_evict_callers_records_above_their_floor_on_wasmer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut m) = machine(&dir);
+        m.idem_limits = crate::idempotency::Limits {
+            keep: [2, 1],
+            cap: 6,
+            ..crate::idempotency::Limits::default()
+        };
+        let caller = Caller::Account {
+            account: "acct".into(),
+        };
+        let mine = ["c0", "c1", "c2", "c3"];
+        for (n, key) in mine.iter().enumerate() {
+            let cmd = call(&m, key, 1_000 + n as u64, &[], 0);
+            let _a = apply(&mut m, n as u64 + 1, &cmd);
+        }
+        for n in 0..20u64 {
+            let cmd = call(&m, &format!("node:c-{n}"), 2_000 + n, &[], 0);
+            let _a = apply(&mut m, n + 5, &cmd);
+        }
+        for key in mine {
+            assert!(
+                m.replay(&caller, key).is_some(),
+                "{key}: a caller's record was evicted by node: keys"
+            );
+        }
     }
 
     /// D74 (v0.26) on wasmer: the cap never takes a class below its floor; a burst
