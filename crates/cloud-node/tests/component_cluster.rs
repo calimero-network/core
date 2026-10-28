@@ -2977,3 +2977,78 @@ async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor(
         assert!(initialized, "node {i}");
     }
 }
+
+/// Review item 3, D75 (spec v0.26): `orgs-of` answers only the app's own organization.
+/// Carol is a member of the app's org and the owner of another; a component in the
+/// app's org learns only her role there, and a personal app learns nothing about its
+/// callers' organizations.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_component_sees_no_organization_but_its_own() {
+    use calimero_app_host::{Directory as _, OrgRole};
+    use calimero_cloud_node::component::SysDirectory;
+
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (carol, _c) = signed_up(&c, 1, "carol").await;
+    let carol_id = carol.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let acme = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = alice
+        .post(&format!("orgs/{acme}/invites"), json!({ "role": "member" }))
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = carol
+        .post(&format!("invites/{token}/redeem"), json!({}))
+        .await
+        .unwrap();
+    let other = carol
+        .post("orgs", json!({ "name": "Other" }))
+        .await
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let in_org = alice
+        .create_app("kv-org", &bundle, json!({ "org": acme }))
+        .await
+        .unwrap();
+    let personal = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    // The node's replica has every org now.
+    for _ in 0..50 {
+        if node.sys(|s| s.orgs.contains_key(&other) && s.apps.contains_key(&personal)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let dir = SysDirectory::new(Arc::downgrade(node), in_org.clone());
+    assert_eq!(
+        dir.orgs_of(&carol_id),
+        vec![(acme.clone(), OrgRole::Member)],
+        "a component saw an organization other than its own"
+    );
+    let dir = SysDirectory::new(Arc::downgrade(node), personal.clone());
+    assert_eq!(
+        dir.orgs_of(&carol_id),
+        Vec::new(),
+        "a personal app saw its caller's orgs"
+    );
+    let alice_id = alice.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        dir.orgs_of(&alice_id),
+        Vec::new(),
+        "a personal app saw its owner's orgs"
+    );
+}

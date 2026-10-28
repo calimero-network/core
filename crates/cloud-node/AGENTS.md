@@ -404,6 +404,10 @@ API and system group. What differs from the wasmer path:
 - **Upgrades**: this branch's route and authority (`POST /apps/{app}/upgrade`,
   passkey consent, `UpgradeApp`); at the leader a component upgrades code-only
   (`componentUpgrade`) and a named `migrate` is refused `MigrationsNotSupported`.
+- **Identity a component sees** (`component::SysDirectory`): its org, owner, the
+  caller's role and teams there; `orgs-of` answers only the app's own organization
+  (D75, spec v0.26): for an account, at most the app's org with its role, and nothing
+  for a personal app. Test: `a_component_sees_no_organization_but_its_own`.
 - **Per-executor endpoints** (`the_abi_storage_and_blob_routes_answer_for_a_component`):
   `/apps/{app}/abi` answers the ABI the component embeds (`calimero:abi`);
   `/apps/{app}/storage` counts its keys and bytes; the blob routes answer

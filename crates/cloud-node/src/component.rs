@@ -739,15 +739,21 @@ impl host::Directory for SysDirectory {
         self.with_org(|o| o.teams.contains_key(team))
     }
 
+    /// The app's own organization only (D75, spec v0.26): for `account`, at most the
+    /// app's org with the account's role in it; a personal app learns nothing about
+    /// its callers' organizations. A component runs code the platform doesn't vet,
+    /// so it never maps its callers' memberships in other tenants.
     fn orgs_of(&self, account: &str) -> Vec<(String, host::OrgRole)> {
-        let Some(node) = self.node.upgrade() else {
-            return Vec::new();
-        };
-        node.sys(|s| {
-            s.orgs
-                .iter()
-                .filter_map(|(id, o)| o.role(account).map(|r| (id.clone(), host_role(r))))
-                .collect()
+        self.with(|s, a| {
+            a.org
+                .as_ref()
+                .and_then(|id| {
+                    s.orgs
+                        .get(id)
+                        .and_then(|o| o.role(account))
+                        .map(|r| vec![(id.clone(), host_role(r))])
+                })
+                .unwrap_or_default()
         })
     }
 }

@@ -176,7 +176,8 @@ pub trait Directory: Send + Sync {
     fn in_team(&self, account: &str, team: &str) -> bool;
     /// Whether the team exists, for checking event audiences.
     fn team_exists(&self, team: &str) -> bool;
-    /// Every org the account belongs to, with its role (requirement R1).
+    /// The account's membership in the app's own org, with its role: at most that one
+    /// org, and nothing for a personal app (D75). R1's admitted partners extend it.
     fn orgs_of(&self, account: &str) -> Vec<(String, OrgRole)>;
 }
 
