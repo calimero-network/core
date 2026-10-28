@@ -103,9 +103,7 @@ merge behavior.
   from `UnorderedMap` to `IndexedMap` needs no migration. A validity marker makes
   each node rebuild its own indexes on the first query after anything changed the
   entries behind them (a sync, a merge, a new index declaration); that first query
-  is `O(n)`, every one after it `O(log n + k)`. See `apps/indexed-issue-tracker`,
-  and `apps/indexed-forum` for a compound index over a list and `IndexedMap`
-  beside authored and set collections.
+  is `O(n)`, every one after it `O(log n + k)`. See `apps/indexed-issue-tracker`.
 - **`Vector`** — append + index. `push` assigns each element a stable id, so
   iteration order is preserved across reloads.
 - **`LwwRegister<T>`** — wrap any scalar that should follow last-writer-wins.
@@ -279,8 +277,7 @@ against the writer set / owner. A forged write does not survive convergence.
   `owner_of` and `owned_by_me` added. `Authored<C>` is `Guarded<C, Owner>`: one
   entry carries one stamp, so the write policy is a type parameter rather than
   wrappers that nest. `Authored<IndexedMap>` stores exactly an `AuthoredMap`'s
-  bytes, so switching a field between them needs no migration. See
-  `apps/indexed-forum`.
+  bytes, so switching a field between them needs no migration.
 
 - **`AuthoredMap<K, V>` / `AuthoredVector<V>`** — *per-entry ownership*.
   `AuthoredMap` is `Authored<UnorderedMap<K, V>>` under its original name. Anyone
