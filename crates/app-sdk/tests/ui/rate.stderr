@@ -1,0 +1,5 @@
+error: a rate is `<n>/s`, `<n>/min` or `<n>/h` with n > 0
+  --> tests/ui/rate.rs:11:26
+   |
+11 |     #[app::public(rate = "lots")]
+   |                          ^^^^^^

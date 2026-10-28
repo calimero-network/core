@@ -540,6 +540,10 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
         I: IntoIterator<Item = Entry> + OptionalSend,
         I::IntoIter: OptionalSend,
     {
+        #[cfg(feature = "testing")]
+        while self.db.apply_held(self.group) {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
         let mut out = Vec::new();
         let mut last = 0;
         {
@@ -579,7 +583,9 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
             }
             // Not synced: the entries are in the synced log, so a lost batch is
             // re-applied from there.
-            self.db.commit(&batch, false).map_err(io)?;
+            if !self.db.losing_unsynced(self.group) {
+                self.db.commit(&batch, false).map_err(io)?;
+            }
         }
         if last > 0 {
             let _ = self.applied_tx.send(last);

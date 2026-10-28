@@ -70,6 +70,8 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
         tee_release: None,
         tee_profile: None,
         peer_measurements: calimero_cloud_client::Measurements::None,
+        clock_offset_ms: 0,
+        budget: None,
         registry: None,
         allow_unsigned_bundles: true,
         outbound: None,

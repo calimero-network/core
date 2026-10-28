@@ -175,11 +175,23 @@ impl Node {
         let mut wasm_by_service = BTreeMap::new();
         for (service, bytes) in wasm {
             let hash = hex::encode(calimero_identity::sha256(&bytes));
-            // Refuse what does not compile before anything is recorded.
-            let _module = self
-                .executor
-                .module(&hash, &bytes)
-                .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))?;
+            // Refuse what its executor does not take before anything is recorded:
+            // a core module must compile on wasmer, a component must pass the
+            // engine's prepare.
+            match crate::types::Executor::of(&bytes) {
+                crate::types::Executor::Wasmer => {
+                    let _module = self
+                        .executor
+                        .module(&hash, &bytes)
+                        .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))?;
+                }
+                crate::types::Executor::Component => {
+                    use calimero_app_host::Engine as _;
+                    let _prepared = self.app_engine().prepare(&hash, &bytes).map_err(|e| {
+                        ApiError::bad_request(crate::node::BAD_BUNDLE, &e.to_string())
+                    })?;
+                }
+            }
             let _prev = services.insert(service.clone(), hash);
             let _prev = wasm_by_service.insert(service, bytes);
         }

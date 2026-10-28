@@ -28,6 +28,8 @@ pub mod machine;
 mod migration_tests;
 pub mod network;
 pub mod store;
+#[cfg(feature = "testing")]
+pub mod testing;
 pub mod tuning;
 pub mod types;
 
@@ -83,6 +85,18 @@ pub const MAX_ENTRY_BYTES: usize = 1024 * 1024;
 /// The size of one snapshot chunk on the wire.
 pub const SNAPSHOT_CHUNK_BYTES: u64 = 1024 * 1024;
 
+/// How long a leader waits, before its first proposal in a term, until it has
+/// applied its own log ([`Group::propose_led`]).
+pub const CATCH_UP: Duration = Duration::from_secs(2);
+
+/// What the leadership check that admitted a proposal found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Leadership {
+    /// The term this node leads in. Raft has one leader per term, so a value a
+    /// leader derives from `(term, its own counter)` is unique cluster-wide.
+    pub term: u64,
+}
+
 /// What a proposal builder decided.
 pub enum Proposal {
     /// Append these command bytes to the log.
@@ -129,6 +143,9 @@ pub struct Group<M: Machine> {
     state: GroupState,
     applied_rx: watch::Receiver<u64>,
     propose_lock: Mutex<()>,
+    /// The term this node last caught up in ([`Group::propose_led`]): it applied
+    /// its whole log once after taking the lead in that term. 0: never.
+    caught_up: std::sync::atomic::AtomicU64,
 }
 
 fn forward<E>(leader_id: Option<NodeId>, leader_node: Option<BasicNode>) -> Result<E, WriteError> {
@@ -190,6 +207,68 @@ impl<M: Machine> Group<M> {
         self.confirm_leader().await.map(|_read| ())
     }
 
+    /// [`Self::leads_here`] for a builder that needs the term it leads in
+    /// ([`Self::propose_led`]): the metrics' term when they say it leads (one
+    /// report names state and term together), else, after a confirmation, the
+    /// term the Raft core holds. When the core no longer names this node leader,
+    /// it answers `NotLeader` with the current leader (the caller forwards, as an
+    /// append from a deposed node would make it), and never builds with a term
+    /// it does not lead: ids made from another node's term could collide with that
+    /// leader's (D52).
+    async fn led_term(&self) -> Result<Leadership, WriteError> {
+        {
+            let m = self.raft.metrics();
+            let m = m.borrow();
+            if m.state == ServerState::Leader {
+                return Ok(Leadership {
+                    term: m.current_term,
+                });
+            }
+        }
+        let _read = self.confirm_leader().await?;
+        let (leads, term) = self
+            .raft
+            .with_raft_state(|st| {
+                (
+                    st.server_state == ServerState::Leader,
+                    st.vote_ref().leader_id().get_term(),
+                )
+            })
+            .await
+            .map_err(|e| WriteError::Unavailable(e.to_string()))?;
+        if leads {
+            return Ok(Leadership { term });
+        }
+        let m = self.raft.metrics().borrow().clone();
+        forward(
+            m.current_leader,
+            m.current_leader
+                .and_then(|id| m.membership_config.membership().get_node(&id).cloned()),
+        )
+    }
+
+    /// Once per term this node leads in, before its first proposal there: wait
+    /// until it has applied (so committed) every entry in its log. A leader
+    /// restored into its old term (a restart, no election) can hold entries it
+    /// appended in that term past the commit index it saved (which is not
+    /// synced), not yet applied; a builder reading the applied state would miss
+    /// them. Waits at most [`CATCH_UP`]; `Unavailable` then, and the caller
+    /// retries.
+    async fn catch_up(&self, leadership: Leadership) -> Result<(), WriteError> {
+        use std::sync::atomic::Ordering;
+        if self.caught_up.load(Ordering::Acquire) == leadership.term {
+            return Ok(());
+        }
+        let last = self.raft.metrics().borrow().last_log_index.unwrap_or(0);
+        if !self.wait_applied(last, CATCH_UP).await {
+            return Err(WriteError::Unavailable(
+                "the leader has not applied its own log yet".into(),
+            ));
+        }
+        self.caught_up.store(leadership.term, Ordering::Release);
+        Ok(())
+    }
+
     fn build<F>(&self, build: &mut F) -> Result<(Proposal, u64), WriteError>
     where
         F: FnMut(&M, u64) -> Proposal,
@@ -230,12 +309,37 @@ impl<M: Machine> Group<M> {
     /// it is confirmed with a majority before it is answered, and built again
     /// on the confirmed state when entries committed in between. `build` may
     /// therefore run twice.
-    pub async fn propose<F>(&self, mut build: F) -> Result<Proposed, WriteError>
+    pub async fn propose<F>(&self, build: F) -> Result<Proposed, WriteError>
     where
         F: FnMut(&M, u64) -> Proposal,
     {
         let _guard = self.propose_lock.lock().await;
         self.leads_here().await?;
+        self.propose_held(build).await
+    }
+
+    /// [`Self::propose`], handing the builder the [`Leadership`] the check that
+    /// admitted the proposal found, with no leadership round of its own: the
+    /// term comes from the same check `propose` makes. Before its first
+    /// proposal in a term this node has applied its whole log
+    /// ([`Self::catch_up`]), so the builder sees every entry this node
+    /// appended in that term, whatever commit index it had saved.
+    pub async fn propose_led<F>(&self, mut build: F) -> Result<Proposed, WriteError>
+    where
+        F: FnMut(&M, u64, Leadership) -> Proposal,
+    {
+        let _guard = self.propose_lock.lock().await;
+        let leadership = self.led_term().await?;
+        self.catch_up(leadership).await?;
+        self.propose_held(|m, applied| build(m, applied, leadership))
+            .await
+    }
+
+    /// The body of a proposal, with the proposal lock held and leadership checked.
+    async fn propose_held<F>(&self, mut build: F) -> Result<Proposed, WriteError>
+    where
+        F: FnMut(&M, u64) -> Proposal,
+    {
         let (proposal, built_at) = self.build(&mut build)?;
         let output = match proposal {
             Proposal::Append(cmd) => return self.append(cmd).await,
@@ -504,6 +608,17 @@ impl Engine {
         machine::current_snapshot_file(&self.db, group)
     }
 
+    /// From now on, drop `group`'s unsynced writes on this node (its commit
+    /// index and its applied batches), as a crash before they reached the disk
+    /// would: a test stops the node after this and starts it again. The log
+    /// entries themselves, which are synced, are kept. Feature `testing`.
+    #[cfg(feature = "testing")]
+    pub fn lose_unsynced_writes(&self, group: GroupId) {
+        if let Ok(mut l) = self.db.losing.write() {
+            let _new = l.insert(group);
+        }
+    }
+
     /// Store a sealed blob on this node (outside every log).
     pub fn put_blob(&self, name: &str, bytes: &[u8]) -> eyre::Result<()> {
         self.db.put_blob(name, bytes)
@@ -581,6 +696,7 @@ impl Engine {
             state,
             applied_rx,
             propose_lock: Mutex::new(()),
+            caught_up: std::sync::atomic::AtomicU64::new(0),
         });
         let _prev = self
             .groups

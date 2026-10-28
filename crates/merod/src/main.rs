@@ -298,6 +298,8 @@ async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
         tee_release: args.tee_release.clone(),
         tee_profile: args.tee_profile.clone(),
         peer_measurements,
+        clock_offset_ms: 0,
+        budget: None,
         registry: args.registry_url.clone(),
         allow_unsigned_bundles: args.allow_unsigned_bundles.unwrap_or(false) || dev,
         outbound: outbound

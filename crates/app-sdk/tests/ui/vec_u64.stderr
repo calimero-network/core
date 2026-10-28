@@ -1,0 +1,5 @@
+error: u64 inside Vec<u64> would lose precision in JSON (D20); wrap it in a Record or use a string
+  --> tests/ui/vec_u64.rs:10:31
+   |
+10 |     pub fn sum(&mut self, xs: Vec<u64>) -> app::Result<()> {
+   |                               ^^^^^^^^

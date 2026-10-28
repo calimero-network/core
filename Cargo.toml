@@ -100,6 +100,12 @@ members = [
     "./tools/storage-compare",
     "./crates/account",
     "./crates/app-downloader",
+    "./crates/app-build",
+    "./crates/app-engine-wasmtime",
+    "./crates/app-host",
+    "./crates/app-sdk",
+    "./crates/app-sdk-macros",
+    "./crates/app-wit",
     "./crates/build-utils",
     "./crates/bundle",
     "./crates/context/config",
@@ -240,6 +246,7 @@ candid = "0.10.10"
 cargo_metadata = "0.23.1"
 cfg-if = "1.0.0"
 chrono = "0.4.37"
+ciborium = "0.2.2"
 claims = "0.8.0"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 clap = "4.4.18"
@@ -260,6 +267,8 @@ eyre = "0.6.12"
 fixedstr = "0.5.7"
 flate2 = "1.0"
 fragile = "3.0.0"
+# Cross-process build lock in calimero-app-build (already in the tree through tantivy).
+fs4 = "0.13.1"
 futures-util = "0.3.30"
 generic-array = "1.0.0"
 hex = "0.4.3"
@@ -293,8 +302,10 @@ prettyplease = "0.3"
 proc-macro2 = "1.0"
 # pinned to the major libp2p-metrics uses; moves when libp2p does
 prometheus-client = "0.23"
+proptest = "1.12.0"
 quote = "1.0.37"
 rand = "0.10"
+rand_chacha = "0.10.0"
 rcgen = "0.13.2"
 reqwest = { version = "0.12.2", default-features = false, features = ["rustls-tls"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
@@ -368,17 +379,28 @@ velcro = "0.5.4"
 wasmer = "6.1.0"
 wasmer-types = "6.1.0"
 wasmer-middlewares = "6.1.0"
+wasmtime = { version = "50.0.0", default-features = false }
+wasmtime-wasi = { version = "50.0.0", default-features = false }
 wasm-opt = "0.116"
 wasmparser = "0.262"
 wat = "1.243.0"
 web3 = "0.19.0"
 webbrowser = "1.2.2"
+wit-bindgen = "0.63.0"
+wit-component = "0.262.0"
+wit-parser = "0.262.0"
 zeroize = "1.8"
 zip = { version = "9.0", default-features = false, features = ["deflate"] }
 
 pyo3 = "0.20"
 
 calimero-app-downloader = { path = "./crates/app-downloader" }
+calimero-app-wit = { path = "./crates/app-wit" }
+calimero-app-build = { path = "./crates/app-build" }
+calimero-app-engine-wasmtime = { path = "./crates/app-engine-wasmtime" }
+calimero-app-host = { path = "./crates/app-host" }
+calimero-app-sdk = { path = "./crates/app-sdk" }
+calimero-app-sdk-macros = { path = "./crates/app-sdk-macros" }
 calimero-build-utils = { path = "./crates/build-utils" }
 calimero-bundle = { path = "./crates/bundle" }
 calimero-blobstore = { path = "./crates/store/blobs" }

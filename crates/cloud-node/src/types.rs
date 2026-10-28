@@ -23,9 +23,13 @@ pub enum Caller {
     /// Nobody in particular (public apps).
     Public,
     /// The app itself: the node running an event handler, a timer, or an
-    /// `xcall` from app `app` (then the caller is the calling app). Never from
-    /// a client: the API builds callers from credentials.
+    /// `xcall` from app `app` (then the caller is the calling app), on the
+    /// wasmer executor. Never from a client: the API builds callers from
+    /// credentials.
     App { app: AppId },
+    /// The platform itself: a component's timer ticks (D34), which reach only
+    /// methods whose ABI says `allowSystem`. Never from a client.
+    System,
 }
 
 impl Caller {
@@ -33,11 +37,11 @@ impl Caller {
     pub fn account(&self) -> Option<&str> {
         match self {
             Self::Account { account } | Self::ApiKey { account, .. } => Some(account),
-            Self::Public | Self::App { .. } => None,
+            Self::Public | Self::App { .. } | Self::System => None,
         }
     }
 
-    /// The 32 bytes the runtime exposes as `env::account_id()`.
+    /// The 32 bytes the wasmer runtime exposes as `env::account_id()`.
     #[must_use]
     pub fn account_bytes(&self) -> [u8; 32] {
         // An app calls as its context id, what it sees as `env::context_id()`.
@@ -52,6 +56,22 @@ impl Caller {
             }
         }
         out
+    }
+
+    /// The caller as the component host core sees it (the WIT `caller`, D13).
+    #[must_use]
+    pub fn to_host(&self) -> calimero_app_host::Caller {
+        use calimero_app_host::Caller as H;
+        match self {
+            Self::Account { account } => H::Account(account.clone()),
+            Self::ApiKey { key, account } => H::ApiKey {
+                key_id: key.clone(),
+                account: account.clone(),
+            },
+            Self::Public => H::Public,
+            Self::App { app } => H::App(app.clone()),
+            Self::System => H::System,
+        }
     }
 }
 
@@ -94,9 +114,15 @@ pub struct AppRecord {
     pub org: Option<OrgId>,
     #[serde(default)]
     pub access: Access,
-    /// Methods that need a fresh passkey assertion (`#[app::confirm]`).
+    /// Methods that need a fresh passkey assertion (`#[app::confirm]`), for an
+    /// app on the wasmer executor; a component's come from its ABI.
     #[serde(default)]
     pub confirm_methods: Vec<String>,
+    /// The executor its bundle runs on, decided once from the bundle's WASM when
+    /// the app is created. Absent (a record written before components existed):
+    /// wasmer.
+    #[serde(default, skip_serializing_if = "Executor::is_wasmer")]
+    pub executor: Executor,
     pub replicas: Vec<u64>,
     pub created_at: u64,
     /// The arguments `init` ran with (JSON; `null` for none).
@@ -109,6 +135,37 @@ pub struct AppRecord {
     /// The last upgrade tried on this app, done or failed (v1's upgrade status).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_upgrade: Option<UpgradeRecord>,
+}
+
+/// Which executor runs an app's code.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Executor {
+    /// A v1 core module (SDK 0.12), on the wasmer runtime (`app::Executor`).
+    #[default]
+    Wasmer,
+    /// A `calimero:app` component (the v2 SDK), on wasmtime through the host
+    /// core (`calimero-app-host`).
+    Component,
+}
+
+impl Executor {
+    /// The executor for `wasm`: a component (its header's layer field says so,
+    /// `wasmparser::Parser::is_component`) runs on wasmtime; anything else is a
+    /// core module for wasmer, which judges it as it does today.
+    #[must_use]
+    pub fn of(wasm: &[u8]) -> Self {
+        if wasmparser::Parser::is_component(wasm) {
+            Self::Component
+        } else {
+            Self::Wasmer
+        }
+    }
+
+    #[must_use]
+    pub fn is_wasmer(&self) -> bool {
+        *self == Self::Wasmer
+    }
 }
 
 /// One upgrade of one app, as the directory remembers it.
@@ -492,6 +549,46 @@ pub struct Invite {
     pub uses_left: u32,
 }
 
+/// Who receives an event (R9). Resolved when the event is sent to a
+/// subscriber, against the system state of that moment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Audience {
+    /// Everyone who reaches the app.
+    All,
+    /// The account that made the call.
+    Caller,
+    Accounts {
+        accounts: Vec<AccountId>,
+    },
+    /// The members of a team of the app's organization.
+    Team {
+        team: TeamId,
+    },
+    /// Members, admins and the owner of the organization.
+    OrgMembers {
+        org: OrgId,
+    },
+    /// Admins and the owner of the organization.
+    OrgAdmins {
+        org: OrgId,
+    },
+}
+
+impl From<calimero_app_host::Audience> for Audience {
+    fn from(a: calimero_app_host::Audience) -> Self {
+        use calimero_app_host::Audience as H;
+        match a {
+            H::All => Self::All,
+            H::Caller => Self::Caller,
+            H::Accounts(accounts) => Self::Accounts { accounts },
+            H::Team(team) => Self::Team { team },
+            H::OrgMembers(org) => Self::OrgMembers { org },
+            H::OrgAdmins(org) => Self::OrgAdmins { org },
+        }
+    }
+}
+
 /// One event committed with a call.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -500,6 +597,14 @@ pub struct EventRecord {
     pub seq: u32,
     pub kind: String,
     pub data: serde_json::Value,
+    /// A component's event: who receives it (R9), checked when it is sent.
+    /// `None` for an event of an app on wasmer, which goes to everyone who
+    /// reaches the app, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<Audience>,
+    /// The calling account, for [`Audience::Caller`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<AccountId>,
 }
 
 /// Seconds since the epoch.

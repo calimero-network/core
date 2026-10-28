@@ -1,0 +1,5 @@
+error: `init` runs once as the owner; it takes no other attribute
+  --> tests/ui/init_allow_app.rs:12:12
+   |
+12 |     pub fn init() -> app::Result<Self> {
+   |            ^^^^

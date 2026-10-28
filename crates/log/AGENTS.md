@@ -13,6 +13,21 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   `ensure_linearizable` and built again if entries committed meanwhile, so the
   builder may run twice (`FnMut`). Regression:
   `a_stale_build_by_a_deposed_leader_never_applies`.
+- `Group::propose_led` is `propose` that also hands the builder the `Leadership`
+  (the term the same leadership check found: the metrics' term when they say this
+  node leads, else the Raft core's after a confirmation; no extra round). Once per
+  term this node leads in, before its first proposal there, it waits (up to
+  `CATCH_UP`, then `Unavailable`) until it has applied its whole log: a leader
+  restored into its old term (a restart, no election) can hold entries it
+  appended past the commit index it saved, which is not synced. The cloud node's
+  component apps take their unique ids (D52, `term.seq.n`) from it.
+- Test hooks (feature `testing`, never in a release build):
+  `Engine::lose_unsynced_writes(group)` drops a group's commit index and applied
+  batches from then on, as a crash before they reach the disk would;
+  `testing::hold_apply(dir, group)` / `release_apply` hold every apply of a group
+  on the node opened at `dir` (from its next start), so a test decides when a
+  restarted leader catches up. Used by the node's
+  `unique_ids_survive_a_crash_before_the_commit_index_reaches_the_disk`.
 - Storage (`store.rs`): one RocksDB per node (`<data-dir>/store`), opened with
   `tuning`'s column and table options (moved from v1's `calimero-store-rocksdb`) (one bounded block cache,
   `BLOCK_CACHE_BYTES`). Column families `log`, `meta`, `state`, `blobs`. Every value
