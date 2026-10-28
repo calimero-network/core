@@ -75,17 +75,21 @@ The apps repo's `apps/kv-store/app-cloud` is a complete browser frontend (passke
 sign-in, a store per user, live events) with a Playwright test that drives a real
 passkey ceremony through Chromium's virtual authenticator.
 
-## 4. Scenario tests with merobox
+## 4. Scenario tests and the process suite
 
-merobox's `cloud-v2` backend (branch `release-v2`) starts a cluster with one
-`merod` process per node and runs YAML scenarios against it: deploy, call and
-read as several accounts, then crash, freeze, restart or upgrade nodes and check
-the app keeps its data and answers within a time budget.
+An app's scenarios (`apps/<app>/scenarios/*.json`) and core's
+(`workflows/**/scenarios/`) run on an in-process 3-node cluster: deploy, call
+and read as several accounts, in orgs and teams, with packages and upgrades.
+The process suite starts one `merod run --dev` process per node and crashes,
+freezes, restarts or upgrades them, checking the app keeps its data and answers
+within a time budget.
 
 ```bash
-MEROD_V2_BINARY=target/debug/merod \
-KV_STORE_WASM=target/wasm32-unknown-unknown/app-release/kv_store.wasm \
-merobox cloud run workflow-examples/cloud-v2/frozen-leader.yml
+cargo test -p calimero-node --test scenarios -- apps/kv-store/   # kv-store's scenarios
+cargo build --release -p merod -p meroctl
+cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
+python3 -I crates/node/tests/fault/suite.py --only frozen-leader
 ```
 
-See merobox's `workflow-examples/cloud-v2/README.md` for the step reference.
+See [Testing strategy](/contribute/testing/#scenarios) for the file format and
+every step.

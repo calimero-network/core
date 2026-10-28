@@ -163,8 +163,9 @@ A frozen or partitioned leader is replaced after an election timeout. A call
 forwarded to an app's leader waits at most `FORWARD_TIMEOUT` (5 s) before the
 forwarding node retries at whoever leads now; calls without a client
 idempotency key get a node key first (`node:…`, remembered 10 minutes), so the
-retry replays a call that did commit instead of running it twice. merobox's
-`workflow-examples/cloud-v2/frozen-leader.yml` is the regression scenario.
+retry replays a call that did commit instead of running it twice. The process
+suite's `frozen-leader` (`crates/node/tests/fault/suite.py`) is the regression
+test.
 
 ## State, restarts and snapshots
 
@@ -244,7 +245,7 @@ A data directory that still holds the previous single-file store (`log.redb`)
 is migrated when the engine opens it: entries, vote, commit and purge marks,
 blobs, and each machine's old whole-state snapshot (imported through
 `Machine::import`). The old file is kept beside, renamed `log.redb.migrated`.
-merobox runs one build on fresh state, so this path has its own tests
+Scenarios and the process suite run one build on fresh state, so this path has its own tests
 (`crates/log/src/migration_tests.rs`).
 
 ## What replaced v1's sync
