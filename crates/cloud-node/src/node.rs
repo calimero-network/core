@@ -1353,15 +1353,17 @@ impl Node {
                 if m.state.initialized || m.state.bundle.is_some() {
                     return Proposal::Reply(Vec::new());
                 }
-                let outcome = Executor::run(
-                    &module,
-                    &app_id,
-                    &owner,
-                    "init",
-                    &init_args,
-                    &m.state.kv,
-                    &env,
-                );
+                let outcome = off_workers(|| {
+                    Executor::run(
+                        &module,
+                        &app_id,
+                        &owner,
+                        "init",
+                        &init_args,
+                        &m.state.kv,
+                        &env,
+                    )
+                });
                 self.keep_blobs(&outcome);
                 let cmd = AppCmd::Init {
                     bundle: bundle.clone(),
@@ -1550,15 +1552,17 @@ impl Node {
                         ..Outcome::default()
                     },
                     (Some(module), None) => {
-                        let (outcome, _ret) = Executor::run_bytes(
-                            module,
-                            &req.app_id,
-                            &req.caller,
-                            &req.method,
-                            &input,
-                            &m.state.kv,
-                            &env,
-                        );
+                        let (outcome, _ret) = off_workers(|| {
+                            Executor::run_bytes(
+                                module,
+                                &req.app_id,
+                                &req.caller,
+                                &req.method,
+                                &input,
+                                &m.state.kv,
+                                &env,
+                            )
+                        });
                         if read_only && (!outcome.diff.is_empty() || !outcome.new_blobs.is_empty())
                         {
                             let refused = Applied {
@@ -1675,14 +1679,16 @@ impl Node {
                 }
                 let outcome = match &migrate {
                     Some(method) => {
-                        let outcome = Executor::migrate(
-                            &module,
-                            &req.app_id,
-                            &req.caller,
-                            method,
-                            &m.state.kv,
-                            &env,
-                        );
+                        let outcome = off_workers(|| {
+                            Executor::migrate(
+                                &module,
+                                &req.app_id,
+                                &req.caller,
+                                method,
+                                &m.state.kv,
+                                &env,
+                            )
+                        });
                         self.keep_blobs(&outcome);
                         outcome
                     }
@@ -1959,15 +1965,17 @@ impl Node {
         Ok(g.read_local(|m, applied| {
             // Search answers from indexes brought up to this very state.
             env.search = self.search.for_view(&module, &bundle, m, applied);
-            let out = Executor::run(
-                &module,
-                &req.app_id,
-                &req.caller,
-                &req.method,
-                &req.args,
-                &m.state.kv,
-                &env,
-            );
+            let out = off_workers(|| {
+                Executor::run(
+                    &module,
+                    &req.app_id,
+                    &req.caller,
+                    &req.method,
+                    &req.args,
+                    &m.state.kv,
+                    &env,
+                )
+            });
             ViewAnswer {
                 index: applied,
                 status: out.status,
@@ -2130,5 +2138,60 @@ impl Node {
             }
         }
         Ok(written)
+    }
+}
+
+/// Runs `f`, a WASM run that may take up to its budget, without holding an
+/// async worker: on the multi-threaded runtime, `block_in_place` hands this
+/// worker's queued tasks to another worker for the run, so Raft heartbeats,
+/// the system group and HTTP keep going beside it. The run cannot move to
+/// `spawn_blocking` itself: it builds its proposal on the machine's read lock,
+/// under the group's proposal lock, from borrowed state. Elsewhere (a
+/// current-thread runtime, which `block_in_place` refuses) `f` runs in place.
+fn off_workers<R>(f: impl FnOnce() -> R) -> R {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
+    }
+}
+
+#[cfg(test)]
+mod off_workers_tests {
+    use std::time::{Duration, Instant};
+
+    use super::off_workers;
+
+    /// A run that holds its thread for 300 ms leaves the one async worker
+    /// free: a task ticking every 10 ms never waits much longer than that.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_long_run_does_not_hold_an_async_worker() {
+        let ticker = tokio::spawn(async {
+            let mut worst = Duration::ZERO;
+            let mut last = Instant::now();
+            for _ in 0..40 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                worst = worst.max(last.elapsed());
+                last = Instant::now();
+            }
+            worst
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        // On the worker, as a request handler's run is (the test's own body
+        // runs on the thread that blocks on it, not on a worker).
+        tokio::spawn(async { off_workers(|| std::thread::sleep(Duration::from_millis(300))) })
+            .await
+            .unwrap();
+        let worst = ticker.await.unwrap();
+        assert!(
+            worst < Duration::from_millis(150),
+            "a task waited {worst:?}"
+        );
+    }
+
+    #[test]
+    fn outside_a_runtime_it_runs_in_place() {
+        assert_eq!(off_workers(|| 7), 7);
     }
 }

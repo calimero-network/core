@@ -146,6 +146,13 @@ is its command line.
   upgrade applied in between; `AppMachine::stale_module`, also checked by
   `upgrade_local`). Regression:
   `a_call_built_with_a_module_an_upgrade_replaced_never_commits`.
+- **Runs leave the async workers** (`node::off_workers`): a WASM run (call,
+  follow-up, timer, init, migration, strong view) happens inside the group's
+  proposal lock, on the machine's read lock, from borrowed state, so it cannot
+  move to `spawn_blocking`; it goes through `block_in_place`, which hands the
+  worker's other tasks (Raft heartbeats, the system group, HTTP) to another
+  worker meanwhile. Regression: `a_long_run_does_not_hold_an_async_worker`.
+  Xabi's app-runtime branch has the same helper under the same name.
 - **Upgrades plan their migration from the ABIs** (`services::plan_upgrade`, v1's
   `plan_upgrade`): without a named `migrate`, an upgrade one state version up runs
   the target's `#[app::migrate]` edge; a downgrade, a jump or a missing edge is
