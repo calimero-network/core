@@ -567,10 +567,7 @@ fn resolve_operand(value: &str, vars: &Map<String, Value>) -> Result<Value, Unre
     }
     let mut result = value.to_owned();
     let mut start = 0;
-    loop {
-        let Some(open) = result[start..].find("{{").map(|i| i + start) else {
-            break;
-        };
+    while let Some(open) = result[start..].find("{{").map(|i| i + start) {
         let Some(close) = result[open..].find("}}").map(|i| i + open) else {
             break;
         };
@@ -1043,6 +1040,12 @@ impl From<ClientError> for Fail {
     }
 }
 
+impl From<Box<ClientError>> for Fail {
+    fn from(e: Box<ClientError>) -> Self {
+        Fail::from(*e)
+    }
+}
+
 impl From<String> for Fail {
     fn from(e: String) -> Self {
         Fail::Workflow(e)
@@ -1444,7 +1447,7 @@ impl<'a> Runner<'a> {
         }
         self.sign_up().await?;
         let steps = sc.steps.as_array().cloned().unwrap_or_default();
-        self.run_steps(&steps, 0).await
+        self.run_steps(&steps).await
     }
 
     async fn sign_up(&mut self) -> Result<(), String> {
@@ -1839,7 +1842,7 @@ impl<'a> Runner<'a> {
         cl: &Client,
         step: &Map<String, Value>,
         args: Value,
-    ) -> Result<calimero_client::ViewResult, ClientError> {
+    ) -> Result<calimero_client::ViewResult, Box<ClientError>> {
         let consistency = if truthy(step.get("stale")) {
             Consistency::Stale {
                 min_index: step
@@ -1852,6 +1855,7 @@ impl<'a> Runner<'a> {
         };
         cl.view(&s(step, "app"), &s(step, "method"), args, consistency)
             .await
+            .map_err(Box::new)
     }
 
     async fn wait_for(&mut self, step: &Map<String, Value>) -> StepResult {
@@ -2471,11 +2475,7 @@ impl<'a> Runner<'a> {
         Ok(())
     }
 
-    fn run_steps<'b>(
-        &'b mut self,
-        steps: &'b [Value],
-        depth: usize,
-    ) -> Fut<'b, Result<(), String>> {
+    fn run_steps<'b>(&'b mut self, steps: &'b [Value]) -> Fut<'b, Result<(), String>> {
         Box::pin(async move {
             for (i, raw) in steps.iter().enumerate() {
                 let raw = raw.as_object().ok_or("a step is an object")?;
@@ -2506,7 +2506,7 @@ impl<'a> Runner<'a> {
                                     }
                                 }
                             }
-                            self.run_steps(&inner, depth + 1)
+                            self.run_steps(&inner)
                                 .await
                                 .map_err(|e| format!("{} iteration {n}: {e}", at()))?;
                         }
@@ -2728,7 +2728,7 @@ impl<'a> Runner<'a> {
         eprintln!("    {label}: {passed}/{total} operations passed ({rate:.1}%)");
         if rate < threshold {
             let mut top: Vec<_> = failures.into_iter().collect();
-            top.sort_by(|a, b| b.1.cmp(&a.1));
+            top.sort_by_key(|a| std::cmp::Reverse(a.1));
             let shown: Vec<String> = top
                 .iter()
                 .take(5)
