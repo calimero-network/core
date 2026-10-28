@@ -1,5 +1,5 @@
 //! A write into a `SharedStorage` cell by an account outside the cell's writer
-//! set is refused inside the SDK, so it is never committed: release-v2 runs a
+//! set is refused inside the SDK, so it is never committed: the node runs a
 //! call once, on the leader, with no peer to re-check it at merge.
 //!
 //! Needs `apps/kv-store-with-shared-storage/res/kv_store_with_shared_storage.wasm`

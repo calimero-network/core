@@ -10,7 +10,7 @@
 //! cannot be opened, not even with the transport key.
 //!
 //! The node's side, and the wire format this implements byte for byte (as
-//! mero-js does), are in `calimero-server`'s `sealed` module:
+//! mero-js does), are in this crate's `server` module:
 //!
 //! ```text
 //! handshake   Noise_NK_25519_AESGCM_SHA256, prologue "calimero/sealed-http/v2"

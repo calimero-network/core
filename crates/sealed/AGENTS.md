@@ -1,7 +1,6 @@
 # calimero-sealed
 
-The sealed transport (wire format v2), extracted from `calimero-server`'s `sealed`
-module and `calimero-client`'s `tee/sealed` for the release-v2 cloud node.
+The sealed transport (wire format v2) between clients and the node.
 
 - `server`: `SealedTransport` (per-process X25519 key, never persisted) and the
   `intercept` middleware. **Wrap the router from outside** (`tower::Layer::layer`

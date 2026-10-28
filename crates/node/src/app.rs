@@ -124,7 +124,7 @@ pub struct Pending {
     pub depth: u32,
 }
 
-/// How deep a cascade of handlers and xcalls may go (v1's `MAX_XCALL_DEPTH`):
+/// How deep a cascade of handlers and xcalls may go:
 /// a run at this depth still runs, but asks for nothing more.
 pub const MAX_FOLLOWUP_DEPTH: u32 = 3;
 
@@ -988,8 +988,7 @@ pub const RESERVED: &[u8] = b"\0calimero.";
 
 /// Where a shared-storage cell's current writer set lives in the app's state.
 ///
-/// v1 recorded a cell's writer rotations as group governance ops. A cloud app
-/// has one log already, so the rotation a run asks for is written beside the
+/// An app has one log, so the rotation a run asks for is written beside the
 /// cell, in the same entry as the run's other writes, and read back from there.
 #[must_use]
 pub fn writers_key(cell: &[u8; 32]) -> Vec<u8> {
@@ -1007,7 +1006,7 @@ pub fn blob_key(id: &[u8; 32]) -> Vec<u8> {
     k
 }
 
-/// What an app's storage holds (v1's context storage size).
+/// What an app's storage holds.
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageStats {
@@ -1022,7 +1021,7 @@ pub struct StorageStats {
 
 /// Where an account's private storage lives in the app's state.
 ///
-/// v1 kept "private" data on the member's own node, never synced. A cloud app
+/// v1 kept "private" data on the member's own node, never synced. Here an app
 /// has no member nodes, so private data is the caller's own space instead:
 /// replicated and sealed like the rest of the state, but the host hands a run
 /// only its caller's space, so app code can never read another account's.
@@ -1158,13 +1157,12 @@ impl Storage for Overlay<'_> {
     }
 }
 
-/// Why a run's writer-set rotations may not take effect, if they may not: v1's
+/// Why a run's writer-set rotations may not take effect, if they may not: the
 /// host-side rules (`shared_rotations.rs`). Each rotation steps from the set in
 /// effect (the state's, or at genesis the run's own prior if the cell id commits
 /// to it, or this run's previous rotation of the cell), and the run's account
 /// must hold `ADMIN` in it (so a `Frozen` cell, which grants none, never rotates).
-/// A TEE run or a cross-app call may not rotate, as v1's delegated and TEE runs
-/// could not.
+/// A TEE run or a cross-app call may not rotate.
 fn rotation_refusal(
     overlay: &Overlay<'_>,
     rotations: &[calimero_storage::shared_writers::SharedRotation],
@@ -1216,7 +1214,7 @@ fn rotation_refusal(
 }
 
 /// Write `state` (borsh of the app's state) as the app's root entry, with the
-/// Merkle index updated, as v1's `write_migration_state` does. The storage
+/// Merkle index updated. The storage
 /// layer's callbacks outlive any borrow, so they work over a copy of the state
 /// and the writes are carried back into `overlay`.
 fn write_root_state(
@@ -1326,7 +1324,7 @@ pub struct RunEnv {
 
 /// The storage entities a run's artifact (a borsh `StorageDelta`) touches, and
 /// every entry above them, hex: what search re-extracts. Empty for anything
-/// that does not decode. (v1: `calimero_context::search::changed_entity_ids`.)
+/// that does not decode.
 #[must_use]
 pub fn changed_entities(artifact: &[u8]) -> Vec<String> {
     use calimero_storage::action::Action;
@@ -1396,8 +1394,7 @@ impl Executor {
         Ok(module)
     }
 
-    /// Run a migration export the way v1 does (`calimero-context`'s
-    /// `update_application`): the export reads the old state and returns the
+    /// Run a migration export: the export reads the old state and returns the
     /// new root state (borsh), the app's `__calimero_migration_check`, if it
     /// exports one, must pass over it, and the host writes it as the app's root
     /// entry. Never fails: errors become the outcome's status. A module without
@@ -1553,8 +1550,8 @@ impl Executor {
         } else {
             calimero_account::AccountId::from(caller.account_bytes())
         };
-        // release-v2 has no devices: a person is their account, so the executor
-        // (v1's per-device key, `env::executor_id`) is the account too. Apps that
+        // There are no device ids: a person is their account, so the executor
+        // (`env::executor_id`, a per-device key in v1) is the account too. Apps that
         // key players or authors by executor then tell people apart as before.
         // The caller's private storage (`env::private_storage_*`), when there
         // is a caller to own it.

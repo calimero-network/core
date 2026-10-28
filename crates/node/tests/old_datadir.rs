@@ -2,7 +2,7 @@
 //! apps keep running on wasmer.
 //!
 //! `fixtures/datadir-a09547b2b.tar.gz` is one node's data directory as
-//! release-v2-parity at `a09547b2b` wrote it (its own `calimero-node`, run in
+//! the node at `a09547b2b` wrote it (its own `calimero-node`, run in
 //! process: one node on port 39517, storage key `[42; 32]`, a `kv-store` app with
 //! `a = 1` and `b = 2`); `fixture.json` inside it names the app, its bundle and
 //! its owner. Neither its directory record nor its group's state names an executor.

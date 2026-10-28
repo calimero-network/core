@@ -97,7 +97,7 @@ pub enum BundleSource {
 pub struct PackageRecord {
     pub name: String,
     /// The publisher's key (`did:key`), pinned by the first release. Every
-    /// later release must be signed by it (v1's `(package, signer)` identity).
+    /// later release must be signed by it (the `(package, signer)` identity).
     pub signer_id: String,
     /// Who installed the first release; may uninstall releases.
     pub owner: AccountId,
@@ -304,7 +304,7 @@ impl SystemState {
                 .is_some_and(|o| self.manages_apps(o, account, team))
     }
 
-    /// v1's `MANAGE_APPLICATION`: whether `account` may upgrade `org`'s apps
+    /// `MANAGE_APPLICATION`: whether `account` may upgrade `org`'s apps
     /// (on `team`, or org-wide when `None`) and approve its outbound hosts.
     /// The owner, an admin, a team's lead, or a member holding the capability
     /// there; never someone outside the organization or below member.
@@ -616,8 +616,7 @@ pub enum SystemCmd {
         consent: Value,
     },
     /// The owner approves URL prefixes for a package's publisher to call out
-    /// to, in an org's apps or their own outside one (v1's namespace
-    /// `OutboundApprovalSet`). `selection` is the latest release's declared
+    /// to, in an org's apps or their own outside one. `selection` is the latest release's declared
     /// list or chosen prefixes; `replace` sets exactly those (how a prefix is
     /// revoked), else they are added. Logged with the passkey consent.
     SetOutboundApproval {
@@ -735,8 +734,7 @@ pub enum SystemCmd {
         metadata: Option<Value>,
         actor: AccountId,
     },
-    /// Delete a team, the teams below it and their apps (v1's cascading
-    /// `delete_group`).
+    /// Delete a team, the teams below it and their apps.
     DeleteTeam {
         org: OrgId,
         team: TeamId,
@@ -1011,7 +1009,7 @@ impl SystemMachine {
                     if !member.is_some_and(|r| r >= OrgRole::Member) {
                         return Err("owner is not a member of the organization");
                     }
-                    // v1's CAN_CREATE_CONTEXT: admins and the team's leads hold it,
+                    // CREATE_APP: admins and the team's leads hold it,
                     // a member only when granted (not by default).
                     let team = match &app.access {
                         Access::Team { team } => Some(team.as_str()),
@@ -1023,8 +1021,7 @@ impl SystemMachine {
                 }
                 if let Access::Team { team } = &app.access {
                     let o = app.org.as_ref().and_then(|o| s.orgs.get(o));
-                    // A team's app is created by someone who writes the team
-                    // (v1: a context in a group its creator belongs to).
+                    // A team's app is created by someone who writes the team.
                     if !o.is_some_and(|o| o.writes_team(&app.owner, team)) {
                         return Err("not a member of that team");
                     }
@@ -1759,7 +1756,7 @@ impl SystemMachine {
                     return Err("team exists");
                 }
                 // An admin anywhere, a team's lead below it; a member with
-                // CREATE_TEAM at the top (v1: CAN_CREATE_SUBGROUP, root only).
+                // CREATE_TEAM at the top.
                 let allowed = match &parent {
                     Some(p) => o.teams.contains_key(p) && o.manages_team(&actor, p),
                     None => {
@@ -1770,7 +1767,7 @@ impl SystemMachine {
                 if !allowed {
                     return Err("not allowed to create this team");
                 }
-                // Its creator leads it (v1: the creator is the subgroup's admin).
+                // Its creator leads it.
                 let mut members = BTreeMap::new();
                 let _prev = members.insert(actor.clone(), true);
                 let _prev = o.teams.insert(
@@ -1993,7 +1990,7 @@ impl SystemMachine {
                 let _prev = t.members.remove(&account);
                 let _was = t.read_only.remove(&account);
                 let _caps = t.capabilities.remove(&account);
-                // A removal, and a leave too (v1's `MemberLeft`), keeps them from
+                // A removal, and a leave too, keeps them from
                 // coming back by inheritance: an open team would otherwise put a
                 // leaver straight back, and a read-only leaver would shed the
                 // role. They return only when a lead re-adds them or an invite
@@ -2008,7 +2005,7 @@ impl SystemMachine {
             } => {
                 let o = s.orgs.get(&invite.org).ok_or("no such organization")?;
                 let role = o.role(&actor).ok_or("not a member")?;
-                // v1's CAN_INVITE_MEMBERS: below admin, the capability for the
+                // INVITE_MEMBERS: below admin, the capability for the
                 // organization (an invite naming no team) or for each team named
                 // (a team's leads hold it there).
                 let may_invite = if invite.teams.is_empty() {
@@ -2161,7 +2158,7 @@ mod tests {
         }
     }
 
-    /// v1's `MemberLeft`: leaving an open team sticks. Inheritance would put the
+    /// Leaving an open team sticks. Inheritance would put the
     /// leaver straight back, so leaving would change nothing; they come back
     /// only by an explicit act, a lead re-adding them, never by themselves.
     #[test]
@@ -2213,7 +2210,7 @@ mod tests {
         assert!(reaches(&m), "a lead re-adds them");
     }
 
-    /// v1's `MANAGE_APPLICATION`: in an organization, an admin or a member
+    /// `MANAGE_APPLICATION`: in an organization, an admin or a member
     /// holding the capability (org-wide, or on the app's team) upgrades its
     /// apps and approves its outbound hosts, as the org owner does. A personal
     /// app stays its owner's, and a team-only grant reaches only that team.

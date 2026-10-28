@@ -34,7 +34,7 @@ and `zebrafish` in five.
 ## What changed since v1
 
 v1 kept each context's index in its node's RocksDB (`RocksDirectory`, a chunk
-cache, a dirty log replayed by an indexer). Release-v2 keeps it in memory and
+cache, a dirty log replayed by an indexer). The node keeps it in memory and
 rebuilds it from state on first use after a restart, so the store-backed
 directory, the column compaction and the crash-replay section are gone with it.
 The v1 numbers, and the end-to-end ones measured through v1's

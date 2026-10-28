@@ -1639,7 +1639,7 @@ async fn unknown_methods_and_init_are_refused_by_the_node() {
 }
 
 /// Upgrades switch the bundle, code only; a named migration is refused (D38).
-/// The upgrade route is release-v2-parity's: a passkey assertion over the exact
+/// The upgrade route is the node's: a passkey assertion over the exact
 /// upgrade (412 first), and a refusal answered `422 UPGRADE_FAILED` with the
 /// leader's answer in its details.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1991,8 +1991,8 @@ fn running_bundle(c: &Cluster, i: usize, app: &str) -> Option<String> {
         .read_local(|m, _| m.state.bundle.clone())
 }
 
-/// C1 (Ruling 36) on release-v2-parity (Xabi's decision: keep parity's refusal of every
-/// `__` method). Proto routed `__upgrade` sent through `/intents` to the upgrade path;
+/// C1 (Ruling 36; Xabi's decision: keep the node's refusal of every
+/// `__` method). The spec routed `__upgrade` sent through `/intents` to the upgrade path;
 /// here `/intents` and `/views` refuse every `__` method (`400 RESERVED_METHOD`) before
 /// the app's executor is looked at, so a component's bundle is never switched by naming
 /// one, by anyone, its owner included; upgrades take `POST /apps/{app}/upgrade`.
@@ -2252,7 +2252,7 @@ async fn concurrent_first_uses_of_a_bundle_prepare_it_once() {
     assert_eq!(node.prepares() - before, 1, "prepared more than once");
 }
 
-/// C1 on release-v2-parity's upgrade path (Xabi's decision: keep parity's check). Who
+/// C1 on the node's upgrade path (Xabi's decision: keep the node's check). Who
 /// may upgrade is judged where the system log applies `UpgradeApp`, on every replica
 /// (`SystemState::may_upgrade`: the owner, or `MANAGE_APPLICATION` in the app's
 /// organization), and by the upgrade route before anything runs. Neither another

@@ -1442,7 +1442,7 @@ struct CreateAppBody {
     /// Arguments for the app's `init`, as JSON.
     #[serde(default)]
     init_args: Value,
-    /// The instance's metadata (v1's context metadata).
+    /// The instance's metadata.
     #[serde(default)]
     metadata: Value,
 }
@@ -1752,7 +1752,7 @@ async fn gate(
         });
     }
     // A read-only row refuses what writes: a blob upload here, a call that
-    // would write at commit (`Node::call_local`), as v1 discarded its writes.
+    // would write at commit (`Node::call_local`); v1 discarded such writes.
     if write && method == "__blob" && read_only_in(node, app, account).await {
         return Err(ApiError::forbidden("read-only in this team"));
     }
@@ -1994,7 +1994,7 @@ async fn component_intents(
         .get(&body.method)
         .cloned();
     let caller = p.caller.clone();
-    // A declared view runs as one, whichever way it is invoked (v1's rule): it
+    // A declared view runs as one, whichever way it is invoked: it
     // reads the latest state and writes nothing.
     if method
         .as_ref()
@@ -2068,7 +2068,7 @@ async fn intents(
     if app.executor == crate::types::Executor::Component {
         return component_intents(&node, &app, p, body).await;
     }
-    // A declared view runs as one, whichever way it is invoked (v1's rule): it
+    // A declared view runs as one, whichever way it is invoked: it
     // reads the latest state, writes nothing, and may search.
     if node.facts(&app.bundle).await.views.contains(&body.method) {
         let a = node
@@ -2330,7 +2330,7 @@ struct PresenceBody {
     state: Option<String>,
 }
 
-/// Publish the caller's presence in an app (v1's `presence-intents`): anyone
+/// Publish the caller's presence in an app (`presence-intents`): anyone
 /// who reaches the app, one entry per device (the session's passkey, or the
 /// API key). Re-send the same `seq` and state as a heartbeat.
 async fn presence_publish(
@@ -2452,7 +2452,7 @@ async fn app_upgrade(
     let account = p.account()?;
     // Who may upgrade is the system log's rule (`UpgradeApp`); asked first, so
     // a refused or failed upgrade records nothing. An upgrade is the app's
-    // owner's decision, or, for an org app, of whoever holds v1's
+    // owner's decision, or, for an org app, of whoever holds
     // `MANAGE_APPLICATION` there (`SystemState::manages_apps`), each with
     // their own passkey: new code reads the app's data.
     let app = node.app(&app_id).await?;
@@ -2843,7 +2843,7 @@ async fn ops_org_upgrade(
     start_run(node, org, body, apps, who).await
 }
 
-/// An organization-wide upgrade's progress (v1's upgrade and cascade status).
+/// An organization-wide upgrade's progress, cascade included.
 async fn org_upgrade_status(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -2861,7 +2861,7 @@ async fn org_upgrade_status(
 }
 
 /// Run an organization-wide upgrade again for the apps that failed, under the
-/// same terms (v1's retry), as a new run.
+/// same terms, as a new run.
 async fn org_upgrade_retry(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -2931,7 +2931,7 @@ struct AliasBody {
     app: String,
 }
 
-/// Name an app for this account (v1's aliases).
+/// Name an app for this account (an alias).
 async fn alias_set(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -3086,7 +3086,7 @@ struct TransferBody {
     confirm: Option<ConfirmBody>,
 }
 
-/// Hand an app to another account (v1's context ownership transfer): the
+/// Hand an app to another account: the
 /// owner's, with a passkey assertion over this transfer (412 first). Who then
 /// upgrades the app, and so which code reads its data, is the new owner's.
 async fn app_transfer(
@@ -3217,7 +3217,7 @@ struct PasskeyLabelBody {
     label: String,
 }
 
-/// Name one of the caller's passkeys (v1's device label).
+/// Name one of the caller's passkeys (a device label).
 async fn passkey_label(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -3648,7 +3648,7 @@ async fn internal_blob_get(
     Ok(Json(json!({ "wasm": calimero_log::Bytes(wasm) })))
 }
 
-/// A blob id as a client gives it: base58 (what apps print, v1's `BlobId`) or hex.
+/// A blob id as a client gives it: base58 (what apps print, `BlobId`) or hex.
 fn parse_blob_id(id: &str) -> Result<[u8; 32], ApiError> {
     if let Ok(raw) = hex::decode(id) {
         if let Ok(b) = <[u8; 32]>::try_from(raw.as_slice()) {
@@ -3756,7 +3756,7 @@ fn manages_app(node: &Node, app: &crate::types::AppRecord, account: Option<&str>
             .is_some_and(|o| node.sys(|s| s.is_org_admin(o, a)))
 }
 
-/// The app's blobs (v1's blob list).
+/// The app's blobs.
 async fn blob_list(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -3773,7 +3773,7 @@ async fn blob_list(
     })))
 }
 
-/// One blob's size (v1's blob info); 404 if the app has no such blob.
+/// One blob's size; 404 if the app has no such blob.
 async fn blob_info(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -3829,7 +3829,7 @@ async fn blob_delete(
     Ok(Json(json!({ "index": a.index })))
 }
 
-/// What the app's storage holds (v1's context storage): keys, bytes, blobs.
+/// What the app's storage holds: keys, bytes, blobs.
 async fn app_storage(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -3847,7 +3847,7 @@ async fn app_storage(
     })))
 }
 
-/// The ABI the app's bundle embeds (v1's application ABI); `null` for none.
+/// The ABI the app's bundle embeds; `null` for none.
 async fn app_abi(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -3869,7 +3869,7 @@ async fn app_abi(
     Ok(Json(json!({ "bundle": app.bundle, "abi": abi })))
 }
 
-/// What the caller's account uses, against the cluster's quotas (v1's usage).
+/// What the caller's account uses, against the cluster's quotas.
 async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let account = signed_in(&node, &headers).await?.account()?;
     Ok(Json(node.sys(|s| {
@@ -4065,7 +4065,7 @@ fn operator(node: &Node, headers: &HeaderMap) -> Result<(), ApiError> {
     }
 }
 
-/// Prometheus metrics (v1's `/metrics`), behind the operator token: counts,
+/// Prometheus metrics, behind the operator token: counts,
 /// this node's groups and its streams. Never names, state or credentials.
 async fn ops_metrics(
     State(node): State<Arc<Node>>,

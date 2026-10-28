@@ -1,4 +1,4 @@
-//! App frontends, served from each package's own origin (v1's `app_host`):
+//! App frontends, served from each package's own origin:
 //! `{label}.{apps_domain}`, where the label is the package's (52 lowercase
 //! base32 characters). The files are the release's own `.mpk` frontend,
 //! fetched like its WASM and verified against the publisher's signature

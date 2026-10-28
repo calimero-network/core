@@ -1008,7 +1008,7 @@ mod tests {
 
     /// D74 on a component: a `node:` key is honoured for 10 minutes of entry time, a
     /// caller's own key for 24 hours, judged by the newest applied entry's timestamp
-    /// (with the per-class floors at zero, as for parity's own expiry test).
+    /// (with the per-class floors at zero).
     #[test]
     fn idempotency_records_are_kept_by_time_class() {
         const MIN: u64 = 60 * 1000;

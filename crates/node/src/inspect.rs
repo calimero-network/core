@@ -1,5 +1,5 @@
-//! What a stopped node's data directory holds (`merod inspect`, v1's
-//! `merodb`), read offline. Without the storage key: the raw layout (sizes
+//! What a stopped node's data directory holds (`merod inspect`),
+//! read offline. Without the storage key: the raw layout (sizes
 //! are sealed sizes). With it: each group's metadata (vote, applied index,
 //! membership) too. The store is opened for writing, so stop the node first.
 

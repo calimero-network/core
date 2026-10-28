@@ -13,8 +13,8 @@ pub fn tee_key(storage_key: &[u8; 32], app_id: &str) -> [u8; 32] {
     tag(storage_key, &format!("calimero.tee.v1|{app_id}"))
 }
 
-/// The key that stands for `account`'s devices in `app`: v1 sealed a member's
-/// share to each of their devices; a cloud member reads through the node,
+/// The key that stands for `account`'s devices in `app`: a member's share is
+/// sealed to it, not to each device; the member reads through the node,
 /// which opens it only in that member's own runs.
 #[must_use]
 pub fn member_key(storage_key: &[u8; 32], app_id: &str, account: &str) -> [u8; 32] {

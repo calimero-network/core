@@ -1,6 +1,6 @@
 [package]
 name = "calimero-client"
-description = "Client for the Calimero cloud (release-v2): attestation, sealed channel, passkeys, calls"
+description = "Client for Calimero nodes: attestation, sealed channel, passkeys, calls"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

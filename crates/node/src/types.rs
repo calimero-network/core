@@ -89,7 +89,7 @@ pub enum Access {
     /// Anyone, signed in or not.
     Public,
     /// Members of a team of the app's organization: its direct members, and,
-    /// for an open team, everyone who reaches its parent (v1's subgroup).
+    /// for an open team, everyone who reaches its parent.
     Team { team: TeamId },
 }
 
@@ -128,11 +128,11 @@ pub struct AppRecord {
     /// The arguments `init` ran with (JSON; `null` for none).
     #[serde(default)]
     pub init_args: serde_json::Value,
-    /// The app instance's metadata (v1's context metadata): a title, an icon.
+    /// The app instance's metadata: a title, an icon.
     /// Set by its owner or an admin of its organization.
     #[serde(default)]
     pub metadata: serde_json::Value,
-    /// The last upgrade tried on this app, done or failed (v1's upgrade status).
+    /// The last upgrade tried on this app, done or failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_upgrade: Option<UpgradeRecord>,
 }
@@ -186,7 +186,7 @@ pub struct UpgradeRecord {
     pub run: Option<String>,
 }
 
-/// An upgrade of many apps at once (v1's group upgrade, with cascade): every
+/// An upgrade of many apps at once, with cascade: every
 /// app of the organization (or of a team, and with `cascade` the teams below
 /// it) that runs `package`, to `version`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,10 +228,10 @@ pub struct Account {
     #[serde(default)]
     pub outbound_approvals: std::collections::BTreeMap<String, OutboundApproval>,
     /// A name for each of the account's passkeys (its devices), by credential
-    /// id: v1's device label.
+    /// id: a device label.
     #[serde(default)]
     pub passkey_labels: std::collections::BTreeMap<String, String>,
-    /// The account's own names for apps (v1's aliases): alias -> app id.
+    /// The account's own names for apps (aliases): alias -> app id.
     #[serde(default)]
     pub aliases: std::collections::BTreeMap<String, AppId>,
 }
@@ -281,7 +281,7 @@ pub enum OrgRole {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TeamJoin {
-    /// Open (v1's `Open` subgroup): everyone who reaches the parent team (or,
+    /// Open: everyone who reaches the parent team (or,
     /// at the top, the organization) is a member too, unless an admin denied
     /// them `caps::JOIN_OPEN_TEAMS`.
     Everyone,
@@ -308,11 +308,11 @@ pub mod caps {
     pub const DEFAULT: u32 = JOIN_OPEN_TEAMS;
 }
 
-/// A member's standing in one team (a direct row; v1's group member role).
+/// A member's standing in one team (a direct row).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TeamRole {
-    /// Manages the team and the teams below it (v1's group admin).
+    /// Manages the team and the teams below it.
     Lead,
     Member,
     /// Reads, never writes, the team's apps.
@@ -334,7 +334,7 @@ pub struct Team {
     /// account -> is lead
     #[serde(default)]
     pub members: std::collections::BTreeMap<AccountId, bool>,
-    /// Members whose row is read-only (v1's `ReadOnly` role): they write none
+    /// Members whose row is read-only: they write none
     /// of the team's apps. Only a direct row counts.
     #[serde(default)]
     pub read_only: std::collections::BTreeSet<AccountId>,
@@ -345,7 +345,7 @@ pub struct Team {
     #[serde(default)]
     pub metadata: serde_json::Value,
     /// Members a manager removed: they do not come back by inheritance, only
-    /// when someone adds them again (v1's removal from an `Open` subgroup).
+    /// when someone adds them again.
     #[serde(default)]
     pub removed: std::collections::BTreeSet<AccountId>,
 }
@@ -371,11 +371,11 @@ pub struct Org {
     /// an app's run reaches only a prefix its manifest declares and this holds.
     #[serde(default)]
     pub outbound_approvals: std::collections::BTreeMap<String, OutboundApproval>,
-    /// The organization's own metadata (v1's group metadata), for its apps
+    /// The organization's own metadata, for its apps
     /// and frontends to read: a name's display form, a logo, settings.
     #[serde(default)]
     pub metadata: serde_json::Value,
-    /// Per-member metadata (v1's member metadata): a display name, a role
+    /// Per-member metadata: a display name, a role
     /// title. Set by the member, or by an admin.
     #[serde(default)]
     pub member_metadata: std::collections::BTreeMap<AccountId, serde_json::Value>,

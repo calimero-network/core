@@ -1,6 +1,6 @@
 //! `meroctl`: the command line for Calimero nodes (`merod`).
 //!
-//! v1's command tree over the release-v2 API. Every request goes through the
+//! v1's command tree over the node's API. Every request goes through the
 //! attested, sealed client the SDKs use (`calimero-client`): the node's
 //! quote is checked before anything is sent. Where v1 had an "application"
 //! this has a signed package (`app`); a context is an app instance

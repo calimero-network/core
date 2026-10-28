@@ -1,6 +1,6 @@
 # merod
 
-The Calimero node binary: v1's command line over the release-v2 node
+The Calimero node binary: v1's command line over the node
 (`calimero-node`, which holds everything the node does). This crate only
 turns a configuration into `calimero_node::Config` and calls `run`.
 

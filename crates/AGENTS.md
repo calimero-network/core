@@ -1,6 +1,6 @@
 # Crates - AI Agent Guidance
 
-The workspace's library and binary crates on release-v2. Each has its own
+The workspace's library and binary crates. Each has its own
 `AGENTS.md` (with a `CLAUDE.md` symlink beside it) where one exists; read it
 before working in the crate. How they connect:
 [architecture](../docs/src/content/docs/contribute/architecture.mdx); the same
@@ -32,7 +32,7 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 - [bundle](bundle/AGENTS.md) (`calimero-bundle`) - the `.mpk` manifest, JCS canonicalization, Ed25519 signatures.
 - [app-downloader](app-downloader/AGENTS.md) (`calimero-app-downloader`) - fetching signed releases from a package registry.
 
-## SDK and runtime (unchanged from v1; the runtime is being replaced)
+## SDK and runtimes (SDK 0.12 apps on wasmer, `calimero:app` components on wasmtime)
 
 - [sdk](sdk/AGENTS.md) (`calimero-sdk`, with `sdk/macros`, `calimero-sdk-macros`) - the app SDK and `TestHost`.
 - [storage](storage/AGENTS.md) (`calimero-storage`) - CRDT collections and the storage interface; `converge` harness.
@@ -41,6 +41,12 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 - [wasm-abi](wasm-abi/AGENTS.md) (`calimero-wasm-abi`) - the `wasm-abi/1` schema and the embedded section the node reads.
 - [prelude](prelude/AGENTS.md) (`calimero-prelude`) - root storage key derivation shared by SDK and storage.
 - [runtime](runtime/AGENTS.md) (`calimero-runtime`) - the wasmer runtime, metering and host functions.
+- [app-wit](app-wit/AGENTS.md) (`calimero-app-wit`) - the `calimero:app` WIT world.
+- [app-host](app-host/AGENTS.md) (`calimero-app-host`) - the host core of `calimero:app`.
+- [app-engine-wasmtime](app-engine-wasmtime/AGENTS.md) (`calimero-app-engine-wasmtime`) - the wasmtime engine for `calimero:app`.
+- [app-sdk](app-sdk/AGENTS.md) (`calimero-app-sdk`) - the Rust app SDK runtime for components.
+- [app-sdk-macros](app-sdk-macros/AGENTS.md) (`calimero-app-sdk-macros`) - the `app` attributes.
+- [app-build](app-build/AGENTS.md) (`calimero-app-build`) - Rust guest to `calimero:app` component.
 
 ## Shared types
 
@@ -50,7 +56,7 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 ## Runtime-only v1 crates
 
 Kept only because `calimero-runtime` still links them; nothing in the
-release-v2 node uses them directly. Do not build on them.
+node uses them directly. Do not build on them.
 
 - `node/primitives` (`calimero-node-primitives`) - the runtime's `NodeClient`; brings in the crates below.
 - `context/config` (`calimero-context-config`) - types the runtime and `governance-types` name.

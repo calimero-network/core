@@ -1180,8 +1180,8 @@ impl Node {
     }
 
     /// The app's TEE key, public half, as `env::tee_sealing_key` reads it:
-    /// what a value only the app's TEE may read is sealed to (v1's namespace
-    /// TEE key; here the cluster is every app's TEE).
+    /// what a value only the app's TEE may read is sealed to (the
+    /// cluster is every app's TEE).
     fn tee_sealing_key(&self, app_id: &str) -> calimero_runtime::logic::SealingKeyResolver {
         let tee = calimero_primitives::identity::PrivateKey::from(crate::backup::tee_key(
             &self.config.storage_key,
@@ -1760,7 +1760,7 @@ impl Node {
         // The bundle the migration is planned from; the build checks it is
         // still the state's, as a call's does.
         let current = g.read_local(|m, _| m.state.bundle.clone());
-        // Without a named migration, plan it from the two ABIs, as v1 does.
+        // Without a named migration, plan it from the two ABIs.
         if migrate.is_none() {
             if let Some(current) = current.clone().filter(|c| *c != bundle) {
                 let (from, to) = (
@@ -1824,7 +1824,7 @@ impl Node {
     }
 
     /// Why an `xcall` from app `origin` may not run `method` of app `target`,
-    /// if it may not (v1's rules): the method must be an `#[app::xcall]` entry
+    /// if it may not: the method must be an `#[app::xcall]` entry
     /// point, `from_same_app` admits only the same bundle, and the two apps
     /// must share their organization (or, outside one, their owner).
     fn xcall_refusal(

@@ -1,4 +1,4 @@
-//! The Calimero cloud node (release-v2).
+//! The Calimero node.
 //!
 //! One process inside a TDX VM. It hosts the cluster's system group and the
 //! app groups placed on it, runs app calls on each group's leader, and serves

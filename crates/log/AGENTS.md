@@ -1,6 +1,6 @@
 # calimero-log
 
-Replicated log for the cloud-only (release-v2) architecture: one Raft group per
+Replicated log for the node: one Raft group per
 app instance plus a system group per cluster, on [openraft](https://docs.rs/openraft) 0.9.
 
 - `Engine` hosts every group of one node; `Group<M>` is one group with state machine `M: Machine`.
@@ -19,7 +19,7 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   term this node leads in, before its first proposal there, it waits (up to
   `CATCH_UP`, then `Unavailable`) until it has applied its whole log: a leader
   restored into its old term (a restart, no election) can hold entries it
-  appended past the commit index it saved, which is not synced. The cloud node's
+  appended past the commit index it saved, which is not synced. The node's
   component apps take their unique ids (D52, `term.seq.n`) from it.
 - Test hooks (feature `testing`, never in a release build):
   `Engine::lose_unsynced_writes(group)` drops a group's commit index and applied
@@ -29,7 +29,7 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   restarted leader catches up. Used by the node's
   `unique_ids_survive_a_crash_before_the_commit_index_reaches_the_disk`.
 - Storage (`store.rs`): one RocksDB per node (`<data-dir>/store`), opened with
-  `tuning`'s column and table options (moved from v1's `calimero-store-rocksdb`) (one bounded block cache,
+  `tuning`'s column and table options (one bounded block cache,
   `BLOCK_CACHE_BYTES`). Column families `log`, `meta`, `state`, `blobs`. Every value
   is sealed with AES-256-GCM under the storage key, bound to its column, group and
   key. A machine can hide a key (`StateTx::put_hidden`): the row is keyed by an HMAC

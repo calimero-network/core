@@ -1,5 +1,5 @@
 //! Rooms, a `calimero:app` component, installed as a signed `.mpk` the way
-//! release-v2-parity installs packages: uploaded (`POST /packages`) and from the
+//! the node installs packages: uploaded (`POST /packages`) and from the
 //! operator's registry (`POST /packages/install`), then created from its release.
 //! A package whose WASM is a component runs on the component executor like a raw
 //! component upload does.

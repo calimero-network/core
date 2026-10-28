@@ -1,7 +1,7 @@
 //! Durable, encrypted storage for every group's log, metadata and state.
 //!
 //! One RocksDB database per node holds all groups, opened with the column and
-//! table options `calimero-store` gives v1's store (compression, bloom filters,
+//! table options `calimero-store` uses (compression, bloom filters,
 //! one bounded block cache), in four column families:
 //!
 //! | Column | Key | Holds |
@@ -585,7 +585,7 @@ impl Db {
 
     /// What the store holds, from the raw keys alone (no row is opened):
     /// per group, its log entries, state rows and metadata names, and the
-    /// blobs. v1's `merodb` read the same from its own columns.
+    /// blobs.
     pub fn summary(&self) -> eyre::Result<StoreSummary> {
         let mut out = StoreSummary::default();
         let group_of = |k: &[u8]| -> Option<GroupId> {

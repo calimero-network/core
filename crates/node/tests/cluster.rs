@@ -1260,7 +1260,7 @@ async fn views_search_the_apps_own_index_as_it_changes() {
         .await
         .unwrap();
     assert_eq!(hits(&called.result), 2, "{}", called.result);
-    // A write may not search (v1 rule: search is for views).
+    // A write may not search (search is for views).
     assert!(alice
         .call(
             &chat,
@@ -1279,10 +1279,10 @@ async fn set(cl: &Client, app: &str, v: &str) -> Result<(), Box<calimero_client:
         .map_err(Box::new)
 }
 
-/// v1's member capabilities: a member who is not an admin creates apps in the
+/// Member capabilities: a member who is not an admin creates apps in the
 /// organization only with `CREATE_APP`, invites only with `INVITE_MEMBERS`,
 /// and upgrades another's org app only with `MANAGE_APPLICATION` (none by
-/// default, as in v1), with their own passkey.
+/// default), with their own passkey.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_member_needs_the_capability_to_create_apps_or_invite() {
     const CREATE_APP: u32 = 1 << 0;
@@ -2394,7 +2394,7 @@ async fn probe(cl: &Client, app: &str) -> Value {
     .result
 }
 
-/// v1's outbound gate, with the owner's approval in place of the namespace
+/// The outbound gate, with the owner's approval in place of v1's namespace
 /// admin's: a run reaches a declared prefix only once the app's owner
 /// approved it for the publisher, never on the operator's say; a view and
 /// another account's approval reach nothing; a replace revokes.
@@ -2565,8 +2565,8 @@ async fn the_nodes_own_commands_cannot_be_called_as_methods() {
 
 /// An upgrade that turns an identity-gated field (an `AuthoredMap`) into a
 /// plain one (an `UnorderedMap`) would strip every entry's authorship, so it
-/// is refused and the app stays where it was, as v1's identity-downgrade gate
-/// refused it (#2587; v1 workflow app-migration/22).
+/// is refused and the app stays where it was, by the identity-downgrade gate
+/// (#2587).
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_upgrade_that_strips_authorship_is_refused() {
     let c = Cluster::start(3).await;
@@ -2858,7 +2858,7 @@ async fn account_id(cl: &Client) -> String {
         .to_owned()
 }
 
-/// v1's group metadata, member metadata, context metadata, device labels and
+/// Org metadata, member metadata, app metadata, device labels and
 /// owner-delete: who may set each, what reads them back, and that deleting an
 /// organization takes its apps and invites, with the owner's passkey.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -2979,7 +2979,7 @@ async fn org_metadata_labels_and_deletion_work_like_v1() {
 
 // ---------------------------------------------------------------- blobs, storage
 
-/// v1's blob list, info and delete, context storage size, application ABI and
+/// Blob list, info and delete, app storage size, the app's ABI and
 /// usage. A deleted blob is the app's no longer; its bytes leave every node
 /// once no other app holds the same content, and never while one does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -3063,8 +3063,8 @@ async fn finished_run(cl: &Client, org: &str, run: &str) -> Value {
     panic!("upgrade run {run} never finished");
 }
 
-/// v1's group upgrade (with cascade), its status and retry, and each app's
-/// last upgrade; and v1's aliases.
+/// Org upgrade runs (with cascade), their status and retry, and each app's
+/// last upgrade; and aliases.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
     let c = Cluster::start_with(3, |cfg| cfg.allow_unsigned_bundles = true).await;
@@ -3227,7 +3227,7 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
 
 // ---------------------------------------------------------------- presence
 
-/// v1's ephemeral presence: members on different nodes see each other, live;
+/// Ephemeral presence: members on different nodes see each other, live;
 /// the newest seq wins and a retract shows them leaving; a heartbeat keeps an
 /// entry alive on every node and silence expires it everywhere. Nothing of it
 /// is in the app's log.
@@ -3324,7 +3324,7 @@ async fn presence_reaches_every_node_and_expires() {
 
 // ---------------------------------------------------------------- app frontends
 
-/// v1's app hosts: each package's frontend on its own origin, served from the
+/// App frontends: each package's frontend on its own origin, served from the
 /// release's verified `.mpk` under a strict CSP, with client routes and deep
 /// links; and a passkey session opened from that origin is bound to the
 /// package, reaching its apps and nothing else of the account.
@@ -3720,7 +3720,7 @@ async fn a_node_is_removed_once_no_app_keeps_a_replica_on_it() {
     assert_eq!(v.result, json!("1"));
 }
 
-/// v1's context ownership transfer: the owner hands an app to another account
+/// Ownership transfer: the owner hands an app to another account
 /// with a passkey assertion; the new owner then decides, the old one no longer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_owner_transfers_an_app_with_their_passkey() {
@@ -3824,7 +3824,7 @@ async fn metrics_can_be_scraped_on_their_own_listener() {
 
 // ---------------------------------------------------------------- inspection
 
-/// `merod inspect` (v1's `merodb`): a stopped node's data directory, read
+/// `merod inspect`: a stopped node's data directory, read
 /// offline. The raw layout without the key; with it, each group's metadata.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_stopped_nodes_store_can_be_inspected() {

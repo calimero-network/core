@@ -1,6 +1,6 @@
 # calimero-node (the inside of `merod`)
 
-The release-v2 cloud node: an attested TEE node that hosts the cluster's system
+The node: an attested TEE node that hosts the cluster's system
 group and the app groups placed on it. Design: the "Calimero Confidential Cloud"
 architecture spec. This crate is the library; the `merod` binary
 (`crates/merod`: `init`, `run`, `config`, `local`, `inspect`, `kms`) turns its
@@ -58,8 +58,8 @@ is its command line.
   A call whose arguments alone pass the cap is refused where it arrives
   (`413 TOO_LARGE`), never forwarded to the leader first (regression:
   `a_write_too_large_for_the_log_is_refused_at_once_on_every_node`).
-- **Packages** (`packages.rs`, `system::PackageRecord`): signed `.mpk` releases, v1's
-  install model. `POST /packages/install { package, version }` fetches from the
+- **Packages** (`packages.rs`, `system::PackageRecord`): signed `.mpk` releases.
+  `POST /packages/install { package, version }` fetches from the
   operator's registry (`--registry-url`, `calimero-app-downloader`'s `HttpRegistry`);
   `POST /packages` takes an uploaded file. Before `InstallPackage` is logged the
   node checks the publisher signature and every artifact digest
@@ -102,7 +102,7 @@ is its command line.
   are the app's owner's, or, for an org app, of whoever holds `MANAGE_APPLICATION`
   on its team or org-wide (`SystemState::manages_apps`), with their own passkey
   assertion over the exact upgrade (`consent` on `UpgradeApp`).
-- **Outbound HTTPS** (`calimero-outbound`, v1's gate): `Config::outbound` from
+- **Outbound HTTPS** (`calimero-outbound`): `Config::outbound` from
   `--settings` (`[outbound]`). `Node::outbound_for` hands a client only to
   `call_local`'s runs (calls, follow-ups, timers; not a read-only member's), for
   a bundle that is a signed release declaring prefixes; identity = (package,
@@ -121,7 +121,7 @@ is its command line.
 - **The host's key space** (`app::RESERVED`, `\0calimero.*`): private spaces, writer
   sets, blob marks. App code's overlay answers nothing there and a run that tries is
   refused; the host writes with `Overlay::set_host` and reads with
-  `Storage::host_get`. Rotations follow v1's host rules (`rotation_refusal`).
+  `Storage::host_get`. Rotations are judged by `rotation_refusal`.
 - **Access is judged fresh**: every request carrying a credential, every gated request and every client call's leader
   read the system state through `sys_fresh` (a read index), so a removal committed
   elsewhere holds before the next request.
@@ -171,18 +171,17 @@ is its command line.
   move to `spawn_blocking`; it goes through `block_in_place`, which hands the
   worker's other tasks (Raft heartbeats, the system group, HTTP) to another
   worker meanwhile. Regression: `a_long_run_does_not_hold_an_async_worker`.
-  Xabi's app-runtime branch has the same helper under the same name.
-- **Upgrades plan their migration from the ABIs** (`services::plan_upgrade`, v1's
-  `plan_upgrade`): without a named `migrate`, an upgrade one state version up runs
+- **Upgrades plan their migration from the ABIs** (`services::plan_upgrade`):
+  without a named `migrate`, an upgrade one state version up runs
   the target's `#[app::migrate]` edge; a downgrade, a jump or a missing edge is
   refused, and so is a target whose ABI strips authorship from a field
-  (`calimero_wasm_abi::downgrade::identity_downgrades`, v1's L1 gate; regression:
-  `an_upgrade_that_strips_authorship_is_refused`). Bundles without an ABI upgrade code-only. The migration runs as v1's
-  does (`Executor::migrate`): the export returns the new root state, the app's
+  (`calimero_wasm_abi::downgrade::identity_downgrades`, the L1 gate; regression:
+  `an_upgrade_that_strips_authorship_is_refused`). Bundles without an ABI upgrade code-only. In a migration
+  (`Executor::migrate`) the export returns the new root state, the app's
   `__calimero_migration_check` must pass, and the host writes the root entry
   (`write_root_state`). The directory records the new bundle only once the
   upgrade succeeded.
-- **Upgrade runs** (v1's group upgrade, cascade, status, retry): `POST
+- **Upgrade runs** (cascade, status, retry): `POST
   /orgs/{org}/upgrade { package, version, team?, cascade? }` (the org owner, one
   passkey assertion for the run) or `POST /ops/orgs/{org}/upgrade` (where the
   operator holds app upgrades) records a `types::UpgradeRun` in the org
@@ -191,9 +190,9 @@ is its command line.
   the run and on `AppRecord::last_upgrade`. `GET /orgs/{org}/upgrades/{run}`
   follows it; `.../retry` runs the failed apps again as a new run. A release
   missing from the cluster is installed from the registry first (owner runs).
-- **Aliases** (v1's): `Account::aliases`, `PUT/GET/DELETE /auth/aliases/{alias}`
+- **Aliases**: `Account::aliases`, `PUT/GET/DELETE /auth/aliases/{alias}`
   and `GET /auth/aliases`; an alias names only an app its account reaches.
-- **Metadata and org lifecycle** (v1's group/member/context metadata, device
+- **Metadata and org lifecycle** (org/member/app metadata, device
   labels, owner-delete): `Org::metadata` (admins or `MANAGE_METADATA`),
   `Org::member_metadata` (the member or an admin), `AppRecord::metadata` (owner
   or org admin), each at most `MAX_METADATA_BYTES` (16 KiB, team metadata too);
@@ -207,14 +206,14 @@ is its command line.
 - **Init**: `POST /apps` takes `initArgs` (JSON) for the app's `init`, kept on the
   `AppRecord`; a failed init answers `422 INIT_FAILED` (`AppState::init_error`).
 - **Identity inside the app**: `env::account_id` and `env::executor_id` are both the
-  caller's account (no devices in release-v2); the context id is `SHA-256(app_id)`.
+  caller's account (no device ids); the context id is `SHA-256(app_id)`.
   `env::caller_org` is the caller's role and teams in the app's organization
   (`app::caller_org`, passed through `Module::run_cloud`).
 - **Private storage** (`env::private_storage_*`): v1 kept it on the member's node,
   unsynced. Here it is the caller's own space in the app's state (`app::private_prefix`):
   replicated and sealed, but a run is handed only its caller's space.
 - **Shared-storage writers**: a cell's rotated writer set is kept in the app's state
-  (`app::writers_key`), written with the run that rotated it; v1 published governance ops.
+  (`app::writers_key`), written with the run that rotated it.
 - **Ids people type** (accounts, apps, organizations, teams, upgrade runs, API
   keys) are base64url that never starts with `-` (`api::typed_id`), which
   meroctl would read as a flag. Regression: `a_typed_id_never_starts_with_a_dash`.
@@ -227,7 +226,7 @@ is its command line.
   onto its outcome (never through the host), the leader stores them before
   proposing and spreads them after the entry commits; a run opens only blobs its
   app's state marks. An upload commits `AppCmd::Blob`. Ids are base58 (what apps
-  print, v1's `BlobId`) or hex in the API. `GET /apps/{app}/blobs[/{id}/info]`
+  print, `BlobId`) or hex in the API. `GET /apps/{app}/blobs[/{id}/info]`
   list them from a scan of the app's state (`AppMachine::storage_stats`, on a
   replica). `DELETE /apps/{app}/blobs/{id}` (owner or org admin) commits
   `AppCmd::BlobForget`, then `Node::collect_blob` deletes the bytes on every
@@ -241,7 +240,7 @@ is its command line.
   reports both as `TOO_LARGE`. Regressions:
   `a_blob_too_large_to_reach_the_other_nodes_is_refused_up_front`,
   `an_upload_past_the_sealed_cap_is_answered_413`.
-- **App frontends** (`app_host.rs`, v1's app hosts): with `--apps-domain D`
+- **App frontends** (`app_host.rs`): with `--apps-domain D`
   (`merod local`: `localhost`), each package's frontend is at
   `{label}.D` (`app_host::label`, 52 base32 characters), from its release's
   `.mpk` (`Node::release_mpk`, verified before a byte is served, opened ones
@@ -254,19 +253,19 @@ is its command line.
   reads and writes, listings), `unbound`/`holder` refuse it credentials, API
   keys, approvals, upgrades, uninstalls and uploads, and it creates instances
   of its own package only. Its step-ups come from its own origin only.
-- **Presence** (`presence.rs`, v1's ephemeral awareness channel): in memory on
+- **Presence** (`presence.rs`, the ephemeral awareness channel): in memory on
   every node, never in a log. `POST /apps/{app}/presence { seq, state }` (anyone
   who reaches the app; one entry per account and device) applies it here and
   passes it to every other node (`internal/presence`); `GET .../presence` and
-  `GET .../presence/stream` (SSE: `snapshot`, then `presence` diffs). v1's rules:
+  `GET .../presence/stream` (SSE: `snapshot`, then `presence` diffs). Rules:
   newest seq wins, a retract is a tombstone, a heartbeat (same seq and state)
   refreshes and is passed on too, `PRESENCE_TTL_MS` (7 s) sweep each second,
   `MAX_AUTHORS_PER_APP` (512, the stalest evicted), 4 KiB of state.
-- **Inspection** (v1's context storage, application ABI, usage):
+- **Inspection**:
   `GET /apps/{app}/storage` (keys, bytes, blobs), `GET /apps/{app}/abi` (the
   bundle's embedded ABI), `GET /auth/usage` (the account's apps, bundle bytes,
   API keys, owned orgs, and the quotas).
-- **Search** (`services::Search`): v1's per-context tantivy indexes, in memory per
+- **Search** (`services::Search`): tantivy indexes, in memory per
   app and built from the app's `__calimero_search_*` exports. A view brings them
   up to the very state it reads first: from the entities entries touched
   (`Outcome::touched`, from the run's `StorageDelta`; kept for the last
@@ -276,7 +275,7 @@ is its command line.
   queued when it applies; the leader runs them (`Node::drive`, woken by `kick`)
   as entries that consume them (`Trigger::FollowUp`), or, for an xcall, calls
   the target with an idempotency key and then commits `AppCmd::Done`. A new
-  leader neither skips nor repeats one. v1's rules hold: only `#[app::handler]`
+  leader neither skips nor repeats one. Only `#[app::handler]`
   methods run for an event; an xcall reaches only `#[app::xcall]` entry points
   (`from_same_app`: the same bundle), only within the caller's organization
   (outside one: its owner), as `Caller::App` with `env::xcall_origin`; cascades
@@ -291,15 +290,15 @@ is its command line.
   their own runs open with it. ABI facts (timers, handlers, xcall entry
   points) come from the bundle's embedded ABI (`services::BundleFacts`), so
   apps are built with `cargo mero build`; a bundle without one gets none.
-- **Teams are v1's subgroups** (`types::Org`): nested (`parent`, moved with
+- **Teams** (`types::Org`): nested (`parent`, moved with
   `UpdateTeam`), open (`TeamJoin::Everyone`: whoever reaches the parent, the
   organization at the top, is a member, unless denied `caps::JOIN_OPEN_TEAMS`)
   or restricted (direct rows only). A direct row has a role (`TeamRole`: lead,
-  member, read-only) and capabilities (`caps`, v1's `MemberCapabilities` bits;
+  member, read-only) and capabilities (`caps`, `MemberCapabilities` bits;
   the organization keeps a default). An app deployed with `access: team` is
   reached by the team's members; a member whose direct row there is read-only
   runs calls, but one that would write is refused (`403`, `node::READ_ONLY`;
-  v1 discarded the writes). A team's creator leads it. Below admin, creating an app in the organization needs `caps::CREATE_APP` (on its team, or org-wide) and minting an invite `caps::INVITE_MEMBERS` (org-wide, or on each team it names); neither is in `caps::DEFAULT`, as in v1, and a team's leads hold both there. `caps::MANAGE_APPLICATION` (v1's) lets a member upgrade the org's apps (on the app's team, or org-wide), start org upgrade runs, and approve the org's outbound hosts (org-wide grants only); a personal app stays its owner's (`SystemState::manages_apps`; regressions: `a_member_needs_the_capability_to_create_apps_or_invite`, `manage_application_lets_a_member_upgrade_and_approve_outbound`). A member who left, or
+  v1 discarded the writes). A team's creator leads it. Below admin, creating an app in the organization needs `caps::CREATE_APP` (on its team, or org-wide) and minting an invite `caps::INVITE_MEMBERS` (org-wide, or on each team it names); neither is in `caps::DEFAULT`, and a team's leads hold both there. `caps::MANAGE_APPLICATION` lets a member upgrade the org's apps (on the app's team, or org-wide), start org upgrade runs, and approve the org's outbound hosts (org-wide grants only); a personal app stays its owner's (`SystemState::manages_apps`; regressions: `a_member_needs_the_capability_to_create_apps_or_invite`, `manage_application_lets_a_member_upgrade_and_approve_outbound`). A member who left, or
   whom a manager removed, does not come back by inheritance until a manager adds them again or an invite names the team (`Team::removed`; regression: `leaving_an_open_team_sticks_until_someone_lets_you_back_in`). Reads are filtered: a
   team one neither reaches nor manages is not listed (`GET /orgs/{org}`) and
   answers `404` (`GET /orgs/{org}/teams/{team}`). `DeleteTeam` takes the teams
@@ -318,7 +317,7 @@ is its command line.
   Concurrent callers share a round (`ReadRounds`): one that arrives while a
   round runs waits for the next one, never takes the one already under way.
 - **Declared views**: a call (`/intents`) of a method the ABI declares `#[app::view]`
-  runs as a strong view: it writes nothing and may search (v1's rule).
+  runs as a strong view: it writes nothing and may search.
 - **Browsers**: `config.origins` are the CORS origins too (`lib.rs`, outermost layer).
 - **Storage key** (`kms.rs`): K_r = HKDF(KMS key, cluster). A TDX node takes it from
   mero-kms only (`kms::key_source`: `--storage-key`/`--storage-key-file` need `--dev`),
@@ -345,7 +344,7 @@ is its command line.
 
 ## Component executor (`calimero:app` components, the v2 SDK)
 
-From the app-runtime prototype (spec `app-runtime-v0.14`), on this branch's log,
+Spec `app-runtime-v0.14`, on the node's log,
 API and system group. What differs from the wasmer path:
 
 - **Engine and host** (`node/component.rs`): one `WasmtimeEngine` per node
@@ -422,7 +421,7 @@ API and system group. What differs from the wasmer path:
   `internal/events`) and a call's answer check `SystemState::receives` when they
   send it, so a removed member stops receiving at once. A wasmer app's events have
   no audience and go out as before.
-- **Upgrades**: this branch's route and authority (`POST /apps/{app}/upgrade`,
+- **Upgrades**: the node's route and authority (`POST /apps/{app}/upgrade`,
   passkey consent, `UpgradeApp`); at the leader a component upgrades code-only
   (`componentUpgrade`) and a named `migrate` is refused `MigrationsNotSupported`.
 - **Identity a component sees** (`component::SysDirectory`): its org, owner, the
@@ -433,14 +432,14 @@ API and system group. What differs from the wasmer path:
   `/apps/{app}/abi` answers the ABI the component embeds (`calimero:abi`);
   `/apps/{app}/storage` counts its keys and bytes; the blob routes answer
   `409 NOT_SUPPORTED` (R8). The host refuses blobs, search, xcall, event handlers,
-  TEE runs and outbound HTTPS to a component, as the prototype did; a wasmer app's
+  TEE runs and outbound HTTPS to a component; a wasmer app's
   xcall into a component is refused (`node::COMPONENT_REFUSES`).
-- **Not here**: proto's `__upgrade` through `/intents` (Ruling 36; this branch refuses
+- **Not here**: the spec's `__upgrade` through `/intents` (Ruling 36; the node refuses
   every `__` method there) and the leader's own re-check of upgrade authority
-  (Ruling 45; this branch judges it in the API and the system log); their tests are
+  (Ruling 45; the node judges it in the API and the system log); their tests are
   `#[ignore]`d with the reason.
 
-## Not done yet (prototype)
+## Not done yet
 
 rollback counter (proposed: a mero-kms epoch, restored nodes rejoin as learners),
 keys per app from mero-kms, placement across zones, snapshot restore into a
@@ -468,5 +467,5 @@ python3 -I crates/node/tests/fault/rooms_fault.py --iterations 200 --seed 1
 cargo bench -p calimero-node --bench cluster_throughput -- --secs 15 --out cluster.json
 cargo run -p merod -- --help
 cargo run -p merod -- local   # dev cluster: 3 nodes on :2501-2503 (`local.rs`)
-cargo run -p merod -- --node n1 inspect [--storage-key-file F]   # a stopped node's store (v1's merodb; `inspect.rs`)
+cargo run -p merod -- --node n1 inspect [--storage-key-file F]   # a stopped node's store (`inspect.rs`)
 ```

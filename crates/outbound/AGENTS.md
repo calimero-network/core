@@ -1,9 +1,7 @@
 # calimero-outbound
 
 Outbound HTTPS requests from a run, and the secrets they may carry: the
-`OutboundHost` the runtime's `http_request` host function calls. Ported from
-v1's `calimero-context::outbound` so merod does not depend on the v1 context
-crate.
+`OutboundHost` the runtime's `http_request` host function calls.
 
 A request is made only when every gate holds:
 

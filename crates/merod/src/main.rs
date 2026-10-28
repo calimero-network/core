@@ -1,5 +1,5 @@
 //! `merod`: the Calimero node. v1's command line (`--home`, `--node`, `init`,
-//! `run`, `config`, `kms`) over the release-v2 node (`calimero-node`):
+//! `run`, `config`, `kms`) over the node (`calimero-node`):
 //! attested, one Raft log per app.
 
 use std::collections::BTreeMap;

@@ -9,7 +9,7 @@
 //! the fleet installed, then verifies it again before running any of it.
 //!
 //! A registry release is never pushed between nodes: each node that runs it
-//! fetches it from the registry itself (`Node::release_wasm`), v1's one-source
+//! fetches it from the registry itself (`Node::release_wasm`), the one-source
 //! rule. An uploaded release has no registry to come from, so a majority of
 //! nodes hold it and the rest fetch it from them.
 
@@ -28,7 +28,7 @@ use crate::system::{BundleSource, PackageRef, PackageVersion, SystemCmd};
 use crate::types::now_secs;
 
 /// The largest `.mpk` a node takes, uploaded or fetched: it is kept as a blob,
-/// so the blob limit (v1 allowed 512 MiB; a release-v2 blob must reach a
+/// so the blob limit (v1 allowed 512 MiB; a blob here must reach a
 /// majority inside one sealed request).
 pub const MAX_MPK_BYTES: usize = crate::node::MAX_BLOB_BYTES;
 
@@ -336,7 +336,7 @@ impl Node {
         actor: &str,
     ) -> Result<String, ApiError> {
         // No version: the latest the fleet has installed. A registry install
-        // always names its version, as v1's did.
+        // always names its version.
         let version = match version {
             Some(v) => v.to_owned(),
             None => self

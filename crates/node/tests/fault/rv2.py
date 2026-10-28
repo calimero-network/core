@@ -1,4 +1,4 @@
-"""Black-box helpers for a release-v2 (`merod run --dev`) cluster, one process per node.
+"""Black-box helpers for a `merod run --dev` cluster, one process per node.
 
 Adapted from the release-v2 review's tests/raft/rv2.py. Ports 7600-7699, above every
 merobox workflow's, so a fault run and the workflows can share a machine. Plain HTTP

@@ -1,6 +1,6 @@
 [package]
 name = "calimero-identity"
-description = "Passkeys (WebAuthn), sessions, API keys and step-up consent for Calimero cloud"
+description = "Passkeys (WebAuthn), sessions, API keys and step-up consent for Calimero"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

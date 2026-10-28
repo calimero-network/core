@@ -1,4 +1,4 @@
-//! Client for the Calimero cloud (release-v2).
+//! Client for Calimero nodes.
 //!
 //! Every request goes through a sealed channel to a node whose attestation was
 //! verified first ([`attest`]). People sign in with a passkey ([`Passkey`]);

@@ -1,9 +1,9 @@
-//! Identity for the Calimero cloud: people sign in with WebAuthn passkeys,
+//! Identity for Calimero: people sign in with WebAuthn passkeys,
 //! machines with scoped API keys, and both become a short session verified by
 //! any node of the cluster.
 //!
 //! This crate is pure logic. Accounts, credentials and revocations are stored
-//! by the caller (the cloud node keeps them in the system group).
+//! by the caller (the node keeps them in the system group).
 
 use ring::digest::{digest, SHA256};
 use ring::hmac;

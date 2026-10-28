@@ -1,5 +1,4 @@
-//! RocksDB tuning every node store opens with (moved from v1's
-//! `calimero-store-rocksdb`, unchanged): LZ4 above the bottommost level, ZSTD
+//! RocksDB tuning every node store opens with: LZ4 above the bottommost level, ZSTD
 //! with a trained dictionary at it, bloom filters, early compaction of
 //! deletion-heavy files.
 

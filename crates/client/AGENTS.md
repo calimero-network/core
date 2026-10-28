@@ -1,6 +1,6 @@
 # calimero-client
 
-Rust client for the release-v2 cloud: verifies the node's attestation
+Rust client for Calimero nodes: verifies the node's attestation
 (`attest.rs`, shared with the node), seals every request (`calimero-sealed`),
 signs in with a `Passkey` (feature `testing`: `SoftAuthenticator`) or an API key,
 and calls `/apps/{app}/{intents,views,events}`.

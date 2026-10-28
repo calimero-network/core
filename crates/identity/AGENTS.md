@@ -1,9 +1,9 @@
 # calimero-identity
 
-Identity for the release-v2 cloud: WebAuthn passkeys for people, API keys for
+Identity: WebAuthn passkeys for people, API keys for
 machines, short session tokens any node verifies, and step-up consent challenges.
 
-- Pure logic: no storage. The cloud node keeps accounts, credentials, API-key
+- Pure logic: no storage. The node keeps accounts, credentials, API-key
   hashes, revocations and the session key K_s in the system group.
 - `webauthn.rs`: registration and assertion verification, ES256 and EdDSA via
   `ring`; attestation statements are not checked (passkeys use `none`).

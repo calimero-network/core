@@ -1,6 +1,6 @@
 [package]
 name = "calimero-node"
-description = "Calimero cloud node (release-v2): attested, one Raft log per app, sealed client API"
+description = "The Calimero node: attested, one Raft log per app, sealed client API"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "calimero-log"
-description = "Replicated log for Calimero cloud: one Raft group per app, on openraft"
+description = "Replicated log for Calimero: one Raft group per app, on openraft"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

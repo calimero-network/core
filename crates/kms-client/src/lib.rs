@@ -1,7 +1,7 @@
 //! The mero-kms client a TEE node fetches its keys with: the KMS is verified
 //! against the signed mero-tee release policy (or a pinned allowlist), the
 //! request is bound to an attested quote, and every key comes back sealed to
-//! the TD. Moved here from v1's `merod`, unchanged.
+//! the TD.
 //!
 //! - [`kms`]: attestation, key fetch, probe.
 //! - [`policy`]: the signed release policy.

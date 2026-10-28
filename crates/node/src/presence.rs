@@ -1,10 +1,10 @@
-//! Ephemeral presence (v1's awareness channel, `presence-intents`): what each
+//! Ephemeral presence (the awareness channel, `presence-intents`): what each
 //! member's device says about itself right now (online, a cursor, a
 //! selection), for the app's frontends. Never persisted and never in the log.
 //!
 //! Each node keeps every app's presence in memory and passes each update to
 //! every other node (`internal/presence`), so a client on any node sees the
-//! whole cluster. v1's rules hold: one entry per (account, device), the
+//! whole cluster. One entry per (account, device), the
 //! highest `seq` wins (a retract is an entry with no state, so an older set
 //! cannot bring it back), an entry not refreshed within [`PRESENCE_TTL_MS`]
 //! is swept, at most [`MAX_AUTHORS_PER_APP`] per app (a new author evicts the
@@ -16,10 +16,10 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-/// An entry not refreshed for this long is gone (v1's `PRESENCE_TTL_MS`).
+/// An entry not refreshed for this long is gone.
 pub const PRESENCE_TTL_MS: u64 = 7_000;
 
-/// The most authors one app's presence holds (v1's `MAX_AUTHORS_PER_CONTEXT`).
+/// The most authors one app's presence holds.
 pub const MAX_AUTHORS_PER_APP: usize = 512;
 
 /// The most bytes of state one entry carries.
@@ -32,7 +32,7 @@ pub struct Update {
     pub app: String,
     pub account: String,
     /// The passkey (or API key) the update came through: one account's
-    /// devices are separate entries, as in v1.
+    /// devices are separate entries.
     pub device: String,
     pub seq: u64,
     /// Hex; `None` retracts.

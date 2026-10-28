@@ -55,7 +55,7 @@ mod settings;
 
 pub use settings::*;
 
-/// The most prefixes one approval holds (v1's `MAX_OUTBOUND_APPROVALS`).
+/// The most prefixes one approval holds.
 pub const MAX_OUTBOUND_APPROVALS: usize = 64;
 
 /// What replaces a secret echoed in a response.

@@ -10,7 +10,7 @@
 //! per app, oldest (by the entry that wrote them) dropped first.
 //!
 //! The newest [`IDEMPOTENCY_MIN_KEEP`] caller keys and [`NODE_KEY_MIN_KEEP`] node keys
-//! of an app are kept whatever their age (release-v2-parity's floors, Xil's review,
+//! of an app are kept whatever their age (Xil's review,
 //! issue 10: an entry stamped by a leader whose clock jumped ahead would otherwise
 //! expire acknowledged calls, and their retries would run again).
 //!
