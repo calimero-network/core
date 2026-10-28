@@ -31,7 +31,7 @@ cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 | `wasmer-fixtures/org-gated` | Org notes (v1 SDK)  | The wasmer fixture `crates/node/tests/cluster.rs` loads (`org_gated.wasm`) for `env::caller_org()` |
 | `kv-store-with-handlers` | KV with event handlers | Event handling         |
 | `sorted-kv-store`        | Ordered KV store       | `SortedMap`: range / prefix / page |
-| `authored-sorted-kv-store` | Shared noticeboard   | `AuthoredSortedMap`: per-entry ownership + prefix slices, and why the two go together |
+| `authored-sorted-kv-store` | Shared noticeboard (component SDK) | Per-note authors checked against `env::caller()`, topic slices through a `Table` index, and why the two go together |
 | `indexed-issue-tracker`  | Issue tracker          | `IndexedMap` + `#[derive(app::Indexed)]`: filter, count and page by field values without scanning |
 | `indexed-forum`          | Forum (component SDK)  | Tables with compound and optional-field indexes and maintained counts; a tag index as one row per tag; v1's `Moderated`/`Frozen`/`Authored` policies as explicit checks against `env::caller()` and a moderators table |
 | `search-chat`            | Chat with full-text search | `#[derive(app::Searchable)]` + `app::search_indexes!`: the node indexes a map on its own; a view queries it with `Query` and gets entries read back from state. Example and E2E fixture for search |
@@ -59,7 +59,7 @@ cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 
 ## Component apps (`calimero-app-sdk`, `wasm32-wasip2`)
 
-`rooms`, `org-gated` and every app ported to the component SDK are standalone
+`rooms`, `org-gated`, `authored-sorted-kv-store` and every app ported to the component SDK are standalone
 crates (`[workspace]` in their `Cargo.toml`, `calimero-app-sdk` by path), not
 members of the core workspace, so `cargo test --manifest-path apps/<app>/Cargo.toml`
 runs them (CI's "Cargo test (standalone v2 apps)" loop lists each). Storage is

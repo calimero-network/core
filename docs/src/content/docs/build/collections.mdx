@@ -315,11 +315,12 @@ against the writer set / owner. A forged write does not survive convergence.
   writer who targets your specific prefix can still crowd it — no collection can
   prevent that — but an untargeted flood stops mattering.
 
-  Worked example in `apps/authored-sorted-kv-store`, with
-  `workflows/authored-sorted-kv-store.yml` driving the same three properties
-  across two real nodes: that authored state replicates at all, that the owner
-  gate is refused from the *other* node, and that a flood under an unread topic
-  leaves the slice unchanged.
+  `apps/authored-sorted-kv-store` is the same noticeboard on the component SDK:
+  a `Table` whose `byTopic` index is the slice, and an author check in `edit` /
+  `retract` against `env::caller()`. Its `scenarios/authored-sorted-kv-store.json`
+  drives the properties: the owner gate refused to the *other* account, two
+  authors on one `seq`, and a flood under an unread topic leaving the slice
+  unchanged.
   </Aside>
 
 - **`UserStorage<T>`** — *per-user slots keyed by identity*. Each executor can
