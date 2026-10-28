@@ -14,7 +14,7 @@
     "from": "now-6h",
     "to": "now"
   },
-  "description": "Counts, latency, errors, Raft and disk from merod's --metrics-listen. No label carries an app, account or org id.",
+  "description": "Counts, latency, errors, Raft, disk and process from merod's --metrics-listen. HTTP, build-info, process and storage metrics keep v1's names. No label carries an app, account or org id.",
   "templating": {
     "list": [
       {
@@ -328,12 +328,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (status) (rate(calimero_http_requests_total{instance=~\"$instance\",group=\"calls\"}[$__rate_interval]))",
+          "expr": "sum by (status) (rate(http_requests_total{instance=~\"$instance\",group=\"calls\"}[$__rate_interval]))",
           "legendFormat": "calls {{status}}"
         },
         {
           "refId": "B",
-          "expr": "sum by (status) (rate(calimero_http_requests_total{instance=~\"$instance\",group=\"views\"}[$__rate_interval]))",
+          "expr": "sum by (status) (rate(http_requests_total{instance=~\"$instance\",group=\"views\"}[$__rate_interval]))",
           "legendFormat": "views {{status}}"
         }
       ]
@@ -375,7 +375,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (group) (rate(calimero_http_requests_total{instance=~\"$instance\",group!~\"raft|internal|health\"}[$__rate_interval]))",
+          "expr": "sum by (group) (rate(http_requests_total{instance=~\"$instance\",group!~\"raft|internal|health\"}[$__rate_interval]))",
           "legendFormat": "{{group}}"
         }
       ]
@@ -417,7 +417,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (route, status) (rate(calimero_http_requests_total{instance=~\"$instance\",group=\"sign_in\"}[$__rate_interval]))",
+          "expr": "sum by (route, status) (rate(http_requests_total{instance=~\"$instance\",group=\"sign_in\"}[$__rate_interval]))",
           "legendFormat": "{{route}} {{status}}"
         }
       ]
@@ -519,17 +519,17 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(calimero_http_request_duration_seconds_bucket{instance=~\"$instance\",group=\"calls\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"$instance\",group=\"calls\"}[$__rate_interval])))",
           "legendFormat": "p50"
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(calimero_http_request_duration_seconds_bucket{instance=~\"$instance\",group=\"calls\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"$instance\",group=\"calls\"}[$__rate_interval])))",
           "legendFormat": "p95"
         },
         {
           "refId": "C",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(calimero_http_request_duration_seconds_bucket{instance=~\"$instance\",group=\"calls\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"$instance\",group=\"calls\"}[$__rate_interval])))",
           "legendFormat": "p99"
         }
       ]
@@ -571,17 +571,17 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(calimero_http_request_duration_seconds_bucket{instance=~\"$instance\",group=\"views\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"$instance\",group=\"views\"}[$__rate_interval])))",
           "legendFormat": "p50"
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(calimero_http_request_duration_seconds_bucket{instance=~\"$instance\",group=\"views\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"$instance\",group=\"views\"}[$__rate_interval])))",
           "legendFormat": "p95"
         },
         {
           "refId": "C",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(calimero_http_request_duration_seconds_bucket{instance=~\"$instance\",group=\"views\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"$instance\",group=\"views\"}[$__rate_interval])))",
           "legendFormat": "p99"
         }
       ]
@@ -623,7 +623,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, group) (rate(calimero_http_request_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, group) (rate(http_request_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
           "legendFormat": "{{group}}"
         }
       ]
@@ -665,12 +665,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(calimero_http_request_duration_seconds_bucket{instance=~\"$instance\",group=\"raft\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"$instance\",group=\"raft\"}[$__rate_interval])))",
           "legendFormat": "p50"
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(calimero_http_request_duration_seconds_bucket{instance=~\"$instance\",group=\"raft\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{instance=~\"$instance\",group=\"raft\"}[$__rate_interval])))",
           "legendFormat": "p99"
         }
       ]
@@ -767,7 +767,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (group) (rate(calimero_http_requests_total{instance=~\"$instance\",status=~\"5..\"}[$__rate_interval]))",
+          "expr": "sum by (group) (rate(http_requests_total{instance=~\"$instance\",status=\"5xx\"}[$__rate_interval]))",
           "legendFormat": "{{group}}"
         }
       ]
@@ -1176,12 +1176,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "calimero_store_bytes{instance=~\"$instance\"}",
+          "expr": "storage_disk_usage_bytes{instance=~\"$instance\",store=\"datastore\"}",
           "legendFormat": "store {{instance}}"
         },
         {
           "refId": "B",
-          "expr": "calimero_snapshot_bytes{instance=~\"$instance\"}",
+          "expr": "storage_disk_usage_bytes{instance=~\"$instance\",store=\"snapshots\"}",
           "legendFormat": "snapshots {{instance}}"
         }
       ]
@@ -1225,6 +1225,137 @@
           "refId": "A",
           "expr": "time() - process_start_time_seconds{instance=~\"$instance\"}",
           "legendFormat": "{{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "Resident memory, by node",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "w": 12,
+        "h": 8,
+        "x": 0,
+        "y": 90
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "process_resident_memory_bytes{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "CPU, by node",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "w": 12,
+        "h": 8,
+        "x": 12,
+        "y": 90
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(process_cpu_seconds_total{instance=~\"$instance\"}[$__rate_interval])",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "type": "timeseries",
+      "title": "Open file descriptors and threads, by node",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "w": 12,
+        "h": 8,
+        "x": 0,
+        "y": 98
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "process_open_fds{instance=~\"$instance\"}",
+          "legendFormat": "fds {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "process_threads{instance=~\"$instance\"}",
+          "legendFormat": "threads {{instance}}"
         }
       ]
     }

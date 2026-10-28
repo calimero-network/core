@@ -3937,13 +3937,8 @@ fn metrics_response(node: &Node) -> Response {
         }
     }
     crate::metrics::render_raft(&mut out, &samples);
-    let data = &node.config.data_dir;
-    let _r = writeln!(
-        out,
-        "# HELP calimero_store_bytes Bytes of this node's sealed store (log, state, blobs).\n# TYPE calimero_store_bytes gauge\ncalimero_store_bytes {}\n# HELP calimero_snapshot_bytes Bytes of this node's snapshot files.\n# TYPE calimero_snapshot_bytes gauge\ncalimero_snapshot_bytes {}",
-        crate::metrics::dir_bytes(&data.join("store"), 1),
-        crate::metrics::dir_bytes(&data.join("snapshots"), 2),
-    );
+    crate::metrics::render_node(&mut out, node.config.node_id, &node.config.data_dir);
+    crate::metrics::render_process(&mut out);
     crate::metrics::render(&mut out);
     let _r = writeln!(
         out,

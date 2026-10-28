@@ -52,13 +52,13 @@ groups:
         annotations:
           summary: "Leaders keep losing builds to leader changes or concurrent writes"
       - alert: MerodServerErrors
-        expr: sum by (group) (rate(calimero_http_requests_total{status=~"5..",group!~"raft|internal"}[5m])) > 1
+        expr: sum by (group) (rate(http_requests_total{status="5xx",group!~"raft|internal"}[5m])) > 1
         for: 5m
         labels: { severity: warning }
         annotations:
           summary: "{{ $value }} 5xx answers per second on {{ $labels.group }}"
       - alert: MerodSlowCalls
-        expr: histogram_quantile(0.99, sum by (le) (rate(calimero_http_request_duration_seconds_bucket{group="calls"}[5m]))) > 2
+        expr: histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{group="calls"}[5m]))) > 2
         for: 10m
         labels: { severity: warning }
         annotations:
@@ -70,7 +70,7 @@ groups:
         annotations:
           summary: "{{ $labels.instance }} has {{ $value }} open streams; new ones answer 429 past 4096"
       - alert: MerodMixedReleases
-        expr: count(count by (release) (calimero_build_info)) > 1
+        expr: count(count by (version) (merod_build_info)) > 1
         for: 30m
         labels: { severity: info }
         annotations:

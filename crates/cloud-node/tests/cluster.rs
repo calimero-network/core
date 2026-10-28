@@ -4020,19 +4020,26 @@ async fn metrics_count_requests_errors_and_raft_without_naming_anyone() {
             .to_owned()
     };
     let calls = line(
-        "calimero_http_requests_total{group=\"calls\",route=\"/apps/{app}/intents\",status=\"200\"}",
+        "http_requests_total{method=\"POST\",path=\"/apps/{app}/intents\",status=\"2xx\",group=\"calls\"}",
     );
     let n: u64 = calls.rsplit(' ').next().unwrap().parse().unwrap();
     assert!(n >= 3, "{calls}");
     let _ = line("calimero_http_errors_total{group=\"apps\",code=\"NOT_FOUND\"}");
-    let _ = line("calimero_http_request_duration_seconds_bucket{group=\"calls\",le=\"+Inf\"}");
-    let _ = line("calimero_http_request_duration_seconds_count{group=\"raft\"}");
+    let _ = line(
+        "http_request_duration_seconds_bucket{method=\"POST\",path=\"/apps/{app}/intents\",status=\"2xx\",group=\"calls\",le=\"+Inf\"}",
+    );
+    let _ = line("http_request_duration_seconds_count{method=\"POST\",path=\"/internal/raft\"");
     let _ = line("calimero_group_term{group=\"system\"}");
     let _ = line("calimero_group_leader{group=\"system\"}");
     let _ = line("calimero_group_apply_lag{group=\"system\"}");
-    let _ = line("calimero_store_bytes ");
+    let _ = line("storage_disk_usage_bytes{store=\"datastore\"}");
+    let _ = line("merod_build_info{version=");
     let _ = line("process_start_time_seconds ");
-    assert!(metrics.contains("# TYPE calimero_http_request_duration_seconds histogram"));
+    if cfg!(target_os = "linux") {
+        let _ = line("process_resident_memory_bytes ");
+        let _ = line("process_cpu_seconds_total ");
+    }
+    assert!(metrics.contains("# TYPE http_request_duration_seconds histogram"));
     for secret in [
         app.as_str(),
         alice_id.as_str(),
