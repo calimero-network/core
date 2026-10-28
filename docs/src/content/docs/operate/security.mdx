@@ -23,6 +23,18 @@ operator controls, and which settings break it.
 This holds only for TDX-mode nodes running a mero-tee image the users' clients
 trust. Everything below is about keeping it so.
 
+## What an organization's admins can see
+
+An organization's data is the organization's, as with any workplace tool.
+Private storage keeps a member's data from other members, the operator and
+Calimero, not from the organization: its admins choose which code its apps
+run, so they can reach what those apps hold, members' private data included.
+Tell members so where they join, for example: "Admins of this organization can read your data in its
+apps."
+
+An app a person deploys outside any organization has no admin: only its
+owner reaches it.
+
 ## TDX mode and development mode
 
 | | TDX mode (default) | `--dev` |
@@ -140,7 +152,9 @@ The node's own notes (`crates/cloud-node/AGENTS.md`) list what is not done:
 no rollback counter (a host could restart a node on old state), no keys per app
 from mero-kms, no placement across zones, no restore of a snapshot into a
 running cluster, no event audiences, no pruning of revoked session ids, and
-search indexes rebuilt from state at each start. Sign-up is open; bound it with
+search indexes rebuilt from state at each start, and no recovery when every
+mero-kms replica is lost: backups are sealed only under the cluster's key
+(planned: each organization holds a recovery seed that opens its own backups). Sign-up is open; bound it with
 the `maxAccounts` quota.
 
 ## Checklist
