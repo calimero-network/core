@@ -60,6 +60,11 @@ pub struct Cluster {
     _dirs: Vec<tempfile::TempDir>,
 }
 
+/// Numbers the clusters this process starts: each gets a name of its own, as
+/// `tests/harness/cluster.rs` does, so its peer secret is its own and a node of
+/// another test's cluster that a reused port leads to refuses its Raft messages.
+static NEXT_CLUSTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl Cluster {
     pub async fn start(n: u64) -> Self {
         Self::start_with(n, |_| {}).await
@@ -79,6 +84,11 @@ impl Cluster {
         let mut nodes = Vec::new();
         let mut dirs = Vec::new();
         let mut configs = Vec::new();
+        let name = format!(
+            "test-{}-{}",
+            std::process::id(),
+            NEXT_CLUSTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
         for (i, port) in ports.iter().enumerate() {
             let dir = tempfile::tempdir().unwrap();
             let mut config = Config {
@@ -88,7 +98,7 @@ impl Cluster {
                 data_dir: dir.path().to_owned(),
                 peers: peers.clone(),
                 bootstrap: i == 0,
-                cluster: "test".into(),
+                cluster: name.clone(),
                 storage_key: [42; 32],
                 attestation: Mode::Mock,
                 allow_mock_peers: true,
