@@ -193,13 +193,13 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 
 ## Ops
 
-Every route needs the ops token. The Ops API returns counts, Raft status and
-placement, never app state, names or credentials.
+Every route needs the ops token. The Ops API returns counts, Raft status,
+placement and per-app usage by id, never app state, names or credentials.
 
 | Route | What | meroctl |
 | --- | --- | --- |
 | `GET /ops/status` | `{ node, system, governance, groups, nodes, apps, accounts }` | `ops status` |
-| `GET /ops/metrics` | Prometheus text; see [Observability](/operate/observability/) | `ops metrics` |
+| `GET /ops/metrics` | Prometheus text, including per-app usage for billing; see [Observability](/operate/observability/) and [usage metering](/operate/observability/#usage-metering) | `ops metrics` |
 | `POST /ops/nodes` | `{ id, addr, zone? }`: register a node; the system leader adds it as a learner | `ops add-node` |
 | `POST /ops/apps/{app}/replicas` | `{ replicas: [id, …] }`: move an app (at least `min(3, nodes in the cluster)` replicas, and only nodes on a release the app's owner approved). On a follower: `421 NOT_LEADER`. | `ops move` |
 | `POST /ops/backup` | Snapshot the apps this node leads into `--backup-dir` → `{ written }` | `ops backup` |

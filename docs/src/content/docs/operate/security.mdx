@@ -16,7 +16,7 @@ operator controls, and which settings break it.
 | The operator can | The operator cannot |
 | --- | --- |
 | Start, stop and place nodes; move app replicas between nodes | Read app state, blobs, account names or credentials: the Ops API has no read path into them |
-| See counts, Raft status and placement (`/ops/status`, `/ops/metrics`) | Open the disks: they are sealed under a key only an attested TD receives |
+| See counts, Raft status, placement and per-app usage by app and payer id (`/ops/status`, `/ops/metrics`) | Open the disks: they are sealed under a key only an attested TD receives |
 | Set quotas and trigger backups | Open a backup: snapshots are sealed under the same key |
 | Make the governance decisions the deployment gave the operator | Make the ones it gave the owners |
 
