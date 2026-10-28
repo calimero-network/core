@@ -429,9 +429,8 @@ expect_exit 3 "no contract anywhere" bash "$BUMP" --surface cargo --version 0.11
 echo "tee — the fleet image bundles a merod"
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# Two versions in ONE object, which is what makes this different from `tauri`:
-# there the document's own `version` is the first key and position is enough, so
-# a positional rewrite here would move whichever version happened to come first.
+# Two versions in ONE object: a positional rewrite would move whichever version
+# happened to come first.
 # These cases pin that both fields move, and that the OTHERS do not.
 mkversions() {
   mkdir -p "$1/mero-tee"
@@ -646,39 +645,11 @@ expect_file "$I" 'RELEASE=0.11.0-rc.1' "  ...but nothing in that installer moves
 expect_absent "$I" 'f5d81939' "  ...not even the checksum it could have refreshed"
 expect_file "$UNCLAIMED" 'setup-cargo-mero.sh' "  ...and it is named in the report"
 
-mkdesktop() {
-  mkdir -p "$1/apps/desktop/src-tauri"
-  cat > "$1/merod-config.json" <<EOF
-{
-    "name": "merod binary",
-    "version": "0.11.0-rc.1",
-    "sha256": {
-        "merod_aarch64-apple-darwin.tar.gz": "$OLD",
-        "$2": "$OLD"
-    }
-}
-EOF
-  printf '{\n  "name": "desktop",\n  "version": "1.4.0"\n}\n' > "$1/apps/desktop/package.json"
-  printf '{\n  "version": "1.4.0"\n}\n' > "$1/apps/desktop/src-tauri/tauri.conf.json"
-}
-
-D=$(mkfixture tauri-sums); mkdesktop "$D" merod_x86_64-pc-windows-msvc.tar.gz; commit "$D"
-C="$D/merod-config.json"
-expect_exit 0 "tauri: the merod pins move with the bundled version" \
-  env RELEASE_SUMS_FILE="$SUMS" bash "$BUMP" --surface tauri --version 0.11.0-rc.2 --dir "$D"
-expect_file "$C" '"version": "0.11.0-rc.2"' "  bundles the new merod"
-expect_file "$C" '"merod_aarch64-apple-darwin.tar.gz": "7f580cf9022a6c94ced4758ed649598153d2149a261ef23ae94d82e9fe41fcd5"' \
-  "  the darwin pin moved"
-expect_file "$C" '"merod_x86_64-pc-windows-msvc.tar.gz": "94f11f2a83508190734b46fe37237ba03e0facd84dc1e8a340f327c865e42b4a"' \
-  "  the windows pin moved"
-expect_absent "$C" "$OLD" "  no old pin left"
-expect_file "$D/apps/desktop/package.json" '"version": "1.4.1"' "  the desktop gets a version of its own"
-
-D=$(mkfixture tauri-sums-missing); mkdesktop "$D" merod_x86_64-unknown-linux-gnu.tar.gz; commit "$D"
-C="$D/merod-config.json"
-expect_exit 1 "tauri: a pin the release cannot supply stops the bump, rather than opening a red PR" \
-  env RELEASE_SUMS_FILE="$SUMS" bash "$BUMP" --surface tauri --version 0.11.0-rc.2 --dir "$D"
-expect_file "$C" '"version": "0.11.0-rc.1"' "  ...and merod-config.json is left as it was"
+# The desktop app (tauri-app) is retired and 1.0 ships no macOS merod: the
+# surface is gone, and naming it is an error rather than a silent no-op.
+D=$(mkfixture tauri-gone); commit "$D"
+expect_exit 1 "tauri: the surface no longer exists" \
+  bash "$BUMP" --surface tauri --version 0.11.0-rc.2 --dir "$D"
 
 # A pin naming a core commit, not a version: apps' run-relay.sh builds the
 # mobile live tests' merod from CORE_REF, and a bundle built against the new

@@ -6,7 +6,6 @@
     "  cargo — pins calimero-network/core by git tag, in logic/Cargo.toml or in",
     "          a workspace root's [workspace.dependencies]",
     "  npm   — declares @calimero-network/* packages in some package.json",
-    "  tauri — links no SDK; ships a merod BINARY named in merod-config.json",
     "  tee   — links no SDK either; builds the confidential-VM image the hosted",
     "          fleet runs, which BUNDLES a merod named in mero-tee/versions.json",
     "",
@@ -24,7 +23,7 @@
     "looking for any Cargo.toml in the tree that pins core, so a repository does",
     "not have to be reshaped to be bumpable.",
     "",
-    "A core release moves `cargo`, `tauri` and `tee`. `npm` is recorded because the same",
+    "A core release moves `cargo` and `tee`. `npm` is recorded because the same",
     "shape of file is read by the equivalent workflow in mero-js, mero-react and",
     "design-system; fleet-bump.yml here selects the core-release surfaces only.",
     "",
@@ -71,11 +70,18 @@
     { "repo": "apps", "surfaces": ["cargo", "npm"] },
     { "repo": "mero-ar", "surfaces": ["cargo"] },
     { "repo": "mero-tag", "surfaces": ["cargo"] },
-    { "repo": "tauri-app", "surfaces": ["npm", "tauri"] },
     { "repo": "app-registry", "surfaces": ["npm"] },
     { "repo": "calimero-studio", "surfaces": ["cargo"] },
     { "repo": "mero-tee", "surfaces": ["tee"] }
   ],
+
+  "_retired_note": [
+    "Consumers that no longer get a bump. tauri-app (Calimero Desktop) bundled a",
+    "local merod for macOS; 1.0 runs nodes only in the cloud and ships no macOS",
+    "merod, and the desktop app is deprecated. Its `tauri` surface is removed",
+    "from bump-fleet.sh; listing it here stops it being re-added."
+  ],
+  "_retired": ["tauri-app"],
 
   "_migrated_note": [
     "Each entry below was its own repository with its own SDK pin and its own",

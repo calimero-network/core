@@ -71,7 +71,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$SURFACE" ] || die "--surface is required (cargo|npm|tauri|tee)"
+[ -n "$SURFACE" ] || die "--surface is required (cargo|npm|tee)"
 [ -n "$DIR" ] || die "--dir is required"
 [ -d "$DIR" ] || die "--dir '$DIR' is not a directory"
 
@@ -888,35 +888,9 @@ $stale"
   record_change "logic/Cargo.lock"
 }
 
-# The desktop app ships a merod BINARY (merod-config.json names the version,
-# src-tauri/build.rs embeds it), so a core release means: bundle the new merod
-# and cut a new desktop version that ships it.
-
-# Highest of two dotted versions, compared numerically field by field. Not
-# `sort -V`: that is a GNU extension this has to run without on macOS.
-max_version() {
-  printf '%s\n%s\n' "$1" "$2" \
-    | awk -F. '{ printf "%010d%010d%010d %s\n", $1, $2, $3, $0 }' \
-    | sort | tail -1 | cut -d' ' -f2
-}
-
-read_json_version() {
-  perl -ne 'if (m{"version"\s*:\s*"([^"]*)"}) { print "$1\n"; exit }' "$1"
-}
-
-# Only the FIRST "version" key, which in all three of these files is the
-# document's own version. The guard has to be set by a successful substitution,
-# not by merely visiting a line — incrementing per line spends the flag on the
-# opening brace and then never rewrites anything.
-write_json_version() {
-  NEW="$2" perl -i -pe '
-    if (!$done && s{("version"\s*:\s*")[^"]*(")}{$1$ENV{NEW}$2}) { $done = 1 }
-  ' "$1"
-}
-
-# Keyed variants of the two above. `tauri`'s files name the document's own
-# version `version`, so position is enough there; mero-tee's names two versions
-# in one object, so the key has to be part of the match.
+# Read and rewrite the first value of a JSON key in place. mero-tee's
+# versions.json names two versions in one object, so the key is part of the
+# match; the guard is set by a successful substitution, not by visiting a line.
 read_json_key() {
   KEY="$2" perl -ne 'if (m{"$ENV{KEY}"\s*:\s*"([^"]*)"}) { print "$1\n"; exit }' "$1"
 }
@@ -927,77 +901,6 @@ write_json_key() {
   ' "$1"
 }
 
-bump_tauri() {
-  local cfg="$DIR/merod-config.json"
-
-  if [ ! -f "$cfg" ]; then
-    note "no merod-config.json — this repository bundles no merod"
-    exit 3
-  fi
-
-  local current
-  current=$(read_json_version "$cfg")
-  [ -n "$current" ] || die "merod-config.json carries no version field"
-
-  head_note "tauri: bundled merod $current -> $VERSION"
-
-  if [ "$current" = "$VERSION" ]; then
-    note "already bundling $VERSION"
-    exit 4
-  fi
-
-  # The desktop verifies the merod it downloads against `sha256`, one entry per
-  # asset, and its CI fails ("Pins match the release") while any is stale. Every
-  # entry moves with the version or the bump stops: a pull request that cannot
-  # go green is worse than none.
-  local assets asset sum pairs=""
-  assets=$(perl -0ne 'print "$1\n" while m{"([^"]+\.tar\.gz)"\s*:\s*"[0-9a-fA-F]{64}"}g' "$cfg")
-  for asset in $assets; do
-    sum=$(release_sha256 "$asset")
-    [ -n "$sum" ] || die "release $VERSION has no sha256 for $asset in its SHA256SUMS — merod-config.json would pin a stale hash"
-    pairs="$pairs $asset=$sum"
-  done
-
-  write_json_version "$cfg" "$VERSION"
-  [ "$(read_json_version "$cfg")" = "$VERSION" ] || die "merod-config.json did not take the new version"
-  if [ -n "$pairs" ]; then
-    PAIRS="$pairs" perl -i -pe '
-      BEGIN { %s = map { split /=/, $_, 2 } split " ", $ENV{PAIRS} }
-      s{("([^"]+)"\s*:\s*")[0-9a-fA-F]{64}(")}{exists $s{$2} ? "$1$s{$2}$3" : $&}ge;
-    ' "$cfg"
-    note "merod-config.json: $(printf '%s' "$pairs" | wc -w | tr -d ' ') sha256 pin(s) from the release's SHA256SUMS"
-  fi
-  record_change "merod-config.json"
-  note "merod-config.json now bundles $VERSION"
-
-  local pkg="apps/desktop/package.json"
-  local conf="apps/desktop/src-tauri/tauri.conf.json"
-  local vp="" vc="" top next
-
-  [ -f "$DIR/$pkg" ]  && vp=$(read_json_version "$DIR/$pkg")
-  [ -f "$DIR/$conf" ] && vc=$(read_json_version "$DIR/$conf")
-
-  if [ -z "$vp" ] && [ -z "$vc" ]; then
-    note "WARNING: found no desktop app version to bump"
-    return 0
-  fi
-
-  top=$(max_version "${vp:-0.0.0}" "${vc:-0.0.0}")
-  next=$(printf '%s' "$top" | awk -F. '{printf "%d.%d.%d", $1, $2, $3 + 1}')
-
-  if [ -n "$vp" ] && [ -n "$vc" ] && [ "$vp" != "$vc" ]; then
-    note "NOTE: app version had drifted ($pkg $vp vs $conf $vc); taking $top and syncing both"
-  fi
-
-  if [ -n "$vp" ]; then
-    write_json_version "$DIR/$pkg" "$next"; record_change "$pkg"
-  fi
-  if [ -n "$vc" ]; then
-    write_json_version "$DIR/$conf" "$next"; record_change "$conf"
-  fi
-  note "desktop app $top -> $next"
-}
-
 # ---------------------------------------------------------------------------
 # tee
 # ---------------------------------------------------------------------------
@@ -1006,8 +909,8 @@ bump_tauri() {
 # BUNDLES a merod binary. `mero-tee/versions.json` names both: `merodVersion` is
 # the binary it bundles, `imageVersion` is the image's own version.
 #
-# The same two-field shape as `tauri`, and handled the same way: a core release
-# moves the bundled binary, and the thing bundling it needs a version of its own
+# A core release moves the bundled binary, and the thing bundling it needs a
+# version of its own
 # so the new bundle is distinguishable from the old. An image whose contents
 # changed under an unchanged `imageVersion` is indistinguishable from the one
 # already deployed, which is how a fleet silently keeps running the old merod.
@@ -1041,9 +944,8 @@ bump_tee() {
   [ "$(read_json_key "$cfg" merodVersion)" = "$VERSION" ] \
     || die "versions.json did not take the new merodVersion"
 
-  # The image's own version, patch-incremented — exactly what `tauri` does for
-  # the desktop app it rebuilds. Left alone, the rebuilt image would claim to be
-  # the one already running.
+  # The image's own version, patch-incremented. Left alone, the rebuilt image
+  # would claim to be the one already running.
   local image next
   image=$(read_json_key "$cfg" imageVersion)
   if [ -z "$image" ]; then
@@ -1198,8 +1100,8 @@ EOF
 # repo keeps its frontend at app/, that one at apps/desktop/" is a thing that
 # drifts silently. Instead: find every package.json that actually declares the
 # dependency, and for each, walk up to the nearest lockfile to find the install
-# root. That covers the standalone app/ repos, the pnpm workspaces (tauri-app,
-# app-registry, apps), and anything added later, without being told about any of
+# root. That covers the standalone app/ repos, the pnpm workspaces
+# (app-registry, apps), and anything added later, without being told about any of
 # them. A workspace that resolves its versions through a pnpm CATALOG declares
 # them nowhere near a package.json, so that is handled separately below.
 
@@ -1426,7 +1328,7 @@ bump_npm() {
     #
     #   fatal: pathspec 'home/runner/work/.../pnpm-lock.yaml' did not match any files
     #
-    # tauri-app, app-registry and the apps monorepo are all shaped that way.
+    # app-registry and the apps monorepo are both shaped that way.
     local rel="${root#$DIR}"; rel="${rel#/}"
     local lock="${rel:+$rel/}pnpm-lock.yaml"
 
@@ -1465,15 +1367,11 @@ case "$SURFACE" in
   npm)
     bump_npm
     ;;
-  tauri)
-    [ -n "$VERSION" ] || die "--surface tauri needs --version"
-    bump_tauri
-    ;;
   tee)
     [ -n "$VERSION" ] || die "--surface tee needs --version"
     bump_tee
     ;;
-  *) die "--surface must be cargo, npm, tauri or tee (got '$SURFACE')" ;;
+  *) die "--surface must be cargo, npm or tee (got '$SURFACE')" ;;
 esac
 
 # Hand the caller exactly the paths to stage; anything else the tooling left

@@ -59,8 +59,8 @@ jobs:
         with:
           persist-credentials: false
 
-      # Three surfaces move on release: `cargo` pins the SDK by git tag; `tauri` and
-      # `tee` ship a merod binary with no SDK link, reached only through this list.
+      # Two surfaces move on release: `cargo` pins the SDK by git tag; `tee` ships a
+      # merod binary with no SDK link, reached only through this list.
       - name: Select the targets
         id: pick
         env:
@@ -71,7 +71,7 @@ jobs:
             [ .consumers[]
               | . as $c
               | $c.surfaces[]
-              | select(. == "cargo" or . == "tauri" or . == "tee")
+              | select(. == "cargo" or . == "tee")
               | { repo: $c.repo, surface: . } ]
             | if $only == "" then .
               else
@@ -123,7 +123,7 @@ jobs:
           path: consumer
 
       # Needed only for `cargo generate-lockfile`; the consumer's own CI compiles
-      # the contract on the pull request. The tauri surface needs no toolchain.
+      # the contract on the pull request. The tee surface needs no toolchain.
       - name: Setup Rust
         if: matrix.surface == 'cargo'
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
@@ -191,9 +191,7 @@ jobs:
 
           branch="chore/core-$VERSION"
 
-          if [ "$SURFACE" = "tauri" ]; then
-            title="chore: bundle merod $VERSION and cut a new desktop version"
-          elif [ "$SURFACE" = "tee" ]; then
+          if [ "$SURFACE" = "tee" ]; then
             title="chore(image): bundle merod $VERSION and cut a new image version"
           else
             title="chore(deps): pin the Calimero SDK to $VERSION"
@@ -229,27 +227,7 @@ jobs:
 
           # Written to a file rather than a shell string: the block scalar this
           # runs inside would eat a heredoc's terminator indentation.
-          if [ "$SURFACE" = "tauri" ]; then
-          cat > "$RUNNER_TEMP/pr-body.md" <<PR_BODY
-          Bundles merod \`$VERSION\` and cuts a new desktop version to ship it.
-
-          The desktop app links no Calimero SDK — it ships a merod **binary**.
-          \`merod-config.json\` names the version, \`src-tauri/build.rs\` embeds it as
-          \`MEROD_CONFIG_VERSION\` at compile time, and the app downloads that merod at
-          runtime. So a core release means two things here: bundle the new merod, and
-          cut a version that ships it.
-
-          The app version is carried in **two** files — \`apps/desktop/package.json\` and
-          \`apps/desktop/src-tauri/tauri.conf.json\`, the latter being what actually
-          stamps the built bundle. They have drifted apart before, so this takes the
-          higher of the two, increments the patch, and writes both. If the job log
-          mentions drift, this pull request also heals it.
-
-          Opened automatically by \`fleet-bump\` in
-          [calimero-network/core](https://github.com/calimero-network/core) when
-          \`$VERSION\` was released.
-          PR_BODY
-          elif [ "$SURFACE" = "tee" ]; then
+          if [ "$SURFACE" = "tee" ]; then
           cat > "$RUNNER_TEMP/pr-body.md" <<PR_BODY
           Bundles merod \`$VERSION\` into the fleet image, and cuts an image version
           that ships it.
