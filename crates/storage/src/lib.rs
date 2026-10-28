@@ -124,6 +124,10 @@ pub mod tests {
     /// A leaf stamped with the retired rotation-log type is verified like any other.
     #[cfg(test)]
     pub mod legacy_crdt_label;
+    /// A local write to a writer-set-guarded entity by a caller its cell's
+    /// writers do not grant is refused before it is stored.
+    #[cfg(test)]
+    pub mod local_writers;
     /// LWW (Last-Write-Wins) Register CRDT tests.
     #[cfg(test)]
     pub mod lww_register;

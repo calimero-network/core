@@ -5726,9 +5726,30 @@ mod shared_writers_from_the_host {
     }
 
     #[test]
-    fn a_removed_writer_does_not_stamp_a_local_delete_of_a_rotated_wrapper() {
+    fn a_removed_writer_cannot_delete_a_rotated_wrapper_locally() {
         let cell = rotated_wrapper();
-        assert!(!local_delete_is_stamped(&cell, &cell.bob_sk));
+        crate::delta::reset_delta_context();
+        let account = *account_of_key(&cell.bob_sk).as_bytes();
+        let rotated = cell.rotated.clone();
+        let removed = env::with_account_id(account, || {
+            let resolve = env_resolving(move |_| Some(CellWriters::Rotated(rotated.clone())));
+            env::with_runtime_env(resolve, || {
+                MainInterface::remove_child_from(crate::address::Id::root(), cell.id)
+            })
+        });
+        assert!(
+            matches!(
+                removed,
+                Err(crate::interface::StorageError::ActionNotAllowed(_))
+            ),
+            "the fold removed Bob, so his delete is refused: {removed:?}"
+        );
+        assert!(
+            <crate::index::Index<crate::store::MainStorage>>::get_index(cell.id)
+                .expect("index")
+                .is_some_and(|index| index.deleted_at.is_none()),
+            "the wrapper is not tombstoned"
+        );
     }
 
     #[test]

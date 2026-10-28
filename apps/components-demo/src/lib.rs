@@ -119,8 +119,8 @@ impl ComponentsDemo {
         Ok(())
     }
 
-    /// Set a settings entry. Only a current writer's entry converges across
-    /// nodes; a non-writer's write is rejected at merge.
+    /// Set a settings entry. Only a current writer may: the SDK refuses a
+    /// non-writer's write, and this method returns the refusal.
     pub fn settings_set(&mut self, key: String, value: String) -> app::Result<()> {
         self.settings
             .get_mut()?
