@@ -3923,6 +3923,28 @@ fn metrics_response(node: &Node) -> Response {
             s.group, s.applied
         );
     }
+    // Raft per group (the system group as `system`), disk, then requests.
+    let mut samples = vec![crate::metrics::raft_sample(
+        "system".to_owned(),
+        &node.system,
+    )];
+    for app in node.sys(|s| s.apps.keys().cloned().collect::<Vec<_>>()) {
+        if let Some(g) = node.hosted(&app) {
+            samples.push(crate::metrics::raft_sample(
+                g.status().group.to_string(),
+                &g,
+            ));
+        }
+    }
+    crate::metrics::render_raft(&mut out, &samples);
+    let data = &node.config.data_dir;
+    let _r = writeln!(
+        out,
+        "# HELP calimero_store_bytes Bytes of this node's sealed store (log, state, blobs).\n# TYPE calimero_store_bytes gauge\ncalimero_store_bytes {}\n# HELP calimero_snapshot_bytes Bytes of this node's snapshot files.\n# TYPE calimero_snapshot_bytes gauge\ncalimero_snapshot_bytes {}",
+        crate::metrics::dir_bytes(&data.join("store"), 1),
+        crate::metrics::dir_bytes(&data.join("snapshots"), 2),
+    );
+    crate::metrics::render(&mut out);
     let _r = writeln!(
         out,
         "# HELP calimero_build_info This node's release.\n# TYPE calimero_build_info gauge\ncalimero_build_info{{release=\"{}\"}} 1",
@@ -4462,6 +4484,9 @@ pub fn router(node: Arc<Node>) -> Router {
             delete(ops_package_version_uninstall),
         )
         .route("/ops/quotas", get(ops_quotas_get).post(ops_quotas_set))
+        // Counted, timed and sized per route template (`metrics::track`);
+        // inside the sealed envelope, so it sees what each handler answered.
+        .route_layer(axum::middleware::from_fn(crate::metrics::track))
         // Bundles (peer blob pushes, uploads) exceed axum's 2 MiB default; the sealed envelope caps requests at 64 MiB.
         .layer(axum::extract::DefaultBodyLimit::max(
             calimero_sealed::server::MAX_SEALED_BYTES,

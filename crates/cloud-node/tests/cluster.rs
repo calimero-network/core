@@ -3982,3 +3982,66 @@ async fn access_changed_through_one_node_holds_at_once_through_another() {
             });
     }
 }
+
+/// What `/ops/metrics` adds for dashboards: requests by route template and
+/// status, error codes, latency by route group, Raft per group and disk
+/// sizes. No id, name or value reaches a label.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn metrics_count_requests_errors_and_raft_without_naming_anyone() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice-the-metrics-user").await;
+    let alice_id = alice.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    for i in 0..3 {
+        let _ = alice
+            .call(
+                &app,
+                "set",
+                json!({ "key": format!("k{i}"), "value": "v" }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let refused = alice.get("apps/no-such-app").await.expect_err("404");
+    assert_eq!(refused.code(), Some("NOT_FOUND"), "{refused}");
+
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let metrics = ops.get_text("ops/metrics").await.unwrap();
+    let line = |prefix: &str| {
+        metrics
+            .lines()
+            .find(|l| l.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no `{prefix}` in\n{metrics}"))
+            .to_owned()
+    };
+    let calls = line(
+        "calimero_http_requests_total{group=\"calls\",route=\"/apps/{app}/intents\",status=\"200\"}",
+    );
+    let n: u64 = calls.rsplit(' ').next().unwrap().parse().unwrap();
+    assert!(n >= 3, "{calls}");
+    let _ = line("calimero_http_errors_total{group=\"apps\",code=\"NOT_FOUND\"}");
+    let _ = line("calimero_http_request_duration_seconds_bucket{group=\"calls\",le=\"+Inf\"}");
+    let _ = line("calimero_http_request_duration_seconds_count{group=\"raft\"}");
+    let _ = line("calimero_group_term{group=\"system\"}");
+    let _ = line("calimero_group_leader{group=\"system\"}");
+    let _ = line("calimero_group_apply_lag{group=\"system\"}");
+    let _ = line("calimero_store_bytes ");
+    let _ = line("process_start_time_seconds ");
+    assert!(metrics.contains("# TYPE calimero_http_request_duration_seconds histogram"));
+    for secret in [
+        app.as_str(),
+        alice_id.as_str(),
+        "alice-the-metrics-user",
+        "no-such-app",
+    ] {
+        assert!(
+            !metrics.contains(secret),
+            "{secret} leaked into the metrics"
+        );
+    }
+}
