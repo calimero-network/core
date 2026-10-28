@@ -747,7 +747,7 @@ impl Machine for AppMachine {
         let component = match self.state.executor() {
             Some(Kind::Component) => true,
             Some(Kind::Wasmer) => false,
-            None => crate::component::ComponentCmd::is_init(command),
+            None => crate::component::ComponentCmd::is_component(command),
         };
         let out = if component {
             self.apply_component(tx, index, command)

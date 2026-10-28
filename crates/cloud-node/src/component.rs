@@ -235,6 +235,19 @@ impl ComponentCmd {
         }
         serde_json::from_slice::<Op<'_>>(command).is_ok_and(|o| o.op == "componentInit")
     }
+
+    /// Whether `command` is any component entry: before the group's state names an
+    /// executor, a component's entry (its `init`, or an upgrade taken while its
+    /// init had not applied) is what names it.
+    #[must_use]
+    pub fn is_component(command: &[u8]) -> bool {
+        #[derive(Deserialize)]
+        struct Op<'a> {
+            #[serde(borrow)]
+            op: &'a str,
+        }
+        serde_json::from_slice::<Op<'_>>(command).is_ok_and(|o| o.op.starts_with("component"))
+    }
 }
 
 /// What `apply` answers for a component's entry.
@@ -377,6 +390,16 @@ fn idem_key(caller: &Caller, key: &str) -> String {
 }
 
 impl AppMachine {
+    /// The bundle a component's calls and views run, once its `init` applied (it
+    /// succeeded, or failed for good). `None` while init is pending, even when an
+    /// upgrade taken before it already named a bundle.
+    #[must_use]
+    pub fn component_bundle(&self) -> Option<String> {
+        (self.state.initialized || self.state.init_error.is_some())
+            .then(|| self.state.bundle.clone())
+            .flatten()
+    }
+
     /// A component's previous answer for this idempotency key, if still remembered.
     #[must_use]
     pub fn component_replay(&self, caller: &Caller, key: &str) -> Option<Applied> {
@@ -573,7 +596,10 @@ impl AppMachine {
                 outcome,
                 ..
             }) => {
-                if self.state.bundle.is_some() {
+                // Init applies once: it succeeded (`initialized`) or failed for good
+                // (`init_error`). An upgrade taken before it gives the app a bundle,
+                // not an init.
+                if self.state.initialized || self.state.init_error.is_some() {
                     Applied::conflict(index, "already initialized")
                 } else {
                     let a =
@@ -603,6 +629,8 @@ impl AppMachine {
                     None,
                 );
                 if !a.conflict {
+                    // Taken before `init` applied: the entry names the executor.
+                    self.state.executor = Some(crate::types::Executor::Component);
                     self.state.bundle = Some(bundle);
                 }
                 a

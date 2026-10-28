@@ -949,7 +949,15 @@ impl Node {
                     continue;
                 }
             };
-            let needs_init = g.read_local(|m, _| !m.state.initialized && m.state.bundle.is_none());
+            // A wasmer app is initialized once it has a bundle; a component app may
+            // be given one by an upgrade before its init applied (its init timed
+            // out), and still needs its init then, on that bundle.
+            let needs_init = g.read_local(|m, _| {
+                !m.state.initialized
+                    && (m.state.bundle.is_none()
+                        || (m.state.executor() == Some(Kind::Component)
+                            && m.state.init_error.is_none()))
+            });
             if needs_init && g.status().is_leader {
                 if let Err(e) = self.init_app(&g, &app).await {
                     debug!(app = %app.app_id, error = %e.message, "init not yet possible");
@@ -1717,10 +1725,12 @@ impl Node {
         // An upgrade never moves an app between executors (either way, state or
         // none) until rebuild migrations (D38) exist: the two keep different
         // state formats. Judged from the target's WASM against the executor
-        // the app's state names.
-        let from = g
-            .read_local(|m, _| m.state.executor())
+        // the app's state names, or, before its `init` applied (none named yet),
+        // the one the replicated app record names (decided once, at creation).
+        let recorded = self
+            .sys(|s| s.apps.get(&req.app_id).map(|a| a.executor))
             .unwrap_or(Kind::Wasmer);
+        let from = g.read_local(|m, _| m.state.executor()).unwrap_or(recorded);
         let to = self
             .executor_of(&bundle)
             .await

@@ -406,7 +406,12 @@ impl Node {
     ) -> Result<crate::app::Applied, ApiError> {
         // A component the engine refuses fails `init` for good (reported as
         // INIT_FAILED); anything else is retried by `reconcile`.
-        let prepared = match self.prepared_for(&app.bundle).await {
+        // The bundle the group names if an upgrade gave it one before init applied
+        // (its first bundle's init timed out), else the app record's.
+        let bundle = g
+            .read_local(|m, _| m.state.bundle.clone())
+            .unwrap_or_else(|| app.bundle.clone());
+        let prepared = match self.prepared_for(&bundle).await {
             Ok(p) => Ok(p),
             Err(e) if e.code == BAD_BUNDLE => Err(format!("component refused: {}", e.message)),
             Err(e) => return Err(e),
@@ -421,7 +426,7 @@ impl Node {
         let mut timed_out = false;
         let p = g
             .propose_led(|m, applied, leadership| {
-                if m.state.initialized || m.state.bundle.is_some() {
+                if m.state.initialized || m.state.init_error.is_some() {
                     return Proposal::Reply(Vec::new());
                 }
                 let ts_ms = self.stamp(m);
@@ -454,7 +459,7 @@ impl Node {
                 }
                 timed_out = false;
                 Proposal::Append(entry_bytes(ComponentCmd::Init {
-                    bundle: app.bundle.clone(),
+                    bundle: bundle.clone(),
                     base_index: m.state.last_index,
                     ts_ms,
                     id_term,
@@ -617,7 +622,7 @@ impl Node {
         req: &CallRequest,
     ) -> Result<Applied, LocalError> {
         let bundle = g
-            .read_local(|m, _| m.state.bundle.clone())
+            .read_local(|m, _| m.component_bundle())
             .ok_or_else(|| WriteError::Unavailable("the app is not initialized yet".into()))?;
         let prepared = self
             .prepared_for(&bundle)
@@ -879,7 +884,7 @@ impl Node {
     ) -> Result<ViewAnswer, ApiError> {
         let (bundle, state, applied, ts_ms) = g.read_local(|m, applied| {
             (
-                m.state.bundle.clone(),
+                m.component_bundle(),
                 m.view(),
                 applied,
                 m.state.component.head.last_ts_ms,

@@ -2842,3 +2842,138 @@ async fn the_abi_storage_and_blob_routes_answer_for_a_component() {
     let e = alice.upload_blob(&app, b"x".to_vec()).await.unwrap_err();
     assert_eq!(refused(e), (409, "NOT_SUPPORTED".to_owned()));
 }
+
+/// The engine tests' `spin` guest (`crates/app-engine-wasmtime/tests/guests/spin`): its
+/// `handle` never returns, so every run of it, `init` included, times out (D23).
+fn spin_component() -> Vec<u8> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../app-engine-wasmtime/tests/guests/spin");
+    let target = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("guests");
+    calimero_app_build::build_component(&dir, &target)
+        .unwrap_or_else(|e| panic!("build spin: {e}"))
+        .component
+}
+
+/// Review item 2: a component app whose `init` has not applied (every run of its
+/// bundle times out, D23, so `reconcile` keeps retrying) is still a component at
+/// upgrade: the app record's executor decides until the group's state names one. A
+/// wasmer bundle is refused; a component bundle is taken, and `init` then runs on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor() {
+    // Unlimited fuel, so the spinning init hits its wall clock (a timeout, never
+    // logged) instead of running out of fuel (a trap, logged as a failed init).
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.budget = Some(calimero_app_host::Budget {
+            fuel: u64::MAX,
+            ..calimero_app_host::Budget::call()
+        });
+    })
+    .await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let stuck = alice.upload_bundle(spin_component()).await.unwrap();
+    let fixed = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let wasmer = alice.upload_bundle(wasmer_kv()).await.unwrap();
+    // Created; its init never applies (the create call itself waits 30 s for it,
+    // so it runs beside the test).
+    let creating = {
+        let cl = c.client(0);
+        let mut pk2 = SoftAuthenticator::new("localhost", ORIGIN);
+        std::mem::swap(&mut pk, &mut pk2);
+        let stuck = stuck.clone();
+        let task = tokio::spawn(async move {
+            let _s = cl.sign_in(&mut pk2).await.unwrap();
+            let r = cl
+                .post("apps", json!({ "name": "stuck", "bundle": stuck }))
+                .await;
+            (r, pk2)
+        });
+        let mut app = None;
+        for _ in 0..100 {
+            app = c.nodes[0].as_ref().unwrap().node.sys(|s| {
+                s.apps
+                    .values()
+                    .find(|a| a.name == "stuck")
+                    .map(|a| a.app_id.clone())
+            });
+            if app.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        (app.expect("the app was recorded"), task)
+    };
+    let (app, task) = creating;
+    let (created, back) = task.await.unwrap();
+    pk = back;
+    assert_eq!(
+        created.unwrap_err().code(),
+        Some("UNAVAILABLE"),
+        "the stuck app started"
+    );
+    let _s = alice.sign_in(&mut pk).await.unwrap();
+    for i in 0..3 {
+        let g = hosted_on(&c, i, &app).await;
+        assert_eq!(g.read_local(|m, _| m.state.executor()), None, "node {i}");
+    }
+    // A wasmer bundle: refused, nothing switched.
+    let e = alice
+        .upgrade_app(&app, json!({ "bundle": wasmer }), &mut pk)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("UPGRADE_FAILED"), "{e}");
+    assert!(
+        e.details().unwrap()["error"]
+            .as_str()
+            .is_some_and(|m| m.contains("across executors")),
+        "{e}"
+    );
+    for i in 0..3 {
+        let g = hosted_on(&c, i, &app).await;
+        assert_eq!(
+            g.read_local(|m, _| m.state.bundle.clone()),
+            None,
+            "node {i}"
+        );
+    }
+    // A component bundle: taken, and init then runs on it.
+    let up = alice
+        .upgrade_app(&app, json!({ "bundle": fixed }), &mut pk)
+        .await
+        .unwrap();
+    assert_eq!(up["status"], "ok", "{up}");
+    let mut done = None;
+    for _ in 0..80 {
+        if let Ok(r) = alice
+            .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+            .await
+        {
+            done = Some(r);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(done.is_some(), "the app never came up after the upgrade");
+    for i in 0..3 {
+        let g = hosted_on(&c, i, &app).await;
+        for _ in 0..100 {
+            if g.read_local(|m, _| m.state.initialized) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let (bundle, executor, initialized) = g.read_local(|m, _| {
+            (
+                m.state.bundle.clone(),
+                m.state.executor(),
+                m.state.initialized,
+            )
+        });
+        assert_eq!(bundle, Some(fixed.clone()), "node {i}");
+        assert_eq!(
+            executor,
+            Some(calimero_cloud_node::types::Executor::Component),
+            "node {i}"
+        );
+        assert!(initialized, "node {i}");
+    }
+}
