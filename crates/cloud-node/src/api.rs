@@ -1199,7 +1199,18 @@ async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Bod
                 .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))?;
         }
         crate::types::Executor::Component => {
-            let _prepared = node.prepare_bytes(&hash, body.to_vec()).await?;
+            // A refused component is a bad request, as a core module wasmer can't
+            // compile is (`400 BAD_BUNDLE`).
+            let _prepared = node
+                .prepare_bytes(&hash, body.to_vec())
+                .await
+                .map_err(|e| {
+                    if e.code == crate::node::BAD_BUNDLE {
+                        ApiError::bad_request(crate::node::BAD_BUNDLE, &e.message)
+                    } else {
+                        e
+                    }
+                })?;
         }
     }
     node.replicate_bundle(&hash, &body).await?;
@@ -2020,13 +2031,27 @@ async fn component_intents(
     } else {
         None
     };
-    let applied = node
+    let unconfirmed = consent_value.is_none();
+    let (method_name, args) = (body.method.clone(), body.args.clone());
+    let applied = match node
         .call_component(&CallRequest {
             idempotency_key: body.idempotency_key,
             consent: consent_value,
-            ..CallRequest::new(app_id.clone(), body.method, body.args, p.caller)
+            ..CallRequest::new(app_id.clone(), body.method, body.args, p.caller.clone())
         })
-        .await?;
+        .await
+    {
+        // The replica that runs it found a confirm method this node's ABI did not
+        // know (it was stale): the step-up is the usual `412 CONFIRM_REQUIRED` with
+        // a challenge (SDK reference), as on the wasmer path.
+        Err(e) if unconfirmed && e.details["code"] == "ConfirmRequired" => {
+            return Err(consent(node, &p, &app_id, &method_name, &args, None)
+                .await
+                .err()
+                .unwrap_or(e));
+        }
+        other => other?,
+    };
     Ok(component_answer(node, &app_id, &caller, applied))
 }
 
@@ -3653,8 +3678,9 @@ async fn blob_upload(
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    no_component_blobs(&app)?;
     let p = gate(&node, &headers, &app, "__blob", true).await?;
+    // After the gate: one who can't reach the app learns nothing of it (404).
+    no_component_blobs(&app)?;
     if p.caller.account().is_none() {
         return Err(ApiError::unauthenticated("sign in to upload"));
     }
@@ -3682,8 +3708,9 @@ async fn blob_download(
 ) -> Result<Response, ApiError> {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    no_component_blobs(&app)?;
     let _p = gate(&node, &headers, &app, "__blob", false).await?;
+    // After the gate: one who can't reach the app learns nothing of it (404).
+    no_component_blobs(&app)?;
     let raw = parse_blob_id(&id)?;
     if !node.blob_held(&app, &raw).await? {
         return Err(ApiError::not_found("no such blob in this app"));
@@ -3737,8 +3764,9 @@ async fn blob_list(
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    no_component_blobs(&app)?;
     let _p = gate(&node, &headers, &app, "__blob", false).await?;
+    // After the gate: one who can't reach the app learns nothing of it (404).
+    no_component_blobs(&app)?;
     let stats = node.storage_stats(&app).await?;
     Ok(Json(json!({
         "blobs": stats.blobs.iter().map(|(id, size)| blob_json(id, *size)).collect::<Vec<_>>(),
@@ -3753,8 +3781,9 @@ async fn blob_info(
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    no_component_blobs(&app)?;
     let _p = gate(&node, &headers, &app, "__blob", false).await?;
+    // After the gate: one who can't reach the app learns nothing of it (404).
+    no_component_blobs(&app)?;
     let raw = parse_blob_id(&id)?;
     let stats = node.storage_stats(&app).await?;
     let size = stats
@@ -3776,8 +3805,9 @@ async fn blob_delete(
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    no_component_blobs(&app)?;
     let p = gate(&node, &headers, &app, "__blob", true).await?;
+    // After the gate: one who can't reach the app learns nothing of it (404).
+    no_component_blobs(&app)?;
     if !manages_app(&node, &app, p.caller.account()) {
         return Err(ApiError::forbidden(
             "only the app's owner or an org admin deletes its blobs",

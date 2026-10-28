@@ -200,11 +200,22 @@ impl<M: Machine> Group<M> {
     /// already say so. Otherwise openraft's core answers: a follower is refused
     /// at once (no round trip), so it is not handed a build (a WASM run) it
     /// could not append, and a leader the metrics do not show yet confirms.
-    ///
-    /// Answers the term it leads in: the metrics' term when they say it leads
-    /// (one report names state and term together), else, after a confirmation,
-    /// the term the Raft core itself holds.
-    async fn leads_here(&self) -> Result<Leadership, WriteError> {
+    async fn leads_here(&self) -> Result<(), WriteError> {
+        if self.raft.metrics().borrow().state == ServerState::Leader {
+            return Ok(());
+        }
+        self.confirm_leader().await.map(|_read| ())
+    }
+
+    /// [`Self::leads_here`] for a builder that needs the term it leads in
+    /// ([`Self::propose_led`]): the metrics' term when they say it leads (one
+    /// report names state and term together), else, after a confirmation, the
+    /// term the Raft core holds. When the core no longer names this node leader,
+    /// it answers `NotLeader` with the current leader (the caller forwards, as an
+    /// append from a deposed node would make it), and never builds with a term
+    /// it does not lead: ids made from another node's term could collide with that
+    /// leader's (D52).
+    async fn led_term(&self) -> Result<Leadership, WriteError> {
         {
             let m = self.raft.metrics();
             let m = m.borrow();
@@ -226,10 +237,14 @@ impl<M: Machine> Group<M> {
             .await
             .map_err(|e| WriteError::Unavailable(e.to_string()))?;
         if leads {
-            Ok(Leadership { term })
-        } else {
-            Err(WriteError::Unavailable("leadership moved; retry".into()))
+            return Ok(Leadership { term });
         }
+        let m = self.raft.metrics().borrow().clone();
+        forward(
+            m.current_leader,
+            m.current_leader
+                .and_then(|id| m.membership_config.membership().get_node(&id).cloned()),
+        )
     }
 
     /// Once per term this node leads in, before its first proposal there: wait
@@ -299,7 +314,7 @@ impl<M: Machine> Group<M> {
         F: FnMut(&M, u64) -> Proposal,
     {
         let _guard = self.propose_lock.lock().await;
-        let _leadership = self.leads_here().await?;
+        self.leads_here().await?;
         self.propose_held(build).await
     }
 
@@ -314,7 +329,7 @@ impl<M: Machine> Group<M> {
         F: FnMut(&M, u64, Leadership) -> Proposal,
     {
         let _guard = self.propose_lock.lock().await;
-        let leadership = self.leads_here().await?;
+        let leadership = self.led_term().await?;
         self.catch_up(leadership).await?;
         self.propose_held(|m, applied| build(m, applied, leadership))
             .await

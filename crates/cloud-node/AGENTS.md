@@ -362,14 +362,33 @@ API and system group. What differs from the wasmer path:
   still holds the previous one; `restore` (a restart, a snapshot install) reads it
   back from the rows. Host records (`ComponentHead`: `last_ts_ms`, `last_id`,
   `install_ts_ms`, `timers`, the idempotency rings) live in the group's `Head`.
-  Idempotency (D74, `idempotency.rs`, the one rule of both executors): records in
-  `rows::CIDEM`, a ring per class in `rows::corder`; a `node:` key (the node's own, or a
-  D70 client's `node:c-…`) is kept 10 minutes, a caller's own key 24 hours, expiring once
-  the newest applied entry's timestamp (D16) passes its own by that time, never by a
-  node's clock; at most 100,000 records per app, oldest first; the newest 10,000 caller
-  keys and 1,000 node keys stay whatever their age (parity's floors). Tests:
-  `idempotency_records_are_kept_by_time_class`, `the_idempotency_cap_drops_the_oldest_first`,
-  `replicas_drop_the_same_records`.
+  Idempotency (D74 in spec v0.26, `idempotency.rs`, the one rule of both executors):
+  records in `rows::CIDEM` (wasmer: `rows::IDEM`), a ring per class in `rows::corder`
+  (wasmer: `rows::expiry`). A key's class is its prefix (`class_of`): a `node:` key (the
+  node's own, or a D70 client's `node:c-…`) is kept 10 minutes, a caller's own key 24
+  hours. A record expires once the earlier of the newest applied entry's timestamp and
+  the applying entry's own (`expiry_now`) passes its own by that time, never by a node's
+  clock, so every replica drops the same records and one entry stamped by a skewed
+  leader can't expire what follows it. At most 100,000 records per app, oldest first,
+  but the cap never takes a class below its floor (the newest 10,000 caller keys and
+  1,000 node keys stay whatever their age). Each entry drops at most `EXPIRY_STEP`
+  (4,096) records; the rest carries over. Tests: `idempotency_records_are_kept_by_time_class`,
+  `the_idempotency_cap_drops_the_oldest_first`, `replicas_drop_the_same_records`,
+  `a_burst_of_node_keys_does_not_evict_a_callers_record_below_its_floor`,
+  `one_skewed_entry_does_not_expire_the_records_written_after_it`,
+  `a_callers_key_containing_node_is_kept_24_hours`, and on wasmer the same with
+  `_on_wasmer`, plus `records_over_the_new_cap_drain_a_bounded_number_per_entry`.
+  **Upgrade note (rolling upgrade, no version gate):** while a cluster runs both the
+  previous release and this one, an app's replicas keep different idempotency records:
+  the previous release expires only when a keyed call applies, against that call's own
+  timestamp, and caps 1,000,000 records per class; this one expires on every entry and
+  caps 100,000 per app, draining any excess `EXPIRY_STEP` per entry. Records are never
+  compared between replicas and app state is unaffected; what differs is how long a key
+  is honoured, which is decided by the replica that leads the app when the retry
+  arrives. Both keep a key for its class's time unless the app is over its cap, and
+  both keep the newest records of each class (the floors) whatever their age, so a
+  retry within D70's ~9 s window is answered either way. Finish upgrading an app's
+  replicas before relying on the new cap.
 - **Calls** (`Node::call_component`, routed by the API from the app's executor):
   inside `Group::propose_led`, off the async workers (`node::off_workers`, the one
   copy both executors use); `base_index` is the app's last entry

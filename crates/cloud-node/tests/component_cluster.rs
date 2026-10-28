@@ -3052,3 +3052,168 @@ async fn a_component_sees_no_organization_but_its_own() {
         "a personal app saw its owner's orgs"
     );
 }
+
+/// Review nit: the blob routes judge access first. A caller who can't reach a private
+/// component app gets `404` on every blob route (as on any route), never the `409`
+/// that would tell them it exists and is a component.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_blob_routes_hide_a_private_component_app_from_outsiders() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let id = "00".repeat(32);
+    let status = |e: calimero_cloud_client::Error| match e {
+        calimero_cloud_client::Error::Api { status, code, .. } => (status, code),
+        other => panic!("{other:?}"),
+    };
+    let not_found = (404, "NOT_FOUND".to_owned());
+    assert_eq!(
+        status(bob.list_blobs(&app).await.unwrap_err()),
+        not_found,
+        "list"
+    );
+    assert_eq!(
+        status(bob.blob_info(&app, &id).await.unwrap_err()),
+        not_found,
+        "info"
+    );
+    assert_eq!(
+        status(bob.download_blob(&app, &id).await.unwrap_err()),
+        not_found,
+        "download"
+    );
+    assert_eq!(
+        status(bob.delete_blob(&app, &id).await.unwrap_err()),
+        not_found,
+        "delete"
+    );
+    assert_eq!(
+        status(bob.upload_blob(&app, b"x".to_vec()).await.unwrap_err()),
+        not_found,
+        "upload"
+    );
+    // Its owner still gets the component's answer.
+    assert_eq!(
+        status(alice.list_blobs(&app).await.unwrap_err()),
+        (409, "NOT_SUPPORTED".to_owned())
+    );
+}
+
+/// Review nit (D70): a same-key retry is answered from its record even when an upgrade
+/// since removed the method: the replay comes before the ABI check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_retry_replays_even_after_an_upgrade_removed_its_method() {
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let kv = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let gated = alice.upload_bundle(wasm("org-gated")).await.unwrap();
+    let app = alice.create_app("kv", &kv, json!({})).await.unwrap();
+    let first = alice
+        .call(
+            &app,
+            "set",
+            json!({ "key": "a", "value": "1" }),
+            Some("retry-me"),
+        )
+        .await
+        .unwrap();
+    let up = alice
+        .upgrade_app(&app, json!({ "bundle": gated }), &mut pk)
+        .await
+        .unwrap();
+    assert_eq!(up["status"], "ok", "{up}");
+    // `set` is gone from the running bundle; a new call of it is refused...
+    let e = alice
+        .call(
+            &app,
+            "set",
+            json!({ "key": "a", "value": "2" }),
+            Some("fresh"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.details().unwrap()["code"], "UnknownMethod", "{e}");
+    // ...but the retry of the committed one is its recorded answer, from any node.
+    for i in 0..3 {
+        let cl = c.client(i);
+        let _s = cl.sign_in(&mut pk).await.unwrap();
+        let again = cl
+            .call(
+                &app,
+                "set",
+                json!({ "key": "a", "value": "1" }),
+                Some("retry-me"),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("node {i}: {e}"));
+        assert_eq!(again.index, first.index, "node {i}");
+    }
+}
+
+/// Review nit, codes: a confirm method a stale front node did not know is confirm
+/// (here: a node that hosts no replica reads the directory's bundle, org-gated,
+/// while the group runs kv, whose `wipe` is a confirm method) still answers the
+/// spec's step-up, `412 CONFIRM_REQUIRED` with a challenge, as the wasmer path does,
+/// not the leader's `422 ConfirmRequired`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_confirm_method_a_stale_front_missed_still_asks_for_a_passkey() {
+    let c = Cluster::start(4).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let gated = alice.upload_bundle(wasm("org-gated")).await.unwrap();
+    let kv = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("app", &gated, json!({})).await.unwrap();
+    let leader = c.app_leader(&app).unwrap();
+    let g = c.nodes[leader].as_ref().unwrap().node.hosted(&app).unwrap();
+    let _p = g
+        .propose(|m, _| {
+            calimero_log::Proposal::Append(
+                serde_json::to_vec(&calimero_cloud_node::component::ComponentCmd::Upgrade {
+                    bundle: kv.clone(),
+                    base_index: m.state.last_index,
+                })
+                .unwrap(),
+            )
+        })
+        .await
+        .unwrap();
+    drop(g);
+    let record = c.nodes[0].as_ref().unwrap().node.app(&app).await.unwrap();
+    let outsider = (0..4)
+        .find(|i| !record.replicas.contains(&(*i as u64 + 1)))
+        .expect("a node without a replica");
+    for i in (0..4).filter(|i| *i != outsider) {
+        for _ in 0..100 {
+            if running_bundle(&c, i, &app).as_deref() == Some(kv.as_str()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    let front = c.client(outsider);
+    let _s = front.sign_in(&mut pk).await.unwrap();
+    let e = front.call(&app, "wipe", json!({}), None).await.unwrap_err();
+    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+    assert!(
+        e.details().unwrap()["challengeId"].is_string(),
+        "no challenge: {e}"
+    );
+}
+
+/// Review nit, codes: a component the engine refuses at `POST /bundles` is a
+/// `400 BAD_BUNDLE`, as a core module wasmer can't compile is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_component_upload_is_a_400_like_wasmers() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    // A component's header (layer 1) and nothing a component needs after it.
+    let mut broken = b"\0asm\x0d\0\x01\0".to_vec();
+    broken.extend_from_slice(&[0; 16]);
+    let e = alice.upload_bundle(broken).await.unwrap_err();
+    let status = match &e {
+        calimero_cloud_client::Error::Api { status, .. } => *status,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!((status, e.code()), (400, Some("BAD_BUNDLE")), "{e}");
+}

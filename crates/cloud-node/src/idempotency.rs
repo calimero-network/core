@@ -70,10 +70,13 @@ impl Ring {
     }
 }
 
-/// The class of a stored key: `0` a caller's own key, `1` a `node:` key.
+/// The class of an idempotency key as the call carried it (not the stored
+/// `caller|key`): `1` for a key starting `node:`, `0` for a caller's own key, D74
+/// in spec v0.26 ("a key's class is decided by its prefix"). A caller's key that
+/// merely contains `node:` (`sync-node:42`) is a caller's key.
 #[must_use]
 pub fn class_of(key: &str) -> usize {
-    usize::from(key.contains(NODE_KEY_PREFIX))
+    usize::from(key.starts_with(NODE_KEY_PREFIX))
 }
 
 /// How long a record of `class` is kept past its entry's timestamp.
@@ -126,9 +129,15 @@ pub fn expiry_now(newest_ts_ms: u64, entry_ts_ms: Option<u64>) -> Option<u64> {
 }
 
 /// Store `record` under `key` (the stored key, `caller|key`) and append the key
-/// to its class's ring.
-pub fn record(tx: &mut StateTx<'_>, rows: &Rows, rings: &mut [Ring; 2], key: &str, record: &[u8]) {
-    let class = class_of(key);
+/// to the ring of `class` ([`class_of`] the call's key).
+pub fn record(
+    tx: &mut StateTx<'_>,
+    rows: &Rows,
+    rings: &mut [Ring; 2],
+    class: usize,
+    key: &str,
+    record: &[u8],
+) {
     tx.put_hidden(rows.tag, key.as_bytes(), record);
     let ring = &mut rings[class];
     tx.put((rows.ring)(class as u8, ring.next), key.as_bytes().to_vec());

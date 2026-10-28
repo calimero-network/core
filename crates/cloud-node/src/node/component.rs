@@ -628,16 +628,6 @@ impl Node {
             .prepared_for(&bundle)
             .await
             .map_err(|e| WriteError::Unavailable(e.message))?;
-        // The ABI checks again, against the bundle this replica runs (Ruling 40); the
-        // proposal below re-runs the call if an upgrade lands before it is built.
-        abi_check(
-            &prepared,
-            &req.method,
-            &req.caller,
-            false,
-            req.consent.is_some(),
-        )
-        .map_err(LocalError::Refused)?;
         // The caller's standing (org role, teams, read-only rows) is read from the
         // system state below: it includes every change committed before the call,
         // wherever it was committed.
@@ -662,8 +652,12 @@ impl Node {
             None => false,
         };
         let args = args_bytes(&req.args);
+        let mut refused = None;
         let p = g
             .propose_led(|m, applied, leadership| {
+                refused = None;
+                // A retry of a call that committed is its recorded answer, whatever
+                // the bundle runs now (D70): the replay comes before the ABI check.
                 if let Some(key) = &req.idempotency_key {
                     if let Some(prev) = m.component_replay(&req.caller, key) {
                         return Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default());
@@ -676,6 +670,17 @@ impl Node {
                         ..Applied::unlogged(applied, Outcome::default())
                     };
                     return Proposal::Reply(serde_json::to_vec(&again).unwrap_or_default());
+                }
+                // The ABI checks again, against the bundle this replica runs (Ruling 40).
+                if let Err(e) = abi_check(
+                    &prepared,
+                    &req.method,
+                    &req.caller,
+                    false,
+                    req.consent.is_some(),
+                ) {
+                    refused = Some(e);
+                    return Proposal::Reply(Vec::new());
                 }
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
@@ -729,6 +734,9 @@ impl Node {
                 }))))
             })
             .await?;
+        if let Some(e) = refused {
+            return Err(LocalError::Refused(e));
+        }
         let a: Applied = serde_json::from_slice(&p.output)
             .map_err(|e| LocalError::Write(WriteError::Unavailable(e.to_string())))?;
         if p.appended && a.conflict {
@@ -777,6 +785,11 @@ impl Node {
     pub async fn call_component(&self, req: &CallRequest) -> Result<Applied, ApiError> {
         // The loop below retries forwards that timed out and calls that raced a
         // leader change; a call that did commit must replay, not run again.
+        // A call that came with a key may be a retry of one that committed, which
+        // replays whatever the bundle runs now (D70); only the replica that runs it
+        // can tell, after the replay, so the ABI is checked here only for a call
+        // that came without one.
+        let came_keyed = req.idempotency_key.is_some();
         let keyed;
         let req = if req.idempotency_key.is_some() {
             req
@@ -794,8 +807,10 @@ impl Node {
             return Err(args_too_large());
         }
         let app = self.app(&req.app_id).await?;
-        self.abi_gate(&app, &req.method, &req.caller, false, req.consent.is_some())
-            .await?;
+        if !came_keyed {
+            self.abi_gate(&app, &req.method, &req.caller, false, req.consent.is_some())
+                .await?;
+        }
         let body = serde_json::to_value(req).map_err(|e| ApiError::internal(&e.to_string()))?;
         for _attempt in 0..30 {
             // A conflict (the diff was built on state a leader change replaced)
@@ -849,8 +864,7 @@ impl Node {
         if args_bytes(&req.args).len() > MAX_ARGS_BYTES {
             return Err(args_too_large());
         }
-        self.abi_gate(app, &req.method, &req.caller, false, req.consent.is_some())
-            .await?;
+        // The ABI is checked by `call_local_component`, after the replay (D70).
         let g = self
             .app_group(app.group)
             .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;

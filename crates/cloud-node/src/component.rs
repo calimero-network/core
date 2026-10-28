@@ -500,15 +500,18 @@ impl AppMachine {
         applied: &Applied,
     ) {
         let id = idem_key(caller, key);
+        // The class (and so the TTL) is the call's key's prefix (D74, spec v0.26).
+        let class = idempotency::class_of(key);
         let record = IdemRecord {
             applied: applied.clone(),
-            expires_ms: ts_ms.saturating_add(idempotency::ttl_ms(idempotency::class_of(&id))),
+            expires_ms: ts_ms.saturating_add(idempotency::ttl_ms(class)),
         };
         match serde_json::to_vec(&record) {
             Ok(v) => idempotency::record(
                 tx,
                 &IDEM_ROWS,
                 &mut self.state.component.head.idempotency,
+                class,
                 &id,
                 &v,
             ),
@@ -1106,6 +1109,22 @@ mod tests {
             "a record written after the skew expired"
         );
         assert!(honoured(&r, "later"));
+    }
+
+    /// D74 (v0.26): a key's class is decided by its prefix. A caller's own key that
+    /// merely contains `node:` (`sync-node:42`) keeps its 24 hours.
+    #[test]
+    fn a_callers_key_containing_node_is_kept_24_hours() {
+        const MIN: u64 = 60 * 1000;
+        let mut r = Rig::new();
+        r.machine.idem_limits.keep = [0, 0];
+        let _i = r.apply(1, &init(0));
+        let _a = r.apply(2, &call_at(1, "sync-node:42", 1_000));
+        let _a = r.apply(3, &call_at(2, "x", 1_000 + 11 * MIN));
+        assert!(
+            honoured(&r, "sync-node:42"),
+            "a caller's key got the node class"
+        );
     }
 
     /// Retention is a function of the applied entries alone: two replicas fed the

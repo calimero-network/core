@@ -623,13 +623,22 @@ impl AppMachine {
 
     /// Remember `applied` for an idempotency key until `expires_ms` (D74's rule,
     /// `crate::idempotency`).
-    fn remember(&mut self, tx: &mut StateTx<'_>, key: String, applied: Applied, expires_ms: u64) {
+    fn remember(
+        &mut self,
+        tx: &mut StateTx<'_>,
+        class: usize,
+        key: String,
+        applied: Applied,
+        expires_ms: u64,
+    ) {
         let record = IdemRecord {
             applied,
             expires_ms,
         };
         match serde_json::to_vec(&record) {
-            Ok(v) => crate::idempotency::record(tx, &IDEM_ROWS, &mut self.state.expiry, &key, &v),
+            Ok(v) => {
+                crate::idempotency::record(tx, &IDEM_ROWS, &mut self.state.expiry, class, &key, &v)
+            }
             Err(e) => tx.fail(e),
         }
     }
@@ -886,8 +895,10 @@ impl AppMachine {
                 }
                 if let (Some(key), false) = (&call.idempotency_key, a.conflict) {
                     let id = Self::idem_key(&call.caller, key);
-                    let ttl = crate::idempotency::ttl_ms(crate::idempotency::class_of(&id));
-                    self.remember(tx, id, a.clone(), call.ts_ms.saturating_add(ttl));
+                    // The class (and so the TTL) is the call's key's prefix (D74).
+                    let class = crate::idempotency::class_of(key);
+                    let ttl = crate::idempotency::ttl_ms(class);
+                    self.remember(tx, class, id, a.clone(), call.ts_ms.saturating_add(ttl));
                 }
                 a
             }
@@ -944,7 +955,8 @@ impl AppMachine {
         let mut records: Vec<_> = old.idempotency.into_iter().collect();
         records.sort_by_key(|(_, r)| r.expires_ms);
         for (key, r) in records {
-            let class = usize::from(key.contains(NODE_KEY_PREFIX));
+            // The stored key is `caller|key`; the class is the call's key's prefix.
+            let class = crate::idempotency::class_of(key.split_once('|').map_or(&*key, |(_, k)| k));
             tx.put_hidden(rows::IDEM, key.as_bytes(), &serde_json::to_vec(&r)?);
             let ring = &mut self.state.expiry[class];
             tx.put(rows::expiry(class as u8, ring.next), key.into_bytes());
@@ -2227,6 +2239,27 @@ mod tests {
         };
         assert!(m.replay(&caller, "k59").is_some());
         assert!(m.replay(&caller, "k0").is_none());
+    }
+
+    /// D74 (v0.26) on wasmer: a key's class is decided by its prefix; a caller's own
+    /// key that merely contains `node:` keeps its 24 hours.
+    #[test]
+    fn a_callers_key_containing_node_is_kept_24_hours_on_wasmer() {
+        const MIN: u64 = 60 * 1000;
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut m) = machine(&dir);
+        m.idem_limits.keep = [0, 0];
+        let caller = Caller::Account {
+            account: "acct".into(),
+        };
+        let cmd = call(&m, "sync-node:42", 1_000, &[], 0);
+        let _a = apply(&mut m, 1, &cmd);
+        let cmd = call(&m, "x", 1_000 + 11 * MIN, &[], 0);
+        let _a = apply(&mut m, 2, &cmd);
+        assert!(
+            m.replay(&caller, "sync-node:42").is_some(),
+            "a caller's key got the node class"
+        );
     }
 
     /// Wasmer retention is a function of the applied entries alone: two replicas
