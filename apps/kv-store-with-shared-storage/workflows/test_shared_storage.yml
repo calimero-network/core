@@ -167,6 +167,9 @@ steps:
     key: evil
     value: forged
   account: new-calimero-node-2
+  # The SDK refuses a non-writer's write into the cell; the method returns
+  # the refusal, so nothing is committed.
+  expected_error: APP_ERROR
 - name: Let the forged delta attempt (and fail) to propagate
   type: wait
   seconds: 20.0
