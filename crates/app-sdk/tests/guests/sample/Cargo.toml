@@ -1,0 +1,13 @@
+[package]
+name = "sample-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-app-sdk = { path = "../../.." }
+
+[workspace]

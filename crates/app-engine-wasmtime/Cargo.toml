@@ -1,0 +1,44 @@
+[package]
+name = "calimero-app-engine-wasmtime"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "The wasmtime engine for calimero:app components: fuel, epochs, limits and a checked cache"
+publish = false
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+calimero-app-build.workspace = true
+calimero-app-host.workspace = true
+calimero-app-wit.workspace = true
+eyre.workspace = true
+hex.workspace = true
+ring.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+# Only what the engine uses: no `cache`, `gc`, `wat`, `threads`, `component-model-async`,
+# profiling or debug support (Ruling 21).
+wasmtime = { workspace = true, features = [
+    "component-model",
+    "cranelift",
+    "parallel-compilation",
+    "pooling-allocator",
+    "runtime",
+    "std",
+] }
+wasmparser.workspace = true
+wasmtime-wasi = { workspace = true, features = ["p2"] }
+
+[features]
+# Exposes `WasmtimeEngine::with_pool_size` to integration tests.
+testing = []
+
+[dev-dependencies]
+calimero-app-engine-wasmtime = { path = ".", features = ["testing"] }
+tempfile.workspace = true
+wat.workspace = true

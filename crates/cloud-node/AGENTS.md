@@ -10,9 +10,28 @@ is its command line.
 ## Mental model
 
 - **One Raft log per app** (`calimero-log`). The leader runs the WASM call
-  (`app::Executor`, today's `calimero-runtime` over a copy-on-write `Overlay`) and
-  appends `{ call, outcome { result, diff, events } }`. Followers apply the diff;
+  and appends `{ call, outcome { result, diff, events } }`. Followers apply the diff;
   nothing is re-executed. `base_index` guards against applying a stale diff.
+- **Two executors** (`types::Executor`; the transition the spec records as D53,
+  overriding D1/D15 until v1 apps move): a v1 core module (SDK 0.12) runs on
+  wasmer (`app::Executor`, today's `calimero-runtime` over a copy-on-write
+  `Overlay`; everything below that is not under "Component executor"); a
+  `calimero:app` component (the v2 SDK) runs on wasmtime through the host core
+  (`node/component.rs`, `component.rs`). The executor is decided once, from the WASM
+  the app's bundle names (a package's service or a raw upload,
+  `wasmparser::Parser::is_component`), when the app is created
+  (`AppRecord::executor`, absent = wasmer), and the app's `init` entry records it in
+  the group's state (`AppState::executor`, in `Head`, so a snapshot carries it; a
+  state from before has none: wasmer). Each executor's entries are a format of its
+  own (`app::AppCmd`, `component::ComponentCmd`, distinct `op` names) and write a
+  keyspace of its own (`rows::KV`/`IDEM` and `rows::CKV`/`CIDEM`/`CORDER`); a replica
+  applies an entry with the executor its state names, and one of the other format
+  changes nothing (tests `a_wasmer_entry_never_applies_to_a_component_app`,
+  `wasmer_and_component_apps_share_a_cluster`). An upgrade that would move an app
+  between executors is refused at the leader (`upgrade_local`), either way, until
+  rebuild migrations (D38) exist (`upgrades_across_executors_are_refused_both_ways`).
+  A data directory written before components opens and its apps run on wasmer
+  (`old_datadir.rs`, from a directory `a09547b2b` wrote).
 - **System group** (`system.rs`, group 1): fleet, app directory, bundles, accounts,
   passkeys, API keys, refresh tokens, session keys, organizations, teams, invites.
   Commands carry their `actor`; `apply` checks authority, so the log decides.
@@ -324,6 +343,71 @@ is its command line.
   never "unknown"). Regression:
   `a_reused_refresh_token_revokes_the_session_on_a_lagging_node`.
 
+## Component executor (`calimero:app` components, the v2 SDK)
+
+From the app-runtime prototype (spec `app-runtime-v0.14`), on this branch's log,
+API and system group. What differs from the wasmer path:
+
+- **Engine and host** (`node/component.rs`): one `WasmtimeEngine` per node
+  (`Node::app_engine`), compiled artifacts cached under `<data_dir>/components`, each
+  with a MAC under a key derived from K_r (S8). `Node::prepared_for` prepares a bundle
+  once (single-flight, Ruling 44; `concurrent_first_uses_of_a_bundle_prepare_it_once`).
+  `POST /bundles` and package installs run the engine's `prepare` on a component
+  where they compile a core module on wasmer.
+- **State** (`component::ComponentState`, D46): the component's stored keys
+  (generation prefix included, D39) are hidden rows of the group (`rows::CKV`, sealed
+  and HMAC-keyed like a wasmer app's), and each replica keeps them in memory too as an
+  ordered `Arc<BTreeMap>`: a run gets the current version as its `StateView` (ordered
+  `range` scans, which hidden rows cannot answer); `apply` copies it only while a run
+  still holds the previous one; `restore` (a restart, a snapshot install) reads it
+  back from the rows. Host records (`ComponentHead`: `last_ts_ms`, `last_id`,
+  `install_ts_ms`, `timers`, the idempotency ring) live in the group's `Head`.
+  Idempotency (D16): `rows::CIDEM`, kept for `IDEMPOTENCY_ENTRIES` (100,000) entries.
+- **Calls** (`Node::call_component`, routed by the API from the app's executor):
+  inside `Group::propose_led`, off the async workers (`node::off_workers`, the one
+  copy both executors use); `base_index` is the app's last entry
+  (`AppState::last_index`), as on the wasmer path. Statuses (spec section 5, D23,
+  D36): `422 APP_ERROR` with `details.{code, fields}`, `422 TRAP` with
+  `details.{kind, detail}`, `503 TIMEOUT` (not logged, key not spent); arguments
+  over `MAX_ARGS_BYTES` (512 KiB) are `413 ARGS_TOO_LARGE`, an entry over the log's
+  cap is logged trapped `HostDenied` (D50). Answers carry the node's receipt.
+- **ABI gate** (`Node::abi_gate`, `abi_check`, S5, Ruling 31/40): from the ABI of the
+  bundle the group runs; default-deny; `/intents` reads `view` and `confirm` from it
+  (`AppRecord::confirm_methods` is the wasmer path's).
+- **Unique ids** (D52): `id_term` is the term `propose_led`'s leadership check found
+  (no round of its own), `id_seq` this node's per-term counter (`Node::next_id`),
+  continuing from `max(memory, AppState last_id)`. Safety on this log: a deposed
+  leader's entry never commits or applies as a no-op through `base_index`; a leader
+  restored into its old term catches up with its own log once before its first
+  proposal (`propose_led`), so the counter continues after every entry it appended,
+  committed index saved or not. Tests:
+  `unique_ids_survive_a_crash_before_the_commit_index_reaches_the_disk`
+  (deterministic, through the log's test hooks), `unique_ids_survive_a_restart_into_the_same_term`,
+  `unique_ids_continue_when_a_leader_restarts_into_its_term_in_a_three_replica_group`,
+  `a_snapshot_install_carries_a_components_host_records`.
+- **Time and timers** (D16, D19, D34): `Node::app_clock` (`Config::clock_offset_ms`,
+  `Node::advance_clock` under feature `testing`); `lib.rs` polls `node::TIMER_POLL`
+  and `Node::tick_timers` proposes each due slot (`ComponentCmd::Tick`) as
+  `Caller::System`; a slot at or before the applied one changes nothing.
+- **Events** (R9): a component's `EventRecord` carries its `audience` and caller;
+  the event stream (`api::local_events`, the subscriber passed to a peer's
+  `internal/events`) and a call's answer check `SystemState::receives` when they
+  send it, so a removed member stops receiving at once. A wasmer app's events have
+  no audience and go out as before.
+- **Upgrades**: this branch's route and authority (`POST /apps/{app}/upgrade`,
+  passkey consent, `UpgradeApp`); at the leader a component upgrades code-only
+  (`componentUpgrade`) and a named `migrate` is refused `MigrationsNotSupported`.
+- **Per-executor endpoints** (`the_abi_storage_and_blob_routes_answer_for_a_component`):
+  `/apps/{app}/abi` answers the ABI the component embeds (`calimero:abi`);
+  `/apps/{app}/storage` counts its keys and bytes; the blob routes answer
+  `409 NOT_SUPPORTED` (R8). The host refuses blobs, search, xcall, event handlers,
+  TEE runs and outbound HTTPS to a component, as the prototype did; a wasmer app's
+  xcall into a component is refused (`node::COMPONENT_REFUSES`).
+- **Not here**: proto's `__upgrade` through `/intents` (Ruling 36; this branch refuses
+  every `__` method there) and the leader's own re-check of upgrade authority
+  (Ruling 45; this branch judges it in the API and the system log); their tests are
+  `#[ignore]`d with the reason.
+
 ## Not done yet (prototype)
 
 rollback counter (proposed: a mero-kms epoch, restored nodes rejoin as learners),
@@ -341,6 +425,12 @@ for a in blobs kv-store-with-handlers kv-store-with-shared-storage search-chat x
   migrations/scenario-identity-downgrade-v1 migrations/scenario-identity-downgrade-v2; do
   cargo mero build --manifest-path apps/$a/Cargo.toml; done
 cargo test -p calimero-cloud-node    # 3-node cluster in process, sealed, real WASM
+# component fixtures (apps/v2-fixtures/{kv,org-gated}, apps/rooms) are built on first use by
+# tests/common/mod.rs into target/app-components (needs the wasm32-wasip2 target)
+cargo test --release -p calimero-cloud-node --test rooms   # Rooms A1 (shared scenario), A3, A5
+# A4, the fault test (merod run --dev processes on ports 3600-3699; release merod and
+# meroctl in RV2_BIN_DIR, default target/release; the cached Rooms component)
+python3 -I crates/cloud-node/tests/fault/rooms_fault.py --iterations 200 --seed 1
 # calls/s and p50/p99 through that cluster (harness: tests/harness/cluster.rs), as JSON:
 cargo bench -p calimero-cloud-node --bench cluster_throughput -- --secs 15 --out cluster.json
 cargo run -p merod -- --help

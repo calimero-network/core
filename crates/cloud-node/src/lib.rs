@@ -17,6 +17,7 @@ pub mod app;
 pub mod app_host;
 pub mod attest;
 pub mod backup;
+pub mod component;
 pub mod error;
 pub mod inspect;
 pub mod kms;
@@ -169,6 +170,20 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
             }
             let Some(node) = weak.upgrade() else { return };
             node.reconcile().await;
+        }
+    }));
+
+    // Timer ticks (D34) of the component apps this node leads.
+    let weak = Arc::downgrade(&node);
+    let stop = shutdown.clone();
+    drop(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = tokio::time::sleep(node::TIMER_POLL) => {}
+            }
+            let Some(node) = weak.upgrade() else { return };
+            node.tick_timers();
         }
     }));
 

@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::types::{
-    Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Invite, NodeRecord, Org, OrgId,
-    OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
+    Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Invite, NodeRecord, Org,
+    OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -391,6 +391,46 @@ impl SystemState {
                 .as_ref()
                 .and_then(|o| self.orgs.get(o))
                 .is_some_and(|o| o.in_team(a, team)),
+        }
+    }
+
+    /// Whether `account` (`None`: anonymous) receives an event of `app` sent to
+    /// `audience` by `emitter` (R9): it must still reach the app, and be in the
+    /// audience as the system state stands at this moment, so a removed member
+    /// stops receiving at once.
+    #[must_use]
+    pub fn receives(
+        &self,
+        app: &AppRecord,
+        audience: &Audience,
+        emitter: Option<&str>,
+        account: Option<&str>,
+    ) -> bool {
+        if !self.may_reach(app, account) {
+            return false;
+        }
+        let org = |id: &str| {
+            app.org
+                .as_deref()
+                .filter(|o| *o == id)
+                .and_then(|o| self.orgs.get(o))
+        };
+        match (audience, account) {
+            (Audience::All, _) => true,
+            (_, None) => false,
+            (Audience::Caller, Some(a)) => emitter == Some(a),
+            (Audience::Accounts { accounts }, Some(a)) => accounts.iter().any(|x| x == a),
+            (Audience::Team { team }, Some(a)) => app
+                .org
+                .as_ref()
+                .and_then(|o| self.orgs.get(o))
+                .is_some_and(|o| o.in_team(a, team)),
+            (Audience::OrgMembers { org: id }, Some(a)) => {
+                org(id).is_some_and(|o| o.role(a).is_some_and(|r| r >= OrgRole::Member))
+            }
+            (Audience::OrgAdmins { org: id }, Some(a)) => {
+                org(id).is_some_and(|o| o.role(a).is_some_and(|r| r >= OrgRole::Admin))
+            }
         }
     }
 

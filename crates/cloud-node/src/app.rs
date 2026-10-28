@@ -3,6 +3,14 @@
 //! The leader executes a call against the applied state and appends the
 //! result as one entry: `{ call, outcome { result, diff, events } }`. Every
 //! replica applies the diff; none re-executes.
+//!
+//! An app runs on one of two executors ([`crate::types::Executor`]), recorded by
+//! its `init` entry: a v1 core module on wasmer (this module's [`AppCmd`] and
+//! [`Executor`]), or a `calimero:app` component on wasmtime
+//! ([`crate::component`]). Each executor's entries are a format of their own
+//! and write a keyspace of their own; a replica applies an entry with the
+//! executor the app's state names, and an entry of the other format changes
+//! nothing.
 
 use calimero_storage::shared_writers::CellWriters;
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -257,7 +265,7 @@ impl StateRead for BTreeMap<Bytes, Bytes> {
 /// The app's own keys and the idempotency table are hidden rows (the key on
 /// disk is an HMAC; see `calimero_log::store::hide`); the rest are the node's
 /// bookkeeping.
-mod rows {
+pub(crate) mod rows {
     /// The app's storage: `env::storage_*`, private storage, blobs, writers.
     pub const KV: u8 = b'k';
     /// Idempotency records, by `caller|key`.
@@ -268,6 +276,19 @@ mod rows {
     pub const EVENT: u8 = b'e';
     /// The idempotency keys in the order they expire, per TTL class: `r ‖ class ‖ n`.
     pub const EXPIRY: u8 = b'r';
+
+    /// A component's storage (`crate::component`): its stored keys.
+    pub const CKV: u8 = b'c';
+    /// A component's idempotency records, by `caller|key`.
+    pub const CIDEM: u8 = b'j';
+    /// A component's idempotency keys in the order they were recorded: `q ‖ n`.
+    pub const CORDER: u8 = b'q';
+
+    pub fn corder(n: u64) -> Vec<u8> {
+        let mut k = vec![CORDER];
+        k.extend_from_slice(&n.to_be_bytes());
+        k
+    }
 
     pub fn event(n: u64) -> Vec<u8> {
         let mut k = vec![EVENT];
@@ -289,6 +310,12 @@ pub struct KvView {
 }
 
 impl KvView {
+    /// The group's state these rows are read from (`None` before `attach`).
+    #[must_use]
+    pub(crate) const fn group(&self) -> Option<&GroupState> {
+        self.state.as_ref()
+    }
+
     /// Every key and value of the app's storage, in no particular order.
     pub fn for_each(&self, mut f: impl FnMut(&[u8], &[u8])) -> eyre::Result<()> {
         let Some(state) = &self.state else {
@@ -340,6 +367,13 @@ struct Head {
     events_next: u64,
     #[serde(default)]
     expiry: [Ring; 2],
+    /// The executor the app's `init` entry chose. Absent in a state written
+    /// before components existed: wasmer ([`AppState::executor`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    executor: Option<crate::types::Executor>,
+    /// A component's host records; absent for a wasmer app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    component: Option<crate::component::ComponentHead>,
 }
 
 #[derive(Clone, Default)]
@@ -359,9 +393,23 @@ pub struct AppState {
     events_first: u64,
     events_next: u64,
     expiry: [Ring; 2],
+    /// The executor the `init` entry recorded; see [`Self::executor`].
+    pub executor: Option<crate::types::Executor>,
+    /// A component's host records and its storage in memory (empty for wasmer).
+    pub component: crate::component::ComponentState,
 }
 
 impl AppState {
+    /// The executor the app's entries are applied with: the one its `init`
+    /// recorded; wasmer for an app initialized before components existed;
+    /// `None` before `init` applied.
+    #[must_use]
+    pub fn executor(&self) -> Option<crate::types::Executor> {
+        self.executor.or_else(|| {
+            (self.bundle.is_some() || self.initialized).then_some(crate::types::Executor::Wasmer)
+        })
+    }
+
     fn head(&self) -> Head {
         Head {
             bundle: self.bundle.clone(),
@@ -374,6 +422,9 @@ impl AppState {
             events_first: self.events_first,
             events_next: self.events_next,
             expiry: self.expiry,
+            executor: self.executor,
+            component: (self.executor == Some(crate::types::Executor::Component))
+                .then(|| self.component.head.clone()),
         }
     }
 
@@ -388,6 +439,8 @@ impl AppState {
         self.events_first = h.events_first;
         self.events_next = h.events_next;
         self.expiry = h.expiry;
+        self.executor = h.executor;
+        self.component.head = h.component.unwrap_or_default();
     }
 }
 
@@ -427,6 +480,11 @@ pub struct AppMachine {
     pub touched_since: u64,
     /// Records kept per idempotency class whatever their age (client, node).
     idem_keep: [u64; 2],
+    /// A component's last applied ticks with their outcome, for tests (feature
+    /// `testing`: the Rooms cluster runner checks a tick step's `expect`). Not
+    /// part of the state, and not in a production build.
+    #[cfg(feature = "testing")]
+    pub ticks: crate::component::Ticks,
 }
 
 impl AppMachine {
@@ -440,7 +498,24 @@ impl AppMachine {
             touched: VecDeque::new(),
             touched_since: u64::MAX,
             idem_keep: [IDEMPOTENCY_MIN_KEEP, NODE_KEY_MIN_KEEP],
+            #[cfg(feature = "testing")]
+            ticks: crate::component::Ticks::new(),
         }
+    }
+
+    /// Append `rec` to the event ring, dropping the oldest past [`EVENT_RING`],
+    /// and hand it to live subscribers.
+    pub(crate) fn push_event(&mut self, tx: &mut StateTx<'_>, rec: EventRecord) {
+        match serde_json::to_vec(&rec) {
+            Ok(v) => tx.put(rows::event(self.state.events_next), v),
+            Err(e) => tx.fail(e),
+        }
+        self.state.events_next += 1;
+        while self.state.events_next - self.state.events_first > EVENT_RING as u64 {
+            tx.delete(rows::event(self.state.events_first));
+            self.state.events_first += 1;
+        }
+        let _receivers = self.events_tx.send(rec);
     }
 
     /// The events kept for resuming subscriptions, from entry `from` on.
@@ -506,6 +581,15 @@ impl AppMachine {
     /// a scan of its whole state.
     #[must_use]
     pub fn storage_stats(&self) -> StorageStats {
+        // A component's storage is its own keyspace, in memory: no blob marks (R8).
+        if self.state.executor() == Some(crate::types::Executor::Component) {
+            let kv = &self.state.component.kv;
+            return StorageStats {
+                keys: kv.len() as u64,
+                bytes: kv.iter().map(|(k, v)| (k.len() + v.len()) as u64).sum(),
+                ..StorageStats::default()
+            };
+        }
         let prefix = blob_key(&[0; 32]);
         let prefix = &prefix[..prefix.len() - 32];
         let mut stats = StorageStats::default();
@@ -653,22 +737,17 @@ impl AppMachine {
                 }
             }
             for (seq, (kind, data)) in outcome.events.iter().enumerate() {
-                let rec = EventRecord {
-                    index,
-                    seq: u32::try_from(seq).unwrap_or(u32::MAX),
-                    kind: kind.clone(),
-                    data: data.clone(),
-                };
-                match serde_json::to_vec(&rec) {
-                    Ok(v) => tx.put(rows::event(self.state.events_next), v),
-                    Err(e) => tx.fail(e),
-                }
-                self.state.events_next += 1;
-                while self.state.events_next - self.state.events_first > EVENT_RING as u64 {
-                    tx.delete(rows::event(self.state.events_first));
-                    self.state.events_first += 1;
-                }
-                let _receivers = self.events_tx.send(rec);
+                self.push_event(
+                    tx,
+                    EventRecord {
+                        index,
+                        seq: u32::try_from(seq).unwrap_or(u32::MAX),
+                        kind: kind.clone(),
+                        data: data.clone(),
+                        audience: None,
+                        caller: None,
+                    },
+                );
             }
         }
         Applied {
@@ -704,6 +783,55 @@ impl Machine for AppMachine {
     }
 
     fn apply(&mut self, index: u64, command: &[u8], tx: &mut StateTx<'_>) -> Vec<u8> {
+        use crate::types::Executor as Kind;
+        // Each entry is applied with the executor the app's state names; before
+        // `init`, the entry itself names it.
+        let component = match self.state.executor() {
+            Some(Kind::Component) => true,
+            Some(Kind::Wasmer) => false,
+            None => crate::component::ComponentCmd::is_init(command),
+        };
+        let out = if component {
+            self.apply_component(tx, index, command)
+        } else {
+            self.apply_wasmer(tx, index, command)
+        };
+        self.state.last_index = index;
+        match serde_json::to_vec(&self.state.head()) {
+            Ok(h) => tx.put(rows::HEAD.to_vec(), h),
+            Err(e) => tx.fail(e),
+        }
+        out
+    }
+
+    fn restore(&mut self, _data: &[u8]) -> eyre::Result<()> {
+        let head = match self.state.kv.state.as_ref().and_then(|s| s.get(rows::HEAD)) {
+            Some(raw) => serde_json::from_slice(&raw)?,
+            None => Head::default(),
+        };
+        self.state.set_head(head);
+        // A component's storage, in memory again from its rows.
+        self.state.component.kv = crate::component::Kv::default();
+        if self.state.executor() == Some(crate::types::Executor::Component) {
+            if let Some(state) = self.state.kv.state.clone() {
+                self.state.component.load(&state)?;
+            }
+        }
+        // What search knows to catch up from is gone with the old state.
+        self.touched.clear();
+        self.touched_since = u64::MAX;
+        Ok(())
+    }
+
+    fn import(&mut self, data: &[u8], tx: &mut StateTx<'_>) -> eyre::Result<()> {
+        self.import_legacy(data, tx)
+    }
+}
+
+impl AppMachine {
+    /// Apply one entry of an app on wasmer. An entry that is not of that format
+    /// (a component's) changes nothing.
+    fn apply_wasmer(&mut self, tx: &mut StateTx<'_>, index: u64, command: &[u8]) -> Vec<u8> {
         let applied = match serde_json::from_slice::<AppCmd>(command) {
             Ok(AppCmd::Init {
                 bundle,
@@ -712,6 +840,7 @@ impl Machine for AppMachine {
             }) => {
                 let a = self.apply_outcome(tx, index, base_index, &outcome, 0);
                 if !a.conflict {
+                    self.state.executor = Some(crate::types::Executor::Wasmer);
                     self.state.bundle = Some(bundle);
                     self.state.initialized = outcome.status == Status::Ok;
                     if !self.state.initialized {
@@ -816,27 +945,12 @@ impl Machine for AppMachine {
                 conflict: true,
             },
         };
-        self.state.last_index = index;
-        match serde_json::to_vec(&self.state.head()) {
-            Ok(h) => tx.put(rows::HEAD.to_vec(), h),
-            Err(e) => tx.fail(e),
-        }
         serde_json::to_vec(&applied).unwrap_or_default()
     }
 
-    fn restore(&mut self, _data: &[u8]) -> eyre::Result<()> {
-        let head = match self.state.kv.state.as_ref().and_then(|s| s.get(rows::HEAD)) {
-            Some(raw) => serde_json::from_slice(&raw)?,
-            None => Head::default(),
-        };
-        self.state.set_head(head);
-        // What search knows to catch up from is gone with the old state.
-        self.touched.clear();
-        self.touched_since = u64::MAX;
-        Ok(())
-    }
-
-    fn import(&mut self, data: &[u8], tx: &mut StateTx<'_>) -> eyre::Result<()> {
+    /// Bring in an app state written by the previous storage format (wasmer apps
+    /// only: components came after it).
+    fn import_legacy(&mut self, data: &[u8], tx: &mut StateTx<'_>) -> eyre::Result<()> {
         let old: LegacyAppState = serde_json::from_slice(data)?;
         for (k, v) in &old.kv {
             tx.put_hidden(rows::KV, &k.0, &v.0);
