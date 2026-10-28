@@ -27,9 +27,6 @@ use crate::types::{now_ms, AppId, Caller, EventRecord};
 /// Idempotency retention's classes and floors, shared by both executors
 /// (`crate::idempotency`, D74).
 pub use crate::idempotency::{IDEMPOTENCY_MIN_KEEP, IDEMPOTENCY_TTL_MS, NODE_KEY_PREFIX};
-use crate::idempotency::{NODE_KEY_MIN_KEEP, NODE_KEY_TTL_MS};
-/// The most records of one class an app keeps at all, whatever their age.
-const IDEMPOTENCY_MAX_KEEP: u64 = 1_000_000;
 /// Events kept for resuming subscriptions.
 pub const EVENT_RING: usize = 10_000;
 
@@ -229,6 +226,12 @@ struct IdemRecord {
     expires_ms: u64,
 }
 
+/// Where a wasmer app's idempotency records live (D74's rule, `crate::idempotency`).
+const IDEM_ROWS: crate::idempotency::Rows = crate::idempotency::Rows {
+    tag: rows::IDEM,
+    ring: rows::expiry,
+};
+
 /// Reads an app's state: the keys its runs see.
 pub trait StateRead: Send + Sync {
     fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
@@ -350,6 +353,10 @@ struct Head {
     events_next: u64,
     #[serde(default)]
     expiry: [Ring; 2],
+    /// The newest timestamp of a call applied (D74: what idempotency records
+    /// expire by). Absent in a state written before: 0, raised by the next call.
+    #[serde(default)]
+    newest_ts_ms: u64,
     /// The executor the app's `init` entry chose. Absent in a state written
     /// before components existed: wasmer ([`AppState::executor`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -376,6 +383,8 @@ pub struct AppState {
     events_first: u64,
     events_next: u64,
     expiry: [Ring; 2],
+    /// The newest timestamp of a call applied (D74).
+    newest_ts_ms: u64,
     /// The executor the `init` entry recorded; see [`Self::executor`].
     pub executor: Option<crate::types::Executor>,
     /// A component's host records and its storage in memory (empty for wasmer).
@@ -405,6 +414,7 @@ impl AppState {
             events_first: self.events_first,
             events_next: self.events_next,
             expiry: self.expiry,
+            newest_ts_ms: self.newest_ts_ms,
             executor: self.executor,
             component: (self.executor == Some(crate::types::Executor::Component))
                 .then(|| self.component.head.clone()),
@@ -422,6 +432,7 @@ impl AppState {
         self.events_first = h.events_first;
         self.events_next = h.events_next;
         self.expiry = h.expiry;
+        self.newest_ts_ms = h.newest_ts_ms;
         self.executor = h.executor;
         self.component.head = h.component.unwrap_or_default();
     }
@@ -461,14 +472,12 @@ pub struct AppMachine {
     pub touched: VecDeque<(u64, Vec<String>)>,
     /// The first index `touched` is complete from.
     pub touched_since: u64,
-    /// Records kept per idempotency class whatever their age (client, node).
-    idem_keep: [u64; 2],
     /// A component's last applied ticks with their outcome, for tests (feature
     /// `testing`: the Rooms cluster runner checks a tick step's `expect`). Not
     /// part of the state, and not in a production build.
     #[cfg(feature = "testing")]
     pub ticks: crate::component::Ticks,
-    /// A component's idempotency floors and cap (D74's; tests scale them down).
+    /// Idempotency floors and cap, both executors (D74's; tests scale them down).
     pub(crate) idem_limits: crate::idempotency::Limits,
 }
 
@@ -482,7 +491,6 @@ impl AppMachine {
             events_tx,
             touched: VecDeque::new(),
             touched_since: u64::MAX,
-            idem_keep: [IDEMPOTENCY_MIN_KEEP, NODE_KEY_MIN_KEEP],
             #[cfg(feature = "testing")]
             ticks: crate::component::Ticks::new(),
             idem_limits: crate::idempotency::Limits::default(),
@@ -613,52 +621,16 @@ impl AppMachine {
             .map(|r| r.applied)
     }
 
-    /// Remember `applied` for an idempotency key until `expires_ms`, and forget
-    /// keys that expired by `now` (the log's own clock).
-    fn remember(
-        &mut self,
-        tx: &mut StateTx<'_>,
-        key: String,
-        applied: Applied,
-        expires_ms: u64,
-        now: u64,
-    ) {
-        let class = usize::from(key.contains(NODE_KEY_PREFIX));
+    /// Remember `applied` for an idempotency key until `expires_ms` (D74's rule,
+    /// `crate::idempotency`).
+    fn remember(&mut self, tx: &mut StateTx<'_>, key: String, applied: Applied, expires_ms: u64) {
         let record = IdemRecord {
             applied,
             expires_ms,
         };
         match serde_json::to_vec(&record) {
-            Ok(v) => tx.put_hidden(rows::IDEM, key.as_bytes(), &v),
+            Ok(v) => crate::idempotency::record(tx, &IDEM_ROWS, &mut self.state.expiry, &key, &v),
             Err(e) => tx.fail(e),
-        }
-        let ring = &mut self.state.expiry[class];
-        tx.put(rows::expiry(class as u8, ring.next), key.into_bytes());
-        ring.next += 1;
-        // Each class expires in the order it was written, so the oldest go first,
-        // but never one of the newest `idem_keep` (see IDEMPOTENCY_MIN_KEEP).
-        for (c, ring) in self.state.expiry.iter_mut().enumerate() {
-            while ring.first < ring.next {
-                let kept = ring.next - ring.first;
-                if kept <= self.idem_keep[c] {
-                    break;
-                }
-                let slot = rows::expiry(c as u8, ring.first);
-                let Some(key) = tx.get(&slot) else {
-                    ring.first += 1;
-                    continue;
-                };
-                let live = tx
-                    .get_hidden(rows::IDEM, &key)
-                    .and_then(|r| serde_json::from_slice::<IdemRecord>(&r).ok())
-                    .is_some_and(|r| r.expires_ms > now);
-                if live && kept <= IDEMPOTENCY_MAX_KEEP {
-                    break;
-                }
-                tx.delete_hidden(rows::IDEM, &key);
-                tx.delete(slot);
-                ring.first += 1;
-            }
         }
     }
 
@@ -906,19 +878,13 @@ impl AppMachine {
                         Some(Trigger::XCall { .. }) | None => {}
                     }
                 }
+                if !a.conflict {
+                    self.state.newest_ts_ms = self.state.newest_ts_ms.max(call.ts_ms);
+                }
                 if let (Some(key), false) = (&call.idempotency_key, a.conflict) {
-                    let ttl = if key.starts_with(NODE_KEY_PREFIX) {
-                        NODE_KEY_TTL_MS
-                    } else {
-                        IDEMPOTENCY_TTL_MS
-                    };
-                    self.remember(
-                        tx,
-                        Self::idem_key(&call.caller, key),
-                        a.clone(),
-                        call.ts_ms + ttl,
-                        call.ts_ms,
-                    );
+                    let id = Self::idem_key(&call.caller, key);
+                    let ttl = crate::idempotency::ttl_ms(crate::idempotency::class_of(&id));
+                    self.remember(tx, id, a.clone(), call.ts_ms.saturating_add(ttl));
                 }
                 a
             }
@@ -931,6 +897,20 @@ impl AppMachine {
                 conflict: true,
             },
         };
+        // D74: what has expired by the newest applied call's timestamp goes, on
+        // every entry, and the app keeps at most the cap.
+        crate::idempotency::expire(
+            tx,
+            &IDEM_ROWS,
+            &mut self.state.expiry,
+            self.idem_limits,
+            self.state.newest_ts_ms,
+            |raw| {
+                serde_json::from_slice::<IdemRecord>(raw)
+                    .ok()
+                    .map(|r| (r.expires_ms, r.applied.index))
+            },
+        );
         serde_json::to_vec(&applied).unwrap_or_default()
     }
 
@@ -2028,7 +2008,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (_engine, mut m) = machine(&dir);
         // Time alone decides here; the kept minimum is tested below.
-        m.idem_keep = [0, 0];
+        m.idem_limits.keep = [0, 0];
         let caller = Caller::Account {
             account: "acct".into(),
         };
@@ -2060,6 +2040,108 @@ mod tests {
         // Each ring dropped exactly what expired: "old", and the node's key.
         assert_eq!(m.state.expiry[0].first, 1);
         assert_eq!(m.state.expiry[1].first, 1);
+    }
+
+    /// D74 on wasmer: a caller's own key is still honoured at 23 hours of entry time
+    /// and gone past 24; a `node:` key (a D70 client's `node:c-…`) past 10 minutes;
+    /// judged by the newest applied call's timestamp, never a node's clock.
+    #[test]
+    fn idempotency_records_are_kept_by_time_class_on_wasmer() {
+        const MIN: u64 = 60 * 1000;
+        const HOUR: u64 = 60 * MIN;
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut m) = machine(&dir);
+        m.idem_limits.keep = [0, 0];
+        let caller = Caller::Account {
+            account: "acct".into(),
+        };
+        let t0 = 1_000;
+        for (index, key, ts) in [
+            (1, "mine", t0),
+            (2, "node:c-retry", t0),
+            (3, "x1", t0 + 9 * MIN),
+        ] {
+            let cmd = call(&m, key, ts, &[], 0);
+            let _a = apply(&mut m, index, &cmd);
+        }
+        assert!(
+            m.replay(&caller, "node:c-retry").is_some(),
+            "gone before 10 minutes"
+        );
+        let cmd = call(&m, "x2", t0 + 11 * MIN, &[], 0);
+        let _a = apply(&mut m, 4, &cmd);
+        assert!(
+            m.replay(&caller, "node:c-retry").is_none(),
+            "outlived 10 minutes"
+        );
+        let cmd = call(&m, "x3", t0 + 23 * HOUR, &[], 0);
+        let _a = apply(&mut m, 5, &cmd);
+        assert!(
+            m.replay(&caller, "mine").is_some(),
+            "dropped before 24 hours"
+        );
+        let cmd = call(&m, "x4", t0 + 24 * HOUR + 1, &[], 0);
+        let _a = apply(&mut m, 6, &cmd);
+        assert!(m.replay(&caller, "mine").is_none(), "outlived 24 hours");
+        assert!(m.replay(&caller, "x4").is_some());
+    }
+
+    /// D74's cap on wasmer (scaled down to 3 through `Limits::cap`; the real one is
+    /// 100,000 per app): the oldest record goes first, whatever its class.
+    #[test]
+    fn the_idempotency_cap_drops_the_oldest_first_on_wasmer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut m) = machine(&dir);
+        m.idem_limits = crate::idempotency::Limits {
+            keep: [0, 0],
+            cap: 3,
+        };
+        let caller = Caller::Account {
+            account: "acct".into(),
+        };
+        let keys = ["k1", "node:k2", "k3", "node:k4", "k5"];
+        for (n, key) in keys.iter().enumerate() {
+            let cmd = call(&m, key, 1_000, &[], 0);
+            let _a = apply(&mut m, n as u64 + 1, &cmd);
+        }
+        let kept: Vec<&str> = keys
+            .into_iter()
+            .filter(|k| m.replay(&caller, k).is_some())
+            .collect();
+        assert_eq!(kept, vec!["k3", "node:k4", "k5"]);
+    }
+
+    /// Wasmer retention is a function of the applied entries alone: two replicas
+    /// fed the same entries keep the same records.
+    #[test]
+    fn replicas_drop_the_same_records_on_wasmer() {
+        const MIN: u64 = 60 * 1000;
+        let caller = Caller::Account {
+            account: "acct".into(),
+        };
+        let keys = ["a", "node:b", "c", "node:d", "e", "f"];
+        let feed = |dir: &tempfile::TempDir| {
+            let (engine, mut m) = machine(dir);
+            m.idem_limits = crate::idempotency::Limits {
+                keep: [0, 0],
+                cap: 4,
+            };
+            for (n, key) in keys.iter().enumerate() {
+                let cmd = call(&m, key, 1_000 + n as u64 * 4 * MIN, &[], 0);
+                let _a = apply(&mut m, n as u64 + 1, &cmd);
+            }
+            let kept: Vec<bool> = keys
+                .iter()
+                .map(|k| m.replay(&caller, k).is_some())
+                .collect();
+            (engine, m.state.expiry, kept)
+        };
+        let (d1, d2) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (_e1, rings1, kept1) = feed(&d1);
+        let (_e2, rings2, kept2) = feed(&d2);
+        assert_eq!(rings1, rings2);
+        assert_eq!(kept1, kept2);
+        assert!(kept1.iter().any(|k| !k), "nothing expired: {kept1:?}");
     }
 
     /// Xil's review, issue 10: a leader whose clock jumped 25 hours ahead
