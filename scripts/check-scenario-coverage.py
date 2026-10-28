@@ -127,7 +127,7 @@ def check(root: Path) -> list[str]:
             problems.append(f"{f}: not YAML ({e.__class__.__name__})")
             continue
         if not isinstance(wf, dict) or wf.get("backend") != "cloud-v2":
-            problems.append(f"{f}: not a release-v2 workflow (backend: cloud-v2); nothing runs it")
+            problems.append(f"{f}: not a merobox cloud-v2 workflow (backend: cloud-v2); nothing runs it")
             continue
         na = wf.get("not_applicable")
         if na is not None:

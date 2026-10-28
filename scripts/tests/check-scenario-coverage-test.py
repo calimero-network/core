@@ -80,7 +80,7 @@ CASES = [
         "a v1 workflow left on disk runs nowhere",
         E2E_SHARDED,
         {"workflows/a.yml": wf(), "apps/x/workflows/v1.yml": "nodes: {count: 2}\nsteps: []\n"},
-        ["apps/x/workflows/v1.yml: not a release-v2 workflow"],
+        ["apps/x/workflows/v1.yml: not a merobox cloud-v2 workflow"],
     ),
     (
         "not_applicable with a reason is accepted",
