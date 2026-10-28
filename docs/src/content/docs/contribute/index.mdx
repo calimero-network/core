@@ -1,36 +1,41 @@
 ---
 title: Contribute to Calimero Core
-description: Orientation for developers hacking on the Calimero Core Rust workspace — the repo shape, the crate map, and the dev workflow.
+description: Orientation for developers working on the Calimero Core workspace — the node, the CLI, the crate map and the development workflow.
 sidebar:
   label: Overview
   order: 1
 ---
 
-import { CardGrid, LinkCard, Steps, Aside } from '@astrojs/starlight/components';
+import { CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
 
-Calimero Core is a Rust workspace of ~30 crates plus example apps and tools.
-This track orients you in the codebase and the development workflow.
+Calimero Core is a Rust workspace: the node (`merod` over
+`calimero-node`), its command line (`meroctl`), the Raft log, the sealed
+transport, identity and attestation crates, the app SDK and WASM runtime, the
+example apps under `apps/` and the tools under `tools/`.
 
 ## Start here
 
 <Steps>
 
-1. Read the **[architecture orientation](/contribute/architecture/)** — the actor model and the crate map.
-2. Skim the **[Protocol Reference](/protocol/overview/)** for the model the code implements.
-3. Set up your **[development workflow](/contribute/development/)** — build, test, the PR conventions.
+1. Read the **[architecture orientation](/contribute/architecture/)**: what is inside a node and the path of a call.
+2. Find your crate in the **[crate guide](/contribute/crate-guide/)**, then read its `AGENTS.md`.
+3. Set up the **[development workflow](/contribute/development/)**: build, run a local cluster, the checks before a PR.
+4. Read the **[testing strategy](/contribute/testing/)** before writing a test.
 
 </Steps>
 
 ## Orientation
 
 <CardGrid>
-  <LinkCard title="Architecture &amp; crate map" href="/contribute/architecture/" description="Actors, layers, and what each crate does." />
-  <LinkCard title="Protocol Reference" href="/protocol/overview/" description="The model the codebase implements." />
+  <LinkCard title="Architecture" href="/contribute/architecture/" description="The node's parts and the path of a call." />
+  <LinkCard title="Crate guide" href="/contribute/crate-guide/" description="Every crate and tool, grouped by role." />
+  <LinkCard title="Cloud overview" href="/cloud/overview/" description="What Calimero is, for users and operators." />
 </CardGrid>
 
 ## Working on core
 
 <CardGrid>
-  <LinkCard title="Development workflow" href="/contribute/development/" description="Build, test, lint, commit and PR conventions." />
-  <LinkCard title="Writing documentation" href="/contribute/docs/" description="How this docs site is structured and contributed to." />
+  <LinkCard title="Development workflow" href="/contribute/development/" description="Build, run, the checks before a PR, conventions." />
+  <LinkCard title="Testing strategy" href="/contribute/testing/" description="Cluster tests, CLI tests, SDK harnesses, merobox." />
+  <LinkCard title="Writing documentation" href="/contribute/docs/" description="How this docs site is organized and checked." />
 </CardGrid>

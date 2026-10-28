@@ -1,6 +1,6 @@
 //! TDX quote verification.
 
-use calimero_server_primitives::admin::Quote;
+use crate::quote::Quote;
 use dcap_qvl::collateral::{CollateralClient, INTEL_PCS_URL};
 use dcap_qvl::tcb_info::TcbInfo as DcapTcbInfo;
 use dcap_qvl::verify::verify;

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
 # gen-blob-fixtures.sh — make the large, RANDOM blob fixtures the cross-node
-# size sweep uploads. Not committed: 416 MiB of binary has no business in git,
+# size sweep uploads. Not committed: 456 MiB of binary has no business in git,
 # and the content must differ per run anyway (see below).
 #
 # Usage (from apps/blobs, or anywhere — paths resolve off this script):
-#   ./scripts/gen-blob-fixtures.sh                  # CI tier: 1 5 10 50 100 250
+#   ./scripts/gen-blob-fixtures.sh                  # CI tier: 1 5 10 40 50 100 250
 #   BLOB_FIXTURE_SIZES_MIB="1 250 500" ./scripts/gen-blob-fixtures.sh
 #
 # WHY RANDOM, NOT ZEROS: blobs are content-addressed. A fixture of predictable
@@ -14,19 +14,18 @@
 # under test never touches the network — a green run proving nothing. Random
 # content makes each run's blob genuinely absent on the fetching node.
 #
-# WHY THESE SIZES: CHUNK_SIZE is 1 MiB, so 1 MiB is the only size that does not
-# walk the chunk graph; 5/10/50/100/250 MiB exercise the streaming path at
-# 5 → 250 chunks. The tier stops at 250 MiB because the hard ceiling is 500 MiB
-# (MAX_BLOB_SIZE_BYTES, crates/network/src/handlers/commands/request_blob.rs) and
-# anything past it is refused by design, not broken — 250 proves bulk transfer
-# works while leaving the refusal path out of this sweep. Keep this default in
-# step with the sizes in workflows/blob-cross-node-sizes.yml.
+# WHY THESE SIZES: the node keeps one blob to 47 MiB (MAX_BLOB_BYTES,
+# crates/node/src/node.rs: it reaches the other nodes base64-encoded in
+# one sealed request). 1/5/10/40 MiB must transfer byte-exact between nodes, 40
+# being the largest that fits; 50/100/250 MiB (v1's sweep, whose ceiling was
+# 500 MiB) must be refused naming the limit. Keep this default in step with the
+# sizes in workflows/blob-cross-node-sizes.yml.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT_DIR="$SCRIPT_DIR/../static/generated"
-SIZES_MIB="${BLOB_FIXTURE_SIZES_MIB:-1 5 10 50 100 250}"
+SIZES_MIB="${BLOB_FIXTURE_SIZES_MIB:-1 5 10 40 50 100 250}"
 
 mkdir -p "$OUT_DIR"
 

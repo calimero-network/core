@@ -1,545 +1,239 @@
 ---
-title: Admin & JSON-RPC API Reference
-description: Real endpoint paths, methods, and purposes for the merod HTTP server.
+title: Node API Reference
+description: Every HTTP route a merod node serves — transport, credentials, errors, and the client, Ops and internal routes, with the meroctl command for each.
 sidebar:
+  label: Node API
   order: 6
 ---
 
-import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
-import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Aside } from '@astrojs/starlight/components';
 
-The node's HTTP server (default bind `/ip4/127.0.0.1/tcp/2528` and
-`/ip6/::1/tcp/2528`) exposes four
-surfaces: a REST-style **admin API**, a **JSON-RPC** endpoint for app
-execution, a **WebSocket** stream, and a **Server-Sent Events** stream. Every
-path below is taken directly from the axum routers in the server crate.
+A `merod` node serves one HTTP API on its `--listen` address. The route table is
+`router` in `crates/node/src/api.rs`; this page lists every route in it.
+v1's separate admin API, JSON-RPC endpoint, WebSocket and SSE server are gone:
+calls, reads, events and administration are all routes of this one API.
 
-## Base paths
+## Transport
 
-| Surface | Base path | Enabled by |
+- **In the clear:** only `GET /health` and `GET /attestation`.
+- **Sealed:** everything else travels inside the sealed channel
+  (`calimero-sealed`, wire format v2, Noise NK). A client fetches
+  `/attestation`, checks the quote binds the node's transport key and that the
+  quote's measurements match a signed mero-tee release it trusts, and only then
+  seals requests to that key. The sealed envelope wraps the router from
+  outside, so an opened request meets the same handlers as a direct one.
+- A node started with `--dev` also accepts plain requests; a TDX node refuses
+  them.
+- Requests are limited to 64 MiB.
+
+Use a client that does this: `meroctl`, `calimero-client` (Rust), mero-js
+`CalimeroClient`, or calimero-client-py `CloudClient`. A hand-written `curl`
+reaches only `/health` and `/attestation` on a TDX node.
+
+## Credentials
+
+The `Authorization: Bearer` header carries one of:
+
+| Credential | Form | Obtained from |
 | --- | --- | --- |
-| Admin API | `/admin-api` | `[server.admin] enabled = true` |
-| JSON-RPC | `/jsonrpc` | `[server.jsonrpc] enabled = true` |
-| WebSocket | `/ws` | `[server.websocket] enabled = true` |
-| Server-Sent Events | `/sse` | `[server.sse] enabled = true` |
-| Admin dashboard UI | `/admin-dashboard` | `[server.admin] enabled = true` |
+| Session token | `v1.<claims>.<mac>`, 15 minutes | a passkey ceremony, or `/auth/refresh` |
+| API key | `cal_…` | `POST /auth/apikeys` |
+| Ops token | the configured token | `--ops-token` / `--ops-token-sha256` |
 
-<Aside type="note">
-Every base path can be prefixed by setting the `NODE_PATH_PREFIX` environment
-variable. For example `NODE_PATH_PREFIX=/node1` makes the admin API live at
-`/node1/admin-api`. The tables below show the unprefixed paths.
-</Aside>
+Cluster peers add an `x-cluster-auth` header on `/internal/*`. See
+[Authentication](/operate/auth/) for lifetimes, scopes and revocation.
 
-Every request body on these surfaces is a closed set.
-A body carrying a field the node does not declare is a 400 at deserialization, never a silent drop, so a client built against a different shape fails loudly instead of installing, joining, or upgrading something it did not name.
-Query strings stay lenient.
+The **Who** column below uses these terms:
 
-## Choosing an API surface
-
-All four surfaces are mounted on a single HTTP server and wrapped by the **same
-optional auth layer** — when embedded auth is on, every one of them is guarded
-identically; when it is off, all four are open. They differ in shape, not in how
-they authenticate:
-
-| Surface | Path | Shape | Use it for |
-| --- | --- | --- | --- |
-| Admin REST | `/admin-api` | Request/response | Node management: install apps, create contexts and groups, manage members and aliases, inspect state. |
-| JSON-RPC | `/jsonrpc` | Request/response | One-shot app calls. `execute` (run a method) and `sync_status`. |
-| WebSocket | `/ws` | Bidirectional, long-lived | App calls plus live updates over one connection: `execute`, `subscribe`, `unsubscribe`. |
-| SSE | `/sse` | Server→client stream | A read-only event feed when you only need to *receive* events (no custom request headers needed). |
-
-Two practical notes:
-
-- **There is one execute, reached two ways.** The `execute` over JSON-RPC and the
-  `execute` over WebSocket resolve to the **same execution kernel** — same
-  executor resolution, same runtime invocation, same result envelope. Pick
-  JSON-RPC for a single stateless call; pick WebSocket when you also want to
-  subscribe to events on the same connection.
-- **Query vs. mutate is not a flag you set.** Whether an `execute` call only
-  reads state or commits a change is decided by the target method's own
-  `#[app::view]` declaration in the app, not by the transport or any request
-  field. The same `execute` request shape covers both.
-
-## Authentication
-
-Admin routes split into **protected** and **public** sets. The protected set is
-wrapped in an auth guard whose behavior depends on `[server] auth_mode`:
-
-- `proxy` (default) — the node expects an external auth proxy in front of it.
-- `embedded` — the bundled `mero-auth` service enforces auth in-process.
-
-The public routes below carry no auth guard and are always reachable when the
-admin API is enabled.
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET | `/admin-api/health` | Liveness/health check. |
-| GET | `/admin-api/is-authed` | Reports whether the caller is authenticated. |
-
-### CORS and browser / Tauri clients
-
-The server applies one CORS layer to every mounted route. With embedded auth it
-allows `Any` origin (or the `[server.cors] allowed_origins` list when set),
-`Any` request header, the methods `GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`OPTIONS`,
-and sets `allow_private_network(true)` so requests from a public-origin page to
-a loopback node pass the browser's private-network preflight.
-
-In proxy auth mode the node checks no caller itself, so it judges every browser
-request: one that carries an `Origin`, or the `Sec-Fetch-Site` header a browser
-sends even on a same-origin `GET`. (`Sec-Fetch-Mode` alone does not count: Node's
-built-in `fetch` sends it on every request.) Such a request is served when:
-
-- its origin is listed in `[server.cors] allowed_origins`; or
-- its origin is a loopback page (`localhost`, `*.localhost`, `127.0.0.0/8`,
-  `[::1]`, any port), including the desktop webview's `tauri://localhost`,
-  whatever host it calls; or
-- **every** host it names (`Host`, and `X-Forwarded-Host` if present) is one of
-  the node's own, and the origin is the node's own origin (it matches one of
-  those hosts) or absent.
-
-The loopback rule means that in proxy mode any page served from localhost can
-reach the admin API, whatever port it is on.
-Use proxy mode only on a development machine or behind a proxy that checks every
-caller.
-
-A host is the node's own when it is a loopback name, an IP address, or the host
-of an `allowed_origins` entry. A browser's `Host` is whatever name it resolved,
-so on its own it proves nothing: under DNS rebinding a page on
-`attacker.example` re-points its name at the node and sends that name as both
-`Origin` and `Host`. **A node served to browsers under a host name of its own,
-for example behind a proxy at `https://node.example.com`, must list that origin
-in `allowed_origins`**, or its own pages are refused.
-
-Any other browser request gets `403` before a handler runs, on every route
-including `/jsonrpc`, `/ws` and `/sse`, and CORS does not answer it.
-A WebSocket upgrade is held to this rule with embedded auth as well; see [WebSocket](#websocket).
-Private-network access is advertised only to origins listed in
-`allowed_origins`. Requests with neither an `Origin` nor `Sec-Fetch-Site` (curl,
-meroctl, SDKs outside a browser, Node's `fetch`) are unaffected, whatever host
-they name.
-
-Because the response uses `Any` origin, `allow_credentials` is **intentionally
-not set** (the two are incompatible per the CORS spec, so enabling it would be a
-no-op for browsers). Cookie/credentialed auth therefore does not work against
-the default configuration; pass tokens via the `Authorization` header instead.
-
-Cross-origin clients (browser SPAs, Tauri webviews) can only read response
-headers that the server explicitly exposes. The layer exposes exactly three:
-
-| Exposed header | Use |
+| Who | Means |
 | --- | --- |
-| `x-auth-error` | Signals the auth-failure reason. A 401 from an expired-but-refreshable token carries `X-Auth-Error: token_expired`. |
-| `x-auth-user` | The authenticated user: an opaque ID, stable across logins and token refreshes; a password reset issues a new one. |
-| `x-auth-permissions` | The caller's resolved permissions. |
+| anyone | no credential needed |
+| signed in | a session or an API key |
+| session | a passkey session; an API key is refused (`403`) |
+| account holder | a passkey session not bound to an app's frontend |
+| installer | an account holder, or an API key scoped to no app and no method and not read-only |
+| app access | whoever the app's access setting admits (`public` admits anyone); an API key's app, method and read-only scope apply |
+| ops | the ops token |
+| peer | another node of the cluster |
 
-To implement transparent refresh-on-401, read `X-Auth-Error` on a 401: if it is
-`token_expired`, refresh the access token and retry; otherwise treat it as a
-hard auth failure. If these headers are not exposed (e.g. behind a proxy that
-strips them), every access-token expiry surfaces as a hard logout instead.
+Authority beyond the credential (an org admin, the app's owner, the holder of a
+governance decision) is checked when the command applies to the system log,
+so every node reaches the same verdict; a refusal there answers
+`400 REJECTED`.
 
-## JSON-RPC
+## Errors
 
-A single endpoint accepts JSON-RPC 2.0 requests. The `method` field selects the
-operation; `params` carries its arguments.
-
-<SeqDiagram
-  id="d-op-jsonrpc"
-  title="A JSON-RPC execute request"
-  lanes={[
-    { label: 'Client', color: '#f0883e' },
-    { label: 'Server', color: '#58a6ff' },
-    { label: 'Context', color: '#3fb950' },
-    { label: 'Network', color: '#a371f7' },
-  ]}
-  steps={[
-    { from: 0, to: 1, label: 'POST /jsonrpc { method: "execute", params }' },
-    { from: 1, to: 1, label: 'dispatch on method = execute' },
-    { from: 1, to: 2, label: 'execute(contextId, method, argsJson)' },
-    { from: 2, to: 2, label: 'run app method → state delta', color: '#a5ff11' },
-    { from: 2, to: 3, label: 'broadcast op (state delta) on context topic' },
-    { from: 2, to: 1, label: 'outcome { returns }', dashed: true },
-    { from: 1, to: 0, label: 'JSON-RPC 2.0 result', dashed: true },
-  ]}
-/>
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| POST | `/jsonrpc` | JSON-RPC 2.0 request dispatch. |
-
-Supported `method` values:
-
-| `method` | Purpose |
-| --- | --- |
-| `execute` | Execute an application method against a context (mutating or query). Params: `contextId`, `method`, `argsJson`, optional `substitute` aliases. |
-| `sync_status` | Report sync status. |
+An error answer has an HTTP status and a JSON body:
 
 ```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "execute",
-  "params": {
-    "contextId": "<context-id>",
-    "method": "set",
-    "argsJson": { "key": "a", "value": "b" },
-    "substitute": []
-  }
-}
+{ "status": 403, "error": "FORBIDDEN", "message": "this needs a passkey session, not an API key" }
 ```
 
-## WebSocket
+with `details` when there is more to say (for example `leaderUrl` with
+`421 NOT_LEADER`). The codes an operator meets most:
 
-| Method | Path | Purpose |
+| Status | `error` | Means |
 | --- | --- | --- |
-| GET | `/ws` | WebSocket upgrade. Carries `execute`, `subscribe`, and `unsubscribe` messages over the socket. |
+| 400 | `BAD_REQUEST`, `BAD_NONCE`, `BAD_PACKAGE`, `BAD_BUNDLE`, `UNKNOWN_CHALLENGE`, `EXPIRED_CHALLENGE`, `TOO_FEW`, `NO_REGISTRY` | The request is malformed, refers to nothing valid, or needs a registry the node lacks. |
+| 400 | `REJECTED` | The system log refused the command when it applied; `message` says why (for example the caller is not an admin of the organization). |
+| 401 | `UNAUTHENTICATED` | No, unknown, expired or revoked credential. |
+| 403 | `FORBIDDEN` | The credential may not do this (scope, role, governance, read-only). |
+| 404 | `NOT_FOUND` | No such object, or one the caller may not see. |
+| 409 | `CONFLICT` | The state does not allow it now. |
+| 412 | `CONFIRM_REQUIRED` | A passkey assertion is needed; `details` carries the challenge. |
+| 413 | `TOO_LARGE` | Over a size limit (a bundle over 16 MiB, a log entry over 1 MiB). |
+| 421 | `NOT_LEADER` | Send it to the leader named in `details.leaderUrl`. |
+| 422 | `INIT_FAILED`, `APP_ERROR`, `UPGRADE_FAILED` | The app's code refused. |
+| 429 | `QUOTA_EXCEEDED`, `RATE_LIMITED` | An account quota, or a node's limit on open streams or ceremonies. |
+| 503 | `UNAVAILABLE`, `NOT_CAUGHT_UP` | The cluster cannot answer now, or a replica is behind `minIndex`. |
 
-When embedded auth is enabled, the auth guard runs at the HTTP **upgrade**
-request, before the socket is established — an unauthenticated upgrade is
-rejected with a 401 and never becomes a WebSocket. The guard resolves the token
-in this order:
+## Public
 
-1. An `Authorization: Bearer <jwt>` header. If present, it is validated
-   exclusively — even an invalid token here is rejected rather than retried.
-2. Only if no `Authorization` header is present, a `?token=<jwt>` query
-   parameter. This fallback exists because the browser `WebSocket` and
-   `EventSource` APIs cannot set custom headers.
-
-If the `Authorization` header is present, the `?token=` query parameter is
-ignored entirely.
-
-A WebSocket has no CORS, so the node judges a browser's upgrade by its origin itself, in every auth mode, by the same rule that proxy auth mode applies to every route (see [CORS and browser / Tauri clients](#cors-and-browser--tauri-clients)).
-With embedded auth the token is checked first: an upgrade without a valid token gets `401` whatever its origin, and a page the origin rule does not admit gets `403` only when it carries a valid token.
-So an app hosted on another origin must be listed in `[server.cors] allowed_origins` to open a socket, as well as hold a token.
-A `GET /ws` that is not a WebSocket upgrade gets `400`.
-A client that sends neither `Origin` nor `Sec-Fetch-Site` is not a browser and is unaffected.
-
-:::caution[Proxy auth mode: a loopback page always gets a socket]
-In proxy auth mode a page on a loopback origin (`http://localhost:<port>`, `tauri://localhost`) is admitted a socket, whatever proxy is in front of the node.
-If that proxy authenticates callers by something a browser attaches by itself (a cookie, HTTP Basic, a client certificate), any page on a loopback origin on the operator's machine gets an authenticated socket.
-A proxy that authenticates by a token the client must present, as mero-auth does, is not affected.
-If your proxy authenticates by ambient credentials, have it check `Origin` on `/ws` itself.
-:::
-
-The upgrade needs `context:subscribe`. Each `execute` message is then checked
-against the same token for `context:execute` on its context (and method, for a
-method-scoped grant), so a subscribe-only token can subscribe but its `execute`
-messages are refused. `/jsonrpc` calls are held to the same check. In proxy auth
-mode the node takes the token's permissions from the `X-Auth-Permissions` header
-the proxy forwards; see [Where a scope is checked](/operate/auth/#where-a-scope-is-checked).
-
-## Server-Sent Events
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET | `/sse` | Open an SSE event stream. |
-| GET | `/sse/session/:session_id` | Fetch/attach to an existing SSE session. |
-| POST | `/sse/subscription` | Manage subscriptions for an SSE session. |
-
-Open the stream with `EventSource` or `fetch`.
-A browser request that no script opened, such as navigating to `/sse` or loading it as an image or a frame (`Sec-Fetch-Mode` other than `cors` or `same-origin`), gets `403` and creates no session.
-Clients that are not browsers (curl, SDKs on a server) send no `Sec-Fetch-Mode` and are unaffected.
-
-### SSE durability and reconnection
-
-The SSE stream uses a **skip-on-disconnect** delivery model: there is no replay
-buffer. Sessions persist (subscriptions and a monotonic event counter survive a
-reconnect), but any event emitted while a client is disconnected is **lost** and
-never redelivered. Event IDs are sequential, so a gap in the IDs a client
-receives is the signal that events were missed.
-
-On connect the response carries two headers for the client to track its session:
-
-| Response header | Meaning |
-| --- | --- |
-| `X-SSE-Session-ID` | The session ID assigned to (or resumed by) this stream. |
-| `X-SSE-Reconnect` | `true` if this connection resumed an existing session, `false` for a fresh one. |
-
-Subscribing is a separate `POST /sse/subscription` naming the session ID from
-the `connect` frame. Its response is the **readiness signal**: once it answers
-200 and lists a context in `contexts`, every later event for that context
-reaches the stream. A client that needs to observe something it is about to
-trigger must wait for that response, not merely for the stream to open. A
-context the caller may not observe is dropped from `contexts` rather than
-refused, so check the list.
-
-To reconnect, the client sends the `Last-Event-ID` header. Event IDs have the
-format `{session_id}-{n}`; the server parses the `session_id` prefix to restore
-the session. Sessions expire after **24 hours** of inactivity, after which a
-reconnect attempt starts a fresh session. The stream also advertises a retry
-hint of **3000ms** in its initial event.
-
-<Aside type="caution">
-Because missed events are never replayed, consumers must **reconcile state on
-reconnect** (for example, re-query the relevant context/application state)
-rather than assume the event stream is a complete, gap-free log.
-</Aside>
-
-## Admin API — Applications
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| POST | `/admin-api/install-application` | Install `package`@`version` from the node's configured registry. |
-| POST | `/admin-api/install-dev-application` | Install a local dev application. |
-| GET | `/admin-api/applications` | List installed applications. |
-| GET | `/admin-api/applications/:application_id` | Get one application. |
-| GET | `/admin-api/applications/:application_id/abi` | Get the application's embedded WASM ABI manifest (optional `?service_name=`). |
-| DELETE | `/admin-api/applications/:application_id` | Uninstall an application. |
-| GET | `/admin-api/applications/:application_id/versions` | List versions of an installed application. |
-
-### Packages
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET | `/admin-api/packages` | List known packages. |
-| GET | `/admin-api/packages/:package/versions` | List versions of a package. |
-| GET | `/admin-api/packages/:package/latest` | Get the latest version of a package. |
-
-## Admin API — Contexts
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET | `/admin-api/contexts` | List context IDs. |
-| POST | `/admin-api/contexts` | Create a context. |
-| GET | `/admin-api/contexts/:context_id` | Get a context. |
-| DELETE | `/admin-api/contexts/:context_id` | Delete a context. |
-| POST | `/admin-api/contexts/:context_id/application` | Update the context's application. |
-| POST | `/admin-api/contexts/:context_id/resync` | Force a resync of the context. |
-| GET | `/admin-api/contexts/:context_id/intents` | Relay descriptor: the account and signing key a warrant must name (`executorAccount`, `executorKey`), the release it must pin (`releaseBytecodeId`, `releaseVersion`), and whether this node relays delegated writes for the context (`canAuthorOnBehalf`). See [delegated authorship](/protocol/delegated-authorship/). |
-| POST | `/admin-api/contexts/:context_id/intents` | Execute a member's signed intent under their warrant; `403` if this node may not relay. See [delegated authorship](/protocol/delegated-authorship/). |
-| GET | `/admin-api/contexts/for-application/:application_id` | List contexts for an application. |
-| GET | `/admin-api/contexts/with-executors/for-application/:application_id` | List contexts with their executors for an application. |
-| GET | `/admin-api/contexts/:context_id/storage` | Get context storage info. |
-| GET | `/admin-api/contexts/:context_id/identities` | List identities in the context. |
-| GET | `/admin-api/contexts/:context_id/identities-owned` | List identities the node owns in the context. |
-| GET | `/admin-api/contexts/:context_id/group` | Get the context's group. |
-| POST | `/admin-api/contexts/:context_id/join` | Join a context. |
-| POST | `/admin-api/contexts/:context_id/leave` | Leave a context. |
-| POST | `/admin-api/contexts/sync` | Trigger sync across all contexts. |
-| POST | `/admin-api/contexts/sync/:context_id` | Trigger sync for one context. |
-
-## Admin API — Groups
-
-<Aside type="caution">
-The groups surface is the largest and most actively evolving part of the admin
-API (governance: members, capabilities, metadata, upgrades, migrations,
-ownership proofs). Several paths use `:namespace_id` rather than `:group_id` as
-the path parameter — these are reproduced exactly as routed below.
-</Aside>
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| POST | `/admin-api/groups` | Create a group. A nested group is created Open unless the body sets `visibility: "restricted"`. |
-| GET | `/admin-api/groups/:group_id` | Get group info. |
-| PATCH | `/admin-api/groups/:group_id` | Update group settings. |
-| DELETE | `/admin-api/groups/:group_id` | Delete a group. |
-| GET | `/admin-api/groups/:group_id/contexts` | List contexts in a group. |
-| POST | `/admin-api/groups/:group_id/reparent` | Re-parent a group. |
-| GET | `/admin-api/groups/:group_id/subgroups` | List subgroups. |
-| GET | `/admin-api/groups/:group_id/members` | List group members. |
-| POST | `/admin-api/groups/:group_id/members` | Add group members, each named by account, or by key written `key:<64-hex>`. Every id is hex, so the tag is what tells the two apart — an untagged key is read as an account. |
-| POST | `/admin-api/groups/:group_id/members/remove` | Remove group members. |
-| POST | `/admin-api/groups/:group_id/accounts/:account/seal` | Seal a payload to that account's **root key**, as this group sees it. Body `{ plaintext }`, hex, at most 64 KiB and never empty; returns `{ accountRootEpoch, ephemeralPublicKey, nonce, ciphertext }`. Caller and target must both be group members, and a non-member is refused identically to an unknown account. Confidentiality only — the sender key is ephemeral and unauthenticated, so anyone knowing a root public key can produce an envelope for it. |
-| POST | `/admin-api/groups/:group_id/leave` | Leave a group. |
-| PUT | `/admin-api/groups/:group_id/members/:identity/role` | Update a member's role. |
-| GET | `/admin-api/groups/:group_id/metadata` | Get group metadata. |
-| PUT | `/admin-api/groups/:group_id/metadata` | Set group metadata. |
-| GET | `/admin-api/groups/:group_id/members/:identity/metadata` | Get member metadata. |
-| PUT | `/admin-api/groups/:group_id/members/:identity/metadata` | Set member metadata. |
-| GET | `/admin-api/groups/:group_id/contexts/:context_id/metadata` | Get context-in-group metadata. |
-| PUT | `/admin-api/groups/:group_id/contexts/:context_id/metadata` | Set context-in-group metadata. |
-| POST | `/admin-api/groups/:group_id/contexts/:context_id/remove` | Detach a context from a group. |
-| POST | `/admin-api/groups/:group_id/upgrade` | Upgrade a group. |
-| GET | `/admin-api/groups/:group_id/upgrade/status` | Get group upgrade status: `data` (the recorded upgrade, or `null`) and `missingReleases` (`{package, version, applicationId}` per release this node must install before `upgrade/activate` on the namespace can switch every context it holds, oldest first in ladder order, the target included; empty when none). |
-| POST | `/admin-api/groups/:group_id/upgrade/retry` | Retry a group upgrade. |
-| POST | `/admin-api/groups/:namespace_id/upgrade/activate` | Switch this node's contexts of a namespace to its stored target release and replay the deltas held for them. Never fetches or installs a release: `404` naming the first release a context would step through (each upgrade rung, then the target) that is not installed. Takes the namespace root (`400` for a subgroup). Optional body fields `expectedApplicationId` and `expectedVersion`; `409` naming the group when the namespace or any subgroup being switched targets another application, or when the namespace's target release is another version. Answers `200` with `targetApplicationId`, `switchedContexts`, `replayedDeltas` and `failedContexts` (`{contextId, error, retryable}` per context that did not finish, empty when all did); calling again retries only those. |
-| GET | `/admin-api/groups/:namespace_id/cascade-status` | Get cascade status (by namespace). |
-| GET | `/admin-api/groups/:namespace_id/migration-status` | Get migration status (by namespace). |
-| POST | `/admin-api/groups/:namespace_id/migration/abort` | Abort a migration (by namespace). |
-| POST | `/admin-api/groups/:group_id/issue-ownership-proof` | Issue a group ownership proof. |
-| POST | `/admin-api/groups/:group_id/issue-namespace-ownership-proof` | Issue a namespace ownership proof. Beside the signed proof the answer carries `founding` (`{ founderAccountId, salt }`) and `credential` (hex borsh `AccountProof<DeviceCert>` over the signing key), unsigned and self-verifying, so a verifier without governance state can confirm the signer is a node of the account that founded the namespace. Each is absent when the node cannot produce it. |
-| POST | `/admin-api/groups/:group_id/sync` | Sync a group. |
-| POST | `/admin-api/groups/:group_id/join-via-inheritance` | Join a subgroup via inheritance. |
-| GET | `/admin-api/groups/:group_id/members/:identity/capabilities` | Get a member's capabilities. |
-| PUT | `/admin-api/groups/:group_id/members/:identity/capabilities` | Set a member's capabilities. |
-| PUT | `/admin-api/groups/:group_id/members/:identity/auto-follow` | Set a member's auto-follow flag. |
-| PUT | `/admin-api/groups/:group_id/settings/default-capabilities` | Set group default capabilities. |
-| GET | `/admin-api/groups/:group_id/settings/tee-admission-policy` | Get the group's TEE admission policy, including its `mode`. |
-| PUT | `/admin-api/groups/:group_id/settings/tee-admission-policy` | Set the group's TEE admission policy: measurement lists, or `signedRelease` to admit any signed mero-tee release of the named profiles. Optional `mode`, `"replica"` (default) or `"relay"`, picks the role admitted TEEs get and converts those already admitted — see [replica or relay](/protocol/tee-attestation/#replica-or-relay-the-admission-mode). |
-| PUT | `/admin-api/groups/:group_id/settings/subgroup-visibility` | Set subgroup visibility. |
-| POST | `/admin-api/groups/:group_id/invite` | Create a group invitation (legacy). |
-| POST | `/admin-api/groups/join` | Join a group (legacy). |
-
-## Admin API — Namespaces
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET | `/admin-api/namespaces` | List namespaces. |
-| POST | `/admin-api/namespaces` | Create a namespace. |
-| GET | `/admin-api/namespaces/:namespace_id` | Get a namespace. |
-| DELETE | `/admin-api/namespaces/:namespace_id` | Remove a namespace from this node. Any member may; nothing is published and the account stays a member. |
-| POST | `/admin-api/namespaces/:namespace_id/invite` | Invite into a namespace. Body may name `admitters` and `admitterAddrs` — see [below](#invitation-body-admitters-and-addresses). |
-| POST | `/admin-api/namespaces/:namespace_id/join` | Join a namespace with an `invitation`, or restore one removed from this node with none, see [below](#restoring-a-removed-namespace). A refusal carries a `code`, see [below](#join-refusals). |
-| POST | `/admin-api/namespaces/:namespace_id/admit` | Publish a join signed by a keyholder that has no node of its own. Takes **no credential** on any node: the signed op is the authorization, and a node the invitation does not name refuses it `403`. A join already applied here answers `published: false`. See [Direct Admission](/protocol/direct-admission/#served-without-a-credential). |
-| POST | `/admin-api/namespaces/:namespace_id/leave` | Leave a namespace. With `?purge=true`, this node takes it off its disk once an admin has confirmed the leave, and every other device of the account does the same; the response's `purged` says whether this node did. When it is `false` the account has still left: remove the namespace with `DELETE` on each device. The account namespace itself is refused with `409` `AccountNamespaceNotRemovable`. |
-| GET | `/admin-api/namespaces/:namespace_id/revoked-devices` | Device ids revoked in the namespace (`revokedDevices`) and `sha256(account \|\| device)` of devices an account withdrew there (`withdrawnSlots`). Admin only, on a member node. |
-| GET | `/admin-api/namespaces/for-application/:application_id` | List namespaces for an application, including the ones removed from this node, flagged `forgotten: true`. |
-
-#### Restoring a removed namespace
-
-`DELETE /admin-api/namespaces/:namespace_id` leaves a node-local marker when this node's account is still a member.
-`GET /admin-api/namespaces/for-application/:application_id` lists those namespaces with `forgotten: true`, and no other field of them is held here.
-`POST /admin-api/namespaces/:namespace_id/join` with no `invitation` (body `{}`) restores one: the node follows the namespace again, waits up to 30 seconds for its group rows and key to arrive from a peer and for its own account to be a member again, then lifts the marker and answers as a join does.
-If they do not arrive, the marker stays and the call answers `503` so it can be retried; rows that did arrive may stay under the marker until a retry completes.
-A client key bound to an application may restore a namespace of that application, and a client key bound to a context may not.
-
-| Answer | Meaning |
-| --- | --- |
-| `404` | This node never held the namespace, and its account is not a member. |
-| `403` | The account no longer names the namespace (a sibling device left it), or this device's scope does not reach its application. |
-| `503` | The namespace was followed again but its state has not arrived in time; retry. |
-
-An invitation join of a removed namespace lifts the marker too.
-
-#### Join refusals
-
-A refused join (`/namespaces/:namespace_id/join` and `/groups/join`) answers
-`{ "error": <message>, "code": <code> }`. The status says whether trying again can
-help; the `code` says which refusal it was, since several share a status and
-each asks something different of the person joining.
-
-| `code` | Status | Meaning |
-| --- | --- | --- |
-| `invitation_expired` | 409 | The invitation's 24-hour window has passed. A new invitation is needed. |
-| `invitation_invalid` | 400 | The invitation is missing something a join needs. A new invitation is needed. |
-| `invitation_already_used` | 409 | This identity joined with this invitation before and has since left. A new invitation is needed. |
-| `removed_from_group` | 409 | An admin removed this identity. No invitation readmits it; an admin must re-add it. |
-| `reentry_blocked` | 409 | This identity left and cannot come back by inheritance; it must be re-invited or re-added. |
-| `join_refused_by_member` | 503 | Every member that answered refused; the message quotes the last one's reason. Retryable: a member behind on the namespace's history refuses what it has not seen yet. |
-| `no_admitter_reached` | 503 | A member answered but is not an admitter the invitation names. Retry once one is online. |
-| `no_member_reachable` | 504 | No member of the namespace answered. Retry once the inviting node is online. |
-
-Any other failure has no `code`.
-
-#### Invitation body: admitters and addresses
-
-Both `/groups/:group_id/invite` and `/namespaces/:namespace_id/invite` accept the
-same body. Every field is optional.
-
-```json
-{
-  "expirationTimestamp": 3600,
-  "recursive": false,
-  "admitters": ["8f2c…e1", "b04a…77"],
-  "admitterAddrs": [
-    "/ip4/203.0.113.7/tcp/2528/p2p/12D3KooWExample"
-  ]
-}
-```
-
-| field | meaning |
-| --- | --- |
-| `expirationTimestamp` | Validity in **seconds**, clamped to 24 hours. Not an absolute time despite the name. |
-| `recursive` | Also mint invitations for the namespace's child groups. |
-| `admitters` | Accounts allowed to admit a claim, 64 hex each. **Signed** into the invitation. Omit and the node fills in the group's admins plus its TEE nodes; it refuses to mint if that set is empty. |
-| `admitterAddrs` | libp2p multiaddrs for those admitters, each including its `/p2p/<peer-id>` suffix. **Not signed.** Omit and the node fills in what it knows. |
-
-The peer id has to be in the address: a joiner cannot resolve an account to a peer
-without governance state, which is precisely what it has not synced yet.
-
-Supplied addresses are used **as given** and are not merged with the node's own
-view — a caller naming one is usually correcting that view, not extending it.
-
-Because they are unsigned, a wrong address costs a failed dial and nothing more:
-libp2p authenticates the peer id on connect, and the signed `admitters` list still
-decides who may answer. [Direct Admission](/protocol/direct-admission/) covers the
-split.
-
-## Admin API — Blobs
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| PUT | `/admin-api/blobs` | Upload a blob. Optional `?hash=<hex>` to verify the content, and `?context_id=<id>` to share it in a context this node is a member of (`400` for any other context, and nothing is stored). Peers are served only blobs held for the context they ask under, so a blob uploaded without a context stays local. |
-| GET | `/admin-api/blobs` | List blobs. |
-| GET | `/admin-api/blobs/:blob_id` | Download a blob. Optional `?context_id=<id>`: if this node does not hold the blob, look for it among the context's peers and download it from one. |
-| HEAD | `/admin-api/blobs/:blob_id` | Get blob info/metadata (headers only). Optional `?context_id=<id>`: see below. |
-| DELETE | `/admin-api/blobs/:blob_id` | Delete a blob. |
-
-A `GET` or `HEAD` that a page on another site caused without a script, such as a link, a navigation or an `<img>` (`Sec-Fetch-Site: cross-site` with a `Sec-Fetch-Mode` other than `cors`), is answered from this node's own store only: `context_id` does not make the node ask its peers, and a blob it does not hold is `404`.
-A `fetch` from an admitted origin, a page the node serves and a client that is not a browser are unaffected.
-
-### `HEAD` with `?context_id=`
-
-Without the parameter, `HEAD` answers only about blobs this node holds — one
-local store read, and a 404 for anything else.
-
-With it, a local miss falls through to the same bounded peer search `GET` uses,
-but stops at the header a holder sends before its first chunk: **`HEAD` never
-transfers the blob**. Discovery is opt-in for a reason — a search can run to the
-node's 30s discovery deadline, while `HEAD` otherwise reads as a cheap call.
-
-`X-Blob-Source` says where the answer came from, and which other headers you get:
-
-| `X-Blob-Source` | Meaning | Headers |
-| --- | --- | --- |
-| `local` | This node holds the blob. | `Content-Length`, `Content-Type`, `ETag`, `X-Blob-ID`, `X-Blob-Hash`, `X-Blob-MIME-Type` |
-| `peer` | Only a context peer holds it. | `Content-Length` (the size that peer reported, omitted if it reported none), `X-Blob-ID` |
-
-`ETag`, `Content-Type`, `X-Blob-Hash` and `X-Blob-MIME-Type` are absent from a
-`peer` answer because every one of them is computed from the bytes — the content
-hash from local metadata, the MIME type sniffed from the first chunk — and this
-node does not have them. They are omitted rather than guessed. A blob held
-neither locally nor by any probed peer is still a 404.
-
-Private blobs need the same signed membership proof on this path as on `GET`; a
-peer answers "not held" to an unauthorized probe, so discovery is no weaker and
-no stronger than the download path.
-
-## Admin API — TEE
-
-| Method | Path | Purpose | Auth |
+| Route | Who | What | meroctl |
 | --- | --- | --- | --- |
-| GET | `/admin-api/tee/info` | TEE info. | Public |
-| POST | `/admin-api/tee/attest` | Produce an attestation, optionally binding keys and carrying its collateral. | Public |
-| POST | `/admin-api/tee/registration-attest` | Produce an attestation carrying the registration binding, for fleet registration. | Protected |
-| POST | `/admin-api/tee/fleet-join` | Join a TEE fleet. | Protected |
+| `GET /health` | anyone | `{ ok, node, systemLeader, release }` | `network status` |
+| `GET /attestation?nonce=HEX[&app=ID \| &appHash=HEX][&purpose=receipts]` | anyone | The node's attestation document: quote, transport key, app hash, nonce, release and profile. `purpose=receipts` attests the receipt key and the governance instead. | `attest` |
 
-## Admin API — Identity & Alias
+## Accounts and credentials (`/auth`)
 
-| Method | Path | Purpose |
+| Route | Who | What | meroctl |
+| --- | --- | --- | --- |
+| `POST /auth/passkey/register/begin` | anyone | Start a sign-up: `{ name }` → `{ challengeId, options }` | `login` (new file) |
+| `POST /auth/passkey/register/finish` | anyone | `{ challengeId, registration }` → a session | `login` |
+| `POST /auth/passkey/login/begin` | anyone | Start a sign-in | `login` |
+| `POST /auth/passkey/login/finish` | anyone | `{ challengeId, assertion }` → a session | `login` |
+| `POST /auth/passkeys/add/begin`, `/finish` | account holder | Add a passkey (a device) | `account device add` |
+| `POST /auth/passkeys/{cred}` | account holder | `{ label }`: name a device | `account device label` |
+| `DELETE /auth/passkeys/{cred}` | account holder | Remove a device; its sessions end | `account device revoke` |
+| `POST /auth/refresh` | anyone with a refresh token | `{ refreshToken }` → a new session and refresh token | (automatic) |
+| `POST /auth/logout` | session | End this session | |
+| `POST /auth/logout-all` | account holder | End every session of the account | `logout --all` |
+| `GET /auth/me` | signed in | The account, passkeys, `passkeyId`, organizations, approvals | `whoami`, `account show` |
+| `GET /auth/usage` | signed in | Apps, bundle bytes, API keys and owned orgs against the quotas | `account usage` |
+| `GET /auth/aliases` | signed in | The account's aliases | `context alias list` |
+| `GET/PUT/DELETE /auth/aliases/{alias}` | signed in | Resolve, set (`{ app }`) or remove an alias | `context alias get/add/remove`, `context use` |
+| `POST /auth/apikeys` | account holder | `{ label, apps?, methods?, readOnly, allowConfirm, ttlSecs? }` → `{ keyId, key }` | `account api-key create` |
+| `GET /auth/apikeys` | account holder | The account's keys | `account api-key list` |
+| `DELETE /auth/apikeys/{key}` | account holder | Revoke a key | `account api-key revoke` |
+| `POST /auth/releases` | account holder | `{ version, approved, confirm? }`: approve a mero-tee release for the account's own apps (where the owner holds release approvals) | `account approve-release` |
+| `POST /auth/outbound` | account holder | `{ package, prefixes, replace, confirm? }`: approve outbound prefixes for the account's own apps | `account outbound` |
+
+## Packages and bundles
+
+| Route | Who | What | meroctl |
+| --- | --- | --- | --- |
+| `POST /bundles` | installer | Upload raw WASM (16 MiB at most). Only with `--allow-unsigned-bundles` or `--dev`. | `app install --path X.wasm` |
+| `POST /packages` | installer | Upload a signed `.mpk` | `app install --path X.mpk` |
+| `POST /packages/install` | installer | `{ package, version }` from the registry | `app install P@V` |
+| `GET /packages` | signed in | Installed packages | `app list` |
+| `GET /packages/{package}` | signed in | One package and its versions | `app get`, `app versions`, `app get-latest-version` |
+| `DELETE /packages/{package}` | account holder | Uninstall every version; refused while an app runs one | `app uninstall` |
+| `DELETE /packages/{package}/{version}` | account holder | Uninstall one version | `app uninstall --version` |
+
+Before an install is logged the node checks the publisher signature and every
+artifact digest, `minRuntimeVersion`, the package's pinned signer (the first
+release's wins) and that each service's WASM compiles. A node that later runs
+the release fetches and verifies it again.
+
+## Apps (contexts)
+
+`{app}` is an app id or its context id (`hex(SHA-256(app_id))`).
+
+| Route | Who | What | meroctl |
+| --- | --- | --- | --- |
+| `POST /apps` | installer | `{ name, package?, version?, service?, bundle?, org?, access?, confirmMethods?, initArgs?, metadata? }` | `context create` |
+| `GET /apps[?package=P]` | signed in or anyone | Apps the caller reaches | `context list` |
+| `GET /apps/{app}` | signed in or anyone | One app | `context get` |
+| `DELETE /apps/{app}` | session | Delete (owner or org admin) | `context delete` |
+| `POST /apps/{app}/intents` | app access | `{ method, args, idempotencyKey?, confirm? }`: a call. A confirm method answers `412` first. | `call` |
+| `POST /apps/{app}/views` | app access | `{ method, args, consistency?: "stale", minIndex? }`: a read | `call --view` |
+| `GET /apps/{app}/events?from=N` | app access | Server-sent events: committed events from `N`, then live ones | `context watch` |
+| `POST /apps/{app}/upgrade` | account holder | `{ bundle? \| package?, version?, service?, migrate?, confirm? }`; where the owner holds app upgrades | `context update` |
+| `POST /apps/{app}/access` | session | `{ access: { kind: owner \| org \| team \| accounts \| public, … } }` | `context access` |
+| `POST /apps/{app}/metadata` | signed in | `{ metadata }` (owner or org admin; 16 KiB) | `context metadata` |
+| `GET /apps/{app}/storage` | app access | Keys, bytes and blobs held | `context storage` |
+| `GET /apps/{app}/abi` | app access | The bundle's embedded ABI | `context abi` |
+| `GET /apps/{app}/attestation` | app access | Every replica's receipt-key attestation | `attest --context` |
+| `GET/POST /apps/{app}/presence` | app access | Who is present; publish `{ seq, state }` | `context presence list/publish` |
+| `GET /apps/{app}/presence/stream` | app access | Server-sent events: `snapshot`, then `presence` diffs | `context presence stream` |
+| `POST /apps/{app}/blobs` | app access | Upload a blob | `blob upload` |
+| `GET /apps/{app}/blobs` | app access | List blobs | `blob list` |
+| `GET /apps/{app}/blobs/{id}` | app access | Download (id base58 or hex) | `blob download` |
+| `GET /apps/{app}/blobs/{id}/info` | app access | Size | `blob info` |
+| `DELETE /apps/{app}/blobs/{id}` | app access | Forget (owner or org admin) | `blob delete` |
+
+Every `/intents` and `/views` answer carries a receipt signed by the answering
+node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
+
+## Organizations and teams
+
+| Route | Who | What | meroctl |
+| --- | --- | --- | --- |
+| `POST /orgs` | session | `{ name }` | `namespace create` |
+| `GET /orgs/{org}` | signed in | Members, teams (filtered to those the caller reaches or manages), metadata | `namespace get`, `groups`, `members list`, `metadata get` |
+| `DELETE /orgs/{org}` | account holder | Delete with teams, invites and apps (owner; `412` first) | `namespace delete` |
+| `POST /orgs/{org}/metadata` | signed in | `{ metadata }` | `namespace metadata set` |
+| `POST /orgs/{org}/members` | session | `{ account, role }`; `owner` moves ownership | `namespace members add` |
+| `DELETE /orgs/{org}/members/{account}` | session | Remove a member, or leave | `namespace members remove`, `namespace leave` |
+| `POST /orgs/{org}/members/{account}/metadata` | signed in | `{ metadata }` | `namespace member-metadata` |
+| `POST /orgs/{org}/capabilities` | session | `{ account?, team?, capabilities }` | `namespace capabilities`, `group settings` |
+| `POST /orgs/{org}/invites` | session | `{ role, teams, ttlSecs?, uses? }` → a token | `namespace invite` |
+| `POST /invites/{token}/redeem` | session | Join | `namespace join` |
+| `POST /orgs/{org}/teams` | session | `{ name, parent?, join: everyone \| invite }` | `namespace create-group` |
+| `GET /orgs/{org}/teams/{team}` | signed in | One team | `group get`, `group members list` |
+| `POST /orgs/{org}/teams/{team}` | session | `{ name?, join?, parent?, metadata? }` | `group update`, `reparent`, `metadata` |
+| `DELETE /orgs/{org}/teams/{team}` | session | Delete with the teams and apps below | `group delete` |
+| `POST /orgs/{org}/teams/{team}/members` | session | `{ account, role?, capabilities? }` | `group members add` |
+| `DELETE /orgs/{org}/teams/{team}/members/{account}` | session | Remove, or leave | `group members remove`, `group leave` |
+| `POST /orgs/{org}/releases` | account holder | `{ version, approved, confirm? }` (owner) | `namespace approve-release` |
+| `POST /orgs/{org}/outbound` | account holder | `{ package, prefixes, replace, confirm? }` (owner) | `namespace outbound` |
+| `POST /orgs/{org}/upgrade` | account holder | `{ package, version, team?, cascade?, migrate?, confirm? }`: an upgrade run (owner) | `group upgrade trigger` |
+| `GET /orgs/{org}/upgrades/{run}` | signed in (a member) | A run's progress | `group upgrade status` |
+| `POST /orgs/{org}/upgrades/{run}/retry` | account holder, or ops for an operator's run | Retry the failed apps as a new run | `group upgrade retry` |
+
+## Ops
+
+Every route needs the ops token. The Ops API returns counts, Raft status and
+placement, never app state, names or credentials.
+
+| Route | What | meroctl |
 | --- | --- | --- |
-| GET | `/admin-api/identity` | Get this node's account and device identity. Replaced the per-namespace route: identity is node-level, one root to one account to one device. |
-| DELETE | `/admin-api/identity/revoked-from` | Acknowledge that this node's device was revoked, clearing `revokedFrom` from `GET /admin-api/identity`. A no-op when nothing is recorded. |
-| POST | `/admin-api/identity/context` | Generate a new context identity (keypair). |
-| POST | `/admin-api/alias/create/context` | Create an alias for a context. |
-| POST | `/admin-api/alias/create/application` | Create an alias for an application. |
-| POST | `/admin-api/alias/create/device` | Create an alias for a device. |
-| POST | `/admin-api/alias/lookup/context/:name` | Resolve a context alias. |
-| POST | `/admin-api/alias/lookup/application/:name` | Resolve an application alias. |
-| POST | `/admin-api/alias/lookup/device/:name` | Resolve a device alias. |
-| POST | `/admin-api/alias/delete/context/:name` | Delete a context alias. |
-| POST | `/admin-api/alias/delete/application/:name` | Delete an application alias. |
-| POST | `/admin-api/alias/delete/device/:name` | Delete a device alias. |
-| GET | `/admin-api/alias/list/context` | List context aliases. |
-| GET | `/admin-api/alias/list/application` | List application aliases. |
-| GET | `/admin-api/alias/list/device` | List device aliases. |
+| `GET /ops/status` | `{ node, system, governance, groups, nodes, apps, accounts }` | `ops status` |
+| `GET /ops/metrics` | Prometheus text; see [Observability](/operate/observability/) | `ops metrics` |
+| `POST /ops/nodes` | `{ id, addr, zone? }`: register a node; the system leader adds it as a learner | `ops add-node` |
+| `POST /ops/apps/{app}/replicas` | `{ replicas: [id, …] }`: move an app (at least `min(3, nodes in the cluster)` replicas, and only nodes on a release the app's owner approved). On a follower: `421 NOT_LEADER`. | `ops move` |
+| `POST /ops/backup` | Snapshot the apps this node leads into `--backup-dir` → `{ written }` | `ops backup` |
+| `GET /ops/quotas`, `POST /ops/quotas` | Read or replace the per-account quotas | `ops quotas`, `ops set-quotas` |
+| `POST /ops/releases` | `{ version, approved }`, where the operator holds release approvals | `ops release` |
+| `POST /ops/outbound` | `{ package, prefixes, replace }`, where the operator holds outbound approvals | `ops outbound` |
+| `POST /ops/packages`, `POST /ops/packages/install`, `GET /ops/packages` | Install (upload or registry) and list the releases the operator upgrades to | `ops install`, `ops packages` |
+| `DELETE /ops/packages/{package}[/{version}]` | Uninstall what the operator installed | `ops uninstall` |
+| `POST /ops/apps/{app}/upgrade` | `{ bundle? \| package?, version?, service?, migrate? }`, where the operator holds app upgrades | `ops upgrade` |
+| `POST /ops/orgs/{org}/upgrade` | `{ package, version, team?, cascade?, migrate? }`, an operator's upgrade run | `ops upgrade-namespace` |
 
-<Aside type="note">
-Alias `lookup` and `delete` are routed as `POST` (not `GET`/`DELETE`) — the
-name to resolve is a path segment and the handlers are registered with `post`.
+Quotas (`POST /ops/quotas` replaces all of them; a field left out takes its
+default):
+
+| Field | Default |
+| --- | --- |
+| `maxAppsPerAccount` | `100` |
+| `maxBundleBytesPerAccount` | `1073741824` (1 GiB) |
+| `maxApiKeysPerAccount` | `50` |
+| `maxOrgsPerAccount` | `20` |
+| `maxAccounts` | `100000` |
+
+## Internal
+
+`/internal/raft`, `/internal/system`, `/internal/system/index`,
+`/internal/call`, `/internal/view`, `/internal/blob`, `/internal/blob/get`,
+`/internal/blob/held`, `/internal/blob/delete`, `/internal/storage`,
+`/internal/presence`, `/internal/app-ready` and `/internal/events` are for the
+cluster's own nodes: they need the cluster secret (an HMAC of the storage key
+and the cluster name) inside a sealed channel whose key was attested like any
+client's. Nothing outside the cluster calls them.
+
+<Aside type="note" title="App frontends">
+  With `--apps-domain`, requests whose `Host` is `{label}.{domain}` are served
+  before any of these routes: `GET`/`HEAD` of a package's frontend files and
+  `/.well-known/calimero.json`. See [Networking](/operate/networking/#app-frontends).
 </Aside>
-
-## Admin API — Network & Usage
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET | `/admin-api/network/status` | libp2p connectivity snapshot (relays, rendezvous, DCUtR, AutoNAT). |
-| GET | `/admin-api/peers` | Connected peers count. |
-| GET | `/admin-api/usage` | Per-namespace usage (counts and on-disk bytes). |
-
-## Next steps
-
-<CardGrid>
-  <LinkCard title="Auth service & providers" href="/operate/auth/" description="How the protected admin routes are authenticated." />
-  <LinkCard title="meroctl reference" href="/operate/meroctl/" description="The CLI wrapping most of these endpoints." />
-  <LinkCard title="Production deployment" href="/operate/deployment/" description="Front the HTTP server with a reverse proxy and keep it private." />
-</CardGrid>

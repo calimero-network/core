@@ -1,0 +1,85 @@
+---
+title: The operator & the Ops API
+description: What the party running the machines can do — register nodes, move replicas, set quotas, take backups, read counts — and why it has no read path into app data.
+sidebar:
+  order: 16
+---
+
+The **operator** runs the machines: it starts nodes, gives them a network and
+disks, and keeps the cluster healthy. It is not trusted with app data. The
+**Ops API** (`/ops/*`) gives it what operating requires and nothing that opens
+an app. mdma's `OpsClient` and `meroctl --ops-token TOKEN ops …` use it.
+
+## The credential
+
+The operator holds a bearer token. A node is given either the token
+(`--ops-token`) or only its SHA-256 (`--ops-token-sha256`), so a machine's
+metadata or configuration need not hold anything usable. The token is compared
+in constant time, inside the sealed channel like every other request. A node
+given neither has the Ops API disabled. The operator's actions that the system
+log records carry the actor `operator`, which no account id can be.
+
+## What it can do
+
+| Route | What |
+| --- | --- |
+| `GET /ops/status` | This node, the system group's Raft status, the Raft status of the app groups hosted here (by app id), the node list, the governance, and counts of apps and accounts |
+| `GET /ops/metrics` | Prometheus text: nodes, apps, accounts, organizations, packages, bundle bytes; groups hosted and led here; open streams; system applied index, leadership, voters, learners; each hosted group's applied index; the build release |
+| `POST /ops/nodes` | Register a node; the system leader then adds it as a learner ([Replication](/protocol/replication/#joining-nodes)) |
+| `POST /ops/apps/{app}/replicas` | Move an app to a new replica set, onto approved releases only ([Replica moves](/protocol/replication/#replica-moves)) |
+| `GET` / `POST /ops/quotas` | Read or set the per-account quotas |
+| `POST /ops/backup` | Write sealed snapshots of the app groups this node leads (below) |
+
+And, only where the deployment's [governance](/protocol/governance/) gives
+the operator that decision:
+
+| Route | Decision |
+| --- | --- |
+| `POST /ops/releases { version, approved }` | Release approvals, for every app |
+| `POST /ops/apps/{app}/upgrade`, `POST /ops/orgs/{org}/upgrade` | App upgrades, to a release it installed |
+| `POST /ops/packages`, `/ops/packages/install`, `GET /ops/packages`, `DELETE /ops/packages/{p}[/{v}]` | Installing the releases it upgrades to (it removes only what it installed) |
+| `POST /ops/outbound { package, prefixes, replace }` | Outbound approvals, for every app |
+
+Elsewhere, the operator configures the node: the outbound policy (which hosts
+any app may reach, and the secrets requests may carry), the registry releases
+are installed from, the domain app frontends are served under, and the
+measurement policy for peers.
+
+## What it cannot do
+
+There is no Ops route that runs a view, reads state, streams events, lists an
+account's apps, downloads a blob or a bundle, or returns a credential. Status
+and metrics report counts, ids and Raft positions; app names, organization
+names, people's names and app state never appear. The operator cannot sign in
+as anyone: sessions are minted only after a passkey ceremony, under a key held
+in the system state.
+
+The operator does control availability. It can stop, freeze or restart nodes,
+withhold the network, or refuse to register nodes. An app stays available
+while a majority of its replicas run.
+
+## Backups
+
+With `--backup-dir`, every node writes, every 60 seconds (and on
+`POST /ops/backup`), a copy of the current snapshot file of each app group it
+leads, first asking for a fresh snapshot if the last one is older than what it
+has applied. A backup is the log's own snapshot file, sealed frame by frame
+under the cluster's storage key, stored as
+`{dir}/{app}/{index:020}.{group}.{snapshot}.snap`. Only a node holding the
+cluster's K_r can open one (`backup::latest`). The directory stands in for
+object storage.
+
+Restoring a snapshot into a running cluster is not done yet.
+
+## Offline inspection
+
+`merod inspect` reads a stopped node's store: without the storage key, the
+layout and sealed sizes only; with it, each group's metadata (vote, applied
+index, membership). It is the counterpart of v1's `merodb`.
+
+:::note[v1 comparison]
+v1's operator ran their own node and its admin API could read everything that
+node held. Here the operator runs other people's nodes, so the line moved: the
+operator sees enough to keep the cluster running, and the people whose data it
+holds see — through attestation — what the operator is allowed to change.
+:::

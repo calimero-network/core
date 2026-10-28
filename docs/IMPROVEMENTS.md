@@ -68,16 +68,16 @@ polished product. Grouped by theme; check items off as they land.
 - [ ] 52. How-to: ship v2 (migrations) with troubleshooting.
 
 ## G · Operate track content
-- [ ] 53. Full admin-API reference with request/response schemas (OpenAPI).
-- [ ] 54. Generate the merod/meroctl CLI reference from `--help`.
-- [x] 55. Production deployment guide (systemd/Docker/k8s).
-- [x] 56. Networking/NAT/relay/bootstrap setup guide.
-- [ ] 57. Metrics dashboard guide (Prometheus/Grafana examples).
-- [ ] 58. Expand the backup/restore runbook with concrete commands.
-- [x] 59. Security hardening guide (auth modes, key management).
+- [ ] 53. Node API reference with full request/response schemas (OpenAPI); routes and credentials are listed (`operate/admin-api`).
+- [ ] 54. Generate the merod/meroctl CLI reference from `--help` (hand-written from the clap definitions).
+- [x] 55. Production deployment guide (TDX, mero-kms, forming the cluster, TLS front).
+- [x] 56. Networking guide (listener, peer URLs, CORS, app domains, egress); v1's NAT/relay/bootstrap guide retired.
+- [ ] 57. Metrics collection and dashboard guide for `/ops/metrics` (a sealing collector, Grafana examples).
+- [ ] 58. Restore runbook, once snapshot restore exists (backups are documented; restore is not implemented).
+- [x] 59. Security guide (TDX vs --dev, quote policies, governance, ops token).
 - [ ] 60. Capacity & performance tuning guide.
-- [ ] 61. Multi-node cluster tutorial.
-- [x] 62. Document the auth service / JWT providers.
+- [ ] 61. Multi-process cluster tutorial (separate `merod` processes; `merod local` covers one process).
+- [x] 62. Document authentication (passkeys, sessions, API keys, ops token); v1's auth service and JWT providers retired.
 
 ## H · Protocol track content
 - [x] 63. Identity & key-rotation chapter.
@@ -93,25 +93,25 @@ polished product. Grouped by theme; check items off as they land.
 
 ## I · Contribute track content
 - [ ] 73. "Where to start / good first issue" guide.
-- [ ] 74. Testing strategy page (unit/integration/e2e/sync-sim).
+- [x] 74. Testing strategy page (unit, cluster, CLI, SDK harnesses, merobox).
 - [ ] 75. "Add a new X" cookbook (config option, collection, host fn).
 - [ ] 76. ~~ADR index page~~ (dropped — ADRs removed from the repo).
-- [ ] 77. Debugging guide (merodb, tracing, state inspection).
-- [ ] 78. Document the actor message contracts.
+- [ ] 77. Debugging guide (`merod inspect`, tracing, `ops status`).
+- [ ] 78. ~~Document the actor message contracts~~ (dropped — the actor-based node was deleted with v1).
 
 ## J · Accuracy & freshness
 - [x] 79. Fix the stale `TeeAttestationAnnounce.nonce` doc-comment in code. (The message is gone: the node now answers a challenge a member chose.)
 - [ ] 80. Reconcile `minRuntimeVersion` docs vs the bundle-manifest reality.
 - [ ] 81. Sweep remaining `:::caution` markers and resolve where possible.
 - [ ] 82. Cross-check every config default against a freshly generated config.
-- [ ] 83. Verify all admin-API methods (GET/POST) against the router.
+- [x] 83. Verify every node API route against `router` in `crates/node/src/api.rs`.
 - [ ] 84. Add a status badge convention per chapter (stable/draft/planned).
 - [ ] 85. CI drift check: generated refs vs committed.
 - [ ] 86. Remove stale references to the legacy architecture site.
 
 ## K · Automation & sustain
 - [ ] 87. Generate the config reference from the config structs.
-- [ ] 88. Generate the admin-API reference from OpenAPI.
+- [ ] 88. Generate the node API reference from OpenAPI.
 - [ ] 89. Generate the CLI reference from clap `--help`.
 - [ ] 90. Generate the SDK reference from rustdoc JSON.
 - [ ] 91. CI accessibility/contrast check (axe/pa11y).
@@ -158,15 +158,15 @@ A fresh 100, reflecting the now-built-out site: depth, completeness, polish.
 - [ ] R20. Peer/connection state-machine diagram.
 
 ## Operate depth
-- [ ] R21. Admin API reference with request/response schemas (OpenAPI) + a Bruno/Postman collection.
+- [ ] R21. Node API reference with request/response schemas (OpenAPI); requests must be sealed, so a collection needs a sealing client.
 - [ ] R22. CLI reference generated from `--help` (merod/meroctl), always current.
-- [ ] R23. Metrics catalog (every metric, type, labels) + a sample Grafana dashboard JSON.
+- [ ] R23. Sample Grafana dashboard JSON (the metrics catalog is in `operate/observability`).
 - [ ] R24. Kubernetes/Helm deployment guide + manifests.
 - [ ] R25. Tested backup/restore with RPO/RTO guidance.
-- [ ] R26. Capacity planning & sizing (memory/disk per context, peer counts).
+- [ ] R26. Capacity planning & sizing (disk per app, replicas per node, system group size).
 - [ ] R27. Cross-version upgrade runbook (node binary + app together).
-- [ ] R28. Disaster recovery (recover a context from divergence; rebuild from peers).
-- [ ] R29. Bootstrap-node / relay-node operator guide.
+- [ ] R28. Disaster recovery (losing a system-group majority; restoring an app from its snapshot).
+- [ ] R29. ~~Bootstrap-node / relay-node operator guide~~ (dropped — a cluster has no p2p network).
 - [ ] R30. Log reference (what each warn/error means, what to do).
 
 ## Reference completeness

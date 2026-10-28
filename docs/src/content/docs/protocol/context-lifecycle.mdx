@@ -1,136 +1,84 @@
 ---
-title: Context Lifecycle
-description: The end-to-end journey of a context — create, invite, join, use, leave, and delete — and the load-bearing distinction between the three kinds of leave, deletion, and tombstone GC.
+title: App instance lifecycle
+description: The life of one app instance — placement, init, access, names and metadata, replica moves, and deletion.
 sidebar:
-  label: Context lifecycle
+  label: App instance lifecycle
+  order: 18
 ---
 
-import SeqDiagram from '../../../components/SeqDiagram.astro';
-import { Aside } from '@astrojs/starlight/components';
+An **app instance** (what `meroctl` still calls a *context*) is one running copy
+of a bundle with its own state and its own Raft group. Its directory record
+lives in the system group; its state lives only on its replicas.
 
-A **context** is the protocol's central noun: a single shared application instance, with its own membership, its own encrypted state, and its own delta DAG. Every other chapter touches contexts, but none follows one from birth to death. This page does.
+## Create
 
-The journey has six stations — **create → invite → join → use → leave → delete** — and the interesting part is the tail. There is not one way to stop participating, there are several, and they differ enormously in blast radius: some are silent and local to one node, one cascades across an entire scope subtree, and none of them erases the immutable DAG history. Getting that distinction right is the whole point of the chapter.
+`POST /apps { name, package+version | bundle, service?, initArgs?, org?, access?, confirmMethods?, metadata? }`
+by a passkey session, an unscoped API key, or (for its own package) a
+package-bound session:
 
-This builds on the scope tree from [Governance](/protocol/governance/), the bytecode binding from [Applications](/protocol/applications/), and the inheritance rules from [Capability & Membership Inheritance](/protocol/capability-inheritance/).
-
-## Create — a context is born bound to an application
-
-A context is never free-floating. It is created **inside a governance group** and **bound to an application id** from its first instruction. The creator must be a member of the target group and hold the `CAN_CREATE_CONTEXT` capability (or be an admin); a non-member or under-capable identity is rejected before any state is written.
-
-Creation does the following, in order:
-
-- Derives a fresh context id from a random context secret (retried up to five times to avoid collision).
-- Resolves the application to init with. A group can be **pinned to a specific bytecode version** — if the group's `bytecode_id` names a blob the node holds, the context inits on *that* bytecode, not the application row's current blob. This positions every new context on its group's upgrade ladder from birth. (See [Upgrades](/protocol/upgrades/).)
-- Runs the application's `init` method, producing the context's first state and a **genesis delta** whose parent is `[0; 32]`. The genesis delta is persisted even when state is empty, so the DAG always has a head.
-- Writes local `ContextConfig`, `ContextMeta`, and a `ContextIdentity` row holding the creator's keys.
-- Publishes a `ContextRegistered` governance op into the group, then subscribes to the context and namespace gossipsub topics.
-
-A context may optionally carry a `service_name` (binding it to a node-side service) and a human-readable `name`, the latter published as a `ContextMetadataSet` op. The genesis governance scope is the group it was created in — that scope owns its membership and its encryption domain from here on.
-
-<Aside type="note">
-The `init` artifact is signed with the creator's identity key **before** it goes into the broadcast delta. Peers verify those signatures when they apply the genesis delta, so an unsigned or placeholder-signed genesis would be rejected network-wide. Creation bails rather than ship an unusable context.
-</Aside>
-
-## Invite — a signed, expiring bearer credential
-
-To bring a new member in, an admin (or a member holding `CAN_INVITE_MEMBERS`) produces a **`SignedGroupOpenInvitation`**. This is a self-contained bearer credential — there is no commitment published to the network at invite time, and nothing to redeem against. Whoever holds the bytes can present them.
-
-The credential carries:
-
-- **`inviter_signature`** — the inviter signs a SHA-256 of the serialized invitation with their group signing key, so any receiver can verify it came from an authorized member.
-- **`group_id`** and an **`expiration_timestamp`** — the invitation is scoped to one group and expires (default **365 days**, configurable at creation). Expiry is checked both locally as a fast-fail and authoritatively on apply.
-- **`application_id`** and **`bytecode_id`** — the real target application and its pinned bytecode id. Carrying these lets the joiner **align on the same app schema** the inviter is on. Without them the joiner would seed its group metadata to zero and diverge from the inviter's state-hash view permanently.
-- A random `secret_salt` and an `invited_role` (Member).
-
-The invitation is handed to the joiner out of band. Redemption is a **separate join step** — issuing the credential and acting on it are decoupled.
-
-## Join — two gates, in order
-
-Joining is **two distinct admissions**, not one. A node first becomes a member of the **group / namespace**, then joins **each context** it wants to follow inside that group.
-
-**Gate 1 — namespace/group membership** (`crates/node/src/join_namespace.rs`). The joiner provisions a namespace identity, subscribes to the namespace topic, publishes a `ReadinessProbe` to find a synced peer, backfills the namespace governance DAG against that peer, then publishes `RootOp::MemberJoined` carrying the signed invitation. Peers holding the group key respond with a `KeyDelivery` so the joiner can decrypt shared state.
-
-**Gate 2 — per-context join** (`crates/context/src/handlers/join_context.rs`). With group membership in place, the joiner resolves the **context → group mapping** (waiting on a registration signal, kicking namespace sync if the mapping hasn't landed locally yet), verifies its membership path (direct, or **inherited** through an `Open` subgroup), writes a `ContextIdentity` row, subscribes to the context topic, and syncs the delta DAG. Joining also **clears any leave tombstone** for this `(identity, context)` pair — an explicit rejoin re-arms auto-follow.
-
-A node that is a group member can follow the group's contexts; auto-follow registers contexts as it learns of them, except those the node has explicitly left.
-
-<SeqDiagram id="ctx-invite-join" title="Invite → join handshake"
-  lanes={[
-    {label:'Admin / inviter', color:'#3fb950'},
-    {label:'Joiner node', color:'#58a6ff'},
-    {label:'Namespace peers', color:'#d29922'}
-  ]}
-  steps={[
-    {from:0,to:0,label:'create_group_invitation → SignedGroupOpenInvitation (signed, expiring; carries group_id, app_id, bytecode_id)'},
-    {from:0,to:1,label:'hand off invitation out-of-band', dashed:true},
-    {from:1,to:2,label:'Gate 1: join_namespace — provision identity, subscribe, publish ReadinessProbe + MemberJoined'},
-    {from:2,to:1,label:'KeyDelivery (group key) + namespace DAG backfill', dashed:true},
-    {from:1,to:1,label:'Gate 2: join_context — resolve context→group, write ContextIdentity, clear leave marker'},
-    {from:1,to:2,label:'subscribe context topic + sync delta DAG'},
-    {from:2,to:1,label:'genesis + deltas applied → local root_hash converges', dashed:true}
-  ]} />
+1. **Resolve the bundle.** A package release (installed from the registry
+   first if the cluster lacks it) or, on a development cluster, a raw bundle
+   hash.
+2. **Place.** The node picks the least-loaded nodes, up to `--replicas` (3 by
+   default), among those whose attested mero-tee release is approved to hold
+   the owner's (or the organization's) apps ([Release
+   approvals](/protocol/governance/#release-approvals)). No such node: `503`.
+   Placement across zones is not done in the node.
+3. **Record.** `CreateApp` applies in the system group: the bundle must be
+   known, the owner within their app quota, a member (at least `member`) of the
+   organization if one is named, and a writer of the team for `access: team`.
+   It assigns the app its group number. The default access is `org` inside an
+   organization and `owner` outside one.
+4. **Start the group.** Each replica's reconcile loop starts the group; the
+   first replica in the list forms it with all replicas as voters.
+5. **Init.** The group's first leader runs `init` with `initArgs` as the owner
+   and appends the `Init` entry. The create request waits for it (up to 30
+   seconds) and answers `{ appId, contextId, group, replicas }`, or
+   `422 INIT_FAILED` with the app's error, recorded on the instance
+   (`AppState::init_error`) rather than leaving a dead app.
 
 ## Use
 
-Once joined, the node executes methods against the context, producing signed deltas that propagate over the context's gossipsub topic and converge via the CRDT delta DAG. This is the steady state — covered in depth by [Write path](/protocol/write-path/), [Sync](/protocol/sync/), and [Execution](/protocol/execution/). The lifecycle picks back up when a participant wants out.
+Calls, views and events go through any node ([The write path](/protocol/write-path/),
+[Reads](/protocol/reads/)). The API takes the app id or its context id
+(`hex(SHA-256(app_id))`), the id the app itself sees and hands to others.
 
-## Leave — three forms, three blast radii
+## Access, names and metadata
 
-This is the load-bearing distinction of the chapter. "Leaving" can mean three different things, and they are *not* interchangeable.
+| Change | Route | Who |
+| --- | --- | --- |
+| Access rule | `POST /apps/{app}/access` | The owner, with a passkey session |
+| Metadata (a title, an icon; at most 16 KiB) | `POST /apps/{app}/metadata` | The owner, or an admin of its organization |
+| An alias for the app | `PUT /auth/aliases/{alias}` | Any account, for an app it reaches; aliases are the account's own |
 
-### `leave-context` — unilateral, local-only opt-out
+## Move
 
-`leave_context` is a **node-local soft opt-out from a single context**. It writes a `ContextLeftMarker` tombstone in the node-local `Column::ContextLocal`, deletes the local `ContextIdentity` row (which stops sync), and unsubscribes from the context's gossipsub topic. It publishes **no governance op**.
+The operator can move an instance to another replica set
+(`POST /ops/apps/{app}/replicas`): new nodes join the group as learners, catch
+up, and become voters, and nodes that left stop the group and delete its data
+([Replica moves](/protocol/replication/#replica-moves)). A move only lands on
+nodes whose release the app's approver has approved.
 
-The consequences are precise: **peers never learn** the node left — the leaver still appears in member lists elsewhere. Auto-follow consults the marker and **won't re-add** the context on future registration events. The reversal is a plain `JoinContextRequest`, which deletes the marker as a side effect. Nothing about the group, the namespace, or any other context is touched.
+## Upgrade
 
-### `leave-group` / `leave-namespace` — published, with cascade
+`POST /apps/{app}/upgrade` switches the instance to another release and runs
+its migration; the directory records the new bundle only once the upgrade
+succeeded ([Upgrades & migrations](/protocol/upgrades/)).
 
-These publish a real governance op — `GroupOp::MemberLeft` signed by the leaver — so **peers do observe the departure**. Apply-side validation (direct-row, owner, last-admin checks) runs identically on every receiver and on the publisher, so a leave that would orphan a group is rejected the same way everywhere.
+## Delete
 
-- **`leave-group`** leaves one subgroup. It rejects being called on a namespace root (routing you to `leave_namespace`) and deliberately does **not** unsubscribe from the namespace topic, because the leaver may still belong to other groups under it. For a regular `Admin`/`Member`/`Observer` self-leave, local rows are preserved as soft-leave residue that rejoin/re-keyshare paths depend on; only a TEE (`ReadOnlyTee` or `RelayTee`) self-leave purges local rows.
-- **`leave-namespace`** leaves the root group and **cascades** to every descendant where the leaver holds a direct row — owner and last-admin checks across all of them upfront, then a row-removal cascade. It additionally issues `unsubscribe_namespace`, since the member is leaving the entire subtree.
-  With `purge` (`?purge=true` on the admin API) the leaver also purges the namespace, but only once an admin has acked its `MemberLeft` (`PublishReadiness::Ready`): the purge deletes the only local copy of that op.
-  Until then it is a plain leave and the response says `purged: false`; the account has already left, so the recovery is `DELETE /admin-api/namespaces/{id}` on each device.
-  When it purges, it announces `AccountNamespacePurged` instead of `AccountNamespaceLeft`; a sibling purges once it has applied the account's `MemberLeft` and its account is no longer a member, and otherwise ignores it.
-  A purge that arrives first is stored (`PendingNamespacePurges`) and done once the account's own `MemberRemoved` is applied there, or at the next start; a plain leave or a rejoin of the namespace withdraws it.
-  No forgotten marker is written: the account is no longer a member, and a later invitation is a fresh join.
+`DELETE /apps/{app}` by its owner, or an admin of its organization, with a
+passkey session. `DeleteApp` removes the directory record; each replica's
+reconcile loop then stops the group and deletes its data from that node.
 
-Neither leave mints its own key rotation — the leaver cannot, since it would have to generate the very key it is being cut off from. Instead the apply records the rotation as a **debt**, and a remaining admin discharges it automatically; see [Key Rotation](/protocol/key-rotation/). Forward secrecy after a self-leave is therefore real but *deferred*: writes made before the rotation lands are still readable by the leaver.
+An app is also deleted with its organization (`DELETE /orgs/{org}`, the owner
+with a passkey step-up) and with the team it is deployed to (`DeleteTeam` takes
+the team, the teams below it, and their apps).
 
-## Delete — admin teardown, not history erasure
-
-`delete-context` is an **admin action** (for a grouped context the requester must be a group admin). It deletes the local `ContextMeta`, `ContextConfig`, all `ContextIdentity` rows, and all `ContextState` for the context, unsubscribes from the topic, and — for a grouped context — publishes a `ContextDetached` governance op so peers detach it too.
-
-It explicitly **never deletes the `ContextDagDelta` entries**. The delta DAG is immutable distributed history: other nodes may still be syncing parents from it, and removing it would surface `DeltaNotFound` errors across the network. Deletion is therefore a teardown of *this node's working copy plus a detach signal*, not an erasure of the shared past.
-
-### Delete is not GC
-
-These are completely separate mechanisms — do not conflate them:
-
-- **Delete** is an explicit, user-triggered, admin-gated teardown of a *context*.
-- **GC** (`crates/node/src/gc.rs`) is an automatic, periodic, node-local sweep of expired *CRDT tombstones* within the `ContextState` of every context. The GC actor **runs on an interval defaulting to 10 minutes**, and within each run it collects the entity tombstones that **every member device of the context has applied**: each member's signed state beacon (its DAG heads and root hash) must have equalled this node's own state after the sweep first saw the tombstone (`crates/node/src/tombstone_stability.rs`). There is no time limit, so a silent member keeps the tombstones of every delete since it went quiet. It also drops each collected tombstone's id from its parent's `deleted_children` in the same pass (under the context's execution lock, since that rewrites the parent's row). A collected tombstone of a signed entry gives way, in the same atomic write, to a record of its `deleted_at` keyed by the entity's id (8 bytes, kept for good), against which apply drops a signed write no newer than the delete. It reclaims storage for deleted *entities inside a live context*; it has nothing to do with deleting contexts. A delete alone frees no disk in RocksDB, so after a sweep the GC compacts the state-column slice of each context it reclaimed at least 64 KiB and 1/32 of that slice from (`GC_COMPACT_MAX_WRITE_AMP`), on the sweep's blocking thread and without pausing background compaction.
-
-## What each teardown does — at a glance
-
-| Action | Local effect | Network effect | Recoverable? |
-| --- | --- | --- | --- |
-| **`leave-context`** | Writes `ContextLeftMarker`, deletes local `ContextIdentity`, unsubscribes topic | None — no op published; peers never learn | Yes — rejoin via `JoinContextRequest` clears the marker |
-| **`leave-group`** | Publishes `MemberLeft`; local rows kept as soft-leave residue (TEE role purges them) | Peers see the leave for that one subgroup | Yes — re-add / rejoin via inheritance |
-| **`leave-namespace`** | Publishes `MemberLeft`, unsubscribes namespace; cascades row removal across descendants | Peers see the leave across the whole subtree | Yes, but the whole subtree must be re-admitted |
-| **`leave-namespace` with `purge`** | As above, and once an admin acked the leave the namespace and its contexts leave this node's disk (else `purged: false`) | Every other device of the account purges it once it has seen the leave | Only by a fresh invitation |
-| **`delete-context`** | Deletes local `ContextMeta`/`Config`/`Identity`/`State` | Publishes `ContextDetached` (grouped contexts) | DAG deltas survive; state must be re-synced from peers |
-| **Tombstone GC** | Removes entity tombstones every member has applied, inside live contexts' state (~1h interval, no time limit) | None — purely node-local | No — but only ever reclaims already-deleted entities |
-
-The throughline: **nothing here erases the delta DAG**. Every recoverable path recovers by re-syncing that immutable history; the only thing that ever truly disappears is a CRDT tombstone every member has already applied, and that is by design.
-
-## Operating it
-
-Operators drive this lifecycle through the CLI — context creation, invitation issuance, join, leave, and delete all have [`meroctl`](/operate/meroctl/) commands.
-
-## Where this leads
-
-A context's membership, invitations, and per-context join all hinge on **identities and keys** — who signs an invitation, which identity a join provisions, and which key decrypts shared state.
-
-→ [Identities & Keys](/protocol/identities/)
+:::note[v1 comparison]
+v1 distinguished three kinds of leave (a local opt-out, a published group
+leave, a namespace leave), a delete that kept history, and tombstone garbage
+collection, because every member held a replica. Here members hold none: losing
+access is a system command, and deleting an instance removes it from every node
+that held it.
+:::

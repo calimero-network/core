@@ -24,10 +24,12 @@ To accept a change, regenerate the snapshot and commit it so the delta shows up 
 Ordinary `#[test]`s that time one operation at a small and a large input and assert the *ratio*, never an absolute time.
 The ratio is what a complexity bug changes and what a slower machine does not: growing the input 8x grows a linear path ~8x and a quadratic one ~64x, so a bound between the two (24x, keeping the fastest of three runs) fails a quadratic regression on any runner and passes a linear path even in a debug build under `nextest`.
 
-- `crates/dag/tests/complexity.rs`: the pending-set paths a peer drives (many waiters on one missing parent, inserts into a full map, an origin flooding at its quota, reverse-chain and fan-in cascades).
-  It caught `cleanup_stale` and per-origin eviction going quadratic: 44x and 64x growth on the old code, 8-10x after the fix.
+- `tools/storage-cost/tests/flat_curve.rs` (rows and hashes counted, not timed): the shape of each storage workload's cost curve, in both directions (a cost marked linear that stops being linear fails too); `cargo test -p storage-cost --release --test flat_curve -- --include-ignored`.
+- `crates/runtime/tests/cost_is_flat.rs` (gas, not time): whether a guest doing a fixed number of host calls is charged more gas as the store grows. It exists because an append whose cost grew with the collection made a collection unwritable while every correctness test stayed green.
 
-Write one when a path's cost depends on state a peer can grow (a pending set, a queue, a bucket of waiters) and the right answer is "linear" or "flat".
+(v1's pending-set guard, `crates/dag/tests/complexity.rs`, went with the DAG crate.)
+
+Write one when a path's cost depends on state a caller can grow (a collection, a queue, a ring of records) and the right answer is "linear" or "flat".
 Build the fixture outside the timed region, size it so the large run is a few tens of milliseconds, and also assert the result (counts, order), so the test is a correctness check as well as a timing one.
 Pair it with a Criterion sweep over the same shape in Tier 2, which shows the trend the guard only bounds.
 
@@ -38,15 +40,29 @@ Pair it with a Criterion sweep over the same shape in Tier 2, which shows the tr
     cargo bench -p calimero-storage --bench child_trie -- --test    # run once, assert nothing
     cargo bench -p storage-cost --bench collections                 # every registry workload, timed
     cargo bench -p storage-cost --bench indexed_map_indexes         # write cost per declared index
+    cargo bench -p calimero-log --bench log                         # append + commit, 1 vs 3 nodes; one synced RocksDB write
+    cargo bench -p calimero-sealed --bench sealed                   # a request sealed vs plain, 1 KiB / 64 KiB / 1 MiB
 
 Criterion compiles benches with release optimisations; never read numbers from a debug build.
 
-`master` saves a baseline per commit, and a PR compares against it with `critcmp` (`.github/workflows/benchmarks.yml`): a PR benches only while it carries the `run-benchmarks` label, and then benches every crate, again on each push. A storage change without the label is covered by the deterministic storage cost gate in `ci-checks.yml` instead.
+Two benches are not criterion, and run as their own jobs of the same workflow:
+
+    cargo run --release -p search-bench -- --sizes 10000,100000 --out search-bench.md     # tools/search-bench
+    cargo bench -p calimero-node --bench cluster_throughput -- --secs 20 --out cluster-throughput.json
+
+- `tools/search-bench`: `calimero-search`'s engine (index size, query latency, memory, the search-gas fit) as a markdown report, uploaded as `search-bench-<sha>`. Its `README.md` holds the reference run.
+- `crates/node/benches/cluster_throughput.rs`: calls per second and p50/p99 through a 3-node cluster in one process (the real node, sealed channels, the kv-store wasm, merod's Raft timing): 1 app with 1 and 64 calls in flight, and 2 apps with 64 each, led by one node and by two. It needs `kv_store.wasm` built first (`cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release`) and writes JSON, uploaded as `cluster-throughput-<sha>`; the `compare` job adds a table of it against the base commit's to the PR comment. The [testing page](src/content/docs/contribute/testing.mdx#benchmarks-and-cost-gates) has a reference run.
+
+`master` and the release branch `release-v2-parity` each save a baseline per commit, and a PR compares against its base branch's with `critcmp` (`.github/workflows/benchmarks.yml`): a PR benches only while it carries the `run-benchmarks` label, and then benches every crate, again on each push. A storage change without the label is covered by the deterministic storage cost gate in `ci-checks.yml` instead.
 Neither ever fails the PR. On a fork PR the comparison runs but cannot comment (its token is read-only), so read the `compare` job's log.
 
 ## Tier 3 - macro
 
-`.github/workflows/fuzzy-load-test.yml` runs CPU and memory flamegraphs as a nightly soak.
+`.github/workflows/e2e.yml` runs the fuzzy loads (`workflows/fuzzy-tests/`) for 15 minutes each as a nightly soak, against this tree's `merod` (a debug build) and against the `merod` in the latest release's image.
+Each records per-call latency (p50/p95/p99) and calls/s per operation (merobox's `MEROBOX_SOAK_REPORT`), shown in the job summary and uploaded as `soak-metrics-K` (and inside `e2e-release-results-K`); like Tier 2, it gates nothing, and only the pass rate can fail.
+The calls run one at a time, so the numbers are one caller's latency and rate, not the cluster's capacity (the cluster bench measures that); compare a night with earlier nights of the same job, and read the release image's rows for the shipped build's speed.
+The same nightly run profiles one node through the kv-store soak with `perf record -g` and renders a flamegraph with inferno (artifact `merod-flamegraph`, with the folded stacks for `inferno-diff-folded`).
+The [testing page](src/content/docs/contribute/testing.mdx#soak-latency-and-throughput) has the commands and a sample.
 The document-ceiling probes in `crates/runtime/tests/{chat,rga,fugue}_wall.rs` are `#[ignore]`d by design; they answer "how big can one document get", which Tier 1's row counts cannot.
 
 ## Adding a bench
@@ -56,7 +72,8 @@ The document-ceiling probes in `crates/runtime/tests/{chat,rga,fugue}_wall.rs` a
 3. Module docs say what question the bench answers.
 4. Never copy a private function's body; add a `pub(crate)` seam instead.
 5. Run `cargo bench --workspace --benches --no-run` before pushing.
-6. For a crate's *first* `[[bench]]`, add the crate to the `all` list in the `plan` job of `.github/workflows/benchmarks.yml`, or it silently gets no `master` baseline.
+6. For a crate's *first* `[[bench]]`, add the crate to the `all` list in the `plan` job of `.github/workflows/benchmarks.yml`, or it silently gets no baseline on `master` or the release branch.
+   A bench that is not criterion (no baseline for `critcmp`) gets its own job there instead, uploading its report as an artifact named with the commit, as `search-bench` and `cluster` do.
 
 ## Reading the comparison
 

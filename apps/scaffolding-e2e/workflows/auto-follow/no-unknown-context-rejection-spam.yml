@@ -1,276 +1,146 @@
-name: "No unknown-context rejection spam (peer-selection)"
-description: >
-  Workflow 4 of the #2422 regression test plan — covers options 3 + 4
-  from the issue (filter sync-target discovery by per-context
-  subscription; typed NotMaterialized response).
-
-  Setup: a context exists on node-1; node-2 is in the same group but
-  DELIBERATELY opted out of auto-follow (`auto_follow.contexts = false`).
-  node-2 is therefore a legitimate namespace mesh peer that simply
-  hasn't materialised the context. Today's sync-target selection in
-    crates/node/src/sync/manager/mod.rs
-  treats namespace-mesh membership as good enough and picks node-2 as
-  a sync target for the context. node-2 IS a verified group member
-  in this topology (it was added via `add_group_members`), so the
-  receiver-side gate sees `dialer_verified = true` and falls into the
-  `materialised == None` arm, logging at DEBUG level:
-    "context not materialised within join race window, closing stream"
-  (see crates/node/src/sync/manager/mod.rs — the materialisation
-  window). The CI runner greps for that exact debug signature; the
-  Ronit/Fran-shape warn ("inbound stream for unknown context") only
-  fires when `dialer_verified = false`, which this workflow does NOT
-  reproduce (would need a cross-namespace stream or a missing
-  group_for_context mapping). Both signatures are guarded in CI so a
-  future workflow that does provoke the warn shape is auto-covered.
-
-  Workflow shape:
-    - bootstrap two-node namespace + subgroup
-    - admin (node-1) auto-follows its own contexts and writes data
-    - node-2 joins WITHOUT auto-follow being set on it
-    - then we just sleep — letting normal gossipsub + sync-session
-      timers run on their own. The bug manifests during that window:
-      node-1's sync layer picks node-2 as a sync target and node-2's
-      responder logs the rejection.
-
-  Pass/fail policy:
-    - The convergence side is intentionally empty: by construction
-      node-2 never materialises context-A, so no positive overlap
-      assertion exists. Workflow steps are otherwise individually
-      green on a healthy run.
-    - The REGRESSION GATE is inline via merobox's
-      `assert_log_absent` step (merobox#244) — a final step at the
-      end of the workflow scans both nodes' docker logs for three
-      signatures and fails the workflow on any hit:
-        (a) "context not materialised within join race window"
-            (debug-level — our topology's symptom)
-        (b) "inbound stream for unknown context"
-            (warn-level — Ronit/Fran shape, for future workflows
-             that provoke !dialer_verified)
-        (c) "no owned identities found for context"
-      Same shape as sync-regression.yml's #2356 guards, but now
-      expressed inline in the workflow file rather than as a CI-side
-      grep on the artefact.
-    - The metric counterpart
-      (`sync_failures_total{protocol="HashComparison"}` on node-1
-      should stay near zero for this context) is deferred until
-      merobox grows an `assert_metric` step. The runtime-side
-      plumbing already exists in
-        crates/node/src/sync/prometheus_metrics.rs::sync_failures_total
-      so adding it is a workflow-author change, not a core change.
-    - The local-absent assertion on node-2 (no materialised entry for
-      ctx-A) is deferred until merobox grows an
-      `assert_context_absent` step. See the marked TODO at the end.
-
-no_docker: false
-nuke_on_start: true
-nuke_on_end: false
-
-auth_mode: embedded
-
-nodes:
-  count: 2
-  image: ghcr.io/calimero-network/merod:edge
-  prefix: af-no-spam-node
-
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no counterpart in this node):
+#   assert_log_absent x1: v1 node logs
+#   login (unknown) x2: checks what the dropped steps did
+#   set_member_auto_follow (unknown) x2: checks what the dropped steps did
+name: No unknown-context rejection spam (peer-selection)
+description: "Workflow 4 of the #2422 regression test plan — covers options 3 + 4 from the issue (filter\
+  \ sync-target discovery by per-context subscription; typed NotMaterialized response).\nSetup: a context\
+  \ exists on node-1; node-2 is in the same group but DELIBERATELY opted out of auto-follow (`auto_follow.contexts\
+  \ = false`). node-2 is therefore a legitimate namespace mesh peer that simply hasn't materialised the\
+  \ context. Today's sync-target selection in\n  crates/node/src/sync/manager/mod.rs\ntreats namespace-mesh\
+  \ membership as good enough and picks node-2 as a sync target for the context. node-2 IS a verified\
+  \ group member in this topology (it was added via `add_group_members`), so the receiver-side gate sees\
+  \ `dialer_verified = true` and falls into the `materialised == None` arm, logging at DEBUG level:\n\
+  \  \"context not materialised within join race window, closing stream\"\n(see crates/node/src/sync/manager/mod.rs\
+  \ — the materialisation window). The CI runner greps for that exact debug signature; the Ronit/Fran-shape\
+  \ warn (\"inbound stream for unknown context\") only fires when `dialer_verified = false`, which this\
+  \ workflow does NOT reproduce (would need a cross-namespace stream or a missing group_for_context mapping).\
+  \ Both signatures are guarded in CI so a future workflow that does provoke the warn shape is auto-covered.\n\
+  Workflow shape:\n  - bootstrap two-node namespace + subgroup\n  - admin (node-1) auto-follows its own\
+  \ contexts and writes data\n  - node-2 joins WITHOUT auto-follow being set on it\n  - then we just sleep\
+  \ — letting normal gossipsub + sync-session\n    timers run on their own. The bug manifests during that\
+  \ window:\n    node-1's sync layer picks node-2 as a sync target and node-2's\n    responder logs the\
+  \ rejection.\n\nPass/fail policy:\n  - The convergence side is intentionally empty: by construction\n\
+  \    node-2 never materialises context-A, so no positive overlap\n    assertion exists. Workflow steps\
+  \ are otherwise individually\n    green on a healthy run.\n  - The REGRESSION GATE is inline via merobox's\n\
+  \    `assert_log_absent` step (merobox#244) — a final step at the\n    end of the workflow scans both\
+  \ nodes' docker logs for three\n    signatures and fails the workflow on any hit:\n      (a) \"context\
+  \ not materialised within join race window\"\n          (debug-level — our topology's symptom)\n   \
+  \   (b) \"inbound stream for unknown context\"\n          (warn-level — Ronit/Fran shape, for future\
+  \ workflows\n           that provoke !dialer_verified)\n      (c) \"no owned identities found for context\"\
+  \n    Same shape as sync-regression.yml's #2356 guards, but now\n    expressed inline in the workflow\
+  \ file rather than as a CI-side\n    grep on the artefact.\n  - The metric counterpart\n    (`sync_failures_total{protocol=\"\
+  HashComparison\"}` on node-1\n    should stay near zero for this context) is deferred until\n    merobox\
+  \ grows an `assert_metric` step. The runtime-side\n    plumbing already exists in\n      crates/node/src/sync/prometheus_metrics.rs::sync_failures_total\n\
+  \    so adding it is a workflow-author change, not a core change.\n  - The local-absent assertion on\
+  \ node-2 (no materialised entry for\n    ctx-A) is deferred until merobox grows an\n    `assert_context_absent`\
+  \ step. See the marked TODO at the end.\n"
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 4980
+accounts:
+- af-no-spam-node-1
+- af-no-spam-node-2
 steps:
-  # First login on a fresh embedded-auth node bootstraps its root key
-  # and seeds merobox's token cache; every step below runs authenticated.
-  - name: Login on af-no-spam-node-1
-    type: login
-    node: af-no-spam-node-1
-    username: dev
-    password: dev-password
-
-  - name: Login on af-no-spam-node-2
-    type: login
-    node: af-no-spam-node-2
-    username: dev
-    password: dev-password
-
-  - name: Install application on node-1
-    type: install_application
-    node: af-no-spam-node-1
-    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Node-1 creates namespace
-    type: create_namespace
-    node: af-no-spam-node-1
-    application_id: "{{app_id}}"
-    outputs:
-      namespace_id: namespaceId
-
-  - name: Node-1 captures its account
-    type: node_identity
-    node: af-no-spam-node-1
-    outputs:
-      node1_account: accountId
-
-  - name: Node-1 creates subgroup
-    type: create_group_in_namespace
-    node: af-no-spam-node-1
-    namespace_id: "{{namespace_id}}"
-    group_name: "no-rejection-spam"
-    outputs:
-      group_id: groupId
-
-  - name: Enable contexts auto-follow for node-1 (admin self-flip)
-    type: set_member_auto_follow
-    node: af-no-spam-node-1
-    group_id: "{{group_id}}"
-    member_id: "{{node1_account}}"
-    auto_follow_contexts: true
-    auto_follow_subgroups: false
-
-  - name: Wait for admin self-flip to apply
-    type: wait
-    seconds: 3
-
-  # ── Node-2 joins the namespace + subgroup BEFORE any context exists ──
-  # Critical ordering: add node-2 + opt out FIRST, then create context-A.
-  # Post-#2422 the member default is `contexts: true`, so the
-  # synthesised AutoFollowSet that fires from the MemberAdded apply
-  # path would race the opt-out and backfill any pre-existing
-  # contexts before we get a chance to flip the flag. By doing the
-  # add+opt-out while the subgroup is still context-less, MemberAdded's
-  # AutoFollowSet handler has nothing to backfill, the opt-out lands
-  # cleanly, and node-2 sees ContextRegistered later with
-  # auto_follow.contexts=false (so handle_context_registered no-ops).
-  - name: Node-1 invites node-2 to namespace
-    type: create_namespace_invitation
-    node: af-no-spam-node-1
-    namespace_id: "{{namespace_id}}"
-    outputs:
-      ns_invite: invitation
-
-  - name: Node-2 joins namespace
-    type: join_namespace
-    node: af-no-spam-node-2
-    namespace_id: "{{namespace_id}}"
-    invitation: "{{ns_invite}}"
-    outputs:
-      node2_identity: memberIdentity
-      node2_account: memberAccount
-
-  - name: Node-1 adds node-2 to subgroup
-    type: add_group_members
-    node: af-no-spam-node-1
-    group_id: "{{group_id}}"
-    members:
-      - identity: "{{node2_identity}}"
-        role: Member
-
-  - name: Wait for MemberAdded op to converge
-    type: wait
-    seconds: 5
-
-  - name: Admin opts node-2 OUT of contexts auto-follow
-    type: set_member_auto_follow
-    node: af-no-spam-node-1
-    group_id: "{{group_id}}"
-    member_id: "{{node2_account}}"
-    auto_follow_contexts: false
-    auto_follow_subgroups: false
-
-  - name: Wait for opt-out to propagate
-    type: wait
-    seconds: 5
-
-  # ── Now the subgroup has a non-following member: create context-A ────
-  # ContextRegistered will gossip to node-2, whose
-  # handle_context_registered sees auto_follow.contexts=false and
-  # skips the auto-follow path. node-2 stays absent from context-A.
-  - name: Node-1 creates context-A
-    type: create_context
-    node: af-no-spam-node-1
-    application_id: "{{app_id}}"
-    group_id: "{{group_id}}"
-    outputs:
-      ctx_a: contextId
-      node1_key_a: memberPublicKey
-
-  - name: Node-1 writes into context-A
-    type: call
-    node: af-no-spam-node-1
-    context_id: "{{ctx_a}}"
-    method: set
-    args:
-      key: "alpha"
-      value: "from-A"
-    executor_public_key: "{{node1_key_a}}"
-
-  # ── Provoke the symptom ──────────────────────────────────────────────
-  # 30s window per the issue test plan. We do NOT call wait_for_sync
-  # for ctx-A on both nodes — by construction node-2 should never
-  # converge, and asserting that here would muddle the regression
-  # signal (workflow timeout vs. log spam are different bugs).
-  #
-  # During this sleep, node-1's sync manager fires its periodic
-  # sync-tick (default 5–10s — see crates/node/src/sync/config.rs).
-  # Pre-fix, it picks node-2 as a sync target for ctx-A via the
-  # namespace-mesh fallback in crates/node/src/sync/manager/mod.rs;
-  # node-2's receiver-side gate verifies node-2 IS a group member
-  # (dialer_verified = true) but finds the context is not materialised
-  # locally, logging "context not materialised within join race
-  # window" at debug level. The CI runner greps that exact signature.
-  - name: Window during which the bug would log spam
-    type: wait
-    seconds: 30
-
-  # Sanity assertion: node-1 still has its own write — i.e. the workflow
-  # didn't accidentally tear down node-1's context. This ensures the
-  # log-grep in CI is meaningfully testing the bug, not a degenerate
-  # "node-1 was broken so there was no sync attempt at all" outcome.
-  - name: Node-1 still has its own context
-    type: call
-    node: af-no-spam-node-1
-    context_id: "{{ctx_a}}"
-    method: get
-    args:
-      key: "alpha"
-    outputs:
-      n1_self_read: result
-
-  - name: Assert node-1 reads its own write
-    type: assert
-    statements:
-      - "is_set({{n1_self_read}})"
-      - 'contains({{n1_self_read}}, "from-A")'
-
-  # ── Inline regression gate (per merobox#244) ─────────────────────────
-  # Three log signatures are the symptom of #2422 on this topology. A
-  # healthy build emits none of them across either node during the 30s
-  # observation window above. A regression on Options 3 / 4 emits the
-  # first (debug-level, our topology's symptom); a regression that also
-  # provokes !dialer_verified emits the second (warn-level, Ronit/Fran
-  # shape, broad-substring match so future "...closing cleanly" /
-  # "...closing with error" suffix variants are also caught); the
-  # third is the unrelated #2356 owned-identity guard kept in lockstep
-  # with sync-regression.yml.
-  #
-  # `assert_log_absent` scans the full container log history (no
-  # time-window scoping in the current API). The three patterns are
-  # specific failure-mode signatures from the sync responder/initiator
-  # and are NOT emitted during normal bootstrap, namespace join,
-  # governance gossip, or auto-follow setup — verified empirically on
-  # the green-build matrix runs at b694dc03 + 57fffca6 (zero hits
-  # across both nodes for all three patterns on the full lifetime log).
-  - name: Regression guard — no rejection spam on either node
-    type: assert_log_absent
-    nodes:
-      - af-no-spam-node-1
-      - af-no-spam-node-2
-    patterns:
-      - "context not materialised within join race window"
-      - "inbound stream for unknown context"
-      - "no owned identities found for context"
-
-  # TODO (Phase A follow-up): when merobox grows `assert_context_absent`,
-  # add the local-absent check on node-2 here:
-  #
-  #   - name: Assert node-2 has not materialised context-A
-  #     type: assert_context_absent
-  #     node: af-no-spam-node-2
-  #     context_id: "{{ctx_a}}"
+- name: Install application on node-1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: af-no-spam-node-1
+- type: set
+  values:
+    app_id: com.calimero.scaffolding-e2e
+- name: Node-1 creates namespace
+  type: create_org
+  org_name: Node-1 creates namespace
+  outputs:
+    namespace_id: orgId
+  account: af-no-spam-node-1
+- name: Node-1 captures its account
+  type: whoami
+  outputs:
+    node1_account: publicKey
+  account: af-no-spam-node-1
+- name: Node-1 creates subgroup
+  type: create_team
+  org: '{{namespace_id}}'
+  team_name: no-rejection-spam
+  join: invite
+  outputs:
+    group_id: teamId
+  account: af-no-spam-node-1
+- name: Wait for admin self-flip to apply
+  type: wait
+  seconds: 3.0
+- name: Node-1 invites node-2 to namespace
+  type: invite
+  org: '{{namespace_id}}'
+  role: member
+  account: af-no-spam-node-1
+  outputs:
+    ns_invite: token
+- name: Node-2 joins namespace
+  type: redeem_invite
+  token: '{{ns_invite}}'
+  account: af-no-spam-node-2
+- type: whoami
+  account: af-no-spam-node-2
+  outputs:
+    node2_identity: publicKey
+    node2_account: publicKey
+- name: Node-1 adds node-2 to subgroup
+  type: team_add
+  org: '{{namespace_id}}'
+  team: '{{group_id}}'
+  members:
+  - '{{node2_identity}}'
+  role: member
+  account: af-no-spam-node-1
+- name: Wait for MemberAdded op to converge
+  type: wait
+  seconds: 5.0
+- name: Wait for opt-out to propagate
+  type: wait
+  seconds: 5.0
+- name: Node-1 creates context-A
+  type: deploy
+  account: af-no-spam-node-1
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Node-1 creates context-A
+  org: '{{namespace_id}}'
+  access:
+    kind: team
+    team: '{{group_id}}'
+  outputs:
+    ctx_a: contextId
+    node1_key_a: memberPublicKey
+- name: Node-1 writes into context-A
+  type: call
+  app: '{{ctx_a}}'
+  method: set
+  args:
+    key: alpha
+    value: from-A
+  account: af-no-spam-node-1
+  as_key: '{{node1_key_a}}'
+- name: Window during which the bug would log spam
+  type: wait
+  seconds: 30.0
+- name: Node-1 still has its own context
+  type: call
+  app: '{{ctx_a}}'
+  method: get
+  args:
+    key: alpha
+  account: af-no-spam-node-1
+  outputs:
+    n1_self_read: rpc
+- name: Assert node-1 reads its own write
+  type: assert
+  statements:
+  - is_set({{n1_self_read}})
+  - contains({{n1_self_read}}, "from-A")

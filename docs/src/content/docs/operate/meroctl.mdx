@@ -1,554 +1,312 @@
 ---
 title: meroctl CLI Reference
-description: The Calimero operator CLI — command groups for apps, contexts, groups, namespaces, blobs, calls, and node connections.
+description: Every meroctl command, argument and flag, taken from the clap definitions, with the node route each one calls.
 sidebar:
   label: meroctl reference
   order: 4
 ---
 
-import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Aside } from '@astrojs/starlight/components';
 
-`meroctl` is the operator CLI. It connects to a running `merod` node over its
-RPC server and manages applications, namespaces, groups, contexts, blobs, and
-method calls.
+`meroctl` is the command line for Calimero nodes. It keeps v1's command tree
+over the node API, through `calimero-client`: before anything is
+sent it fetches the node's attestation and judges the quote, then every request
+travels in the sealed channel. The source is `crates/meroctl/src`.
+
+| v1 name | What it is now |
+| --- | --- |
+| application (`app`) | a signed package, installed once per cluster |
+| context (`context`) | an app instance |
+| namespace (`namespace`) | an organization |
+| group (`group`) | a team of an organization |
+| identity (`account`) | an account; each passkey is one of its devices |
+
+Output is JSON, pretty-printed. Commands that stream (`context watch`,
+`context presence stream`, `ops metrics`, `blob download` to stdout, `app
+watch`, `dev`) print their own lines.
 
 ## Global arguments
 
-| Flag                       | Type / values            | Notes                                                                       |
-| -------------------------- | ------------------------ | --------------------------------------------------------------------------- |
-| `--home <PATH>`            | path                     | Directory for config and data. Env: `CALIMERO_HOME`.                        |
-| `--node <ALIAS>`           | string                   | Use a pre-configured node alias. Conflicts with `--api`.                    |
-| `--api <URL>`              | URL                      | API endpoint URL of the node to target.                                     |
-| `--output-format <FORMAT>` | enum                     | Output format (e.g. JSON) — used by commands such as `network status`.      |
+| Flag | Environment | Default | Meaning |
+| --- | --- | --- | --- |
+| `--home PATH` | `CALIMERO_HOME` | `~/.calimero` | Directory for meroctl's saved nodes and sessions (`{home}/meroctl/`). |
+| `--api URL` | `CALIMERO_API` | none | The node's URL (any node of the cluster). |
+| `--node ALIAS` | | the default saved node | A node saved with `node add`. Conflicts with `--api`. |
+| `--allow-mock` | | off | Trust mock quotes (development clusters such as `merod local`). A flag only, never read from the environment; `node add --allow-mock` remembers it for one saved node. |
+| `--allow-debug-profiles` | | off | Trust a release's debug profiles (the host can read a debug image's memory). |
+| `--tee-profiles NAME,...` | `CALIMERO_TEE_PROFILES` | none | Image profiles a real node's signed mero-tee release must list it under. Without any, every real quote is refused. |
+| `--min-release VERSION` | `CALIMERO_MIN_RELEASE` | `2.3.109` | The oldest mero-tee release to trust. |
+| `--api-key KEY` | `CALIMERO_API_KEY` | none | Authenticate with this API key instead of a saved session. |
+| `--ops-token TOKEN` | `CALIMERO_OPS_TOKEN` | none | The operator's token, for `ops` commands. |
 
-When neither `--node` nor `--api` is given, `meroctl` uses the active node (set
-with `node use`), falling back to `http://127.0.0.1:2528`.
+Which node: `--api`, else `--node`, else the default saved node. Which
+credential: `--api-key`, else the session saved for that node's URL (refreshed
+when it is within 30 seconds of expiring), else none, and the node says what
+the request needs.
 
-## Aliases
+A `CONTEXT` argument is an alias of the signed-in account or an app id (a
+context id works too). With no credential, it is used as given.
 
-Almost every command accepts an **alias** wherever it accepts an id. An alias is
-a human-readable name (max 50 characters) that the node resolves server-side to
-a `ContextId`, an `ApplicationId`, a member `PublicKey`, or a `DeviceId`. Aliases
-live on the node, not in the CLI: they are created, looked up, and deleted
-through the
-[admin API alias endpoints](/operate/admin-api/#admin-api--identity--alias), so
-every client talking to the same node sees the same aliases.
+### Approvals on a development cluster
 
-**Scoping is not uniform across the four target types:**
+What an owner approves takes `--dev-passkey FILE`: a passkey kept in a file,
+which only a development cluster's `localhost` relying party accepts.
+Without it, the command sends the request plainly and the node answers
+`412 CONFIRM_REQUIRED`: on a real cluster the owner approves in a browser.
+That holds for `context update`, `context transfer`, `namespace delete`, `namespace outbound`,
+`namespace approve-release`, `account outbound`, `account approve-release`,
+`group upgrade trigger` and `group upgrade retry`.
 
-| Alias target     | Scope                | Created with                                              |
-| ---------------- | -------------------- | -------------------------------------------------------- |
-| `ContextId`      | Node-global          | `context alias add`, or `context create --name`          |
-| `ApplicationId`  | Node-global          | admin API `alias/create/application`                     |
-| `DeviceId`       | Node-global          | `account alias add`                                      |
+## node
 
-Context, application, and device aliases are unique across the whole node.
+Saved nodes, in `{home}/meroctl/nodes.json` (mode `0600`). No network.
 
-A reserved `default` alias exists for contexts. Commands that take `--context`
-fall back to `default` when the flag is omitted, and `context use <CONTEXT>`
-just points the `default` alias at a chosen target.
+| Command | Meaning |
+| --- | --- |
+| `node add NAME URL [--allow-mock]` | Save a node. The first one saved becomes the default. `--allow-mock` trusts its mock quote. A name is letters, digits, `-` and `_`. |
+| `node remove NAME` (`rm`) | Forget a saved node. |
+| `node use NAME` | Make a saved node the default. |
+| `node list` (`ls`) | The saved nodes and the default. |
 
-<Aside type="caution">
-  `--node <ALIAS>` is a different kind of name entirely. It is a **meroctl
-  connection name** — client-side state stored in `nodes.toml`
-  (see [meroctl's own config](#meroctls-own-config-nodestoml)) that selects
-  which node to talk to. It never reaches the node and has nothing to do with
-  the context/application/device aliases above.
-</Aside>
+## login, logout, whoami, attest
 
-## Command groups
-
-| Group         | Purpose                                                          |
-| ------------- | ---------------------------------------------------------------- |
-| `account`     | Manage accounts and their devices: pairing, revocation, sealing. |
-| `app`         | Manage applications (install, list, versions, watch).            |
-| `context`     | Manage contexts, identities, aliases, and sync.                  |
-| `group`       | Manage groups: members, contexts, metadata, upgrades, settings.  |
-| `namespace`   | Manage namespaces (root groups / application instances). Alias `ns`. |
-| `blob`        | Upload, download, inspect, and delete blobs.                     |
-| `call`        | Call a method on a context (mutation or view).                   |
-| `dev`         | Developer workflow: build, install, create context, watch.       |
-| `network`     | Inspect libp2p networking state.                                 |
-| `peers`       | Return the number of connected peers.                            |
-| `tee`         | TEE fleet-node commands.                                          |
-| `node`        | Manage node connections used by `meroctl` (local config).        |
-
----
-
-## account
-
-An **account** is a person or agent; a **device** is one installation of theirs.
-Neither is a public key — both are content addresses, so keys rotate without the
-identity changing. One grant to the account lets any number of its devices
-write, each as a distinct CRDT replica, and any one of them can be revoked
-without touching the others.
-
-| Subcommand (aliases)                              | Purpose                                                        | Key args |
-| ------------------------------------------------- | -------------------------------------------------------------- | -------- |
-| `show`                                            | Show this node's account, device and signing key.               | — |
-| `device-init <ACCOUNT_ID>`                        | Mint a device for an account on this machine, holding no node.  | `ACCOUNT_ID` |
-| `pair-init <NAMESPACE_ID>... --root-key <HEX>`    | Mint a device on this node for an existing account.             | namespace IDs, the account's epoch-0 root key |
-| `pair-complete`                                   | Certify and link a device minted by `pair-init`.                | the device ID, KEM key, signing key, pairing statement and confirmation code printed by `pair-init` |
-| `revoke <NAMESPACE_ID> --device-id <HEX>`         | Withdraw a device from an account.                              | `NAMESPACE_ID`, `--device-id`; optional `--proof <HEX\|@PATH>` from `merod account revoke-proof` |
-| `seal-to <GROUP_ID> <ACCOUNT>`                    | Seal stdin so only that account's **root key** can open it.     | `GROUP_ID`, `ACCOUNT` |
-| `alias add\|remove\|get\|list`                     | Manage device aliases.                                          | alias name, device |
-
-### account seal-to
-
-Reads raw bytes on **stdin** and prints the sealed envelope. The node resolves
-the account's current root key itself, which is why the command never takes a
-key.
-
-```sh
-printf '%s' "$SECRET" | meroctl --node node1 account seal-to <GROUP_ID> <ACCOUNT>
-```
-
-The envelope it prints carries `accountRootEpoch`, `ephemeralPublicKey`, `nonce`
-and `ciphertext`.
-It opens only as an account envelope, with the account root key; `env::open_sealed` in an app does not open it.
-At most 64 KiB may be sealed in one call, and an empty payload
-is refused rather than sealed — an envelope over nothing is valid and carries no
-information, which downstream is indistinguishable from a real one.
-
-<Aside type="caution">
-Two properties decide whether this command is the right tool.
-
-**It seals to the account root, never to a device key.** A device is precisely
-what is gone in the case worth sealing for — device loss — so an envelope
-addressed to one is unopenable exactly when it is needed, and looks correct
-until then.
-
-**It proves confidentiality, not authorship.** The sender key is ephemeral and
-unauthenticated, so anyone who knows an account's root public key can produce an
-envelope for it. Whatever decides that a stored envelope is *legitimate* has to
-live in the service that accepted the write.
-</Aside>
-
-Both the caller and the target must be members of `GROUP_ID`: the caller so the
-surface does not widen past someone who already holds the group's key, and the
-target so the route cannot be used to probe whether an arbitrary account exists
-on this node. A non-member and an unknown account are refused identically.
-
----
+| Command | Route | Meaning |
+| --- | --- | --- |
+| `login --dev-passkey FILE [--name NAME] [--origin URL]` | `/auth/passkey/register/*` or `/auth/passkey/login/*` | Sign in with a file passkey, or sign up when `FILE` does not exist (`--name`, default `developer`, names the account). `--origin` (default `http://localhost:3000`) must be one the cluster allows. Needs `--allow-mock`: on a real cluster use an API key. Saves the session for the node. |
+| `logout [--all]` | `/auth/logout-all` with `--all` | Forget the saved session; `--all` first ends every session of the account. |
+| `whoami` | `GET /auth/me` | Who the requests run as. |
+| `attest [-c CONTEXT]` | `GET /attestation`, `GET /apps/{app}/attestation` | The node's attestation document; with `--context`, every replica of that app verified, their receipt keys and the governance they attest. |
 
 ## app
 
-| Subcommand (aliases)               | Purpose                                          | Key args                                                       |
-| ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
-| `get <APP_ID>`                     | Fetch application details.                        | `APP_ID`                                                      |
-| `install`                          | Install a signed `.mpk` application bundle.       | `PACKAGE@VERSION`, `--path`/`-p`, `--watch`/`-w`                |
-| `list` (`ls`)                      | List installed applications.                      | —                                                            |
-| `uninstall <APP_ID>`               | Uninstall an application.                         | `APP_ID`                                                      |
-| `versions <APP_ID>`                | List locally installed versions of an app.        | `APP_ID`                                                      |
-| `watch`                            | Watch a `.mpk` bundle and update all contexts using the app. | `--path`/`-p`, `--current-app-id` |
-| `list-packages`                    | List the packages installed on this node.         | —                                                            |
-| `list-versions <package>`          | List this node's installed versions of a package. | `package`                                                    |
-| `get-latest-version <package>`     | Highest installed version of a package.           | `package`                                                    |
+Signed packages (v1's applications). An application is installed once on the
+cluster and verified on every node that runs it.
 
-```sh
-meroctl --node node1 app install com.example.myapp@1.0.0
-meroctl --node node1 app install --path ./my-app.mpk
-meroctl --node node1 app ls
-```
-
-Positional `PACKAGE@VERSION` installs a published version from the one application
-source the node is configured with (its [`[registry]`](/operate/config/#registry)
-section); `--path` installs a local signed bundle. The two are mutually exclusive,
-and `--watch` applies to a `--path` install only.
-
-A `.mpk` bundle is the only thing either form installs - there is no raw-`.wasm`
-path and no way to name a URL. A node in `dht` mode has no registry to ask, so
-`PACKAGE@VERSION` reports the coordinates as unpublished there; use `--path`, or let
-governance deliver the application.
-
-`list-packages`, `list-versions` and `get-latest-version` all read this node's own
-installed rows, not the registry. Because a bundle's application id is version-stable,
-a package occupies one row, so `list-versions` reports the version this node currently
-holds.
-
----
+| Command | Route | Meaning |
+| --- | --- | --- |
+| `app install PACKAGE[@VERSION] [--version V]` | `POST /packages/install` | Install a release from the node's registry. The version is required, as `@V` or `--version`. |
+| `app install --path FILE` | `POST /packages` or `POST /bundles` | Upload a signed `.mpk`; any other file is uploaded as a raw WASM bundle (development clusters only) and its hash printed. |
+| `app list` (`ls`, `list-packages`) | `GET /packages` | Installed applications and their versions. |
+| `app get PACKAGE` | `GET /packages/{package}` | One installed application. |
+| `app versions PACKAGE` (`list-versions`) | `GET /packages/{package}` | Its installed versions. |
+| `app get-latest-version PACKAGE` | `GET /packages/{package}` | Its newest installed version. |
+| `app uninstall PACKAGE [--version V]` | `DELETE /packages/{package}[/{version}]` | Uninstall one version or the whole application. Refused while a context runs it. |
+| `app watch --path FILE --dev-passkey FILE [-c CONTEXT]... [--once] [--interval-ms MS]` | uploads, then `POST /apps/{app}/upgrade` | Push a build now, then on every save. A `.mpk` is installed and this account's contexts of its package (or the `--context`s named) are updated to its version; a raw `.wasm` updates only the `--context`s named. `--interval-ms` defaults to `500`. |
 
 ## context
 
-| Subcommand (aliases)               | Purpose                                          | Key args                                                       |
-| ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
-| `list` (`ls`)                      | List all contexts.                                | —                                                            |
-| `create`                           | Create a new context.                             | `--application-id`/`-a`, `--group-id` (required), `--params`/`-p`, `--watch`/`-w` `<path>`, `--seed`/`-s`, `--name` (context alias), `--service`, `--identity-secret`, `--group-name` |
-| `get <CONTEXT>`                    | Fetch context details: `info`, `client-keys`, or `storage`. | `CONTEXT`, subcommand                                  |
-| `delete` (`del`) `<CONTEXT>`       | Delete a context.                                 | `CONTEXT`                                     |
-| `update`                           | Update the application in a context.              | `--context`/`-c`, `--application-id`/`-a`, `--path`, `--watch`/`-w` |
-| `watch` (`ws`)                     | Stream context events, optionally run a command.  | `--context`, `-x`/`--exec`, `-n`/`--count`                  |
-| `sync`                             | Explicitly request a sync.                        | `--context`/`-c`, `--all`                                    |
-| `identity`                         | Manage context identities (see below).            | subcommand                                                    |
-| `alias`                            | Manage context aliases: `add`, `remove`, `get`, `list`. | subcommand                                              |
-| `use <CONTEXT>`                    | Set the default context.                          | `CONTEXT`, `--force`                                        |
+App instances (v1's contexts).
 
-### context identity
-
-| Subcommand (aliases)               | Purpose                                          | Key args                                                       |
-| ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
-| `list` (`ls`)                      | List identities in a context.                     | `--context`, `--owned`                                       |
-| `generate` (`new`)                 | Generate a new identity keypair.                  | —                                                            |
-
-<Aside type="note">
-  Per-context capability `grant`/`revoke` are gone. Manage capabilities through
-  the group instead (`group members set-capabilities`).
-</Aside>
-
-```sh
-meroctl --node node1 context create --application-id <app_id> --group-id <group_id>
-meroctl --node node1 group members set-caps <group_id> <identity> --can-create-context
-```
-
----
-
-## group
-
-| Subcommand (aliases)               | Purpose                                          | Key args                                                       |
-| ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
-| `get <GROUP_ID>`                   | Get information about a group.                    | `GROUP_ID`                                                    |
-| `delete` (`del`) `<GROUP_ID>`      | Delete a group.                                   | `GROUP_ID`                                    |
-| `members`                          | Manage group members (see below).                 | subcommand                                                    |
-| `contexts`                         | List (`list`/`ls`) or `detach` contexts in a group. | subcommand                                                  |
-| `metadata`                         | Show / update a group's metadata record.          | subcommand                                                    |
-| `member-metadata`                  | Show / update a member's metadata record.         | subcommand                                                    |
-| `context-metadata`                 | Show / update a registered context's metadata.    | subcommand                                                    |
-| `reparent <GROUP_ID> <NEW_PARENT_ID>` | Atomically move a group to a new parent.       | `GROUP_ID`, `NEW_PARENT_ID`                  |
-| `subgroups <GROUP_ID>`             | List direct subgroups of a group.                 | `GROUP_ID`                                                    |
-| `upgrade`                          | `trigger`, `status`, or `retry` a group upgrade.  | subcommand                                                    |
-| `sync <GROUP_ID>`                  | Sync a group from local state.                    | `GROUP_ID`                                   |
-| `join-context <CONTEXT_ID>`        | Join a context via group membership.              | `CONTEXT_ID`                                                  |
-| `leave-context <CONTEXT_ID>`       | Locally opt out of a context (no DAG op).         | `CONTEXT_ID`                                                  |
-| `leave <GROUP_ID>`                 | Voluntarily leave a group (publishes MemberLeft). | `GROUP_ID`                                                    |
-| `settings`                         | Manage group-level default settings (see below).  | subcommand                                                    |
-
-### group members
-
-| Subcommand (aliases)               | Purpose                                          | Key args                                                       |
-| ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
-| `list` (`ls`) `<GROUP_ID>`         | List all members of a group.                      | `GROUP_ID`                                                    |
-| `add <GROUP_ID> <IDENTITY>`        | Add a member to a group.                          | `--role`                                      |
-| `remove <GROUP_ID> <IDENTITY...>`  | Remove members from a group.                      | identities                                   |
-| `set-role <GROUP_ID> <IDENTITY> <ROLE>` | Update a member's role.                       | —                                                |
-| `set-capabilities` (`set-caps`)    | Set capabilities for a member (admin-only).       | `GROUP_ID`, `IDENTITY`, `--can-*` flags                     |
-| `get-capabilities` (`get-caps`)    | Get a member's capabilities.                      | `GROUP_ID`, `IDENTITY`                                       |
-| `check-access`                     | Check if an identity can join a context.          | `GROUP_ID`, identity                                        |
-
-### group settings
-
-| Subcommand (aliases)                       | Purpose                                  | Key args                                              |
-| ------------------------------------------ | ---------------------------------------- | ----------------------------------------------------- |
-| `get <GROUP_ID>`                           | Get current default settings.            | `GROUP_ID`                                            |
-| `set-default-capabilities` (`set-default-caps`) | Set default capabilities for new members. | `GROUP_ID`, `--can-*` flags        |
-| `set-subgroup-visibility` (`set-subgroup-vis`) | Set subgroup visibility (open/restricted). | `GROUP_ID`, `--mode`               |
-| `get-tee-admission-policy` (`get-tee-policy`) | Show a namespace's TEE admission policy, including its replica/relay mode. | `GROUP_ID` |
-| `set-tee-admission-policy` (`set-tee-policy`) | Set a namespace's TEE admission policy (admin-only): measurement lists or signed releases, and the role admitted TEEs get. | `GROUP_ID`, `--mrtd`/`--rtmr0..3` or `--profile` [`--min-release-version`], `--tcb-status`, `--accept-mock`, `--mode replica\|relay` |
-
-```sh
-meroctl --node node1 group members list <group_id>
-meroctl --node node1 group reparent <group_id> <new_parent_id>
-```
-
----
-
-## namespace
-
-Alias: `ns`. Namespaces are root groups (application instances).
-
-| Subcommand (aliases)               | Purpose                                          | Key args                                                       |
-| ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
-| `create`                           | Create a new namespace.                           | `--application-id`, `--name`, `--bytecode-id` (alias: `--app-key`) |
-| `get <NAMESPACE_ID>`               | Get details about a namespace.                    | `NAMESPACE_ID`                                                |
-| `delete` (`del`) `<NAMESPACE_ID>`  | Remove a namespace from this node (any member).   | `NAMESPACE_ID`                                |
-| `invite <NAMESPACE_ID>`            | Create an invitation for a namespace.             | `NAMESPACE_ID`, `--expiration-timestamp`, `--recursive`, `--admitter`, `--admitter-addr` (see [below](#invitation-admitters-and-addresses)) |
-| `join <NAMESPACE_ID> <INVITATION>` | Join a namespace using an invitation.             | `NAMESPACE_ID`, invitation JSON                              |
-| `leave <NAMESPACE_ID>`             | Leave a namespace (cascades through descendants). `--purge` also takes it off every device of the account, once an admin confirmed the leave. | `NAMESPACE_ID`, `--purge` |
-| `groups <NAMESPACE_ID>`            | List direct groups under a namespace.             | `NAMESPACE_ID`                                               |
-| `create-group <NAMESPACE_ID>`      | Create a child group in a namespace.              | `NAMESPACE_ID`, `--alias`                                    |
-| `list` (`ls`)                      | List all namespaces.                              | —                                                           |
-| `identity` (`id`) `<NAMESPACE_ID>` | Get this node's identity for a namespace.         | `NAMESPACE_ID`                                               |
-
-```sh
-meroctl --node node1 namespace create --application-id <app_id>
-meroctl --node node2 namespace join <namespace_id> '<invitation_json>'
-```
-
----
-
-
-### Invitation admitters and addresses
-
-`namespace invite` takes two optional flags that decide **who** may admit a joiner
-and **where** the joiner should look for them. Both are repeatable.
-
-| flag | value | what it does |
+| Command | Route | Meaning |
 | --- | --- | --- |
-| `--admitter` | account, 64 hex | Narrows who may admit this invitation. Omit and the node uses the group's admins plus its TEE nodes. **Signed**, so it cannot be redirected afterwards. |
-| `--admitter-addr` | `/ip4/…/tcp/…/p2p/<peer-id>` | Where a joiner can dial an admitter. **Unsigned**, and must include the `/p2p/` suffix. |
+| `context create --name NAME (--package P [--version V] \| --bundle HASH \| --path FILE) [options]` | `POST /apps` | Create a context. `--path` installs a `.mpk` (or a development `.wasm`) first. See the options below. |
+| `context list [--package P]` (`ls`) | `GET /apps[?package=P]` | Contexts this account reaches. |
+| `context get CONTEXT` | `GET /apps/{app}` | One context. |
+| `context delete CONTEXT` (`del`) | `DELETE /apps/{app}` | Delete a context (its owner or an org admin). |
+| `context transfer CONTEXT ACCOUNT [--dev-passkey F]` | `POST /apps/{app}/transfer` | Hand the context to another account (its owner, with a passkey; an org's context only to a member of the org). |
+| `context update CONTEXT [--version V] [--package P] [--service S] [--bundle HASH] [--migrate EXPORT] [--dev-passkey FILE]` | `POST /apps/{app}/upgrade` | Move to another release or bundle, migrating state where the ABIs say how. `--bundle` conflicts with `--version` and `--package`. The owner approves. |
+| `context watch CONTEXT [--from N] [--limit N]` (`ws`) | `GET /apps/{app}/events` | Print committed events from index `--from` (default `0`), then live ones, as JSON lines; stop after `--limit`. |
+| `context alias add ALIAS CONTEXT` (`new`, `create`) | `PUT /auth/aliases/{alias}` | Name a context for this account. |
+| `context alias remove ALIAS` (`rm`, `del`, `delete`) | `DELETE /auth/aliases/{alias}` | Remove an alias. |
+| `context alias get [ALIAS]` | `GET /auth/aliases/{alias}` | Resolve an alias (default `default`). |
+| `context alias list` (`ls`) | `GET /auth/aliases` | This account's aliases. |
+| `context use CONTEXT` | `PUT /auth/aliases/default` | Make a context the default (the alias `default`). |
+| `context access CONTEXT owner\|org\|team\|accounts\|public [--group TEAM] [--account ID]...` | `POST /apps/{app}/access` | Who reaches the context. `team` needs `--group`; `accounts` takes `--account` once per account. |
+| `context metadata CONTEXT JSON` | `POST /apps/{app}/metadata` | Set the context's metadata; `null` clears it. |
+| `context storage CONTEXT` | `GET /apps/{app}/storage` | Keys, bytes and blobs the context holds. |
+| `context abi CONTEXT` | `GET /apps/{app}/abi` | The ABI of the bundle it runs. |
+| `context presence list CONTEXT` (`ls`) | `GET /apps/{app}/presence` | Who is present now (ephemeral, never stored). |
+| `context presence publish CONTEXT --seq N [--state HEX]` | `POST /apps/{app}/presence` | Publish this device's presence; no `--state` retracts it. |
+| `context presence stream CONTEXT [--limit N]` | `GET /apps/{app}/presence/stream` | The snapshot, then each change, as JSON lines. |
 
-**You usually need neither.** The node names the admitters itself and fills in
-addresses from what it already has on file. Reach for them when:
+`context create` options:
 
-- `--admitter` — you want a *narrower* set than every admin and TEE node.
-- `--admitter-addr` — the node's address for an admitter is stale or missing (it
-  has not seen that peer within the cache's 24-hour window).
-
-```bash
-# Ordinary case: let the node decide who admits and where they are.
-meroctl namespace invite $NS
-
-# Narrow admission to one account, and say where it is.
-meroctl namespace invite $NS \
-  --admitter 8f2c...e1 \
-  --admitter-addr /ip4/203.0.113.7/tcp/2528/p2p/12D3KooWExample
-```
-
-Addresses are **unsigned**, deliberately. A wrong one costs a failed dial and
-nothing more: libp2p authenticates the peer id on connect, and the signed
-`--admitter` list still decides who may answer. See
-[Direct Admission](/protocol/direct-admission/) for why an address travels
-unsigned while the admitter list cannot.
-
-## blob
-
-| Subcommand (aliases)               | Purpose                                          | Key args                                                       |
-| ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
-| `list` (`ls`)                      | List all blobs.                                   | —                                                            |
-| `upload`                           | Upload a blob from a file.                         | `--file`, `--context-id`                                    |
-| `download`                         | Download a blob to a file.                         | `--blob-id`, `--output`, `--context-id`                    |
-| `info`                             | Get information about a blob.                      | `--blob-id`                                                  |
-| `delete` (`rm`)                    | Delete a blob by its ID.                           | `--blob-id`                                                  |
-
-```sh
-meroctl --node node1 blob upload --file /path/to/file
-meroctl --node node1 blob download --blob-id <blob_id> --output /path/to/output
-```
-
-<Aside type="note">
-  Each blob flag also has a short form: `--file`/`-f`, `--context-id`/`-c`,
-  `--blob-id`/`-b`, `--output`/`-o`.
-</Aside>
-
----
+| Flag | Meaning |
+| --- | --- |
+| `--name NAME` | Required. The context's name. |
+| `--package P` | An installed application. Conflicts with `--bundle` and `--path`. |
+| `--version V` | With `--package`: the release; default the newest installed. |
+| `--service S` | The service, for a multi-service application. |
+| `--bundle HASH` | A raw bundle's hash (development clusters). Conflicts with `--path`. |
+| `--path FILE` | A `.mpk`, or a development `.wasm`, installed first. |
+| `--params JSON` | Arguments for the app's `init`. |
+| `--namespace ORG` | Create it in this organization. |
+| `--group TEAM` | With `--namespace`: reached by this team's members (`access: team`). |
+| `--confirm METHOD` | A method that needs a passkey confirmation per call; repeat for each. |
+| `--alias ALIAS` | Also name it with this alias. |
 
 ## call
 
-Call a method on a context. Whether a call mutates state or runs as a read-only
-view is determined by the method's own declaration (`#[app::view]`), not by a
-CLI flag; the call executes under the context's default identity.
-
-| Arg / flag                | Type / values        | Default     | Purpose                                                         |
-| ------------------------- | -------------------- | ----------- | --------------------------------------------------------------- |
-| `<METHOD>`                | string               | —           | Method to call (omit with `--interactive`).                    |
-| `--context`/`-c <CONTEXT>` | context alias/id    | `default`   | Context to call the method on.                                  |
-| `--args <JSON>`           | JSON                 | `{}`        | JSON arguments to pass to the method.                          |
-| `--id <ID>`               | string               | —           | JSON-RPC call id.                                              |
-| `--interactive`/`-i`      | bool                 | `false`     | Open a persistent WebSocket shell and run many calls.          |
-| `--timeout <SECONDS>`     | u64                  | `120`       | Per-call timeout in the interactive shell (`0` disables).      |
-
-```sh
-meroctl --node <NODE> call <METHOD> --context <CONTEXT_ID> --args '<ARGS_JSON>'
-meroctl --node <NODE> call -i --context <CONTEXT_ID>
+```bash
+meroctl call -c CONTEXT METHOD [--args JSON] [--view [--min-index N]]
+             [--idempotency-key KEY] [--dev-passkey FILE]
 ```
 
-<Aside type="note">
-  In the interactive shell, enter `<method> [args-json]` lines. Meta-commands:
-  `:context <alias>`, `:help`, `:quit` (or Ctrl-D).
-</Aside>
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `-c, --context CONTEXT` | required | The context. |
+| `METHOD` | required | The method. |
+| `--args JSON` | `{}` | JSON arguments. |
+| `--view` | off | Read only (`POST /apps/{app}/views`): no write, answered by the leader. |
+| `--min-index N` | none | With `--view`: any replica that has applied index `N` may answer (a stale read). |
+| `--idempotency-key KEY` | none | Retries with the same key are answered once. |
+| `--dev-passkey FILE` | none | For a method that needs a passkey confirmation per call (development clusters). |
 
----
+A call without `--view` is `POST /apps/{app}/intents`. Both answers carry a
+receipt signed by the answering node.
+
+## blob
+
+A context's blobs.
+
+| Command | Route | Meaning |
+| --- | --- | --- |
+| `blob list -c CONTEXT` (`ls`) | `GET /apps/{app}/blobs` | The context's blobs. |
+| `blob upload FILE -c CONTEXT` | `POST /apps/{app}/blobs` | Upload a file; prints its id. |
+| `blob download ID -c CONTEXT [-o FILE]` | `GET /apps/{app}/blobs/{id}` | Write a blob to `--output`, or to standard output. |
+| `blob info ID -c CONTEXT` | `GET /apps/{app}/blobs/{id}/info` | A blob's size. |
+| `blob delete ID -c CONTEXT` (`rm`) | `DELETE /apps/{app}/blobs/{id}` | Forget a blob (its owner or an org admin); its bytes go once no other context holds them. |
+
+## namespace
+
+Organizations (v1's namespaces). Alias: `ns`. `ROLE` is `guest`, `member`,
+`admin` or `owner`; `JOIN` is `open` (whoever reaches the parent is a member)
+or `restricted` (only the members added).
+
+| Command | Route | Meaning |
+| --- | --- | --- |
+| `namespace create NAME` | `POST /orgs` | Create an organization. |
+| `namespace get ORG` | `GET /orgs/{org}` | One organization. |
+| `namespace list` (`ls`) | `GET /auth/me` | The organizations this account belongs to, with its role. |
+| `namespace delete ORG [--dev-passkey FILE]` | `DELETE /orgs/{org}` | Delete it with its teams, invites and contexts (the owner's). |
+| `namespace invite ORG [--role ROLE] [--group TEAM]... [--ttl-secs N] [--uses N]` | `POST /orgs/{org}/invites` | Make an invitation token. `--role` defaults to `member`; `--group` adds teams the invitee joins. |
+| `namespace join TOKEN` | `POST /invites/{token}/redeem` | Join with an invitation token. |
+| `namespace leave ORG` | `DELETE /orgs/{org}/members/{me}` | Leave the organization. |
+| `namespace groups ORG` | `GET /orgs/{org}` | The organization's teams. |
+| `namespace create-group ORG NAME [--parent TEAM] [--join JOIN]` | `POST /orgs/{org}/teams` | Create a team; `--join` defaults to `restricted`. |
+| `namespace members list ORG` (`ls`) | `GET /orgs/{org}` | Its members. |
+| `namespace members add ORG ACCOUNT [--role ROLE]` (`set-role`) | `POST /orgs/{org}/members` | Add a member or change their role (default `member`). `owner` moves ownership. |
+| `namespace members remove ORG ACCOUNT` (`rm`) | `DELETE /orgs/{org}/members/{account}` | Remove a member. |
+| `namespace metadata get ORG` | `GET /orgs/{org}` | The organization's metadata. |
+| `namespace metadata set ORG JSON` | `POST /orgs/{org}/metadata` | Replace it. |
+| `namespace member-metadata ORG ACCOUNT JSON` | `POST /orgs/{org}/members/{account}/metadata` | Set a member's metadata (theirs, or an admin's); `null` clears it. |
+| `namespace capabilities ORG BITS [--account ID \| --group TEAM]` | `POST /orgs/{org}/capabilities` | Set the capability bits of a member, of a team's members, or (neither) the organization's default. |
+| `namespace outbound ORG --package P [--prefix URL]... [--replace] [--dev-passkey FILE]` | `POST /orgs/{org}/outbound` | Approve URL prefixes the package's publisher may call out to from the organization's contexts (default: every prefix its latest release declares). `--replace` sets exactly these, which is how one is revoked. Where the owner holds outbound approvals. |
+| `namespace approve-release ORG VERSION [--dev-passkey FILE]` | `POST /orgs/{org}/releases` | Approve a mero-tee release to hold the organization's contexts. Where the owner holds release approvals. |
+
+## group
+
+An organization's teams (v1's groups). `ROLE` is `lead`, `member` or
+`read-only`.
+
+| Command | Route | Meaning |
+| --- | --- | --- |
+| `group get ORG TEAM` | `GET /orgs/{org}/teams/{team}` | One team. |
+| `group update ORG TEAM [--name NAME] [--join JOIN]` | `POST /orgs/{org}/teams/{team}` | Rename it or change who may join. |
+| `group delete ORG TEAM` | `DELETE /orgs/{org}/teams/{team}` | Delete it with the teams below it and their contexts. |
+| `group reparent ORG TEAM (PARENT \| --top)` | `POST /orgs/{org}/teams/{team}` | Move it under another team, or to the top. |
+| `group subgroups ORG TEAM` | `GET /orgs/{org}` | The teams directly below it. |
+| `group members list ORG TEAM` (`ls`) | `GET /orgs/{org}/teams/{team}` | Its members and read-only members. |
+| `group members add ORG TEAM ACCOUNT [--role ROLE] [--capabilities BITS]` (`set-role`) | `POST /orgs/{org}/teams/{team}/members` | Add a member or change their role (default `member`) or capabilities. |
+| `group members remove ORG TEAM ACCOUNT` (`rm`) | `DELETE /orgs/{org}/teams/{team}/members/{account}` | Remove a member. |
+| `group metadata ORG TEAM JSON` | `POST /orgs/{org}/teams/{team}` | Set the team's metadata. |
+| `group settings ORG TEAM --capabilities BITS` | `POST /orgs/{org}/capabilities` | The capabilities every member of the team gets. |
+| `group leave ORG TEAM` | `DELETE /orgs/{org}/teams/{team}/members/{me}` | Leave the team. |
+| `group upgrade trigger ORG --package P --version V [--group TEAM [--cascade]] [--migrate EXPORT] [--dev-passkey FILE]` | `POST /orgs/{org}/upgrade` | Move the organization's contexts of `P` (or one team's, with `--cascade` its subtree) to a release, as one run the owner approves once. |
+| `group upgrade status ORG RUN` | `GET /orgs/{org}/upgrades/{run}` | Follow a run. |
+| `group upgrade retry ORG RUN [--dev-passkey FILE]` | `POST /orgs/{org}/upgrades/{run}/retry` | Run its failed contexts again, as a new run. |
+
+## account
+
+The signed-in account.
+
+| Command | Route | Meaning |
+| --- | --- | --- |
+| `account show` | `GET /auth/me` | The account, its devices, organizations and approvals. |
+| `account usage` | `GET /auth/usage` | What it uses against its quotas. |
+| `account device list` (`ls`) | `GET /auth/me` | Its devices (passkeys) and the current one. |
+| `account device add --dev-passkey FILE [--origin URL]` | `/auth/passkeys/add/*` | Add a device: a new file passkey (development clusters). `FILE` must not exist. |
+| `account device label CREDENTIAL LABEL` | `POST /auth/passkeys/{cred}` | Name a device; `""` clears the name. |
+| `account device revoke CREDENTIAL` | `DELETE /auth/passkeys/{cred}` | Remove a device; its sessions end. |
+| `account api-key create [--label L] [--context C]... [--read-only] [--ttl-secs N]` | `POST /auth/apikeys` | Create an API key (needs a passkey session). `--label` defaults to `meroctl`; `--context` limits it to those contexts. The key is printed once. |
+| `account api-key list` (`ls`) | `GET /auth/apikeys` | Its API keys. |
+| `account api-key revoke KEY_ID` | `DELETE /auth/apikeys/{key}` | Revoke one. |
+| `account approve-release VERSION [--dev-passkey FILE]` | `POST /auth/releases` | Approve a mero-tee release to hold the account's own contexts. |
+| `account outbound --package P [--prefix URL]... [--replace] [--dev-passkey FILE]` | `POST /auth/outbound` | Approve outbound prefixes for the account's own contexts. |
 
 ## dev
 
-| Subcommand        | Purpose                                                   | Key args                                                                 |
-| ----------------- | --------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `start <path>`    | Build, install, create/reuse a context, optionally watch. | `--group-id` (required), `--watch`/`-w`, `--new`, `--params`/`-p`, `--seed`/`-s`, `--no-build` |
-
-`<path>` may be a signed `.mpk` bundle, or a project directory with a
-`Cargo.toml` (which is bundled with `cargo mero bundle --dev --no-icon` into
-`dist/dev.mpk`).
-
-```sh
-meroctl --node node1 dev start ./my-app --group-id <group_id> --watch
-```
-
----
+| Command | Meaning |
+| --- | --- |
+| `dev start --path FILE --dev-passkey FILE [--name NAME] [-p JSON] [-w]` | Install a build (`.mpk`, or a development `.wasm`), create a context from it (`--name`, default `dev`; `--params` for `init`) and, with `--watch`, push every later save to it. |
+| `dev watch --path FILE --dev-passkey FILE [-c CONTEXT]... [--once] [--interval-ms MS]` | `app watch` under another name. |
 
 ## network
 
-| Subcommand | Purpose                                                                 |
-| ---------- | ----------------------------------------------------------------------- |
-| `status`   | Dump swarm connectivity: listen/external addresses, relay reservations, rendezvous registrations, DCUtR upgrades, AutoNAT. |
+| Command | Route | Meaning |
+| --- | --- | --- |
+| `network status` | `GET /health` | This node's id, its release, and who leads the system group. |
 
-```sh
-meroctl --node node1 network status
-meroctl --output-format json --node node1 network status
+## ops
+
+The operator's commands. Every one needs `--ops-token` (or
+`CALIMERO_OPS_TOKEN`). The Ops API has no read path into apps' data. Decisions
+the deployment gave the operator are made here; the node answers `403` for the
+others.
+
+| Command | Route | Meaning |
+| --- | --- | --- |
+| `ops status` | `GET /ops/status` | This node, the system group's and hosted groups' Raft status, governance, fleet and counts. |
+| `ops metrics` | `GET /ops/metrics` | Prometheus text. |
+| `ops add-node ID ADDR [--zone Z]` | `POST /ops/nodes` | Register a node so the system group admits it as a learner. `ADDR` is its URL. |
+| `ops remove-node ID` | `DELETE /ops/nodes/{id}` | Remove a node no app keeps a replica on; run against the system leader. |
+| `ops move CONTEXT --replicas ID,...` | `POST /ops/apps/{app}/replicas` | Move a context to these replica node ids. A follower answers `421 NOT_LEADER`; meroctl retries at the leader it names. |
+| `ops backup` | `POST /ops/backup` | Write encrypted snapshots of the contexts this node leads now. |
+| `ops quotas` | `GET /ops/quotas` | The per-account quotas. |
+| `ops set-quotas JSON` | `POST /ops/quotas` | Replace them. |
+| `ops release VERSION [--withdraw]` | `POST /ops/releases` | Approve (or withdraw) a mero-tee release for every app, where the operator holds release approvals. |
+| `ops outbound --package P [--prefix URL]... [--replace]` | `POST /ops/outbound` | Approve outbound prefixes cluster-wide, where the operator holds outbound approvals. |
+| `ops packages` | `GET /ops/packages` | Installed applications. |
+| `ops install PACKAGE[@VERSION] [--version V]` / `ops install --path FILE` | `POST /ops/packages/install`, `POST /ops/packages` | Install a release for the operator's upgrades, from the registry or a signed `.mpk`. |
+| `ops uninstall PACKAGE [--version V]` | `DELETE /ops/packages/{package}[/{version}]` | Uninstall what the operator installed. |
+| `ops upgrade CONTEXT [--version V] [--package P] [--service S] [--bundle HASH] [--migrate EXPORT]` | `POST /ops/apps/{app}/upgrade` | Update a context to an installed release, where the operator holds app upgrades. |
+| `ops upgrade-namespace ORG --package P --version V [--group TEAM [--cascade]] [--migrate EXPORT]` | `POST /ops/orgs/{org}/upgrade` | Update an organization's contexts (or one team's) to a release; follow it with `group upgrade status`. |
+
+<Aside type="note">
+  `ops move` and `ops upgrade` pass `CONTEXT` to the node as given (an app id
+  or a context id); they do not resolve aliases.
+</Aside>
+
+## raw
+
+```bash
+meroctl raw METHOD PATH [BODY]
 ```
 
----
+Any API route, through the same attested, sealed client. `METHOD` is `get`,
+`post`, `put` or `delete`; `BODY` is JSON (default `{}` for `post` and `put`).
+Use it for what no command covers, such as `POST /auth/apikeys` with
+`methods` or `allowConfirm`. It cannot answer a `412 CONFIRM_REQUIRED`: a route
+that needs a passkey assertion needs a command with `--dev-passkey`, or a
+browser. See the
+[node API reference](/operate/admin-api/).
 
-## peers
+## Not carried over from v1
 
-No subcommand — returns the number of connected peers.
+`context sync` and `group sync` (Raft replicates), `context identity`,
+`account pair-*`, `seal-to` and `device-init` (a passkey is the device),
+`peers` (there is no gossip network) and `tee fleet-join` (`ops add-node`)
+have no meaning on a cluster.
 
-```sh
-meroctl --node node1 peers
+## Example session
+
+```bash
+merod local                                         # in another terminal
+meroctl node add local http://127.0.0.1:2501/ --allow-mock
+meroctl login --dev-passkey ./dev-passkey.json --name ada
+meroctl app install --path ./kv-store.mpk
+meroctl context create --package com.example.kv --name notes --alias notes
+meroctl call -c notes set --args '{"key":"a","value":"1"}'
+meroctl call -c notes get --args '{"key":"a"}' --view
+meroctl --ops-token "$TOKEN" ops status
 ```
-
----
-
-## tee
-
-| Subcommand (aliases)            | Purpose                                          | Key args     |
-| ------------------------------- | ------------------------------------------------ | ------------ |
-| `fleet-join <GROUP_ID>`         | Ask to be admitted as a TEE fleet member and auto-join contexts in the group once admitted. | `GROUP_ID`   |
-
-```sh
-meroctl --node node1 tee fleet-join <GROUP_ID>
-```
-
----
-
-## node (connection management)
-
-These commands manage `meroctl`'s **local connection config** — they do not call
-a node. A node may be a local home directory or a remote URL.
-
-| Subcommand (aliases)               | Purpose                                          | Key args                                                       |
-| ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
-| `add` (`connect`) `<NAME> <LOCATION>` | Add or connect to a node.                      | `LOCATION` (path or URL), `--access-token`, `--refresh-token` |
-| `remove` (`rm`, `disconnect`) `<NAME>` | Remove a node connection.                     | `NAME`                                                        |
-| `use <NAME>`                       | Set a node as active (default for commands).      | `NAME`                                                        |
-| `list` (`ls`)                      | List all configured nodes.                        | —                                                            |
-| `identity` (`id`)                  | Display the node's peer ID (local nodes only).    | —                                                            |
-
-```sh
-meroctl node add node1 /path/to/home
-meroctl node add node3 https://public.node.com
-meroctl node use node1
-meroctl node ls
-```
-
-For a remote node that needs authentication, login starts automatically; pass
-`--access-token` (and optionally `--refresh-token`) to skip it with explicit
-JWTs.
-
-Use https for any node that is not on this machine: `node add` and `--api`
-warn on stderr when a plain `http://` URL points at a non-loopback host, since
-the access token would then cross the network unencrypted.
-
-### meroctl's own config (`nodes.toml`)
-
-The `node` commands above read and write a single client-side config file at
-`~/.config/calimero/meroctl/nodes.toml` (under your platform config dir). This
-is meroctl's own state — it is never sent to a node. It records:
-
-- Each configured **node connection** under its connection name, as either a
-  local node (a `path` to a node home) or a remote node (a `url`).
-- `active_node` — the connection used when neither `--node` nor `--api` is given.
-- Per-node **JWT access and refresh tokens**, saved here after a login so
-  subsequent commands reuse them.
-
-Because it holds bearer tokens, the file is written with owner-only permissions
-(`0600`) and re-written atomically with those permissions on every update. Treat
-it as secret material:
-
-```toml
-active_node = "node1"
-
-[nodes.node1]
-path = "/home/alice/.calimero"
-
-[nodes.node1.jwt_tokens]
-access_token = "<jwt>"
-refresh_token = "<jwt>"
-
-[nodes.prod]
-url = "https://node.example.com/"
-```
-
-## End-to-end session
-
-A complete run from an installed application bundle to reading back state. Each
-command below adds `--output-format json` so the ids you need to copy forward
-are machine-readable; drop it to get the default human-readable table.
-
-1. **Install the application.** The node returns an `applicationId`:
-
-   ```bash
-   meroctl --node node1 app install \
-     --path ./dist/com.example.kv-store-0.1.0.mpk \
-     --output-format json
-   ```
-
-   ```json
-   {"data":{"applicationId":"<app-id>"}}
-   ```
-
-2. **Create a namespace** bound to that application id. A namespace is a root
-   group; its id is the `--group-id` a context attaches to:
-
-   ```bash
-   meroctl --node node1 namespace create --application-id <app-id> \
-     --output-format json
-   ```
-
-   ```json
-   {"data":{"namespaceId":"<namespace-id>"}}
-   ```
-
-3. **Create a context** from the application id and the namespace id, giving it a
-   memorable alias with `--name`:
-
-   ```bash
-   meroctl --node node1 context create \
-     --application-id <app-id> \
-     --group-id <namespace-id> \
-     --name my-kv \
-     --output-format json
-   ```
-
-   ```json
-   {"data":{"contextId":"<context-id>","memberPublicKey":"<public-key>"}}
-   ```
-
-4. **Call a mutating method.** Whether a call mutates or only reads is decided by
-   the method's own `#[app::view]` declaration, not a CLI flag — `set` here
-   writes a key. Refer to the context by its alias:
-
-   ```bash
-   meroctl --node node1 call set \
-     --context my-kv \
-     --args '{"key": "hello", "value": "world"}' \
-     --output-format json
-   ```
-
-   `set` returns `()`, so the result is `null`:
-
-   ```json
-   {"jsonrpc":"2.0","id":null,"result":{"output":null}}
-   ```
-
-5. **Read it back with a view method.** `get` is declared `#[app::view]`, so the
-   same `call` command runs it read-only:
-
-   ```bash
-   meroctl --node node1 call get \
-     --context my-kv \
-     --args '{"key": "hello"}' \
-     --output-format json
-   ```
-
-   ```json
-   {"jsonrpc":"2.0","id":null,"result":{"output":"world"}}
-   ```
-
-The value you stored comes back under `result.output`.
-
-## Next steps
-
-<CardGrid>
-  <LinkCard title="Admin & JSON-RPC API" href="/operate/admin-api/" description="The HTTP endpoints these CLI commands call under the hood." />
-  <LinkCard title="Runbooks" href="/operate/runbooks/" description="Step-by-step operational tasks built from these commands." />
-  <LinkCard title="merod reference" href="/operate/merod/" description="The node daemon meroctl connects to." />
-</CardGrid>

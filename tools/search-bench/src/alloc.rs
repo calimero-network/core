@@ -1,5 +1,5 @@
 //! A counting global allocator: live Rust heap bytes, for the memory numbers.
-//! (RocksDB's C++ allocations bypass it; its block cache is reported apart.)
+//! (C++ allocations bypass it; the index here is all Rust.)
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};

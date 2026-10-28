@@ -1,81 +1,34 @@
 [package]
 name = "merod"
-version = "0.1.0"
+description = "The Calimero node: attested, one Raft log per app (internals: calimero-node)"
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
 publish = false
 
+[[bin]]
+name = "merod"
+path = "src/main.rs"
+
 [dependencies]
-base64.workspace = true
-camino = { workspace = true, features = ["serde1"] }
-clap = { workspace = true, features = ["env", "derive"] }
-color-eyre.workspace = true
-const_format.workspace = true
-curve25519-dalek.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
 dirs.workspace = true
 eyre.workspace = true
-borsh.workspace = true
 hex.workspace = true
-libp2p.workspace = true
-multiaddr.workspace = true
-rand.workspace = true
-reqwest = { workspace = true, features = ["json"] }
-ring.workspace = true
-semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-sha2.workspace = true
-subtle.workspace = true
-tempfile.workspace = true
-tokio = { workspace = true, features = ["io-std", "macros", "fs", "net"] }
-toml_edit.workspace = true
-tracing.workspace = true
-zeroize.workspace = true
+tokio = { workspace = true, features = ["full"] }
+toml.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-url = { workspace = true, features = ["serde"] }
 
-calimero-app-downloader.workspace = true
-calimero-blobstore.workspace = true
-calimero-config.workspace = true
-calimero-utils-fs.workspace = true
-calimero-crypto.workspace = true
-calimero-context.workspace = true
-calimero-network-primitives.workspace = true
+calimero-client.workspace = true
 calimero-node.workspace = true
-calimero-server.workspace = true
-calimero-store.workspace = true
-calimero-store-encryption.workspace = true
-calimero-store-rocksdb.workspace = true
-calimero-tee-attestation.workspace = true
-calimero-tee-release.workspace = true
-calimero-utils-actix.workspace = true
-calimero-primitives = { workspace = true, features = ["borsh"] }
-mero-auth = { path = "../auth" }
-calimero-account = { version = "0.0.0", path = "../account" }
-calimero-governance-store = { version = "0.0.0", path = "../governance-store" }
-
-[build-dependencies]
-calimero-build-utils.workspace = true
-
-[features]
-# DEV/TEST ONLY. Compiles the mock TEE attestation path across merod (KMS mock
-# verify, `merod tee probe --mock-tee`, mock-tee admin wiring). Default OFF, so
-# release `merod` binaries contain no mock-attestation code. See crate docs.
-# The same test image also answers outbound requests to `.test` hosts in-process
-# (`[context.outbound.testing]`), so merobox can drive outbound end to end.
-mock-attestation = [
-    "calimero-context/outbound-testing",
-    "calimero-node/mock-attestation",
-    "calimero-server/mock-attestation",
-    "calimero-tee-attestation/mock-attestation",
-]
+calimero-identity.workspace = true
+calimero-kms-client.workspace = true
+calimero-log.workspace = true
+calimero-outbound.workspace = true
 
 [dev-dependencies]
-axum.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
-
-[package.metadata.workspaces]
-independent = true

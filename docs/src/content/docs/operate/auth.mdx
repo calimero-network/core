@@ -1,417 +1,155 @@
 ---
-title: Auth Service & Providers
-description: How merod authenticates requests — proxy vs embedded auth, the JWT model, the available providers, and the mock-token dev endpoint.
+title: Authentication
+description: How people, services and the operator authenticate to a merod cluster — passkeys, sessions and refresh tokens, API keys, confirmations, and the ops token.
 sidebar:
-  order: 13
+  label: Authentication
+  order: 7
 ---
 
-import { Steps, Tabs, TabItem, CardGrid, LinkCard } from '@astrojs/starlight/components';
-import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Aside } from '@astrojs/starlight/components';
 
-A `merod` node's HTTP server (admin API, JSON-RPC, WebSocket, SSE) can be
-protected either by an external proxy or by a bundled authentication service,
-`mero-auth`. This page describes the two modes, the JWT model the auth service
-uses, the providers it ships, and the local-development mock-token endpoint. For
-where auth fits into hardening a deployment, see
-[Hardening & Security](/operate/security/); for the `auth_mode` config key and
-init flags, see the [config reference](/operate/config/) and
-[merod reference](/operate/merod/).
+There is no separate auth service: the node itself registers passkeys,
+mints sessions and checks API keys (`crates/node/src/api.rs`, with the
+primitives in `calimero-identity`). Accounts, passkeys, API-key hashes, refresh
+tokens, revocations and the session-signing key live in the cluster's system
+group, so any node verifies any credential. v1's `mero-auth`, its JWT
+providers and the embedded/proxy modes are gone.
 
-## Embedded vs proxy auth
-
-The `server.auth_mode` setting picks how requests are authenticated.
-
-<Tabs>
-<TabItem label="proxy (default)">
-
-The node does not authenticate requests itself. It expects an external,
-authenticating proxy in front of it that decides who gets through. This is the
-default. With no proxy in place, the server is effectively unauthenticated, so
-the loopback bind (see [Hardening](/operate/security/#keep-the-admin-api-off-public-interfaces))
-matters.
-
-</TabItem>
-<TabItem label="embedded">
-
-The node builds the `mero-auth` service in-process and serves its routes
-alongside the node's own endpoints. The node issues and validates JWTs itself —
-no external auth proxy is required for authentication (you still terminate TLS at
-the edge). Enable it with `merod init --auth-mode embedded`, by setting
-`server.auth_mode = "embedded"`, or per run with `merod run --auth-mode embedded`.
-
-In embedded mode the auth store path (`auth_storage_path`, default `auth`) is
-resolved relative to the node home, so the auth database lives under
-`<home>/<node>/auth`.
-
-</TabItem>
-</Tabs>
-
-:::caution
-`merod run --auth-mode embedded` requires an embedded-auth configuration to be
-present; the node validates this at startup. If `auth_mode = "embedded"` is set
-without embedded-auth config, startup fails asking you to either provide the
-configuration or switch back to `proxy`.
-:::
-
-## The JWT model
-
-The auth service issues JSON Web Tokens. The relevant details, grounded in the
-token manager:
-
-- **Algorithm:** HS256 (symmetric). Tokens are signed with a secret that the
-  service generates and stores in its own storage backend — there is no external
-  key file to manage.
-- **Two token types:** a short-lived **access token** and a longer-lived
-  **refresh token**.
-- **Default lifetimes:** access token `3600` seconds (1 hour), refresh token 30
-  days. Configurable via `jwt.access_token_expiry` / `jwt.refresh_token_expiry`.
-- **Application client keys** get shorter tokens: access token `900` seconds
-  (15 minutes), refresh token 7 days, set by `jwt.client_access_token_expiry` /
-  `jwt.client_refresh_token_expiry` and never longer than the two settings
-  above. Every refresh issues a new refresh token, so an app in use stays signed
-  in until its client key expires (30 days by default, or the `ttl_secs` it was
-  minted with); an app left unused for longer than the refresh lifetime signs in
-  again.
-- **Issuer:** `jwt.issuer` (the shipped example config uses `calimero-auth`).
-
-Access-token claims:
-
-| Claim | Meaning |
-| --- | --- |
-| `sub` | Subject: an opaque user ID, stable across logins and refreshes; a password reset issues a new one. Forwarded as `X-Auth-User`. |
-| `key_id` | The key the token authenticates with. A client key's ID changes on every refresh. |
-| `iss` | Issuer (`jwt.issuer`). |
-| `aud` | Audience — the client ID. |
-| `exp` / `iat` | Expiry and issued-at, as Unix timestamps. |
-| `jti` | Unique token ID. |
-| `permissions` | The permission strings granted to the token. |
-| `node_url` | Optional node URL the token is scoped to. |
-
-:::note
-Because the signing secret is symmetric (HS256) and held by the auth service,
-token validation happens inside the same service that issues them. Protect the
-auth storage directory the same way you protect other key material — see
-[Key & identity storage](/operate/security/#key--identity-storage).
-:::
-
-## Permission scopes
-
-The `permissions` claim is the part of the token that actually gates API access.
-It is a list of permission strings; the guard parses each one back into a
-structured `Permission` and checks it against what the requested route needs. A
-permission has three parts:
-
-- A **category** — one of `admin`, `application`, `package`, `blob`, `context`,
-  or `keys` — usually followed by an action (and sometimes a sub-action), e.g.
-  `application:install`, `blob:add:stream`, `keys:create`.
-- A **resource scope** in `[...]` — either omitted/`*` for *all resources* or a
-  specific id, e.g. `context:execute[<ctx-id>]` limits the grant to one context.
-- A **user scope** for the permissions that carry one (`context:execute`,
-  `context:invite`, `context:leave`) — `*` for any identity or a specific
-  identity, encoded as the second field inside the brackets.
-
-The brackets are positional: `category:action[<resource>,<user>,<method>]`.
-`context:execute[<ctx>,<identity>,<method>]` is the fullest form — execute on
-one context, as one identity, restricted to one method — and any trailing field
-may be left empty to widen the scope.
-
-| Example string | Grants |
-| --- | --- |
-| `admin` | Everything. The master permission satisfies every other check. |
-| `application:install` | Install applications (any application). |
-| `application:list[<app-id>]` | List, scoped to one application id. |
-| `blob:add:stream` | Add blobs via the streaming upload path only. |
-| `keys:create` | Mint client keys. |
-| `context` | All context operations (any context). |
-| `context:execute[<ctx>,<identity>,set]` | Call only the `set` method, on one context, as one identity. |
-| `context:capabilities:grant` / `context:capabilities:revoke` | Manage the per-context capability grants on the auth side. |
-
-An **admin** token carries a single string:
-
-```json
-{ "permissions": ["admin"] }
-```
-
-A **scoped frontend** token grants only what one app's UI needs — read its
-context, call a couple of methods, and add blobs:
-
-```json
-{
-  "permissions": [
-    "context:list[<ctx-id>]",
-    "context:execute[<ctx-id>,<identity>,set]",
-    "context:execute[<ctx-id>,<identity>,get]",
-    "blob:add:stream"
-  ]
-}
-```
-
-### Where a scope is checked
-
-A route is admitted on the permission its path needs, and some paths are
-several authorities in one. `/ws` is admitted on `context:subscribe`, yet the
-same socket takes `execute` frames; `/jsonrpc` is admitted on
-`context:execute`, yet the context and method are in the request body. So
-every execute call, on either transport, is checked again against the token's
-`context:execute` grants for the context and method it actually names. A
-subscribe-only token cannot write over `/ws`, and a grant scoped to `get`
-cannot call `set`. This holds for client keys too, though they are otherwise
-treated as the node owner.
-
-In proxy mode the node reads the token's permissions from the
-`X-Auth-Permissions` header that mero-auth's `/auth/validate` returns, which the
-proxy must forward onto the request (Traefik: list it in `authResponseHeaders`).
-A request that names none is answered as before, so a proxy that does not
-forward it loses this check rather than breaking.
-
-:::caution[Two different permission systems]
-This is the **auth-service** permission model: it gates the node's **HTTP API**
-(who may call which admin / JSON-RPC / WebSocket route). It is entirely separate
-from the in-context **governance capability** model
-([capability inheritance](/protocol/capability-inheritance/)), which gates what
-a member may do *inside* a context's governance (create contexts, manage
-members, and so on). A token's `context:capabilities:grant` permission lets the
-caller hit the capability-management HTTP routes; it does not itself confer any
-in-context governance capability. Holding `admin` here says nothing about your
-authority inside any context.
-:::
-
-## Secret rotation
-
-The signing secrets are generated by the auth service itself and rotated on a
-schedule — there is no key file for an operator to provision or rotate by hand.
-Two independent secrets exist: the **JWT auth secret** (signs access and
-refresh tokens) and a **CSRF secret**.
-
-- **Cadence.** A background task wakes **every hour** and rotates any secret that
-  has reached the rotation interval — **24 hours** by default. Each rotation
-  generates a fresh 32-byte random value as the new primary.
-- **Storage layout.** Each secret is written under a **primary** storage key and
-  mirrored to a **backup** key. The backup is a durability fallback: if the
-  primary cannot be read, the service restores it from the backup. Each stored
-  secret also carries a **48-hour** expiry that ages out the retained prior copy
-  in memory.
-- **Validation uses the current secret.** Tokens are verified against the current
-  primary signing secret only. A rotation therefore caps the practical lifetime
-  of already-issued tokens at the rotation interval — clients re-authenticate
-  through the normal login flow once their tokens stop validating.
-
-:::note
-Because both secrets live in the auth storage backend, protecting that
-directory is the whole of secret management — see
-[Key & identity storage](/operate/security/#key--identity-storage). There is no
-separate secret to back up or distribute.
-:::
-
-## Client-key rotation
-
-One more time bound matters when integrating a login flow:
-
-- **Client-key rotation on refresh.** When a **client** token is refreshed, the
-  auth service rotates the underlying key id — it derives a new client id, stores
-  the new key, then deletes the old one. The previous client id no longer exists
-  after a successful refresh, so always keep the newest token pair you receive.
-  **Root** tokens are the exception: a refresh keeps the same key id.
-
-## node_url binding
-
-A token may carry an optional `node_url` claim scoping it to a specific node.
-When that claim is present, the auth service validates it against the request's
-`Host` header (or `X-Forwarded-Host` when a proxy sets it): if the host the token
-was minted for does not match the host the request is hitting, validation fails.
-
-This matters behind a **shared reverse proxy** fronting several nodes — a token
-minted for `node-a.example.com` will not validate against `node-b.example.com`,
-even though both sit behind the same proxy. Requests coming from the internal
-auth service (host exactly `auth`, or `auth:<port>` with a numeric port) skip the
-check; because the port must be all digits, forged hosts such as
-`auth:evil.example.com` cannot use it to bypass binding.
-
-## Providers
-
-The auth service loads providers from a registry and enables them per the
-`[providers]` map in its configuration. Today the registry ships a single auth
-provider:
-
-| Provider | ID | Enable with | Status |
-| --- | --- | --- | --- |
-| Username / password | `user_password` | `[providers] user_password = true` | Available, enabled in the shipped example config. |
-
-The `user_password` provider validates a `{ username, password }` credential and
-has tunable bounds via `[user_password]` (`min_password_length` default `8`,
-`max_password_length` default `128`).
-
-:::caution[No OIDC or wallet provider ships today]
-The provider registry currently contains only `user_password`. No OIDC, wallet,
-or external-IdP provider is registered in this codebase. Do not assume one
-exists; if you need federated login you would add and register a new provider in
-`mero-auth`.
-:::
-
-## Mock-token endpoint
-
-For CI and local development, the auth service can expose a **mock-token
-endpoint** at `POST /auth/mock-token` that mints valid JWTs **without any
-authentication flow**. It is part of the `[development]` config and is **disabled
-by default**.
-
-| Option | Default | Purpose |
+| Who | Credential | Lifetime |
 | --- | --- | --- |
-| `enable_mock_auth` | `false` | Enable the mock endpoint. Returns `404` when off, and `403` to a request a browser sent (it carries `Origin` or `Sec-Fetch-Site`), so a browser page never gets a mock token. A malformed body is answered `400` before that check. |
-| `mock_auth_require_header` | `true` | Require an `Authorization` header on the mock endpoint. |
-| `mock_auth_header_value` | unset | Specific header value the endpoint requires (e.g. `Bearer test-auth-token`). |
+| A person | A WebAuthn passkey, which opens a session | session 15 minutes, refresh token 30 days |
+| A service | An API key, `cal_…` | `ttlSecs`, at most and by default 365 days |
+| The operator | The ops token | until the configuration changes |
 
-A minimal dev configuration:
+All three travel as `Authorization: Bearer …` inside the sealed channel. A
+credential is judged on the cluster's latest system state (a read index), so a
+revocation committed through one node holds on every node from the next
+request.
 
-```toml
-[development]
-enable_mock_auth = true
-mock_auth_require_header = true
-mock_auth_header_value = "Bearer test-auth-token"
-```
+## Passkeys
 
-Requesting a token:
+An account is created by a passkey registration and has one or more passkeys,
+each a device of the account.
 
-```sh
-curl -X POST http://localhost:3001/auth/mock-token \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer test-auth-token" \
-  -d '{ "client_name": "ci-test-client", "permissions": ["admin"] }'
-```
+- **Relying party.** `--rp-id` (default `localhost`) is the WebAuthn relying
+  party id; passkeys are bound to it. Set it to the domain your users' browsers
+  sign in on, and do not change it: existing passkeys stop working.
+- **Origins.** `--origins` (default `http://localhost:3000`) are the origins a
+  ceremony may come from, and the browser origins allowed by CORS. Origins
+  under `--apps-domain` are allowed too; see
+  [app-bound sessions](#app-bound-sessions).
+- **Algorithms.** ES256 and EdDSA; attestation `none`. A sign counter that does
+  not advance is refused unless both values are zero.
+- **Ceremonies.** `begin` returns a `challengeId` valid for 5 minutes. The
+  challenge is held in the memory of the node that issued it, so `finish` must
+  reach the same node; a load balancer in front of the cluster needs session
+  affinity for `/auth/passkey/*` and `/auth/passkeys/add/*`, or clients must
+  talk to one node URL. A node holds at most 10,000 open ceremonies and then
+  answers `429 RATE_LIMITED`.
+- **Sign-up is open.** Anyone who can reach the cluster can register an
+  account. The `maxAccounts` quota (default 100,000) bounds the total; see
+  [quotas](/operate/runbooks/#set-quotas).
 
-The response carries `access_token` and `refresh_token`, plus warning headers
-(`X-Mock-Token: true`, `X-Warning: Mock token - for testing only`) and a key ID
-prefixed with `mock_` so mock tokens are traceable. The tokens are real,
-fully-valid JWTs that pass all normal validation — which is exactly why the
-endpoint must never be enabled in production.
+Devices: `POST /auth/passkeys/add/*` adds one (`meroctl account device add`),
+`DELETE /auth/passkeys/{cred}` removes one and ends the sessions it opened.
 
-:::caution[Mock auth bypasses authentication]
-`enable_mock_auth = true` lets anyone who can reach the endpoint (and supply the
-optional header) mint admin tokens. Enable it only in CI/dev environments, keep
-it off in production, and pair it with `mock_auth_require_header` plus a secret
-header value if you must expose it. This is the auth-service analogue of the
-node's [`--mock-tee`](/operate/security/#the---mock-tee-switch) dev switch.
-:::
+## Sessions
 
-## Trusted callback origins
+A successful ceremony answers `{ accountId, sessionToken, expiresAt,
+refreshToken }`.
 
-After a login the node's login page hands the new token pair to the app's
-`callback-url`. It does so only for an origin it trusts: the node's own, a
-loopback app on a loopback node, origins built into the login page, and the
-frontend the app registry declares for the app. A preview deployment of an app
-(a Vercel preview, say) runs on an origin the registry does not declare, so its
-login is refused with **"Login callback destination is not allowed."**
+- **Session token:** `v1.<claims>.<HMAC-SHA256>`, valid 15 minutes, naming the
+  account, the session, the passkey it was opened with and the signing key's
+  version.
+- **Refresh token:** `rt_…`, valid 30 days; `POST /auth/refresh` exchanges it
+  for a new session and a new refresh token. Reusing a refresh token is
+  recorded and ends the session.
+- **Signing key rotation.** The system leader adds a new session-signing key
+  once the current one is `--session-key-rotation-secs` old (default 6 hours,
+  at least 30 minutes). The previous key keeps verifying, so sessions it signed
+  run out normally.
+- **Ending sessions:** `POST /auth/logout` ends one; `POST /auth/logout-all`
+  (`meroctl logout --all`) ends every session of the account.
 
-A node's operator can trust more origins in `[development]`:
+## API keys
 
-```toml
-[development]
-trusted_callback_origins = [
-  "https://mero-crm-git-my-branch-calimero-network.vercel.app",
-]
-```
+Created by an account holder with a passkey session (`POST /auth/apikeys`,
+`meroctl account api-key create`); the key is shown once and only its hash is
+stored.
 
-In a node's `config.toml` this is `[server.embedded_auth.development]`; the
-desktop app edits it under **Settings → Advanced → Trusted App Origins**
-(Developer Mode on). The list is published on `GET /auth/providers` as
-`trusted_callback_origins`, and the login page reads it from its own node only,
-never from a URL parameter, so a link cannot add to it.
+| Field | Meaning |
+| --- | --- |
+| `label` | A name for it. |
+| `apps` | Only these apps. Absent: every app the account reaches. |
+| `methods` | Only these methods (`*` for any). |
+| `readOnly` | Refuse writes. |
+| `allowConfirm` | May call confirm methods; each call still needs the account holder's passkey assertion. Without it such calls answer `403`. |
+| `ttlSecs` | Lifetime; at most and by default 365 days. |
 
-An app calls the node at its own origin (`window.location.origin`), where `/jsonrpc`, `/ws`, `/sse`, `/auth/refresh`, `/auth/validate` and a short list of admin routes for contexts and namespaces reach the node's handlers when the node's embedded auth verifies the token.
-A token used there acts as if bound to that app, narrowed by its own binding, and a token that holds `admin` or is bound to another application is refused with `403`, on `/auth/refresh` and `/auth/validate` as well.
-The admin routes there include `GET /admin-api/applications`, which lists only the bound application, and `GET /admin-api/namespaces/for-application/{app}`.
-A join of a namespace the node does not hold yet is allowed when the invitation's application, an unsigned hint, is the bound one.
-Every other admin route answers `403` on an app's origin.
-Login is never served there: `GET /auth/login` on an app host answers `302` to the node's own login page with the same query and port, so it stays a navigation to the node's own origin.
-An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.
-Proxy deployments get no app API unless `[server.apps] trust_proxy = true` is set, in which case the proxy must authenticate every request to an app host and forward the original `Host` (`proxy_set_header Host $host` for nginx) and its `X-Auth-Permissions`.
-The proxy's forward-auth must send `X-Forwarded-Uri` and `X-Forwarded-Method` to mero-auth's `/auth/validate`, so per-route permissions are checked.
-Traefik's forwardAuth does; nginx `auth_request` needs them configured.
-It must also overwrite any client-sent `X-Auth-Permissions`, `X-Auth-Account` and `X-Auth-Device`; merod cannot check that it does, so a proxy that forwards them lets a client name its own permissions.
-[App hosts behind the proxy](/operate/deployment/#app-hosts-behind-the-proxy) shows an nginx configuration.
-On app hosts only `POST /auth/refresh` and `GET`/`HEAD /auth/validate` may reach mero-auth.
-`/auth/login` must go to merod, which redirects to the node's login page, or be refused, so the login page is never served on an app's origin.
-`[server.apps] base_domain` must be the node's own host, because mero-auth validates an app-host request by stripping exactly one app label and comparing the rest with the token's host.
-The desktop webview origins (`calimero-app://...`) cannot use the app API from the node and go through the desktop app instead.
+A key cannot manage credentials (passkeys, other keys, sessions), approvals or
+upgrades: those need a passkey session. A key scoped to apps or methods, or
+read-only, also cannot install code or create apps. `meroctl` takes a key with
+`--api-key` or `CALIMERO_API_KEY`.
 
-Each entry must be an exact `http` or `https` origin (`scheme://host[:port]`):
-an entry with a path, query, credentials or a wildcard is dropped with a
-warning. Changes take effect when the node restarts.
+## Confirmations
 
-:::caution[Each trusted origin can receive this node's tokens]
-Whoever serves pages from a trusted origin can complete a login to this node
-and receive its tokens. List only origins you control, and remove a preview's
-origin when you are done with it.
-:::
+Some actions need a fresh passkey assertion over the exact request, which the
+log keeps as the owner's consent:
 
-## Getting an embedded-auth node ready
+- calls of methods listed in the app's `confirmMethods`;
+- app upgrades, release approvals and outbound approvals by an owner;
+- organization-wide upgrade runs and their retries;
+- deleting an organization.
 
-In embedded mode the auth service mints a JWT for an authenticated client, and
-the node's admin API validates that bearer token in-process on every protected
-call:
+The node first answers `412 CONFIRM_REQUIRED` with a challenge in `details`;
+the client signs it with a passkey and retries with `confirm: { challengeId,
+assertion }`. Like a sign-in challenge, it is held by the node that issued it
+for 5 minutes, so the retry must reach the same node. Browsers and the SDK
+clients do this; `meroctl` does it with a
+file passkey (`--dev-passkey`) on development clusters.
 
-<SeqDiagram
-  id="d-op-auth"
-  title="Embedded-auth JWT flow"
-  lanes={[
-    { label: 'Client', color: '#3fb950' },
-    { label: 'Auth service', color: '#a371f7' },
-    { label: 'Node API', color: '#58a6ff' },
-  ]}
-  steps={[
-    { from: 0, to: 1, label: 'POST /auth/token { username, password }' },
-    { from: 1, to: 1, label: 'user_password provider validates credential' },
-    { from: 1, to: 1, label: 'mint HS256 JWT (access + refresh)', color: '#a5ff11' },
-    { from: 1, to: 0, label: '{ access_token, refresh_token }', dashed: true },
-    { type: 'divider', label: 'authenticated request' },
-    { from: 0, to: 2, label: 'GET /admin-api/... Authorization: Bearer <token>' },
-    { from: 2, to: 1, label: 'validate token (secret, claims, exp)' },
-    { from: 1, to: 2, label: 'valid — permissions granted', dashed: true, color: '#3fb950' },
-    { from: 2, to: 0, label: 'response', dashed: true },
-  ]}
-/>
+## App-bound sessions
 
-<Steps>
+With `--apps-domain`, a passkey ceremony run from a package's frontend origin
+(`{label}.{domain}`) opens a session bound to that package. It reaches only
+apps that run a release of that package, can create instances of that package
+only, and is refused credentials, API keys, approvals, upgrades, uninstalls
+and uploads. Its step-up confirmations come from its own origin only.
 
-1. Initialize (or reconfigure) the node for embedded auth:
+## The ops token
 
-   ```sh
-   merod --node node1 init --auth-mode embedded
-   ```
+The Ops API (`/ops/*`) takes the operator's token as a bearer token.
 
-2. Confirm `server.auth_mode = "embedded"` in `config.toml` and that an
-   embedded-auth section is present.
+- `--ops-token TOKEN` gives the node the token itself.
+- `--ops-token-sha256 HEX` gives it only the token's SHA-256, so the machine's
+  configuration and metadata hold nothing an operator can sign in with.
+  Generate a token and its hash with, for example:
 
-3. Run the node. The auth store is created under `<home>/node1/auth`:
+  ```bash
+  TOKEN=$(openssl rand -hex 32)
+  printf %s "$TOKEN" | sha256sum | cut -d' ' -f1
+  ```
 
-   ```sh
-   merod --node node1 run
-   ```
+- With neither, every `/ops/*` route answers `403` ("the Ops API is disabled on
+  this node").
+- The comparison is constant-time. The token is the same for every node only
+  if you configure it so; each node checks its own configuration.
 
-4. Authenticate against the auth endpoints to obtain a JWT, then send it as a
-   bearer token to the admin API. The flow and endpoints are covered in the
-   [admin API reference](/operate/admin-api/#authentication).
+The ops token is not an account: it never reads app state, and what the
+operator installs is recorded as the actor `operator`, which no account can
+be. What it may decide beyond counts and placement depends on the cluster's
+[governance](/operate/security/#governance).
 
-</Steps>
+## Development clusters
 
-## Out of scope here
+`merod local` and `--dev` nodes accept mock attestation, so `meroctl` can keep
+a passkey in a file (`--dev-passkey`, a software authenticator for relying
+party `localhost`). `meroctl login` refuses a file passkey unless the node is
+trusted with `--allow-mock`. On a real cluster, sign in through a browser and
+give tools an API key.
 
-The `mero-auth` crate carries more surface than node operators normally touch.
-The following exist in the crate but are beyond this operate page; consult the
-auth service directly if you need them:
-
-- **Root-key and client-key management** endpoints (creating, listing, and
-  deleting keys, and per-key permission management).
-- **CORS and security-header configuration** (`[cors]`, `[security.headers]`,
-  CSP) — relevant when serving the auth UI cross-origin.
-- **Standalone operation:** `mero-auth` can also run as its own service (default
-  listen `127.0.0.1:3001`) rather than embedded in the node; that deployment
-  shape is not covered here.
-
-## Next steps
-
-<CardGrid>
-  <LinkCard title="Admin & JSON-RPC API" href="/operate/admin-api/" description="The protected routes and the JWT flow auth gates." />
-  <LinkCard title="Hardening & security" href="/operate/security/" description="Where auth fits in the broader node-hardening picture." />
-  <LinkCard title="Configuration reference" href="/operate/config/" description="The [server] auth_mode and embedded-auth config keys." />
-</CardGrid>
+<Aside type="caution">
+  A file passkey is a private key on disk. `meroctl` writes it, and the saved
+  sessions in `{home}/meroctl/sessions.json`, with mode `0600`; keep them out
+  of repositories and shared machines.
+</Aside>

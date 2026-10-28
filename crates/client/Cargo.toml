@@ -1,69 +1,38 @@
 [package]
 name = "calimero-client"
+description = "Client for Calimero nodes: attestation, sealed channel, passkeys, calls"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
-description.workspace = true
-publish = true
+publish = false
 
 [dependencies]
+base64.workspace = true
 eyre.workspace = true
-url = { workspace = true, features = ["serde"] }
+futures-util.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+serde_json_canonicalizer.workspace = true
+sha2.workspace = true
+reqwest = { workspace = true, features = ["json", "stream"] }
+ring.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-reqwest = { workspace = true, features = ["json"] }
-tokio = { workspace = true, features = ["full"] }
 thiserror.workspace = true
-async-trait.workspace = true
-chrono = { workspace = true, features = ["serde"] }
-hex.workspace = true
-webbrowser.workspace = true
-base64.workspace = true
-zeroize.workspace = true
-percent-encoding.workspace = true
-tracing.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "rt"] }
+url.workspace = true
 
-# Calimero primitives
-borsh.workspace = true
-calimero-account.workspace = true
-calimero-primitives.workspace = true
-calimero-server-primitives.workspace = true
-calimero-context-config.workspace = true
-
-# `tee`: attested transports to a TEE node (`src/tee.rs`).
-calimero-tee-attestation = { workspace = true, optional = true }
-bytes = { workspace = true, optional = true }
-futures-util = { workspace = true, optional = true }
-http = { workspace = true, optional = true }
-ring = { workspace = true, optional = true }
-snow = { workspace = true, optional = true, features = ["default-resolver", "risky-raw-split"] }
+calimero-identity.workspace = true
+calimero-sealed.workspace = true
+calimero-tee-attestation.workspace = true
+calimero-tee-release.workspace = true
 
 [dev-dependencies]
-tokio-test.workspace = true
-wiremock = "0.6"
-# The `tee` tests talk to the node's own sealed implementation, served in
-# process.
-axum.workspace = true
-calimero-server.workspace = true
-prometheus-client.workspace = true
-tower = { workspace = true, features = ["util"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+calimero-node.workspace = true
+tempfile.workspace = true
 
 [features]
-default = []
-full = ["reqwest/rustls-tls", "reqwest/gzip", "reqwest/brotli"]
-native-tls = ["reqwest/native-tls"]
-rustls = ["reqwest/rustls-tls"]
-# Requests sealed to a TEE node's attested transport key. Off by default: it
-# brings in quote verification (dcap-qvl) and a Noise stack, which a client
-# that never talks to a TEE node has no use for.
-tee = [
-    "dep:calimero-tee-attestation",
-    "dep:bytes",
-    "dep:futures-util",
-    "dep:http",
-    "dep:ring",
-    "dep:snow",
-    "reqwest/stream",
-]
+testing = ["calimero-identity/testing"]

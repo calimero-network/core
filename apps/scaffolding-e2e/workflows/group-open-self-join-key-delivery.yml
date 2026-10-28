@@ -1,270 +1,157 @@
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no counterpart in this node):
+#   login (unknown) x2: checks what the dropped steps did
+#   wait_for_sync x3: replication is synchronous: a read sees every committed write
 name: E2E KV Store - Open Subgroup Self-Join Key Delivery
-description: >
-  Regression guard for PR #2351 (`fix(context): trigger KeyDelivery for
-  self-join of Open subgroups`).
+description: 'Regression guard for PR #2351 (`fix(context): trigger KeyDelivery for self-join of Open
+  subgroups`).
 
-  Pre-fix bug: when a namespace member self-joins an `Open` subgroup
-  context via the `CAN_JOIN_OPEN_SUBGROUPS` parent-walk (no
-  admin-issued `add_group_members`), `join_context` inserts a
-  `ContextIdentity` row with `sender_key: None`. No `MemberJoined`
-  governance op is published for them, so no peer ever wraps the
-  current group key in a `KeyDelivery` for the joiner. Their
-  outgoing state-DAG ops can't be signed/encrypted with the group
-  key, so peers reject/ignore them; symmetrically, the joiner can't
-  decrypt incoming ops. Symptom: "joined a public channel, sends
-  messages, no one sees them; can't see others either."
+  Pre-fix bug: when a namespace member self-joins an `Open` subgroup context via the `CAN_JOIN_OPEN_SUBGROUPS`
+  parent-walk (no admin-issued `add_group_members`), `join_context` inserts a `ContextIdentity` row with
+  `sender_key: None`. No `MemberJoined` governance op is published for them, so no peer ever wraps the
+  current group key in a `KeyDelivery` for the joiner. Their outgoing state-DAG ops can''t be signed/encrypted
+  with the group key, so peers reject/ignore them; symmetrically, the joiner can''t decrypt incoming ops.
+  Symptom: "joined a public channel, sends messages, no one sees them; can''t see others either."
 
-  Fix: `join_context.rs` now publishes a self-signed
-  `RootOp::MemberJoinedOpen { member, group_id }` whenever the join
-  path was `MembershipPath::Inherited`. Peers holding the group key
-  queue a `PendingKeyDelivery` (same struct the existing
-  `MemberJoined` path uses); the delivery dispatcher publishes a
-  wrapped `KeyDelivery`, populating the joiner's `sender_key`.
+  Fix: `join_context.rs` now publishes a self-signed `RootOp::MemberJoinedOpen { member, group_id }` whenever
+  the join path was `MembershipPath::Inherited`. Peers holding the group key queue a `PendingKeyDelivery`
+  (same struct the existing `MemberJoined` path uses); the delivery dispatcher publishes a wrapped `KeyDelivery`,
+  populating the joiner''s `sender_key`.
 
-  This workflow differs from `group-subgroup-visibility-inheritance.yml`
-  by exercising the *joiner-as-author* direction explicitly: that
-  existing test only confirms node-1's writes flow to node-2, which
-  passes on master because the joiner can DECRYPT incoming ops using
-  the namespace-level group key delivered through a different path.
-  The bug is that the joiner can't AUTHOR ops because `sender_key`
-  was never populated — that's what this test asserts by having
-  node-2 write and node-1 read the result.
+  This workflow differs from `group-subgroup-visibility-inheritance.yml` by exercising the *joiner-as-author*
+  direction explicitly: that existing test only confirms node-1''s writes flow to node-2, which passes
+  on master because the joiner can DECRYPT incoming ops using the namespace-level group key delivered
+  through a different path. The bug is that the joiner can''t AUTHOR ops because `sender_key` was never
+  populated — that''s what this test asserts by having node-2 write and node-1 read the result.
 
-  Pre-fix expectation: Round 2 wait_for_sync times out, or the
-  node-1 read of node-2's write returns null/empty (node-1 can't
-  decrypt the joiner's ops). Post-fix expectation: both directions
-  succeed.
+  Pre-fix expectation: Round 2 wait_for_sync times out, or the node-1 read of node-2''s write returns
+  null/empty (node-1 can''t decrypt the joiner''s ops). Post-fix expectation: both directions succeed.
 
-force_pull_image: false
-
-auth_mode: embedded
-
-nodes:
-  count: 2
-  image: merod:local
-  prefix: open-selfjoin-node
-
+  '
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 4530
+accounts:
+- open-selfjoin-node-1
+- open-selfjoin-node-2
 steps:
-  # First login on a fresh embedded-auth node bootstraps its root key
-  # and seeds merobox's token cache; every step below runs authenticated.
-  - name: Login on open-selfjoin-node-1
-    type: login
-    node: open-selfjoin-node-1
-    username: dev
-    password: dev-password
-
-  - name: Login on open-selfjoin-node-2
-    type: login
-    node: open-selfjoin-node-2
-    username: dev
-    password: dev-password
-
-  # ── Phase 1: Bootstrap mesh, namespace, Open subgroup, context ────
-
-  - name: Install application on node-1
-    type: install_application
-    node: open-selfjoin-node-1
-    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Node-1 creates namespace
-    type: create_namespace
-    node: open-selfjoin-node-1
-    application_id: '{{app_id}}'
-    outputs:
-      namespace_id: namespaceId
-
-  - name: Invite node-2 to namespace
-    type: create_namespace_invitation
-    node: open-selfjoin-node-1
-    namespace_id: '{{namespace_id}}'
-    outputs:
-      ns_invite: invitation
-
-  - name: Node-2 joins namespace
-    # Default member capabilities include CAN_JOIN_OPEN_SUBGROUPS, so
-    # node-2 inherits the right to join any Open subgroup beneath
-    # this namespace without an explicit add_group_members.
-    type: join_namespace
-    node: open-selfjoin-node-2
-    namespace_id: '{{namespace_id}}'
-    invitation: '{{ns_invite}}'
-    outputs:
-      node2_identity: memberIdentity
-
-  - name: Node-1 creates Open subgroup inside namespace
-    type: create_group_in_namespace
-    node: open-selfjoin-node-1
-    namespace_id: '{{namespace_id}}'
-    group_name: open-channel
-    outputs:
-      subgroup_id: groupId
-
-  - name: Mark subgroup as Open
-    type: set_subgroup_visibility
-    node: open-selfjoin-node-1
-    group_id: '{{subgroup_id}}'
-    visibility: open
-
-  - name: Node-1 creates context inside Open subgroup
-    type: create_context
-    node: open-selfjoin-node-1
-    application_id: '{{app_id}}'
-    group_id: '{{subgroup_id}}'
-    outputs:
-      ctx_id: contextId
-      # The key node-1 executes context calls as. It is the context creation
-      # that mints it — namespace creation answers with a namespace id and
-      # nothing else.
-      node1_key: memberPublicKey
-
-  - name: Wait for subgroup visibility + context-registered ops to propagate
-    # `set_subgroup_visibility` and `create_context` issue governance
-    # ops that need to reach node-2 before its `join_context` runs the
-    # parent-walk inheritance check. Without this wait, node-2 may
-    # still see the subgroup as Restricted (or not yet know the
-    # context exists at all) when it tries to join — the inheritance
-    # check returns `MembershipPath::None` and `join_context` bails
-    # with "identity is not a member of the group".
-    type: wait
-    seconds: 10
-
-  # ── Phase 2: node-2 self-joins via inherited path ─────────────────
-  # This is the critical operation. No `add_group_members` is run for
-  # node-2 on the Open subgroup — they're inherited from the parent
-  # namespace + CAN_JOIN_OPEN_SUBGROUPS. Pre-fix this leaves their
-  # ContextIdentity row with sender_key:None; post-fix the joiner
-  # publishes MemberJoinedOpen which triggers KeyDelivery.
-
-  - name: Node-2 self-joins Open-subgroup context (inherited path)
-    type: join_context
-    node: open-selfjoin-node-2
-    context_id: '{{ctx_id}}'
-    outputs:
-      node2_key: memberPublicKey
-
-  - name: Assert bootstrap shape
-    type: assert
-    statements:
-      - "is_set({{namespace_id}})"
-      - "is_set({{subgroup_id}})"
-      - "is_set({{ctx_id}})"
-      - "is_set({{node1_key}})"
-      - "is_set({{node2_identity}})"
-      - "is_set({{node2_key}})"
-
-  - name: Initial sync (empty Root state)
-    # Lets the post-join_context flow settle — including (post-fix)
-    # the MemberJoinedOpen publish + KeyDelivery round-trip that
-    # populates node-2's sender_key. Pre-fix this is a no-op because
-    # there's nothing to deliver.
-    type: wait_for_sync
-    context_id: '{{ctx_id}}'
-    nodes:
-      - open-selfjoin-node-1
-      - open-selfjoin-node-2
-    timeout: 60
-    check_interval: 2
-
-  # ── Phase 3: Round 1 — node-1 writes, node-2 reads ────────────────
-  # Control case. This direction works on master too (matches the
-  # existing group-subgroup-visibility-inheritance test). Asserts the
-  # fix doesn't regress the inbound-decrypt path.
-
-  - name: Round 1 — node-1 writes
-    type: call
-    node: open-selfjoin-node-1
-    context_id: '{{ctx_id}}'
-    method: set
-    args:
-      key: "from_admin"
-      value: "node1_msg"
-    executor_public_key: '{{node1_key}}'
-
-  - name: Round 1 sync
-    type: wait_for_sync
-    context_id: '{{ctx_id}}'
-    nodes:
-      - open-selfjoin-node-1
-      - open-selfjoin-node-2
-    timeout: 30
-    check_interval: 2
-    expect:
-      method: get
-      args:
-        key: "from_admin"
-      equals:
-        output: "node1_msg"
-
-  - name: Node-2 reads node-1's write
-    type: call
-    node: open-selfjoin-node-2
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "from_admin"
-    executor_public_key: '{{node2_key}}'
-    outputs:
-      node2_read_admin: result
-
-  # ── Phase 4: Round 2 — node-2 writes, node-1 reads ────────────────
-  # THIS IS THE BUG. Pre-fix, node-2 has sender_key:None so their op
-  # can't be signed with the group key. Either:
-  #   (a) the write attempt fails locally with a key-missing error, or
-  #   (b) the op is produced but peers reject it as malformed/unsigned, or
-  #   (c) the op propagates as plaintext but node-1's apply path
-  #       refuses to apply ops not encrypted with the current group key.
-  # In all three sub-modes, node-1's read of "from_joiner" returns
-  # null/empty after Round 2 sync. Post-fix, the key has been
-  # delivered to node-2 so the write authors cleanly and node-1
-  # decrypts it.
-
-  - name: Round 2 — node-2 (inherited self-joiner) writes
-    type: call
-    node: open-selfjoin-node-2
-    context_id: '{{ctx_id}}'
-    method: set
-    args:
-      key: "from_joiner"
-      value: "node2_msg"
-    executor_public_key: '{{node2_key}}'
-
-  - name: Round 2 sync
-    type: wait_for_sync
-    context_id: '{{ctx_id}}'
-    nodes:
-      - open-selfjoin-node-1
-      - open-selfjoin-node-2
-    timeout: 30
-    check_interval: 2
-    expect:
-      method: get
-      args:
-        key: "from_joiner"
-      equals:
-        output: "node2_msg"
-
-  - name: Node-1 reads node-2's write (THE BUG)
-    type: call
-    node: open-selfjoin-node-1
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "from_joiner"
-    executor_public_key: '{{node1_key}}'
-    outputs:
-      node1_read_joiner: result
-
-  # ── Phase 5: Assertions ───────────────────────────────────────────
-
-  - name: Assert both directions converged
-    type: assert
-    statements:
-      - "is_set({{node2_read_admin}})"
-      - "is_set({{node1_read_joiner}})"
-      - 'contains({{node2_read_admin}}, "node1_msg")'
-      - 'contains({{node1_read_joiner}}, "node2_msg")'
-
-stop_all_nodes: false
+- name: Install application on node-1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: open-selfjoin-node-1
+- type: set
+  values:
+    app_id: com.calimero.scaffolding-e2e
+- name: Node-1 creates namespace
+  type: create_org
+  org_name: Node-1 creates namespace
+  outputs:
+    namespace_id: orgId
+  account: open-selfjoin-node-1
+- name: Invite node-2 to namespace
+  type: invite
+  org: '{{namespace_id}}'
+  role: member
+  account: open-selfjoin-node-1
+  outputs:
+    ns_invite: token
+- name: Node-2 joins namespace
+  type: redeem_invite
+  token: '{{ns_invite}}'
+  account: open-selfjoin-node-2
+- type: whoami
+  account: open-selfjoin-node-2
+  outputs:
+    node2_identity: publicKey
+- name: Node-1 creates Open subgroup inside namespace
+  type: create_team
+  org: '{{namespace_id}}'
+  team_name: open-channel
+  join: invite
+  outputs:
+    subgroup_id: teamId
+  account: open-selfjoin-node-1
+- name: Mark subgroup as Open
+  type: team_update
+  org: '{{namespace_id}}'
+  team: '{{subgroup_id}}'
+  join: everyone
+  account: open-selfjoin-node-1
+- name: Node-1 creates context inside Open subgroup
+  type: deploy
+  account: open-selfjoin-node-1
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Node-1 creates context inside Open subgroup
+  org: '{{namespace_id}}'
+  access:
+    kind: team
+    team: '{{subgroup_id}}'
+  outputs:
+    ctx_id: contextId
+    node1_key: memberPublicKey
+- name: Wait for subgroup visibility + context-registered ops to propagate
+  type: wait
+  seconds: 10.0
+- name: Node-2 self-joins Open-subgroup context (inherited path)
+  type: whoami
+  account: open-selfjoin-node-2
+  outputs:
+    node2_key: publicKey
+- name: Assert bootstrap shape
+  type: assert
+  statements:
+  - is_set({{namespace_id}})
+  - is_set({{subgroup_id}})
+  - is_set({{ctx_id}})
+  - is_set({{node1_key}})
+  - is_set({{node2_identity}})
+  - is_set({{node2_key}})
+- name: Round 1 — node-1 writes
+  type: call
+  app: '{{ctx_id}}'
+  method: set
+  args:
+    key: from_admin
+    value: node1_msg
+  account: open-selfjoin-node-1
+  as_key: '{{node1_key}}'
+- name: Node-2 reads node-1's write
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: from_admin
+  account: open-selfjoin-node-2
+  as_key: '{{node2_key}}'
+  outputs:
+    node2_read_admin: rpc
+- name: Round 2 — node-2 (inherited self-joiner) writes
+  type: call
+  app: '{{ctx_id}}'
+  method: set
+  args:
+    key: from_joiner
+    value: node2_msg
+  account: open-selfjoin-node-2
+  as_key: '{{node2_key}}'
+- name: Node-1 reads node-2's write (THE BUG)
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: from_joiner
+  account: open-selfjoin-node-1
+  as_key: '{{node1_key}}'
+  outputs:
+    node1_read_joiner: rpc
+- name: Assert both directions converged
+  type: assert
+  statements:
+  - is_set({{node2_read_admin}})
+  - is_set({{node1_read_joiner}})
+  - contains({{node2_read_admin}}, "node1_msg")
+  - contains({{node1_read_joiner}}, "node2_msg")

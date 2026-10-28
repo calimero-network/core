@@ -1,163 +1,110 @@
 ---
-title: Limits, capabilities & roles
-description: The hard constants — execution resource limits, wire-protocol caps, the capability bitmask, the four member roles, and the data-plane operation mask.
+title: Limits
+description: The fixed numbers — what one run may use, how big an entry, request, bundle or package may be, the per-account quotas, and the node's own bounds.
 sidebar:
-  label: 'Limits & capabilities'
-  order: 96
+  label: Limits
+  order: 26
 ---
 
-This is a reference page of the fixed numbers and bitsets a Calimero context enforces: how big a value can be, how large a signed governance op may grow, what each role is allowed to do, and which bits make up a capability or an operation mask. Every figure here is sourced from a named constant in the codebase — when the code and this page disagree, the code wins.
+Every figure here comes from a named constant; when the code and this page
+disagree, the code wins.
 
-Cross-links: [Build gotchas](/build/gotchas/) (the limits you hit in practice), [Governance](/protocol/governance/) (how roles and capabilities are assigned), and [Capability inheritance](/protocol/capability-inheritance/) (how capability bits flow through subgroups).
+## Execution limits
 
-## Execution limits (`VMLimits`)
+`VMLimits::default` (`crates/runtime/src/logic.rs`) bounds one run. Exceeding a
+limit traps the run, which then leaves an empty diff.
 
-These bound a single WASM execution. Defaults live in `crates/runtime/src/logic.rs` (`VMLimits::default`); a node may override them, but these are what ship.
+| Limit | Default |
+| --- | --- |
+| Memory | 1024 pages = 64 MiB |
+| Stack | 200 KiB |
+| Gas | 1 000 000 000 (one point per executed WASM operator) |
+| Host calls | 1 000 000 |
+| Registers | 100; 100 MiB each; 1 GiB in all |
+| Logs | 1024 lines of at most 16 KiB (a longer line traps) |
+| Events | 100; kind 100 bytes; data 16 KiB |
+| Cross-app calls | 8; function name 100 bytes; parameters 16 KiB |
+| Storage key / value | 1 MiB / 10 MiB |
+| Storage writes | 100 000, and 128 MiB in all |
+| Blob handles | 100; chunk 10 MiB; 512 MiB written in all |
+| Ordered-index scan | 100 000 entries |
+| Return value | 16 MiB |
+| Commit artifact | 16 MiB |
+| Method name | 256 bytes |
+| WASM module | 128 MiB (256 MiB precompiled) |
+| Table elements | 100 000 |
 
-| Limit (`VMLimits` field) | Default | Notes |
+A run's result also has to fit the log: its whole entry — arguments, diff,
+events — must stay under **1 MiB**.
+
+## Node limits
+
+| Limit | Value | Constant |
 | --- | --- | --- |
-| `max_memory_pages` | 1024 pages = **64 MiB** | One WASM page is 64 KiB; `1024 × 64 KiB`. |
-| `max_stack_size` | **200 KiB** | Guest call stack. |
-| `max_registers` | **100** | Number of host-call registers. |
-| `max_register_size` | **100 MiB** | Per-register data cap (constrained `< u64::MAX`). |
-| `max_registers_capacity` | **1 GiB** | Total across all registers. |
-| `max_logs` | **1024** | Log-line count per execution. |
-| `max_log_size` | **16 KiB** | Per line; an over-long line *traps* (`LogLengthOverflow`), it is not truncated. |
-| `max_events` | **100** | Emitted events per execution. |
-| `max_event_kind_size` | **100 bytes** | Event "kind" string. |
-| `max_event_data_size` | **16 KiB** | Event data payload. |
-| `max_xcalls` | **100** | Cross-context calls per execution. |
-| `max_xcall_function_size` | **100 bytes** | Cross-context call function name. |
-| `max_xcall_params_size` | **16 KiB** | Cross-context call params. |
-| `max_storage_key_size` | **1 MiB** | Per storage key (`NonZeroU64`). |
-| `max_storage_value_size` | **10 MiB** | Per storage value (`NonZeroU64`). |
-| `max_blob_handles` | **100** | Concurrent open blob handles. |
-| `max_blob_chunk_size` | **10 MiB** | Per read/write chunk against a blob. |
-| `max_method_name_length` | **256 bytes** | Entrypoint method name. |
-| `max_module_size` | **20 MiB** | WASM module size before compilation (anti-DoS). |
-| `max_artifact_size` | **16 MiB** | Commit artifact copied out of guest memory onto the `Outcome` (anti-DoS); over-size traps with `ArtifactSizeOverflow`. |
+| One log entry | 1 MiB | `calimero_log::MAX_ENTRY_BYTES` |
+| One sealed request, one HTTP body | 64 MiB | `MAX_SEALED_BYTES`, `DefaultBodyLimit` |
+| A raw development bundle | 16 MiB | `bundle_put` |
+| One blob (an uploaded file, a package `.mpk`, uploaded or fetched from a registry) | 47 MiB: it reaches the other nodes base64-encoded in one sealed request | `MAX_BLOB_BYTES`, `MAX_MPK_BYTES` |
+| Metadata (organization, member, team, app) | 16 KiB of JSON | `MAX_METADATA_BYTES` |
+| Passkeys per account | 10 | `AddPasskey` |
+| Aliases per account | 1000, each 1–64 characters | `MAX_ALIASES` |
+| Passkey label | 64 characters | `MAX_LABEL_CHARS` |
+| Upgrade runs kept per organization | 20 | `UPGRADE_RUNS_KEPT` |
+| Follow-up depth | 3 | `MAX_FOLLOWUP_DEPTH` |
+| Events kept per app | 10 000 | `EVENT_RING` |
+| Entries whose touched entities search remembers | 4096 | `TOUCHED_RING` |
+| Presence | 512 authors per app, 4 KiB state, 7 s TTL | `MAX_AUTHORS_PER_APP`, `MAX_STATE_BYTES`, `PRESENCE_TTL_MS` |
+| Event and presence streams per node | 4096 | `MAX_EVENT_STREAMS` |
+| Open passkey ceremonies per node | 10 000, each 5 minutes | `MAX_PENDING_CHALLENGES` |
+| Sealed sessions per node | 16 384; 1 h lifetime, 10 min idle | `MAX_SESSIONS`, `SESSION_LIFETIME` |
+| Forward to an app's leader | 5 s, then retry | `FORWARD_TIMEOUT` |
+| Replicas per app | `--replicas`, 3 by default; moves keep at least 3 | |
 
-## Wire limits
+A body past a limit is answered `413`, error code `TOO_LARGE`, with the limit
+in the message. Under 64 MiB the node's own check answers, sealed like any
+answer. Past 64 MiB the sealed envelope is refused before it can be opened, so
+its `413` (`{"error":{"code":"too_large",...}}`, which `calimero-client`
+reports as `TOO_LARGE`) comes back in the clear: sealing it would mean spending
+the request id on bytes nobody has authenticated, letting a relay make the node
+vouch for a refusal of a request the client never sent. The node reads and drops
+the rest of such a body before it answers, up to 1 GiB and 120 s
+(`MAX_DISCARDED_BYTES`, `SEALED_READ_TIME`), because a client that sends its
+whole body before reading would otherwise meet a reset, not the answer; past
+that, or for a declared length past 1 GiB or a client waiting on
+`Expect: 100-continue`, it answers at once and closes.
 
-Caps on what crosses the network — RPC requests, signed governance ops, sync snapshot transfers, and DAG-head sets. Snapshot constants are in `crates/node/primitives/src/sync/snapshot.rs`; the governance DAG-head cap is in `crates/context/config/src/types.rs`; request-validation caps are in `crates/server/primitives/src/validation.rs`.
+## Time limits
 
-| Limit | Value | Constant / source |
-| --- | --- | --- |
-| RPC call args (`args_json`) | **10 MiB** (`10 × 1024 × 1024`) | `MAX_ARGS_JSON_SIZE` (`validation.rs`) |
-| Signed governance-op payload | **64 KiB** (`64 × 1024`) | `MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES` (`snapshot.rs`) |
-| Group/member/context metadata | **64 KiB** | `MAX_METADATA_SIZE` (`validation.rs`) |
-| TEE quote (base64) | **64 KiB** | `MAX_QUOTE_B64_LENGTH` (`validation.rs`) |
-| Governance DAG heads | **32** | `MAX_GOVERNANCE_DAG_HEADS` (`context/config/types.rs`) |
-| Sync DAG heads (per snapshot) | **100** | `MAX_DAG_HEADS` (`snapshot.rs`) |
-| Snapshot page size — default | **256 KiB** (`256 × 1024`) | `DEFAULT_SNAPSHOT_PAGE_SIZE` |
-| Snapshot page size — max | **4 MiB** (`4 × 1024 × 1024`) | `MAX_SNAPSHOT_PAGE_SIZE` |
-| Entities per snapshot page | **1000** | `MAX_ENTITIES_PER_PAGE` |
-| Entity data size (per record) | **1 MiB** | `MAX_ENTITY_DATA_SIZE` |
-| Total pages per snapshot | **10 000** | `MAX_SNAPSHOT_PAGES` (≈2.5 GB at 256 KiB/page) |
-| Compressed page payload | **8 MiB** | `MAX_COMPRESSED_PAYLOAD_SIZE` |
-| Bundled frontend (sum of declared file sizes) | **32 MiB** (`32 × 1024 × 1024`) | `MAX_FRONTEND_BYTES` (`crates/bundle/src/frontend.rs`) |
+| What | Lifetime |
+| --- | --- |
+| Session token | 15 minutes |
+| Refresh token | 30 days, single use |
+| Session-signing key rotation | 6 hours by default, at least 30 minutes |
+| API key | Up to 1 year |
+| Invite | 7 days by default; 1 use by default |
+| Client idempotency record | 24 hours; the newest 10 000 kept regardless; at most 1 000 000 |
+| Node idempotency record (`node:…`) | 10 minutes; the newest 1000 kept regardless |
+| Revoked session remembered | 1 hour |
+| `sys_until` / read-index wait | 2 seconds |
 
-:::note
-There are two distinct DAG-head caps and they are not the same number. **32** bounds the *governance* DAG (`MAX_GOVERNANCE_DAG_HEADS`); **100** bounds the *sync snapshot* head set (`MAX_DAG_HEADS` in `snapshot.rs`). The governance store internally also triggers head compaction at **64** heads (its own `MAX_DAG_HEADS`), which is a compaction threshold, not a wire cap.
-:::
+## Quotas
 
-## Sync protocol caps
+Per account, set by the operator (`POST /ops/quotas`), checked at apply
+([The system group](/protocol/system-group/#quotas)); a refusal is
+`429 QUOTA_EXCEEDED`.
 
-Bounds on the sync subsystem: how many in-flight deltas a node buffers while it
-catches up, how long a buffered delta waits for governance before it is dropped,
-and the per-message / per-session ceilings the incremental state-transfer
-protocols enforce so a peer cannot demand an unbounded walk. These are about
-liveness and DoS resistance, not the wire-format sizes above.
+| Quota | Default |
+| --- | --- |
+| Apps owned | 100 |
+| Bundle and package bytes uploaded | 1 GiB |
+| API keys | 50 |
+| Organizations owned | 20 |
+| Accounts on the cluster | 100 000 |
 
-### Delta buffering
+## Roles and capabilities
 
-While a node is uninitialized or applying a snapshot, incoming gossip deltas are
-held in a FIFO buffer and replayed once the node has the state to apply them
-against. A separate buffer holds deltas whose authorizing governance hasn't been
-folded yet.
-
-| Cap | Value | Behaviour at the limit | Constant / source |
-| --- | --- | --- | --- |
-| Snapshot-sync delta buffer | **10 000** deltas / context | Oldest evicted first (FIFO); the `drops` counter increments | `DEFAULT_BUFFER_CAPACITY` (`node/primitives/delta_buffer.rs:29`) |
-| Minimum recommended buffer | **100** | Below this a startup warning is logged — small buffers drop under normal load | `MIN_RECOMMENDED_CAPACITY` (`delta_buffer.rs:35`) |
-| Zero-capacity buffer | **0** | Valid but drops **every** delta immediately (`DroppedZeroCapacity`) | `delta_buffer.rs` (`push`, the `capacity == 0` arm) |
-| Governance-pending drain attempts | **16** | After 16 re-buffer passes the delta is **permanently dropped** with a warn (`dropped_max_attempts`) | `MAX_GOVERNANCE_DRAIN_ATTEMPTS` (`delta_buffer.rs:158`), enforced in `handlers/state_delta/buffering.rs:195` |
-
-The drain counter advances on both drain triggers — a governance op applying and
-new state-delta traffic arriving — so 16 attempts is well past any legitimate
-partition-recovery delay; a still-orphaned delta is dropped rather than retained
-forever (a later gossip rebroadcast or snapshot would re-deliver it if valid).
-
-### Incremental state transfer (HashComparison / LevelWise)
-
-The two tree-walking protocols clamp every request and response so a malicious or
-buggy peer cannot force an arbitrarily expensive traversal. Note the two depth
-caps differ by protocol.
-
-| Cap | Value | Behaviour at the limit | Constant / source |
-| --- | --- | --- | --- |
-| HashComparison nodes per response | **1000** | Response with more nodes is rejected as invalid | `MAX_NODES_PER_RESPONSE` (`node/primitives/sync/hash_comparison.rs:20`) |
-| HashComparison bytes per response | **4 MiB** | Responder stops adding children; the rest are requested by id | `MAX_RESPONSE_BYTES` (`node/primitives/sync/hash_comparison.rs`) |
-| HashComparison child ids per message | **1024** | A wider node is **paged** (`children_next` → `TreeNodeChildrenRequest`), not rejected | `MAX_CHILDREN_PER_NODE` (`node/primitives/sync/hash_comparison.rs`) |
-| HashComparison request depth | **16** | `max_depth` MUST be validated against this before processing | `MAX_TREE_REQUEST_DEPTH` (`node/primitives/sync/wire.rs:47`) |
-| LevelWise nodes per level | **10 000** | Responder **bails** (errors the session) if a level response exceeds it | `MAX_NODES_PER_LEVEL` (`sync/levelwise.rs:83`; checked in `sync/level_sync.rs:306`) |
-| LevelWise parents per request | **1000** | **Truncated** to the cap and `truncation_occurred` is set — sync may be incomplete | `MAX_PARENTS_PER_REQUEST` (`levelwise.rs:77`; clamped in `level_sync.rs:523`) |
-| LevelWise requests per session | **128** | Further requests are refused, bounding how long a peer can hold the session open | `MAX_REQUESTS_PER_SESSION` (`levelwise.rs:90`; checked in `level_sync.rs:813`) |
-| LevelWise traversal depth | **64** | `max_depth` clamped to this (LevelWise targets depth ≤ 2; the ceiling is headroom) | `MAX_LEVELWISE_DEPTH` (`levelwise.rs:71`) |
-
-:::note
-The two depth caps are not the same number and gate different protocols: **16**
-(`MAX_TREE_REQUEST_DEPTH`) bounds a single HashComparison `TreeNodeRequest`; **64**
-(`MAX_LEVELWISE_DEPTH`) clamps a LevelWise traversal. Only the parents-per-request
-cap *silently* loses data (it truncates and flags `truncation_occurred`); the node
-and request caps error the exchange instead, which falls back to another protocol.
-:::
-
-## Capability bitmask (`MemberCapabilities`)
-
-A member's capabilities are a `u32` bitset (`crates/context/config/src/lib.rs`, also exported via `crates/primitives/src/context.rs`). These gate governance actions beyond the implicit default-write that membership already grants. Capabilities flow through open subgroups — see [Capability inheritance](/protocol/capability-inheritance/).
-
-| Bit | Constant | Grants |
-| --- | --- | --- |
-| `1 << 0` | `CAN_CREATE_CONTEXT` | Create a context within the group. |
-| `1 << 1` | `CAN_INVITE_MEMBERS` | Issue invitations to the group. |
-| `1 << 2` | `CAN_JOIN_OPEN_SUBGROUPS` | Be inherited as a member of `Open` subgroups beneath this group. Granted to non-admins by default; admins revoke it as a deny-list. |
-| `1 << 3` | `MANAGE_MEMBERS` | Add/remove members and manage their roles. |
-| `1 << 4` | `MANAGE_APPLICATION` | Manage the group's application (e.g. upgrades). |
-| `1 << 5` | `CAN_CREATE_SUBGROUP` | Create a subgroup directly under the namespace root (the "any member can start a channel" knob). |
-| `1 << 6` | `CAN_DELETE_SUBGROUP` | Cascade-delete a subgroup and its subtree. A delegation knob, not a default. |
-| `1 << 7` | `CAN_MANAGE_VISIBILITY` | Flip a subgroup to `Restricted` without full admin. That flip rotates the key, so it also needs a direct admin of the subgroup. Opening a subgroup is its creator's alone, whatever the capability (#4522). |
-| `1 << 8` | `CAN_MANAGE_METADATA` | Set group/member/context metadata (`*MetadataSet` ops) without full admin. A member may always set *their own* member metadata regardless. |
-
-## The four roles (`GroupMemberRole`)
-
-A member's role (`crates/primitives/src/context.rs`) is the coarse classification; capability bits refine what a non-admin can additionally do.
-
-| Role | Read | Write default data | Governance | Notes |
-| --- | --- | --- | --- | --- |
-| `Admin` | Yes | Yes | Yes — holds management capabilities implicitly (add/remove members, roles, metadata, visibility). | Removal is guarded so a group is never left without another admin. |
-| `Member` | Yes | Yes (`DEFAULT_MEMBER_MASK` on non-restricted entities) | Only what their capability bits grant. | The ordinary participant; the write boundary for default data. |
-| `ReadOnly` | Yes | No | No | Holds the group key to decrypt and read, but cannot author write ops. Still a replica: it applies the deltas writers author. |
-| `ReadOnlyTee` | Yes | No | No | A TEE-attested fleet read replica admitted by hardware attestation, not invitation. Removal cascades an in-band self-purge. Never relays. See [TEE Attestation](/protocol/tee-attestation/). |
-| `RelayTee` | Yes | No (its own writes) | No | A TEE relay: a `ReadOnlyTee` that may also author members' writes under their warrants. See [delegated authorship](/protocol/delegated-authorship/#what-the-relay-must-be-granted). |
-
-## Data-plane operation mask (`OpMask`)
-
-Separate from governance capabilities, the data plane authorizes individual writes through a 3-bit `OpMask` (`crates/storage/src/entities.rs`). It answers "may this author perform this kind of operation on this entity?"
-
-| Bit | Constant | Meaning |
-| --- | --- | --- |
-| `0b001` | `OpMask::WRITE` | Create/update (upsert) an entity. |
-| `0b010` | `OpMask::DELETE` | Delete an entity. |
-| `0b100` | `OpMask::ADMIN` | Change an entity's writer set (rotate its ACL / ownership). |
-| `0b000` | `OpMask::NONE` | No rights. |
-| `0b111` | `OpMask::FULL` | `WRITE` + `DELETE` + `ADMIN`. |
-
-Membership implicitly grants `WRITE | DELETE` (`DEFAULT_MEMBER_MASK`) on any non-restricted entity — but **not** `ADMIN`, so a plain member can write and delete default data yet cannot lock others out by rotating an object's writer set. Restricted objects override this with an explicit per-object ACL. The full authorization story is in [Governance](/protocol/governance/) and the [Security & threat model](/protocol/security-model/).
-
-## See also
-
-- [Build gotchas](/build/gotchas/) — the limits and edge cases you actually trip over when building.
-- [Governance](/protocol/governance/) — how roles and capabilities are assigned and checked.
-- [Capability inheritance](/protocol/capability-inheritance/) — how capability bits flow through open subgroups.
-- [Governance Edge Cases](/protocol/governance-edge-cases/) — the corner cases where these roles, capabilities, and guards interact.
+Organization roles (`guest < member < admin < owner`), team row roles (`lead`,
+`member`, `read-only`) and the capability bits are on
+[Organizations, teams & access](/protocol/organizations/). The storage crate's
+per-entity write mask (`OpMask`: `WRITE`, `DELETE`, `ADMIN`) is unchanged; it is
+checked inside the run, on the leader.

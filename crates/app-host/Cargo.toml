@@ -1,0 +1,23 @@
+[package]
+name = "calimero-app-host"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "The engine-neutral host core of calimero:app: state, policy, time and randomness"
+publish = false
+
+[features]
+# Exposes diagnostic counters (`HostCore::peak_buffered`) to integration tests.
+testing = []
+
+[dependencies]
+ciborium.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+calimero-app-host = { path = ".", features = ["testing"] }

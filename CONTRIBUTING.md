@@ -2,7 +2,7 @@
 
 [GitPR]: https://github.com/susam/gitpr
 [Issues]: https://github.com/calimero-network/core/issues
-[README]: README.mdx
+[README]: README.md
 [STANDARDS]: CODING_STANDARDS.md
 
 Thank you for dedicating your time to contribute to our project.
@@ -45,7 +45,8 @@ general guidelines:
 
 - Update the [README][] file if your changes affect it.
 
-For **versioning and how to cut a release**, see [docs/RELEASE.md](docs/RELEASE.md).
+The shared release version of the public crates is `version` under
+`[workspace.metadata.workspaces]` in the root `Cargo.toml`.
 
 ## Git hooks
 

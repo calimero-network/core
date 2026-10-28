@@ -23,22 +23,22 @@ For a bug fix, show it actually works - not just that tests pass:
 
 Skip this section only for pure docs/chore PRs.
 
-## Wire contract (SDK gate)
+## Wire contract (clients)
 
-If this PR changes an HTTP wire DTO or route, the SDKs mirror it by hand — keep
-them in sync or the contract gate goes red:
+mero-js and calimero-client-py mirror the node's HTTP API, the sealed wire
+format (`crates/sealed`) and the attestation check
+(`crates/client/src/attest.rs`) by hand. `e2e.yml`'s `clients` job runs
+both against this PR's `merod`:
 
-- [ ] Regenerated wire fixtures (if a DTO changed):
-      `UPDATE_FIXTURES=1 cargo test -p calimero-server-primitives --test wire_fixtures`
-- [ ] Updated `crates/server/endpoints.json` (if routes changed):
-      `UPDATE_MANIFEST=1 cargo test -p calimero-server --test route_manifest`
-- [ ] Linked the matching mero-js PR — a breaking wire change needs a paired SDK update
+- [ ] Changed a route, request or answer: updated both clients, or linked their PRs
+- [ ] Changed the sealed format or the attestation check: changed mero-js in the same way
 
-To run the live SDK e2e against your paired SDK branch, add a line to this body
-(defaults to `master`):
+To test against a client branch other than a same-named one, add lines to this
+body (both default to `master`):
 
 ```
 sdk-ref: <your-mero-js-branch>
+py-ref: <your-calimero-client-py-branch>
 ```
 
 ## Trust boundary

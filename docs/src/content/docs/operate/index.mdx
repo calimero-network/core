@@ -1,50 +1,51 @@
 ---
-title: Operate a Calimero Node
-description: Run and manage a Calimero node — install merod, drive it with meroctl.
+title: Operate a Calimero Cluster
+description: Run and manage a Calimero cluster — merod nodes in TDX VMs, meroctl, the Ops API — from a development cluster to production.
 sidebar:
   label: Overview
   order: 1
 ---
 
-import { CardGrid, LinkCard, Steps, Aside } from '@astrojs/starlight/components';
+import { CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
 
-A node is one `merod` process: it holds keys, runs applications, stores state,
-and gossips with peers. You drive it with the `meroctl` CLI and the admin API.
+A cluster is a set of `merod` nodes. In production each runs in an attested
+Intel TDX VM, takes its storage key from mero-kms, and holds the replicas of the
+apps placed on it; one Raft log per app keeps the replicas identical, and one
+system log holds accounts, organizations, packages and the fleet. You drive it
+with `meroctl`, and the operator's side goes through the Ops API with an ops
+token, which reports counts and placement and never reads app data.
+
+New to Calimero? Read the [Cloud overview](/cloud/overview/) first, then the
+[Quickstart](/cloud/quickstart/).
 
 ## Start here
 
 <Steps>
 
-1. **[Install &amp; first run](/operate/install/)** — build/Docker, then `init` → `run` → verify.
-2. Learn the **[`merod`](/operate/merod/)** and **[`meroctl`](/operate/meroctl/)** commands.
-3. When you go to production, work through the **Guides** (deployment, networking, security).
-4. Keep **troubleshooting** and the **runbooks** handy for operations.
+1. **[Install &amp; first run](/operate/install/)**: build, start a development cluster, connect `meroctl`.
+2. **[Production deployment](/operate/deployment/)**: storage key, forming the cluster, governance, what goes in front.
+3. **[Security](/operate/security/)** and **[Observability](/operate/observability/)** before you put data on it.
+4. Keep the **[runbooks](/operate/runbooks/)** and **[troubleshooting](/operate/troubleshooting/)** at hand.
 
 </Steps>
-
-## Get started
-
-<CardGrid>
-  <LinkCard title="Install &amp; first run" href="/operate/install/" description="From binaries or Docker, to a running node." />
-</CardGrid>
 
 ## Guides
 
 <CardGrid>
-  <LinkCard title="Production deployment" href="/operate/deployment/" description="Long-lived service, volumes, ports, reverse proxy." />
-  <LinkCard title="Networking &amp; discovery" href="/operate/networking/" description="Bootstrap, mDNS, relays, NAT traversal." />
-  <LinkCard title="Security hardening" href="/operate/security/" description="Auth modes, key storage, what to keep private." />
-  <LinkCard title="Observability" href="/operate/observability/" description="Metrics, logging, what divergence looks like." />
-  <LinkCard title="Troubleshooting" href="/operate/troubleshooting/" description="Problem → cause → fix." />
-  <LinkCard title="Runbooks" href="/operate/runbooks/" description="Upgrade, back up, recover, leave safely." />
+  <LinkCard title="Production deployment" href="/operate/deployment/" description="TDX nodes, mero-kms, forming the cluster, TLS in front." />
+  <LinkCard title="Networking" href="/operate/networking/" description="The listener, peer URLs, CORS, app frontend domains, egress." />
+  <LinkCard title="Security" href="/operate/security/" description="TDX versus --dev, quote policies, governance, the ops token." />
+  <LinkCard title="Observability" href="/operate/observability/" description="Ops metrics, status, health and logs." />
+  <LinkCard title="Runbooks" href="/operate/runbooks/" description="Add nodes, move replicas, back up, upgrade." />
+  <LinkCard title="Troubleshooting" href="/operate/troubleshooting/" description="Error, cause, fix." />
 </CardGrid>
 
 ## Reference
 
 <CardGrid>
-  <LinkCard title="merod" href="/operate/merod/" description="The node daemon CLI." />
-  <LinkCard title="meroctl" href="/operate/meroctl/" description="The control CLI." />
-  <LinkCard title="Configuration" href="/operate/config/" description="The config.toml reference." />
-  <LinkCard title="Admin API" href="/operate/admin-api/" description="The HTTP/JSON-RPC endpoints." />
-  <LinkCard title="Auth service" href="/operate/auth/" description="JWT auth modes and providers." />
+  <LinkCard title="merod" href="/operate/merod/" description="Every node command and flag." />
+  <LinkCard title="meroctl" href="/operate/meroctl/" description="Every CLI command." />
+  <LinkCard title="Configuration" href="/operate/config/" description="config.toml and the [outbound] table." />
+  <LinkCard title="Node API" href="/operate/admin-api/" description="Every route, its credential and its meroctl command." />
+  <LinkCard title="Authentication" href="/operate/auth/" description="Passkeys, sessions, API keys, confirmations, the ops token." />
 </CardGrid>

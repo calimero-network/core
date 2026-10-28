@@ -1,7 +1,7 @@
 name: WASM apps
 description: >
   Restore an app set that a build of exactly these inputs already produced on
-  master, or set up Rust and cargo-mero so the caller's next step can build it.
+  master or the release-v2-parity release branch, or set up Rust and cargo-mero so the caller's next step can build it.
   The caller runs the build itself when `hit` is not true (so the step stays
   visible to check-like-ci.py and the bundle-coverage lint), then saves with
   actions/cache/save, its `paths` and `key`, when `save` is true. A hit stands in
@@ -27,7 +27,7 @@ inputs:
       and must be in it.
     required: true
   rust-cache-save:
-    description: Whether a miss saves the `wasm-apps` rust-cache group (its one saver passes true on master).
+    description: Whether a miss saves the `wasm-apps` rust-cache group (its one saver passes true on master and the release branch).
     required: false
     default: "false"
 
@@ -36,8 +36,8 @@ outputs:
     description: "'true' when the set was restored; the caller then skips its build."
     value: ${{ steps.restore.outputs.cache-hit == 'true' }}
   save:
-    description: "'true' when the caller should save what it built: a shareable miss, on master only."
-    value: ${{ steps.restore.outputs.cache-hit != 'true' && steps.key.outputs.share == 'true' && github.ref == 'refs/heads/master' }}
+    description: "'true' when the caller should save what it built: a shareable miss, on master or the release-v2-parity release branch only."
+    value: ${{ steps.restore.outputs.cache-hit != 'true' && steps.key.outputs.share == 'true' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release-v2-parity') }}
   key:
     description: The cache key.
     value: ${{ steps.key.outputs.key }}
@@ -48,7 +48,7 @@ outputs:
 runs:
   using: composite
   steps:
-    # Git tree ids, the merod-binaries / setup-cargo-mero pattern: a tar or an mtime
+    # Git tree ids, the setup-cargo-mero pattern: a tar or an mtime
     # changes on every checkout, a tree id only when the content does. The trees:
     # every package under the root and every workspace dir they are built from
     # (path-dep-closure.py, build-dependencies included); cargo-mero, which builds,

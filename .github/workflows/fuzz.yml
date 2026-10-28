@@ -4,12 +4,10 @@ on:
   pull_request:
     paths:
       - "crates/bundle/**"
-      - "crates/governance-store/**"
-      - "crates/governance-types/**"
-      - "crates/network/**"
-      - "crates/node/primitives/**"
-      - "crates/projection/**"
+      - "crates/identity/**"
+      - "crates/sealed/**"
       - "crates/storage/**"
+      - "crates/tee-attestation/**"
       - "tools/mero-sign/**"
       - "fuzz/**"
       - "scripts/fuzz.sh"
@@ -52,8 +50,6 @@ jobs:
             bundle_open:
               - *shared
               - "crates/bundle/**"
-              - "crates/node/primitives/src/client/application/bundle*/**"
-              - "crates/node/primitives/src/client/application/bundle.rs"
               - "tools/mero-sign/**"
               - "fuzz/fuzz_targets/bundle_open.rs"
               - "fuzz/seeds/bundle_open/**"
@@ -62,27 +58,23 @@ jobs:
               - "crates/storage/**"
               - "fuzz/fuzz_targets/crdt_sync.rs"
               - "fuzz/seeds/crdt_sync/**"
-            wire_decode:
+            sealed_request:
               - *shared
-              - "crates/node/primitives/src/sync/**"
-              - "crates/network/primitives/**"
-              - "fuzz/fuzz_targets/wire_decode.rs"
-            provider_record:
+              - "crates/sealed/**"
+              - "fuzz/fuzz_targets/sealed_request.rs"
+            passkey_verify:
               - *shared
-              - "crates/network/src/blob_provider_record.rs"
-              - "fuzz/fuzz_targets/provider_record.rs"
-            signed_ops:
+              - "crates/identity/src/webauthn.rs"
+              - "crates/identity/src/testing.rs"
+              - "fuzz/fuzz_targets/passkey_verify.rs"
+            session_token:
               - *shared
-              - "crates/governance-types/**"
-              - "fuzz/fuzz_targets/signed_ops.rs"
-              - "fuzz/seeds/signed_ops/**"
-            governance_apply:
+              - "crates/identity/src/lib.rs"
+              - "fuzz/fuzz_targets/session_token.rs"
+            quote_parse:
               - *shared
-              - "crates/governance-store/**"
-              - "crates/governance-types/**"
-              - "crates/projection/**"
-              - "fuzz/fuzz_targets/governance_apply.rs"
-              - "fuzz/seeds/governance_apply/**"
+              - "crates/tee-attestation/**"
+              - "fuzz/fuzz_targets/quote_parse.rs"
 
   smoke:
     name: Smoke (${{ matrix.target }})
@@ -118,10 +110,10 @@ jobs:
         target:
           - bundle_open
           - crdt_sync
-          - wire_decode
-          - provider_record
-          - signed_ops
-          - governance_apply
+          - sealed_request
+          - passkey_verify
+          - session_token
+          - quote_parse
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

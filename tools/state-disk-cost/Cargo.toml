@@ -11,7 +11,7 @@ publish = false
 [dependencies]
 borsh = { workspace = true, features = ["derive"] }
 calimero-storage = { workspace = true }
-calimero-store-rocksdb = { workspace = true }
+calimero-log.workspace = true
 eyre = { workspace = true }
 rocksdb = { workspace = true }
 tempfile = { workspace = true }

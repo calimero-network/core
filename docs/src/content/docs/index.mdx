@@ -1,9 +1,9 @@
 ---
 title: Calimero Core
-description: Build, operate, and reimplement Calimero — a peer-to-peer framework for sandboxed WASM apps over causally-consistent shared state.
+description: Build and run Calimero — sandboxed WASM apps replicated by Raft across attested TEE nodes, reached through a sealed channel.
 template: splash
 hero:
-  tagline: A peer-to-peer framework for sandboxed WASM apps over causally-consistent shared state. No consensus, no quorum — a signed operation DAG that folds to a state and a root hash.
+  tagline: Sandboxed WASM apps on a cluster of attested Intel TDX nodes. One Raft log per app, one for the cluster, every request sealed to an attested key — and nobody operating it can read the data.
   actions:
     - text: Read the Protocol Reference
       link: /protocol/overview/
@@ -16,7 +16,6 @@ hero:
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
-import ArchMap from '../../components/ArchMap.astro';
 
 {/* Audience-routed landing (Tailscale/Vercel pattern) — pick your track. */}
 
@@ -25,13 +24,15 @@ import ArchMap from '../../components/ArchMap.astro';
     Write a WASM app on the SDK. Quickstart, the SDK macros, and the collection
     types. [Start building →](/build/)
   </Card>
-  <Card title="Operate" icon="setting">
-    Run, configure, and monitor nodes. Install, the `merod`/`meroctl` CLI
-    reference, config, and the admin API. [Run a node →](/operate/)
+  <Card title="Run a cluster" icon="setting">
+    Start a local cluster, deploy an app, and operate `merod` in production:
+    the storage key, peers, governance and the Ops API.
+    [Calimero Cloud →](/cloud/overview/)
   </Card>
   <Card title="Protocol" icon="open-book">
-    Reimplement a node from scratch. Concept explainers and a normative,
-    versioned spec. [Read the reference →](/protocol/overview/)
+    How a cluster works and why: replication, the system group, attestation,
+    sealed channels, accounts, organizations, upgrades.
+    [Read the reference →](/protocol/overview/)
   </Card>
   <Card title="Contribute" icon="puzzle">
     Work on Calimero core itself. Architecture orientation, the crate map, and
@@ -41,6 +42,17 @@ import ArchMap from '../../components/ArchMap.astro';
 
 ## Architecture at a glance
 
-<ArchMap />
+```text
+client (meroctl · mero-js · calimero-client-py · calimero-client)
+   │  verify the TDX quote → Noise NK session to the attested key → sealed requests
+   ▼
+any merod node ──── system group (group 1, every node): accounts, orgs, packages, app directory
+   │  forward over a peer sealed channel
+   ▼
+the app's leader ── runs the WASM call, appends { call, outcome { result, diff, events } }
+   │  Raft
+   ▼
+the app's followers ── apply the diff (nobody re-executes)
+```
 
 New here? [How to use these docs](/using-the-docs/) · [Journeys by goal](/journeys/) · [Browse by topic](/topics/)

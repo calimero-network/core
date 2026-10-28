@@ -34,7 +34,7 @@ use config::ContextConfig;
 
 ## Modules
 
-Give each module a file named after it, and declare its children there: `crates/meroctl/src/cli/app.rs` holds `mod get; mod install;`, and the children live in `crates/meroctl/src/cli/app/get.rs` and `crates/meroctl/src/cli/app/install.rs`.
+Give each module a file named after it, and declare its children there: `crates/runtime/src/logic.rs` holds `mod host_functions;`, `crates/runtime/src/logic/host_functions.rs` holds `mod blobs; mod outbound;`, and the children live in `crates/runtime/src/logic/host_functions/blobs.rs` and `crates/runtime/src/logic/host_functions/outbound.rs`.
 The existing `mod.rs` files predate this rule; a new module follows it.
 
 Place a helper shared across a crate in a `commons.rs`-style module, and a type shared across crates in that area's `primitives` crate.
@@ -77,14 +77,14 @@ Delete commented-out code; add future code in the change that first uses it.
 A PR touching a path in `TRUST_BOUNDARY_PATHS` ([`scripts/check-trust-boundary.py`](scripts/check-trust-boundary.py)) must answer the PR template's Trust boundary block; CI fails without it.
 Fixing a finding: the **calimero-security-fix** skill ([`.cursor/skills/calimero-security-fix/SKILL.md`](.cursor/skills/calimero-security-fix/SKILL.md)).
 
-- **Untrusted:** every peer, gossip or stream payload, HTTP caller and app guest, and every field a signature does not cover - [`a_join_key_from_a_sender_the_invitation_does_not_vouch_for_is_not_installed`](crates/context/src/handlers/join_group.rs).
-- **Identity** comes from the authenticated channel or a signature; a field in the message is a claim, not an identity - [`init_proof_rejects_wrong_peer_id`](crates/node/primitives/src/sync/wire.rs).
-- **Verify before acting:** the check that authorizes a store write, install or network call runs before it - [`a_bundle_deriving_another_id_is_refused_before_anything_is_written`](crates/context/primitives/tests/ensure_application_bytecode.rs).
-- **Limits:** every input from outside has a named constant bounding its size, count, time or concurrency, checked before the costly work - [`MAX_PRESENTED_HANDOFFS`](crates/account/src/root_key.rs), [`a_long_handoff_chain_is_refused_before_any_signature_is_checked`](crates/server/src/proof_auth.rs).
-- **Ending membership:** every gated operation considers kicked, left, deny-listed, revoked, descoped and inherited actors, and actors from other namespaces - [`is_author_denied_for_context`](crates/governance-store/src/deny_list.rs).
-- **Closed input:** refuse unknown fields, variants and versions - [`every_request_body_is_a_closed_set`](crates/server/primitives/tests/deny_unknown_fields.rs).
-- **One gate:** enforce a rule in the shared function every caller goes through - [`ProofPolicy::admit`](crates/server/src/proof_auth.rs).
-- **Signed format changes** bump the schema version in the same PR, check open PRs have not claimed that number, and name the paired SDK PR with `sdk-ref:` in the body - [`SIGNED_NAMESPACE_OP_SCHEMA_VERSION`](crates/governance-types/src/lib.rs), [`pre_flag_day_namespace_op_version_is_rejected`](crates/governance-types/src/tests.rs).
+- **Untrusted:** every peer, HTTP caller, registry download and app guest, and every field a signature or an attestation does not cover - [`clients_refuse_unattested_nodes_and_plain_requests`](crates/node/tests/cluster.rs).
+- **Identity** comes from a verified credential or signature; a field in the request is a claim, not an identity - `principal` in [`crates/node/src/api.rs`](crates/node/src/api.rs), which derives the caller from the session token or API key alone.
+- **Verify before acting:** the check that authorizes a store write, install or network call runs before it - [`an_uploaded_package_is_verified_and_reaches_the_other_nodes`](crates/node/tests/cluster.rs).
+- **Limits:** every input from outside has a named constant bounding its size, count, time or concurrency, checked before the costly work - [`MAX_PENDING_CHALLENGES`](crates/node/src/api.rs), [`MAX_STATE_BYTES`](crates/node/src/presence.rs) and [`oversized_state_is_refused`](crates/node/src/presence.rs).
+- **Ending membership:** every gated operation considers removed, departed, revoked, read-only and inherited actors, and actors from other organizations, and judges them on fresh system state - [`teams_work_like_v1_subgroups`](crates/node/tests/cluster.rs), `gate` in [`crates/node/src/api.rs`](crates/node/src/api.rs).
+- **Closed input:** refuse unknown fields, variants and versions - the sealed envelope's `RequestHead` in [`crates/sealed/src/server.rs`](crates/sealed/src/server.rs), and `merod`'s `NodeArgs` ([`crates/merod/src/node_config.rs`](crates/merod/src/node_config.rs)).
+- **One gate:** enforce a rule in the shared function every caller goes through - `attest::verify` in [`crates/client/src/attest.rs`](crates/client/src/attest.rs), which clients and peers both call.
+- **Signed and wire format changes** bump the version in the same PR, check open PRs have not claimed that number, and name the paired SDK PR with `sdk-ref:` in the body: the sealed wire format ([`crates/sealed`](crates/sealed/src/lib.rs), byte-compatible with mero-js `src/sealed/`) and the attestation check ([`crates/client/src/attest.rs`](crates/client/src/attest.rs), mirrored in mero-js `src/cloud-v2/attestation.ts`) change in both or neither.
 - **Workflows:** give every workflow explicit least-privilege `permissions`; a privileged workflow (`pull_request_target`, `workflow_run`) never checks out PR code or trusts an artifact a fork can upload - the "Check payload targets the triggering PR" step in [`comment.yml`](.github/workflows/comment.yml).
   Pass `github.*` and `steps.*` values to a `run:` script through `env:`, never `${{ }}`; `Workflow lint` runs `actionlint` and `zizmor` (`zizmor .github/workflows`) and its exceptions are in `.github/zizmor.yml`. `scripts/check-workflow-triggers.py` fails a privileged workflow whose job checks out the PR head without a same-repository `if`, or saves a cache.
 - **Secrets** (tokens, keys, credentials) stay in the node's local config under `~/.calimero/<node>/`, outside the repository.

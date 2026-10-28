@@ -6,11 +6,8 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::Arc;
 
-use calimero_node_primitives::bundle::sign_manifest_json;
-use calimero_node_primitives::client::application::bundle::{
-    extract_bundle_manifest, is_bundle_blob, VerifiedBundle,
-};
-use calimero_node_primitives::fuzz_api::extract_bundle_files;
+use calimero_bundle::archive::fuzz_api::extract_bundle_files;
+use calimero_bundle::{extract_bundle_manifest, is_bundle_blob, sign_manifest_json, VerifiedBundle};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use libfuzzer_sys::fuzz_target;
@@ -20,13 +17,18 @@ use tar::Header;
 
 const BLOCK: usize = 512;
 
+/// Above any `minRuntimeVersion` a fuzzed manifest names, so the check never masks the read.
+fn runtime() -> semver::Version {
+    semver::Version::new(u64::MAX, 0, 0)
+}
+
 fuzz_target!(|data: &[u8]| {
     let mut entries = data.to_vec();
     fix_checksums(&mut entries);
 
     // Unsigned, as a peer serves it: a manifest the read accepts marks a bundle.
     let unsigned = gzip(&entries);
-    if extract_bundle_manifest(&unsigned).is_ok() {
+    if extract_bundle_manifest(&unsigned, &runtime()).is_ok() {
         assert!(
             is_bundle_blob(&unsigned),
             "manifest read but blob not recognised"
@@ -40,7 +42,7 @@ fuzz_target!(|data: &[u8]| {
     let mut archive = manifest_entry(&path, &hash, wasm.len());
     archive.extend_from_slice(&entries);
     let compressed: Arc<[u8]> = gzip(&archive).into();
-    let Ok(bundle) = VerifiedBundle::open(Arc::clone(&compressed)) else {
+    let Ok(bundle) = VerifiedBundle::open(Arc::clone(&compressed), &runtime()) else {
         return;
     };
     assert_eq!(bundle.signer_id(), dev_signer_id());

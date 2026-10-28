@@ -1,504 +1,310 @@
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no counterpart in this node):
+#   login (unknown) x2: checks what the dropped steps did
+#   script x2: scripts drive v1 node RPC URLs
+#   wait_for_sync x2: replication is synchronous: a read sees every committed write
 name: E2E KV Store - Sync Reconciles Shared & User Entities
-description: >
-  Regression guard for the redesigned signature commitment that
-  decouples the signed payload from tree-state ancestry. Before
-  this change, cross-peer reconciliation of Shared (writer-set)
-  and User (owner-signed) entities was broken: the stored
-  signature committed to ancestor merkle hashes at sign time,
-  so on a receiver whose tree state diverges (which is the whole
-  point of a sync run) the signature failed to verify and the
-  leaf was either skipped or silently flipped to Public via the
-  default-metadata fallback. The new payload commits only to
-  authorization (id, data, nonce, signer hint, storage-type
-  access control); tree-state integrity is verified separately
-  at apply time. The sync wire now carries the full
-  `StorageType` for Shared/User leaves so the receiver can
-  verify the signature against authorization rules, not its own
-  tree.
-
-  Scenario (partition node-2, write Shared+User on node-1, heal):
-    1. Two nodes join a namespace + context. Both write a
-       baseline value so each has `has_state = true`. This is
-       what forces the initialized-node protocol selection path
-       (`select_protocol` Rule 2a / Snapshot is gated on a fresh
-       local node, which is not the situation we want to test).
-    2. Partition node-2 off the Docker bridge. node-1's writes
-       in the next phase will NOT reach node-2 via gossipsub.
-    3. node-1 writes context-state entities that the redesign
-       directly affects:
-         - `set_user_simple` → UserStorage → StorageType::User
-           (owner-signed; the User wire path)
-         - `shared_set` → SharedStorage → StorageType::Shared
-           (writer-set governed; the Shared wire path)
-         - `authored_insert` → AuthoredMap → per-entry owner
-           (a second User-typed wire path with a different
-           collection shape)
-         - `authored_sorted_insert` → AuthoredSortedMap → per-entry
-           owner AND a node-local ordered index. The only
-           collection that is both, and the intersection is the
-           point: a remote apply mutates entries host-side
-           without going through `insert`, so it leaves the
-           index marker stale and the next ORDERED read has to
-           notice and rebuild. That is the #3333 shape, which
-           was only ever exercised over unsigned `SortedSet`
-           entries — never over User-signed ones.
-       Each write is REPEATED once so the stored SignatureData
-       carries an incremented nonce — pre-redesign this was a
-       second source of payload-vs-stored drift on the sync path.
-    4. Heal the partition. node-2's tree state and node-1's now
-       differ on the three entities above; gossipsub catch-up and
-       the scheduled state-sync fire. With both peers initialized
-       and divergence localized, the default-rule selection in
-       `select_protocol` (crates/node/primitives/src/sync/protocol.rs)
-       lands on `HashComparison` or one of its sibling protocols
-       (`LevelWise`, `SubtreePrefetch`). All three drive the same
-       `apply_leaf_with_crdt_merge` apply path with the new wire
-       authorization helpers in `crates/node/src/sync/helpers.rs`.
-    5. node-2 reads each entity back. Pre-redesign: the writes
-       either never land (signature rejected against node-2's
-       tree) or land with provenance downgraded to Public via
-       `Metadata::default()`. Post-redesign: name + data fields
-       match exactly.
-
-  Why this is partition-based, not the simpler "node-1 writes,
-  node-2 reads" pattern: under normal gossipsub propagation the
-  apply path runs on the receiver well before any state-sync
-  tick, so HashComparison never sees a divergent root and the
-  test would pass vacuously even with the redesign reverted.
-  Partitioning while node-1 writes is what forces sync — not
-  gossipsub — to be the path that delivers the entities to
-  node-2.
-
-  Why this partition pattern IS deterministic, where the
-  member-removed-partition-window-reconcile workflow is not:
-  that workflow needs admin to *sign* during the partition
-  against a stale view, which races the TCP-buffer drain after
-  reconnect. This workflow only needs node-1's writes to be
-  invisible to node-2 during the partition window; after heal,
-  either gossipsub catch-up or a sync tick lands the entities,
-  and the assertions only depend on final convergence.
-
-force_pull_image: false
-
-auth_mode: embedded
-
-nodes:
-  count: 2
-  image: merod:local
-  prefix: e2e-node
-
+description: "Regression guard for the redesigned signature commitment that decouples the signed payload\
+  \ from tree-state ancestry. Before this change, cross-peer reconciliation of Shared (writer-set) and\
+  \ User (owner-signed) entities was broken: the stored signature committed to ancestor merkle hashes\
+  \ at sign time, so on a receiver whose tree state diverges (which is the whole point of a sync run)\
+  \ the signature failed to verify and the leaf was either skipped or silently flipped to Public via the\
+  \ default-metadata fallback. The new payload commits only to authorization (id, data, nonce, signer\
+  \ hint, storage-type access control); tree-state integrity is verified separately at apply time. The\
+  \ sync wire now carries the full `StorageType` for Shared/User leaves so the receiver can verify the\
+  \ signature against authorization rules, not its own tree.\nScenario (partition node-2, write Shared+User\
+  \ on node-1, heal):\n  1. Two nodes join a namespace + context. Both write a\n     baseline value so\
+  \ each has `has_state = true`. This is\n     what forces the initialized-node protocol selection path\n\
+  \     (`select_protocol` Rule 2a / Snapshot is gated on a fresh\n     local node, which is not the situation\
+  \ we want to test).\n  2. Partition node-2 off the Docker bridge. node-1's writes\n     in the next\
+  \ phase will NOT reach node-2 via gossipsub.\n  3. node-1 writes context-state entities that the redesign\n\
+  \     directly affects:\n       - `set_user_simple` → UserStorage → StorageType::User\n         (owner-signed;\
+  \ the User wire path)\n       - `shared_set` → SharedStorage → StorageType::Shared\n         (writer-set\
+  \ governed; the Shared wire path)\n       - `authored_insert` → AuthoredMap → per-entry owner\n    \
+  \     (a second User-typed wire path with a different\n         collection shape)\n       - `authored_sorted_insert`\
+  \ → AuthoredSortedMap → per-entry\n         owner AND a node-local ordered index. The only\n       \
+  \  collection that is both, and the intersection is the\n         point: a remote apply mutates entries\
+  \ host-side\n         without going through `insert`, so it leaves the\n         index marker stale\
+  \ and the next ORDERED read has to\n         notice and rebuild. That is the #3333 shape, which\n  \
+  \       was only ever exercised over unsigned `SortedSet`\n         entries — never over User-signed\
+  \ ones.\n     Each write is REPEATED once so the stored SignatureData\n     carries an incremented nonce\
+  \ — pre-redesign this was a\n     second source of payload-vs-stored drift on the sync path.\n  4. Heal\
+  \ the partition. node-2's tree state and node-1's now\n     differ on the three entities above; gossipsub\
+  \ catch-up and\n     the scheduled state-sync fire. With both peers initialized\n     and divergence\
+  \ localized, the default-rule selection in\n     `select_protocol` (crates/node/primitives/src/sync/protocol.rs)\n\
+  \     lands on `HashComparison` or one of its sibling protocols\n     (`LevelWise`, `SubtreePrefetch`).\
+  \ All three drive the same\n     `apply_leaf_with_crdt_merge` apply path with the new wire\n     authorization\
+  \ helpers in `crates/node/src/sync/helpers.rs`.\n  5. node-2 reads each entity back. Pre-redesign: the\
+  \ writes\n     either never land (signature rejected against node-2's\n     tree) or land with provenance\
+  \ downgraded to Public via\n     `Metadata::default()`. Post-redesign: name + data fields\n     match\
+  \ exactly.\n\nWhy this is partition-based, not the simpler \"node-1 writes, node-2 reads\" pattern:\
+  \ under normal gossipsub propagation the apply path runs on the receiver well before any state-sync\
+  \ tick, so HashComparison never sees a divergent root and the test would pass vacuously even with the\
+  \ redesign reverted. Partitioning while node-1 writes is what forces sync — not gossipsub — to be the\
+  \ path that delivers the entities to node-2.\nWhy this partition pattern IS deterministic, where the\
+  \ member-removed-partition-window-reconcile workflow is not: that workflow needs admin to *sign* during\
+  \ the partition against a stale view, which races the TCP-buffer drain after reconnect. This workflow\
+  \ only needs node-1's writes to be invisible to node-2 during the partition window; after heal, either\
+  \ gossipsub catch-up or a sync tick lands the entities, and the assertions only depend on final convergence.\n"
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 4650
+accounts:
+- e2e-node-1
+- e2e-node-2
 steps:
-  # First login on a fresh embedded-auth node bootstraps its root key
-  # and seeds merobox's token cache; every step below runs authenticated.
-  - name: Login on e2e-node-1
-    type: login
-    node: e2e-node-1
-    username: dev
-    password: dev-password
-
-  - name: Login on e2e-node-2
-    type: login
-    node: e2e-node-2
-    username: dev
-    password: dev-password
-
-  # --- Phase 1: bootstrap; both nodes join the namespace + context
-  #     and write a baseline value so both end up with
-  #     `has_state = true`. This is the precondition for the
-  #     initialized-node sync rules to fire (rather than fresh-node
-  #     Snapshot). ---
-
-  - name: Install application on node-1
-    type: install_application
-    node: e2e-node-1
-    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Create namespace on node-1
-    type: create_namespace
-    node: e2e-node-1
-    application_id: '{{app_id}}'
-    outputs:
-      ns: namespaceId
-
-  - name: Create context on node-1
-    type: create_context
-    node: e2e-node-1
-    application_id: '{{app_id}}'
-    group_id: '{{ns}}'
-    outputs:
-      ctx: contextId
-
-  - name: Invite node-2 to namespace
-    type: create_namespace_invitation
-    node: e2e-node-1
-    namespace_id: '{{ns}}'
-    outputs:
-      invitation: invitation
-
-  - name: Node-2 joins namespace
-    type: join_namespace
-    node: e2e-node-2
-    namespace_id: '{{ns}}'
-    invitation: '{{invitation}}'
-    outputs:
-      node2_id: memberIdentity
-
-  - name: Node-2 joins context
-    type: join_context
-    node: e2e-node-2
-    context_id: '{{ctx}}'
-
-  # Each side writes a baseline value via the public KV path. After
-  # these two writes node-1 and node-2 both have `has_state = true`
-  # and their root hashes match (modulo gossipsub timing — the
-  # `wait_for_sync` below catches us up).
-  - name: Node-1 writes baseline
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx}}'
-    method: set
-    args:
-      key: "baseline-1"
-      value: "from-node-1"
-
-  - name: Node-2 writes baseline
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx}}'
-    method: set
-    args:
-      key: "baseline-2"
-      value: "from-node-2"
-
-  - name: Wait for baseline convergence
-    type: wait_for_sync
-    context_id: '{{ctx}}'
-    nodes:
-      - e2e-node-1
-      - e2e-node-2
-    timeout: 60
-    check_interval: 2
-    trigger_sync: true
-
-  - name: Settle after baseline convergence
-    type: wait
-    seconds: 3
-
-  # --- Phase 2: partition node-2 off the bridge. From here until the
-  #     reconnect step, anything node-1 writes is invisible to
-  #     node-2 over libp2p. ---
-
-  # By ACCOUNT: user storage is keyed per person, and an account is derived from
-  # a node's root rather than carried on the wire, so it has to be read off the
-  # node that owns it.
-  #
-  # Read here, before the partition, rather than beside the read that consumes
-  # it. node-1's account is fixed from startup, so nothing about this depends on
-  # sync — and placing it after the heal put a call between the reconciliation
-  # barrier and the cross-node read, which is both a convergence-lint finding and
-  # one more thing in flight while the partition is closing.
-  - name: Read node-1's account
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx}}'
-    method: my_account
-    outputs:
-      node1_account: result.output
-
-  - name: Partition node-2 from the bridge
-    type: script
-    script: scripts/disconnect-node-from-bridge.sh
-    target: local
-    args:
-      - e2e-node-2
-
-  - name: Brief settle so libp2p notices the partition
-    type: wait
-    seconds: 3
-
-  # --- Phase 3: node-1 writes the Shared + User + Authored entities
-  #     while node-2 is partitioned away. Each is written twice so
-  #     the stored SignatureData carries a non-initial nonce. ---
-
-  # UserStorage (StorageType::User, owner-signed). Signer is
-  # node-1's executor identity; the entity is owned by the writer.
-  - name: Node-1 sets simple user value (User entity, initial)
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx}}'
-    method: set_user_simple
-    args:
-      value: "node-1-profile-initial"
-
-  - name: Node-1 sets simple user value (User entity, updated — fresh nonce)
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx}}'
-    method: set_user_simple
-    args:
-      value: "node-1-profile-final"
-
-  # SharedStorage (StorageType::Shared, writer-set governed). The
-  # init caller (node-1) is the sole initial writer per
-  # `apps/scaffolding-e2e/src/lib.rs::E2eKvStore::init`.
-  - name: Node-1 sets shared value (Shared entity, initial)
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx}}'
-    method: shared_set
-    args:
-      value: "shared-initial"
-
-  - name: Node-1 sets shared value (Shared entity, updated — fresh nonce)
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx}}'
-    method: shared_set
-    args:
-      value: "shared-final"
-
-  # AuthoredMap (per-entry User-owned). Insert + update on the same
-  # key both go through the User-signed path because node-1 owns it.
-  - name: Node-1 inserts authored entry (User entity, initial)
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx}}'
-    method: authored_insert
-    args:
-      key: "profile-bio"
-      value: "bio-initial"
-
-  - name: Node-1 updates authored entry (User entity, fresh nonce)
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx}}'
-    method: authored_update
-    args:
-      key: "profile-bio"
-      value: "bio-final"
-
-  # AuthoredSortedMap. Three keys under one prefix and one outside it, so the
-  # post-heal read can be an ORDERED, PREFIX-SCOPED read rather than a point
-  # lookup — a point lookup would pass off a stale index.
-  - name: Node-1 inserts authored-sorted entries (User entities + ordered index)
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx}}'
-    method: authored_sorted_insert
-    args:
-      key: "doc/a"
-      value: "sorted-a"
-
-  - name: Node-1 inserts a second authored-sorted entry under the same prefix
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx}}'
-    method: authored_sorted_insert
-    args:
-      key: "doc/b"
-      value: "sorted-b"
-
-  - name: Node-1 inserts an authored-sorted entry OUTSIDE the prefix
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx}}'
-    method: authored_sorted_insert
-    args:
-      key: "other/z"
-      value: "sorted-z"
-
-  - name: Node-1 updates an authored-sorted entry (fresh nonce)
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx}}'
-    method: authored_sorted_update
-    args:
-      key: "doc/a"
-      value: "sorted-a-final"
-
-  # --- Phase 4: heal the partition. node-2's tree state and node-1's
-  #     now diverge on the three entities written above. With both
-  #     peers `has_state = true` and divergence local, the
-  #     initialized-node rules in `select_protocol` route this to
-  #     `HashComparison` or a sibling (`LevelWise` /
-  #     `SubtreePrefetch`) — all three drive the same wire
-  #     authorization apply path. ---
-
-  - name: Heal node-2's partition
-    type: script
-    script: scripts/connect-node-to-bridge.sh
-    target: local
-    args:
-      - e2e-node-2
-
-  - name: Wait for libp2p mesh reformation
-    type: wait
-    seconds: 8
-
-  - name: Wait for context reconciliation
-    type: wait_for_sync
-    context_id: '{{ctx}}'
-    nodes:
-      - e2e-node-1
-      - e2e-node-2
-    timeout: 90
-    check_interval: 2
-    trigger_sync: true
-    expect:
-      method: get_user_simple_for
-      args:
-        user_key: '{{node1_account}}'
-      equals:
-        output: "node-1-profile-final"
-
-  - name: Settle after reconciliation
-    type: wait
-    seconds: 5
-
-  # --- Phase 5: read each entity back from node-2 and assert it
-  #     reconciled to the final (post-update) value. Pre-redesign,
-  #     each of these would either come back null (signature
-  #     verification failed and the apply was rejected) or come
-  #     back with downgraded provenance. Post-redesign, name + data
-  #     match the LWW winner of the two writes node-1 issued. ---
-
-  - name: Read node-1's User entity from node-2
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx}}'
-    method: get_user_simple_for
-    args:
-      user_key: '{{node1_account}}'
-    outputs:
-      user_read_from_node2: result
-
-  - name: Assert User entity reconciled to node-2
-    type: json_assert
-    statements:
-      - 'json_equal({{user_read_from_node2}}, {"output": "node-1-profile-final"})'
-
-  - name: Read Shared entity from node-2
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx}}'
-    method: shared_get
-    outputs:
-      shared_read_from_node2: result
-
-  - name: Assert Shared entity reconciled to node-2
-    type: json_assert
-    statements:
-      - 'json_equal({{shared_read_from_node2}}, {"output": "shared-final"})'
-
-  - name: Read AuthoredMap entry from node-2
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx}}'
-    method: authored_get
-    args:
-      key: "profile-bio"
-    outputs:
-      authored_read_from_node2: result
-
-  - name: Assert AuthoredMap entry reconciled to node-2
-    type: json_assert
-    statements:
-      - 'json_equal({{authored_read_from_node2}}, {"output": "bio-final"})'
-
-  # AuthoredMap exposes the owner of each entry — confirm it is
-  # node-1's ACCOUNT, not the default-Public fallback that the
-  # v1 silent storage-type-flip bug would have produced.
-  #
-  # By account since #3399: an entry is owned by the person, so that a second
-  # device of theirs can edit it. This compared against the node's signing key
-  # until now, and went stale silently — the step was simply never reached,
-  # because reconciliation timed out three steps earlier.
-  - name: Read AuthoredMap entry owner from node-2
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx}}'
-    method: authored_get_owner
-    args:
-      key: "profile-bio"
-    outputs:
-      authored_owner_from_node2: result
-
-  - name: Assert AuthoredMap entry owner is node-1
-    type: json_assert
-    statements:
-      - 'json_equal({{authored_owner_from_node2}}, {"output": "{{node1_account}}"})'
-
-  # AuthoredSortedMap, read back ORDERED and prefix-scoped. A point `get` would
-  # be served straight from the entry and say nothing about the index; this read
-  # seeks the node-local ordered index, which the remote apply left stale and
-  # the rebuild-on-read has to have repaired. `other/z` is in the collection and
-  # must NOT appear — a rebuild that over-collected would be just as wrong as
-  # one that under-collected.
-  - name: Read AuthoredSortedMap prefix from node-2 (ordered, index-backed)
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx}}'
-    method: authored_sorted_prefix
-    args:
-      prefix: "doc/"
-    outputs:
-      authored_sorted_prefix_from_node2: result
-
-  - name: Assert the ordered prefix read reconciled, and stayed scoped
-    type: json_assert
-    statements:
-      - 'json_equal({{authored_sorted_prefix_from_node2}}, {"output": ["doc/a", "doc/b"]})'
-
-  - name: Read the updated AuthoredSortedMap value from node-2
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx}}'
-    method: authored_sorted_get
-    args:
-      key: "doc/a"
-    outputs:
-      authored_sorted_read_from_node2: result
-
-  - name: Assert the updated value reconciled
-    type: json_assert
-    statements:
-      - 'json_equal({{authored_sorted_read_from_node2}}, {"output": "sorted-a-final"})'
-
-  # The provenance half: ordering is node-local and derived, so it must not have
-  # cost the entry its owner stamp on the way across.
-  - name: Read AuthoredSortedMap entry owner from node-2
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx}}'
-    method: authored_sorted_get_owner
-    args:
-      key: "doc/a"
-    outputs:
-      authored_sorted_owner_from_node2: result
-
-  - name: Assert AuthoredSortedMap entry owner is node-1
-    type: json_assert
-    statements:
-      - 'json_equal({{authored_sorted_owner_from_node2}}, {"output": "{{node1_account}}"})'
-
-  # And the pre-partition baseline state is still present on
-  # node-2 — reconcile must not have wiped pre-divergence writes.
-  - name: Read baseline KV from node-2
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx}}'
-    method: get
-    args:
-      key: "baseline-1"
-    outputs:
-      baseline_read_from_node2: result
-
-  - name: Assert baseline state preserved
-    type: json_assert
-    statements:
-      - 'json_equal({{baseline_read_from_node2}}, {"output": "from-node-1"})'
-
-stop_all_nodes: false
+- name: Install application on node-1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: e2e-node-1
+- type: set
+  values:
+    app_id: com.calimero.scaffolding-e2e
+- name: Create namespace on node-1
+  type: create_org
+  org_name: Create namespace on node-1
+  outputs:
+    ns: orgId
+  account: e2e-node-1
+- name: Create context on node-1
+  type: deploy
+  account: e2e-node-1
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Create context on node-1
+  org: '{{ns}}'
+  outputs:
+    ctx: contextId
+- name: Invite node-2 to namespace
+  type: invite
+  org: '{{ns}}'
+  role: member
+  account: e2e-node-1
+  outputs:
+    invitation: token
+- name: Node-2 joins namespace
+  type: redeem_invite
+  token: '{{invitation}}'
+  account: e2e-node-2
+- type: whoami
+  account: e2e-node-2
+  outputs:
+    node2_id: publicKey
+- name: Node-1 writes baseline
+  type: call
+  app: '{{ctx}}'
+  method: set
+  args:
+    key: baseline-1
+    value: from-node-1
+  account: e2e-node-1
+- name: Node-2 writes baseline
+  type: call
+  app: '{{ctx}}'
+  method: set
+  args:
+    key: baseline-2
+    value: from-node-2
+  account: e2e-node-2
+- name: Settle after baseline convergence
+  type: wait
+  seconds: 3.0
+- name: Read node-1's account
+  type: call
+  app: '{{ctx}}'
+  method: my_account
+  args: {}
+  account: e2e-node-1
+  outputs:
+    node1_account: result
+- name: Brief settle so libp2p notices the partition
+  type: wait
+  seconds: 3.0
+- name: Node-1 sets simple user value (User entity, initial)
+  type: call
+  app: '{{ctx}}'
+  method: set_user_simple
+  args:
+    value: node-1-profile-initial
+  account: e2e-node-1
+- name: Node-1 sets simple user value (User entity, updated — fresh nonce)
+  type: call
+  app: '{{ctx}}'
+  method: set_user_simple
+  args:
+    value: node-1-profile-final
+  account: e2e-node-1
+- name: Node-1 sets shared value (Shared entity, initial)
+  type: call
+  app: '{{ctx}}'
+  method: shared_set
+  args:
+    value: shared-initial
+  account: e2e-node-1
+- name: Node-1 sets shared value (Shared entity, updated — fresh nonce)
+  type: call
+  app: '{{ctx}}'
+  method: shared_set
+  args:
+    value: shared-final
+  account: e2e-node-1
+- name: Node-1 inserts authored entry (User entity, initial)
+  type: call
+  app: '{{ctx}}'
+  method: authored_insert
+  args:
+    key: profile-bio
+    value: bio-initial
+  account: e2e-node-1
+- name: Node-1 updates authored entry (User entity, fresh nonce)
+  type: call
+  app: '{{ctx}}'
+  method: authored_update
+  args:
+    key: profile-bio
+    value: bio-final
+  account: e2e-node-1
+- name: Node-1 inserts authored-sorted entries (User entities + ordered index)
+  type: call
+  app: '{{ctx}}'
+  method: authored_sorted_insert
+  args:
+    key: doc/a
+    value: sorted-a
+  account: e2e-node-1
+- name: Node-1 inserts a second authored-sorted entry under the same prefix
+  type: call
+  app: '{{ctx}}'
+  method: authored_sorted_insert
+  args:
+    key: doc/b
+    value: sorted-b
+  account: e2e-node-1
+- name: Node-1 inserts an authored-sorted entry OUTSIDE the prefix
+  type: call
+  app: '{{ctx}}'
+  method: authored_sorted_insert
+  args:
+    key: other/z
+    value: sorted-z
+  account: e2e-node-1
+- name: Node-1 updates an authored-sorted entry (fresh nonce)
+  type: call
+  app: '{{ctx}}'
+  method: authored_sorted_update
+  args:
+    key: doc/a
+    value: sorted-a-final
+  account: e2e-node-1
+- name: Wait for libp2p mesh reformation
+  type: wait
+  seconds: 8.0
+- name: Settle after reconciliation
+  type: wait
+  seconds: 5.0
+- name: Read node-1's User entity from node-2
+  type: call
+  app: '{{ctx}}'
+  method: get_user_simple_for
+  args:
+    user_key: '{{node1_account}}'
+  account: e2e-node-2
+  outputs:
+    user_read_from_node2: rpc
+- name: Assert User entity reconciled to node-2
+  type: json_assert
+  statements:
+  - 'json_equal({{user_read_from_node2}}, {"output": "node-1-profile-final"})'
+- name: Read Shared entity from node-2
+  type: call
+  app: '{{ctx}}'
+  method: shared_get
+  args: {}
+  account: e2e-node-2
+  outputs:
+    shared_read_from_node2: rpc
+- name: Assert Shared entity reconciled to node-2
+  type: json_assert
+  statements:
+  - 'json_equal({{shared_read_from_node2}}, {"output": "shared-final"})'
+- name: Read AuthoredMap entry from node-2
+  type: call
+  app: '{{ctx}}'
+  method: authored_get
+  args:
+    key: profile-bio
+  account: e2e-node-2
+  outputs:
+    authored_read_from_node2: rpc
+- name: Assert AuthoredMap entry reconciled to node-2
+  type: json_assert
+  statements:
+  - 'json_equal({{authored_read_from_node2}}, {"output": "bio-final"})'
+- name: Read AuthoredMap entry owner from node-2
+  type: call
+  app: '{{ctx}}'
+  method: authored_get_owner
+  args:
+    key: profile-bio
+  account: e2e-node-2
+  outputs:
+    authored_owner_from_node2: rpc
+- name: Assert AuthoredMap entry owner is node-1
+  type: json_assert
+  statements:
+  - 'json_equal({{authored_owner_from_node2}}, {"output": "{{node1_account}}"})'
+- name: Read AuthoredSortedMap prefix from node-2 (ordered, index-backed)
+  type: call
+  app: '{{ctx}}'
+  method: authored_sorted_prefix
+  args:
+    prefix: doc/
+  account: e2e-node-2
+  outputs:
+    authored_sorted_prefix_from_node2: rpc
+- name: Assert the ordered prefix read reconciled, and stayed scoped
+  type: json_assert
+  statements:
+  - 'json_equal({{authored_sorted_prefix_from_node2}}, {"output": ["doc/a", "doc/b"]})'
+- name: Read the updated AuthoredSortedMap value from node-2
+  type: call
+  app: '{{ctx}}'
+  method: authored_sorted_get
+  args:
+    key: doc/a
+  account: e2e-node-2
+  outputs:
+    authored_sorted_read_from_node2: rpc
+- name: Assert the updated value reconciled
+  type: json_assert
+  statements:
+  - 'json_equal({{authored_sorted_read_from_node2}}, {"output": "sorted-a-final"})'
+- name: Read AuthoredSortedMap entry owner from node-2
+  type: call
+  app: '{{ctx}}'
+  method: authored_sorted_get_owner
+  args:
+    key: doc/a
+  account: e2e-node-2
+  outputs:
+    authored_sorted_owner_from_node2: rpc
+- name: Assert AuthoredSortedMap entry owner is node-1
+  type: json_assert
+  statements:
+  - 'json_equal({{authored_sorted_owner_from_node2}}, {"output": "{{node1_account}}"})'
+- name: Read baseline KV from node-2
+  type: call
+  app: '{{ctx}}'
+  method: get
+  args:
+    key: baseline-1
+  account: e2e-node-2
+  outputs:
+    baseline_read_from_node2: rpc
+- name: Assert baseline state preserved
+  type: json_assert
+  statements:
+  - 'json_equal({{baseline_read_from_node2}}, {"output": "from-node-1"})'

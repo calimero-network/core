@@ -12,13 +12,20 @@ base64.workspace = true
 bs58.workspace = true
 ed25519-dalek.workspace = true
 eyre.workspace = true
+flate2.workspace = true
 hex.workspace = true
 html5ever = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+semver.workspace = true
 serde_json_canonicalizer.workspace = true
 sha2.workspace = true
+tar.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
 [features]
 html = ["dep:html5ever"]

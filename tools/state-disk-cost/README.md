@@ -20,7 +20,7 @@ bytes), several contexts interleaved, in batches of 32 rows in random key order.
 flushes, forces a full compaction to the bottommost level, and reads
 `rocksdb.total-sst-files-size`, `rocksdb.estimate-live-data-size` and the
 aggregated table properties. Each variant starts from
-`calimero_store_rocksdb::{table_options, column_options}`, so the `node` row is
+`calimero_log::tuning::{table_options, column_options}`, so the `node` row is
 exactly what a node opens `State` with.
 
 Timings are for one run on a shared machine, so read them for ratios.

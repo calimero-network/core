@@ -1,540 +1,158 @@
 ---
 title: Configuration Reference
-description: Section-by-section reference for the merod node config.toml.
+description: The merod config.toml — where it lives, how flags and environment variables override it, every key with its default, and the [outbound] table.
 sidebar:
+  label: Configuration
   order: 5
 ---
 
-import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Aside } from '@astrojs/starlight/components';
 
-A node reads a single TOML file, `config.toml`, from its home directory
-(written by `merod init` and re-read on `merod run`). This page documents every
-section, key, type, default, and meaning, grounded in the structs the node
-actually deserializes.
+A node's configuration is one TOML file, `{home}/{node}/config.toml`
+(`--home`/`CALIMERO_HOME`, default `~/.calimero`). One struct,
+`node_config::NodeArgs` in `crates/merod/src/node_config.rs`, is both the file
+and the [node flags](/operate/merod/#node-flags), so every key has a flag and an
+environment variable of the same meaning.
 
-<Aside type="note">
-Calimero is pre-1.0. Keys can be added, renamed, or removed between releases.
-Treat the defaults here as the values `merod init` writes today, not a frozen
-contract. The parser is lenient: unknown keys are ignored rather than rejected.
-</Aside>
+## Precedence
 
-## Top-level keys
+For `merod run`, from strongest to weakest:
 
-These live at the root of the file, outside any section.
+1. a flag on the command line;
+2. its environment variable (`MEROD_*`, or `MERO_TEE_*` for the two TEE keys);
+3. the key in `{home}/{node}/config.toml`, if `--node` is given and the file exists;
+4. the default, applied when the node starts.
 
-| Key | Type | Default | Meaning |
+A list key (`peers`, `origins`, `peer-profiles`) given on the command line
+replaces the file's list. `merod init` writes only what it is given;
+`merod config` merges what it is given into the file. Both write the file with
+mode `0600`.
+
+## Rules of the file
+
+- Keys are kebab-case, as the flags without `--`.
+- Unknown keys are refused, so a typo fails at start instead of being ignored.
+- Every key is optional in the file; `node-id` and `public-url` must be set
+  somewhere before `run` starts.
+- Defaults are not written, so a file shows only what someone chose.
+
+## Keys
+
+| Key | Type | Default | See |
 | --- | --- | --- | --- |
-| `mode` | `"standard"` \| `"readonly"` | `"standard"` | Node role. `readonly` disables JSON-RPC execution and is used for observer / TEE nodes. (The values serialize lowercase; the `merod init --mode` flag spells the read-only value `read-only`.) |
+| `node-id` | integer | required | This node's id in the cluster. |
+| `listen` | `"ip:port"` | `"0.0.0.0:2528"` | [Networking](/operate/networking/) |
+| `public-url` | string | required | [Networking](/operate/networking/) |
+| `data-dir` | path | `{home}/{node}/data` | [Data directory](#data-directory) |
+| `peers` | list of `"id=url"` | `[]` | [Deployment](/operate/deployment/#form-the-cluster) |
+| `bootstrap` | bool | `false` | [Deployment](/operate/deployment/#form-the-cluster) |
+| `cluster` | string | `"dev"` | Must match on every node. |
+| `dev` | bool | `false` | [Security](/operate/security/#tdx-mode-and-development-mode) |
+| `storage-key` | hex string | none | `dev` only. |
+| `storage-key-file` | path | none | `dev` only. |
+| `kms-url` | string | none | [Deployment](/operate/deployment/#storage-key) |
+| `kms-identity` | path | none | [Deployment](/operate/deployment/#storage-key) |
+| `rp-id` | string | `"localhost"` | [Authentication](/operate/auth/#passkeys) |
+| `origins` | list of URLs | `["http://localhost:3000"]` | [Authentication](/operate/auth/#passkeys) |
+| `ops-token` | string | none | [Authentication](/operate/auth/#the-ops-token) |
+| `ops-token-sha256` | hex string | none | [Authentication](/operate/auth/#the-ops-token) |
+| `replicas` | integer | `3` | How many nodes hold each new app. |
+| `backup-dir` | path | none | [Runbooks](/operate/runbooks/#back-up-app-state) |
+| `session-key-rotation-secs` | integer | `21600` | Raised to `1800` if lower. |
+| `tee-release` | string | none (`MERO_TEE_VERSION`) | [Security](/operate/security/#peer-and-client-trust) |
+| `tee-profile` | string | none (`MERO_TEE_PROFILE`) | [Security](/operate/security/#peer-and-client-trust) |
+| `peer-profiles` | list | `[tee-profile]` | [Security](/operate/security/#peer-and-client-trust) |
+| `peer-min-release` | string | `"2.3.109"` | [Security](/operate/security/#peer-and-client-trust) |
+| `registry-url` | string | none | [Registry](#registry) |
+| `allow-unsigned-bundles` | bool | `false` (`true` with `dev`) | Raw WASM uploads. |
+| `release-approvals` | `"owner"` \| `"operator"` | `"owner"` | [Governance](/operate/security/#governance) |
+| `app-upgrades` | `"owner"` \| `"operator"` | `"owner"` | [Governance](/operate/security/#governance) |
+| `outbound-approvals` | `"owner"` \| `"operator"` | `"owner"` | [Governance](/operate/security/#governance) |
+| `apps-domain` | string | none | [Networking](/operate/networking/#app-frontends) |
+| `settings` | path | none | A file whose `[outbound]` table replaces this one's. |
+| `[outbound]` | table | none (no outbound HTTPS) | [Outbound](#outbound) |
 
-## `[identity]`
-
-The libp2p transport identity for the node. Generated automatically on
-`merod init`; you normally never hand-edit it.
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `peer_id` | string (base58) | generated | Libp2p peer ID derived from the keypair. Must match `keypair`. |
-| `keypair` | string (base58) | generated | Base58-encoded protobuf libp2p keypair (the node's private key). |
+## Example
 
 ```toml
-[identity]
-peer_id = "12D3KooWQrRJCnybfvLGZ7d4iaqGkGHpjLAB7PG6sFtXrHbkPMFc"
-keypair = "23jhTbrf...redacted...CyLA"
-```
-
-## `[swarm]`
-
-libp2p listen addresses for peer-to-peer traffic.
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `listen` | array of multiaddr | `["/ip4/0.0.0.0/tcp/2428", "/ip4/0.0.0.0/udp/2428/quic-v1", "/ip6/::/tcp/2428", "/ip6/::/udp/2428/quic-v1"]` | Addresses the swarm binds for inbound peer connections. `merod init` seeds TCP and QUIC on both IPv4 (`0.0.0.0`) and IPv6 (`::`). Default port is `2428`. |
-
-## `[server]`
-
-The local HTTP server: admin API, JSON-RPC, WebSocket, and SSE. Default port is
-`2528`.
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `listen` | array of multiaddr | `["/ip4/127.0.0.1/tcp/2528", "/ip6/::1/tcp/2528"]` | Addresses the HTTP server binds. `merod init` seeds both IPv4 (`127.0.0.1`) and IPv6 (`::1`) loopback. |
-| `auth_mode` | `"proxy"` \| `"embedded"` | `"proxy"` | How auth is enforced. `proxy` expects an external auth proxy in front of the node; `embedded` runs the bundled auth service (see `[server.embedded_auth]`). |
-
-### `[server.admin]`
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `enabled` | bool | `true` | Enables the admin API (and admin dashboard UI). When `false`, none of the admin routes are mounted. |
-
-### `[server.jsonrpc]`
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `enabled` | bool | `true` | Enables the JSON-RPC endpoint at `/jsonrpc`. |
-
-### `[server.websocket]`
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `enabled` | bool | `true` | Enables the WebSocket endpoint at `/ws`. |
-| `ping_interval_secs` | integer (seconds) | `30` | Interval between server-initiated pings. `0` disables server pings (rely on client pings). |
-| `pong_timeout_secs` | integer (seconds) | `10` | If no pong arrives within this window after a ping, the connection is closed. |
-
-### `[server.sse]`
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `enabled` | bool | `true` | Enables the Server-Sent Events endpoint at `/sse`. |
-
-### `[server.sealed]`
-
-Sealed transport: traffic encrypted end to end to a TEE node's attested key (see
-[sealed transport](/operate/security/#sealed-transport-encrypting-to-the-tee)).
-The section is left out of a generated config while it holds the default.
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `required` | bool | `false` | Refuse every unsealed request with `403 sealed_required`, except `GET /admin-api/health`, `GET /admin-api/ready`, `GET /admin-api/tee/info` and `POST /admin-api/tee/attest`. Turn it on for a TEE node behind a proxy you do not trust. |
-
-With `auth_mode = "proxy"`, a sealed request can reach only the routes `merod`
-serves without a credential (direct admission, and delegated execution with
-`delegated_access`), since the proxy cannot check the route inside an envelope;
-see [behind an auth proxy](/operate/security/#behind-an-auth-proxy).
-
-### `[server.embedded_auth]`
-
-Present only when `auth_mode = "embedded"`. Carries the bundled auth service
-configuration (storage backend, etc.).
-
-`trusted_admin_applications` (array of application ids, default `[]`) names the
-applications whose client key may be minted with `admin`. Such a key acts
-node-wide, as the admin dashboard does. A key for any other application is
-refused `admin`. The list does not authenticate the application: only an admin
-session can mint, and the login page decides which origin receives the key.
-Removing an entry does not revoke keys already minted for it; they are named
-`Trusted Application - <id>` in the client key list.
-
-<Aside type="caution">
-The embedded-auth schema lives in the auth crate (`mero-auth`) rather than the
-node config crate and is broader than this page covers. If you run
-`auth_mode = "embedded"`, consult the auth service configuration directly.
-</Aside>
-
-## `[bootstrap]`
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `nodes` | array of multiaddr | `[]` | Bootstrap peers to dial on startup for initial network entry. `merod init --network` can seed this with IPFS or Calimero dev boot nodes. |
-
-## `[discovery]`
-
-Peer discovery and NAT-traversal behavior.
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `mdns` | bool | `false` | Enables local-network mDNS peer discovery. `merod init` writes `false`: a node that announces itself and dials whoever answers is a local-development convenience, and on a shared network it is a tenancy question. Turn it on for LAN or offline development with `merod init --mdns`. (A config file that omits the key keeps `true`, so upgrading an existing node changes nothing.) |
-| `advertise_address` | bool | `false` | Whether to advertise external addresses to peers. Gates `external_address`. |
-| `external_address` | array of multiaddr | `[]` | Operator-supplied external addresses, seeded into the swarm's confirmed external-address set (used for static-IP / hosted deployments instead of AutoNAT discovery). |
-
-### `[discovery.rendezvous]`
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `namespace` | string | `"/calimero/devnet/global"` | Rendezvous namespace used for peer registration/discovery. |
-| `discovery_rpm` | float | `0.5` | Discovery queries per minute (throttle floor; `0.5` ≈ one query per 120s per peer in steady state). |
-| `discovery_interval` | duration table | `{ secs = 15, nanos = 0 }` | Interval between rendezvous discovery ticks. Serialized as a nested `[discovery.rendezvous.discovery_interval]` table with `secs` / `nanos`. |
-| `registrations_limit` | integer | `3` | Max rendezvous registrations to hold. |
-
-### `[discovery.relay]`
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `registrations_limit` | integer | `3` | Max relay reservations to hold. |
-
-### `[discovery.autonat]`
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `max_candidates` | integer | `5` | Max AutoNAT server candidates probed for external-address confirmation. |
-| `probe_interval` | duration table | `{ secs = 10, nanos = 0 }` | Interval between AutoNAT probes. Serialized as a nested table with `secs` / `nanos`. |
-
-<Aside type="caution">
-Older `config.toml` files may show `[discovery.autonat]` with a
-`confidence_threshold` key instead of `max_candidates` / `probe_interval`. The
-current node reads the fields documented above; regenerate or update old files
-to match.
-</Aside>
-
-## `[sync]`
-
-State-sync timing. Durations are expressed in milliseconds via the `_ms`
-suffixed keys.
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `timeout_ms` | integer (ms) | `30000` | Per-request sync timeout. |
-| `session_deadline_ms` | integer (ms) | `30000` (falls back to `timeout_ms`) | Outer deadline for one sync session run. Optional; lower it to fail-fast on stuck sessions when not doing cold-start snapshot syncs. |
-| `interval_ms` | integer (ms) | `5000` | Interval between sync attempts. |
-| `frequency_ms` | integer (ms) | `10000` | Sync scheduling frequency. |
-
-## `[datastore]`
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `path` | path | `"data"` | RocksDB datastore directory, relative to the node home. |
-
-## `[blobstore]`
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `path` | path | `"blobs"` | On-disk blob storage directory, relative to the node home. |
-
-## `[context]`
-
-Context configuration.
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `migration_v2` | bool | `true` | Master switch for the hybrid zero-downtime migration framework. Pin `false` to restore the legacy namespace-cascade write-freeze. |
-
-## `[runtime]`
-
-Operator-tunable WASM VM limits. Every key is optional; an absent `[runtime]`
-section (or any absent sub-key) keeps the built-in default behavior.
-
-### `[runtime.limits]`
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `max_logs` | integer | built-in `VMLimits` default | Max log entries one execution may emit. Capped at `1_000_000`; exceeding the limit traps the execution. |
-| `max_log_size` | integer (bytes) | built-in `VMLimits` default | Max size of a single log line. Capped at 10 MiB; an over-long line traps the execution. |
-
-<Aside type="note">
-The transient per-execution log buffer is bounded by the product
-`max_logs * max_log_size`. Raising both multiplies the worst-case memory
-ceiling, so tune them together.
-</Aside>
-
-## `[dag_compaction]`
-
-Bounds on-disk delta-log growth by pruning history older than a recent retain
-window. Enabled by default; set `enabled = false` to opt out.
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `enabled` | bool | `true` | Whether periodic DAG compaction runs. |
-| `min_deltas_before_compact` | integer | `10000` | Minimum delta rows a context must hold before it is eligible for compaction. |
-| `retain_recent_count` | integer | `1000` | Number of most-recent deltas retained after a sweep. Must be strictly below `min_deltas_before_compact`. |
-| `check_interval` | duration (seconds) | `3600` | Interval between compaction sweeps. Serialized as a plain integer count of seconds (e.g. `check_interval = 3600`), not a `{ secs, nanos }` table. Must be non-zero. |
-
-### Tuning compaction for a high-write node
-
-The defaults keep ~1000 recent deltas per context and only start pruning once a
-context holds 10000 — fine for a quiet node, but a busy data-plane context can
-accumulate that history quickly. A production excerpt that prunes more
-aggressively on a high-write deployment:
-
-```toml
-[dag_compaction]
-enabled = true
-# Start pruning sooner on a high-write context...
-min_deltas_before_compact = 4000
-# ...but keep a generous recent window so peers can still catch up via deltas
-# instead of falling back to a full snapshot.
-retain_recent_count = 1500
-# Sweep more often than the 1h default so growth is bounded between checks.
-check_interval = 900
-```
-
-Keep `retain_recent_count` comfortably above the largest delta gap a lagging
-peer is expected to close incrementally: prune below that and the peer can only
-reconverge via a full snapshot. `retain_recent_count` must stay strictly below
-`min_deltas_before_compact`, and `check_interval` must be non-zero — the node
-**refuses to start** with `[dag_compaction] enabled = true` and either invariant
-violated, rather than silently letting the delta log grow unbounded.
-
-## `[gc]`: background tombstone GC
-
-DAG compaction is one of **two** independent background maintenance loops; the
-other is the **tombstone garbage collector**, and the two reclaim different
-things:
-
-| Loop | Reclaims | Cadence | Operator-tunable? |
-| --- | --- | --- | --- |
-| DAG compaction | old delta-log **history** older than the recent retain window | `[dag_compaction] check_interval` (default 1h) | Yes — the `[dag_compaction]` keys above. |
-| Tombstone GC | CRDT **tombstones** (the markers a deleted entity leaves behind) every member has applied | `[gc] check_interval` (default 10min) | Only the cadence: when a tombstone may go is never configurable. |
-
-When an entity is deleted, the CRDT layer keeps a **tombstone** so the deletion
-can win against a concurrent or out-of-order write that arrives later, and
-against a replica that still holds the entity. A tombstone is collected only
-once **every member device of the context has applied the delete**, with no
-time limit. Each member sends a signed state beacon (its DAG heads and root
-hash) with its heartbeat. A member is caught up when its beacon equals this
-node's own state. The GC loop runs every `[gc] check_interval` (default
-**10 minutes**): it notes each tombstone it finds, and collects one on a later
-pass once every other member device was caught up after that. A context with no
-other member collects its tombstones on the pass after the one that finds them.
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `check_interval` | duration (seconds) | `600` | Interval between sweeps, as a plain integer count of seconds. Must be non-zero; the node refuses to start otherwise. |
-
-A sweep reads **every** state row of every context to find tombstones, so its
-cost tracks the node's state size, not how much was deleted. A shorter interval
-reclaims a collectable tombstone sooner (about one to two intervals after every
-member caught up) at the price of scanning more often. `gc_sweep_duration_seconds`
-and `gc_rows_scanned_total` show what a sweep costs on a given node; lengthen
-the interval if sweeps on a large store take a meaningful share of it.
-
-```toml
-[gc]
-check_interval = 300
-```
-
-A delete also lists the entity's id in its parent's `deleted_children` (so sync
-can ship the deletion); the same pass drops each collected tombstone's id from
-that list.
-For an entry whose writes are signed (owned entries and `SharedStorage` cells and their entries), the pass keeps a record of when it was deleted in the tombstone's place.
-A signed write to that entity no newer than the delete is dropped against it, as the tombstone dropped it, so a peer replaying an older write cannot bring the entity back.
-Each record is one state row: a 33-byte key under the context id, holding 8 bytes.
-Records are kept for good and read by every sweep's scan; deletes of other entries leave nothing.
-A node that resyncs from a snapshot keeps its records, though it installs whatever the snapshot holds.
-A node that joins from a snapshot has no records, as it has no tombstones: a replay sent to it lands there, and the nodes holding the record never take that entity from it, so the two stay apart until it is deleted again.
-
-The cost of never guessing: while any member device is silent (offline, or
-gone without being removed), the tombstones of every delete since it went
-quiet stay on disk until it returns and catches up, or an admin removes it
-from the group. No `[gc]` setting changes that.
-
-## `[registry]`
-
-Where this node gets application bundles from - and there is exactly **one** such place.
-The node has no second route behind it, so this section decides both what it can install and
-whether it serves application bytecode to peers at all.
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `mode` | `"http"` \| `"dht"` | `"http"` | The node's one application source. `http` fetches from `base_url`; `dht` fetches from context members over blob share. |
-| `base_url` | URL | written by `merod init` as `"https://apps.calimero.network/"` | Base of the registry `http` mode resolves versions against. Override at init with `merod init --registry-url <URL>`. Unused in `dht` mode. |
-
-An absent `[registry]` section means `mode = "http"` with no `base_url`, which is a node
-that cannot resolve applications at all - see the failure modes below.
-`merod init` writes the public registry into a fresh `config.toml`, so a node initialized
-normally starts out resolvable; a mirror or an air-gapped deployment changes that one line.
-
-```toml
-[registry]
-mode = "http"
-base_url = "https://apps.calimero.network/"
-```
-
-### What each mode does
-
-| | `http` | `dht` |
-| --- | --- | --- |
-| Fetches applications from | `base_url`, by `package`/`version` | context members, authorized by membership |
-| Serves application bytecode to peers | **no** - neither announced nor served | yes |
-| Installs `package@version` by name | yes | no - governance or a local `.mpk` path only |
-| Serves user-data blobs | yes | yes |
-
-The serving gate is `NodeClient::may_share_blob`.
-An `http` node is not a source of application bytecode, so it withholds exactly that: an
-application's bytecode and compiled artifacts, including every named service's.
-User-data blob sharing is untouched in both modes.
-
-`dht` mode is for deployments with no registry reachable from the nodes - a closed fleet, a
-test harness, a lab network - where members hand each other the bytes governance named.
-It cannot bare-install by name, because a peer fetch needs a context to authorize against.
-
-### Environment overrides
-
-Two variables override the file, applied when `merod run` loads the config:
-
-| Variable | Overrides |
-| --- | --- |
-| `CALIMERO_REGISTRY_MODE` | `mode` (`http` or `dht`) |
-| `CALIMERO_REGISTRY_URL` | `base_url` |
-
-A malformed value is a startup error, not a silent fall back to the file's setting: a
-misconfigured node must not start.
-
-### How a version is resolved
-
-The node appends the coordinates carried by the governance op to `base_url` -
-`{base_url}/artifacts/{package}/{version}/{package}-{version}.mpk` - and accepts the
-download only if its blob id equals the `bytecode_id` the group named, so a wrong registry
-can only cause a fetch failure, never a code substitution.
-Because the value is operator-chosen, no host guard applies to it, which is what makes a
-private or air-gapped registry reachable. It is also the only URL the node ever fetches an
-application from - nothing remote-chosen names a location.
-See [how bytecode reaches a node](/protocol/applications/#how-bytecode-reaches-a-node) for
-the full picture.
-
-### When it is misconfigured
-
-There is no fallback, so a misconfiguration surfaces rather than degrading:
-
-| Situation | What you see |
-| --- | --- |
-| `mode = "http"`, no `base_url`, installing by coordinates | the install fails with `[registry] mode = "http" needs a base_url to fetch from` |
-| `mode = "http"`, no `base_url`, a group names bytecode | `no application source is configured` in the log; the context keeps its current version and retries on next access |
-| `base_url` points somewhere with nothing published there | the install reports the coordinates as unpublished (retryable - the version simply is not there yet) |
-| `base_url` points at a registry that repacks bundles | every fetch fails a `blob id mismatch` and no node moves version |
-
-<Aside type="caution">
-The registry must serve the `.mpk` byte for byte.
-`bytecode_id` covers the whole envelope, so a mirror that re-gzips the tar, reorders its
-entries, or restamps mtimes produces a different blob id: every fetch then fails the check,
-and every node stays on the version it already runs.
-</Aside>
-
-## `[tee]`
-
-Trusted Execution Environment configuration. The entire section is optional and
-absent on non-TEE deployments.
-
-When `[tee]` is present, `merod run` fetches the datastore's encryption key from the
-KMS and refuses to start without it. **Create a TEE node with `merod init --kms-url
-<URL>`** rather than adding this section afterwards. `init` is what writes the node's
-signing identity and account root, so a store encrypted only from the first `run`
-would already hold both in plaintext. Having been written unencrypted, that store also
-could not be opened encrypted at all, because every read is decrypted. `--kms-url`
-fetches the key before anything is written and saves `[tee.kms]` with that URL.
-
-The KMS is verified against the signed mero-tee release policy, so `init --kms-url`
-requires the release to be named in `MERO_TEE_VERSION` (or `MERO_KMS_VERSION` /
-`MERO_KMS_RELEASE_TAG`) and refuses otherwise. A store encrypted with a key from an
-unverified KMS would be readable by whoever runs that endpoint. In a build without
-`mock-attestation`, `merod run` and `merod kms probe` hold to the same rule: they refuse a
-`[tee.kms]` with no named release and no enabled config allowlists (see `enabled`
-below), before sending the KMS any request.
-
-### `[tee.kms]`
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `url` | URL | — (required if present) | URL of the mero-kms service (the KMS cluster for this release). Its host may be a DNS name resolving to several replicas; merod gives each resolved address a share of a 10s connect timeout (~2s each with five) and moves on to the next, so a dead replica still in the record does not stall key fetch. |
-
-#### `[tee.kms.tls]`
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `ca_cert_path` | path | unset | PEM CA certificate added to the KMS TLS trust store. Absolute path to an existing file. |
-| `client_cert_path` | path | unset | PEM client certificate for mTLS. Must be set together with `client_key_path`. |
-| `client_key_path` | path | unset | PEM client private key for mTLS. Must be set together with `client_cert_path`. |
-
-#### `[tee.kms.attestation]`
-
-Policy for verifying KMS self-attestation before requesting storage keys.
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `enabled` | bool | `false` | Enable KMS attestation verification before requesting keys. In a build without `mock-attestation`, `run` and `kms probe` refuse a KMS with no named release unless this is `true`, `accept_mock` is `false` and the allowlists below are set. |
-| `accept_mock` | bool | `false` | Accept mock quotes (development only). Bypasses real attestation guarantees. |
-| `allowed_tcb_statuses` | array of string | `["UpToDate"]` | Allowed TCB statuses for quote verification. Required non-empty when `enabled` and not `accept_mock`. |
-| `allowed_mrtd` | array of string (hex) | `[]` | Allowed KMS MRTD measurement values. Required non-empty when enforcing real attestation. |
-| `allowed_rtmr0` | array of string (hex) | `[]` | Allowed KMS RTMR0 values. Required when `enabled` and not `accept_mock`. |
-| `allowed_rtmr1` | array of string (hex) | `[]` | Allowed KMS RTMR1 values. Required when `enabled` and not `accept_mock`. |
-| `allowed_rtmr2` | array of string (hex) | `[]` | Allowed KMS RTMR2 values. Required when `enabled` and not `accept_mock`. |
-| `allowed_rtmr3` | array of string (hex) | `[]` | Allowed KMS RTMR3 values. Required when `enabled` and not `accept_mock`. |
-| `binding_b64` | string (base64) | unset | Optional 32-byte binding value for the `/attest` call. Defaults to the domain-separator binding, `SHA-256("mero-kms-attest-v1")`. |
-| `policy_json_path` | path | unset | Path to an externally-generated attestation policy JSON (for startup scripts that fetch/verify signed policy artifacts). |
-
-## Representative `config.toml`
-
-A complete, typical single-node config (chainless local self-signer):
-
-```toml
-mode = "standard"
-
-[identity]
-peer_id = "12D3KooWQrRJCnybfvLGZ7d4iaqGkGHpjLAB7PG6sFtXrHbkPMFc"
-keypair = "23jhTbrf...redacted...CyLA"
-
-[swarm]
-listen = [
-    "/ip4/0.0.0.0/tcp/2428",
-    "/ip4/0.0.0.0/udp/2428/quic-v1",
-    "/ip6/::/tcp/2428",
-    "/ip6/::/udp/2428/quic-v1",
+node-id = 1
+listen = "0.0.0.0:2528"
+public-url = "https://n1.eu1.example.com/"
+cluster = "eu1"
+peers = [
+  "1=https://n1.eu1.example.com/",
+  "2=https://n2.eu1.example.com/",
+  "3=https://n3.eu1.example.com/",
 ]
+bootstrap = true
+kms-url = "https://kms.internal.example.com/"
+kms-identity = "/data/disk-identity"
+rp-id = "example.com"
+origins = ["https://app.example.com"]
+ops-token-sha256 = "<hex SHA-256 of the ops token>"
+backup-dir = "/backups"
+registry-url = "https://registry.example.com/"
 
-[server]
-listen = ["/ip4/127.0.0.1/tcp/2528", "/ip6/::1/tcp/2528"]
-auth_mode = "proxy"
-
-[server.admin]
+[outbound]
 enabled = true
+hosts = ["api.example.com"]
 
-[server.jsonrpc]
-enabled = true
-
-[server.websocket]
-enabled = true
-ping_interval_secs = 30
-pong_timeout_secs = 10
-
-[server.sse]
-enabled = true
-
-[bootstrap]
-nodes = []
-
-[discovery]
-mdns = true
-advertise_address = false
-
-[discovery.rendezvous]
-namespace = "/calimero/devnet/global"
-discovery_rpm = 0.5
-registrations_limit = 3
-
-[discovery.rendezvous.discovery_interval]
-secs = 15
-nanos = 0
-
-[discovery.relay]
-registrations_limit = 3
-
-[discovery.autonat]
-max_candidates = 5
-
-[discovery.autonat.probe_interval]
-secs = 10
-nanos = 0
-
-[sync]
-timeout_ms = 30000
-session_deadline_ms = 30000
-interval_ms = 5000
-frequency_ms = 10000
-
-[datastore]
-path = "data"
-
-[blobstore]
-path = "blobs"
-
-[context]
-migration_v2 = true
-
-[runtime.limits]
-max_logs = 2048
-max_log_size = 32768
-
-[dag_compaction]
-enabled = true
-min_deltas_before_compact = 10000
-retain_recent_count = 1000
-
-[registry]
-base_url = "https://apps.calimero.network/"
+[outbound.env_secrets.EXAMPLE_API]
+env = "EXAMPLE_API_KEY"
+packages = ["com.example.forms"]
+signers = ["did:key:z6Mk..."]
+hosts = ["api.example.com"]
 ```
 
-## Next steps
+`tee-release` and `tee-profile` are usually left to the image, which sets
+`MERO_TEE_VERSION` and `MERO_TEE_PROFILE`.
 
-<CardGrid>
-  <LinkCard title="Networking & discovery" href="/operate/networking/" description="What the [swarm], [bootstrap], and [discovery] keys actually do." />
-  <LinkCard title="Hardening & security" href="/operate/security/" description="Which settings keep the admin API and keys safe in production." />
-  <LinkCard title="Production deployment" href="/operate/deployment/" description="Put this config behind a reverse proxy and run it as a service." />
-</CardGrid>
+## Data directory
+
+`data-dir` holds everything the node persists, sealed under its storage key:
+
+| Path | What |
+| --- | --- |
+| `store/` | One RocksDB: the Raft logs, votes, state of every group and the sealed blob store (bundles, `.mpk` files, app blobs). Every value is AES-256-GCM sealed and bound to its column, group and key. |
+| `snapshots/` | Raft snapshot files, sealed frame by frame. |
+
+A directory that still holds the earlier `log.redb` file is migrated into
+`store/` on start, and the old file is renamed `log.redb.migrated`.
+
+## Registry
+
+`registry-url` is the package registry every node fetches signed releases from
+(`calimero-app-downloader`'s HTTP registry). `meroctl app install
+PACKAGE@VERSION`, `POST /apps { package, version }` for a release the cluster
+lacks, and owner upgrade runs install from it. A node that runs a registry
+release it does not hold fetches it from the registry, never from a peer, and
+refuses bytes whose hash differs from what the log recorded. Without
+`registry-url`, those requests answer `400 NO_REGISTRY`; uploaded `.mpk` files
+still work.
+
+## Outbound
+
+The `[outbound]` table (or the `[outbound]` table of the file `settings`
+names, which replaces it) is the operator's policy for HTTPS requests apps make
+with `env::http_request`. Without it, every such request fails.
+
+| Key | Meaning |
+| --- | --- |
+| `enabled` | `true` to allow outbound requests at all. Default `false`. |
+| `hosts` | DNS names requests may go to; `"*"` allows any host an installed app's signed manifest declares. |
+| `env_secrets.NAME` | A secret from an environment variable, used in a request as `{{secret:NAME}}`: `env` (the variable, read once at start), `packages`, `signers` (`did:key:…`; both must match) and `hosts` (where it may be sent). |
+| `sidecar` | Secrets from a loopback service instead: `url` (a loopback `http://` URL) and `token_env` (the variable holding the bearer token sent to it). Exclusive with `env_secrets`. |
+
+A request is made only when all of these hold: the operator allows the host
+here; the app's signed `.mpk` manifest declares a prefix covering the URL; the
+prefix was approved for the app's publisher by whoever holds
+[outbound approvals](/operate/security/#governance); the run writes (a call,
+follow-up or timer, never a view or migration); and the URL is `https` on port
+443 to a name that resolves only to public addresses. Secrets are filled in by
+the node and redacted from the answer the app sees.
+
+<Aside type="note">
+  An `[outbound.testing]` table exists only in builds with the
+  `outbound-testing` feature (tests and merobox). A release `merod` refuses it
+  as an unknown key.
+</Aside>

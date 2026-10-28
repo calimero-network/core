@@ -1,0 +1,42 @@
+[package]
+name = "calimero-sealed"
+description = "Sealed HTTP transport to an attested node (Noise NK + framed AES-GCM)"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+axum.workspace = true
+bytes.workspace = true
+curve25519-dalek.workspace = true
+eyre.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+http.workspace = true
+rand.workspace = true
+reqwest = { workspace = true, features = ["json", "stream"] }
+ring.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+snow = { workspace = true, features = ["default-resolver", "risky-raw-split"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros"] }
+tokio-util.workspace = true
+tracing.workspace = true
+url.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "net"] }
+tower.workspace = true
+
+[lib]
+bench = false
+
+[[bench]]
+name = "sealed"
+harness = false

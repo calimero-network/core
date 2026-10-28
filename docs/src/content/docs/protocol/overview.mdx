@@ -1,6 +1,6 @@
 ---
 title: Protocol Reference — Overview
-description: How a Calimero node works, told as the life of one operation — enough to reimplement the protocol from scratch.
+description: How a Calimero cluster works, told as the life of one call — from a client's sealed request to a committed log entry and a signed receipt.
 sidebar:
   label: Overview
   order: 1
@@ -8,116 +8,141 @@ sidebar:
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
 
-This is the **implementation reference** — a design-level description of the
-Calimero protocol aimed at building an independent node. It follows one
-**operation** from birth to convergence rather than touring the Rust crates.
+This reference explains how a Calimero cluster works and why it is built that
+way. It follows one **call** from the client that makes it to the log entry
+that records it, rather than touring the crates. The crates are
+[`merod`](/operate/merod/) (the node binary), `calimero-node` (everything
+the node does), `calimero-log` (the replicated log), `calimero-sealed` (the
+encrypted transport), `calimero-identity` (passkeys, sessions, API keys) and
+`calimero-client` (the Rust client, whose attestation check every client
+and peer shares).
 
-:::tip[New here? Read the core model first, in order]
-[Concepts &amp; Scopes](/protocol/concepts/) → [Identities &amp; Keys](/protocol/identities/) → [Operations &amp; the Causal DAG](/protocol/operations/) → [State, Projection &amp; the Root Hash](/protocol/projection/). Everything else builds on those four.
+:::tip[New here? Read these first, in order]
+[Concepts](/protocol/concepts/) → [The system group](/protocol/system-group/) →
+[Replication](/protocol/replication/) → [Application execution](/protocol/execution/).
+Everything else builds on those four.
 :::
 
 ## The one idea everything hangs on
 
-A Calimero node runs **sandboxed WASM applications** over **replicated,
-causally-consistent shared state**. There is **no global consensus and no
-quorum**. Every change — a data write, an access-control change, a membership
-change, an admin action — is a **signed operation** in a **content-addressed
-DAG**.
+A Calimero app is a WASM module whose state lives on a **cluster** of attested
+Intel TDX nodes. Each app instance has **its own Raft log**, replicated on several
+nodes (three by default). The log's **leader** runs every call against the app's current
+state and appends the call together with what it produced: the result, the
+exact storage writes (the **diff**) and the events. Every replica applies the
+diff in log order. Nobody runs the call a second time.
 
-Each node **folds that DAG deterministically** into materialized state. Because
-the fold is order-independent (last-writer-wins per slot, keyed on a hybrid
-clock), any two nodes that have seen the same set of operations compute the same
-state and the same **scope root** hash. Nodes don't _prevent_ divergence — they
-_detect_ it by comparing scope roots, and _heal_ it by syncing missing
-operations.
+A second Raft log, the **system group**, is shared by the whole cluster. It
+holds who exists and who may do what: nodes, accounts and their passkeys,
+sessions and API keys, organizations and teams, installed packages and the
+directory of app instances. Every command in it names the actor it acts for,
+and the state machine checks that actor's authority when the command applies,
+so the log alone decides every outcome.
 
-> Hold onto that sentence — _"a signed op DAG that folds to a state plus a root
-> hash, with divergence detected, not prevented"_ — and every chapter is a
-> detail of it.
+Nothing a node holds leaves it in the clear. Clients and peers verify a node's
+TDX quote before they send it anything, then speak to it only through a
+**sealed channel** bound to the key that quote attests. Everything a node
+writes to disk is sealed under a storage key it receives from mero-kms only
+after proving its own image.
 
-## The life of an operation
+> Hold onto that: _one log per app, one log for the cluster, the leader runs
+> and everyone applies, and nothing crosses a trust boundary unsealed_. Every
+> chapter is a detail of it.
 
-The whole reference follows one operation from birth to convergence. This is the
-spine — and the diagram below is the **bespoke animated engine running as an
-Astro island**, the thing this spike set out to prove:
+## Why it is built this way
+
+The previous design ran a node per user and kept replicas convergent with
+signed operations in a causal DAG, CRDT merges and a sync protocol that
+repaired divergence after the fact. It worked without coordination, at the
+price of every replica merging every change through the app's own merge code
+(state had to be mergeable, in any order), and of
+authorization that had to be judged "at the author's causal cut" because no
+two nodes saw changes in the same order.
+
+A cluster of attested nodes can afford coordination. With one leader per app
+and a log every replica applies in the same order:
+
+- **Calls are linearized.** Two writes to one instance never race; the second
+  runs against the state the first left. CRDT collections still work and are
+  still the storage format, but no merge is needed to converge.
+- **Authorization is one verdict.** A command is checked against the state it
+  applies to, which is the same state on every replica.
+- **Execution need not be deterministic for convergence.** Followers apply the
+  leader's diff, so `time_now` and `random_bytes` are read once, on the leader.
+- **Confidentiality comes from the hardware and the channel,** not from a key
+  per scope delivered to each member. A member's client never holds app state;
+  it reads through the node.
+
+## The life of a call
 
 <SeqDiagram
-  id="d-op-life"
-  title="The life of an operation"
+  id="d-call-life"
+  title="The life of a call"
   lanes={[
-    { label: 'Author node', color: '#3fb950' },
-    { label: 'Gossip (scope topic)', color: '#a371f7' },
-    { label: 'Peer node', color: '#58a6ff' },
+    { label: 'Client', color: '#f0883e' },
+    { label: 'Any node', color: '#3fb950' },
+    { label: 'App leader', color: '#58a6ff' },
+    { label: 'Followers', color: '#a371f7' },
   ]}
   steps={[
-    { from: 0, to: 0, label: 'app execution / governance action' },
-    { from: 0, to: 0, label: 'build Op { scope, parents, hlc, payload }' },
-    { from: 0, to: 0, label: 'sign id with member key' },
-    { from: 0, to: 0, label: 'append to local DAG → fold → scope_root' },
-    { from: 0, to: 1, label: 'broadcast Op (encrypted under scope key)', color: '#a5ff11' },
-    { from: 1, to: 2, label: 'deliver Op' },
-    { from: 2, to: 2, label: 'verify signature' },
-    { from: 2, to: 2, label: 'authorize at the causal cut' },
-    { from: 2, to: 2, label: 'decrypt; buffer if parent / key missing' },
-    { from: 2, to: 2, label: 'append to DAG → fold → scope_root′' },
-    { type: 'divider', label: 'scope_root == scope_root′  ⇒  converged' },
+    { from: 0, to: 1, label: 'GET /attestation (nonce) — verify quote' },
+    { from: 0, to: 1, label: 'Noise NK handshake to the attested key', color: '#a5ff11' },
+    { from: 0, to: 1, label: 'sealed POST /apps/{app}/intents' },
+    { from: 1, to: 1, label: 'credential + access on fresh system state' },
+    { from: 1, to: 2, label: 'forward over the peer sealed channel' },
+    { from: 2, to: 2, label: 'run WASM over a copy-on-write overlay' },
+    { from: 2, to: 3, label: 'append { call, outcome { result, diff, events } }' },
+    { from: 3, to: 2, label: 'majority acknowledges', dashed: true },
+    { from: 2, to: 2, label: 'apply the diff; queue follow-ups' },
+    { from: 3, to: 3, label: 'apply the same diff', color: '#a371f7' },
+    { from: 2, to: 1, label: 'result', dashed: true },
+    { from: 1, to: 0, label: 'result + receipt signed by an attested key', dashed: true },
   ]}
 />
 
-The write half (build → sign → persist → broadcast), the receive half (verify →
-authorize → decrypt → fold), and the repair channel (compare roots → transfer
-what differs) are the substance of this reference.
+The client half (attest, handshake, seal) is in [Networking & sealed
+channels](/protocol/networking/) and [Attestation & receipts](/protocol/tee-attestation/).
+The node half (authenticate, check access, route, run, append, apply) is in
+[The write path](/protocol/write-path/), [Application execution](/protocol/execution/)
+and [Replication](/protocol/replication/).
 
 ## How this reference is organized
 
-Read it **top to bottom**. Each part answers the next question you'd naturally
-ask, and each goes one level deeper than the last — so you can stop wherever
-your need does.
+1. **The model.** [Concepts](/protocol/concepts/), [The system group](/protocol/system-group/),
+   [Replication](/protocol/replication/).
+2. **The call path.** [Application execution](/protocol/execution/),
+   [The write path](/protocol/write-path/), [Reads, views & events](/protocol/reads/).
+3. **Trust.** [Networking & sealed channels](/protocol/networking/),
+   [Attestation & receipts](/protocol/tee-attestation/),
+   [Encryption](/protocol/encryption/), [Keys & their lifetimes](/protocol/key-rotation/),
+   [Security & threat model](/protocol/security-model/).
+4. **People and authority.** [Accounts, passkeys & sessions](/protocol/identities/),
+   [Who a run acts as](/protocol/authorship/),
+   [Organizations, teams & access](/protocol/organizations/),
+   [Deployment governance](/protocol/governance/),
+   [The operator & the Ops API](/protocol/operator/).
+5. **Apps.** [Packages & frontends](/protocol/applications/),
+   [App instance lifecycle](/protocol/context-lifecycle/),
+   [Upgrades & migrations](/protocol/upgrades/),
+   [Event handlers & cross-app calls](/protocol/xcall/),
+   [Blobs](/protocol/blobs/), [Presence](/protocol/presence/).
+6. **Reference.** [Storage schema](/protocol/storage/),
+   [CRDT collections](/protocol/crdt-internals/),
+   [Limits](/protocol/limits/), [Glossary](/protocol/glossary/).
 
-1. **The replication loop** — the heart. An app runs locally and produces a
-   change, that change broadcasts as a signed _state delta_, and peers verify and
-   apply it **without re-running the app**. _Application Execution_, _The Write
-   Path_, _The Receive & Apply Path_.
-2. **What gets replicated** — what's actually inside a delta: the _Operations &
-   the Causal DAG_ (the history) and the _State, Projection & the Root Hash_ it
-   folds to, with a visual _Anatomy of State_.
-3. **How it is organized** — how data is sharded and access-controlled into a
-   tree of scopes: _Concepts & Scopes_ (namespaces, groups, contexts),
-   _Governance_, and _Capability & Membership Inheritance_.
-4. **Confidentiality & identity** — who can read and write: _Identities & Keys_,
-   _Encryption_, _Key Rotation_, and the _Security & Threat Model_.
-5. **Staying in sync** — how nodes that drift apart converge again: _Networking_,
-   _Sync & Convergence_, _Sync Internals_, and _Divergence & Recovery_.
-6. **Subsystems** — features built on the loop: _Blob Transport_, _Cross-Context
-   Calls_, _TEE Attestation_, and _Application Upgrades_.
-7. **Deep internals & reference** — exact rules to look up: _CRDT Internals_, the
-   _Hybrid Logical Clock_, the on-disk _Storage Schema_, _Limits_, governance
-   _edge cases_, and the _Glossary_.
+## Status
 
-The first three parts are the model; the rest is detail you reach for when you
-need it.
-
-## Status, versioning & conformance
-
-:::caution[Pre-1.0 specification]
-This reference describes the unified model and is being hardened toward a
-normative specification — it is not yet a frozen standard. Treat the byte-level
-details as accurate-to-current-code but subject to change pre-1.0.
+:::caution[Release candidate]
+This describes the system as the code stands. It is not a frozen wire
+specification: request and entry formats are JSON and may change before they
+are versioned. Some parts are not done yet and are named where they matter: a
+rollback counter for restored nodes, keys per app from mero-kms, placement
+across zones, restoring a snapshot into a running cluster, event audiences,
+and search indexes that survive a restart.
 :::
 
-- **Normative requirements** appear in **`Normative`** callouts using RFC 2119
-  wording (MUST / SHOULD / MAY). Everything else is explanatory — an
-  implementer may read only the Normative callouts plus the byte-level
-  `Specification` sections and build a conformant node.
-- **Version pinning.** Wire and signing formats are versioned. At the time of
-  writing: the signed group op is **schema version 16**, the signed namespace op
-  is **schema version 23**, and the libp2p sync/blob stream protocols are
-  `…/0.0.3`. A conformant implementation MUST match these for the versions it
-  claims to support.
-  Both op versions are compared strictly-equal on decode, so a peer on an older
-  schema rejects every op from a newer one rather than mis-decoding it - a
-  namespace upgrades all of its peers together.
-- **Conformance, in one line.** A node interoperates if it reproduces the
-  operation **id** computation, the **scope&nbsp;root** fold, and the
-  authorization-at-the-cut rule exactly — everything else is a consequence of
-  those three.
+Apps are built with one of two SDKs: `calimero-sdk` and `calimero-storage`,
+whose core modules run on `calimero-runtime` (wasmer, the runtime v1 apps were
+built against), or `calimero-app-sdk`, whose `calimero:app` components run on
+`calimero-app-engine-wasmtime`. What they do inside a run is described only as
+far as the node depends on it.

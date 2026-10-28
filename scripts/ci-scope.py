@@ -64,7 +64,6 @@ CARGO_MERO_SETUP = (".github/actions/setup-cargo-mero/*", "scripts/setup-cargo-m
 WASM_APPS = (
     ".github/actions/wasm-apps/*",
     ".github/actions/rust-toolchain/*",
-    ".github/workflows/e2e-rust-apps.yml",
     "scripts/check-embedded-abi.sh",
 )
 
@@ -77,7 +76,6 @@ WORKFLOWS = {
             *EVERY_JOB,
             "crates/*",
             "apps/*",
-            "e2e-tests/*",
             "tools/*",
             # Every script ci-checks.yml runs (ci-scope-test.py keeps this complete),
             # and what those scripts read.
@@ -88,10 +86,11 @@ WORKFLOWS = {
             "scripts/check-no-user-data-at-info.py",
             "scripts/check-rust-cache-groups.py",
             "scripts/check-scenario-coverage.py",
-            "scripts/scenario-coverage-baseline.json",
+            "scripts/run-workflows.py",
             "scripts/check-storage-cost.sh",
             "scripts/check-wasm-size.sh",
             "scripts/tests/check-like-ci.test.sh",
+            "scripts/tests/check-scenario-coverage-test.py",
             "scripts/tests/ci-scope-test.py",
             "scripts/tests/ci-paths-test.py",
             "scripts/tests/path-dep-closure-test.py",

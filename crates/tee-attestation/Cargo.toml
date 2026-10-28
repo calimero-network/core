@@ -26,6 +26,7 @@ tracing.workspace = true
 base64.workspace = true
 # Reads `tcbEvaluationDataNumber` out of fetched collateral so a TCB verdict
 # records which baseline produced it. See `verify::tcb_evaluation_data_number_of`.
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 # `attest_key_binding`, shared by the attest endpoint and the clients that check it.
 sha2.workspace = true
@@ -35,7 +36,6 @@ dcap-qvl.workspace = true
 tdx-quote.workspace = true
 
 # Server primitives for Quote type
-calimero-server-primitives.workspace = true
 
 # Only for the `cli` feature's binary: `verify_attestation` is async and the
 # library itself needs no runtime.

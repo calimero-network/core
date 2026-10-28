@@ -444,6 +444,11 @@ where
         host::set_account_id(id);
     }
 
+    /// Sets what [`env::caller_org`](crate::env::caller_org) reports to app logic.
+    pub fn set_caller_org(&mut self, org: Option<crate::env::CallerOrg>) {
+        host::set_caller_org(org);
+    }
+
     /// Overrides the context identity reported to app logic.
     pub fn set_context(&mut self, id: [u8; 32]) {
         host::set_context_id(id);

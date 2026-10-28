@@ -1,0 +1,98 @@
+---
+title: Who a run acts as
+description: How a run is attributed — the caller kinds, what the app reads as its account, the app's own runs, the TEE authority, private spaces and sealed shares.
+sidebar:
+  order: 13
+---
+
+Every entry in an app's log records its **caller**, and every run sees that
+caller through the host. Because the node runs the call itself, for a caller it
+authenticated, there is no separate question of who *signed* a write: the log
+says who asked, and the leader that ran it is the cluster.
+
+## Caller kinds
+
+The API builds the caller from the request's credential; a client cannot name
+one (`types::Caller`).
+
+| Caller | When | `env::account_id()` and `env::executor_id()` |
+| --- | --- | --- |
+| `Account { account }` | A passkey session | The account's 32 bytes |
+| `ApiKey { key, account }` | An API key | The key's account |
+| `Public` | No credential, on an app with `access: public` | 32 zero bytes |
+| `App { app }` | The node runs the app itself: an event handler, a timer, or an xcall from app `app` | That app's context id, `SHA-256(app_id)` |
+
+`env::context_id()` is the running app's own context id, and `env::caller_org()`
+is the caller's standing in the app's organization (its id, role and teams), or
+nothing. A person has one identity everywhere: there are no device keys,
+so apps that tell people apart by `executor_id` still do, and two of one
+person's devices are the same author.
+
+## The app's own runs
+
+Some runs are the node's, not a person's:
+
+- **Event handlers** run after the entry that emitted the event, as
+  `App { app: itself }`. Only methods the ABI marks `#[app::handler]` may run
+  this way.
+- **Cross-app calls** run in the target app as `App { app: origin }`, with
+  `env::xcall_origin()` set to the calling app's context id. Only
+  `#[app::xcall]` entry points may run this way, under the rules in
+  [Event handlers & cross-app calls](/protocol/xcall/).
+- **Timers** (`#[app::tee(every = "…")]`) and **`tee:` handlers** run as the
+  app's **TEE authority** (below).
+
+Such a run cannot rotate a shared cell's writers, and is never a read-only
+member, so it gets the outbound client the app's approvals allow.
+
+## The TEE authority
+
+In v1, a TEE fleet node held a hardware-attested authority that let it write
+state no member could forge, under a policy a namespace granted. Here the
+cluster *is* every app's TEE: every node is attested, and a run the leader
+fires on its own is the TEE's.
+
+A timer run and a `tee:` handler author as `AccountId::TEE_AUTHORITY` with
+`tee_trigger` set, which is the one writer `TeeOnly` state admits. The runtime
+refuses a member's run that tries to write it, so no person can forge it. The
+leader fires each timer method once per period (the last tick per method is in
+the app's state), and a new leader neither skips nor repeats a tick.
+
+## Sealed values
+
+The sealing host functions (`TeeSecret`, sealing to a member) work with keys
+the node derives from the storage key for each app
+([Encryption](/protocol/encryption/#keys-derived-from-k_r)):
+
+- **The app's TEE key** opens and seals what only the app's TEE may read. Its
+  public half is what `env::tee_sealing_key()` answers. TEE runs open with it;
+  no member's run does.
+- **A member key per account** stands in for that member's devices. A TEE run
+  that seals a share for a member seals it to their member key; only a run whose
+  caller is that member opens it with that key. In v1 the share was sealed to
+  each of the member's devices; a member reads through the node instead.
+
+## Private spaces
+
+`env::private_storage_*` is the caller's own space in the app's state
+(`\0calimero.private\0 ‖ account ‖ 0`). It is replicated and sealed like the
+rest of the state, but the host hands each run only its caller's space, and app
+code cannot reach the host's key space by raw key. A run with no account
+(`Public`, `App`) has no private space.
+
+## Writers of shared cells
+
+`SharedStorage` cells keep a writer set with per-writer masks. A rotation a run
+asks for takes effect with the run's other writes, only if the run's account
+holds `ADMIN` in the set in effect, and never from a TEE run, an app's own run
+or a public call. The node writes the new set beside the cell in the app's state
+(`app::writers_key`). See [Application execution](/protocol/execution/#what-the-node-checks-after-the-run).
+
+## What happened to delegation and admission
+
+| v1 mechanism | Why it existed | Now |
+| --- | --- | --- |
+| Delegated authorship: a relay ran a member's request under a signed warrant, attributed to the member | A device that could not run the app still had to own its writes, and peers had to verify the attribution | The node runs every call for the caller it authenticated; the entry records the caller. Nothing to delegate |
+| Direct admission: an account with no node joined a namespace through an admitter named in the invitation | Joining meant holding the namespace's keys on some node | An invite token adds the account to an organization ([Organizations](/protocol/organizations/#invites)); access is checked per request |
+| TEE authorship policy and evidence | A TEE node's authority had to be granted and its attestation kept fresh | Every node is attested before it is a peer; the cluster is the TEE |
+| Client paths (own node, relay, TEE relay, TEE authority) | Each reached a member key differently | One path: any node, sealed ([The write path](/protocol/write-path/)) |

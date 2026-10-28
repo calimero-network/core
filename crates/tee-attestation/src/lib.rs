@@ -57,6 +57,7 @@ mod evidence;
 mod generate;
 mod info;
 mod policy;
+pub mod quote;
 mod verify;
 
 pub use dcap_qvl::QuoteCollateralV3;
@@ -74,6 +75,7 @@ pub use policy::{
     MeasurementRegister, PolicyRejection, VerifierPolicy, DEFAULT_ALLOWED_TCB_STATUS,
     TCB_STATUS_MOCK, TCB_STATUS_REVOKED,
 };
+pub use quote::{CertificationData, QeReportCertificationDataInfo, Quote, QuoteBody, QuoteHeader};
 #[cfg(feature = "mock-attestation")]
 pub use verify::verify_mock_attestation;
 pub use verify::{verify_attestation, VerificationResult};

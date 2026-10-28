@@ -1,0 +1,138 @@
+---
+title: Organizations, teams & access
+description: Who reaches an app — access rules, organization roles, nested open and restricted teams, capabilities, invites — and how each rule is checked.
+sidebar:
+  order: 14
+---
+
+Access has two layers. The node decides **who reaches an app at all**, from the
+app's access rule and the system state, on every request. Everything finer —
+who may edit which record — is the app's own code, which can read the caller's
+standing with `env::caller_org()`.
+
+Every rule on this page is enforced by the system group's state machine when
+the command applies ([The system group](/protocol/system-group/)); the API
+checks most of them first so a refused request records nothing.
+
+## App access
+
+An app instance carries one `Access` rule (`types::Access`), set at creation
+and changed by its owner (`POST /apps/{app}/access`):
+
+| Rule | Who reaches the app |
+| --- | --- |
+| `owner` (default outside an organization) | The owner only |
+| `accounts { accounts }` | The owner and these accounts |
+| `org` (default inside an organization) | Every member of the app's organization, any role |
+| `team { team }` | The team's members (direct rows, and inheritance into an open team) |
+| `public` | Anyone, signed in or not (as `Caller::Public` when not) |
+
+The owner always reaches their app. A caller who does not reach it gets `404`,
+so its existence is not disclosed; with no credential, `401`. The check reads
+fresh system state, so removing someone from an organization or team holds on
+every node before their next request ([Reads of the system
+state](/protocol/system-group/#reading-the-system-state)).
+
+A member whose **direct row** in the app's team is **read-only** still reaches
+the app and its calls run, but a call that would write anything is refused with
+`403` (v1 discarded such writes silently). A blob upload by them is refused
+before it starts.
+
+## Organizations
+
+`POST /orgs { name }` creates an organization with its creator as **owner**.
+Members have one role each, ordered `guest < member < admin < owner`:
+
+| Role | May |
+| --- | --- |
+| `guest` | Reach the organization's `org`-access apps |
+| `member` | Also own apps in the organization and create top-level teams if they hold `CREATE_TEAM` |
+| `admin` | Manage members and their roles (below owner), capabilities, teams, organization metadata; delete the organization's apps |
+| `owner` | Everything, plus ownership, release approvals, and deleting the organization. Upgrades and outbound approvals are also open to `MANAGE_APPLICATION` holders (see Capabilities) |
+
+There is exactly one owner. `SetOrgRole { role: owner }` by the owner moves
+ownership and makes the previous owner an admin; the owner cannot be removed,
+only replaced. Leaving is removing oneself. Removing a member clears their
+capabilities, metadata and every team row they had. `DELETE /orgs/{org}`
+(owner, with a passkey step-up) deletes the organization with its teams,
+invites and apps.
+
+An organization also keeps metadata for its apps and frontends to read (admins,
+or members holding `MANAGE_METADATA`), per-member metadata (the member or an
+admin), the mero-tee releases and outbound prefixes its owner approved, and its
+recent upgrade runs. Each metadata value is at most 16 KiB of JSON.
+
+## Teams
+
+Teams (`types::Team`, v1's subgroups) nest (`parent`), move
+(`UpdateTeam { parent }`, never under themselves), and are one of two kinds:
+
+- **Open** (`join: everyone`): whoever reaches the parent team — at the top,
+  the organization — is a member too, unless they were denied
+  `JOIN_OPEN_TEAMS` there. Membership flows down an unbroken chain of open
+  teams.
+- **Restricted** (`join: invite`): only direct rows. A restricted team is a
+  wall: nothing flows through it.
+
+A **direct row** has a role (`lead`, `member` or `read-only`) and capabilities.
+A team's creator leads it. Whoever leads a team, or an ancestor team, or is an
+organization admin, **manages** it: renames it, adds and removes members,
+creates teams under it, moves it within what they manage, and deletes it.
+
+- A member who leaves a team, or whom a manager removes, does not come back by
+  inheritance (`Team::removed`), so
+  leaving an open team sticks. They return only when a manager adds them again
+  or they redeem an invite that names the team; they cannot rejoin by
+  themselves.
+- A member may join an open team they already reach as a plain member row, or
+  leave any team themselves.
+- Deleting a team deletes the teams below it and the apps deployed to them.
+- Reads are filtered: a team someone neither reaches nor manages is left out of
+  `GET /orgs/{org}` and answers `404` on its own route.
+- A team keeps metadata the app defines (a folder's name and colour), set by
+  those holding `MANAGE_METADATA` for it.
+
+An app deployed with `access: team` must be created by someone who writes that
+team (a member whose row is not read-only).
+
+## Capabilities
+
+Beyond their role, a member holds capability bits (`types::caps`, v1's
+`MemberCapabilities` at the same values): organization-wide, with a default the
+organization sets, and per direct team row (a new row takes the member's
+organization value). Admins and team leads hold them all where they manage.
+
+| Bit | Name | Checked by the node |
+| --- | --- | --- |
+| `1 << 0` | `CREATE_APP` | Creating an app in the organization (on its team, or org-wide) |
+| `1 << 1` | `INVITE_MEMBERS` | Minting an invite (org-wide, or on each team it names) |
+| `1 << 2` | `JOIN_OPEN_TEAMS` | Inheritance into open teams (granted by default) |
+| `1 << 3` | `MANAGE_MEMBERS` | Adding non-lead rows and setting capabilities in a team |
+| `1 << 4` | `MANAGE_APPLICATION` | Upgrading the organization's apps (on the app's team, or org-wide), organization-wide upgrade runs, and approving the organization's outbound hosts (org-wide only) |
+| `1 << 5` | `CREATE_TEAM` | Creating a top-level team (or moving one to the top) without being an admin |
+| `1 << 6` | `DELETE_TEAM` | Deleting a team one does not manage |
+| `1 << 7` | `MANAGE_VISIBILITY` | Switching a team between open and restricted |
+| `1 << 8` | `MANAGE_METADATA` | Organization and team metadata |
+
+## Invites
+
+`POST /orgs/{org}/invites { role, teams?, ttlSecs?, uses? }` returns a token
+`inv_…`; only its hash is stored. An invite expires (7 days by default) and
+admits `uses` accounts (1 by default). Its role may not exceed the inviter's and
+is never `owner`. An inviter below admin may name only teams they manage.
+`POST /invites/{token}/redeem`, by a signed-in person, adds them at the invite's
+role (or keeps a higher role they already have) and gives them a plain row in
+each named team.
+
+## What v1's edge cases became
+
+| v1 rule | Now |
+| --- | --- |
+| Inheritance walked the scope tree at the author's causal cut | `Org::in_team` walks the parent chain on the applied state |
+| Last-admin protection | The owner cannot be removed; ownership moves only by the owner's own command |
+| Owner immunity from involuntary removal | The same |
+| Self-leave versus admin removal (key rotation owed) | No keys to rotate; a manager's removal also sticks against inheritance |
+| Concurrent governance ops at the same parents | The log orders them; each applies to the state the previous one left |
+| Per-signer nonce windows against replay | Commands are proposed by nodes from authenticated requests; there is nothing to replay |
+| Cascade delete of a subgroup | `DeleteTeam` takes the subtree and its apps |
+| The deny-list | Withholding `JOIN_OPEN_TEAMS` keeps a member out of open teams |

@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use calimero_node_primitives::bundle::{derive_signer_id_did_key, sign_manifest_json};
-use calimero_node_primitives::client::application::bundle::VerifiedBundle;
+use calimero_node_primitives::client::application::bundle::{runtime_version, VerifiedBundle};
 use calimero_node_primitives::client::NodeClient;
 use ed25519_dalek::SigningKey;
 use flate2::write::GzEncoder;
@@ -348,7 +348,7 @@ fn a_frontend_shares_the_walk() {
     let dir = TempDir::new().unwrap();
     let allocated = |frontend: bool| {
         let bundle = padded_bundle(&dir, "read.mpk", 1, 0, frontend.then_some(INDEX_HTML));
-        let verified = VerifiedBundle::open(bundle.into()).unwrap();
+        let verified = VerifiedBundle::open(bundle.into(), &runtime_version()).unwrap();
         let before = TOTAL.load(Ordering::Relaxed);
         verified.contents().unwrap();
         TOTAL.load(Ordering::Relaxed) - before

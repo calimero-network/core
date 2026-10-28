@@ -46,7 +46,16 @@ impl VMHostFunctions<'_> {
         // SAFETY: as above.
         let plaintext_buf =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_plaintext_ptr)? };
-        let key = PublicKey::from(*self.read_guest_memory_sized::<32>(&key_buf)?);
+        let raw = *self.read_guest_memory_sized::<32>(&key_buf)?;
+        let key = PublicKey::from(
+            self.borrow_logic()
+                .context
+                .sealing
+                .stand_ins
+                .get(&raw)
+                .copied()
+                .unwrap_or(raw),
+        );
         let plaintext = self.read_guest_memory_slice(&plaintext_buf)?.to_vec();
 
         let purpose = self.app_purpose(key);
@@ -317,12 +326,37 @@ mod tests {
             tee_authority_keys: vec![],
             vault_keys: vault_keys.iter().map(|key| copy(key)).collect(),
             account_devices: std::collections::BTreeMap::new(),
+            stand_ins: std::collections::BTreeMap::new(),
             namespace_sealing_key: None,
         };
         with_host(context(tee_trigger, sealing), |host| {
             put(host, TEXT_DESC, TEXT_AT, sealed);
             Ok((host.open_sealed(TEXT_DESC, REGISTER)? == 1).then(|| register(host)))
         })
+    }
+
+    /// Sealing to a stand-in id seals to the key it stands for: that key opens
+    /// it, and nothing sealed to the bare id would.
+    #[test]
+    fn sealing_to_a_stand_in_seals_to_its_key() {
+        let member = PrivateKey::random(&mut rand::rng());
+        let id = [7u8; DIGEST_SIZE];
+        let sealing = SealingContext {
+            stand_ins: [(id, *AsRef::<[u8; 32]>::as_ref(&member.public_key()))].into(),
+            ..SealingContext::default()
+        };
+        let sealed = with_host(context(true, sealing), |host| {
+            put(host, KEY_DESC, KEY_AT, &id);
+            put(host, TEXT_DESC, TEXT_AT, b"ace of spades");
+            assert_eq!(host.seal_to(KEY_DESC, TEXT_DESC, REGISTER).unwrap(), 1);
+            register(host)
+        });
+        assert_eq!(
+            open(Some(&member), false, &sealed).unwrap(),
+            Some(b"ace of spades".to_vec())
+        );
+        let stranger = PrivateKey::random(&mut rand::rng());
+        assert_eq!(open(Some(&stranger), false, &sealed).unwrap(), None);
     }
 
     /// The player's own key does not open, in another context, a card dealt in this one.
@@ -404,6 +438,7 @@ mod tests {
                     tee_authority_keys: vec![],
                     vault_keys: vec![],
                     account_devices: std::collections::BTreeMap::new(),
+                    stand_ins: std::collections::BTreeMap::new(),
                     namespace_sealing_key: Some(crate::logic::SealingKeyResolver(Arc::new(
                         move || key,
                     ))),
@@ -434,6 +469,7 @@ mod tests {
                 tee_authority_keys: keys.clone(),
                 vault_keys: vec![],
                 account_devices: std::collections::BTreeMap::new(),
+                stand_ins: std::collections::BTreeMap::new(),
                 namespace_sealing_key: None,
             };
             with_host(context(tee_trigger, sealing), |host| {

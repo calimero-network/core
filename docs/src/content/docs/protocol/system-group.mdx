@@ -1,0 +1,139 @@
+---
+title: The system group
+description: The one log the whole cluster shares — what it holds, why every command carries its actor, and how authority is decided when a command applies.
+sidebar:
+  order: 3
+---
+
+The **system group** is Raft group `1`, hosted by every node of the cluster
+(`crates/node/src/system.rs`). Its state machine holds everything that is
+not one app's own data:
+
+| Field of `SystemState` | What it is |
+| --- | --- |
+| `nodes` | Every registered node: id, base URL, zone |
+| `apps` | The app directory: each instance's bundle, owner, organization, access rule, confirm methods, replicas, group, metadata, last upgrade |
+| `next_group` | The next app group number |
+| `bundles` | Bundle hash → size, uploader, and the release it ships in (the WASM itself is in the blob store) |
+| `packages` | Installed packages: pinned signer, owner, and every release (`.mpk` hash and size, source, services, metadata, declared outbound prefixes) |
+| `accounts`, `credentials` | Accounts with their passkeys, labels, aliases and approvals; credential id → account |
+| `api_keys`, `refresh`, `rotated_refresh` | API-key hashes, live refresh tokens, and refresh tokens already exchanged |
+| `revoked_sessions`, `revoked_at` | Sessions that no longer verify, and when they were revoked |
+| `session_keys` | The session-signing key K_s: the current version and the one before it |
+| `orgs`, `invites` | Organizations (members, roles, capabilities, teams, approvals, metadata, upgrade runs) and invite-token hashes |
+| `quotas` | Per-account limits and the account cap |
+| `governance` | Who holds which decision, fixed at genesis ([Deployment governance](/protocol/governance/)) |
+| `operator_releases`, `operator_outbound` | The operator's approvals, where governance gives it those decisions |
+
+## Commands carry their actor
+
+A change is a `SystemCmd`, serialized as JSON and appended through the system
+leader. Every command that acts for someone names them: `actor`, `account`,
+`installed_by`, or a credential id. Clients never send commands: a node builds
+each one and fills the actor in from the request's verified credential. `apply`
+checks the actor's authority against the state the command applies to and
+answers `{ "ok": … }` or `{ "err": … }`:
+
+```text
+DeleteApp { app_id, actor }
+  → refused unless actor is the app's owner, or an admin of its organization
+UpgradeApp { app_id, bundle, by_operator, actor, consent, … }
+  → refused unless governance gives app upgrades to whoever this is, and
+    (for an owner) actor is the app's owner, or, for an org app, holds
+    MANAGE_APPLICATION on its team or org-wide (owner, admin, lead, granted)
+InstallPackage { package, signer_id, release }
+  → refused if the package is pinned to another signer, or the same
+    version is installed with other contents, or the uploader's quota is spent
+```
+
+Because the log orders every command and every replica applies the same
+commands to the same state, there is one verdict. A refused command is still
+committed, as a no-op with its reason, and the node that proposed it turns the
+reason into the HTTP answer (`400 REJECTED`, or `429 QUOTA_EXCEEDED` for a
+reason that starts with "quota exceeded").
+
+The API checks most rules before it proposes, too, so a request that would be
+refused usually fails fast and records nothing. The check at apply is the one
+that counts: two requests that each passed the API's check against slightly
+older state cannot both win.
+
+:::note[v1 comparison]
+v1 encoded membership and authority as signed governance operations in a
+causal DAG, judged "at the author's causal cut" so that peers receiving them in
+different orders still agreed. A single ordered log removes the reason for
+that machinery: there is one order, so there is one state to judge against.
+:::
+
+## Genesis fixes the rules
+
+The first node to lead the system group writes `SystemCmd::Genesis` with the
+[governance](/protocol/governance/) it was configured with and its own mero-tee
+release. `CreateAccount` is refused until genesis has applied, and `Genesis` is
+refused once it has, or once any account exists. A node restarted with other
+`--release-approvals`, `--app-upgrades` or `--outbound-approvals` flags
+therefore changes nothing: the state already holds the answer, and it is the
+state every receipt key attests.
+
+The same leader registers the configured `--peers` as nodes and adds the first
+session key.
+
+## The leader's housekeeping
+
+Every node runs a reconcile loop (on each applied system entry, on a follow-up
+kick, and every 500 ms). On the system leader it also:
+
+- writes `Genesis` if nothing has;
+- registers configured peers that are not yet in `nodes`;
+- adds every registered node that is not in the system group as a **learner**
+  ([Replication](/protocol/replication/#joining-nodes));
+- adds a new session key once the current one is older than
+  `--session-key-rotation-secs` (6 h by default, at least 30 min).
+
+On every node it starts the app groups this node is a replica of, stops the
+ones it no longer is, runs a newly created app's `init` where this node leads
+its group, and drives the follow-ups and timers of the groups it leads.
+
+## Reading the system state
+
+The system group's machine keeps its whole state in memory
+(`Machine::IN_MEMORY`) and is checkpointed with each snapshot. Reads come in
+three strengths:
+
+- **Local** (`Node::sys`): what this replica has applied. Used for lookups that
+  can tolerate a moment's lag.
+- **Until found** (`Node::sys_until`): wait up to 2 seconds for a lookup to
+  find something. A passkey registered through node 1 and used through node 2 a
+  moment later is found instead of answering "unknown passkey".
+- **Fresh** (`Node::sys_fresh`): a read index. The node asks the system leader
+  for its applied index (`internal/system/index`, or locally if it leads) and
+  waits up to 2 seconds to apply it. Every request that carries a credential,
+  every gated request without one, and every client call on the app's leader
+  read the state this way, so a revocation or removal committed through any
+  node holds before the next request anywhere.
+
+## Writes
+
+`Node::sys_write` appends through the system leader: locally if this node
+leads, else by posting the command to the leader's `internal/system` route over
+the [peer sealed channel](/protocol/networking/#between-nodes). It retries for
+about 8 seconds to ride out an election. A follower that receives
+`internal/system` refuses rather than forwarding again.
+
+Some system commands are not idempotent yet, so a forwarded system write keeps
+the long HTTP timeout instead of the short bounded forward app calls use.
+
+## Quotas
+
+`Quotas` live in the system state and are set by the operator
+(`POST /ops/quotas`). They are checked inside `apply`, so every node refuses the
+same command for the same reason:
+
+| Quota | Default | Checked by |
+| --- | --- | --- |
+| `maxAppsPerAccount` | 100 | `CreateApp` |
+| `maxBundleBytesPerAccount` | 1 GiB | `PutBundle`, `InstallPackage` (operator installs count against no account) |
+| `maxApiKeysPerAccount` | 50 | `CreateApiKey` |
+| `maxOrgsPerAccount` | 20 (organizations owned) | `CreateOrg` |
+| `maxAccounts` | 100 000 | `CreateAccount` (sign-up is open, so this bounds the cluster) |
+
+`GET /auth/usage` shows an account what it uses against them.

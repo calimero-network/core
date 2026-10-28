@@ -373,7 +373,7 @@ impl VerificationResult {
 
 #[cfg(test)]
 mod tests {
-    use calimero_server_primitives::admin::{
+    use crate::quote::{
         CertificationData, QeReportCertificationDataInfo, Quote, QuoteBody, QuoteHeader,
     };
 

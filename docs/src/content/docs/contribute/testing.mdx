@@ -1,287 +1,466 @@
 ---
 title: Testing strategy
-description: How testing is organized across the Calimero Core workspace — app unit tests, storage convergence harness, the deterministic sync simulator, e2e, and the exact CI gate a contributor runs before a PR.
+description: How Calimero Core is tested — crate unit tests, the in-process cluster tests, the merod and meroctl CLI tests, the SDK harnesses, merobox scenarios — and how to run each locally.
 sidebar:
   label: Testing strategy
 ---
 
 import { Steps, Aside, LinkCard, CardGrid } from '@astrojs/starlight/components';
 
-Calimero Core is tested in layers, each trading scope for speed. Fast in-process
-unit tests cover application and CRDT logic; a deterministic simulator covers the
-sync protocol without WASM or a network; merobox workflows cover the real
-multi-node system end to end. This page maps the layers and gives the exact
-commands CI enforces, so you can reproduce the gate before opening a PR.
-
-Use both ends of the ladder.
-A green `cargo test` does not prove a networked flow works, and a green E2E does not localize a logic bug.
+Calimero Core is tested in layers that trade scope for speed. Most of the node is
+covered by real clusters in one process: three nodes, sealed channels, real
+WASM, driven only through the client. Multi-process behaviour (crashes,
+freezes, restarts, upgrades) is covered by merobox scenarios.
 
 | Layer | Where | What it proves | Speed |
 | --- | --- | --- | --- |
-| App unit tests (`TestHost`) | `crates/sdk/src/testing.rs` | Your app's `call` / `view` / event / migrate logic, in isolation | Milliseconds |
-| Storage convergence | `crates/storage/src/testing.rs` | A `Mergeable` / `#[app::state]` type converges under concurrent, reordered ops | Sub-second |
-| Sync simulator | `crates/node/tests/sync_sim/` | The sync protocol converges under loss, latency, reordering, and partitions | Fast, deterministic |
-| Fuzzing | `fuzz/` | Parsers of inbound bytes survive hostile input | Coverage-guided, time-boxed |
-| Integration / e2e (merobox) | `apps/*/workflows/`, `workflows/` | The real multi-node system: install, call, sync, govern, migrate | Slow (Docker) |
+| Unit tests | `#[cfg(test)]` in each crate | One module's logic: config merging, key sources, quotas, presence rules, outbound gates | Milliseconds |
+| Raft engine | `crates/log` | Replication, failover, restart from disk, learner catch-up, snapshot streaming, no plaintext on disk, the `log.redb` migration | Seconds |
+| Cluster | `crates/node/tests/cluster.rs` | The node end to end in one process: sign-up, installs, calls, views, events, orgs and teams, upgrades and migrations, blobs, follow-ups, governance, replica moves | Seconds to minutes |
+| CLI | `crates/merod/tests/cli.rs`, `crates/meroctl/tests/cli.rs` | `merod init/config/run/inspect` through the binary; every `meroctl` command group against a local cluster | Seconds to minutes |
+| App logic | `TestHost` in `crates/sdk/src/testing.rs`, `converge` in `crates/storage/src/testing.rs` | An app's methods, events and migrations; that a state type converges | Milliseconds |
+| Scenarios | merobox `cloud-v2` backend | Separate `merod` processes: crash, freeze, restart and upgrade under load | Slow |
 
-## App unit tests with `TestHost`
+Use both ends. A green cluster test does not prove a process restart or a
+frozen leader behaves, and a green scenario does not localize a logic bug.
+
+## Fixtures
+
+The cluster and CLI tests load compiled apps from
+`target/wasm32-unknown-unknown/app-release/`. Build them first:
+
+```bash
+cargo build -p kv-store -p org-gated -p outbound-probe \
+  --target wasm32-unknown-unknown --profile app-release
+PATH="$(scripts/setup-cargo-mero.sh):$PATH"
+for a in blobs kv-store-with-handlers kv-store-with-shared-storage search-chat xcall-example tee-cards tee-dice \
+  migrations/migration-suite-v1 migrations/migration-suite-v2-add-field \
+  migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2 \
+  migrations/scenario-identity-downgrade-v1 migrations/scenario-identity-downgrade-v2; do
+  cargo mero build --manifest-path "apps/$a/Cargo.toml"
+done
+```
+
+The `cargo mero` builds carry the embedded ABI the node reads for handlers,
+timers, xcalls, search and migrations. `KV_STORE_WASM` points the tests at
+another `kv_store.wasm`.
+
+## Running the tests
+
+```bash
+cargo test -p calimero-node                 # the cluster tests
+cargo test -p calimero-node --test cluster teams_work_like_v1_subgroups -- --nocapture
+cargo test -p merod -p meroctl                    # the CLI tests
+cargo test -p calimero-log
+cargo test -p calimero-client -p calimero-identity -p calimero-sealed
+cargo test -p calimero-outbound --features outbound-testing
+cargo test -p calimero-kms-client --features mock-attestation
+cargo test -p calimero-tee-attestation --features mock-attestation
+cargo test --workspace                            # everything
+```
+
+[cargo-nextest](https://nexte.st/) runs the workspace faster
+(`cargo nextest run --workspace`, then `cargo test --workspace --doc` for the
+doctests it skips).
+
+<Aside type="caution">
+  Cluster tests start several nodes on free local ports and use real WASM; run
+  them on Linux. A test that fails with "build kv-store for wasm32 first" is
+  missing a fixture, not broken.
+</Aside>
+
+### Writing a cluster test
+
+`crates/node/tests/cluster.rs` builds clusters with the real `run`,
+mock attestation and a soft authenticator, and drives them only through
+`calimero-client`, as an SDK user would. Write a new test there when the
+behaviour crosses the API: start the cluster, sign up, do the thing, assert on
+what the client sees. Name it for the behaviour
+(`teams_work_like_v1_subgroups`,
+`a_node_added_to_a_running_cluster_hosts_replicas`).
+
+## App logic: `TestHost` and `converge`
 
 [`TestHost`](https://github.com/calimero-network/core/blob/master/crates/sdk/src/testing.rs)
-lets you exercise an `#[app::state]` type as ordinary Rust — no `wasm32` build, no
-node, no containers. State lives in an in-memory mock store; events and logs are
-captured; the executor / context identity is configurable. You drive mutations
-with `call`, reads with `view`, and inspect `events()` / `logs()`. Migrations are
-supported too: `TestHost::migrate`, plus `assert_migrate_converges` and
-`assert_absorb_replay_converges` for the determinism properties the migration
-model rests on.
-
-```rust
-let mut app = TestHost::new(|| MyApp::init());
-app.call(|s| s.increment("a".into())).unwrap();
-let value = app.view(|s| s.get("a".into())).unwrap();
-assert_eq!(value, 1);
-assert_eq!(app.events().len(), 1);
-```
-
-<Aside type="caution" title="What TestHost deliberately does not model">
-  The harness covers normal `call` / `view` / event / log / identity / migrate
-  flows. It does **not** model:
-
-  - **Cross-context calls** (`env::xcall`), **networked blob announce / fetch**,
-    and **`env::ed25519_verify`** — these have no in-process equivalent and
-    **panic** if invoked. Cover them with merobox workflows.
-  - **Event-handler dispatch.** `TestHost` captures the events your methods
-    emit, but it does not run the node's handler loop, so registered handlers do
-    not fire automatically — you drive methods directly through `call`.
-
-  It is also **one-live-harness-per-thread**: construct a fresh `TestHost` at the
-  top of each `#[test]` (it resets all mock state on construction), and set a
-  non-owner identity explicitly when asserting a rejection path — the default
-  identity satisfies owner checks and would silently pass.
-</Aside>
-
-This is the same harness app developers use; the app-author-facing guide is at
-[/build/testing/](/build/testing/).
-
-## Storage convergence (property tests)
-
+runs an `#[app::state]` type as plain Rust: `call`, `view`, `events()`,
+`logs()`, `migrate`, `set_caller_org`. It does not run xcalls, networked blobs
+or event-handler dispatch. `converge` / `converge_app` in
 [`crates/storage/src/testing.rs`](https://github.com/calimero-network/core/blob/master/crates/storage/src/testing.rs)
-provides `converge` / `converge_app`: assert in a single `#[test]` that a state
-type converges under concurrent, reordered operations. It drives N in-memory
-replicas (each with its own store and executor identity), applies the registered
-ops on every replica in a per-replica shuffled order, gossips the resulting
-`StorageDelta`s in shuffled order, and asserts every replica lands on the **same
-Merkle root hash**.
-
-```rust
-converge_app(TeamMetricsApp::init)
-    .replicas(3)
-    .ops(|s| { let _ = s.record_win("liverpool".into()); })
-    .assert_all_replicas_equal();
-```
+asserts that a state type reaches the same root on N in-memory replicas under
+reordered operations. The app-author guide is [Testing your app](/build/testing/).
 
 <Aside type="note">
-  This proves your **app state converges end-to-end**, which is usually **not**
-  your hand-written `Mergeable::merge` — collection fields converge via the
-  storage layer's per-child-entity merge during delta apply, and inline scalars
-  via the root entity's HLC last-writer-wins. `Shared` / `Authored` / `User` /
-  `Frozen` storage need the node's signing identity (delta apply verifies
-  signatures), which this bare harness does not provide — test those with
-  merobox. The run takes a process-global lock, so it self-serializes and does
-  not need `#[serial]`.
+  An app instance's calls are applied in one order by its Raft
+  log, so convergence under concurrent writes matters less for the node than it
+  did for v1; it still matters for code that also targets v1.
 </Aside>
 
-## The deterministic sync simulator
+## Scenario tests with merobox
 
-[`crates/node/tests/sync_sim/`](https://github.com/calimero-network/core/tree/master/crates/node/tests)
-is a discrete-event framework for the sync protocol. It reuses the **real**
-`calimero-storage` `Index` / `Interface::apply_action` and Merkle tree, the real
-hash computation, and the real `select_protocol()` — so hash propagation and
-protocol selection behave identically to production — while replacing WASM
-execution, network I/O, time, and concurrency with a `NetworkRouter` (with fault
-injection), a discrete `SimClock`, seeded RNG, and sequential event processing.
-Seeds make every failure reproducible.
+[merobox](https://github.com/calimero-network/merobox)'s `cloud-v2` backend
+(its `release-v2` branch) starts one `merod` process per node and runs YAML
+scenarios: deploy, call and read as several accounts, then crash, freeze,
+restart or upgrade nodes and check the app keeps its data and answers within a
+time budget.
 
-```rust
-let mut rt = SimRuntime::with_seed(42);
+```bash
+MEROD_BINARY=target/debug/merod \
+KV_STORE_WASM=target/wasm32-unknown-unknown/app-release/kv_store.wasm \
+merobox cloud run workflow-examples/cloud-v2/frozen-leader.yml
 ```
 
-Read `crates/node/tests/sync_sim/AGENT_GUIDE.md` before touching the framework.
-The framework itself lives under `sync_sim/` (change with review); add new
-protocol-behavior tests under `sync_scenarios/`, and compliance tests under
-`sync_compliance/`.
+The scenarios and their step reference are in merobox's
+`workflow-examples/cloud-v2/`. A node behaviour that only shows across
+processes (the bounded forward to a frozen leader is the example) gets its
+regression scenario there.
 
-The neighbouring binaries in `crates/node/tests/` (`sync_scenarios`, `network_simulation`, `dag_*`) exercise sync, DAG and readiness convergence across several nodes in one process, without Docker.
-They are the fastest way to reproduce a sync or ordering bug.
+### Core and app workflows
 
-## Fuzzing
+Core's workflows (`workflows/`: app migrations, sync, fuzzy loads) and every
+app's (`apps/*/workflows/`) are merobox workflows for the `cloud-v2` backend.
+Most were migrated from v1's workflows of the same names, in place, by
+`merobox cloud port`; each file's header lists the v1 steps that have no
+counterpart on a cluster (gossip waits, node logs and admin-API reads, scripts,
+partitions of a user's node) and every fix made in the migration, with its
+reason. They are maintained by hand from here on. An app with no v1 workflow
+(or none that applied) has one written for the cluster, so every deployable app
+has at least one. Run them against a build:
 
-`fuzz/` holds coverage-guided fuzz targets over inbound bytes: bundles, wire frames, signed ops, CRDT sync payloads and provider records.
-Run one with `scripts/fuzz.sh <target> [seconds]`; the targets and seeds are described in
-[`fuzz/README.md`](https://github.com/calimero-network/core/blob/master/fuzz/README.md).
-
-## Integration and e2e (merobox)
-
-The widest layer runs real `merod` nodes in Docker via
-[merobox](https://github.com/calimero-network/merobox), driven by declarative
-YAML workflows. Each scenario file describes a node topology and a sequence of
-install / call / assert steps. These are the
-tests that exercise everything `TestHost` and the simulator leave out — real
-networking, cross-context calls, governance across peers, late joiners,
-partitions, and multi-node migrations. They run in CI under the
-`e2e-rust-apps.yml`, `app-migration-e2e.yml`, and `sync-regression.yml`
-workflows, building a local `merod:local` image plus the WASM apps under
-`apps/`. A scenario joins the `e2e-rust-apps.yml` suite by an entry in
-`.github/e2e-scenarios.yml`; CI packs those entries into groups that each share
-one runner, and cleans every container, network, volume and data directory
-between the scenarios of a group.
-
-The scenarios live in:
-
-- `apps/scaffolding-e2e/workflows/`: group membership, key delivery, kick and rejoin, subgroups, leave, late joiners, sync resilience under partition, mesh soak.
-- `apps/blobs/workflows/`: blob announce, fetch and sizes across nodes.
-- `workflows/sync-tests/`, `workflows/app-migration/` and `workflows/fuzzy-tests/`: sync regression, v1 to v2 migrations, and fuzzy load.
-
-Run one locally with `merobox bootstrap run <scenario.yml>`, then `merobox stop --all`.
-The YAML format is described in [`apps/AGENTS.md`](https://github.com/calimero-network/core/blob/master/apps/AGENTS.md).
-
-CI builds the nodes from the PR's own code (`.github/actions/build-local-merod` produces `merod:local`), so a green E2E means that code passed.
-A failed group re-runs all its scenarios.
-Its step summary names the scenario that failed, and that scenario's node logs are under `docker-logs/<scenario>/` in the group's `logs-*` artifact.
-
-### Reproducing a CI flake locally
-
-A flake that only shows up in CI is usually timing, so reproduce it with CI's build and loop it.
-
-1. Build `merod` the way CI does: `CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256 cargo build -p merod --release`.
-   A debug build runs several times slower, and that alone can hide a race: one ordering bug in `account-pairing-application-scope` never reproduced on a debug build in 17 runs, and failed 2 runs in 11 on this build.
-2. Package it as `merod:local` with `.github/workflows/deps/prebuilt.Dockerfile`, as `.github/actions/build-local-merod` does.
-   For a scenario on the http registry image, serve the bundles with `url=$(./scripts/e2e-fixture-registry.sh)` and stamp the image with `scripts/set-registry-mode.sh merod:local http "$url"`.
-3. Run the scenario from its app directory as `scripts/e2e-run-scenario-group.sh` does: `merobox bootstrap run <scenario.yml> --image merod:local --e2e-mode`.
-   Embedded-auth scenarios need `MERO_AUTH_ADMIN_USER` and `MERO_AUTH_ADMIN_PASSWORD` set, matching the scenario's login steps.
-   The node logs land under `data/container-logs/` in the app directory, and a `stop_all_nodes` scenario removes its containers, so copy that directory before the next run.
-4. Loop it and keep every run's logs, so a failing run can be compared against a passing one.
-   If it still will not fail, add CPU load (one busy process per core): a gossip-mesh race in the same scenario needed it.
-
-<Aside type="caution" title="What E2E cannot catch">
-  Every node in a merobox run is the **same build against fresh state**.
-  It validates a uniform, new-from-scratch network, and by construction never tests mixed old and new nodes or data persisted by an older version.
-  A green E2E says nothing about backward compatibility or rolling upgrades.
-  A format, derivation, schema or borsh-layout change that must survive existing data or staggered upgrades needs its own migration path and its own test.
-</Aside>
-
-## Reading logs
-
-`merod` logs through `tracing` to stdout.
-Target a subsystem with `RUST_LOG` to see the flow you are debugging:
-
-```sh
-RUST_LOG=debug merod --node node1 run
-RUST_LOG=calimero_node::sync=trace,calimero_context=debug merod --node node1 run
+```bash
+python3 scripts/build-workflow-fixtures.py      # the releases and WASM they install
+MEROD_BINARY=target/debug/merod python3 scripts/run-workflows.py [FILE...]
+python3 scripts/run-workflows.py --shard 2/4 --list   # what CI's shard 2 runs
 ```
 
-- In merobox each node is a container, so read its output with `docker logs <container>`.
-  To raise verbosity in a scenario, set `RUST_LOG` on the node in its YAML.
-- Scenarios assert on log signals by grepping for an expected line; the `sync-resilience-*` scenarios, for example, count occurrences of a sync marker.
-- Panics are logged by a structured hook (message, thread, location, backtrace), so grep for the panic message rather than for `panicked`.
+Every workflow names its own `cluster.base_port` and no two overlap, so the four
+shards of one checkout can run side by side, each with its own `--json`. To run
+the same workflows from two checkouts at once, give each a band of its own with
+`--port-offset N` (or `WORKFLOW_PORT_OFFSET`), e.g. 10000 and 20000.
+
+`scripts/workflows-baseline.json` lists the workflows that pass; one
+of them failing fails CI. Add a workflow to it once it passes, and its measured
+duration to `scripts/workflows-durations.json` (the shards are packed
+by it). A workflow not on the baseline still runs and is reported, so a fix
+shows up as a pass.
+
+#### Workflows deleted in the migration
+
+A v1 workflow whose subject has no counterpart on a cluster was deleted rather
+than kept unrun. Each, and why nothing replaces it (or what does):
+
+| Workflow | Its subject, and why a cluster has none |
+| --- | --- |
+| `apps/blobs/workflows/blob-presence-multi-holder.yml` | DHT provider discovery among user nodes holding a blob: a cluster's nodes all keep an app's blobs (blob-cross-node-transfer, blob-cross-node-sizes) |
+| `apps/blobs/workflows/blob-presence-tee-serves.yml` | a ReadOnlyTee availability node prefetching blobs: every cluster node is the TEE and keeps the app's blobs |
+| `apps/fugue-collab/workflows/fugue-collab-figure2.yml` | the Fugue paper's Figure 2, three isolated replicas typing at positions of their own unsynced views and merged after: a cluster orders every edit against one current text, so there is no concurrent merge (the other fugue-collab workflows cover editing) |
+| `apps/fugue-collab/workflows/fugue-collab-large-paste.yml` | a paste merged across a libp2p partition: a cluster has no partitioned user replica (concurrent edits: the other fugue-collab workflows) |
+| `apps/fugue-collab/workflows/fugue-collab-partition-heal.yml` | two sides of a network partition typing at the same position and merging when it heals: a cluster has no partitioned user replica and no merge |
+| `apps/kv-store/workflows/ephemeral-open-subgroup-e2e.yml` | presence over v1's WS/SSE for a member inheriting an open subgroup, checked by a script on v1's endpoints (ephemeral-presence-e2e covers presence) |
+| `apps/nested-crdt-test/workflows/nested-crdt-offline-catchup.yml` | an offline node catching up over v1's HashComparison sync: a cluster replicates by its Raft log |
+| `apps/rich-collab/workflows/rich-catchup.yml` | offline and replaced nodes catching up over v1's HashComparison sync: a cluster replicates by its Raft log |
+| `apps/scaffolding-e2e/workflows/account-namespace-left-unfollows.yml` | v1 devices following and unfollowing an account's namespaces: a device is a passkey of the account and follows nothing |
+| `apps/scaffolding-e2e/workflows/account-pairing-application-scope.yml` | pairing scoped by namespace and application: a passkey signs in to the whole account |
+| `apps/scaffolding-e2e/workflows/account-pairing-missed-publish.yml` | a partitioned device missing the pairing's one-shot publish of its link and scope key: no keys are delivered to devices |
+| `apps/scaffolding-e2e/workflows/account-registry-replicates.yml` | the v1 account namespace recording each device's scope: an account's passkeys are cluster system state |
+| `apps/scaffolding-e2e/workflows/account-revoke-lost-device.yml` | revoking a device with a proof minted from the account root's recovery phrase: an account has passkeys, no root key |
+| `apps/scaffolding-e2e/workflows/account-revoked-device-misses-new-restricted-subgroup.yml` | a revoked device's key excluded from a subgroup opened later (key delivery): removing a passkey ends its sessions (account-device-revoke-lockout) |
+| `apps/scaffolding-e2e/workflows/account-revoked-device-repairs.yml` | a revoked node re-minting its device and re-pairing: a removed passkey is gone; signing in again is a new passkey (add_device) |
+| `apps/scaffolding-e2e/workflows/account-sibling-projected-by-founder.yml` | a device carried into a namespace by a sibling device: a device is a passkey of the account and needs no carrying |
+| `apps/scaffolding-e2e/workflows/admit-without-credential.yml` | v1's admission handler publishing a keyholder's signed join without a node credential: an invite token is redeemed by a signed-in person |
+| `apps/scaffolding-e2e/workflows/delegated-authorship.yml` | a keyholder writing through a relay under a signed warrant (delegated authorship): there are no relays, the node runs every call for the caller it authenticated |
+| `apps/scaffolding-e2e/workflows/delegated-invitation-routing.yml` | routing a join to an admitter named in the invitation: there are no admitters, any node redeems an invite |
+| `apps/scaffolding-e2e/workflows/delegated-proof.yml` | delegated execution by a signed request (CallerProof) to a node the caller has no account on: every call is the authenticated caller's own |
+| `apps/scaffolding-e2e/workflows/delegated-session.yml` | a device key obtaining a session on a node it does not own (delegated sessions): a passkey signs in to any node |
+| `apps/scaffolding-e2e/workflows/group-held-flip-applies-when-member-added.yml` | a governance op held until the subgroup key arrives: teams are system state with no keys to deliver |
+| `apps/scaffolding-e2e/workflows/group-held-flip-nonmember-keeps-up.yml` | a sealed governance op a non-member cannot settle stalling its governance: teams are system state ordered by one log |
+| `apps/scaffolding-e2e/workflows/group-join-mesh-not-ready.yml` | a join failing closed while no admitter is reachable over the mesh, then recovering: there are no admitters, any node redeems an invite (38-namespace-invite-join-regression covers joining) |
+| `apps/scaffolding-e2e/workflows/group-leave-context.yml` | leave_context, a node-local opt-out that stops a node syncing one context: a member holds no replica to stop; access follows the organization and team |
+| `apps/scaffolding-e2e/workflows/kad-routing-from-identify.yml` | libp2p Kademlia routing among user nodes: a cluster's peers are its attested nodes |
+| `apps/scaffolding-e2e/workflows/member-removed-partition-window-reconcile.yml` | v1's reconcile rolling back a write a removed member made in a partition window the admin had not seen: a cluster orders the write and the removal in one log, so there is no window to reconcile |
+| `apps/scaffolding-e2e/workflows/namespace-restore-kicked-member.yml` | restoring a namespace a node removed from its own disk: a cluster keeps no per-member copy to remove |
+| `apps/scaffolding-e2e/workflows/namespace-restore-without-invitation.yml` | restoring a namespace a node removed from its own disk: a cluster keeps no per-member copy to remove |
+| `apps/scaffolding-e2e/workflows/offline-account-root.yml` | a node joining under a certificate its account root signed elsewhere (the root kept offline): an account has passkeys, no root key |
+| `apps/scaffolding-e2e/workflows/public-intents.yml` | a relay serving delegated execution with --public-intents: there are no relays |
+| `apps/scaffolding-e2e/workflows/relay-device-login.yml` | a fleet relay in proxy auth mode behind mero-auth serving device-key login: there are no relays, and every node authenticates its callers |
+| `apps/scaffolding-e2e/workflows/sync-resilience-lossy-link.yml` | v1 sync recovering from packet loss on a user node's link: a cluster replicates by its Raft log |
+| `apps/scaffolding-e2e/workflows/sync-resilience-network-partition-symmetric.yml` | v1 sync and relay reservations across a NAT partition: a cluster replicates by its Raft log |
+| `apps/scaffolding-e2e/workflows/sync-resilience-network-partition.yml` | v1 sync and relay reservations across a NAT partition: a cluster replicates by its Raft log |
+| `apps/scaffolding-e2e/workflows/sync-resilience-peer-pause-symmetric.yml` | v1 sync after a paused peer re-dials its relay: a cluster replicates by its Raft log |
+| `apps/scaffolding-e2e/workflows/sync-resilience-peer-pause.yml` | v1 sync after a paused peer re-dials its relay: a cluster replicates by its Raft log |
+| `apps/scaffolding-e2e/workflows/sync-resilience-peer-restart-symmetric.yml` | v1 sync after a restarted peer re-registers its relay reservation: a cluster replicates by its Raft log |
+| `apps/scaffolding-e2e/workflows/sync-resilience-peer-restart.yml` | v1 sync after a restarted peer re-registers its relay reservation: a cluster replicates by its Raft log |
+| `apps/scaffolding-e2e/workflows/tee-admission-mode-relay.yml` | a namespace's TEE admission mode (RelayTee vs ReadOnlyTee): the cluster is the TEE and there are no relays |
+| `apps/tee-cards/workflows/tee-cards-failover.yml` | failover between TEE authorities elected per trigger: the cluster is the TEE and its leader runs every trigger (tee-cards covers the game) |
+| `apps/tee-cards/workflows/tee-cards-late-tee.yml` | a TEE admitted later opening a deck sealed before (the namespace TEE key): the cluster is the TEE and holds the app's key |
+| `apps/tee-cards/workflows/tee-cards-rotate.yml` | rotating the namespace TEE key when a TEE is removed: the cluster is the TEE and holds the app's key |
+| `workflows/app-migration/26-owner-driven-authored.yml` | identity-gated entries migrating lazily at each owner's next write: an upgrade migrates the app's one state at once (16 covers UserStorage) |
+| `workflows/app-migration/28-get-migration-status.yml` | the rollup of members' migration heartbeats: no member holds its own copy; an upgrade run reports the apps (00, 14) |
+| `workflows/app-migration/36-chained-catchup.yml` | a member left several releases behind replaying the upgrade ladder lazily: no member replica falls behind, each upgrade migrates at once |
+| `workflows/app-migration/37-stranded-resync.yml` | a member stranded by an unobtainable intermediate release, recovered by resync: no member replica falls behind |
+| `workflows/app-migration/42-activate-upgrade-on-an-idle-node.yml` | activating an upgrade on a member's idle node (POST .../upgrade/activate): the cluster installs and switches every node |
+| `workflows/app-migration/43-retarget-before-activate.yml` | a member's activation refused after the admin retargeted: there is no per-member activation |
+| `workflows/app-migration/45-frontend-two-releases.yml` | each release serving its own frontend, checked by a v1 script on the app host: the node serves a package's frontend from its own origin (`{label}.{apps_domain}`, routed by Host), which no runner step addresses; the cluster test `app_frontends_are_served_and_their_sessions_are_bound` (`crates/node/tests/cluster.rs`) covers serving a release's frontend there, one release only |
+| `workflows/app-migration/46-frontend-proxy-mode.yml` | an app host on a node in proxy auth mode passing no token: a cluster node always authenticates |
+| `workflows/app-migration/47-missing-releases-before-activate.yml` | a member installing the releases it missed before activating: the cluster installs releases on every node |
+| `workflows/app-migration/48-member-installs-only-the-newest-release.yml` | a member that installed only the newest release replaying the ladder: the cluster installs and migrates at once |
+| `workflows/auth-seam.yml` | v1's client tokens minted by the auth frontend (POST /admin/client-key): a cluster signs in with passkeys and scopes API keys (merobox's orgs-and-keys example) |
+
+### In CI
+
+`.github/workflows/e2e.yml` runs on every PR that touches code:
+
+- job `merobox fixtures`: builds `merod`, the fixtures and merobox's
+  example inputs once, for the jobs below;
+- job `merobox workflows (K/4)`: every workflow, core's and the
+  apps', in four shards of about equal length (merobox at `MEROBOX_REF`);
+  nightly, the fuzzy loads run 15 minutes each. Each shard's fuzzy load
+  reports its latency and throughput (below) in the job summary and as the
+  artifact `soak-metrics-K`;
+- job `merobox examples`: merobox's own examples;
+- job `clients against merod`: mero-js's `test:cloud-v2` and
+  calimero-client-py's cluster tests against this tree's `merod`. A change that
+  breaks a client goes green with the client's fix: a same-named branch there,
+  or `sdk-ref: <ref>` (mero-js) / `py-ref: <ref>` (Python) in the PR body.
+
+Those test a debug `cargo build`. Two jobs test the `merod` that ships, the
+binary inside the Docker image (merobox starts processes, so it is copied out
+with `docker create` and `docker cp`):
+
+- **A PR's own image** (`.github/workflows/release.yml`, job
+  `E2E on the merod image`, on PRs and the merge queue whenever the PR builds
+  the image). `Release Merod container` builds the amd64 image as it does for
+  master, loads it instead of pushing it, and hands it on as the artifact
+  `merod-image`; the job runs the smoke list,
+  `scripts/run-workflows.py --smoke` (one workflow per area, listed with
+  the fixtures they need in `scripts/workflows-smoke.json`, every one
+  on the baseline; `check-scenario-coverage.py` checks), and merobox's
+  `kv-store-failover` and `frozen-leader` examples against it, about four
+  minutes after the image. `Image E2E fixtures` builds only the smoke list's
+  fixtures, alongside the binaries.
+- **The latest release's image, nightly** (`e2e.yml`, jobs
+  `Latest release image`, `merobox fixtures (release V)` and
+  `merobox workflows on release V (K/4)`; on demand with the `release_image`
+  input: `latest`, a tag of `ghcr.io/<owner>/merod` such as `release-v2-edge`,
+  or an image reference). It pulls
+  `ghcr.io/calimero-network/merod:<version>` for the newest published release
+  (a prerelease included) and runs the four shards, soak included, on the
+  workflows, fixtures and baseline of the commit the image was built from
+  (its `org.opencontainers.image.revision`), so a workflow added after the
+  release does not fail it. A release published before the v1 node was
+  deleted is a v1 node, which merobox does not run: the job says so in its summary and the shards
+  are skipped. On the release branch the nightly tests `release-v2-edge`
+  instead, the image of the branch's latest merge
+  ([Release branch](#release-branch)).
+
+To run the smoke list against a binary taken out of an image locally:
+
+```bash
+docker create --name m ghcr.io/calimero-network/merod:release-v2-edge && docker cp m:/usr/local/bin/merod /tmp/merod && docker rm m
+python3 scripts/build-workflow-fixtures.py $(jq -r '.fixtures[]' scripts/workflows-smoke.json)
+MEROD_BINARY=/tmp/merod python3 scripts/run-workflows.py --smoke
+```
+
+### Soak latency and throughput
+
+A `fuzzy_test` step times every step it sends to the cluster (one round trip
+each). With `MEROBOX_SOAK_REPORT=file.json` it appends a report to that file:
+per operation, how many ran and failed, operations and calls per second over
+the run, and the p50/p95/p99 (and mean, max) latency of its calls in
+milliseconds, the same per step kind (`call set`, `call get`), and the whole
+run's. `merobox cloud soak-report file.json` (or `scripts/soak-summary.sh`,
+which CI runs) prints it as a table:
+
+```bash
+MEROD_BINARY=target/debug/merod MEROBOX_FUZZY_SECONDS=30 MEROBOX_SOAK_REPORT=soak.json \
+  python3 scripts/run-workflows.py workflows/fuzzy-tests/kv-store/fuzzy-test.yml
+merobox cloud soak-report soak.json
+```
+
+A 30-second kv-store run against a debug `merod` on a shared 4-vCPU Linux
+container (the shape of the nightly table, not a reference):
+
+| Operation | Ops | Pass % | Ops/s | Calls | Calls/s | p50 ms | p95 ms | p99 ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| cross_node_write_read | 7 | 100.0 | 0.23 | 14 | 0.46 | 19.5 | 21.8 | 21.8 |
+| list_entries | 29 | 100.0 | 0.96 | 29 | 0.96 | 43.3 | 74.1 | 85.3 |
+| random_read | 28 | 100.0 | 0.93 | 28 | 0.93 | 11.6 | 16.2 | 20.0 |
+| set_and_verify | 96 | 100.0 | 3.18 | 192 | 6.36 | 17.8 | 29.3 | 31.9 |
+| write_burst | 56 | 100.0 | 1.86 | 672 | 22.28 | 25.1 | 30.9 | 33.5 |
+| **all** (30s) | 216 | 100.0 | 7.16 | 935 | 31.00 | 22.1 | 31.8 | 51.1 |
+
+The calls run one at a time, so a call's latency is what one caller sees and
+calls/s is one caller's rate, not the cluster's capacity; the cluster bench
+([below](#cluster-throughput)) measures that. Numbers from a debug build
+(the PR shards) are for comparing runs of the same job, not the release's
+speed; the release image's shards measure that. The pass rate and
+`success_threshold` gate as before; latency gates nothing.
+
+### Flamegraphs
+
+Nightly (or with the `flamegraph` input), job `merod flamegraph (kv-store
+soak)` builds `merod` with the `profiling` profile (optimized, with symbols)
+and `-C force-frame-pointers=yes`, runs the kv-store fuzzy load for five
+minutes, and records node 1 with `perf record -g` for most of it
+(`scripts/soak-flamegraph.sh`; the runner sets `kernel.perf_event_paranoid=-1`).
+inferno renders the samples; the artifact `merod-flamegraph` holds
+`merod-flamegraph.svg`, the folded stacks `merod.folded` (compare two nights
+with `inferno-diff-folded old.folded new.folded | inferno-flamegraph > diff.svg`)
+and the profiled run's soak report. Locally, on Linux:
+
+```bash
+cargo install inferno --version 0.12.8 --locked
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build -p merod --profile profiling
+sudo sysctl -w kernel.perf_event_paranoid=-1
+MEROD_BINARY=target/profiling/merod MEROBOX_FUZZY_SECONDS=120 scripts/soak-flamegraph.sh /tmp/flame
+```
+
+`PERF=/usr/lib/linux-tools/<version>/perf` points it at a perf whose wrapper
+does not match the running kernel; `PROFILE_DELAY`, `PROFILE_SECONDS` and
+`PROFILE_HZ` set when and how it samples, and a second argument names another
+fuzzy workflow (a third, another node).
+
+## Release branch
+
+`release-v2-parity` is the long-lived release branch: PRs merge into
+it, and it never merges into master. Its CI is master's, with its own image
+tags and nightly:
+
+| When | What runs | What publishes |
+| --- | --- | --- |
+| PR into the branch | Every check a PR into master runs (no check's `pull_request` trigger leaves the branch out; `abi-guard.yml` and `platforms.yml` name it) | Nothing; `Release Merod container` builds the PR's image and `E2E on the merod image` tests it |
+| Merge (push) into the branch | `ci-checks.yml`, `e2e.yml`, `release.yml`, `benchmarks.yml`, `docs-ci.yml`, `crypto-vectors.yml`, `abi-contract.yml`, `abi-guard.yml`, `workflow-lint.yml`, `codeql.yml`; ci-checks and E2E runs are never cancelled, and the ci-checks, wasm-apps and storage-cost caches save, as on master | The multi-arch `merod` image as `ghcr.io/calimero-network/merod:release-v2-edge` and `:release-v2-<short sha>`, labelled with the commit (`org.opencontainers.image.revision`); the release binaries as the run's `artifacts-<target>` artifacts, kept 14 days; the criterion, search and cluster benchmark reports as the base the branch's PRs compare against |
+| Nightly | `e2e.yml` with `nightly: true` (the 15-minute soak, the shards on `release-v2-edge`, the flamegraph), `fuzz.yml` (30 minutes per target) and `platforms.yml` with `nightly: true` (macOS; a failure opens "Nightly platform build is failing on release-v2-parity") | Nothing |
+
+The branch never publishes a version: no `edge`, `latest`, `prerelease` or
+version tag, no GitHub Release, crates, App Bundle, Homebrew tap update or SDK
+bump PRs. `release.yml` gates each of those on master. The clients job tests
+the clients' own `release-v2-parity` branches when nothing is paired
+(`sdk-ref:`, `py-ref:` or a same-named branch), since their master has no
+cluster tests.
+
+GitHub runs `schedule` only from the default branch, so the nightly is started
+by `.github/workflows/nightly-release-v2.yml` on master, which runs
+`gh workflow run <workflow> --ref release-v2-parity` for the three workflows
+above (with `GITHUB_TOKEN` and `actions: write`). To run one by hand:
+
+```bash
+gh workflow run e2e.yml --ref release-v2-parity -f nightly=true
+gh workflow run e2e.yml --ref release-v2-parity -f release_image=release-v2-edge   # the 30 s soak, plus the image's shards
+```
+
+`docs-site.yml` stays master's: it deploys the public documentation site to
+GitHub Pages, which has one site per repository, so the branch's docs are
+built and link-checked (`docs-ci.yml`) but not deployed.
+
+## What scenario tests cannot catch
+
+Every node in a merobox run is the same build on fresh state, so it never
+tests data written by an older version. A change to an on-disk or wire format
+needs its own migration test, as `calimero-log`'s `migration_tests.rs` does for
+the `log.redb` store.
 
 ## Proving a fix
 
 <Steps>
 
-1. **Reproduce first, end to end.**
-   Write the failing case at the layer a user hits it: a `sync_sim` or integration test for a logic or ordering bug, a merobox scenario for a networked flow.
-   Watch it fail, and capture the log window around the failure with the specific line or marker that proves the bug.
+1. **Reproduce first, at the layer a user hits it.** A cluster test for API
+   behaviour, a unit test for a rule, a merobox scenario for a multi-process
+   flow. Watch it fail for the reason the bug describes.
 
-2. **Apply the fix and rerun the same test.**
-   Keep it as the regression test.
-   The captured before and after is the evidence the PR description shows.
+2. **Fix it and rerun the same test.** Keep it as the regression test; the
+   before and after output goes in the PR description.
 
-3. **Reason about old data.**
-   For anything touching on-disk formats or wire encoding, work through the old-data and mixed-version cases explicitly, because E2E will not.
-
-</Steps>
-
-## What runs in CI
-
-Workflows are path-filtered:
-
-| Workflow | Triggers on | Runs |
-| --- | --- | --- |
-| `e2e-rust-apps.yml` | any `crates/**` and app dirs | The main merobox suite (scaffolding-e2e, xcall, blobs, kv-store): the scenarios in `.github/e2e-scenarios.yml`, several per runner (`scripts/e2e-scenario-groups.py`) |
-| `sync-regression.yml` | `crates/node/src/sync/**`, storage sync paths | `workflows/sync-tests/` |
-| `app-migration-e2e.yml` | migration paths | v1 to v2 app-migration scenarios |
-| `sdk-e2e.yml` | SDK paths | SDK end to end |
-| `fuzzy-load-test.yml` | manual, load paths | Fuzzy load |
-| `platforms.yml` | nightly; PRs reaching Windows-only code (`scripts/needs-windows-ci.py`); label `ci:platforms` | Windows tests and e2e, macOS and Windows release builds |
-
-Documentation never starts a code workflow.
-Every `paths:` filter ends with `!**/*.md` / `!**/*.mdx`, re-including only the Markdown some code reads (an `include_str!` target, a manifest's `guide` or `readme`); `scripts/tests/ci-paths-test.py` fails a filter that lets docs back in.
-`ci-checks.yml` and `release.yml` carry required checks, so they run on every PR and skip work instead.
-`scripts/ci-scope.py` follows each job's packages through their dependency closure and skips a job the change cannot reach: the storage cost gate, WASM size gate, cargo-mero e2e and app builds run only when their inputs move, and a docs-only PR builds nothing.
-
-## The pre-PR gate
-
-These are the exact checks CI enforces in `.github/workflows/ci-checks.yml`.
-CI runs them as parallel jobs behind the one required `Rust` check: lint, tests, feature-gated tests, the app build, and supply-chain checks.
-Run them all locally with `./scripts/check-like-ci.py`, which reads that workflow instead of keeping its own copy; `--list` shows what it will run.
-The steps below are the same commands, grouped by job.
-
-<Steps>
-
-1. **Check formatting and lint with the no-warnings gate.**
-   The `--features calimero-storage/testing` flag pulls the storage `testing` harness into the same single pass so it is linted too.
-
-   ```sh
-   cargo fmt --check
-   cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
-   ```
-
-2. **Run the tests.**
-   CI runs them under [cargo-nextest](https://nexte.st/), which runs every test binary in parallel, plus the doctests nextest does not cover.
-   Some networking tests bind real interfaces through a `TEST_HOSTS` env var; set it locally if host-dependent tests fail.
-   Tests that execute an app's WASM build it themselves when it is missing or stale, so no app build is needed first.
-
-   ```sh
-   TEST_HOSTS=127.0.0.1,0.0.0.0 cargo nextest run --workspace
-   cargo test --workspace --doc
-   ```
-
-3. **Build every app.**
-   CI builds and bundles all in-repo apps in its own job, and the script ends by checking that every wasm embeds its ABI.
-   The result is cached under a key made of the git trees it is built from (every app and the crates it reaches, cargo-mero, the lockfile, the toolchain, the script and the workflows that run it), and only master saves it, so a PR whose change cannot reach the apps restores the set master already built and checked; e2e's Build Apps restores the same entry (`.github/actions/wasm-apps`).
-
-   ```sh
-   ./scripts/build-all-apps.sh
-   ```
-
-4. **Run the narrow target checks** CI keeps green: the no-chain context-config build and the local-only `merod` init binary.
-
-   ```sh
-   cargo check -p calimero-context-config
-   cargo check -p merod --no-default-features
-   ```
-
-5. **Check the dependency policy** - only needed if you changed dependencies.
-   CI pins `cargo-deny` to `0.19.9` and also runs `cargo machete` for unused dependencies.
-
-   ```sh
-   cargo deny check advisories bans licenses sources
-   cargo machete
-   ```
+3. **Reason about old data.** For anything touching the store, snapshots, the
+   sealed wire format or signed formats, work through existing data and
+   mixed-version clusters explicitly.
 
 </Steps>
 
-<Aside type="tip">
-  Building the example apps to WASM needs the target installed once:
-  `rustup target add wasm32-unknown-unknown`. The full workflow — running local
-  nodes, commit / PR conventions, and style rules — is on the
-  [development workflow](/contribute/development/) page.
+## Benchmarks and cost gates
+
+Storage cost gates, scaling guards and criterion benches are described in
+[`docs/benchmarking.md`](https://github.com/calimero-network/core/blob/master/docs/benchmarking.md).
+`.github/workflows/benchmarks.yml` runs them on every push to master or the
+release branch and on a PR labelled `run-benchmarks`: the criterion benches per
+crate (`calimero-log`'s append and commit, `calimero-sealed`'s request round
+trip, the storage and runtime benches), compared with `critcmp` against the
+base commit's push run on the PR's base branch, plus two
+reports that are not criterion: `tools/search-bench` (the search engine) and
+the cluster throughput bench, whose JSON the comparison also diffs.
+
+### Cluster throughput
+
+`crates/node/benches/cluster_throughput.rs` drives a 3-node cluster in
+one process (the harness of `tests/cluster.rs`, in `tests/harness/cluster.rs`,
+with merod's Raft timing) through the sealed client, calling the kv-store
+fixture's `set` on the app's leader:
+
+```bash
+cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
+cargo bench -p calimero-node --bench cluster_throughput -- --secs 15 --out cluster.json
+```
+
+Two runs on a 4-vCPU Linux container (bench profile with LTO off; the machine
+was shared with other work, so treat rows as ±25%):
+
+| Scenario | Calls/s | Per app | p50 | p99 |
+| --- | --- | --- | --- | --- |
+| (a) 1 app, 1 in flight | 148 / 185 | | 6.3 / 5.2 ms | 15 / 8 ms |
+| (b) 1 app, 64 in flight | 205 / 250 | | 285 / 253 ms | 519 / 317 ms |
+| (c) 2 apps, 64 each, one leader node | 322 / 349 | 160 + 162 / 176 + 173 | 348 / 340 ms | 780 / 495 ms |
+| (c') 2 apps, 64 each, two leader nodes | 264 / 298 | 119 + 146 / 139 + 159 | 436 / 423 ms | 2963 / 3671 ms |
+
+One synced RocksDB write (`rocksdb_write/synced` in `calimero-log`'s bench, and
+timed again by this bench) took 0.16 to 0.19 ms on this disk; unsynced, 2 µs.
+
+**Appends without a leadership round.** `Group::propose` used to confirm
+leadership with a majority (`ensure_linearizable`) before every build; it now
+does so only for a proposal that answers without appending, and concurrent
+`sys_fresh` callers share one read-index round. Before and after on the same
+machine, two runs each, `--secs 10` (other work shared the machine, so ±25%
+still holds):
+
+| Scenario | Calls/s before → after | p50 before → after | p99 before → after |
+| --- | --- | --- | --- |
+| (a) 1 app, 1 in flight | 219 / 191 → 205 / 233 | 4.5 / 5.1 → 4.8 / 4.2 ms | 6.6 / 7.2 → 7.9 / 6.3 ms |
+| (b) 1 app, 64 in flight | 238 / 233 → 293 / 298 | 270 / 273 → 216 / 212 ms | 337 / 301 → 259 / 247 ms |
+| (c) 2 apps, 64 each, one leader node | 368 / 415 → 497 / 465 | 343 / 305 → 252 / 277 ms | 453 / 382 → 327 / 365 ms |
+| (c') 2 apps, 64 each, two leader nodes | 452 / 460 → 481 / 471 | 286 / 274 → 259 / 259 ms | 2273 / 2322 → 368 / 362 ms |
+
+`calimero-log`'s bench on a 3-node group: one proposal in flight 689 / 633 →
+573 / 528 µs, 64 in flight 36.8 / 38.1 → 33.4 / 31.8 ms (1 node: unchanged, it
+had no round to save). A single caller (a) gains nothing measurable; the
+queue behind the propose lock (b, c) moves about a fifth faster, and the
+seconds-long p99 with two leader nodes (c') is gone.
+
+- **The limit is per app, not per node.** A group proposes one call at a time
+  (`propose_lock` in `Group::propose` is held while the leader runs the WASM
+  and until the entry commits), so 64 calls in flight on one app only queue:
+  (b) is 1.35x (a), and its p50 is about 50 times (a)'s. A second app on the same
+  leader node adds its own stream: (c) is 1.4 to 1.6x (b) (2x in an earlier
+  run), and the two apps share it evenly; a per-node limit would hold (c)
+  at about 1x. Two leader nodes did no better than one here, and their p99
+  was seconds: 4 cores ran all three nodes and 128 callers.
+- **The disk is not the limit.** A call needs the leader's synced append and a
+  follower's (in parallel), so about 2 syncs: 1 ÷ (2 × 0.17 ms) is about 3,000
+  calls/s per app, against the 150 to 300 measured. A call's 4 to 7 ms is the
+  sealed HTTP round trip, the fresh system read, the WASM run and the Raft
+  round trip of its append, the last two inside the propose lock. On a disk whose sync takes 10 to
+  25 ms (macOS, where Rust's `sync_data` is `F_FULLFSYNC`, which redb ran on
+  every commit), the same formula gives 20 to 50 writes/s per app, the range
+  of the ~38/s a macOS build on redb reported.
+
+<Aside type="note" title="Fuzzing">
+  `fuzz/` fuzzes what a node reads from untrusted bytes (`sealed_request`,
+  `passkey_verify`, `session_token`, `quote_parse`, `bundle_open`,
+  `crdt_sync`). `fuzz.yml` runs a changed target for a minute on a PR and
+  every target for 30 minutes nightly; `scripts/fuzz.sh <target> [seconds]`
+  runs one locally.
 </Aside>
 
 ## Where to go next
 
 <CardGrid>
-  <LinkCard title="Development workflow" href="/contribute/development/" description="Build, run local nodes, and the commit / PR conventions the gate sits inside." />
-  <LinkCard title="Testing your app" href="/build/testing/" description="The app-author view of TestHost — fast, deterministic in-process unit tests." />
+  <LinkCard title="Development workflow" href="/contribute/development/" description="Build, run local nodes, and the checks before a PR." />
+  <LinkCard title="Testing your app" href="/build/testing/" description="TestHost from the app author's side." />
 </CardGrid>

@@ -1,157 +1,158 @@
 ---
-title: Application Execution
-description: Where data operations come from — running a WASM application.
+title: Application execution
+description: How the leader runs one WASM call — the overlay it runs over, what the host hands the run, what comes out, and what the node refuses.
 sidebar:
-  order: 6
+  order: 5
 ---
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
-import Figure from '../../../components/Figure.astro';
 import AbiBoundary from '../../../components/diagrams/AbiBoundary.astro';
 
-## What an execution is
+An **application** is a WASM module that defines a state machine: its data
+types and the methods that change them. An **execution** (a *run*) is one call
+of one method. On a cluster, only the app group's **leader** runs calls; the
+other replicas apply what the run produced ([Replication](/protocol/replication/)).
 
-An **application** is a WASM module that defines a state machine: data types and the methods that mutate them. An **execution** is one method call. It reads the context's current state, runs deterministic guest code, and produces a set of state changes plus a fresh root hash. Those state changes are the data-plane [operations](/protocol/operations/) that fold into the [projection](/protocol/projection/).
+An app runs on one of two runtimes, decided once from the WASM its bundle names
+(`AppRecord::executor`): a core module built with `calimero-sdk` runs on
+`calimero-runtime` (wasmer), the runtime v1 apps were built against; a
+`calimero:app` component built with `calimero-app-sdk` runs on
+`calimero-app-engine-wasmtime` through the host core `calimero-app-host`. For a
+core module the node calls `Module::run_cloud` (`crates/node/src/app.rs`,
+`Executor`), compiling each bundle once and caching the module by its hash;
+components go through `crates/node/src/component.rs`.
 
-Crucially, execution is **sandboxed and self-contained**: the guest cannot touch the network, the clock, or the disk directly. It can only call back into the host through a fixed set of functions — the ABI. Everything the guest does is therefore observable, bounded, and reproducible.
+## One run
 
 <SeqDiagram
   id="d-exec"
-  title="One application method call"
+  title="One call on the leader"
   lanes={[
-    { label: 'Caller', color: '#f0883e' },
-    { label: 'Runtime', color: '#3fb950' },
-    { label: 'WASM guest', color: '#58a6ff' },
-    { label: 'Storage', color: '#39d0d8' },
+    { label: 'Node', color: '#3fb950' },
+    { label: 'Runtime', color: '#58a6ff' },
+    { label: 'Overlay', color: '#39d0d8' },
+    { label: 'App state', color: '#a371f7' },
   ]}
   steps={[
-    { from: 0, to: 1, label: 'execute(method, input)' },
-    { from: 1, to: 1, label: 'instantiate module' },
-    { from: 1, to: 2, label: 'call method()' },
-    { from: 2, to: 1, label: 'input() → read args', dashed: true },
-    { from: 2, to: 3, label: 'storage_read(k)' },
-    { from: 3, to: 2, label: 'value', dashed: true },
-    { from: 2, to: 2, label: 'storage_write(k, v) → buffered', color: '#f0883e' },
-    { from: 2, to: 1, label: 'emit(event) / log' },
-    { from: 2, to: 2, label: 'commit()', color: '#a5ff11' },
-    { from: 1, to: 3, label: 'persist writes → new root_hash' },
-    { from: 1, to: 0, label: 'Outcome { returns, events, artifact, root_hash }', dashed: true },
+    { from: 0, to: 0, label: 'read the caller\'s standing (fresh system state)' },
+    { from: 0, to: 1, label: 'run_cloud(context, account, method, input, overlay, private, env)' },
+    { from: 1, to: 2, label: 'storage_read(k)' },
+    { from: 2, to: 3, label: 'miss → read applied state', dashed: true },
+    { from: 1, to: 2, label: 'storage_write(k, v) — kept in the overlay', color: '#f0883e' },
+    { from: 1, to: 0, label: 'Outcome { returns, logs, events, xcalls, artifact, blobs, … }', dashed: true },
+    { from: 0, to: 0, label: 'host rules: reserved keys, writer rotations, read-only rows' },
+    { from: 0, to: 0, label: 'diff = overlay writes in order → propose the entry' },
   ]}
 />
 
+The run reads the app's applied state through a copy-on-write **overlay**
+(`Overlay`): a read checks the run's own writes first, then the state; a write
+or delete stays in the overlay. Nothing touches the app's state during the run.
+When it ends, the overlay's writes, in the order they last happened, become the
+outcome's **diff**. If the run trapped or the app returned an error, the diff is
+empty.
+
+The guest commits its storage changes through the SDK,
+and the runtime returns the commit **artifact** (a borsh `StorageDelta`).
+The node does not replicate the artifact: it reads it only to list the storage
+entities the run touched, which is what [search](/protocol/reads/#search)
+re-indexes.
+
 ## The host ABI boundary
 
-The guest and the host share nothing but a block of **linear memory** and a set of numbered **registers**. Arguments cross the boundary as `(pointer, length)` descriptors into guest memory; the host reads or writes those bytes, and hands larger results back through registers the guest then reads. The host bounds-checks every access.
+The guest and the host share a block of linear memory and a set of numbered
+registers. Arguments cross as `(pointer, length)` descriptors; the host
+bounds-checks every access and hands larger results back through registers.
+Exported methods take no arguments and return nothing: input arrives through
+`input()`, the result leaves through `value_return`.
 
 <AbiBoundary />
 
-## What the host offers
+## What the host offers a cloud run
 
-The ABI is a fixed catalog of host functions. The guest never does anything outside this list — which is exactly why execution stays deterministic and bounded. The families:
+| Family | What it does on a cluster |
+| --- | --- |
+| `context_id`, `account_id`, `executor_id`, `device_id` | The app's context id (`SHA-256(app_id)`), and the caller's account. `executor_id` is the account too: there are no per-device keys ([Who a run acts as](/protocol/authorship/)) |
+| `caller_org` | The caller's role and teams in the app's organization, or nothing |
+| `input`, `value_return`, `log_utf8`, `emit`, `emit_with_handler` | Arguments in; result, logs and events out. An event may name a handler to run after the entry commits ([Event handlers](/protocol/xcall/)) |
+| `storage_read` / `storage_write` / `storage_remove` | The app's replicated state, through the overlay |
+| `private_storage_*` | The caller's own space in the app's state (below) |
+| `storage_index_*` | The ordered index. The node keeps none: index writes report "not persisted", and the SDK falls back to its unindexed path |
+| `time_now`, `random_bytes` | The leader's wall clock and randomness, read once: followers apply the result |
+| `xcall`, `xcall_origin` | Queue a call into another app; read which app called this one |
+| `blob_*` | The cluster's [blob store](/protocol/blobs/), for the app's own blobs |
+| `search_query` | The app's own full-text indexes, in views only |
+| Sealing functions (`tee_sealing_key`, …) | `TeeOnly` / `TeeSecret` state, with keys the node derives per app |
+| `http_request` | One outbound HTTPS request, under the gates below |
+| `ed25519_verify` | Signature checks inside app logic |
 
-| Family | Examples | Purpose |
+## Three storage spaces in one state
+
+| Space | Where it lives | Who reads it |
 | --- | --- | --- |
-| Context / input | `context_id`, `account_id`, `device_id`, `input`, `read_register` | Read who is calling — as a person (`account_id`) and as a machine (`device_id`) — in which context, with what arguments. |
-| State | `storage_read`, `storage_write`, `storage_remove` | Read and mutate replicated context state. Writes are buffered (below). |
-| Output | `value_return`, `log`, `emit` | Return a result, log a line, emit an application event. |
-| Commit | `commit` / root-state functions | Finalize buffered writes into a new state root and an artifact. |
-| Crypto | `ed25519_verify` | Verify signatures inside guest logic (deterministic). |
-| Host-provided | `time_now`, `random_bytes` | The _only_ sources of non-determinism — injected by the host, never read by the guest itself. |
-| Cross-context | `xcall` | Queue a fire-and-forget call into another context on the same node. |
-| Blobs | `blob_*` | Stream large binary artifacts outside the state tree. |
-| Search | `search_query` | Query this node's [full-text index](/build/guides/search/) of the running context. Views only: node-local data must not steer a write. |
+| **Shared** | The app's state, keys as the app writes them | Every run |
+| **Private** (`env::private_storage_*`) | The app's state, under `\0calimero.private\0 ‖ account ‖ 0` | Only runs whose caller is that account |
+| **Host** (`\0calimero.*`) | The app's state: private spaces, shared-cell writer sets, blob marks | Only the node |
 
-## Three storage layers
+In v1, private storage stayed on the member's own node and never synced. An
+app on a cluster has no member nodes, so the caller's private space is part of the
+replicated state, sealed on disk like the rest, and the host hands a run only
+its caller's space: app code cannot address another account's.
 
-Not everything a guest writes should replicate. The ABI exposes three distinct layers, and the guest chooses per write:
+The host's key space is reserved. App code's overlay answers nothing under
+`\0calimero.` and a run that reads or writes there is refused outright
+(`the run addressed the host's key space`), so an app can neither forge a
+writer set or a blob mark nor read someone's private space by raw key. The node
+writes there itself (`Overlay::set_host`) as part of the same entry.
 
-| Layer | Description |
-| --- | --- |
-| **Replicated** | The shared context state. Writes here become operations that sync to every member and fold into the scope root. This is "the app's state." |
-| **Private** | Node-local state that never leaves the machine and never enters the scope root. For per-node caches and secrets. |
-| **Ordered index** | A node-local, byte-ordered secondary index for range and prefix queries — a local accelerator, also never replicated. |
+## What the node checks after the run
 
-Only the **replicated** layer produces operations. The other two are conveniences that stay on one node and have no effect on convergence.
+Before a run's outcome becomes an entry, the node applies these host-side
+rules:
 
-## Determinism is the contract
+- **Shared-cell writer rotations** (`SharedStorage`): each rotation must step
+  from the set in effect (the state's, or at genesis the prior set the cell id
+  commits to), and the run's account must hold `ADMIN` in it. A TEE run, an
+  app's own run (handler or xcall) or a public call may not rotate. The new set
+  is written beside the cell, in the same entry.
+- **Blobs the run wrote** are kept by the leader, marked as the app's in the
+  diff, and spread to the other nodes after the entry commits.
+- **Read-only team members**: a call by a member whose row in the app's team is
+  read-only still runs, but if it would write anything (a diff or a blob) the
+  node answers `403` instead of appending it.
 
-Every node that applies the same operation must reach the same state, so execution must be a pure function of _(prior state, input, injected host values)_. The runtime enforces this:
+## Outbound HTTPS
 
-- **Writes buffer, then commit.** A `storage_write` updates an in-execution buffer that later reads can see, but nothing is persisted until `commit`. If the guest traps or never commits, every change is discarded — execution is transactional.
-- **Non-determinism is injected, not reached.** A guest can't read the clock or an RNG on its own; it asks the host via `time_now` / `random_bytes`, so those values are controlled and recorded rather than free.
-- **Resources are bounded.** Memory pages, stack depth, and the counts and sizes of logs, events, cross-calls, and storage keys/values are all capped. Exceeding a limit traps the execution — which, being uncommitted, changes nothing.
-- **The method shape is fixed.** Exported methods take no arguments and return nothing; input arrives through `input()` and results leave through `value_return`, so a method signature can't smuggle in hidden state.
+`http_request` (`calimero-outbound`) makes one request per run, and only when
+every gate holds:
 
-## From execution to operations
+1. the operator turned outbound on and allows the host (`[outbound]` in the
+   node's configuration);
+2. the app's bundle is a signed release whose manifest declares a URL prefix
+   covering the request;
+3. that prefix was approved for the publisher by whoever the cluster's
+   [governance](/protocol/governance/) gives outbound approvals;
+4. the run writes: a call, a follow-up or a timer, never a view, `init`, a
+   migration, or a read-only member's call;
+5. `https` on port 443 to a name that resolves only to public addresses, within
+   the size limits, no redirects.
 
-A successful `commit` yields an **outcome**: the return value, any logs and events, the cross-context calls to dispatch, the new state **root hash**, and an **artifact** describing the committed state changes.
+The request is made while the leader holds the group's propose lock, on its own
+thread. A run repeated after a leader race sends it again.
 
-That artifact is the bridge back to the core: its committed writes are packaged as **data-plane operations** (`Put` / `Delete`) in the context scope — each stamped with the executor's identity, the scope's current heads as parents, and a hybrid timestamp. From there they are exactly the same [operations](/protocol/operations/): appended to the DAG, folded into the [root](/protocol/projection/), and ready to broadcast.
+## Determinism is no longer what converges
 
-:::note[Handoff]
-**Execution ends where the write path begins.**
+In v1 every replica had to reach the same state from the same operations, so
+execution had to be a pure function of prior state and input. Here only the
+leader runs, so `time_now`, `random_bytes`, outbound responses and search
+answers cannot make replicas disagree. Runs are still bounded and
+transactional: resources are capped ([Limits](/protocol/limits/#execution-limits)),
+and a trap or an app error leaves an empty diff.
 
-This chapter stops at "an outcome exists." **The [write path](/protocol/write-path/)** picks it up: how the outcome is signed, persisted atomically, and broadcast to the context's members.
-:::
+## Views and migrations
 
-## Specification
-
-The exact host ABI. All host functions live in the WASM `env` namespace. Pointers and lengths are `u64` offsets into the guest's linear memory; all integers are little-endian.
-
-### Calling convention
-
-- A buffer is passed as a 16-byte descriptor `{ ptr: u64, len: u64 }` at a guest memory offset — the host reads `len` bytes from `ptr`.
-- Larger results are staged in host **registers** addressed by a `u64` id. `register_len(id)` returns the length or `u64::MAX` if absent; `read_register(id, dest_ptr)` copies it into guest memory and returns `1` on success, `0` on a size mismatch.
-- A return value is written by the guest as a `ValueReturn` tagged union — a 1-byte tag (`0`=Ok, `1`=Err) then, at offset 8, a 16-byte buffer descriptor.
-
-### Host functions (the `env` namespace)
-
-| Family | Signature |
-| --- | --- |
-| Input | `context_id(reg: u64)`, `account_id(reg: u64)`, `device_id(reg: u64)`, `input(reg: u64)`, `xcall_origin(reg: u64) -> u32` |
-| Registers | `register_len(id: u64) -> u64`, `read_register(id: u64, dest: u64) -> u32` |
-| Replicated state | `storage_read(key: u64, reg: u64) -> u32`, `storage_write(key: u64, val: u64, reg: u64) -> u32`, `storage_remove(key: u64, reg: u64) -> u32` |
-| Private state | `private_storage_read / write / remove(…)` — same shapes, node-local |
-| Ordered index | `storage_index_set / remove / remove_prefix / scan / last(…)` — node-local |
-| Output | `value_return(ptr: u64)`, `log_utf8(ptr: u64)`, `emit(ptr: u64)`, `emit_with_handler(ptr, handler)` |
-| Commit | `commit(root_hash: u64, artifact: u64)` |
-| Crypto | `ed25519_verify(sig: u64, pk: u64, msg: u64) -> u32` |
-| Host-provided | `time_now(dest: u64)`, `random_bytes(dest: u64)` |
-| Cross-context | `xcall(ptr: u64)` |
-| Blobs | `blob_create() -> u64`, `blob_write / read / open / close(…)`, `blob_announce_to_context(…)` |
-| Search | `search_query(request: u64, reg: u64) -> u32` — view-only, node-local; gas is charged for the host's work |
-| Panic | `panic(loc: u64)`, `panic_utf8(msg: u64, loc: u64)` |
-
-A storage read/write/remove returns `1` on hit and `0` on miss. The index scan result is encoded as `u32` count, then for each pair `u32` key-len ‖ key ‖ `u32` value-len ‖ value.
-
-### Resource limits (defaults)
-
-| Limit | Default | Limit | Default |
-| --- | --- | --- | --- |
-| memory pages | 1024 (64 MiB) | stack size | 200 KiB |
-| registers | 100 | register capacity | 1 GiB total |
-| max register | 100 MiB | logs | 1024 × 16 KiB |
-| events | 100 × 16 KiB | xcalls | 100 × 16 KiB |
-| storage key | 1 MiB | storage value | 10 MiB |
-| blob handles | 100 | blob chunk | 10 MiB |
-| method name | 256 B | module size | 20 MiB |
-
-Exceeding any limit traps the execution; because nothing has committed, the trap leaves state unchanged.
-
-### Outcome
-
-```rust
-struct Outcome {
-  returns: Result<Option<Vec<u8>>, FunctionCallError>,
-  logs: Vec<String>,
-  events: Vec<Event>,  // { kind: String, data: Vec<u8>, handler: Option<String> }
-  xcalls: Vec<XCall>,  // { context_id: [u8;32], function: String, params: Vec<u8> }
-  root_hash: Option<[u8; 32]>,
-  artifact: Vec<u8>,
-  migration_witness: Option<Vec<u8>>,
-}
-```
-
-## Where this leads
-
-We now know where data operations originate. **[The Write Path](/protocol/write-path/)** follows one out of the runtime: how an outcome becomes a signed, durably persisted, broadcast operation.
+A **view** runs the same way against a replica's applied state, with search
+available, and its writes are discarded ([Reads](/protocol/reads/)). A
+**migration** runs the target bundle's `#[app::migrate]` export over the old
+state, writes the returned root state and checks it with the app's
+`__calimero_migration_check` ([Upgrades](/protocol/upgrades/)).

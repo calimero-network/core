@@ -8,11 +8,31 @@ export default defineConfig({
   site: 'https://calimero-network.github.io',
   // GitHub project Pages serve under /<repo>/. Change if a custom domain is used.
   base: '/core',
+  // Pages for v1's sync, governance ops and delegation, now deleted: old links
+  // land on the page that now covers the subject.
+  redirects: {
+    '/protocol/operations/': '/core/protocol/replication/',
+    '/protocol/projection/': '/core/protocol/replication/',
+    '/protocol/sync/': '/core/protocol/replication/',
+    '/protocol/sync-internals/': '/core/protocol/replication/',
+    '/protocol/receive-path/': '/core/protocol/replication/',
+    '/protocol/divergence-recovery/': '/core/protocol/replication/',
+    '/protocol/data-anatomy/': '/core/protocol/storage/',
+    '/protocol/hlc/': '/core/protocol/crdt-internals/',
+    '/protocol/capability-inheritance/': '/core/protocol/organizations/',
+    '/protocol/governance-edge-cases/': '/core/protocol/organizations/',
+    '/protocol/accounts/': '/core/protocol/identities/',
+    '/protocol/delegated-authorship/': '/core/protocol/authorship/',
+    '/protocol/direct-admission/': '/core/protocol/authorship/',
+    '/protocol/tee-authorship/': '/core/protocol/authorship/',
+    '/protocol/client-paths/': '/core/protocol/write-path/',
+    '/cloud/operate/': '/core/operate/deployment/',
+  },
   integrations: [
     starlight({
       title: 'Calimero Core',
       description:
-        'Build, operate, and reimplement Calimero — a peer-to-peer framework for sandboxed WASM apps over causally-consistent shared state.',
+        'Build, operate, and understand Calimero — a confidential cloud for collaborative WASM apps: each app replicated by its own Raft log across attested TDX nodes.',
       logo: {
         light: './src/assets/logo-light.svg',
         dark: './src/assets/logo-dark.svg',
@@ -59,6 +79,11 @@ export default defineConfig({
         {
           label: 'Start here',
           items: ['using-the-docs', 'journeys', 'topics'],
+        },
+        {
+          // Overview, quickstart and writing apps.
+          label: 'Get started',
+          items: ['cloud/overview', 'cloud/quickstart', 'cloud/apps'],
         },
         {
           label: 'Build',
@@ -135,8 +160,8 @@ export default defineConfig({
                 'operate/merod',
                 'operate/meroctl',
                 'operate/config',
-                'operate/admin-api',
-                'operate/auth',
+                { label: 'Node API', slug: 'operate/admin-api' },
+                { label: 'Authentication', slug: 'operate/auth' },
               ],
             },
           ],
@@ -148,72 +173,51 @@ export default defineConfig({
             // each part one level deeper than the last (see overview).
             { label: 'Overview', slug: 'protocol/overview' },
             {
-              label: 'The replication loop',
-              items: [
-                'protocol/execution',
-                'protocol/write-path',
-                'protocol/receive-path',
-              ],
+              label: 'The model',
+              items: ['protocol/concepts', 'protocol/system-group', 'protocol/replication'],
             },
             {
-              label: 'What gets replicated',
-              items: [
-                'protocol/operations',
-                'protocol/projection',
-                'protocol/data-anatomy',
-              ],
+              label: 'The call path',
+              items: ['protocol/execution', 'protocol/write-path', 'protocol/reads'],
             },
             {
-              label: 'How it is organized',
+              label: 'Trust',
               items: [
-                'protocol/concepts',
-                'protocol/governance',
-                'protocol/capability-inheritance',
-                'protocol/applications',
-                'protocol/context-lifecycle',
-              ],
-            },
-            {
-              label: 'Confidentiality & identity',
-              items: [
-                'protocol/identities',
-                'protocol/accounts',
-                'protocol/delegated-authorship',
-                'protocol/client-paths',
-                'protocol/direct-admission',
+                'protocol/networking',
+                'protocol/tee-attestation',
                 'protocol/encryption',
                 'protocol/key-rotation',
                 'protocol/security-model',
               ],
             },
             {
-              label: 'Staying in sync',
+              label: 'People & authority',
               items: [
-                'protocol/networking',
-                'protocol/sync',
-                'protocol/sync-internals',
-                'protocol/divergence-recovery',
+                'protocol/identities',
+                'protocol/authorship',
+                'protocol/organizations',
+                'protocol/governance',
+                'protocol/operator',
               ],
             },
             {
-              label: 'Subsystems',
+              label: 'Apps',
               items: [
-                'protocol/blobs',
-                'protocol/xcall',
-                'protocol/tee-attestation',
-                'protocol/tee-authorship',
+                'protocol/applications',
+                'protocol/context-lifecycle',
                 'protocol/upgrades',
+                'protocol/xcall',
+                'protocol/blobs',
+                'protocol/presence',
               ],
             },
             {
-              label: 'Deep internals & reference',
+              label: 'Reference',
               collapsed: true,
               items: [
-                'protocol/crdt-internals',
-                'protocol/hlc',
                 'protocol/storage',
+                'protocol/crdt-internals',
                 'protocol/limits',
-                'protocol/governance-edge-cases',
                 'protocol/glossary',
               ],
             },

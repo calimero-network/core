@@ -62,8 +62,8 @@ impl KvStore {
         Ok(self.shared_value.get()?.get().clone())
     }
 
-    /// Set an entry in the group-writable map. Only a current writer's write
-    /// converges across nodes; a non-writer's write is rejected at merge.
+    /// Set an entry in the group-writable map. Only a current writer may: the
+    /// SDK refuses a non-writer's write, and this method returns the refusal.
     pub fn map_set(&mut self, key: String, value: String) -> app::Result<()> {
         app::log!("Setting map entry: {:?} = {:?}", key, value);
         self.shared_map

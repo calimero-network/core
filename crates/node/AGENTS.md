@@ -1,400 +1,478 @@
-# calimero-node - Node Orchestration
+# calimero-node (the inside of `merod`)
 
-Main node runtime that coordinates sync, storage, networking, and event handling.
+The node: an attested TEE node that hosts the cluster's system
+group and the app groups placed on it. Design: the "Calimero Confidential Cloud"
+architecture spec. This crate is the library; the `merod` binary
+(`crates/merod`: `init`, `run`, `config`, `local`, `inspect`, `kms`) turns its
+configuration into a `Config` and calls `run`, and `meroctl` (`crates/meroctl`)
+is its command line.
 
-## Package Identity
+## Mental model
 
-- **Crate**: `calimero-node`
-- **Entry**: `src/lib.rs`
-- **Framework**: actix (actors), tokio (async)
+- **One Raft log per app** (`calimero-log`). The leader runs the WASM call
+  and appends `{ call, outcome { result, diff, events } }`. Followers apply the diff;
+  nothing is re-executed. `base_index` guards against applying a stale diff.
+- **Two executors** (`types::Executor`; the transition the spec records as D53,
+  overriding D1/D15 until v1 apps move): a v1 core module (SDK 0.12) runs on
+  wasmer (`app::Executor`, today's `calimero-runtime` over a copy-on-write
+  `Overlay`; everything below that is not under "Component executor"); a
+  `calimero:app` component (the v2 SDK) runs on wasmtime through the host core
+  (`node/component.rs`, `component.rs`). The executor is decided once, from the WASM
+  the app's bundle names (a package's service or a raw upload,
+  `wasmparser::Parser::is_component`), when the app is created
+  (`AppRecord::executor`, absent = wasmer), and the app's `init` entry records it in
+  the group's state (`AppState::executor`, in `Head`, so a snapshot carries it; a
+  state from before has none: wasmer). Each executor's entries are a format of its
+  own (`app::AppCmd`, `component::ComponentCmd`, distinct `op` names) and write a
+  keyspace of its own (`rows::KV`/`IDEM` and `rows::CKV`/`CIDEM`/`CORDER`); a replica
+  applies an entry with the executor its state names, and one of the other format
+  changes nothing (tests `a_wasmer_entry_never_applies_to_a_component_app`,
+  `wasmer_and_component_apps_share_a_cluster`). An upgrade that would move an app
+  between executors is refused at the leader (`upgrade_local`), either way, until
+  rebuild migrations (D38) exist (`upgrades_across_executors_are_refused_both_ways`).
+  A data directory written before components opens and its apps run on wasmer
+  (`old_datadir.rs`, from a directory `a09547b2b` wrote).
+- **System group** (`system.rs`, group 1): fleet, app directory, bundles, accounts,
+  passkeys, API keys, refresh tokens, session keys, organizations, teams, invites.
+  Commands carry their `actor`; `apply` checks authority, so the log decides.
+- **Routing** (`node.rs`): system writes go to the system leader, calls and strong
+  views to the app's leader, over **peer sealed channels** (`internal/*`) whose key
+  is attested like any client's, plus the cluster secret (HMAC of K_r).
+- **API** (`api.rs`), all inside the sealed channel except `/attestation` and `/health`:
+  `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
+  `/orgs/*`, `/invites/{token}/redeem`, `/internal/*` (peers), `/ops/*` (mdma: counts only, no read path).
+- **Reserved methods** (`node::reserved_method`, `__*`): the node's own commands
+  (`HOST_METHODS`: `__upgrade`, `__blob`, `__blob_forget`) run only for a
+  `CallRequest::host` request, which only the API builds after judging who may;
+  `/intents` and `/views` refuse a `__` method (`400 RESERVED_METHOD`), and an
+  xcall or follow-up naming one is refused at the leader. Regression:
+  `the_nodes_own_commands_cannot_be_called_as_methods`.
+- **Ceremonies** (`api::Pending`): a challenge lives on the node that began it, its id `{node}.{random}`; finishing elsewhere takes it from that node (`internal/challenge/take`), so it is used once. Regression: `a_sign_in_begun_on_one_node_finishes_on_another`.
+- **Confirm methods**: `intents` answers `412 CONFIRM_REQUIRED` with a challenge over
+  the exact call; the retry carries a passkey assertion, which is logged as consent.
+- **Bundles are blobs, not log entries**: `POST /bundles` stores the WASM in every
+  node's sealed blob store (`internal/blob`, majority required), then the system log
+  records only `{hash, size}`. A node missing a blob fetches it from a peer
+  (`internal/blob/get`) on first use. Log entries are capped at
+  `calimero_log::MAX_ENTRY_BYTES` (1 MiB): openraft gives each append one heartbeat.
+  A call whose arguments alone pass the cap is refused where it arrives
+  (`413 TOO_LARGE`), never forwarded to the leader first (regression:
+  `a_write_too_large_for_the_log_is_refused_at_once_on_every_node`).
+- **Packages** (`packages.rs`, `system::PackageRecord`): signed `.mpk` releases.
+  `POST /packages/install { package, version }` fetches from the
+  operator's registry (`--registry-url`, `calimero-app-downloader`'s `HttpRegistry`);
+  `POST /packages` takes an uploaded file. Before `InstallPackage` is logged the
+  node checks the publisher signature and every artifact digest
+  (`calimero_bundle::VerifiedBundle`), `minRuntimeVersion` (build.rs's
+  `CALIMERO_RELEASE_VERSION`), the package's pinned signer (first release wins,
+  `apply` re-checks) and that each service's WASM compiles. The log keeps the
+  `.mpk`'s hash; a node that runs a release it does not hold fetches it itself
+  (`Node::release_wasm`: the registry for a registry release, never a peer; a peer
+  for an upload), refuses bytes whose hash differs, and verifies them again.
+  `POST /apps { package, version?, service? }` creates from a release (installing
+  it from the registry first); upgrade takes `{ version }`; `DELETE /apps/{app}`;
+  `DELETE /packages/{p}[/{v}]` is refused while an app runs the release (a WASM
+  another release ships stays). Raw `POST /bundles` is development only
+  (`allow_unsigned_bundles`, on with `--dev`).
+- **Governance** (`system::Governance`, `Authority`, shared with clients in
+  `calimero_client::attest`): three decisions, each held by exactly one
+  party chosen at deployment, `owner` (default) or `operator`:
+  `--release-approvals` (which mero-tee releases may hold the data),
+  `--app-upgrades`, `--outbound-approvals`. The first leader writes
+  `SystemCmd::Genesis` before any account exists (`CreateAccount` waits for it);
+  a second genesis is refused, so a restart with other flags changes nothing.
+  Every receipt-key quote binds it (`receipt_key_binding(key, governance)`,
+  `AttestationDoc::governance`), so `verify_app_cluster` proves it. Operator
+  side: `POST /ops/releases` (`operator_releases`, which `approved_releases`
+  then answers), `POST /ops/apps/{app}/upgrade` (an installed release;
+  `UpgradeApp { by_operator }`), `POST /ops/outbound` (`operator_outbound`,
+  `ReleaseScope::Cluster`). The operator installs the releases it upgrades
+  to: `POST /ops/packages` (an `.mpk`), `/ops/packages/install` (the
+  registry), `GET /ops/packages`, `DELETE /ops/packages/{p}[/{v}]` (only what
+  it installed), recorded as `system::OPERATOR`, which no account can be and
+  which no account quota counts. Owner side: the passkey routes below. Whichever
+  party does not hold a decision gets 403 (API) and a refusal (`apply`).
+- **Owner approvals** (where the owner holds the decision; `system::ReleaseScope`, `Org/Account::approved_releases`): the
+  mero-tee releases that may hold an org's (or an account's own) apps; the one it
+  began on is approved at creation, others by the owner with a passkey assertion
+  (`POST /orgs/{org}/releases`, `/auth/releases`, logged as consent). Enforced by the
+  replicas that hold the data: `Node::may_send` refuses Raft entries/snapshots to a
+  peer whose attested release (`HttpAttestor::seen_release`) is not approved,
+  `Node::place` skips such nodes, `/ops/apps/{app}/replicas` refuses them. Upgrades
+  are the app's owner's, or, for an org app, of whoever holds `MANAGE_APPLICATION`
+  on its team or org-wide (`SystemState::manages_apps`), with their own passkey
+  assertion over the exact upgrade (`consent` on `UpgradeApp`).
+- **Outbound HTTPS** (`calimero-outbound`): `Config::outbound` from
+  `--settings` (`[outbound]`). `Node::outbound_for` hands a client only to
+  `call_local`'s runs (calls, follow-ups, timers; not a read-only member's), for
+  a bundle that is a signed release declaring prefixes; identity = (package,
+  pinned signer), approval = `Org/Account::outbound_approvals[signer]`, set by
+  the account, or for an org whoever holds `MANAGE_APPLICATION` org-wide, with
+  `SetOutboundApproval` (`POST /orgs/{org}/outbound`,
+  `/auth/outbound`, passkey consent; `merge_approval` at apply). The request is
+  made inside the propose lock, on its own thread (`run_blocking`); a leader-race
+  re-run sends it again.
+- **Receipts**: every `/intents` and `/views` answer carries a `Receipt` signed by the
+  answering node's receipt key (Ed25519, in memory, made at start), over
+  `(app, index, SHA-256(JCS(result)), node)`. The key is attested on its own
+  (`GET /attestation?purpose=receipts`, report data `nonce || receipt_key_binding`),
+  and `GET /apps/{app}/attestation` gathers every replica's
+  (`Client::verify_app_cluster`).
+- **The host's key space** (`app::RESERVED`, `\0calimero.*`): private spaces, writer
+  sets, blob marks. App code's overlay answers nothing there and a run that tries is
+  refused; the host writes with `Overlay::set_host` and reads with
+  `Storage::host_get`. Rotations are judged by `rotation_refusal`.
+- **Access is judged fresh**: every request carrying a credential, every gated request and every client call's leader
+  read the system state through `sys_fresh` (a read index), so a removal committed
+  elsewhere holds before the next request.
+- **Joining nodes**: a node started without `--bootstrap` waits; once
+  `/ops/nodes` registers it, the system leader adds it to the system group as a
+  learner (`Node::admit_registered_nodes`, from `reconcile`), it catches up and
+  learns the directory, and replica moves (`/ops/apps/{app}/replicas`) can put
+  apps on it.
+- **Removing nodes**: `DELETE /ops/nodes/{id}` (system leader; `421 NOT_LEADER` elsewhere) writes `RemoveNode` (refused while an app keeps a replica there) and changes the system group's voters, promoting a registered learner while fewer than 3 are left; `SystemState::removed_nodes` keeps `reconcile` from registering it again from `--peers`. Regression: `a_node_is_removed_once_no_app_keeps_a_replica_on_it`.
+- **Transfers**: `POST /apps/{app}/transfer { to }` (owner, passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
+- **Stopping** (`Running::stop`): cancel the tasks, drain the server (2 s),
+  stop the groups, then wait (up to `STOP_WAIT`, 10 s) until the store is
+  closed (`Engine::store_watch`): a task still running holds the RocksDB lock
+  that `inspect` or a restart in the same process needs. Regression:
+  `a_stopped_nodes_store_can_be_inspected` (it failed about 1 in 32 runs under
+  load before).
+- **Ops credentials and metrics**: `--ops-token-sha256` gives the node only the
+  token's hash (machine metadata then holds nothing usable); `GET /ops/metrics`
+  is Prometheus text (directory counts, this node's groups, streams, system
+  membership, build release; per-group Raft term, lags and quorum age; store
+  sizes; and, from `metrics::track` on the router, requests by route template
+  and status, error codes, latency per route group and body bytes), never
+  names, ids or state: labels are templates, groups, codes and numbers
+  (regression: `metrics_count_requests_errors_and_raft_without_naming_anyone`). `--metrics-listen` (`Config::metrics_listen`) serves the same text
+  at plain-HTTP `GET /metrics` for a scraper, nothing else (`api::plain_metrics`).
+- **Ops replica moves** run on the app group's leader; any other replica answers
+  `421 NOT_LEADER` with `details.leaderUrl` before writing anything.
+- **Forwards are bounded**: a call or read forwarded to an app's leader waits at most
+  `FORWARD_TIMEOUT` (5 s, `peer_forward`), then retries at whoever leads now; a frozen
+  leader would otherwise hold a write for the 30 s HTTP timeout. Calls without a
+  client key get a node key (`node:…`, kept 10 min) first, so a retry replays a call
+  that did commit. System-log forwards keep the long timeout: some system commands
+  are not idempotent yet. Regression: merobox `workflow-examples/cloud-v2/frozen-leader.yml`.
+- **Leader races**: `Group::propose` takes no leadership round before a call's
+  append, so a deposed leader may run a call on stale state; its entry never
+  commits, or commits as a no-op (`base_index` ≠ the app's last entry,
+  `AppState::last_index`: `conflict`, no idempotency record), and `Node::call`
+  re-runs it instead of failing. The base is the app's last entry, never the
+  log's applied index, which counts blank and membership entries too: with it
+  the first call after every election conflicted once (regression:
+  `the_first_call_after_a_leader_change_commits_without_a_rerun`;
+  `calimero_build_conflicts_total` in `/ops/metrics` counts conflicts). Replies without an append (idempotent replays) are confirmed first.
+  The module is compiled from the bundle read before the lock, so the build
+  also answers a conflict when the state names another bundle by then (an
+  upgrade applied in between; `AppMachine::stale_module`, also checked by
+  `upgrade_local`). Regression:
+  `a_call_built_with_a_module_an_upgrade_replaced_never_commits`.
+- **Runs leave the async workers** (`node::off_workers`): a WASM run (call,
+  follow-up, timer, init, migration, strong view) happens inside the group's
+  proposal lock, on the machine's read lock, from borrowed state, so it cannot
+  move to `spawn_blocking`; it goes through `block_in_place`, which hands the
+  worker's other tasks (Raft heartbeats, the system group, HTTP) to another
+  worker meanwhile. Regression: `a_long_run_does_not_hold_an_async_worker`.
+- **Upgrades plan their migration from the ABIs** (`services::plan_upgrade`):
+  without a named `migrate`, an upgrade one state version up runs
+  the target's `#[app::migrate]` edge; a downgrade, a jump or a missing edge is
+  refused, and so is a target whose ABI strips authorship from a field
+  (`calimero_wasm_abi::downgrade::identity_downgrades`, the L1 gate; regression:
+  `an_upgrade_that_strips_authorship_is_refused`). Bundles without an ABI upgrade code-only. In a migration
+  (`Executor::migrate`) the export returns the new root state, the app's
+  `__calimero_migration_check` must pass, and the host writes the root entry
+  (`write_root_state`). The directory records the new bundle only once the
+  upgrade succeeded.
+- **Upgrade runs** (cascade, status, retry): `POST
+  /orgs/{org}/upgrade { package, version, team?, cascade? }` (the org owner, one
+  passkey assertion for the run) or `POST /ops/orgs/{org}/upgrade` (where the
+  operator holds app upgrades) records a `types::UpgradeRun` in the org
+  (`StartUpgradeRun`, newest `UPGRADE_RUNS_KEPT`), then upgrades its apps one by
+  one in a background task; each `UpgradeApp`/`UpgradeFailed` notes the app on
+  the run and on `AppRecord::last_upgrade`. `GET /orgs/{org}/upgrades/{run}`
+  follows it; `.../retry` runs the failed apps again as a new run. A release
+  missing from the cluster is installed from the registry first (owner runs).
+- **Aliases**: `Account::aliases`, `PUT/GET/DELETE /auth/aliases/{alias}`
+  and `GET /auth/aliases`; an alias names only an app its account reaches.
+- **Metadata and org lifecycle** (org/member/app metadata, device
+  labels, owner-delete): `Org::metadata` (admins or `MANAGE_METADATA`),
+  `Org::member_metadata` (the member or an admin), `AppRecord::metadata` (owner
+  or org admin), each at most `MAX_METADATA_BYTES` (16 KiB, team metadata too);
+  `Account::passkey_labels` (`POST /auth/passkeys/{cred} { label }`).
+  `DELETE /orgs/{org}` is the owner's, with a passkey assertion (412 first),
+  and takes the org's teams, invites and apps. Ownership moves with
+  `SetOrgRole { role: owner }`; leaving is `RemoveOrgMember` on oneself.
+- **Devices**: a person is their account, and each passkey is a device: the
+  session names the one it was opened with (`SessionClaims::passkey`,
+  `passkeyId` in `/auth/me`); `auth/passkeys/add` adds one.
+- **Init**: `POST /apps` takes `initArgs` (JSON) for the app's `init`, kept on the
+  `AppRecord`; a failed init answers `422 INIT_FAILED` (`AppState::init_error`).
+- **Identity inside the app**: `env::account_id` and `env::executor_id` are both the
+  caller's account (no device ids); the context id is `SHA-256(app_id)`.
+  `env::caller_org` is the caller's role and teams in the app's organization
+  (`app::caller_org`, passed through `Module::run_cloud`).
+- **Private storage** (`env::private_storage_*`): v1 kept it on the member's node,
+  unsynced. Here it is the caller's own space in the app's state (`app::private_prefix`):
+  replicated and sealed, but a run is handed only its caller's space.
+- **Shared-storage writers**: a cell's rotated writer set is kept in the app's state
+  (`app::writers_key`), written with the run that rotated it.
+- **Ids people type** (accounts, apps, organizations, teams, upgrade runs, API
+  keys) are base64url that never starts with `-` (`api::typed_id`), which
+  meroctl would read as a flag. Regression: `a_typed_id_never_starts_with_a_dash`.
+- **Context ids**: an app answers to its context id (`hex(SHA-256(app_id))`, what the app
+  sees as `env::context_id()`) wherever the API takes an app id (`Node::canonical_app_id`).
+- **Blobs** (`env::blob_*`, `POST/GET /apps/{app}/blobs[/{id}]`): bytes live in the
+  cluster's blob store (`hex(SHA-256)`, a majority before the answer, a missing one
+  fetched from a peer), and the app's state marks which are its own
+  (`app::blob_key`). A run's blob host is `services::AppBlobs`: a run writes blobs
+  onto its outcome (never through the host), the leader stores them before
+  proposing and spreads them after the entry commits; a run opens only blobs its
+  app's state marks. An upload commits `AppCmd::Blob`. Ids are base58 (what apps
+  print, `BlobId`) or hex in the API. `GET /apps/{app}/blobs[/{id}/info]`
+  list them from a scan of the app's state (`AppMachine::storage_stats`, on a
+  replica). A download asks the app's leader whether the app still marks the
+  blob (`blob_held_strong`; 503 when no leader answers): a replica that has not
+  applied a delete still holds the mark and the bytes (regression:
+  `a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind`). `DELETE /apps/{app}/blobs/{id}` (owner or org admin) commits
+  `AppCmd::BlobForget`, then `Node::collect_blob` deletes the bytes on every
+  node (`internal/blob/delete`) unless another app still marks the same content
+  (asked of each app's leader, `blob_held_strong`: a lagging replica could miss
+  a mark just committed; an app whose leader does not answer counts as holding
+  it) or it is a bundle or a release `.mpk`. Known window: the same content
+  uploaded to another app between that check and the deletion loses its bytes.
+  A blob past `MAX_BLOB_BYTES` (47 MiB) is refused `413 TOO_LARGE` by the node,
+  one past the sealed cap (64 MiB) by the envelope, in the clear; the client
+  reports both as `TOO_LARGE`. Regressions:
+  `a_blob_too_large_to_reach_the_other_nodes_is_refused_up_front`,
+  `an_upload_past_the_sealed_cap_is_answered_413`.
+- **App frontends** (`app_host.rs`): with `--apps-domain D`
+  (`merod local`: `localhost`), each package's frontend is at
+  `{label}.D` (`app_host::label`, 52 base32 characters), from its release's
+  `.mpk` (`Node::release_mpk`, verified before a byte is served, opened ones
+  cached). Outermost layer: only `GET`/`HEAD` of files, `/` → newest release,
+  client routes and relative tails as v1, v1's CSP plus the cluster's API
+  origins in `connect-src`, `/.well-known/calimero.json`; an unknown label under
+  D is a 404, never a node route. App origins pass CORS, and a passkey ceremony
+  from one opens a session bound to its package (`SessionClaims::app`, carried
+  by refresh): `Principal::within` keeps it to that package's apps (gate, app
+  reads and writes, listings), `unbound`/`holder` refuse it credentials, API
+  keys, approvals, upgrades, uninstalls and uploads, and it creates instances
+  of its own package only. Its step-ups come from its own origin only.
+- **Presence** (`presence.rs`, the ephemeral awareness channel): in memory on
+  every node, never in a log. `POST /apps/{app}/presence { seq, state }` (anyone
+  who reaches the app; one entry per account and device) applies it here and
+  passes it to every other node (`internal/presence`); `GET .../presence` and
+  `GET .../presence/stream` (SSE: `snapshot`, then `presence` diffs). Rules:
+  newest seq wins, a retract is a tombstone, a heartbeat (same seq and state)
+  refreshes and is passed on too, `PRESENCE_TTL_MS` (7 s) sweep each second,
+  `MAX_AUTHORS_PER_APP` (512, the stalest evicted), 4 KiB of state.
+- **Inspection**:
+  `GET /apps/{app}/storage` (keys, bytes, blobs), `GET /apps/{app}/abi` (the
+  bundle's embedded ABI), `GET /auth/usage` (the account's apps, bundle bytes,
+  API keys, owned orgs, and the quotas).
+- **Search** (`services::Search`): tantivy indexes, in memory per
+  app and built from the app's `__calimero_search_*` exports. A view brings them
+  up to the very state it reads first: from the entities entries touched
+  (`Outcome::touched`, from the run's `StorageDelta`; kept for the last
+  `TOUCHED_RING` entries), else a full scan. Derived, never replicated.
+- **Follow-ups** (`AppState::pending`): an entry's event handlers
+  (`app::emit!((e, "handler"))`, `tee:` for a TEE handler) and its `xcall`s are
+  queued when it applies; the leader runs them (`Node::drive`, woken by `kick`)
+  as entries that consume them (`Trigger::FollowUp`), or, for an xcall, calls
+  the target with an idempotency key and then commits `AppCmd::Done`. A new
+  leader neither skips nor repeats one. Only `#[app::handler]`
+  methods run for an event; an xcall reaches only `#[app::xcall]` entry points
+  (`from_same_app`: the same bundle), only within the caller's organization
+  (outside one: its owner), as `Caller::App` with `env::xcall_origin`; cascades
+  stop at `MAX_FOLLOWUP_DEPTH`. Handlers and xcalls run once, not per replica.
+- **Timers and the TEE**: the cluster is every app's TEE. The leader fires each
+  `#[app::tee(every = "..")]` method once per period (`Trigger::Timer`, the
+  last tick per method in `AppState::timer_ticks`). Such a run and a `tee:`
+  handler author as `AccountId::TEE_AUTHORITY` with `tee_trigger`, open and
+  seal with the app's TEE key (`backup::tee_key`, from K_r), and seal a
+  member's share to the key the node keeps for them (`backup::member_key`):
+  their account is their one device (`SealingContext::stand_ins`), and only
+  their own runs open with it. ABI facts (timers, handlers, xcall entry
+  points) come from the bundle's embedded ABI (`services::BundleFacts`), so
+  apps are built with `cargo mero build`; a bundle without one gets none.
+- **Teams** (`types::Org`): nested (`parent`, moved with
+  `UpdateTeam`), open (`TeamJoin::Everyone`: whoever reaches the parent, the
+  organization at the top, is a member, unless denied `caps::JOIN_OPEN_TEAMS`)
+  or restricted (direct rows only). A direct row has a role (`TeamRole`: lead,
+  member, read-only) and capabilities (`caps`, `MemberCapabilities` bits;
+  the organization keeps a default). An app deployed with `access: team` is
+  reached by the team's members; a member whose direct row there is read-only
+  runs calls, but one that would write is refused (`403`, `node::READ_ONLY`;
+  v1 discarded the writes). A team's creator leads it. Below admin, creating an app in the organization needs `caps::CREATE_APP` (on its team, or org-wide) and minting an invite `caps::INVITE_MEMBERS` (org-wide, or on each team it names); neither is in `caps::DEFAULT`, and a team's leads hold both there. `caps::MANAGE_APPLICATION` lets a member upgrade the org's apps (on the app's team, or org-wide), start org upgrade runs, and approve the org's outbound hosts (org-wide grants only); a personal app stays its owner's (`SystemState::manages_apps`; regressions: `a_member_needs_the_capability_to_create_apps_or_invite`, `manage_application_lets_a_member_upgrade_and_approve_outbound`). A member who left, or
+  whom a manager removed, does not come back by inheritance until a manager adds them again or an invite names the team (`Team::removed`; regression: `leaving_an_open_team_sticks_until_someone_lets_you_back_in`). Reads are filtered: a
+  team one neither reaches nor manages is not listed (`GET /orgs/{org}`) and
+  answers `404` (`GET /orgs/{org}/teams/{team}`). `DeleteTeam` takes the teams
+  below it and their apps. Metadata (`POST /orgs/{org}/teams/{team}`) is the
+  app's (a folder's name and colour).
+- **App state on disk** (`app.rs`): `AppMachine` holds no state in memory but its
+  small `Head` (bundle, pending follow-ups, timers, ring bounds). The app's keys are
+  hidden rows of its group (`rows::KV`), idempotency records too (`rows::IDEM`, expired
+  oldest first from a ring per TTL class), events a ring of `EVENT_RING` (`rows::EVENT`).
+  Runs read through `StateRead` (`KvView` for the app, a `BTreeMap` in tests); the
+  system group stays in memory (`Machine::IN_MEMORY`). Backups (`Node::backup`) copy the
+  group's sealed snapshot file; `backup::latest` opens one with K_r.
+- **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
+  its applied index, `internal/system/index`; this replica waits for it). Org
+  and team reads use it, and so does an access check before it refuses.
+  Concurrent callers share a round (`ReadRounds`): one that arrives while a
+  round runs waits for the next one, never takes the one already under way.
+- **Declared views**: a call (`/intents`) of a method the ABI declares `#[app::view]`
+  runs as a strong view: it writes nothing and may search.
+- **Browsers**: `config.origins` are the CORS origins too (`lib.rs`, outermost layer).
+- **Storage key** (`kms.rs`): K_r = HKDF(KMS key, cluster). A TDX node takes it from
+  mero-kms only (`kms::key_source`: `--storage-key`/`--storage-key-file` need `--dev`),
+  fetched by merod itself (`--kms-url --kms-identity`; `calimero-kms-client`:
+  release-policy-verified KMS, key sealed to the TD). The boot script uses the same
+  client for the data disk's key (`merod kms disk-key`). The cluster's nodes share
+  the disk identity, so they share K_r.
+- **Peers' quotes** are judged like a client's (`calimero_client::Measurements`):
+  in TDX mode the signed mero-tee release the peer names, profiles from
+  `--peer-profiles` (default: this node's `MERO_TEE_PROFILE`), floor `--peer-min-release`.
+- **Session keys** rotate: the system leader adds K_s v+1 once the current key is
+  `session_key_rotation_secs` old (default 6 h); the previous key keeps verifying.
+- **Quotas** (`system::Quotas`, set with `POST /ops/quotas`) live in the system state and
+  are checked at apply, so every node enforces the same limits; refusals are `429 QUOTA_EXCEEDED`.
+- **Read-your-writes across nodes**: lookups of system objects (`Node::sys_until`) wait
+  up to `Config::read_wait` (2 s) for the local replica to apply a write committed
+  elsewhere (`sys_fresh` waits as long, and says whether it caught up). A
+  refresh is judged by the system log, not by a stale replica: a token this
+  replica cannot find, or whose exchange the log refuses, goes to the log as
+  `RefreshReused`, which revokes the session if the token was exchanged before
+  and is refused if it never was (then a replica that is behind answers 503,
+  never "unknown"). Regression:
+  `a_reused_refresh_token_revokes_the_session_on_a_lagging_node`.
+
+## Component executor (`calimero:app` components, the v2 SDK)
+
+Spec `app-runtime-v0.14`, on the node's log,
+API and system group. What differs from the wasmer path:
+
+- **Engine and host** (`node/component.rs`): one `WasmtimeEngine` per node
+  (`Node::app_engine`), compiled artifacts cached under `<data_dir>/components`, each
+  with a MAC under a key derived from K_r (S8). `Node::prepared_for` prepares a bundle
+  once (single-flight, Ruling 44; `concurrent_first_uses_of_a_bundle_prepare_it_once`).
+  `POST /bundles` and package installs run the engine's `prepare` on a component
+  where they compile a core module on wasmer.
+- **State** (`component::ComponentState`, D46): the component's stored keys
+  (generation prefix included, D39) are hidden rows of the group (`rows::CKV`, sealed
+  and HMAC-keyed like a wasmer app's), and each replica keeps them in memory too as an
+  ordered `Arc<BTreeMap>`: a run gets the current version as its `StateView` (ordered
+  `range` scans, which hidden rows cannot answer); `apply` copies it only while a run
+  still holds the previous one; `restore` (a restart, a snapshot install) reads it
+  back from the rows. Host records (`ComponentHead`: `last_ts_ms`, `last_id`,
+  `install_ts_ms`, `timers`, the idempotency rings) live in the group's `Head`.
+  Idempotency (D74 in spec v0.26, `idempotency.rs`, the one rule of both executors):
+  records in `rows::CIDEM` (wasmer: `rows::IDEM`), a ring per class in `rows::corder`
+  (wasmer: `rows::expiry`). A key's class is its prefix (`class_of`): a `node:` key (the
+  node's own, or a D70 client's `node:c-…`) is kept 10 minutes, a caller's own key 24
+  hours. A record expires once the earlier of the newest applied entry's timestamp and
+  the applying entry's own (`expiry_now`) passes its own by that time, never by a node's
+  clock, so every replica drops the same records and one entry stamped by a skewed
+  leader can't expire what follows it. At most 100,000 records per app: past the cap
+  `node:` records go first, then the oldest caller record, so a burst of keyless calls
+  never evicts a caller's own record; the cap never takes a class below its floor (the
+  newest 10,000 caller keys and 1,000 node keys stay whatever their age). Each entry drops at most `EXPIRY_STEP`
+  (4,096) records; the rest carries over. Tests: `idempotency_records_are_kept_by_time_class`,
+  `the_idempotency_cap_drops_node_keys_first_then_the_oldest`, `replicas_drop_the_same_records`,
+  `a_burst_of_node_keys_does_not_evict_a_callers_record_below_its_floor`,
+  `a_burst_of_node_keys_does_not_evict_callers_records_above_their_floor`,
+  `one_skewed_entry_does_not_expire_the_records_written_after_it`,
+  `a_callers_key_containing_node_is_kept_24_hours`, and on wasmer the same with
+  `_on_wasmer`, plus `records_over_the_new_cap_drain_a_bounded_number_per_entry`.
+  **Upgrade note (rolling upgrade, no version gate):** while a cluster runs both the
+  previous release and this one, an app's replicas keep different idempotency records:
+  the previous release expires only when a keyed call applies, against that call's own
+  timestamp, and caps 1,000,000 records per class; this one expires on every entry and
+  caps 100,000 per app, draining any excess `EXPIRY_STEP` per entry. Records are never
+  compared between replicas and app state is unaffected; what differs is how long a key
+  is honoured, which is decided by the replica that leads the app when the retry
+  arrives. Both keep a key for its class's time unless the app is over its cap, and
+  both keep the newest records of each class (the floors) whatever their age, so a
+  retry within D70's ~9 s window is answered either way. Finish upgrading an app's
+  replicas before relying on the new cap.
+- **Calls** (`Node::call_component`, routed by the API from the app's executor):
+  inside `Group::propose_led`, off the async workers (`node::off_workers`, the one
+  copy both executors use); `base_index` is the app's last entry
+  (`AppState::last_index`), as on the wasmer path. Statuses (spec section 5, D23,
+  D36): `422 APP_ERROR` with `details.{code, fields}`, `422 TRAP` with
+  `details.{kind, detail}`, `503 TIMEOUT` (not logged, key not spent); arguments
+  over `MAX_ARGS_BYTES` (512 KiB) are `413 ARGS_TOO_LARGE`, an entry over the log's
+  cap is logged trapped `HostDenied` (D50). Answers carry the node's receipt.
+- **ABI gate** (`Node::abi_gate`, `abi_check`, S5, Ruling 31/40): from the ABI of the
+  bundle the group runs; default-deny; `/intents` reads `view` and `confirm` from it
+  (`AppRecord::confirm_methods` is the wasmer path's).
+- **Unique ids** (D52): `id_term` is the term `propose_led`'s leadership check found
+  (no round of its own), `id_seq` this node's per-term counter (`Node::next_id`),
+  continuing from `max(memory, AppState last_id)`. Safety on this log: a deposed
+  leader's entry never commits or applies as a no-op through `base_index`; a leader
+  restored into its old term catches up with its own log once before its first
+  proposal (`propose_led`), so the counter continues after every entry it appended,
+  committed index saved or not. Tests:
+  `unique_ids_survive_a_crash_before_the_commit_index_reaches_the_disk`
+  (deterministic, through the log's test hooks), `unique_ids_survive_a_restart_into_the_same_term`,
+  `unique_ids_continue_when_a_leader_restarts_into_its_term_in_a_three_replica_group`,
+  `a_snapshot_install_carries_a_components_host_records`.
+- **Time and timers** (D16, D19, D34): `Node::app_clock` (`Config::clock_offset_ms`,
+  `Node::advance_clock` under feature `testing`); `lib.rs` polls `node::TIMER_POLL`
+  and `Node::tick_timers` proposes each due slot (`ComponentCmd::Tick`) as
+  `Caller::System`; a slot at or before the applied one changes nothing.
+- **Events** (R9): a component's `EventRecord` carries its `audience` and caller;
+  the event stream (`api::local_events`, the subscriber passed to a peer's
+  `internal/events`) and a call's answer check `SystemState::receives` when they
+  send it, so a removed member stops receiving at once. A wasmer app's events have
+  no audience and go out as before.
+- **Upgrades**: the node's route and authority (`POST /apps/{app}/upgrade`,
+  passkey consent, `UpgradeApp`); at the leader a component upgrades code-only
+  (`componentUpgrade`) and a named `migrate` is refused `MigrationsNotSupported`.
+- **Identity a component sees** (`component::SysDirectory`): its org, owner, the
+  caller's role and teams there; `orgs-of` answers only the app's own organization
+  (D75, spec v0.26): for an account, at most the app's org with its role, and nothing
+  for a personal app. Test: `a_component_sees_no_organization_but_its_own`.
+- **Per-executor endpoints** (`the_abi_storage_and_blob_routes_answer_for_a_component`):
+  `/apps/{app}/abi` answers the ABI the component embeds (`calimero:abi`);
+  `/apps/{app}/storage` counts its keys and bytes; the blob routes answer
+  `409 NOT_SUPPORTED` (R8). The host refuses blobs, search, xcall, event handlers,
+  TEE runs and outbound HTTPS to a component; a wasmer app's
+  xcall into a component is refused (`node::COMPONENT_REFUSES`).
+- **Not here**: the spec's `__upgrade` through `/intents` (Ruling 36; the node refuses
+  every `__` method there) and the leader's own re-check of upgrade authority
+  (Ruling 45; the node judges it in the API and the system log); their tests are
+  `#[ignore]`d with the reason.
+
+## Not done yet
+
+rollback counter (proposed: a mero-kms epoch, restored nodes rejoin as learners),
+keys per app from mero-kms, placement across zones, snapshot restore into a
+running cluster, event audiences, search indexes that survive a restart (rebuilt from state now).
 
 ## Commands
 
 ```bash
-# Build
-cargo build -p calimero-node
-
-# Test
-cargo test -p calimero-node
-
-# Test specific
-cargo test -p calimero-node test_sync -- --nocapture
+cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release   # test fixture
+# fixtures whose ABI the node reads (handlers, timers, xcall, search, blobs):
+for a in blobs kv-store-with-handlers kv-store-with-shared-storage search-chat xcall-example tee-cards tee-dice \
+  migrations/migration-suite-v1 migrations/migration-suite-v2-add-field \
+  migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2 \
+  migrations/scenario-identity-downgrade-v1 migrations/scenario-identity-downgrade-v2; do
+  cargo mero build --manifest-path apps/$a/Cargo.toml; done
+cargo test -p calimero-node    # 3-node cluster in process, sealed, real WASM
+# component fixtures (apps/v2-fixtures/{kv,org-gated}, apps/rooms) are built on first use by
+# tests/common/mod.rs into target/app-components (needs the wasm32-wasip2 target)
+cargo test --release -p calimero-node --test rooms   # Rooms A1 (shared scenario), A3, A5
+# A4, the fault test (merod run --dev processes on ports 7600-7699, above the merobox
+# workflows', shifted by WORKFLOW_PORT_OFFSET when set; release merod and
+# meroctl in RV2_BIN_DIR, default target/release; the cached Rooms component)
+python3 -I crates/node/tests/fault/rooms_fault.py --iterations 200 --seed 1
+# calls/s and p50/p99 through that cluster (harness: tests/harness/cluster.rs), as JSON:
+cargo bench -p calimero-node --bench cluster_throughput -- --secs 15 --out cluster.json
+cargo run -p merod -- --help
+cargo run -p merod -- local   # dev cluster: 3 nodes on :2501-2503 (`local.rs`)
+cargo run -p merod -- --node n1 inspect [--storage-key-file F]   # a stopped node's store (`inspect.rs`)
 ```
-
-## File Organization
-
-```
-src/
-├── lib.rs                    # Crate root: module declarations and re-exports
-├── manager.rs                # NodeManager actor
-├── state.rs                  # NodeClients, NodeManagers, NodeState
-├── run.rs                    # Node startup (start function)
-├── handlers.rs               # Handler module parent
-├── handlers/
-│   ├── network_event.rs      # Network event handler
-│   ├── network_event/
-│   │   ├── namespace.rs      # ns/<id> topic dispatch (Op/Ack/ReadinessBeacon/ReadinessProbe)
-│   │   ├── readiness.rs      # ReadinessBeacon + ReadinessProbe receiver-side handlers
-│   │   └── tee_fired.rs      # A TEE's signed statement that a run which wrote nothing fired
-│   ├── state_delta/          # State delta handler (mod.rs, buffering.rs, crypto.rs, events.rs, store_setup.rs, verify.rs)
-│   ├── stream_opened.rs      # Stream opened handler
-│   ├── blob_protocol.rs      # Blob protocol handler
-│   ├── blob_announce.rs      # Availability prefetch on an inbound blob announcement
-│   └── get_blob_bytes.rs     # Get blob bytes handler
-├── readiness.rs              # ReadinessTier FSM + ReadinessCache + ReadinessManager actor
-├── readiness/
-│   └── tests.rs              # FSM transition tests + cache picker / atomicity tests
-├── join_namespace.rs         # J6 namespace-join: join_namespace/await_namespace_ready/with_retry
-├── tee_admission_state.rs    # TEE admission challenges an admitting member issued (single-use, 60 s) and the namespaces a joiner waits on
-├── tee_firing.rs             # TEE trigger election, failover turns, fired-marker checks (event + timer triggers)
-├── tee_scheduler.rs          # Fires #[app::tee(every = "..")] methods once per tick on TEE authorities
-├── sync/
-│   ├── mod.rs                # Sync module (exception to no mod.rs rule)
-│   ├── manager/              # SyncManager (mod.rs, blob_fetch.rs, handshake.rs, namespace_join.rs, namespace_sync.rs, relay_sealed_join.rs, sealed_outbound.rs, tee_admission.rs, tests.rs)
-│   ├── stream.rs             # Sync streams
-│   ├── config.rs             # Sync configuration
-│   ├── tracking.rs           # Sync tracking
-│   ├── blobs.rs              # Blob sync
-│   ├── delta_request.rs      # Delta request handling
-│   ├── helpers.rs            # Sync helpers
-│   ├── namespace_backfill.rs # decode_backfill (cap, namespace check, parents-first order) and collect_ancestry (targeted fetch of a refused op's ancestors by id)
-│   ├── snapshot.rs           # Snapshot handling
-│   ├── snapshot/leaf.rs      # Checks every snapshot entity passes on arrival
-│   └── snapshot/stage.rs     # Snapshot staged on disk, checked as a tree, then installed
-├── cell_writers.rs           # Who may write a delta's shared cells: the judgement at the delta's governance position, `ProjectionCuts`, and the ever-writers at the current heads for repairs
-├── delta_store.rs            # Delta storage + applier (merge-applies via `ContextClient::apply_remote_delta`, so read-only replicas keep the result)
-├── dag_compactor.rs          # DAG compaction actor: prunes live and cold contexts' delta history, then compacts the delta-column slices
-├── dag_compactor/
-│   ├── disk.rs               # Bounded on-disk prune of one context's ContextDagDelta rows and their side rows (count, retain walk, batched deletes)
-│   ├── side_rows.rs          # The per-delta side tables (events hash, TEE trigger) a pruned row takes with it
-│   ├── orphans.rs            # Bounded two-look sweep of side rows no delta row, absorb record or live DAG claims
-│   └── sweep_tests.rs        # RocksDB sweeps: cold / restarted / pending contexts, side rows, orphans, SST bytes given back
-├── gc.rs                     # Tombstone GC (+ parents' deleted_children, a record per collected delete), under each context's lock
-├── tombstone_stability.rs    # When a tombstone may go: every member device caught up (signed StateBeacon)
-├── constants.rs              # Constants
-├── arbiter_pool.rs           # Actix arbiter pool
-└── utils.rs                  # Utilities
-primitives/                   # calimero-node-primitives
-├── src/
-│   ├── lib.rs                # Shared types
-│   ├── client.rs             # NodeClient
-│   ├── client/application/
-│   │   ├── acquire.rs        # acquire_bytecode + the ApplicationStore impl
-│   │   ├── bind.rs           # Application-row binding + blob release on failure
-│   │   └── install.rs        # Installs by coordinates or local path
-│   ├── sync.rs               # Sync types
-│   └── messages/             # Message types
-```
-
-## Key Components
-
-### NodeManager Actor
-
-Main coordinator using actix actor pattern:
-
-```rust
-// src/manager.rs
-pub struct NodeManager {
-    clients: NodeClients,      // External service clients
-    managers: NodeManagers,    // Service managers
-    state: NodeState,          // Runtime state
-}
-
-impl Actor for NodeManager {
-    type Context = Context<Self>;
-}
-```
-
-### Handler Pattern
-
-- ✅ DO: Follow pattern in `src/handlers/network_event.rs`
-- ✅ DO: Use actix message handlers
-
-```rust
-// src/handlers/network_event.rs
-impl Handler<NetworkEvent> for NodeManager {
-    type Result = ();
-
-    fn handle(&mut self, msg: NetworkEvent, ctx: &mut Self::Context) -> Self::Result {
-        // Handle network events
-    }
-}
-```
-
-### SyncManager
-
-Handles state synchronization between nodes:
-
-```rust
-// src/sync/manager/mod.rs
-pub struct SyncManager {
-    // Sync configuration and state
-}
-```
-
-### ReadinessManager
-
-Per-namespace readiness-beacon emitter and FSM driver. Closes the
-cold-start gap between joining a namespace and being able to publish
-governance ops without losing them to gossipsub's GRAFT handshake.
-See #2237 and the `crates/node/src/readiness.rs` module doc.
-
-```rust
-// src/readiness.rs
-pub struct ReadinessManager {
-    pub cache: Arc<ReadinessCache>,           // shared with receiver
-    pub config: ReadinessConfig,
-    pub state_per_namespace: HashMap<[u8; 32], ReadinessState>,
-    pub node_client: NodeClient,              // raw publish (bypasses 10s mesh-wait)
-    pub datastore: Store,                     // namespace-identity loading
-    pub last_probe_response_at: HashMap<(PeerId, [u8; 32]), Instant>,
-    pub pending_republish: HashMap<[u8; 32], PendingJoin>,  // zero-ack membership ops
-}
-```
-
-- Beacons signed via `READINESS_BEACON_SIGN_DOMAIN` (canonical
-  `signable_bytes`) and verified by
-  `calimero_context::governance_broadcast::verify_readiness_beacon`
-  (signature + namespace member set). A beacon that fails the membership
-  check falls through to the stranded-member arm and is otherwise dropped.
-  A beacon on this node's own account namespace that advertises governance the
-  node lacks also cues a pull from its signer, debounced per (namespace, peer),
-  so a restored holder reaches a surviving device whose key it has not learned.
-  It used to be rescuable by a verifiable admission proof it carried; that
-  path existed so an invitation could be claimed by broadcast, which direct
-  admission replaced — the invitation names who may admit it, and the
-  admitter applies and publishes the join, so no stranger's beacon needs to
-  unlock a pull.
-- Periodic emission on `beacon_interval` ticks for `*Ready` tiers.
-- Edge-trigger emission on tier transition into `*Ready` (via
-  `LocalStateChanged` / `ApplyBeaconLocal`).
-- Probe-response rate-limit at `BEACON_INTERVAL / 2` per
-  `(peer, namespace)` to close traffic + mailbox amplification.
-- A `MemberJoinedAt` broadcast that collected zero acks is queued via
-  `NodeClient::queue_membership_republish` (`PendingRepublish`) and
-  rebroadcast on the next `EmitOutOfCycleBeacon` for that namespace -
-  fired both when a namespace peer subscribes and when one sends a
-  `ReadinessProbe`. The handler's per-(peer, namespace) rate-limit
-  check returns before reaching the republish drain, so a
-  subscribe/probe that lands inside that window does not retry until
-  the next one outside it. The stored op is rebroadcast verbatim, never
-  re-signed. Entries expire after `REPUBLISH_CAP` (10 min) and are NOT
-  removed on republish, so a later subscriber gets another attempt.
-
-### J6 namespace-join (Phase 8)
-
-Free functions in `src/join_namespace.rs` (not on `ContextClient`
-because of a Cargo dep cycle):
-
-```rust
-pub async fn join_namespace(...) -> Result<JoinStarted, JoinError>;
-pub async fn await_namespace_ready(...) -> Result<ReadyReport, ReadyError>;
-pub async fn join_and_wait_ready(...) -> Result<ReadyReport, ReadyError>;
-pub async fn join_namespace_with_retry(...) -> Result<JoinStarted, JoinError>;
-```
-
-The fast path (`join_namespace`) provisions the namespace identity,
-seeds local trust by writing a minimal `GroupMetaValue` with the
-invitation's inviter as `admin_identity` (so beacons signed by the
-inviter pass `verify_readiness_beacon`), subscribes to `ns/<id>`,
-publishes a `ReadinessProbe`, and awaits the first fresh beacon.
-
-## Key Files
-
-| File                            | Purpose                        |
-| ------------------------------- | ------------------------------ |
-| `src/manager.rs`                | NodeManager actor definition   |
-| `src/state.rs`                  | NodeClients, NodeManagers, NodeState |
-| `src/run.rs`                    | `start()` function, NodeConfig; starts the full-text search indexer (`calimero_search::SearchService::run_indexer` over `NodeContextSource`) when `[context.search] enabled` (the default). Sync writes no search rows: the indexer finds state a sync moved by its root chain |
-| `src/handlers/network_event.rs` | Network event handling         |
-| `src/handlers/network_event/namespace.rs` | `ns/<id>` topic dispatch (Op/Ack/Beacon/Probe) |
-| `src/handlers/network_event/readiness.rs` | Beacon receive + probe forwarding |
-| `src/handlers/state_delta/`     | State delta processing         |
-| `src/readiness.rs`              | Readiness FSM + cache + manager (#2237) |
-| `src/join_namespace.rs`         | J6 namespace-join flow         |
-| `src/sync/manager/mod.rs`       | Sync coordination              |
-| `primitives/src/client.rs`      | NodeClient interface           |
-| `primitives/src/client/application/acquire.rs` | `acquire_bytecode`; `NodeClient`'s `ApplicationStore` impl |
-
-## JIT Index
-
-```bash
-# Find handlers
-rg -n "impl Handler" src/
-
-# Find actor messages
-rg -n "impl Message" src/
-
-# Find sync logic
-rg -n "pub async fn" src/sync/
-
-# Find constants
-rg -n "const " src/constants.rs
-```
-
-## Testing
-
-```bash
-# Run all node tests
-cargo test -p calimero-node
-
-# Run specific test
-cargo test -p calimero-node concurrent_branches -- --nocapture
-
-# Integration tests in tests/ directory
-cargo test -p calimero-node --test network_simulation
-```
-
-## Common Gotchas
-
-- NodeManager is an actix Actor - use message passing
-- Sync operations are async - use proper await handling
-- Delta stores are per-context (ContextId key)
-- **A repair leaf defers only when there is something to merge it with.**
-  `sync/helpers.rs`'s `classify_leaf` sends a `Custom`-typed leaf to
-  `dispatch_deferred_custom_merges` (`__calimero_merge_custom`) only when this
-  node stores a `Public` custom entry for it (`stored_custom_type`), under that
-  entry's rule. That pass skips an entry with nothing stored, so one the
-  receiver lacks applies through the plain path, which stores it as it arrives.
-  Deferring it anyway made HashComparison and level-wise unable to deliver an
-  entry a node had refused (its delta applied before the author's binding
-  folded), so the replicas stayed divergent on the same DAG heads (#4310).
-  The leaf's `crdt_type` is unsigned, so a signed entry always takes the plain
-  apply, and storage refuses a custom merge into anything else
-  (`custom_entry_merge_request`). A leaf storage refuses is logged and skipped
-  on every repair path (HashComparison, LevelWise and pushes), never ending the
-  session
-- `ReadinessCache` and `ReadinessCacheNotify` use poison-recoverable
-  mutex helpers (`entries_lock` / `waiters_lock`); never call `.lock()`
-  directly on those fields
-- **Only two things make a peer acceptable to serve a group key** (`key_server_accepted`): it is a trusted anchor of that group, or it proved with a certificate chaining to this node's own account root that it is a device of this node's own account. Decided **per response**, never by pruning the candidate list first — the second ground cannot be known until the answer is in hand. An awaited `key_id` is NOT a ground and the predicate deliberately takes no such argument: that id is read from a cleartext field no gate checks, so whoever mints it can then satisfy its own hash check (#3888). Anchor-first ordering decides who is *asked* first, never who is *believed*. A responder is an anchor when the envelope it served is signed by an anchor's key (`envelope_signed_by`, checked before the gate), and by nothing else. `peer_identities` is not a ground: it is filled by gossip ops a peer relayed, which any peer can re-publish, so it only orders who is asked first. The signature also serves a joiner that bootstrapped by pull and saw none of the anchor's gossip, which was refused the owner forever when a TEE was admitted by another TEE and the owner, answering `AlreadyMember`, published nothing (`tee-cards-late-tee`). A responder that only *claims* an anchor's identity is refused like any non-anchor, so the round goes on to the next candidate. And do not reduce this to anchors alone: `trusted_anchors` reads group meta, so a node holding no governance state identifies NO anchor, and that is exactly the freshly paired device the pull exists for — the `account-device-*` scenarios fail on it, surfacing two steps away as "context does not belong to any group" because without the key the GroupOps mapping a context to its group never fold (#3892). A namespace founded through a relay has no anchor node in its cleartext genesis except that relay, which `trusted_anchors` therefore counts (see governance-store's AGENTS.md).
-- **A device spent in this node's account namespace is served no key** (`NodeDeviceRepository::is_spent_in_own_account`): the namespace join, open-subgroup join and key-pull responders refuse it, and the rotation fan-out (`current_key_recipients`) and `add_group_members`' delivery leave it out, before the carried unlink reaches the namespace. What still gets through: a device that already holds the namespace key keeps it and can author there until the carried unlink lands, and a node of another account, a node that has not applied the revocation, or one that follows no account namespace still serves it (see projection's AGENTS.md for the void rule).
-- `ReadinessCache::insert` does NOT verify signatures or membership -
-  the receiver-side gate `verify_readiness_beacon` is the choke point;
-  callers from outside the receiver path must verify first
-- A beacon's `dag_head` is the lex-min of the sender's head SET, so it cannot
-  represent a fork: a peer holding `{L, G}` advertises whichever sorts lower,
-  and if we already hold that one we look caught up. `applied_through` is what
-  detects the fork, hence `peer_applied_more` in `beacon_indicates_divergence`.
-  The repair pull then goes to the beacon's own signer, the one node
-  demonstrably holding what we lack, not a subscriber that may be as far behind
-- `ns/<id>` topic publishes wrap inner `NamespaceTopicMsg` in
-  `BroadcastMessage::NamespaceGovernanceDelta { namespace_id, delta_id,
-  parent_ids, payload: borsh(NamespaceTopicMsg) }` - sender-side
-  envelope skips break receive-side decoding silently, and the receiver
-  drops an envelope whose `namespace_id` is not the arrival topic's
-- `VerifiedBundle` is the only way to read artifact bytes out of a
-  `.mpk`; `extract_bundle_files` is module-private so the compiler
-  enforces it. Construction requires a valid manifest signature, and
-  every wasm artifact is digest-checked against the signed manifest
-  before its bytes are returned. Nothing is unpacked to disk: the
-  `.mpk` stays a content-addressed blob, and a multi-service install
-  copies each service's wasm into a blob of its own
-- A bundle's manifest is the entry at exactly `manifest.json`, never a
-  nested one: an `old/manifest.json` would be an authentically signed
-  older release, so basename matching is a signed rollback. Only a
-  leading `./` is normalised away, since that is how ordinary tar
-  spells a top-level entry; every other component is significant, on
-  the manifest's declared paths as much as on the archive's entries. A
-  second entry at that path is refused, after the signature rather than
-  during the pre-auth scan, since the check has to reach the archive's end
-- `BundleManifest::artifacts` destructures the manifest without `..`,
-  so adding an artifact field is a compile error until it is
-  classified; keep it that way rather than reaching for a wildcard
-- `acquire_bytecode` is a thin wrapper over
-  `calimero-app-downloader`, which picks the node's ONE source from
-  `[registry] mode` and states the contract; see
-  [app-downloader/AGENTS.md](../app-downloader/AGENTS.md). This crate
-  owns the storage half: the `ApplicationStore` impl, the `PeerBlobs`
-  impl, and the row binding (`bind_application`) in `acquire.rs`, backed
-  by `bind.rs`'s `put_bundle_row`. Add a source there, not by
-  fetching inline at a call site
-- In `Http` mode a node is not a source of application bytecode, so it
-  neither announces nor serves it: `NodeClient::may_share_blob` gates
-  `announce_blob_to_network`, `sync/blobs.rs`'s
-  `handle_blob_share_request`, and `handlers/blob_protocol.rs`. Gate every
-  new serve site through it. User-data blobs are untouched in both modes
-- **A peer is served a blob only for a context this node holds it for.**
-  `NodeClient::is_blob_held_for_context` (a node-local `key::BlobOwner` row, or
-  the context's own application artifact) gates the signed path of
-  `handlers/blob_protocol.rs`, `sync/blobs.rs`'s responder and the runtime's
-  `blob_open`; gate every new serve or read site through it too.
-  `record_blob_owner` writes the row where bytes enter for a context: the
-  runtime's `blob_create`, the admin upload with a `context_id`,
-  `upgrade_group`, `fetch_blob_for_context`'s peer fetch and the `BlobShare`
-  initiator. Record only after the bytes are verified, and never on a local hit
-  or on an announcement's say-so: either would let one context's member claim
-  another context's blob by id
-- **A prefetch's reference is recorded once, and released with its context.**
-  `NodeClient::record_prefetched_blob` is called only on the prefetch path in
-  `handlers/blob_announce.rs`; one `key::PrefetchedBlob` row is one reference.
-  `release_prefetched_blobs` drops them on `delete_context`, and
-  `spawn_prefetch_sweep` does the same for a context once two hourly sweeps in
-  a row find this node no longer serves it. `BlobManager::record_prefetch` and
-  `release_prefetch` write and delete the row under the blob's stripe lock, and
-  only the caller that deletes a row releases its reference
-- `NodeClient::get_blob`'s discovery leg does NOT trust the DHT alone: a
-  provider record is opportunistic (nothing announces application
-  bytecode at install, and a restart drops what was announced), so an
-  empty or failed lookup falls back to the context topic's subscribers.
-  A blob a context member holds must stay reachable without a record
-- `sync/manager/blob_fetch.rs` acquires a context's bytecode through
-  `acquire_bytecode` too, never through `initiate_blob_share_process`.
-  `Unavailable` there is non-fatal by type - it returns a bare `Outcome`,
-  so nothing can `?` it into a session abort
-- `bind_application` derives a bundle's application id from its
-  signed manifest and compares it to the one governance named *before*
-  calling `install_bundle`. That call writes the `ApplicationMeta` row
-  and a blob per service, and nothing reclaims either, so validating
-  afterwards would leave the artifact's own (legitimate, possibly
-  unrelated) application row pointing at a blob the failure path then
-  deletes
-- The `ApplicationMeta` row follows `InstallOrigin`. An `Operator` install
-  (the admin API) may set it to any release, including an older one. A
-  `Remote` install (downloader, blob share, join bootstrap, relay) replaces
-  a signed release only with an equal or semver-newer one, keeping any
-  other as a blob. Raw wasm is refused on every remote path
-  (`derive_bundle_id`), and never runs: `application_bytes_from_blob`
-  refuses it, since a group target, marker or stub can name any held blob.
-  Writes re-check under `lock_application_rows`, the process-wide lock every
-  stub writer (governance `ContextRegistered` and upgrade-target seeds, the
-  join bootstrap) also takes
-- A joiner that holds no key to seal its own join does NOT publish it in
-  the clear. `sync/manager/relay_sealed_join.rs` carries both halves of
-  the exchange that replaced that fallback (#3904): the joiner sends
-  `InitPayload::RelaySealedJoinRequest` with its own signed op, and the
-  admitter wraps it as `NamespaceOp::RootRelaySealed` and publishes.
-  Three things about it are load-bearing. The responder does **no**
-  membership or authority check on the requester — the authority is the
-  endorsement sealed inside the op, which is self-authenticating, so a
-  gate there would only reject legitimate relays. The initiator tries the
-  endorsing admitter first because it is known reachable (the endorsement
-  arrived over a stream to it), which is why `JoinBundle` carries
-  `admitter_peer` at all; it is filled by the requester, never asserted by
-  the responder — and it then falls through to the rest of the namespace
-  topic, because an admitter is NOT guaranteed to hold the key: one still
-  awaiting its own `KeyDelivery` endorses the join and serves an empty
-  envelope, which is precisely how a joiner ends up unkeyed. And a relay that finds no keyholder **fails the join**:
-  falling back to a cleartext publish would make "sealed" and "leaked" the
-  same silence, and an older responder that cannot decode the payload
-  lands in exactly that branch.
-- **A TEE is admitted only on a quote over a challenge this node issued to it, and the answer is still decided in one place.** `sync/manager/tee_admission.rs` carries both halves, and both end in `handlers::tee_attestation_admission::verify_and_admit`. Keep it that way: a second copy of the challenge/quote/credential/policy/vouching checks would drift, and the paths would admit different sets. The node asks (`fleet-join` sends `InitPayload::TeeAdmissionChallengeRequest` to each of its `admitter_addrs`, makes a quote over the challenge it gets, and sends `TeeAdmissionRequest` on a second stream), or a member answers a prompt (`BroadcastMessage::TeeAdmissionPrompt` on `ns/<hex>` makes each member that may vouch open a stream to the gossip `source` with `TeeAdmissionChallengeOffer`; the node replies on it with its quote, and the member verifies). The prompt carries no quote and admits nothing. A challenge (`tee_admission_state::TeeChallenges`, on `NodeState`, so the broadcast handler and the sync responder share it) is 32 random bytes bound to a namespace and a peer, single-use (spent on first presentation whatever the outcome), valid for 60 s, bounded per peer and in total, and not re-issued to a peer within a few seconds. The quote's report data is the challenge followed by `calimero_op_adapter::tee_admission_binding` of the credential, so a quote made for another account, identity key, delivery key, device or namespace fails in `verify_and_admit` and nothing is published for it. A node makes a quote only while it has registered that it is waiting (`PendingTeeJoins`, filled by `SyncManager::initiate_tee_admission`, which `fleet-join` and the evidence retry both reach through `NodeClient::request_tee_admission`; with no addresses it only registers), and at most every couple of seconds per namespace. Quote generation happens in this crate (`attest_admission`), never in the server: the challenge does not exist until a member offers it. The challenge request requires a proof of possession, and a request's `public_key` must equal the proven `party_id`, or a dialer could relay another replica's attestation on its own stream. The offer needs none: it names no identity and only a waiting node answers. The addresses carry no authority (every peer re-checks the voucher at apply). A refusal is re-checked against membership before it is answered (`direct_admission_answer`): a member answering the prompt can admit the node while its direct request is in flight, and a requester whose credential certifies its key and who holds a TEE row at the root is told it is admitted. The channel reaches the manager through `SyncClient::with_tee_admission` / `SyncManager::with_tee_admission_rx` rather than `new`, so test harnesses need not build it; `run.rs` always does. **An initiator never waits on itself or on a silent peer**: `group_admitter_routes` drops this node's own peer id (a self-dial ends in libp2p's `LocalPeerId` and the pending stream open is never answered), every open on this path goes through `SyncManager::open_stream_bounded`, and `SyncDriver` runs each admission beside its loop (at most `MAX_TEE_ADMISSIONS_IN_FLIGHT`, each answered as refused after `TEE_ADMISSION_DEADLINE`) rather than awaiting it inside its `select!` arm, which stalled periodic sync and outbound joins. `fleet-join` answers `admitted=true` without asking anyone when the node already holds a row and the covering key.
-- **A TEE's release rides in its answer.** `InitPayload::TeeReleaseAdmissionRequest` is the direct request plus `release_version`, appended at its enum's tail, and the offered-challenge reply carries the same field; both land in `verify_and_admit` through `TeeAdmissionClaim`, whose `release_version` is `None` for the plain form. merod names its release with `MERO_TEE_VERSION`. The release is checked in `admit_tee_node`, under a signed-release policy only.
-- **A TEE's delta is signed under `SignatureDomain::Tee`, over its trigger's cause.** The cause (`TeeTriggerCause`) rides in the clear as `tee_trigger` on `BroadcastMessage::StateDelta`, `DeltaResponse` and `BufferedDelta`, and every receive path — gossip, buffered replay, parent fetch, `delta_request.rs`'s catch-up and the head-pull in `sync/manager/mod.rs` — must pass it to `verify_delta_envelope`, run `check_tee_envelope` on the result, and call `record_accepted_tee_delta` once the store takes the delta. That call is where the fired marker comes from; nothing else records one for a peer's delta. The cause is kept in a side table (`calimero_context_client::tee_trigger::delta_trigger`), not on the `ContextDagDelta` or `AbsorbRecord` row, because both are plain borsh with no migration: the catch-up responder serves it from there, and an absorbed delta's replay reads it back from there. A new receive path that drops the field refuses every TEE delta as untriggered. A run that writes nothing has no delta, so `TeeFiring` gossips a signed `BroadcastMessage::TeeFired` (`SignatureDomain::TeeFired`) instead, checked in `handlers/network_event/tee_fired.rs`; it is never persisted.
-- **A forwarded outbound request is decided by the context manager.** `sync/manager/sealed_outbound.rs` answers `InitPayload::SealedOutboundRequest` after the usual proof of possession and membership check against the `Init`'s context (the payload is in `payload_requires_init_pop` and `payload_names_another_context`), by handing it to `ContextClient::forwarded_outbound` and sending back the bytes it returns as `MessagePayload::SealedOutboundAnswer`. Keep the decision there (`calimero_context::outbound_forward`): whether this node is a TEE that may open the secret, whether the requester may write, and every outbound gate.
-- **A delta's id covers its events.** `CausalDelta::compute_id` hashes `events_hash` (`CausalDelta::hash_events` of the sealed events bytes) first, so a delta re-sealed with other events no longer matches its id or its author's signature. Gossip and buffered replay hash the decrypted events before `content_address_matches`; catch-up, parent fetch and head-pull get `events_hash` on the wire `CausalDelta` and check it through `id_matches_content`. Every receive path calls `record_accepted_events_hash` once the store takes the delta, and `delta_request.rs`'s responder serves the hash from that side table (`calimero_context_client::delta_events`), because the row's events are cleared once the handlers ran. A receive path that drops it serves deltas no peer can verify.
-- **Event handlers run through `execute_event_handler`.** `state_delta/events.rs` never calls `execute` for an event: the context manager refuses a method the app's ABI does not declare `#[app::handler]` (`ExecuteError::NotAnEventHandler`), and the node treats that refusal as settled so the events are not replayed, warning with the context, the application and the method. `tee_firing.rs` does the same for a TEE trigger.
-- **A snapshot leaf buffered as future-schema drains to the page apply's verdict.** `persist_buffered_snapshot_entity` (`sync/snapshot.rs`, run by `drain_absorbed_leaves`) asks what `request_and_apply_snapshot_pages` asks: the leaf's bytes and update time (`leaf::leaf_defect`), the signature, the TEE-only rule, and `snapshot_leaf_authorship`. That is decided at once, with no rescue: a `Shared` leaf is `Authored` when its signer's account is in the genesis writers it carries (which must be the set its cell id commits to: `authorship_verdict` answers `Forged` for any other, as both storage verifiers refuse it, since a rotation never rewrites a wrapper) or in the cell's ever-writers, a `SharedMember` when it is in its anchor's (the anchor's genesis writers come from the snapshot's anchor record, or from the stored anchor in the drain), a `User` leaf when it is the owner's. The ever-writers come from `ContextClient::cell_writers().ever_writers(context, cell)` at this node's current governance heads, asked only when the genesis set does not name the signer. When they cannot be read (`Err(Cut)`) or the cell is past the fold's budget (`Err(OverBudget)`, logged at warn), the verdict is `Unknown`: the page apply fails the snapshot for a retry and the drain keeps the record `Pending`, never `Forged`, because refusing would drop an honest leaf the shipped root hides from repair. The drain reads a member's genesis writers from its stored anchor (missing is `Pending`) and sorts entity records by `buffered_snapshot_entity_pass` (plain leaves, then `Shared`, then `SharedMember`) so a snapshot, whose entities share one schema, lands in one pass. A signature that fails is `Refused` too, since the key rides in the leaf. What stays `Pending` is retried on the absorb-drain triggers (governance op apply, namespace sync, blob fetch, startup recovery) at most `MAX_GOVERNANCE_DRAIN_ATTEMPTS` times, counted in the record's otherwise unused `governance_drain_attempts` (`drain_buffered_snapshot_entity`), then deleted: a member cannot grow the buffer with records that wait for nothing. A cold joiner whose governance is behind the signer's admission reads a `Forged` verdict for a writer it has not yet heard of: the page apply fails the snapshot and the drain refuses the leaf; the next repair round restores it once the rotation has folded.
-- **A snapshot entity that fails a check fails the snapshot.** `request_and_apply_snapshot_pages` runs `leaf::leaf_defect` (index row names the entity, update time within `DRIFT_TOLERANCE_NANOS` of the clock, `Sha256(entry) == own_hash`) on every entity before any check that could set it aside, and a later signature, TEE-only, authorship, anchor or index-decode failure returns `refused_snapshot_entity` instead of dropping it. The parent's shipped hash counts the entity, so dropping it would publish the source's root over state that lacks it. A future-schema leaf is buffered only after its bytes and signature check out. Pages land in `Column::SnapshotStage` (`snapshot/stage.rs`), not `State`: `install_staged_snapshot` links the staged child tries, checks every entity folds to the `full_hash` it ships (`Index::full_hash_with`), that no parent chain loops and that the root is the boundary's `boundary_root_hash`, and only then sets the sync-in-progress marker and moves the rows into `State` (`Stage::promote`, paged, not atomic). A refusal leaves `State` as it was and sets no marker, so the retry is an ordinary bootstrap. `Stage` clears its area on open and on drop, and context deletion purges the column. Future-schema leaves are staged so the fold counts them and buffered only after the install. A `Public` entity the root does not reach is not installed. The boundary root is still the serving peer's claim. A source's own tree may not fold (a process killed part way through a repair apply, which writes row by row): `stream_snapshot_pages` runs `first_unfolding_entity` at the start of a stream and warns with the context and the entity, still serving; the joiner's refusal names the same entity and `perform_interval_sync` goes on to the next peer
-- **A peer's delta is judged at its own governance position, in `ContextStorageApplier::apply`.** The store remembers the position each delta was handed by delta id (`DeltaStore::add_delta_*` take `governance_position_blob`; a parent not remembered is read from its stored row), so a delta that waited for its parents, or a cascaded child, is judged at its own cut, and a child added in a batch with its parent sees the parent's position before either row is written. `cell_writers::judge` asks `ScopeProjections::shared_writers_at_cut` for each `Shared` cell and `SharedMember` anchor the delta touches, after `refresh_for_cut` folds the cut: `Genesis` puts nothing in `effective_writers` (storage holds the set the cell id commits to), `Rotated(w)` puts `w`, `Err(Cut)` fails the apply as a deferral (nothing applied, retried by the next sync, like a signer that does not resolve yet) and `Err(OverBudget)` as a refusal. A position is **stale** for a cell when the cell's writers at the delta's cut differ from its writers at the union of that cut and the position of a data-DAG parent this node stores (`shared_writers_at_cut` walks ancestry, so redundant heads are fine); a stale position is refused, and a union cut that cannot be read is a deferral. That test reads only the delta's cut and the stored parents' positions, never this node's current heads, so a node that folded a later rotation and one that has not reach the same verdict; a parent with no stored position (compacted, covered by the snapshot this node joined from) is skipped. Only a delta with no position or an empty one (a legacy row re-driven) is judged at this node's current heads, and is refused once a cell it writes has rotated there. The first position remembered for a delta id stands, in memory and in its stored row (`remember_position` reads the row first, and every row is written from the remembered blob): a later envelope for the same id cannot replace it. Known limits: a delta id does not commit to its position, so an author who signs two envelopes for one id with different positions can make nodes keep different ones and have the delta's children judged differently (binding the position into the id would change the wire format and is left to the owner); and a pending delta with no stored row (no events) whose remembered position is evicted (`MAX_REMEMBERED_POSITIONS`, 10,000) applies as position-less. A delta's cut is chosen by whoever signs its envelope, so the stale rule bounds honest lag only; it does not stop a removed writer colluding with a member who still vouches for an old cut, because the model is forward-only. A delta touching no shared cell is not judged and reads no parent, but executing it still pins its position's cut and folds the namespace up to it (`apply_remote_delta` always passes a position, and `pin_cut` runs `refresh_for_cut` for every remote apply in a group). `apply_remote_delta` hands the position on, so the execute path reads the cell's host writers at the same cut. A path with no cut of its own (HashComparison and LevelWise leaf applies, the trait-path HashComparison responder, the absorb drain) installs `ContextClient::cell_writers().ever_resolver(context)` on its runtime env via `sync::helpers::with_repair_cell_writers`; `run.rs` fills the seam with `cell_writers::ProjectionWriters`, which answers every writer the cell has had by the node's current governance heads (`ScopeProjections::shared_writers_ever_at_cut`: the genesis set plus the `new` set of every counted step, void or not). A repair leaf has no cut, and a since-removed writer's earlier legitimate write must still reach a repairing node; the trade-off is that a removed writer can push their own signed leaf again through an admitted source, which the old as-of-timestamp path allowed too, and that a removed cell admin who is still a member can sign a rotation backdated to before their removal: the fold voids it, but its `new` set still counts here, so the accounts it names are admitted on repair. There is no rotation log to read on the delta apply, repair or snapshot paths: a legacy entity an older peer ships, stamped `CrdtType::RotationLog`, is an ordinary leaf with the same authorship check, and every snapshot `Auxiliary` record is rejected. Every path that adds a peer's delta (gossip, parent fetch, DAG catch-up, buffered replay) arms the key-to-account resolver for the delta's own cut (`arm_signer_resolver_for_cut`), and the catch-up batch re-arms it before each delta it adds, at that delta's own remembered position and clock (`add_deltas_batch` takes the arming closure `flush_delta_batch` builds), so a chunk that spans a device revocation resolves each delta where it was signed; HashComparison and LevelWise resolve the signer's account themselves (`signer_account_for`), so they need no armed resolver. A delta deferred because its cut cannot be read yet is not applied and not remembered by the DAG, and it comes back through the next parent fetch, DAG catch-up tick or restart re-drive, each of which re-judges it. A cascaded child keeps the envelope and position it arrived with when its row is rewritten as applied, recovering the position from memory when it was never pre-persisted.
-- **A repair leaf for the app-state entry (`ROOT_ENTRY_ID`) always defers**, whatever `crdt_type` the peer names, and `dispatch_deferred_root_merges` merges it through the module's `__calimero_merge_root_state` by the rule a delta takes. Never apply or last-writer-wins it from the DFS: repair and delta would then settle one conflict two ways. The HashComparison initiator pushes its own entry back, and every responder hands a pushed entry to the same dispatch (the protocol-trait responders return it to their caller), so one session converges both sides. An `Id::root()` leaf goes through `Interface::apply_remote_action`, which holds the root shell rule
-- **A namespace backfill response is ordered before it is applied.** The responder serves ops in delta-id (hash) order, which is unrelated to causality. The three backfill receivers (`fetch_and_apply_namespace_backfill`, the governance catch-up and `sync_namespace_from_peer`) go through `sync::namespace_backfill::decode_backfill`, which caps the batch at `MAX_BACKFILL_OPS`, drops undecodable ops and ops naming another namespace, and sorts parents before children (`calimero_governance_types::order_parents_first`; `join_group` in `calimero-context` applies the same ordering to a join response's ops). The order matters because the governance DAG refuses to buffer an op whose signer is not yet certified: in hash order a member's op could be refused because its join sits later in the same batch. Signatures are checked by the DAG's entry point, not here. A gossip op that comes back `NotAdmitted` or `Pending` triggers `fetch_and_apply_ancestry`: `namespace_backfill::collect_ancestry` asks its sender for the op's missing parents by id (an empty request would only return the first `MAX_BACKFILL_OPS` ops by hash, always the same window), then for what those need, for at most `MAX_ANCESTRY_ROUNDS` rounds and `MAX_ANCESTRY_OPS` ops, keeps only ops that were asked for, and applies the whole set parents first once (nothing is applied between rounds, since an older ancestor may be what certifies a newer op's signer). The `NotAdmitted` fetch is limited to one per (namespace, sender) per `NAMESPACE_REFUSAL_BACKFILL_INTERVAL`, over at most `MAX_REFUSAL_BACKFILL_SLOTS` slots. Paging the empty request, which every sync round uses, is not done: on a namespace with more than `MAX_BACKFILL_OPS` ops it returns the same window each time.
-- **Presence is one `PresenceUpdate`, signed by its author inside the seal** (`calimero_node_primitives::presence`). `BroadcastMessage::Ephemeral` carries only `context_id`, `key_id`, `nonce` and the sealed update; the statement (context, author, seq, time, state hash) is the author's signature, and freshness is judged on its signed stamp after decryption. A node signs its own; an account's update carries its device certificate, and a relay publishes it through `outbound::publish_delegated` after `admit_delegated`. Receivers check an account's membership and revocation by their own data (`ephemeral/standing.rs`, shared with the relay so the two cannot disagree); a node author is gated only by holding the key, as before. A retract (`state: None`) is seq-gated in `AwarenessStore::retract`, so a replayed old one cannot remove a live entry. The relay keeps no `ephemeral_local` entry for an account: the account resends, and the relay's sweep expires it.
-- **A delegated delta's warrant is admitted, and its nonce spent, inside `ContextStorageApplier::apply`**, so every path that applies one runs the same gate: the primary of an add, a cascaded child, a persisted parent `get_missing_parents` loads, a delta re-driven after a restart. The envelope (cut and warrant) comes from the armed slot (`arm_author` takes the warrant with the author and the cut) or, with nothing armed, from the delta's `ContextDagDelta` row (`persisted_envelope`), which is why a delegated delta that goes pending gets a row (`DeltaStore::keep_pending_delegated`): without one a cascade would apply it with no warrant at all. The nonce is spent only once the apply has succeeded, never on arrival — a held-back delta has not used it, and spending early made a pending delta's own re-drive after a restart read as a replay. A re-delivery of an applied delta is a DAG duplicate and never reaches `apply`, so it is not refused. A refusal or an undecidable cut fails the apply; the DAG drops the delta and it is retried from its row or a re-fetch. A cascaded child's refusal surfaces as the error of the add that cascaded it, as any cascaded failure does.
-- **An entry a relay wrote on an account's behalf (`SignatureData::on_behalf`) is that account's only when its signer is a `RelayTee` writing for a member** (`calimero_governance_store::on_behalf_standing`). Each path places it with the cut it already uses. On the delta path `delta_store::on_behalf_accounts` judges each on-behalf action at the delta's own cut - the one armed with its author, or, for a delta applied with nothing armed (a cascaded child, a persisted parent loaded into the DAG, including after a restart), the cut its `ContextDagDelta` row records - and hands storage the account per action (`StorageDelta::CausalActions::on_behalf_accounts`). The delta's author plays no part: a `RelayTee` may write any member's entries, so a relay's entries apply in a delta the member did not author, and a delegated delta applies where no author is armed. An on-behalf action naming no signer, refused by the rule, or undecidable at the cut (not folded, or no cut known) refuses the whole delta, which is retried. Repair (`signer_account_for`, `is_leaf_currently_authorized`) asks the rule live, never through the TEE-authority mapping, and does not run the signer's own read-only gate, which would drop every such entry. Snapshot (`snapshot_leaf_authorship`) asks only the relay half, so a departed member keeps what was written for them: the signer must be a `RelayTee` live, or have been one at the cut of some governance op folded here (`FoldedTeeAuthority::relay_was_seated`, over `ScopeProjections::relay_was_seated`), since a leaf carries no cut and every peer that applied the entry by delta still holds it. A signer the folded history never seats fails the snapshot, which is retried; it is never dropped.
-- **DAG compaction prunes the delta column by its own rows, not by the in-memory DAG** (`dag_compactor.rs`, `dag_compactor/disk.rs`). The in-memory count says nothing about the rows: a context nothing touched since start has no `DeltaStore`, and after a restart a compacted context's DAG cannot be rebuilt (the oldest retained row's parent is gone, so `load_persisted_deltas` restores none of the chain). Each sweep visits every live `DeltaStore` (`DeltaStore::compact`: in-memory prune, then the disk prune keeping every id the DAG still holds) and every other context in `ContextMeta` (disk prune only, the DAG never loaded). The disk prune counts at most `min_deltas_before_compact + 1` keys, walks back from the persisted `dag_heads` for the retain window, scans at most `MAX_COMPACTION_SCAN_ROWS` and deletes at most `MAX_COMPACTION_DELETES_PER_CONTEXT` applied rows per sweep, never a head and never an `applied: false` row. It runs under the context's execution lock (`ContextClient::acquire_lock`), taken after the `dag` write lock on the live path — the same order as an inbound apply — because that lock is held by every commit of an applied row with the heads; without it a head committed mid-scan would be judged against the old heads and deleted. No lock (unknown context) means no rows are deleted. The heads are re-read before each delete batch and a change stops the pass. A pending delta no longer blocks compaction: `prune_to_recent` keeps pending deltas and every parent they already hold. Deleted rows are given back by compacting the context's `Delta` slice when `gc::worth_compacting` (the tombstone GC's bar) says so, with no lock held.
-- **A pruned delta row takes its side rows with it, in the same transaction** (`dag_compactor/side_rows.rs`): the events hash (`delta_events`) and the TEE trigger (`tee_trigger::delta_trigger`), both in `Column::Generic`. A side row goes only with its own delta's row, so a retained, pending, head or kept delta keeps it; a batch holds whole deltas and at most `COMPACTION_DELETE_BATCH` rows. Their keys are hashed from `(context, delta id)`, so a context's side rows are not a range and a side row's key names no delta: `dag_compactor/orphans.rs` sweeps those earlier compactions left behind by reading at most `MAX_ORPHAN_SCAN_ROWS` of each table and ruling out every one claimed by a row in the delta column (of any context, a deleted one included: its rows stay servable), an absorb record (an absorbed replay reads its trigger back) or a delta a live DAG holds (pending deltas have no row), over at most `MAX_ORPHAN_LIVE_ROWS` claims. No context lock can cover it, and every receive path records a side row before its delta enters the DAG, so a row is deleted only when two sweeps an interval apart both found it unclaimed. Nothing reads a side row without its delta (the responder looks one up only after finding the row, so a pruned delta is `DeltaNotFound` either way). Side-table bytes count in `DiskPrune::bytes`; the delta slice is compacted by `delta_bytes()` and the two side tables together by the sweep's total. A new per-delta table must join `SideTable`, or it leaks the same way. `NamespaceGovOp` (governance DAG), `UnifiedOp` (the op-log, never pruned) and `ContextWarrantNonce` (per author device) are not per-delta side tables; the TEE fired markers are per trigger and stay. Context deletion keeps `Delta` and so keeps its side rows; a deleted context is never compacted (no `ContextMeta`)
-- `add_blob`'s `expected_size` asserts a length the caller already
-  knows; it is never a ceiling. Passing a cap through it rejects every
-  correct blob under that cap. Bound a stream where the bytes arrive
-  instead - see `sync/blobs.rs`

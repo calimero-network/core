@@ -2,6 +2,61 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.1] - 2026-10-28
+
+The first release candidate of Calimero 1.0: a confidential cloud for
+collaborative apps. It replaces the 0.x peer-to-peer node. Apps built with the
+0.12 SDK deploy unchanged.
+
+### Added
+
+- **Each app instance is replicated by its own Raft log across attested TDX
+  nodes.** `merod` runs the node (`calimero-node`): a system group holds the
+  fleet, accounts, organizations and packages, and every app has its own group,
+  whose leader runs a call and whose followers apply what it produced. Storage
+  is one sealed RocksDB per node, keyed from mero-kms.
+- **Clients verify a node before they talk to it.** The API is reached through a
+  sealed channel opened only after the client checks the node's TDX quote
+  against signed mero-tee releases (`calimero-client`, mero-js,
+  calimero-client-py). Answers carry receipts signed by an attested key, and a
+  client can verify every replica of an app.
+- **Passkey accounts, organizations and teams.** Sign-in is WebAuthn passkeys
+  with sessions and scoped API keys. Organizations (v1's namespaces) hold teams
+  (v1's groups) with roles and v1's member capabilities, invites, metadata and
+  approvals given with a passkey.
+- **Signed packages.** Apps install as signed `.mpk` releases from a registry
+  or an upload, with a pinned signer, and upgrade with migrations planned from
+  their ABIs; an organization can upgrade all its apps in one run.
+- **Two app runtimes.** Core modules built with `calimero-sdk` run on wasmer, as
+  before; `calimero:app` components built with `calimero-app-sdk` run on
+  wasmtime. The node picks one per app from its bundle.
+- **Who decides is set at deployment.** Release approvals, app upgrades and
+  outbound HTTPS are each held by the owner or the operator
+  (`--release-approvals`, `--app-upgrades`, `--outbound-approvals`), and every
+  attestation binds the choice.
+- **Operator API and metrics.** `/ops/*` places replicas, moves and removes
+  nodes, and sets quotas. `/ops/metrics`, or `--metrics-listen` for a scraper,
+  reports requests, latency, errors, Raft health, disk and process metrics under
+  v1's names where v1 had them, and never an id.
+- **`meroctl` keeps v1's command tree**, over the new API, and `merod` keeps
+  v1's `init`/`run`/`config`/`local`/`inspect` shape.
+
+### Removed
+
+- v1's peer-to-peer node: gossip, DAG sync, governance ops, delegated
+  execution, `mero-auth`, the admin dashboard and its build-time download, and
+  the crates that implemented them (listed with their replacements in
+  `crates/AGENTS.md`).
+- Windows builds. `merod` ships for Linux, `meroctl` for Linux and macOS.
+
+### Upgrading from 0.x
+
+- There is no in-place upgrade of a 0.x node: this release does not migrate
+  its data. Deploy each app's signed package to a cluster and move its users
+  there.
+- v1's names map to these: namespace = organization, group = team, context =
+  app instance, application = signed package.
+
 ## [0.12.0] - 2026-10-28
 
 The first stable 0.12 release. It carries every change shipped across

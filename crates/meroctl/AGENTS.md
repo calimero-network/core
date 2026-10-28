@@ -1,227 +1,41 @@
-# meroctl - CLI Tool
+# meroctl
 
-Command-line interface for managing Calimero nodes, apps, contexts, and blobs.
+The command line for Calimero nodes (`merod`): v1's command tree over the
+node's API, through `calimero-client` (every request attested and
+sealed; the node's quote is judged before anything is sent).
 
-## Package Identity
+| v1 | here | API |
+| --- | --- | --- |
+| `node add/remove/use/list` | saved nodes, `{home}/meroctl/nodes.json` | (local) |
+| `app install/list/get/versions/get-latest-version/uninstall/watch` | signed packages (an application); `--path` a `.mpk`, or a dev `.wasm` bundle | `/packages*`, `/bundles` |
+| `context create/list/get/delete/update/watch/alias/use` | app instances; `use` is the alias `default`; also `access`, `transfer`, `metadata`, `storage`, `abi`, `presence` | `/apps*`, `/auth/aliases*` |
+| `call` | `call --context C METHOD --args JSON [--view]` | `/apps/{app}/intents`, `/views` |
+| `blob list/upload/download/info/delete` | a context's blobs | `/apps/{app}/blobs*` |
+| `namespace ...` | organizations: members, invites, groups, metadata, capabilities, outbound and release approvals | `/orgs*`, `/invites/*` |
+| `group ...` | teams: members, metadata, reparent, subgroups, settings; `group upgrade trigger/status/retry` (org-wide runs) | `/orgs/{org}/teams*`, `/orgs/{org}/upgrade*` |
+| `account ...` | the account: devices (passkeys), API keys, usage, approvals | `/auth/*` |
+| `dev start/watch` | install, create, keep pushing a build | |
+| `network status` | `/health` | |
+| (new) `login`, `logout [--all]`, `whoami`, `attest [--context]` | file passkeys on dev clusters; cluster verification | `/auth/*`, `/attestation` |
+| (new) `ops ...` | the operator, `--ops-token`: status, metrics, add-node, remove-node, move, backup, quotas, release, outbound, packages/install/uninstall, upgrade, upgrade-namespace | `/ops/*` |
 
-- **Binary**: `meroctl`
-- **Entry**: `src/main.rs`
-- **Framework**: clap (CLI), tokio (async)
+Dropped, with no meaning here: `context sync`, `group sync` (Raft replicates),
+`context identity`, `account pair-*`/`seal-to`/`device-init` (a passkey is the
+device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
 
-## Commands
-
-```bash
-# Build
-cargo build -p meroctl
-
-# Build release
-cargo build -p meroctl --release
-
-# Run
-cargo run -p meroctl -- --node node1 context ls
-
-# Test
-cargo test -p meroctl
-```
-
-## CLI Structure
-
-```
-meroctl --node <name> <subcommand>
-├── app           # Application management
-│   ├── install   # Install app by package@version or --path
-│   ├── list      # List installed apps
-│   ├── get       # Get app details
-│   └── uninstall # Remove app
-├── context       # Context management
-│   ├── create    # Create new context
-│   ├── delete    # Delete context
-│   ├── list      # List contexts
-│   ├── get       # Get context details
-│   ├── update    # Update context
-│   ├── watch     # Watch context
-│   ├── sync      # Sync context
-│   ├── alias     # Context alias management
-│   ├── use       # Set default context
-│   └── identity  # Identity management
-├── blob          # Blob storage
-│   ├── upload    # Upload blob
-│   ├── download  # Download blob
-│   ├── list      # List blobs
-│   └── delete    # Delete blob
-├── dev           # Development helpers
-├── group         # Group management
-├── namespace     # Namespace management (alias: ns)
-├── call          # Call context method
-├── network       # Network management
-├── peers         # Peer management
-├── tee           # TEE management
-└── node          # Node info
-```
-
-## File Organization
-
-```
-src/
-├── main.rs              # Entry point
-├── cli.rs               # Root clap command
-├── cli/
-│   ├── app.rs           # App subcommands parent
-│   ├── app/
-│   │   ├── install.rs   # Install command
-│   │   ├── list.rs      # List command
-│   │   ├── get.rs       # Get app command
-│   │   ├── uninstall.rs # Uninstall command
-│   │   ├── get_latest_version.rs  # Get latest version
-│   │   ├── list_packages.rs  # List packages
-│   │   ├── list_versions.rs  # List versions
-│   │   └── watch.rs     # Watch command
-│   ├── context.rs       # Context subcommands parent
-│   ├── context/
-│   │   ├── create.rs    # Create command
-│   │   ├── delete.rs    # Delete command
-│   │   ├── get.rs       # Get command
-│   │   ├── list.rs      # List command
-│   │   ├── update.rs    # Update command
-│   │   ├── sync.rs      # Sync command
-│   │   ├── watch.rs     # Watch command
-│   │   ├── alias.rs     # Alias command
-│   │   ├── identity.rs  # Identity subcommands parent
-│   │   └── identity/
-│   │       ├── generate.rs  # Generate identity
-│   │       ├── grant.rs     # Grant capabilities
-│   │       ├── revoke.rs    # Revoke capabilities
-│   │       └── alias.rs     # Identity alias
-│   ├── blob.rs          # Blob subcommands parent
-│   ├── blob/
-│   │   ├── upload.rs    # Upload blob
-│   │   ├── download.rs  # Download blob
-│   │   ├── list.rs      # List blobs
-│   │   ├── delete.rs    # Delete blob
-│   │   └── info.rs      # Blob info
-│   ├── call.rs          # Call method command
-│   ├── node.rs          # Node info command
-│   ├── peers.rs         # Peer management
-│   └── validation.rs    # Validation command
-├── client.rs            # HTTP client wrapper
-├── output.rs            # Output formatting (JSON/table)
-├── output/
-│   ├── common.rs        # Common output utilities
-│   ├── applications.rs  # Application output
-│   ├── contexts.rs      # Context output
-│   ├── blobs.rs         # Blob output
-│   ├── aliases.rs       # Alias output
-│   ├── groups.rs        # Group output
-│   ├── network.rs       # Network output
-│   └── tee.rs           # TEE output
-├── common.rs            # Shared utilities
-├── config.rs            # Configuration
-├── connection.rs        # Connection handling
-├── defaults.rs          # Default values
-├── storage.rs           # Storage utilities
-├── auth.rs              # Authentication handling
-└── version.rs           # Version checking
-```
-
-## Patterns
-
-### Subcommand Module Pattern
-
-- ✅ DO: Parent file declares `mod` for children
-- ✅ DO: Follow pattern in `src/cli/app.rs`
-
-```rust
-// src/cli/app.rs - Parent declares children
-use clap::Subcommand;
-
-mod get;
-mod install;
-mod list;
-mod uninstall;
-
-#[derive(Debug, Subcommand)]
-pub enum AppSubcommand {
-    Install(install::InstallCommand),
-    List(list::ListCommand),
-    Get(get::GetCommand),
-    Uninstall(uninstall::UninstallCommand),
-}
-```
-
-### Command Implementation Pattern
-
-- ✅ DO: Follow pattern in `src/cli/app/install.rs`
-
-```rust
-// src/cli/app/install.rs
-use clap::Parser;
-
-#[derive(Debug, Parser)]
-pub struct InstallCommand {
-    #[arg(value_name = "PACKAGE@VERSION", conflicts_with = "path")]
-    coords: Option<String>,
-
-    #[arg(long, short, conflicts_with = "coords")]
-    path: Option<Utf8PathBuf>,
-}
-
-impl InstallCommand {
-    pub async fn run(self, environment: &Environment) -> Result<(), CliError> {
-        // Implementation
-    }
-}
-```
-
-### Output Formatting
-
-- ✅ DO: Use `output.rs` for consistent formatting
-- ✅ DO: Support both JSON and table output
-
-## Key Files
-
-| File                        | Purpose                       |
-| --------------------------- | ----------------------------- |
-| `src/main.rs`               | Entry point                   |
-| `src/cli.rs`                | Root command, common args     |
-| `src/client.rs`             | HTTP client wrapper           |
-| `src/output.rs`             | JSON/table output             |
-| `src/cli/app/install.rs`    | App install (good example)    |
-| `src/cli/context/create.rs` | Context create (good example) |
-
-## JIT Index
+- Sessions are kept per node URL in `{home}/meroctl/sessions.json` (0600) and
+  refreshed when they expire. A context argument is an alias of the account or
+  an id (`Env::app`).
+- What an owner approves (`context update`, `context transfer`, `namespace delete`, approvals,
+  `group upgrade trigger/retry`) takes `--dev-passkey FILE` on a development
+  cluster (`Env::post_approved`, `delete_approved`); without it the request is
+  sent as is and the node answers `412 CONFIRM_REQUIRED`: on a real cluster
+  the owner approves in the console.
+- Output is JSON; commands that stream (watch, presence stream, metrics,
+  downloads) write their own and answer `null`, which is not printed.
 
 ```bash
-# Find all CLI commands
-rg -n "#\[derive.*Parser\]" src/cli/
-
-# Find subcommand enums
-rg -n "#\[derive.*Subcommand\]" src/cli/
-
-# Find output formatting
-rg -n "pub fn " src/output.rs
-
-# Find API calls
-rg -n "client\." src/cli/
-```
-
-## Common Gotchas
-
-- Always specify `--node <name>` before subcommand
-- App installation requires context to deploy
-- Use `--help` on any subcommand for options
-
-## Usage Examples
-
-```bash
-# List contexts
-meroctl --node node1 context ls
-
-# Create context with app
-meroctl --node node1 context create --app-id <app-id>
-
-# Call a method
-meroctl --node node1 call <context-id> --method get_value --args '{"key": "test"}'
-
-# Upload blob
-meroctl --node node1 blob upload --path ./file.txt
+cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release   # test fixture
+cargo test -p meroctl        # every command group against an in-process 3-node cluster
+cargo run -p meroctl -- --help
 ```

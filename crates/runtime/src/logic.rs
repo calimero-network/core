@@ -94,6 +94,10 @@ pub struct VMContext<'a> {
     /// for direct/RPC calls. Set by the node, never from guest memory, so the
     /// target can trust it. Exposed to the guest via `env::xcall_origin()`.
     pub xcall_origin: Option<[u8; DIGEST_SIZE]>,
+    /// The caller's standing in the app's organization, as the cloud node
+    /// encodes it (`org\nrole\nteam\n...`); `None` outside an organization.
+    /// Set by the node, never from guest memory. Read by `env::caller_org()`.
+    pub caller_org: Option<Vec<u8>>,
     /// `true` when the node's TEE scheduler fired this run on an attested TEE
     /// that the namespace authorises to author — never set from guest memory or
     /// by an RPC caller. Gates the enclave-only host functions (`tee_origin`,
@@ -115,6 +119,29 @@ pub struct VMContext<'a> {
     /// executes on this node (never a view, a migration, a check or a peer's
     /// delta). `None` everywhere else, and `http_request` then traps.
     pub outbound: Option<std::sync::Arc<dyn OutboundHost>>,
+    /// The release-v2 node's blob store, bound to this run's app. When set, the
+    /// blob host functions use it instead of `node_client`: a written blob is
+    /// buffered and handed back on [`Outcome::new_blobs`] for the node to store
+    /// with the run's entry, and a read loads the bytes from the host.
+    pub blobs: Option<std::sync::Arc<dyn BlobHost>>,
+}
+
+/// The release-v2 node's blob store as a run sees it, bound to the run's app.
+///
+/// A blob the run writes never goes through it: the bytes come back on
+/// [`Outcome::new_blobs`], so a run that fails stores nothing.
+pub trait BlobHost: Send + Sync + fmt::Debug {
+    /// The blob's bytes if it is held for this run's app, else `None`. `state`
+    /// is the run's own view of the app's state, where the node records which
+    /// blobs are the app's.
+    ///
+    /// # Errors
+    /// A message for the node's log: the store could not be read.
+    fn get(
+        &self,
+        blob: [u8; DIGEST_SIZE],
+        state: &dyn crate::store::Storage,
+    ) -> Result<Option<Vec<u8>>, String>;
 }
 
 /// The node's outbound HTTPS client as a run sees it.
@@ -191,6 +218,11 @@ pub struct SealingContext {
     /// value one member may read to, so that each of their devices opens it.
     /// Empty for any other run.
     pub account_devices: std::collections::BTreeMap<[u8; DIGEST_SIZE], Vec<[u8; DIGEST_SIZE]>>,
+    /// Device ids that stand for a key the node holds: `seal_to` an id here
+    /// seals to its key instead. The release-v2 node keys a member's runs by
+    /// their account (`env::device_id()`), which is no key, and opens their
+    /// envelopes with a key it derives for them; empty on a v1 node.
+    pub stand_ins: std::collections::BTreeMap<[u8; DIGEST_SIZE], [u8; DIGEST_SIZE]>,
 }
 
 /// Looks up the namespace TEE key on demand: `None` while there is none.
@@ -233,11 +265,13 @@ impl<'a> VMContext<'a> {
             executor_public_key,
             governance_position: None,
             xcall_origin: None,
+            caller_org: None,
             tee_trigger: false,
             sealing: SealingContext::default(),
             search: None,
             remote_delta: false,
             outbound: None,
+            blobs: None,
         }
     }
 }
@@ -648,6 +682,8 @@ pub struct VMLogic<'a> {
     /// Writer-set rotations the guest asked for, in order. Carried out on the
     /// [`Outcome`] for the node to publish as governance ops.
     shared_rotations: Vec<SharedRotation>,
+    /// Blobs written through a [`BlobHost`] run, in the order they closed.
+    new_blobs: Vec<([u8; DIGEST_SIZE], Vec<u8>)>,
     /// Tracks whether the guest has explicitly called `env.commit`.
     commit_called: bool,
     /// Tracks whether the guest called `register_js_sdk_root_merge`, opting its
@@ -806,6 +842,7 @@ impl<'a> VMLogic<'a> {
             artifact: vec![],
             migration_witness: None,
             shared_rotations: vec![],
+            new_blobs: vec![],
             commit_called: false,
             js_root_merge: false,
 
@@ -1026,6 +1063,11 @@ pub struct Outcome {
     /// as governance ops. Never persisted by the run itself.
     #[serde(skip)]
     pub shared_rotations: Vec<SharedRotation>,
+    /// Blobs the run wrote through a [`BlobHost`] (release-v2): `(id, bytes)`,
+    /// the id `SHA-256(bytes)`. The node stores them with the run's entry.
+    /// Never persisted by the run itself.
+    #[serde(skip)]
+    pub new_blobs: Vec<([u8; DIGEST_SIZE], Vec<u8>)>,
     /// Gas (metering points) this execution consumed, if the module was
     /// metered. `None` only when execution never reached a metered instance
     /// (e.g. an invalid method name or an instantiation failure). On gas
@@ -1148,6 +1190,7 @@ impl VMLogic<'_> {
             artifact: self.artifact,
             migration_witness: self.migration_witness,
             shared_rotations: self.shared_rotations,
+            new_blobs: self.new_blobs,
             gas_used: self.gas_used,
             storage_reads: self.storage_reads,
             storage_read_bytes: self.storage_read_bytes,

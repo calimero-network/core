@@ -1,194 +1,114 @@
-description: >
-  Cold-context regression (#3296): a node that joined a context purely via
-  governance — and has NEVER received a state delta on it — must still acquire
-  dial targets for that context's members and converge via gossip push, WITHOUT
-  a forced pull.
-
-  The bug
-  -------
-
-  Proactive dialing draws from the durable peer-identity cache, which used to be
-  populated ONLY on the state-delta receive path. A context joined through
-  governance but that never received a delta therefore had an EMPTY dial-target
-  cache, so the node never proactively dialed that context's members. Behind NAT
-  (no incidental inbound dials to compensate) the node's subscriber set for the
-  context topic stayed empty, `Mesh peer discovery exhausted all retries` fired,
-  and deltas reached nobody — the context went silently dark while every member
-  was online. The fix also feeds the durable cache from the governance/membership
-  path (see `NamespaceDeltaApply::resolve_signer_membership`), so a freshly-joined
-  cold context has dial targets immediately.
-
-  What this scenario does
-  -----------------------
-
-  1. node-1 creates a namespace + context and writes a SEED key BEFORE node-2
-     exists — node-2 never pulls this.
-  2. node-2 joins the namespace and the context via governance. Crucially there
-     is NO `wait_for_sync` / pull after the join, so node-2's ONLY population of
-     the peer-identity cache for this context is the governance join path — the
-     exact cold-context condition.
-  3. node-1 writes a NEW key.
-  4. node-2 must converge on BOTH keys via `trigger_sync: false` (no manual poke).
-     Seeing the NEW key proves push works; seeing the SEED (written before the
-     join, so it is only reachable by a pull node-2 must initiate itself) proves
-     node-2 had dial targets for node-1 on a cold cache.
-
-  Topology is `nat_mode: cone` (as in `sync-resilience-peer-restart-autoresync`):
-  both peers sit behind a NAT gateway, so there are no incidental inbound dials —
-  node-2 must proactively dial node-1 using the governance-populated cache.
-
-  Scope / honesty note
-  --------------------
-
-  A 2-node local merobox run cannot perfectly reproduce the field's cold peer
-  cache (rendezvous/DHT often still surface node-1 here), so this is a behavioral
-  guard, not a hermetic repro of the NAT isolation. The authoritative regression
-  guard for the cache-population path is the in-process integration test
-  `member_peers_for_context_unions_root_group_for_subgroup_context` (and its
-  sibling) in `crates/node/src/local_governance_node_e2e.rs`.
-
-name: "Group Governance — Cold-Context Push Converge (NAT cone, no pull, #3296)"
-
-force_pull_image: false
-
-topology:
-  type: nat
-  nat_mode: cone
-
-auth_mode: embedded
-
-nodes:
-  count: 2
-  image: ghcr.io/calimero-network/merod:edge
-  prefix: cold-ctx-node
-
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no counterpart in this node):
+#   login (unknown) x2: checks what the dropped steps did
+#   wait_for_sync x1: replication is synchronous: a read sees every committed write
+name: 'Group Governance — Cold-Context Push Converge (NAT cone, no pull, #3296)'
+description: "Cold-context regression (#3296): a node that joined a context purely via governance — and\
+  \ has NEVER received a state delta on it — must still acquire dial targets for that context's members\
+  \ and converge via gossip push, WITHOUT a forced pull.\nThe bug -------\nProactive dialing draws from\
+  \ the durable peer-identity cache, which used to be populated ONLY on the state-delta receive path.\
+  \ A context joined through governance but that never received a delta therefore had an EMPTY dial-target\
+  \ cache, so the node never proactively dialed that context's members. Behind NAT (no incidental inbound\
+  \ dials to compensate) the node's subscriber set for the context topic stayed empty, `Mesh peer discovery\
+  \ exhausted all retries` fired, and deltas reached nobody — the context went silently dark while every\
+  \ member was online. The fix also feeds the durable cache from the governance/membership path (see `NamespaceDeltaApply::resolve_signer_membership`),\
+  \ so a freshly-joined cold context has dial targets immediately.\nWhat this scenario does -----------------------\n\
+  1. node-1 creates a namespace + context and writes a SEED key BEFORE node-2\n   exists — node-2 never\
+  \ pulls this.\n2. node-2 joins the namespace and the context via governance. Crucially there\n   is\
+  \ NO `wait_for_sync` / pull after the join, so node-2's ONLY population of\n   the peer-identity cache\
+  \ for this context is the governance join path — the\n   exact cold-context condition.\n3. node-1 writes\
+  \ a NEW key. 4. node-2 must converge on BOTH keys via `trigger_sync: false` (no manual poke).\n   Seeing\
+  \ the NEW key proves push works; seeing the SEED (written before the\n   join, so it is only reachable\
+  \ by a pull node-2 must initiate itself) proves\n   node-2 had dial targets for node-1 on a cold cache.\n\
+  \nTopology is `nat_mode: cone` (as in `sync-resilience-peer-restart-autoresync`): both peers sit behind\
+  \ a NAT gateway, so there are no incidental inbound dials — node-2 must proactively dial node-1 using\
+  \ the governance-populated cache.\nScope / honesty note --------------------\nA 2-node local merobox\
+  \ run cannot perfectly reproduce the field's cold peer cache (rendezvous/DHT often still surface node-1\
+  \ here), so this is a behavioral guard, not a hermetic repro of the NAT isolation. The authoritative\
+  \ regression guard for the cache-population path is the in-process integration test `member_peers_for_context_unions_root_group_for_subgroup_context`\
+  \ (and its sibling) in `crates/node/src/local_governance_node_e2e.rs`.\n"
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 4310
+accounts:
+- cold-ctx-node-1
+- cold-ctx-node-2
 steps:
-  - name: Login on cold-ctx-node-1
-    type: login
-    node: cold-ctx-node-1
-    username: dev
-    password: dev-password
-
-  - name: Login on cold-ctx-node-2
-    type: login
-    node: cold-ctx-node-2
-    username: dev
-    password: dev-password
-
-  # ---------- Setup: node-1 alone creates namespace + context ----------
-
-  - name: Install application on node-1
-    type: install_application
-    node: cold-ctx-node-1
-    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Create namespace on node-1
-    type: create_namespace
-    node: cold-ctx-node-1
-    application_id: '{{app_id}}'
-    outputs:
-      namespace_id: namespaceId
-
-  - name: Create context in namespace on node-1
-    type: create_context
-    node: cold-ctx-node-1
-    application_id: '{{app_id}}'
-    group_id: '{{namespace_id}}'
-    outputs:
-      ctx_id: contextId
-
-  # Seed written BEFORE node-2 joins. node-2 is only reachable to this via a
-  # pull it initiates itself — which needs a dial target it can only have if
-  # the governance join populated the cache.
-  - name: Node-1 seeds initial state (before node-2 exists)
-    type: call
-    node: cold-ctx-node-1
-    context_id: '{{ctx_id}}'
-    method: set
-    args:
-      key: seed
-      value: from_node_1_pre_join
-
-  # ---------- Cold governance join: NO wait_for_sync / pull ----------
-
-  - name: Create namespace invitation for node-2
-    type: create_namespace_invitation
-    node: cold-ctx-node-1
-    namespace_id: '{{namespace_id}}'
-    outputs:
-      invitation_node2: invitation
-
-  - name: Node-2 joins namespace
-    type: join_namespace
-    node: cold-ctx-node-2
-    namespace_id: '{{namespace_id}}'
-    invitation: '{{invitation_node2}}'
-
-  - name: Node-2 joins context via group membership (governance only)
-    type: join_context
-    node: cold-ctx-node-2
-    context_id: '{{ctx_id}}'
-
-  # DELIBERATELY no wait_for_sync here — node-2 must NOT pull before the push.
-
-  # ---------- New write + push-only convergence (the regression gate) ----------
-
-  - name: Node-1 writes a new key after node-2's cold join
-    type: call
-    node: cold-ctx-node-1
-    context_id: '{{ctx_id}}'
-    method: set
-    args:
-      key: post_join
-      value: pushed_to_cold_node2
-
-  # trigger_sync: false — no manual poke. node-2 must proactively dial node-1
-  # using the governance-populated peer-identity cache, form a subscriber set,
-  # and converge. If the cache is empty (the bug), discovery exhausts its
-  # retries and this wait_for_sync times out.
-  - name: Wait for cold node-2 to auto-converge (NO trigger_sync)
-    type: wait_for_sync
-    context_id: '{{ctx_id}}'
-    nodes:
-      - cold-ctx-node-1
-      - cold-ctx-node-2
-    timeout: 90
-    trigger_sync: false
-
-  - name: Read the post-join key on node-2
-    type: call
-    node: cold-ctx-node-2
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: post_join
-    outputs:
-      post_join_n2: result
-
-  - name: Assert node-2 received the pushed write on a cold cache
-    type: assert
-    statements:
-      - "contains({{post_join_n2}}, 'pushed_to_cold_node2')"
-
-  # The stronger assertion: the SEED was written before node-2 existed, so it is
-  # reachable ONLY by a pull node-2 initiates against a dial target it learned
-  # from the governance join.
-  - name: Read the pre-join seed on node-2
-    type: call
-    node: cold-ctx-node-2
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: seed
-    outputs:
-      seed_n2: result
-
-  - name: Assert node-2 pulled the pre-join seed (proves cold-cache dial targets)
-    type: assert
-    statements:
-      - "contains({{seed_n2}}, 'from_node_1_pre_join')"
-
-stop_all_nodes: true
+- name: Install application on node-1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: cold-ctx-node-1
+- type: set
+  values:
+    app_id: com.calimero.scaffolding-e2e
+- name: Create namespace on node-1
+  type: create_org
+  org_name: Create namespace on node-1
+  outputs:
+    namespace_id: orgId
+  account: cold-ctx-node-1
+- name: Create context in namespace on node-1
+  type: deploy
+  account: cold-ctx-node-1
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Create context in namespace on node-1
+  org: '{{namespace_id}}'
+  outputs:
+    ctx_id: contextId
+- name: Node-1 seeds initial state (before node-2 exists)
+  type: call
+  app: '{{ctx_id}}'
+  method: set
+  args:
+    key: seed
+    value: from_node_1_pre_join
+  account: cold-ctx-node-1
+- name: Create namespace invitation for node-2
+  type: invite
+  org: '{{namespace_id}}'
+  role: member
+  account: cold-ctx-node-1
+  outputs:
+    invitation_node2: token
+- name: Node-2 joins namespace
+  type: redeem_invite
+  token: '{{invitation_node2}}'
+  account: cold-ctx-node-2
+- name: Node-1 writes a new key after node-2's cold join
+  type: call
+  app: '{{ctx_id}}'
+  method: set
+  args:
+    key: post_join
+    value: pushed_to_cold_node2
+  account: cold-ctx-node-1
+- name: Read the post-join key on node-2
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: post_join
+  account: cold-ctx-node-2
+  outputs:
+    post_join_n2: rpc
+- name: Assert node-2 received the pushed write on a cold cache
+  type: assert
+  statements:
+  - contains({{post_join_n2}}, 'pushed_to_cold_node2')
+- name: Read the pre-join seed on node-2
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: seed
+  account: cold-ctx-node-2
+  outputs:
+    seed_n2: rpc
+- name: Assert node-2 pulled the pre-join seed (proves cold-cache dial targets)
+  type: assert
+  statements:
+  - contains({{seed_n2}}, 'from_node_1_pre_join')

@@ -1,129 +1,108 @@
 ---
-title: Storage Schema
-description: The on-disk format — column families, key byte-layouts, and value encodings.
+title: Storage schema
+description: What a node writes to disk — one sealed RocksDB with four columns, key layouts, hidden rows, an app group's rows, snapshot files and backups.
 sidebar:
-  order: 90
+  order: 23
 ---
 
-## Scope
+Everything a node persists is in its data directory (`--data-dir`, by default
+`{home}/{node}/data`):
 
-This page specifies the local persistence layer. A node stores everything in a key-value store (RocksDB) partitioned into **column families**. Two encodings are used for values: **Identity** (raw bytes, no framing) and **Borsh** (the same compact binary encoding used on the wire). Reimplementations are free to choose any backend — what matters for interop is the logical content, not the column layout; this page documents the reference layout because it makes the data model concrete.
-
-## Column families
-
-Some columns replicate (their content syncs between nodes); others are strictly node-local and never leave the machine.
-
-| Column | Scope | Holds |
-| --- | --- | --- |
-| `Meta` | replicated | per-context metadata (root hash, DAG heads, application) |
-| `Config` | replicated | per-context revision counters |
-| `Identity` | replicated | context member keypairs |
-| `State` | replicated | shared application state (the data plane) |
-| `Delta` | replicated | causal deltas (legacy per-context DAG) |
-| `UnifiedOp` | replicated | the unified op-store — one DAG per scope |
-| `Group` | replicated | all governance records (prefix-partitioned, below) |
-| `Blobs` / `Application` | replicated | content-addressed binaries and WASM bundles |
-| `Alias` / `Generic` | replicated | name→id mappings; uncategorized |
-| `PrivateState` | node-local | per-node private state (never synced) |
-| `SortedIndex` | node-local | derived indexes: `SortedMap`/`SortedSet` key order and `IndexedMap` secondary indexes |
-| `SearchIndex` | node-local | [full-text search](/build/guides/search/) indexes: tantivy files per `(context, index)` in 64 KiB chunks, keyed `context ‖ len(index) ‖ index ‖ len(file) ‖ file ‖ chunk_no` |
-| `SearchDirty` | node-local | the search dirty log: one row per committed execution of a search-enabled app (`{before, after, ids}`), keyed `context ‖ seq`, plus a per-context counter |
-| `ContextLocal`, `AbsorbBuffer`, … | node-local | leave markers, straggler buffers, migration/blob breadcrumbs |
-
-## Key byte-layouts
-
-Keys are fixed-size concatenations of 32-byte ids. The leading id is the partition prefix, so a range scan over it returns everything for one context or scope.
-
-| Key | Column | Layout | Bytes |
-| --- | --- | --- | --- |
-| `ContextMeta` | Meta | `context_id(32)` | 32 |
-| `ContextState` | State | `context_id(32) ‖ state_key(32)` | 64 |
-| `ContextPrivateState` | PrivateState | `context_id(32) ‖ state_key(32)` | 64 |
-| `ContextDagDelta` | Delta | `context_id(32) ‖ delta_id(32)` | 64 |
-| `ScopeUnifiedOp` | UnifiedOp | `scope(32) ‖ op_id(32)` | 64 |
-
-The unified op store is the key one for the target model: keyed `scope ‖ op_id`, so all operations of a scope are a contiguous range, and the value is simply the Borsh-encoded `Op` from [Operations](/protocol/operations/), stored verbatim (Identity codec).
-
-## Key value structures
-
-The two structures a reimplementation most needs. Both are Borsh.
-
-```rust
-struct ContextMeta { // Meta column
-  application: [u8; 32],
-  root_hash: [u8; 32], // storage Merkle root = entity root
-  dag_heads: Vec<[u8; 32]>,
-  service_name: Option<str>,
-}
+```text
+<data-dir>/
+├── store/          one RocksDB database for every group on this node
+├── snapshots/      sealed snapshot files, one current per group
+└── log.redb.migrated   (only if the node was upgraded from the previous format)
 ```
 
-```rust
-struct ContextDagDelta { // Delta column (legacy data DAG)
-  delta_id: [u8; 32], parents: Vec<[u8; 32]>,
-  actions: Vec<u8>, hlc: HybridTimestamp, applied: bool,
-  checkpoint_root_hash: Option<[u8; 32]>, // snapshot boundary only
-  events: Option<Vec<u8>>, author_id: Option<PublicKey>,
-  governance_position_blob: Option<Vec<u8>>,
-  delta_signature: Option<[u8; 64]>,
-}
-```
+The database is opened with tuned column and table options
+(`calimero-log`'s `tuning`): compression, bloom filters, one bounded block
+cache (128 MiB). Log appends, votes and blobs are synced writes; RocksDB shares
+one WAL sync between the groups writing at once, and groups never queue behind
+one another.
 
-`events` is a borsh `Vec<ExecutionEvent { kind: String, data: Vec<u8>, handler: Option<String> }>`
-(`ExecutionEvent::encode_all`), the same bytes the delta carries sealed on the wire; it is kept
-until the receiver has run the events' handlers. Clients still receive events as JSON, decoded
-from this blob into `StateMutation` payloads.
+## Columns
 
-## The Group column prefix scheme
-
-All governance record types share one column, distinguished by a 1-byte prefix followed by the relevant ids. A representative selection:
-
-| Prefix | Record | Key layout |
+| Column | Key | Value |
 | --- | --- | --- |
-| `0x20` | GroupMeta | `0x20 ‖ group_id(32)` |
-| `0x21` | GroupMember | `0x21 ‖ group_id(32) ‖ identity(32)` |
-| `0x26` | MemberCapability | `0x26 ‖ group_id(32) ‖ identity(32)` |
-| `0x30` | GroupOpLog | `0x30 ‖ group_id(32) ‖ sequence(8, big-endian)` |
-| `0x34` | GroupParentRef | `0x34 ‖ child_id(32)` → parent |
-| `0x36` | NamespaceParticipation | `0x36 ‖ namespace_id(32)` → marker (no key material) |
-| `0x38` | NamespaceGovOp | `0x38 ‖ namespace_id(32) ‖ delta_id(32)` |
-| `0x3A` | GroupKeyEntry | `0x3A ‖ group_id(32) ‖ key_id(32)` |
-| `0x3C` | NonceWindow | `0x3C ‖ group_id(32) ‖ signer(32)` |
+| `log` | `group (u64 BE) ‖ index (u64 BE)` | A Raft entry |
+| `meta` | `group ‖ name` | `vote`, `committed`, `purged`, `applied` (last applied log id and membership), `generation`, `snapshot` (the current snapshot's metadata and file) |
+| `state` | `group ‖ generation (u32 BE) ‖ machine key` | The state machine's rows |
+| `blobs` | `name` | Bundles, uploaded releases and app blobs, by `hex(SHA-256)` |
 
-Note the `GroupOpLog` sequence is **big-endian** so keys sort in numeric order; id-based keys use the raw 32 bytes. The `key_id` in `GroupKeyEntry` is `SHA-256(scope_key)`, matching the `key_id` a `StateDelta` advertises on the wire (see [Encryption](/protocol/encryption/)).
+## Sealing
 
-## Node-local migration & recovery markers
+Every value is sealed with AES-256-GCM under the storage key K_r, with a random
+96-bit nonce stored in front, and bound as associated data to its column tag,
+its group and its key: `"cl" ‖ tag ‖ group ‖ key`. A state row's associated
+data names its machine key but not its generation, so installing a snapshot can
+move sealed rows to the next generation without opening them. A value copied
+to another row, group or column fails to open.
 
-A handful of node-local columns hold no protocol state — they are **breadcrumbs** an in-progress (or stalled) upgrade leaves behind, and the signal an operator
-requested a recovery. None of them synchronize; each gets its **own column** so its `context_id`-only (or `application_id`-only) key can't collide with a
-same-shaped key in a shared column. For most of them the **presence of the row is the signal** and the value (if any) carries a reason or a pinned blob id. They
-are worth inspecting directly when an upgrade looks stuck (the [recover a stuck upgrade](/operate/runbooks/#recover-a-stuck-upgrade) runbook uses exactly these).
+Two further keys are derived from K_r (`HMAC-SHA256(K_r, label)`):
 
-| Marker (column) | Scope | What its presence signals |
+- `calimero.log.hidden-keys.v1` keys the HMAC that hides row keys;
+- `calimero.log.snapshot.v1` seals snapshot frames.
+
+### Hidden rows
+
+A machine can hide a key (`StateTx::put_hidden`). The row is then stored at
+`tag ‖ HMAC(group ‖ tag ‖ key)` (33 bytes), and the value, before sealing, is
+`u32 BE key length ‖ key ‖ value`. The disk then shows neither which keys an app
+uses nor how they sort; reading a hidden key needs K_r.
+
+## An app group's rows
+
+An app group's machine key space (`crates/node/src/app.rs`, `rows`):
+
+| Row | Hidden | Holds |
 | --- | --- | --- |
-| `ContextMigrationFailed` | per-context | The last migration attempt did **not** complete. The value's `kind` byte categorises the failure: `1` = the migration check aborted, `2` = the migrate apply errored. Read by the migration heartbeat; self-clears when a later migrate commits (or a resync settles). A missing row = no failure on record. |
-| `ContextExecutingBlob` | per-context | A logically-aborted migration left this context **executing OLD bytecode**. The version-stable bundle id's `Application` row already holds the NEW bytecode, so this pin keeps reads on the pre-upgrade code until a migrate succeeds. Deleted on a successful migrate. A missing row = "execute the row's bytecode" (the normal case). |
-| `ContextActivatedBlob` | per-context | The bytecode blob this context **last activated** (`activated_bytecode()`) — set when a migration commits or a code-only swap applies, and moved forward only. The single up-to-date check everywhere is `marker == group.bytecode_id`; if it lags the group's current bytecode id, this node has not caught up to the activated code. |
-| `ContextResyncRequested` | per-context | An **operator requested a full-state resync** of this context (the recovery for a context stranded with no migration path). Its presence admits a snapshot full-state replacement; it is cleared once that snapshot completes. |
-| `ApplicationPreviousBlob` | per-application | The bytecode blob an **in-place (same-id) install overwrote**. It is the source for the executing-blob pin above and the pre-install ABI the downgrade gate compares against. A missing row = no prior in-place install on record. |
-| `BundleFrontend` | per-bundle blob | The **web frontend files stored for one installed bundle**: its application id, its entry path and, per file, the path and blob id. Keyed by the bundle blob id, not the application. A missing row = the bundle ships no frontend, it was installed before nodes stored it, its application was uninstalled, or a remote downgrade to it was refused. |
-| `ApplicationRelease` | application id + hash of the version | The **bundle blob that holds one release of an application**, so a request for a release reads this row and then its `BundleFrontend` row without scanning. The latest install of a release wins. A missing row = the release ships no frontend, it was never installed here, its application was uninstalled, or the pointer could not be written. |
+| `k` + the app's key | yes | The app's storage: what its runs write, private spaces, writer sets and blob marks (the host's `\0calimero.*` keys) |
+| `i` + `caller\|key` | yes | Idempotency records: the answer replayed for a repeated key, and its expiry |
+| `h` | no | The `Head`: bundle, initialized and init error, last applied index, pending follow-ups, timer ticks, event-ring and expiry-ring bounds |
+| `e ‖ n (u64 BE)` | no | Event `n` of the event ring (the last 10 000) |
+| `r ‖ class ‖ n` | no | The idempotency keys in the order they expire, per TTL class (client keys, node keys) |
 
-These columns are auto-created from the column set at open time (no DB migration), so they exist even on a node that has never upgraded — they simply hold no rows
-until a migration writes one.
+Only the `Head` is kept in memory; runs read the app's keys through the group's
+state (`KvView`), so an app's state is never loaded whole.
 
-## Atomic writes: temporal staging and the `WriteBatch`
+The **system group** keeps its state in memory and writes one checkpoint row
+(`\0calimero.log.checkpoint`) with each snapshot.
 
-A node never dribbles individual puts to the backend in the middle of an operation. Writes flow through a small stack of composable **layers** (`crates/store/src/layer.rs:16-61`): `Layer` is the base marker, `ReadLayer` adds `get`/`has`/`iter`, and `WriteLayer` adds `put`/`delete`/`apply`/`commit`. `LayerExt` lets any layer wrap itself — `.temporal()` produces a staging shadow, `.read_only()` a read-only view — so the stack composes without the backend knowing.
+## Snapshot files
 
-The staging layer is `Temporal` (`crates/store/src/layer/temporal.rs:11-104`). It wraps a mutable inner layer and holds a `shadow` `Transaction`. Every `put`/`delete` records the op into the shadow only; nothing touches the inner layer yet. Reads consult the shadow **first**, then fall through to the inner layer:
+A snapshot is `snapshots/<…>.snap`: a magic line (`CALIMERO-SNAPSHOT-1`), then
+frames of up to about 1 MiB of rows each, each frame sealed with associated
+data naming the group, the snapshot id, the frame's position and whether it is
+the last. It is written from a consistent RocksDB view, so a large state is
+streamed rather than held in memory. A follower receiving one writes it to a
+file first, then installs it as the next generation in batches of about 4 MiB
+and switches generations in one batch ([Replication](/protocol/replication/#state-restarts-and-snapshots)).
 
-- `get`: a shadow `Put` returns the staged value; a shadow `Delete` returns `None`; a shadow miss delegates to the inner layer.
-- iteration merges the inner layer's keys with the shadow's, hiding any key the shadow has deleted.
+## Backups
 
-So an operation reads its own uncommitted writes, while the persisted store stays untouched until the end. `commit()` is a single line — `self.inner.apply(&self.shadow)` — handing the whole staged transaction to the inner layer's `apply`. On the RocksDB-backed `Store` that lands as one `WriteBatch` (`crates/store/src/lib.rs:127-135`): every put and delete in the set — **across column families** — is persisted together, or none is. Drop the `Temporal` without committing and the staged set is simply discarded.
+A backup is a copy of a group's current snapshot file under
+`{backup-dir}/{app}/{index:020}.{group}.{snapshot}.snap`
+([The operator](/protocol/operator/#backups)). `backup::latest` opens the newest
+one with K_r and returns its index and rows.
 
-The same all-or-nothing primitive is exposed directly as `StoreBatch` (`crates/store/src/batch.rs:9-77`) for callers that must move several keys together (for example, cascade-delta records plus their context's `dag_heads`): `put`/`delete` stage into a `Transaction`, `commit()` is one `Store::apply`, and a serialization error surfaces at stage time — before anything is written.
+## Migration from the previous format
 
-## See also
+A data directory holding the previous single redb file (`log.redb`) is migrated
+when the engine opens it: entries, votes, commit and purge marks, blobs, and
+each machine's old whole-state snapshot, which the app machine imports into its
+rows (the app's keys, events, idempotency records with their expiry ring). The old
+file is kept, renamed `log.redb.migrated`.
 
-That is the on-disk shape of everything the rest of the reference describes. Continue to [Limits, capabilities & roles](/protocol/limits/) for the fixed constants the store enforces, or revisit [Operations](/protocol/operations/) (whose `Op` is what the unified store holds) and [Projection](/protocol/projection/) (whose root hash is the `root_hash` in `ContextMeta`).
+## Inspecting a stopped node
+
+`merod inspect [--storage-key-file F]` summarizes the store's layout and sealed
+sizes; with the key, it also opens each group's metadata (vote, applied index,
+membership). It opens the store for writing, so stop the node first.
+
+:::note[v1 comparison]
+v1's store had a column family per kind of record — context metadata, state
+entities, the op DAG, governance, keys, blobs, search — and a node's own
+encryption key. Here a node's store holds Raft groups and nothing else: what a
+group means is its state machine's business, and one key seals it all.
+:::

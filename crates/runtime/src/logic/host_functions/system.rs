@@ -684,6 +684,24 @@ impl VMHostFunctions<'_> {
         Ok(1)
     }
 
+    /// Copies the caller's organization standing into a register, if the node
+    /// supplied one (release-v2 cloud apps that belong to an organization).
+    ///
+    /// Returns `1` when the register was written, `0` when there is none.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::InvalidMemoryAccess` if the register operation fails (e.g., exceeds limits).
+    pub fn caller_org(&mut self, dest_register_id: u64) -> VMLogicResult<u32> {
+        let Some(org) = self.borrow_logic().context.caller_org.clone() else {
+            return Ok(0);
+        };
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
+            logic.registers.set(logic.limits, dest_register_id, org)
+        })?;
+        Ok(1)
+    }
+
     /// Copies the input data for the current execution (from context ID) into a register.
     ///
     /// # Arguments

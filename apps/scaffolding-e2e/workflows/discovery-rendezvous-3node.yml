@@ -1,202 +1,121 @@
-description: >
-  Three nodes find each other by ASKING a boot-node who else exists, with
-  mDNS off and no sibling address in any config.
-
-  Why this exists
-  ---------------
-
-  `discovery-bootstrap-only-{2,4}node` already prove that a bootstrap
-  address can be dialled with multicast gone. But merobox hands those
-  fleets a complete roster: every node starts with all of its siblings in
-  `bootstrap.nodes`, so nobody ever has to ask a peer for an address it
-  does not already hold. That covers bootstrap dial, identify and kad, and
-  it stops there.
-
-  A deployed node is told about one or two bootstrap peers and has to
-  discover the rest — rendezvous register and discover. Until this
-  scenario, the only coverage of that path on any topology was the eight
-  NAT `sync-resilience-*` scenarios, which exercise it behind a gateway
-  alongside relay reservations and DCUtR hole-punching. That bundling is
-  the problem: when one of them fails, "discovery regressed" is nobody's
-  first guess, and those scenarios are the most environment-sensitive in
-  the suite.
-
-  The gap this closes is not hypothetical. `crates/network/src/
-  manager_discovery_tests.rs` exists because a cookie-poisoning bug — a
-  per-overlay discover response's cookie stored into the slot the global
-  discover replays, giving `InvalidCookie` forever and killing
-  namespace-invite joins until restart — shipped with CI fully green. Its
-  own comment names the reason: the merobox fleet runs every node on one
-  Docker network with direct bootstrap, so the rendezvous layer is dead
-  code in every CI scenario.
-
-  How it forces the issue
-  -----------------------
-
-  `topology: { type: bootstrap }` (merobox 0.6.60+) puts one boot-node on
-  a plain bridge with the clients and gives each client exactly one
-  `bootstrap.nodes` entry: the boot-node, TCP and QUIC. Sibling addresses
-  are withheld and `discovery.mdns` is forced false after any override, so
-  neither multicast nor a pre-seeded roster can carry the traffic. The
-  boot-node is the `calimero-network/boot-node` image, which serves the
-  rendezvous and relay protocols merod does not — merod builds
-  `rendezvous::client::Behaviour` only, which is exactly why a fleet of
-  plain merods records zero registers and zero discovers however long it
-  runs.
-
-  The write below travels between two joiners, neither of which created
-  the namespace or invited the other. For it to arrive, node-3 must have
-  learned node-2's address from the boot-node.
-
-  No log-pattern assertions: convergence is the assertion. A rendezvous
-  regression surfaces as a failed join or a failed read rather than as a
-  missing grep. Measured on a local run of this shape: 0 mDNS dials, kad
-  routing populated on every node, and rendezvous register AND discover on
-  all three clients.
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no counterpart in this node):
+#   login (unknown) x3: checks what the dropped steps did
+#   wait_for_sync x2: replication is synchronous: a read sees every committed write
 name: E2E Discovery - Rendezvous via Boot-Node (3 nodes)
+description: 'Three nodes find each other by ASKING a boot-node who else exists, with mDNS off and no
+  sibling address in any config.
 
-force_pull_image: false
+  Why this exists ---------------
 
-topology:
-  type: bootstrap
+  `discovery-bootstrap-only-{2,4}node` already prove that a bootstrap address can be dialled with multicast
+  gone. But merobox hands those fleets a complete roster: every node starts with all of its siblings in
+  `bootstrap.nodes`, so nobody ever has to ask a peer for an address it does not already hold. That covers
+  bootstrap dial, identify and kad, and it stops there.
 
-auth_mode: embedded
+  A deployed node is told about one or two bootstrap peers and has to discover the rest — rendezvous register
+  and discover. Until this scenario, the only coverage of that path on any topology was the eight NAT
+  `sync-resilience-*` scenarios, which exercise it behind a gateway alongside relay reservations and DCUtR
+  hole-punching. That bundling is the problem: when one of them fails, "discovery regressed" is nobody''s
+  first guess, and those scenarios are the most environment-sensitive in the suite.
 
-nodes:
-  count: 3
-  image: ghcr.io/calimero-network/merod:edge
-  prefix: e2e-node
+  The gap this closes is not hypothetical. `crates/network/src/ manager_discovery_tests.rs` exists because
+  a cookie-poisoning bug — a per-overlay discover response''s cookie stored into the slot the global discover
+  replays, giving `InvalidCookie` forever and killing namespace-invite joins until restart — shipped with
+  CI fully green. Its own comment names the reason: the merobox fleet runs every node on one Docker network
+  with direct bootstrap, so the rendezvous layer is dead code in every CI scenario.
 
+  How it forces the issue -----------------------
+
+  `topology: { type: bootstrap }` (merobox 0.6.60+) puts one boot-node on a plain bridge with the clients
+  and gives each client exactly one `bootstrap.nodes` entry: the boot-node, TCP and QUIC. Sibling addresses
+  are withheld and `discovery.mdns` is forced false after any override, so neither multicast nor a pre-seeded
+  roster can carry the traffic. The boot-node is the `calimero-network/boot-node` image, which serves
+  the rendezvous and relay protocols merod does not — merod builds `rendezvous::client::Behaviour` only,
+  which is exactly why a fleet of plain merods records zero registers and zero discovers however long
+  it runs.
+
+  The write below travels between two joiners, neither of which created the namespace or invited the other.
+  For it to arrive, node-3 must have learned node-2''s address from the boot-node.
+
+  No log-pattern assertions: convergence is the assertion. A rendezvous regression surfaces as a failed
+  join or a failed read rather than as a missing grep. Measured on a local run of this shape: 0 mDNS dials,
+  kad routing populated on every node, and rendezvous register AND discover on all three clients.
+
+  '
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 4230
+accounts:
+- e2e-node-1
+- e2e-node-2
+- e2e-node-3
 steps:
-  - name: Login on e2e-node-1
-    type: login
-    node: e2e-node-1
-    username: dev
-    password: dev-password
-
-  - name: Login on e2e-node-2
-    type: login
-    node: e2e-node-2
-    username: dev
-    password: dev-password
-
-  - name: Login on e2e-node-3
-    type: login
-    node: e2e-node-3
-    username: dev
-    password: dev-password
-
-  - name: Install application on node-1
-    type: install_application
-    node: e2e-node-1
-    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Create namespace on node-1
-    type: create_namespace
-    node: e2e-node-1
-    application_id: '{{app_id}}'
-    outputs:
-      ns: namespaceId
-
-  - name: Create context on node-1
-    type: create_context
-    node: e2e-node-1
-    application_id: '{{app_id}}'
-    group_id: '{{ns}}'
-    outputs:
-      ctx: contextId
-
-  # The join is the first step that needs a peer at all: group-key delivery
-  # has to reach node-1 over the network, and node-2 holds no address for
-  # it. Reaching node-1 here already means the rendezvous lookup worked.
-  - name: Invite node-2 to namespace
-    type: create_namespace_invitation
-    node: e2e-node-1
-    namespace_id: '{{ns}}'
-    outputs:
-      invite_2: invitation
-  - name: Node-2 joins namespace
-    type: join_namespace
-    node: e2e-node-2
-    namespace_id: '{{ns}}'
-    invitation: '{{invite_2}}'
-  - name: Node-2 joins context
-    type: join_context
-    node: e2e-node-2
-    context_id: '{{ctx}}'
-
-  - name: Invite node-3 to namespace
-    type: create_namespace_invitation
-    node: e2e-node-1
-    namespace_id: '{{ns}}'
-    outputs:
-      invite_3: invitation
-  - name: Node-3 joins namespace
-    type: join_namespace
-    node: e2e-node-3
-    namespace_id: '{{ns}}'
-    invitation: '{{invite_3}}'
-  - name: Node-3 joins context
-    type: join_context
-    node: e2e-node-3
-    context_id: '{{ctx}}'
-
-  # Barrier before the write: `join_context` returns when the join is
-  # accepted, while the joiner's context state materialises a moment later.
-  # Writing into that gap answers `Uninitialized`, which merobox hides
-  # behind a retry — a pass that depends on the retry budget rather than on
-  # the thing under test.
-  - name: Settle the joins before the write
-    type: wait_for_sync
-    context_id: '{{ctx}}'
-    nodes:
-      - e2e-node-1
-      - e2e-node-2
-      - e2e-node-3
-    timeout: 90
-    check_interval: 2
-    trigger_sync: true
-
-  - name: Node-2 writes a key
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx}}'
-    method: set
-    args:
-      key: "asked_the_boot_node"
-      value: "found_you"
-
-  - name: Converge all three peers
-    type: wait_for_sync
-    context_id: '{{ctx}}'
-    nodes:
-      - e2e-node-1
-      - e2e-node-2
-      - e2e-node-3
-    timeout: 90
-    check_interval: 2
-    trigger_sync: true
-    expect:
-      method: get
-      args:
-        key: "asked_the_boot_node"
-      equals:
-        output: "found_you"
-
-  - name: Node-3 reads node-2's key
-    type: call
-    node: e2e-node-3
-    context_id: '{{ctx}}'
-    method: get
-    args:
-      key: "asked_the_boot_node"
-    outputs:
-      n3_read: result
-
-  - name: Assert the joiner-to-joiner write crossed
-    type: json_assert
-    statements:
-      - 'json_equal({{n3_read}}, {"output": "found_you"})'
+- name: Install application on node-1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: e2e-node-1
+- type: set
+  values:
+    app_id: com.calimero.scaffolding-e2e
+- name: Create namespace on node-1
+  type: create_org
+  org_name: Create namespace on node-1
+  outputs:
+    ns: orgId
+  account: e2e-node-1
+- name: Create context on node-1
+  type: deploy
+  account: e2e-node-1
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Create context on node-1
+  org: '{{ns}}'
+  outputs:
+    ctx: contextId
+- name: Invite node-2 to namespace
+  type: invite
+  org: '{{ns}}'
+  role: member
+  account: e2e-node-1
+  outputs:
+    invite_2: token
+- name: Node-2 joins namespace
+  type: redeem_invite
+  token: '{{invite_2}}'
+  account: e2e-node-2
+- name: Invite node-3 to namespace
+  type: invite
+  org: '{{ns}}'
+  role: member
+  account: e2e-node-1
+  outputs:
+    invite_3: token
+- name: Node-3 joins namespace
+  type: redeem_invite
+  token: '{{invite_3}}'
+  account: e2e-node-3
+- name: Node-2 writes a key
+  type: call
+  app: '{{ctx}}'
+  method: set
+  args:
+    key: asked_the_boot_node
+    value: found_you
+  account: e2e-node-2
+- name: Node-3 reads node-2's key
+  type: call
+  app: '{{ctx}}'
+  method: get
+  args:
+    key: asked_the_boot_node
+  account: e2e-node-3
+  outputs:
+    n3_read: rpc
+- name: Assert the joiner-to-joiner write crossed
+  type: json_assert
+  statements:
+  - 'json_equal({{n3_read}}, {"output": "found_you"})'

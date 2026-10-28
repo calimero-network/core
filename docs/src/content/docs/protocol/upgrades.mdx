@@ -1,848 +1,114 @@
 ---
-title: Application Upgrades & Migration
-description: How a versioned WASM application evolves its on-chain state shape convergently across every node in a context.
+title: Upgrades & migrations
+description: How an app instance moves to new code — who may upgrade it, how the migration is planned from the two ABIs and run once on the leader, what a failure leaves behind, and organization-wide upgrade runs.
 sidebar:
-  order: 16
+  order: 19
 ---
 
-import SeqDiagram from '../../../components/SeqDiagram.astro';
-import { Steps, Aside } from '@astrojs/starlight/components';
+An **upgrade** moves an app instance to another bundle, usually another release
+of its package, and reshapes its state if the new code expects a different
+shape. Writing the migration itself is covered in
+[Migrations](/build/migrations/); this page is about what the cluster does
+with it. How a release is parsed, verified and trusted when it is installed is
+in [Packages & frontends](/protocol/applications/#installing-a-release).
 
-An application is a versioned WASM bundle. A context targets one application id and
-runs that bundle's bytecode against the context's state. When you ship a new version
-whose **state shape changes**, the old serialized bytes can no longer be read as the
-new layout — so the upgrade carries a **migration**: a deterministic transform that
-reshapes each context's existing data into the new schema.
+## Who may upgrade
 
-This chapter covers how that works at the protocol level: how versions are identified,
-why migrations must be a pure function of prior state (the convergence rule), the two
-ways you author one, how a migration is guarded before it commits, the wire fence that
-keeps a mid-upgrade context from accepting stale-schema writes, and how an admin rolls
-an upgrade across a whole group at once.
+New code reads the app's data, so an upgrade is one of the three decisions
+[deployment governance](/protocol/governance/) assigns:
 
-## Application versioning
+- **Owner** (default): only the app's owner, or the owner of its organization,
+  with a passkey session and a step-up over the exact upgrade
+  (`POST /apps/{app}/upgrade { version | bundle, migrate? }`, then the `412`
+  challenge). Organization admins may not. The assertion is recorded as
+  `consent` on the directory's `UpgradeApp` command.
+- **Operator**: only the operator (`POST /ops/apps/{app}/upgrade`), to a release
+  it installed itself.
 
-A context binds to an **application id**, and the node loads bytecode for that
-application from a content-addressed blob. Two distinct version markers matter:
+A version alone means the app's own package and service.
 
-| Marker | Where it lives | What it identifies |
-| --- | --- | --- |
-| **Application id** | the context's application binding | which application a context targets; for a bundle this id is **version-stable** across releases |
-| **`bytecode_id`** | `GroupMeta.bytecode_id` = `blob_id(bytecode)` | the exact bytecode/schema a node is executing; changes on every code release |
-| **`state_version`** | embedded ABI manifest (`AppState::SCHEMA_VERSION`, from `#[app::state(version = N)]`) | the schema generation the binary targets; default `1`, readers treat a missing value as `1` |
+## Planning the migration
 
-`bytecode_id` is a `BytecodeId`, which names a bytecode blob. It is a distinct type
-from `ContentHash` — the sha256 digest of a file's raw bytes, computed on every blob
-write and externally supplied only as the expected-hash check input, e.g. a CLI
-flag — with no implicit conversion between them: assigning one to the other does not
-compile. Converting requires going through raw bytes explicitly, so a swap has to be
-written on purpose rather than happening by accident.
+Unless the request names a migration (`migrate`), the leader plans one from the
+two bundles' embedded ABIs (`services::plan_upgrade`):
 
-Because a bundle keeps the **same application id** while its bytecode (and therefore
-its `bytecode_id` and `state_version`) advances, the bytecode blob — not the application id
-— is the real "which version" signal during an upgrade. The embedded ABI also declares
-each retained migration edge:
-
-```rust
-// crates/wasm-abi/src/schema.rs
-pub struct MigrationEdgeAbi {
-    pub method: String,      // the migrate entrypoint for this hop
-    pub from_version: u32,   // migrates from_version -> from_version + 1
-}
-```
-
-Retaining multiple edges lets a node that is several versions behind replay
-`v1→v2` then `v2→v3` rather than jumping the latest edge against older state.
-
-<Aside type="note" title="The `minRuntimeVersion` floor">
-Separate from the `state_version` / `bytecode_id` schema surface above, a signed
-bundle manifest carries an optional **`minRuntimeVersion`** — a floor on the
-node runtime. It is enforced at install: if `min_runtime_version` exceeds the
-node's current runtime version the install **bails** (`"bundle requires runtime
-version X but current runtime is Y"`). This gate applies to signed and
-dev-bundle installs, not to a raw `.wasm` install.
-</Aside>
-
-## Bundles, signing & install
-
-An application ships as an **`.mpk` bundle** (Mero Package Kit): a gzip-compressed
-tar archive whose required entry is `manifest.json`, alongside the WASM / ABI /
-migration artifacts that manifest references. The node reads the manifest straight
-out of the archive in memory — it does not trust a filename or extension for
-content. A blob is treated as a bundle when it contains a `manifest.json` entry
-(`crates/node/primitives/src/client/application/bundle.rs`).
-
-### The manifest
-
-`manifest.json` is camelCase JSON:
-
-| Field | Meaning |
+| Current → target state version | Plan |
 | --- | --- |
-| `version` | manifest-format version |
-| `package` | application package id — the app id; a human label, **not** a security boundary |
-| `appVersion` | the application's own version string |
-| `signerId` | `did:key` of the signing key, the cryptographic update authority (optional in the type; required for a signed bundle) |
-| `minRuntimeVersion` | floor on the node runtime (see the Aside above) |
-| `metadata` | display info — `name`, `description`, `icon`, `tags`, `license` |
-| `interfaces` | declared `exports` / `uses` intents |
-| `wasm` + `abi` | single-service artifacts, each a `{path, hash, size}` record; `hash` is required |
-| `services` | named multi-service modules; overrides `wasm` / `abi` when present and non-empty |
-| `migrations` | migration artifacts |
-| `frontend` | the app's static web build: `entry` plus `files`, each a `{path, hash, size}` record under `frontend/` (below) |
-| `links` | `frontend` / `github` / `docs` URLs |
-| `signature` | the Ed25519 signature object (below) |
-
-Nothing is written out of the archive: the content-addressed blob is the only copy of
-a bundle's bytes, and it re-verifies its own content hashes on every read. Manifest
-parsing still rejects `package` and `appVersion` values that are not safe path
-components, and rejects any artifact path that is absolute or carries a `..` segment.
-That path check runs over *every* artifact the manifest declares - `wasm`, `abi`, each
-`services[].wasm` and `services[].abi`, and each `migrations[]` - enumerated by a
-single exhaustive destructure of the manifest, so a new artifact field stops compiling
-until it is classified
-(`crates/node/primitives/src/client/application/bundle.rs`).
-
-### The bundled frontend
-
-A bundle may carry its own web build, so the UI a namespace loads can match the contract it runs instead of one externally hosted latest build.
-Every file is listed in the manifest with its hash, so the manifest signature covers the UI as it covers the WASM.
-An older node ignores the field and the app still runs from `links.frontend`.
-A node that understands the field checks every listed file against the manifest before any application row or service blob is written, and refuses the whole install on the first mismatch, missing file or rule violation, naming the code below.
-Once verified, each file is stored as its own content-addressed blob, and an index under the bundle blob id lists the application id, the entry and the path and blob id of every file.
-The index is keyed by the bundle, not the application, because a new version overwrites the application row while contexts keep running the bundle they are bound to.
-Identical files across versions share one refcounted blob.
-An upgrade keeps the frontend of every older bundle, because the node does not count the contexts still bound to it.
-Uninstalling an application releases the frontend of every bundle installed under it.
-
-#### Serving the frontend
-
-Each application is served from its own browser origin, `{label}.{base_domain}`, for example `http://{label}.localhost:2428/`.
-`{label}` is the application id as unpadded lowercase base32, 52 characters.
-`base_domain` is `[server.apps] base_domain` and defaults to `localhost`.
-A config with a one-label `base_domain` other than `localhost`, such as `com`, is refused, because a public suffix would put every app under a name anyone can register.
-A request whose `Host` is exactly that name, with at most one trailing dot, is answered before any other route, CORS or auth layer.
-A `Host` whose first label looks like an app label (52 lowercase base32 characters) but is not exactly that name answers `404`, so a name another party controls never reaches the node's own routes.
-Every other host reaches the node's normal routes unchanged.
-Admin tokens live in the dashboard origin, so an app host serves nothing but that app's files, `GET` and `HEAD` of `/{version}/` (the entry) and `/{version}/{path}`, the app API below and a redirect of the login page.
-Any other `/admin-api` route answers `403` with a short plain-text body, and everything else answers `404`.
-`{version}` is found by two point reads, the release pointer stored under the application id and a hash of the version, then the bundle's index, so an older release keeps its own files after an upgrade.
-When two bundles claim one release, the latest install wins.
-`{path}` is only a key into the index's file list and never touches a filesystem, so `..` and encoded dots simply match no file.
-A `GET` or `HEAD` under `/{version}/` that matches no file, has no extension in its last segment and accepts `text/html` is answered with the release's entry and its headers, so a single-page app's client routes survive a reload; that response carries `Vary: Accept`.
-A path with an extension, or a request that does not accept `text/html`, that matches no file is tried again with its leading segments dropped one at a time, and the longest remainder that is a file of the same release is served, trying at most 16 leading segments.
-This resolves an entry's relative `./assets/...` URLs on a deep link such as `/{version}/p/123`, and answers `404` when no remainder is a file.
-`/` redirects (`302`) to the application row's current version, and `/{version}` redirects to `/{version}/`.
-`/?namespace={id}` is not supported yet and answers `404`, because a namespace records the bytecode blob it runs and not the release that blob came from.
-
-Files stream from their blobs, whose chunks are re-hashed as they are read.
-A file declares its `Content-Length` from the blob size.
-A blob that is missing or fails its hash in the first chunk answers `500` before any header is sent, and one that fails later breaks the body, never delivering other bytes.
-Every response carries the content security policy from `crates/bundle/AGENTS.md`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
-A node that sets `[server.sealed] required` mounts no app host, because a browser cannot seal a request.
-A page on an app's origin is third-party code, so the node answers it `403` on every route of its own, in every auth mode, and never counts it as a loopback page.
-A file also carries its `Content-Type`, an `ETag` of its blob id (answered with `304` on a match) and `Cache-Control: public, max-age=31536000, immutable`.
-
-#### App origins
-
-An app's page calls the node at `window.location.origin`, because its content security policy allows requests to its own origin only.
-On an app host the node passes `/jsonrpc`, `/ws`, `/sse`, `/sse/...`, `POST /auth/refresh` and `GET` or `HEAD /auth/validate` to its normal handlers, so auth applies as on the node's own host.
-It also passes the admin routes an app needs to find and make its contexts and namespaces, matched by method and exact path:
-`GET /admin-api/contexts`, `GET /admin-api/contexts/{id}`, `GET /admin-api/contexts/for-application/{app}`, `GET /admin-api/namespaces/for-application/{app}`, `GET /admin-api/applications`, `GET /admin-api/applications/{id}`, `GET /admin-api/contexts/{id}/identities-owned`, `GET /admin-api/contexts/{id}/group`, `POST /admin-api/contexts`, `POST /admin-api/contexts/{id}/join`, `GET` and `POST /admin-api/namespaces`, `POST /admin-api/namespaces/{id}/invite`, `POST /admin-api/namespaces/{id}/join`, `POST /admin-api/namespaces/{id}/groups`, `GET /admin-api/groups/{id}/members`, `GET /admin-api/namespaces/{id}`, `GET /admin-api/namespaces/{id}/groups`, `GET /admin-api/groups/{id}/contexts`, `GET /admin-api/identity`, `GET /admin-api/health` and `GET /admin-api/is-authed`.
-It also passes the routes an app uses to manage what it made, each held to the app by the binding below:
-`GET /admin-api/contexts/{id}/identities`, `POST /admin-api/contexts/{id}/leave`, `POST /admin-api/namespaces/{id}/leave`, `DELETE /admin-api/contexts/{id}`, `DELETE /admin-api/namespaces/{id}`, `GET` and `DELETE /admin-api/groups/{id}`, `GET` and `PUT /admin-api/groups/{id}/metadata`, `PUT /admin-api/groups/{id}/contexts/{context}/metadata`, `POST /admin-api/groups/{id}/members`, `POST /admin-api/groups/{id}/members/remove`, `PUT /admin-api/groups/{id}/members/{account}/role`, `PUT /admin-api/groups/{id}/members/{account}/capabilities`, `GET` and `PUT /admin-api/groups/{id}/members/{account}/metadata`, `GET /admin-api/groups/{id}/members/{account}/capabilities`, `GET /admin-api/groups/{id}/contexts/{context}/metadata`, `PUT /admin-api/groups/{id}/settings/default-capabilities`, `PUT /admin-api/groups/{id}/settings/subgroup-visibility`, `GET /admin-api/groups/{id}/subgroups`, `POST /admin-api/groups/{id}/reparent`, `POST /admin-api/groups/{id}/sync`, `POST /admin-api/groups/{id}/leave`, `POST /admin-api/groups/join`, `PUT /admin-api/blobs`, `GET` and `HEAD /admin-api/blobs/{id}`, `POST /admin-api/alias/create/context` and `POST /admin-api/alias/lookup/context/{name}`.
-A route that names a context, group, namespace or application outside the app answers `403`, a body that names a group outside it is refused, and a blob is reached only through a context of the app.
-Leaving a namespace with `purge`, which frees every device of the account, is refused.
-Installing or uninstalling an application, the node's peers, network and usage, accounts, devices, TEE routes, listing or deleting blobs and every other alias route stay refused.
-Every request passed on is bound to the app of the host's label.
-The node refuses a token that holds `admin` or is bound to another application on an app host, so a page there cannot use the owner's token.
-Any other token acts as if bound to that app, narrowed by its own binding, so RPC, sockets, events and the routes above reach only that app's contexts and namespaces.
-`/auth/refresh` and `/auth/validate` hold the session they carry to the same rule, so an `admin` session is not renewed or checked on an app host.
-A refresh is judged by the permissions it would mint, and `/auth/validate` refuses an `X-Forwarded-Uri` there.
-`GET /admin-api/applications` lists only the bound application, and `GET /admin-api/applications/{id}` and the `for-application` listings refuse any other.
-An app's key may join a namespace on an invitation that names its app, because a node that does not hold the namespace has no signed application to check.
-The invitation's application is an unsigned hint, so the node marks it as unverified when the join seeds it.
-An app's key is refused on that namespace, and the namespace is left out of its listings, until a signed op confirms the application.
-Only a signed target op or cascade upgrade confirms it: a context registration does not, because any member allowed to create a context can sign one.
-A namespace that never gets such an op stays refused to an app's key, and so do its subgroups.
-A join that is refused after seeding the hint leaves the mark in place, so the key stays refused there.
-A token bound to a context never joins a group it does not hold.
-These work only where the node's embedded auth verifies the token, and only for a page whose `Origin` is the host it calls.
-Under proxy mode they answer `403` with a plain-text reason, unless `[server.apps] trust_proxy = true` is set.
-With it, the app API works in proxy mode too, and every request needs the proxy's `X-Auth-Permissions` (`401` without), which is held to the same app binding as an embedded token.
-Set it only where a proxy in front authenticates every request to an app host and sets that header itself, and where mero-auth sees the original `Host` (it accepts `{label}.{node host}` as the node host).
-A reverse proxy in front must forward the original `Host` (`proxy_set_header Host $host` for nginx).
-The proxy's forward-auth must send `X-Forwarded-Uri` and `X-Forwarded-Method` to mero-auth's `/auth/validate`, so per-route permissions are checked.
-Traefik's forwardAuth does; nginx `auth_request` needs them configured.
-It must also strip or overwrite any client-sent `X-Auth-Permissions`.
-On app hosts only `POST /auth/refresh` and `GET`/`HEAD /auth/validate` may reach mero-auth.
-`/auth/login` must go to merod, which redirects to the node's login page, or be refused, so the login page is never served on an app's origin.
-`[server.apps] base_domain` must be the node's own host, because mero-auth validates an app-host request by stripping exactly one app label and comparing the rest with the token's host.
-The desktop webview origins (`calimero-app://...`) cannot use the app API from the node and go through the desktop app instead.
-A login page is never served there, because an app's script could read what the user types.
-`GET /auth/login` on an app host answers `302` to the node's own login page with the same query and port: the host without its label.
-Login is a top-level navigation to the node's own origin.
-
-The app origins are `{label}.{base_domain}` with any port, `calimero-app://{label}` and `http(s)://calimero-app.{label}`, where `{label}` is the canonical base32 of an application id.
-
-An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.
-
-#### Threat model for served frontends
-
-A bundled frontend is code the node serves to a browser, so the boundary has to hold even for a bundle the operator did not write.
-
-- **Per-app origin.** Each app is a separate browser origin, so one app's page cannot read another app's storage or the dashboard's admin tokens.
-- **CSP.** Every response carries a policy that allows only same-origin files, so a bundle cannot load code from another origin or run inline script.
-  Its `script-src` adds `'wasm-unsafe-eval'` so an app can compile WebAssembly, which does not allow `eval`.
-- **App hosts serve files and a narrow API.** `GET` and `HEAD` of a release's indexed files, the app API and a short list of admin routes are the whole surface.
-  A token used there is bound to the app of the host, a token that holds `admin` is refused, every other admin route answers `403`, and the dashboard answers `404`.
-- **Sealed nodes do not serve.** A browser cannot seal a request, so a node that requires sealed requests mounts no app host.
-
-Out of scope here:
-
-- A relay serving frontends to other users.
-  A relay that does so must give each app its own origin and keep its own credentials off those origins.
-- The desktop app's `calimero-app` custom scheme, which lives in `tauri-app`.
-  This node treats the scheme's origins as app origins and refuses them on its own routes, as listed above.
-
-`calimero-bundle` holds the rules (`crates/bundle/src/frontend.rs`), and each refusal carries a stable code.
-The node enforces paths, sizes, hashes and the MIME allowlist at install.
-The HTML rules are build-time feedback that only `cargo mero` runs; at serve time the boundary is the per-app origin plus the CSP.
-
-| Code | Raised by | Refused when |
-| --- | --- | --- |
-| `FRONTEND_UNSAFE_PATH` | both | a path is not under `frontend/`, or has an empty, `.` or `..` component, or any character outside `A-Z a-z 0-9 . _ ~ @ + -` |
-| `FRONTEND_DUPLICATE_PATH` | both | a path is listed twice, ignoring ASCII case |
-| `FRONTEND_NO_ENTRY` | both | `entry` is not one of the listed files |
-| `FRONTEND_ENTRY_NOT_HTML` | both | `entry` is not an HTML file |
-| `FRONTEND_UNSUPPORTED_TYPE` | both | a file's extension is outside the served MIME allowlist (source maps included) |
-| `FRONTEND_TOO_LARGE` | both | the declared sizes sum past `MAX_FRONTEND_BYTES` (32 MiB) |
-| `FRONTEND_SIZE_MISMATCH` / `FRONTEND_HASH_MISMATCH` | both | a file's bytes differ from its manifest entry |
-| `FRONTEND_REMOTE_RESOURCE` | CLI | an HTML file loads a URL from another origin: a `src`, `href`, `srcset` or `poster` with a scheme or `//host` on any element except `<a>` and `<area>`; `data:` and `blob:` are refused only on `script`, `modulepreload` and `preload` loaders |
-| `FRONTEND_ESCAPING_URL` | CLI | an HTML file loads a root-absolute URL (`/assets/app.js`, `/vite.svg`; Vite's default `base: '/'`), or a relative one whose `..` climbs above the frontend root, in any of those attributes; or has any `<base>`; build with `base: './'` |
-| `FRONTEND_INLINE_SCRIPT` | CLI | an HTML file has an executable inline `<script>`, an `on*` event-handler attribute, a `javascript:` URL in `href`, `src`, `action` or `formaction`, a `srcdoc` attribute, or markup a browser could read as text inside a raw-text element; the served page's CSP forbids inline code |
-| `FRONTEND_INVALID_HTML` | CLI | an HTML file is not UTF-8 |
-| `FRONTEND_MISSING_FILE` | both | a file the manifest lists is not in the archive or the build output |
-
-`cargo mero` reads HTML with the `html5ever` tokenizer, so attribute values are decoded and URLs normalised the way a browser does them: `h&#116;tps://`, a tab inside the scheme and `\\host` are all caught.
-
-### Signing
-
-A signed bundle carries a `signature` object:
-
-```text
-signature = {
-  algorithm: "ed25519",                // exact, case-sensitive
-  publicKey: <base64url, no padding>,  // 32-byte Ed25519 key
-  signature: <base64url, no padding>,  // 64-byte signature
-  signedAt?: <ISO 8601 timestamp>
-}
-```
-
-The signed payload is **not** the raw archive bytes. It is the SHA-256 of the
-canonical manifest, prefixed with a domain tag:
-
-```text
-payload = SHA-256( "calimero.bundle.manifest.v1" ‖ 0x00 ‖ JCS(manifest without `signature` and without any `_`-prefixed field) )
-```
-
-The manifest is canonicalized with RFC 8785 (JCS) — lexicographically ordered keys —
-after dropping the `signature` field and **every** underscore-prefixed field
-(transient markers such as `_binary` / `_overwrite` are excluded so they cannot be
-smuggled into the signed view). The domain-tagged SHA-256 of those canonical bytes is
-the Ed25519 signing payload (`crates/bundle/src/signature.rs`). The tag keeps a
-signature over a manifest from being valid for any other message the same key signs,
-and a signature made over the bare SHA-256 is refused. The bundle hash stays the
-plain SHA-256 of the canonical bytes, so a bundle's identity does not depend on the tag.
-
-Verification (`verify_manifest_signature`) is strict:
-
-- `algorithm` must equal `"ed25519"` exactly — `"ED25519"` / `"Ed25519"` are rejected.
-- The signature must verify against `publicKey` over that tagged SHA-256 payload.
-- `signerId` must equal the value **derived from** `publicKey`:
-  `did:key:z{base58btc(0xed01 ‖ pubkey)}` — multibase base58btc of the multicodec
-  `0xed01` (ed25519-pub) tag concatenated with the 32-byte key. A `signerId` the
-  public key does not derive to is a mismatch error.
-
-Signing itself is done out of band by the dedicated **`mero-sign`** CLI (a separate
-workspace tool under `tools/mero-sign`), not by the node or `meroctl` — the node only
-*verifies*. `mero-sign` sets `signerId` from the key, canonicalizes, signs the
-payload, and writes the `signature` object back into the manifest.
-
-### Install trust
-
-Every install path requires a valid signature, whatever the bundle's source:
-
-| Path | Source | Signature |
-| --- | --- | --- |
-| `install-application` | the node's configured registry, by `package`@`version` | **required** |
-| `install-dev-application` | a local filesystem path | **required** |
-
-There is no unsigned path and no synthetic dev signer. A local dev build signs with
-the well-known dev key (`cargo mero bundle --dev`), so it carries a real `signerId`
-without the publisher having to generate one; a dev-signed bundle is still a signed
-bundle and goes through exactly the same verification.
-
-The signature also binds the wasm bytes. `VerifiedBundle` verifies the manifest
-signature, then checks each wasm artifact's SHA-256 against the `hash` the publisher
-signed and fails the install on a mismatch, so a mirror that swaps `app.wasm` under an
-otherwise untouched signed manifest is rejected
-(`crates/node/primitives/src/client/application/bundle.rs`). The artifact path is
-matched exactly and must be unique in the archive, so a decoy or duplicate entry
-cannot pass the check on behalf of the entry the node actually runs. `VerifiedBundle`
-is the only way to obtain artifact bytes at all, so there is no route that reads a
-`.mpk` without first clearing the signature.
-
-The scope of that guarantee is exactly the wasm artifacts. Everything else in the
-archive - the ABI, migrations, and any entry the manifest does not name - is
-path-validated but read back without a digest check. The `minRuntimeVersion` floor
-documented above is still enforced.
-
-Two size bounds apply to attacker-supplied bytes read *before* the signature clears.
-They are measured on decompressed output, so a compression bomb cannot get past them:
-the scan for `manifest.json` stops after 8 MiB, and the whole-archive read that serves
-artifact bytes stops after 512 MiB.
-
-<Aside type="caution" title="Two operational edges the E2E suite cannot catch">
-Every merobox node is the same build against fresh state, so neither of these shows
-up there: one needs data an older node wrote, the other needs a hand-built archive.
-
-**A bundle an older node admitted unsigned is no longer readable.** Signatures are
-now mandatory on every path, and the check runs on read, not just at install, so a
-`.mpk` blob already persisted without a valid signature fails when it is next opened,
-with `"manifest is missing required 'signature' field"`. Two paths surface that as a
-hard error: creating a group against an explicit `bytecode_id`, and resolving an upgrade's
-migration parameters from the target blob. Two others degrade quietly instead: the
-displayed app version (`blob_app_version`) goes empty, and the affected blob is
-skipped from `list_application_versions`. The fix in every case is to reinstall the
-application from a signed bundle.
-
-**A `manifest.json` past 8 MiB of decompressed data classifies as "not a bundle".**
-Installing such an archive from a `.mpk` path reports the cap directly. Reading it
-back as a blob does not: the classifier that decides bundle-or-raw-wasm answers "not
-a bundle" when the scan trips the cap, and raw wasm never runs, so the read is refused.
-It fails closed either way, but on that second path the error names a missing bundle
-rather than the cap. `cargo mero bundle` writes `manifest.json`
-as the archive's first entry, so bundles it produces are never affected; a bundle
-built by hand should place the manifest first.
-</Aside>
-
-## What a migration is
-
-A migration is needed only when **old serialized state can no longer be read as the
-new state**. Borsh is positional, so the rule is purely about field layout:
-
-| Change | Migration? |
-| --- | --- |
-| Add a method, fix logic (no field change) | No |
-| Append a variant to an enum (indices kept) | No |
-| Add a field | Yes — old bytes have no value for it |
-| Remove / rename a field | Yes |
-| Change a field's type | Yes |
-
-A migration runs **once per node**, the first time each context is accessed after the
-upgrade. It reads the old root, transforms it,
-and returns the new root **by value** — there is no `Result`. On unrecoverable input
-(no prior state, undeserializable bytes) the migration `panic!`s, which aborts the
-upgrade and leaves the v1 state intact for a retry: **a failed migration is
-non-destructive.**
-
-## The convergence rule
-
-This is the one rule that actually matters. `#[app::migrate]` runs **independently on
-every node**, against that node's own already-synced, byte-identical v1 state. The
-migrated state is **not** sent over sync — each node re-derives it locally.
-
-:::caution[Normative]
-A migration's output **MUST** be a deterministic, pure function of the old state. Two
-nodes running the same migration on the same v1 bytes **MUST** produce a byte-identical
-v2 root, or they fork and CRDT sync breaks.
-:::
-
-The SDK removes the two structural sources of per-node entropy automatically. A
-migration body runs under storage **merge mode**, and the `#[app::migrate]` macro wraps
-it so that (from `crates/sdk/macros/src/migration.rs`):
-
-<Steps>
-
-1. **Node-local timestamps are zeroed.** `LwwRegister::new(...)` / `.set(...)` and
-   `Element` update times would otherwise stamp this node's clock + identity; merge
-   mode forces the deterministic zero stamp instead.
-
-2. **Random collection ids are made deterministic.** A freshly materialized collection
-   gets an `Id::random()` on the live path; the macro calls
-   `__assign_deterministic_ids()` to re-key every top-level collection field to its
-   `compute_collection_id(field)` id (and `Vector` elements by index).
-
-</Steps>
-
-So a migration that only carries fields through and seeds new ones with `::new()`
-cannot trigger a determinism bug. What you must still avoid is **app-level**
-non-determinism: wall-clock, RNG, or iteration order. If you materialize an ordered
-`Vector` from an unordered map/set, **sort first** — two nodes may iterate the source in
-different orders.
-
-### Data categories
-
-Which moves are safe depends on the field type:
-
-| Category | Types | In a migration |
-| --- | --- | --- |
-| **Convergent** | `UnorderedMap`, `IndexedMap`, `Vector`, `UnorderedSet`, `SortedMap`, `SortedSet`, `UserStorage`, `FrozenStorage` | key/content-addressed — rebuild freely; auto-converges |
-| **Replayable** | `Counter`/`GCounter`/`PNCounter`, `RGA` | carry across, or replay deterministically with the `*_for(id, …)` APIs |
-| **Identity-gated** | `AuthoredMap`, `AuthoredVector`, `SharedStorage` | carry-through only — re-inserting stamps *this* node as owner and diverges |
-
-`Counter::increment` and `RGA::insert` stamp the running node's identity/clock, so the
-SDK makes them **panic during a migration** rather than let them silently fork the
-network. Carry the value through (`field: old.field`) or use the explicit-identity
-replay APIs (`increment_for`, `insert_str_at_timestamp`).
-
-## Declarative vs hand-written
-
-### `#[derive(Migrate)]` — the common case
-
-For add / remove / rename / type-change you don't write the migration body at all.
-Declare the new state, point it at the old layout, and annotate only what changed
-(`crates/sdk/macros/src/migrate_derive.rs`):
-
-```rust
-#[app::state(version = 2)]
-#[derive(app::Migrate)]
-#[migrate(from = DocV1Data)]
-pub struct DocV2 {
-    entries: UnorderedMap<String, LwwRegister<String>>, // carried by name
-    title: LwwRegister<String>,                         // carried by name
-    #[migrate(new = LwwRegister::new("".to_owned()))]
-    notes: LwwRegister<String>,                         // additive: you seed it
-    #[migrate(from = legacy_name)]
-    renamed: LwwRegister<String>,                       // rename: old.legacy_name
-}
-```
-
-| Annotation | Where | Result |
-| --- | --- | --- |
-| _(none)_ | field | carried from the old state by name (`old.field`) |
-| `#[migrate(new = EXPR)]` | field | additive — you provide the seed value |
-| `#[migrate(from = old_name)]` | field | renamed — carry `old.old_name` |
-| `#[migrate(with = EXPR)]` | field | transform — `EXPR(old.field)` (combine with `from` to convert a renamed field) |
-| _field omitted from the new struct_ | — | dropped (the remove case) |
-| `#[migrate(emit = EXPR)]` | struct | emit an app event from the migration |
-
-A new field you forget to annotate is a **compile error** ("no field `notes` on the old
-type") — it cannot silently misbuild. A **dropped** field is silent (that *is* the
-remove case), so review the new field list against the old one deliberately. The
-generated export name defaults to the versioned `migrate_v{N-1}_to_v{N}` so names stay
-unique across releases.
-
-### Hand-written `#[app::migrate]`
-
-When the transform crosses fields — one source feeds many fields, or a new field is
-derived from a field you also keep — write the function yourself. The derive just
-generates this shape:
-
-```rust
-use calimero_sdk::state::read_raw;
-
-#[app::migrate]
-pub fn migrate_v1_to_v2() -> DocV2 {
-    let old_bytes = read_raw().unwrap_or_else(|| panic!("no prior state"));
-    let old: DocV1Data = BorshDeserialize::deserialize(&mut &old_bytes[..])
-        .unwrap_or_else(|e| panic!("v1 deserialize: {e:?}"));
-    DocV2 {
-        entries: old.entries,                       // carry — handle survives
-        title: old.title,
-        notes: LwwRegister::new("".to_owned()),     // seed a new field
-    }
-}
-```
-
-See [the SDK macros reference](/build/sdk-macros/) for the full attribute surface.
-
-## Guarding a migration: `migration_check` + witness
-
-A migration that compiles and runs can still be wrong — drop entries, break an
-invariant, orphan a reference. To catch that **before it commits**, declare an optional
-`#[app::migration_check]`. The runtime invokes it on the produced v2 root, against the
-same in-memory staging buffer the migrate wrote, **before** anything reaches the live
-store. A `false` verdict (or a trap) logically **aborts** the migration: the staging
-buffer is dropped, the context stays on v1 with zero residue, and — because no migration
-marker is recorded — the context re-runs migrate+check on its next access, so a
-transient cause (not-yet-synced v1) self-heals.
-
-```rust
-#[app::migration_check]
-fn check(old: DocV1, new: DocV2) -> bool {
-    // `new` (and its collections) reflect the produced v2 state.
-    // `old`'s scalar fields are pristine v1; do NOT diff old-vs-new
-    // collections — both resolve to the same staged bucket.
-    new.items.get("alpha").map(|v| v.is_some()).unwrap_or(false)
-}
-```
-
-Built-in helpers (`calimero_sdk::migration_check`) compose into the predicate:
-`entity_count_parity(a, b, delta)`, `no_orphaned_refs(refs, keys)`,
-`conservation(old_total, new_total)`.
-
-### The transient migration witness
-
-When the invariant needs a v1 value the v2 schema doesn't keep (e.g. "every item
-survived"), the migrate returns a `(State, Witness)` tuple. The witness is a borsh blob
-that rides out on the runtime `Outcome` and is delivered to the check — **never
-persisted**. The macro emits it via the `emit_migration_witness` host function
-(`crates/runtime/src/logic/host_functions/system.rs`), which captures the blob into the
-transient `Outcome.migration_witness` field:
-
-```rust
-#[app::migrate]
-fn migrate() -> (DocV2, MigrationWitness) {
-    let mut items = old.items;
-    let v1_count = items.len().unwrap_or(0) as u64;  // captured BEFORE any change
-    (DocV2 { items, /* .. */ }, MigrationWitness { v1_count })
-}
-
-#[app::migration_check]
-fn check(_old: DocV1, new: DocV2, witness: MigrationWitness) -> bool {
-    matches!(new.items.len(), Ok(n) if n as u64 == witness.v1_count)
-}
-```
-
-:::caution[Normative]
-The check and any witness **MUST** be a deterministic pure function of the v1 state,
-exactly like the migrate — they run independently on every node against byte-identical
-input, so all nodes reach the same verdict: either all commit or all abort. A
-non-deterministic check or witness is a split-verdict bug.
-:::
-
-A plain `State` return with a 2-arg `check(old, new)` stays valid — the witness is
-opt-in.
-
-### The no-silent-downgrade rail
-
-Changing an identity-gated type to a plain one (`AuthoredMap → UnorderedMap`,
-`SharedStorage → UnorderedMap`, `AuthoredVector → Vector`, or dropping the field) strips
-per-entry authorship / the writer ACL across the **whole network**. This is refused
-twice: in CI by `cargo mero abi diff` (an `UNSAFE_IDENTITY_DOWNGRADE` finding, detected by
-`identity_downgrades()` in `crates/wasm-abi/src/downgrade.rs` and tagged
-`FindingClass::UnsafeIdentityDowngrade` in `tools/calimero-abi/src/diff.rs`), and at the
-node by the upgrade gate, before the upgrade op is even emitted.
-
-## The stale-schema delta fence
-
-A migration is local, but writes still flow over sync. During a rolling upgrade, some
-nodes have migrated and some have not — so a write authored against the **old** schema
-must not be applied on top of **migrated** state, or the v2 reader decodes v1-shaped
-bytes and corrupts.
-
-Two coordinated fences enforce this:
-
-- **`producing_bytecode_id` on the state delta.** Every `StateDelta` broadcast carries the
-  `GroupMeta.bytecode_id` (= `blob_id(bytecode)`) the sender was executing under
-  (`crates/node/primitives/src/sync/snapshot.rs`). A receiver compares it to its local
-  group meta: a delta whose `bytecode_id` no longer matches was authored by a node still on
-  the old schema and is buffered / rejected rather than applied.
-
-  ```rust
-  /// `GroupMeta.bytecode_id` the sender was executing under when this
-  /// delta was produced. Receivers fence stale-schema deltas after a
-  /// cascade migration: a delta whose bytecode_id no longer matches the
-  /// local group meta was authored on the old schema.
-  producing_bytecode_id: Option<[u8; 32]>,
-  ```
-
-- **The `cascade_hlc` HLC fence — absorb, don't drop.** A cascade upgrade stamps a single
-  hybrid-logical-clock boundary (`cascade_hlc`) once, shared by every migrated descendant
-  (see below). The fence decides each incoming context-state delta against three facts: the
-  boundary, the delta's HLC, and — crucially — the **loaded reader** bytecode id, the bytecode
-  blob the receiver actually executes right now, *not* the replicated `GroupMeta.bytecode_id`
-  migration target. The governance target advances for everyone at
-  cascade-apply while each node's binary swaps lazily, so keying on the target would fence a
-  node against a schema it can already read. The rule (`fence_decision`,
-  `crates/context/src/hlc_fence.rs`):
-
-  | Condition | Decision |
-  | --- | --- |
-  | no `cascade_hlc` boundary | `Apply` |
-  | `delta_hlc <= boundary` — pre-cascade legitimate history | `Apply` |
-  | delta schema matches the loaded reader | `Apply` |
-  | after the boundary **and** schema differs from the loaded reader | `Buffer` |
-
-  A fenced delta is **buffered (absorbed) for verbatim replay** once the local binary
-  catches up to the schema that produced it — it is never dropped. The migration fence never
-  emits `Drop`; that verdict is reserved for unrecoverable, non-absorbable cases. The loaded
-  reader resolves in execution order — the per-context activation marker, then the installed
-  application row's bytecode blob, then the group target as a last resort
-  (`loaded_reader_bytecode_id`). The replicated target is threaded through only so the absorb
-  drain can later tell when the binary has reached it.
-
-## Group-wide cascade upgrade
-
-An admin upgrades a group's target application in one governance operation, and every
-node in (and beneath) that group upgrades and migrates — coordinated so cross-version
-drift is fenced. The operation is `GroupOp::CascadeUpgrade`
-(`crates/governance-types/src/lib.rs`):
-
-```rust
-CascadeUpgrade {
-    from_bytecode_id: BytecodeId,      // the walk predicate: match descendants on this bytecode_id
-    bytecode_id: BytecodeId,           // the new bytecode blob id
-    target_application_id: ApplicationId,
-    to_state_version: u32,             // max ABI state version across the target's services
-    migration: Option<Vec<u8>>,        // the migrate method name (bytes)
-    cascade_hlc: HybridTimestamp,      // the fence boundary, stamped once by the initiator
-    package: String,                   // the target's registry coordinates, resolved
-    version: String,                   // against each receiver's OWN registry
-}
-```
-
-It is **atomic**: `target_application_id`, `bytecode_id`, and `migration` are all applied in
-a **single walk per matched descendant** (every descendant whose current `bytecode_id`
-equals `from_bytecode_id`), so a receiver cannot reproduce the old out-of-order apply bug
-where target-set ran first and the migration silently matched nothing. The `cascade_hlc`
-is stamped **once** by the initiator so every node records an identical fence boundary.
-
-`package` / `version` are the target's registry coordinates, and they are **mandatory**:
-plain `String`, not `Option`, on all three application-bearing ops.
-Applying the op records them on the group's upgrade ladder beside the rung's `bytecode_id`
-(`LadderRung { bytecode_id, application_id, package, version }`), so each member resolves the
-new bytecode from its **own** configured registry instead of depending on the publisher
-staying reachable - see
-[how bytecode reaches a node](/protocol/applications/#how-bytecode-reaches-a-node).
-The ladder is the carrier rather than the application row because a bundle's
-`ApplicationId` is version-stable: one row cannot describe both the version this member has
-installed and the one it is being moved to, and no remote party can roll the row back to an
-older release (see [how bytecode reaches a node](/protocol/applications/#how-bytecode-reaches-a-node)).
-
-`GroupOp::TargetApplicationSet`, the single-group form of the same change, carries the
-identical pair, and so does `GroupOp::ContextRegistered` - that is how a joiner learns where
-to fetch the application it was just registered against.
-Because the field is mandatory, an emitter that has no coordinates to put there **fails**
-instead of signing an op no receiver could resolve: emitting an upgrade against an
-unaddressable application row, and creating a context against one, both error with the same
-`application <pkg>@<version> has no registry coordinates` message, raised by the shared
-`registry_coords` check both paths call (`crates/context/src/handlers/upgrade_group.rs`).
-There is no coordinate-less arm left to degrade into.
-
-<Aside type="caution" title="Schema v11 is a flag day: upgrade a namespace's peers together">
-Adding the coordinate pair changed the encoding of three variants -
-`GroupOp::TargetApplicationSet` (ordinal 7), `GroupOp::ContextRegistered` (ordinal 8) and
-`GroupOp::CascadeUpgrade` (ordinal 22) - so `SIGNED_GROUP_OP_SCHEMA_VERSION` was bumped from
-**10** to **11**.
-No ordinal moved and no other variant's layout changed.
-
-The version is compared **strictly equal** on decode, so a peer still on 10 rejects *every*
-v11 op - not only those three - loudly, rather than mis-decoding one.
-Governance stops converging across a mixed fleet, and ops already signed under v10 are
-rejected rather than migrated.
-Upgrade every node in a namespace together.
-
-The same release also changes the on-disk layout of the group governance rows:
-`GroupMeta` replaces its flat `bytecode_id` / `target_application_id` fields with a
-nested `target: GroupTarget { application_id, bytecode_id, package, version }`, and
-`LadderRung` gains trailing `package` and `version` fields.
-Borsh is positional, so a row written by a pre-upgrade binary fails to decode - loudly,
-not silently - and `MetaRepository::load` returns that error for every existing group.
-A coordinated restart does not fix this on its own: each node also needs its datastore
-reset, or its existing groups stay unreadable.
-The upgrade is a coordinated restart **and** a state reset, not a restart alone.
-</Aside>
-
-<SeqDiagram
-  id="d-cascade-upgrade"
-  title="Group-wide cascade upgrade"
-  lanes={[
-    { label: 'Admin', color: '#58a6ff' },
-    { label: 'Governance scope', color: '#a5ff11' },
-    { label: 'Member node', color: '#3fb950' },
-  ]}
-  steps={[
-    { from: 0, to: 1, label: 'POST /groups/:id/upgrade { target_application_id, cascade }' },
-    { from: 1, to: 1, label: 'emit CascadeUpgrade { from_bytecode_id, bytecode_id, target, migration, cascade_hlc }' },
-    { from: 1, to: 2, label: 'op replicates to every member node' },
-    { from: 2, to: 2, label: 'apply: set target + bytecode_id + migration atomically; record cascade_hlc fence' },
-    { type: 'divider', label: 'nothing migrates yet - state is reshaped on first access' },
-    { from: 2, to: 2, label: 'first context access → run migrate (independently, deterministically)' },
-    { from: 2, to: 2, label: 'migration_check passes → commit v2 root; emit AppVersionChanged' },
-    { from: 2, to: 1, label: 'fence: reject deltas with stale producing_bytecode_id / pre-cascade_hlc' },
-    { from: 0, to: 1, label: 'GET /groups/:id/cascade-status → per-subgroup rollout rollup' },
-  ]}
-/>
-
-### Admin endpoints
-
-The cascade is driven and observed through the admin API
-(`crates/server/src/admin/service.rs`):
-
-| Method & path | Purpose |
-| --- | --- |
-| `POST /groups/:group_id/upgrade` | trigger the upgrade (set `cascade: true` for the whole subtree) |
-| `GET /groups/:group_id/upgrade/status` | signed-group upgrade status; `missingReleases` lists the releases to install before `activate` |
-| `POST /groups/:group_id/upgrade/retry` | re-drive a stalled upgrade |
-| `POST /groups/:namespace_id/upgrade/activate` | switch this node's contexts to the stored target now and replay the held deltas (`meroctl group upgrade activate`); every release a context steps through, each upgrade rung and the target, must already be installed |
-| `GET /groups/:namespace_id/cascade-status` | per-subgroup cascade rollout rollup |
-| `GET /groups/:namespace_id/migration-status` | cohort migration rollup (incl. `authored_remaining`), admin-only |
-| `POST /groups/:namespace_id/migration/abort` | admin stop of a rolling migration |
-
-`abort` flips the pending target back to the pre-migration app id and drops the pending
-marker, cascading to every descendant carrying the same pending migration. It is a
-forward "stop" (un-migrated contexts stop switching), **not** a rewind of any context
-that already migrated. Operationally these are reachable via
-[meroctl](/operate/meroctl/) and the admin surface.
-
-`activate` answers `200` with `targetApplicationId`, `switchedContexts`, `replayedDeltas` and `failedContexts`.
-One context failing does not stop the others: each failure is listed as `{contextId, error, retryable}`, and the list is empty when every context finished.
-The node itself retries a failure of its own (a store read, a dropped message) a few times before listing it with `retryable: true`.
-`retryable: false` means the switch itself failed (a migration or a load), which another call repeats until the release or the state changes.
-Calling `activate` again retries only what failed, since contexts already on the target switch nothing.
-`meroctl group upgrade activate` exits non-zero when `failedContexts` is not empty.
-
-### Identity-gated data: owner-driven follow-up
-
-A cascade migrates **structural** state, but identity-gated entries
-(`AuthoredMap` / `AuthoredVector` / `SharedStorage`) are only carried through — each
-keeps its v1 `schema_version` tag until its **owner** re-signs it, because nobody can
-re-sign another identity's entry. `#[app::state(version = N)]` auto-generates a
-`migrate_my_entries()` export: one signed call by an owner sweeps every entry that owner
-still holds below `target`, returning `{converted, remaining}`. The
-`migration-status` endpoint's `authored_remaining` count tracks how many cohort members
-still have unconverted entries — `0` means the cohort is fully converted.
-
-The node also fires an `AppVersionChanged` context event (over SSE/WebSocket) when a
-context's application version flips, carrying `fromVersion` / `toVersion` — frontends use
-it to prompt owners to run `migrate_my_entries()` and to avoid bundle skew.
-
-### Watching a migration from a client
-
-`AppVersionChanged` is per-context and only says a version already flipped.
-The rollout itself is announced on `NodeEvent::GroupMigration`, the sibling of `NodeEvent::GroupMembership`: keyed by the same `groupId`, delivered over the same SSE/WebSocket group subscription, behind the same effective-membership gate.
-A cascade descendant is never the key, because the id a client subscribes with is the namespace root, so every phase of a subtree rollout arrives under the root.
-
-| Payload `type` | Fires when | Carries |
-| --- | --- | --- |
-| `MigrationStarted` | a node folds the upgrade op | `fromVersion`, `toVersion`, `toStateVersion`, `localContextsTotal` |
-| `CascadeProgress` | a node advances its own context swaps for one subgroup | `subgroupId`, `localContextsSwapped`, `localContextsTotal` |
-| `MigrationProgress` | a peer's heartbeat changes the cohort rollup | `migrated`, `inProgress`, `unknown`, `failed`, `total` |
-| `MigrationCompleted` | every pinned cohort member has reported the target | `toVersion`, `completedAt` |
-
-Read `localContexts*` as "on the node that emitted this" and `total` on `MigrationProgress` as the pinned cohort size; the two are unrelated numbers, which is why neither is spelled `total` on the other.
-`MigrationProgress` carries counters and nothing else. The per-member detail behind them (who is still on the old version, who failed and why) stays in
-`GET /groups/:namespace_id/migration-status`, which requires admin authority over the namespace: the node's own for a node session, the delegated account's for an account served through a relay.
-`CascadeProgress` is the one payload that names a descendant subgroup, so it is delivered only to a subscriber holding that same admin authority: enumerating a `Restricted` subgroup is not something a plain member may do. The other three reach every subscribed member.
-
-Under lazy upgrades `completedAt` on the per-group upgrade row remains node-local and says nothing about the fleet.
-The cohort answer is the separate `fleetCompletedAt` field on `migration-status`, stamped once when a node watches every pinned member report the target version, and it is the same edge that fires `MigrationCompleted`.
-
-## The in-progress upgrade write gate
-
-A cascade upgrade spawns a propagator on the initiating node that walks each matched
-descendant group's contexts, migrating them one at a time. While that walk is mid-flight
-the group's upgrade row is `GroupUpgradeStatus::InProgress`, and a second fence - the
-execute write-gate - keeps a not-yet-migrated context from committing a write that would
-drift against group-mates already on the new schema.
-
-Only `InProgress` blocks, and the gate is deliberately narrow so it cannot deadlock the
-machinery that clears it:
-
-- **A direct (non-cascade) group upgrade** writes `Completed` immediately and never passes
-  through `InProgress`; its contexts migrate lazily on next access instead, so the group is
-  never write-frozen.
-- **The cascade propagator** - the task doing the migrating - **bypasses the execute gate**, so
-  the migration commits that retire `InProgress` are never blocked by it.
-
-(`upgrade_blocks_write`, `crates/context/src/handlers/execute/upgrade_gate.rs`.)
-
-The subtle part is that read-vs-write intent does not exist upstream — neither
-`ExecuteRequest`, the RPC layer, the SDK, nor the ABI carries a "this call writes" flag. So
-write-intent is derived **post-execution**:
-
-- A **state-op** is a known write — refused *before* execution with `UpgradeInProgress`.
-- A **user call** is allowed to execute against the **pre-migration root**, then judged on
-  what it produced: a committed `root_hash` or queued `xcalls` means it wrote, and it is
-  rejected after the fact; a pure read produced neither, so its result returns normally
-  (`upgrade_rejects_committed_write`, call site
-  `crates/context/src/handlers/execute/mod.rs`).
-
-So while a cascade propagator's walk is in flight, a context still serves reads from its old
-state and only side-effecting calls are turned away - for exactly as long as the `InProgress`
-window lasts.
-
-## Lazy upgrades: replaying the ladder hop by hop
-
-Nothing migrates at cascade-apply; a context reshapes its state on its
-**first access** afterward. A context idle through several releases can be many versions
-behind the group target — and it must **not** jump the latest edge against old state. Running
-`migrate_v2_to_v3` on still-`v1` bytes mis-decodes and panics. Instead the node replays the
-upgrade **ladder** one rung at a time: `v1→v2`, then `v2→v3`.
-
-Two facts decide what a stale context does (`maybe_lazy_upgrade`,
-`crates/context/src/handlers/execute/upgrade_gate.rs`):
-
-- The **activation marker** — `ContextActivatedBlob`, the bytecode blob this context last
-  *activated* (a migration commit, or a code-only swap), read via `activated_bytecode()`. A
-  context is up to date exactly when its marker equals the group's `bytecode_id`
-  (`crates/context/src/activation.rs`).
-- The **ladder** — the recorded sequence of upgrade rungs (`bytecode_id` paired with
-  `application_id`, plus that release's registry coordinates) the group has climbed. The
-  coordinates ride per rung so a context several versions behind fetches each intermediate
-  release from the registry, not only the newest one.
-
-| Context state | Action |
-| --- | --- |
-| Marker present, behind target | **Replay** the ladder from the marker's blob; each hop's migrate method is resolved from the two blobs' embedded ABIs — the group-level migration *hint* is never run on this arm |
-| No marker, installed row resolves to a blob ≠ target | **Replay** from that installed version (a fresh joiner several versions behind) |
-| No marker, version unresolvable or already at the target | **Single jump** to the target with the group-level migration hint |
-
-`next_rung` positions a context on the ladder by the **last** occurrence of its bound blob,
-so an `A→B→A` re-pin lands it on the later `A`. A bound blob the ladder never recorded (a
-creation version) starts at the first rung; an empty ladder yields no rung at all, and the
-call proceeds on the version the context already runs
-(`crates/context/src/activation.rs`). A rung is never synthesized: every rung is one an
-upgrade op actually recorded, so it always carries the coordinates its bytecode is fetched
-by. The call site seeds the marker to the replay's
-starting blob before running, binding execution to it, so a blocked hop strands the context
-on its real version rather than running target bytecode on un-migrated state.
-
-## Worked example: shipping v2 to a 3-node group
-
-A docs app's state is `DocV1 { entries, title }`. Release 2 adds a field:
-
-```rust
-#[app::state(version = 2)]
-#[derive(app::Migrate)]
-#[migrate(from = DocV1)]
-pub struct DocV2 {
-    entries: UnorderedMap<String, LwwRegister<String>>, // carried
-    title: LwwRegister<String>,                          // carried
-    #[migrate(new = LwwRegister::new("".to_owned()))]
-    notes: LwwRegister<String>,                          // additive
-}
-```
-
-Three nodes — `A`, `B`, `C` — run a context in one group. An admin on `A` ships v2 with
-`POST /groups/:id/upgrade`, emitting one `CascadeUpgrade` that replicates to all three.
-
-The `CascadeUpgrade` records the new target application plus the migration and stamps the
-`cascade_hlc` fence; nothing migrates yet, and every context reshapes its state on first
-access. `A` and `B`, which are actively used, migrate on their next context access: each runs
-`migrate_v1_to_v2` against its own byte-identical `v1` state, the `migration_check` (if any)
-passes, the `v2` root commits, and an `AppVersionChanged { fromVersion: "1", toVersion: "2" }`
-fires - the payload carries the application's own package version strings (this example's
-app happens to use bare `"1"`/`"2"` as its semver), not the `state_version` schema generation.
-`C`, idle, keeps `DocV1` bytes on disk until it is next accessed.
-
-**The lagging node.** Say `C` stays offline across a *second* release, v3. While `C` is
-behind, the `v2`/`v3`-schema deltas its migrated peers broadcast arrive under a schema that
-`C`'s loaded binary cannot read yet, so `C` **buffers** them — the fence keys on `C`'s own
-loaded reader and absorbs rather than drops. When `C` finally opens the context it is two
-versions behind with no activation marker, so the gate sees its installed blob differ from
-the v3 target and **replays the ladder** — `v1→v2` then `v2→v3` — rather than jumping
-`migrate_v2_to_v3` onto `v1` bytes. Once its binary reaches the target schema the buffered
-deltas replay verbatim.
-
-## Related
-
-- [CRDTs — How They Work](/protocol/crdt-internals/) — the per-type merge machinery
-  the convergence rule depends on, including why a migration must be deterministic.
-- [State & projection](/protocol/projection/) — how the root and child entries are
-  Merkle-folded, which is what the convergence rule preserves.
-- [SDK macros](/build/sdk-macros/) — the `#[app::state]`, `#[app::migrate]`,
-  `#[app::migration_check]`, and `#[derive(Migrate)]` attribute surface.
-- [meroctl](/operate/meroctl/) — driving and observing upgrades from the CLI.
+| Same version | Code-only: switch the bundle, run nothing |
+| One version up | Run the target's `#[app::migrate]` edge from the current version |
+| Down | Refused: no silent downgrade |
+| More than one up | Refused: upgrade one version at a time |
+| One up, no edge from the current version | Refused |
+| One side embeds an ABI and the other does not | Refused |
+| Neither embeds an ABI | Code-only |
+
+## Running it
+
+The upgrade is an entry in the app's own log, so it is ordered against the
+app's calls: every call before it ran on the old code, every call after it runs
+on the new.
+
+1. The leader runs the migration export on the target bundle over the current
+   state (`Executor::migrate`). The export returns the new root state (borsh).
+2. If the target exports `__calimero_migration_check`, it runs over the migrated
+   state and an optional **witness** the migration returned (a value the new
+   schema no longer keeps). It must return `true`; anything else, or a trap,
+   refuses the upgrade. Whatever the check writes is dropped, and the witness is
+   never stored.
+3. A migration that addresses the host's key space is refused.
+4. The host writes the returned state as the app's root entry, stamped after
+   whatever the root entry held so it wins (`write_root_state`), and the
+   writes become the entry's diff.
+5. The leader appends `AppCmd::Upgrade { bundle, base_index, outcome }`. Every
+   replica applies the diff and, if the outcome succeeded, switches to the new
+   bundle. As with every entry, followers do not run the migration.
+6. Only then does the node record the new bundle in the system directory
+   (`UpgradeApp`, which checks the upgrader's authority again and notes
+   `lastUpgrade`).
+
+A migration runs once, on the leader. In v1 every node ran it lazily on first
+access and had to reach a byte-identical result, which needed the stale-schema
+delta fence and a write gate during upgrades; a single ordered log needs
+neither.
+
+## Failure
+
+A refused plan, a failing migration or a failing check leaves the app on its
+bundle with its state untouched. The node answers `422 UPGRADE_FAILED` with the
+reason and records it on the instance (`UpgradeFailed` sets the app's `lastUpgrade` with
+`ok: false` and the error), so a client can see why.
+
+## Organization-wide upgrade runs
+
+v1's group upgrade with cascade became an **upgrade run**: every app of an
+organization that runs `package` — or only a team's apps, and with `cascade`
+the apps of the teams below it — moved to `version`.
+
+- **Start.** `POST /orgs/{org}/upgrade { package, version, team?, cascade?, migrate? }`
+  by the organization's owner, with one passkey step-up for the whole run; or
+  `POST /ops/orgs/{org}/upgrade` where the operator holds app upgrades. A
+  release missing from the cluster is installed from the registry first (owner
+  runs).
+- **Record.** `StartUpgradeRun` stores an `UpgradeRun` on the organization (run id,
+  package, version, team, cascade, who started it, its apps, which are done and
+  which failed, and whether it finished); the organization keeps its newest 20
+  runs.
+- **Progress.** A background task on the node that started it upgrades the apps
+  one by one; each `UpgradeApp` or `UpgradeFailed` notes the app on the run and
+  on the instance. An app already on the target bundle is recorded as done.
+  `FinishUpgradeRun` marks the end.
+- **Follow and retry.** `GET /orgs/{org}/upgrades/{run}` shows the run;
+  `POST …/retry` starts a new run over the apps that failed.
+
+The task lives in the memory of the node that started it: if that node stops
+mid-run, the run stays unfinished and the remaining apps are not upgraded until
+a retry or a new run.
+
+## Upgrading the cluster itself
+
+Moving nodes to a new mero-tee release is not an app upgrade: it is a new node
+image. Nodes on the new release join the cluster, but receive an app's data
+only once that app's approver has approved the release
+([Release approvals](/protocol/governance/#release-approvals)). App frontends
+follow the package: `{label}.{apps-domain}/` serves the newest installed
+release.

@@ -1,391 +1,391 @@
-use std::backtrace::Backtrace;
-use std::env::var;
-use std::panic::{set_hook, take_hook};
+//! `merod`: the Calimero node. v1's command line (`--home`, `--node`, `init`,
+//! `run`, `config`, `kms`) over the node (`calimero-node`):
+//! attested, one Raft log per app.
 
-use calimero_utils_actix::init_global_runtime;
-use clap::Parser;
-use eyre::Result as EyreResult;
-use tracing_subscriber::fmt::layer;
-use tracing_subscriber::prelude::*;
-use tracing_subscriber::{registry, EnvFilter};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
-mod cli;
-mod defaults;
-mod kms;
-mod kms_policy;
-mod version;
-mod watchdog;
+use calimero_client::Measurements;
+use calimero_node::attest::Mode;
+use calimero_node::system::{Authority, Governance};
+use calimero_node::{kms, run, Config};
+use clap::{Args, Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 
-use cli::RootCommand;
+mod node_config;
 
-#[tokio::main]
-async fn main() -> EyreResult<()> {
-    // Used by integration tests to verify panic hook logs structured info without panicking in-process.
-    match std::env::var("MEROD_TEST_PANIC").as_deref() {
-        Ok("1") => {
-            setup()?;
-            panic!("test panic message");
-        }
-        Ok("string") => {
-            setup()?;
-            std::panic::panic_any(String::from("string payload panic"));
-        }
-        _ => {}
-    }
+use node_config::NodeArgs;
 
-    setup()?;
-
-    let command = RootCommand::parse();
-
-    version::check_for_update();
-
-    command.run().await
+#[derive(Debug, Parser)]
+#[command(
+    name = "merod",
+    version,
+    about = "Calimero node: attested, one Raft log per app"
+)]
+struct Cli {
+    /// Directory for nodes' configuration and data.
+    #[arg(long, env = "CALIMERO_HOME", default_value_os_t = default_home())]
+    home: PathBuf,
+    /// The node: its configuration is `{home}/{node}/config.toml`, its data
+    /// `{home}/{node}/data` unless configured otherwise.
+    #[arg(long, env = "MEROD_NODE_NAME")]
+    node: Option<String>,
+    #[command(subcommand)]
+    cmd: Cmd,
 }
 
-/// The filter used when `RUST_LOG` says nothing.
-///
-/// `mero_auth` is included so embedded-auth startup messages (notably the
-/// how-to-provision notice on an un-provisioned node) are visible by default.
-const DEFAULT_DIRECTIVES: &str = "merod=info,calimero_=info,mero_auth=info";
-
-/// Targets turned down ahead of every filter, so that a blanket `RUST_LOG=debug`
-/// still produces a log a human can read.
-///
-/// Measured over both node logs of one healthy e2e run (4.87 MB): together these
-/// three are 40.8% of the bytes, and none of them describe anything the node did.
-///
-/// - `cranelift_codegen` (31.2%, 7,808 lines) — the wasm compiler narrating its
-///   own optimisation passes, function by function; compiling one app emits
-///   ~7,800 lines in ~400ms. Volume is not the worst of it. The burst lands
-///   *during* a compile, so it is what the log consists of at exactly the moment
-///   a node that dies inside `create_context` has to be explained from its log
-///   alone.
-/// - `multistream_select` (6.2%, 896 lines) — protocol negotiation announcing
-///   every success four times over (proposed, confirming, sent confirmed,
-///   received confirmation) for protocols that were never in doubt. A
-///   negotiation that genuinely fails still surfaces as a swarm-level upgrade or
-///   connection error, which is not touched here.
-/// - `libp2p_core::transport::choice` (3.3%, 18 lines at ~9 KB each) — which
-///   transport in the list did not handle an address, spelling out the entire
-///   monomorphised transport type to say so. Trying each transport in turn is how
-///   that transport works, so this is routine. Scoped to the one module: its
-///   sibling `libp2p_core::upgrade` reports real TLS/noise upgrade failures.
-///
-/// `warn` rather than `off`: none of the three has said anything at warn or above
-/// in 6.6 MB of captured logs, so the entire flood sits below that line and
-/// leaving the level open costs nothing if one of them ever has something real to
-/// report.
-///
-/// A target-specific directive beats a blanket level regardless of order, which
-/// is what lets `RUST_LOG=debug` keep everything else. Naming one of these
-/// targets explicitly drops our entry for it entirely — see `log_directives`,
-/// which will not emit two directives for one target.
-///
-/// Deliberately NOT included, despite being the next largest: `libp2p_gossipsub`
-/// (12.1%) is mesh formation — `HEARTBEAT: Mesh low`, `Updating mesh`, peer
-/// counts — which is the evidence mesh-join and mesh-scoring bugs are diagnosed
-/// from, and `libp2p_swarm`'s connection-closed lines are how a peer's death is
-/// spotted at all.
-const QUIET_TARGETS: [&str; 3] = [
-    "cranelift_codegen",
-    "multistream_select",
-    "libp2p_core::transport::choice",
-];
-
-/// The level the quieted targets are held at. `warn` rather than `off` so a
-/// genuine complaint from one of them still arrives.
-const QUIET_LEVEL: &str = "warn";
-
-/// The target a single `RUST_LOG` directive applies to, or `None` for a bare
-/// level like `debug`.
-///
-/// Only the target is needed, so this stops at the first `=` and drops any
-/// `[span{field}]` part rather than trying to model the whole grammar.
-fn directive_target(directive: &str) -> Option<&str> {
-    let head = directive.split('=').next().unwrap_or("").trim();
-    let head = head.split('[').next().unwrap_or("").trim();
-
-    // A bare level is not a target, and is exactly the case the quieting exists
-    // for — it must not count as the operator having asked about these targets.
-    if head.is_empty() || head.parse::<tracing::Level>().is_ok() || head.eq_ignore_ascii_case("off")
-    {
-        return None;
-    }
-
-    Some(head)
+#[derive(Debug, Subcommand)]
+enum Cmd {
+    /// Write the node's configuration. Every `run` flag can be set here.
+    Init {
+        #[command(flatten)]
+        node: NodeArgs,
+        /// Replace an existing configuration.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Start the node from its configuration; flags given here override it
+    /// for this run (so a container can run with flags and no `init`).
+    Run {
+        #[command(flatten)]
+        node: NodeArgs,
+    },
+    /// Change the node's configuration (the flags given), then print it.
+    Config {
+        #[command(flatten)]
+        node: NodeArgs,
+    },
+    /// A development cluster in this process.
+    Local(LocalArgs),
+    /// What a stopped node's data directory holds (v1's `merodb`).
+    Inspect(InspectArgs),
+    /// The data-disk key from mero-kms (for a TEE boot script).
+    #[command(subcommand)]
+    Kms(KmsCmd),
 }
 
-/// Builds the tracing filter from `RUST_LOG`, or the default when it is unset
-/// or blank.
-///
-/// A quieted target is dropped from the prefix when `RUST_LOG` names that exact
-/// target, so the result never carries two directives for one target. That is
-/// not a tidiness point: which of two same-target directives wins is not
-/// something `EnvFilter` documents, and depending on it made
-/// `RUST_LOG=cranelift_codegen=debug` work on one platform and silently not on
-/// another. With one directive per target there is nothing to resolve.
-///
-/// A *more specific* target is left alone — `cranelift_codegen::context=debug`
-/// alongside our `cranelift_codegen=warn` is unambiguous, because a longer
-/// target always wins — so asking for one module back does not un-quiet the
-/// rest of the crate.
-fn log_directives(rust_log: Option<&str>) -> String {
-    let requested = match rust_log {
-        Some(value) if !value.trim().is_empty() => value,
-        _ => DEFAULT_DIRECTIVES,
+#[derive(Debug, Subcommand)]
+enum KmsCmd {
+    DiskKey(calimero_kms_client::disk_key::KmsDiskKeyCommand),
+}
+
+fn default_home() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".calimero")
+}
+
+/// `merod local`: a development cluster in this process.
+#[derive(Debug, Args)]
+struct LocalArgs {
+    /// How many nodes.
+    #[arg(long, default_value_t = 3)]
+    nodes: u64,
+    /// Node i listens on base-port + i.
+    #[arg(long, default_value_t = 2500)]
+    base_port: u16,
+    /// Where the cluster keeps its state (kept across restarts).
+    #[arg(long, default_value = ".merod-local")]
+    dir: PathBuf,
+    /// Start from empty state.
+    #[arg(long)]
+    fresh: bool,
+    /// The Ops API token (default: a new random one, printed).
+    #[arg(long, env = "MEROD_OPS_TOKEN")]
+    ops_token: Option<String>,
+    /// The package registry the cluster installs from.
+    #[arg(long, env = "MEROD_REGISTRY_URL")]
+    registry_url: Option<String>,
+    /// Origins allowed to run passkey ceremonies.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "http://localhost:3000,http://localhost:5173"
+    )]
+    origins: Vec<String>,
+}
+
+/// `merod inspect`: read offline. Without the storage key it reads the raw
+/// layout only (sizes are sealed sizes); with it, each group's metadata
+/// (vote, applied index, membership) too. Stop the node first: the store is
+/// opened for writing.
+#[derive(Debug, Args)]
+struct InspectArgs {
+    /// The data directory (default: the `--node`'s).
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    /// The storage key K_r, hex, in a file.
+    #[arg(long)]
+    storage_key_file: Option<PathBuf>,
+}
+
+fn inspect(data_dir: &Path, args: &InspectArgs) -> eyre::Result<()> {
+    let key: Option<[u8; 32]> = match &args.storage_key_file {
+        Some(path) => Some(
+            hex::decode(std::fs::read_to_string(path)?.trim())?
+                .try_into()
+                .map_err(|_| eyre::eyre!("the storage key must be 32 bytes"))?,
+        ),
+        None => None,
     };
-
-    let spoken_for: Vec<&str> = requested.split(',').filter_map(directive_target).collect();
-
-    let mut directives: Vec<String> = QUIET_TARGETS
-        .iter()
-        .filter(|target| !spoken_for.contains(*target))
-        .map(|target| format!("{target}={QUIET_LEVEL}"))
-        .collect();
-
-    directives.push(requested.to_owned());
-    directives.join(",")
-}
-
-fn setup() -> EyreResult<()> {
-    let directives = log_directives(var("RUST_LOG").ok().as_deref());
-
-    registry()
-        .with(EnvFilter::builder().parse(directives)?)
-        .with(layer())
-        .init();
-
-    color_eyre::install()?;
-
-    // Must be called after color_eyre::install() to chain to its panic handler
-    setup_panic_hook();
-
-    init_global_runtime()?;
-
+    let out = calimero_node::inspect::inspect(data_dir, key)?;
+    println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
 
-/// Sets up a custom panic hook that logs structured panic information.
-///
-/// This hook captures and logs the panic message, thread name, source location,
-/// and backtrace before delegating to the previous panic handler. This provides
-/// better crash diagnostics for investigation.
-///
-/// # Note
-///
-/// - Backtraces are always captured regardless of `RUST_BACKTRACE` setting to
-///   ensure crash diagnostics are available in all environments.
-/// - Panic messages are logged as-is. Avoid including sensitive data (tokens,
-///   passwords, keys) in panic messages as they will appear in logs.
-fn setup_panic_hook() {
-    let prev_hook = take_hook();
-
-    set_hook(Box::new(move |panic_info| {
-        let message = panic_info
-            .payload()
-            .downcast_ref::<&str>()
-            .copied()
-            .or_else(|| {
-                panic_info
-                    .payload()
-                    .downcast_ref::<String>()
-                    .map(String::as_str)
-            })
-            .unwrap_or("<no message>");
-
-        let thread = std::thread::current();
-        let thread_name = thread.name().unwrap_or("<unnamed>");
-
-        let (file, line, column) = panic_info
-            .location()
-            .map(|loc| (loc.file(), loc.line(), loc.column()))
-            .unwrap_or(("<unknown>", 0, 0));
-
-        let backtrace = Backtrace::force_capture();
-
-        tracing::error!(
-            panic.message = %message,
-            panic.thread = %thread_name,
-            panic.file = %file,
-            panic.line = %line,
-            panic.column = %column,
-            panic.backtrace = %backtrace,
-            "Application panic occurred"
-        );
-
-        prev_hook(panic_info);
-    }));
+async fn local(args: LocalArgs) -> eyre::Result<()> {
+    if args.fresh && args.dir.exists() {
+        std::fs::remove_dir_all(&args.dir)?;
+    }
+    let token = args
+        .ops_token
+        .unwrap_or_else(|| hex::encode(calimero_identity::random::<16>()));
+    let cluster = calimero_node::local::start(
+        args.nodes,
+        args.base_port,
+        &args.dir,
+        &token,
+        args.origins,
+        args.registry_url,
+    )
+    .await?;
+    println!(
+        "Local cluster \"{}\" (development: mock attestation, dev storage key)",
+        calimero_node::local::CLUSTER
+    );
+    for (i, url) in cluster.urls.iter().enumerate() {
+        println!("  node {}  {url}", i + 1);
+    }
+    println!("  state     {}", args.dir.display());
+    println!("  ops token {token}");
+    println!();
+    println!("  meroctl node add local {} --allow-mock", cluster.urls[0]);
+    println!("  meroctl --node local login --dev-passkey ./dev-passkey.json");
+    tokio::signal::ctrl_c().await?;
+    cluster.stop().await;
+    Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use std::io::{Result as IoResult, Write};
-    use std::sync::{Arc, Mutex};
+/// The `[outbound]` table of the configuration (or of `--settings`).
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct Settings {
+    outbound: calimero_outbound::OutboundSettings,
+}
 
-    use super::{log_directives, DEFAULT_DIRECTIVES, QUIET_TARGETS};
-    use tracing_subscriber::fmt::layer;
-    use tracing_subscriber::prelude::*;
-    use tracing_subscriber::{registry, EnvFilter};
+fn read_settings(path: &Path) -> eyre::Result<calimero_outbound::OutboundSettings> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| eyre::eyre!("reading {}: {e}", path.display()))?;
+    let settings: Settings =
+        toml::from_str(&text).map_err(|e| eyre::eyre!("{}: {e}", path.display()))?;
+    Ok(settings.outbound)
+}
 
-    /// The resolved filter, as `EnvFilter` itself reports it.
-    ///
-    /// Assertions run against this rather than against emitted output. Emission
-    /// depends on process-global state — `tracing` caches a per-callsite decision
-    /// the first time a callsite runs, and the max-level hint is shared — so tests
-    /// that emit through the same callsites are order- and parallelism-sensitive,
-    /// which is how the previous version of this suite passed locally and failed
-    /// in CI. `EnvFilter`'s own `Display` is a pure function of the directives.
-    fn resolved(directives: &str) -> String {
-        EnvFilter::builder()
-            .parse(directives)
-            .expect("directives must parse")
-            .to_string()
+fn need_node(home: Option<&PathBuf>, what: &str) -> eyre::Result<PathBuf> {
+    home.cloned()
+        .ok_or_else(|| eyre::eyre!("{what} needs the node: --node NAME"))
+}
+
+/// The configuration `run` starts from: the node's file, then the flags.
+fn effective(home: Option<&PathBuf>, given: NodeArgs) -> eyre::Result<NodeArgs> {
+    let Some(home) = home else {
+        return Ok(given);
+    };
+    let file = node_config::path(home);
+    if !file.exists() {
+        return Ok(given);
     }
+    Ok(given.over(node_config::read(&file)?))
+}
 
-    #[test]
-    fn a_blanket_level_keeps_the_quieted_targets_quiet() {
-        let filter = resolved(&log_directives(Some("debug")));
+fn authority(a: Option<Authority>) -> Authority {
+    a.unwrap_or(Authority::Owner)
+}
 
-        for target in QUIET_TARGETS {
-            assert!(
-                filter.contains(&format!("{target}=warn")),
-                "{target} must be held at warn under a blanket debug, got: {filter}"
+async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
+    let node_id = args.node_id.ok_or_else(|| {
+        eyre::eyre!("the node's id is not set: merod --node NAME init --node-id N ...")
+    })?;
+    let public_url = args
+        .public_url
+        .clone()
+        .ok_or_else(|| eyre::eyre!("the node's public URL is not set: --public-url URL"))?;
+    let data_dir = args
+        .data_dir
+        .clone()
+        .or_else(|| home.map(|h| h.join("data")))
+        .ok_or_else(|| eyre::eyre!("no data directory: --data-dir DIR (or --node NAME)"))?;
+    let dev = args.dev.unwrap_or(false);
+    let cluster = args.cluster.clone().unwrap_or_else(|| "dev".to_owned());
+    let mut peers = BTreeMap::new();
+    for p in &args.peers {
+        let (id, url) = p
+            .split_once('=')
+            .ok_or_else(|| eyre::eyre!("peer must be id=url: {p}"))?;
+        let _prev = peers.insert(id.parse()?, url.to_owned());
+    }
+    if args.kms_url.is_some() != args.kms_identity.is_some() {
+        eyre::bail!("mero-kms needs both --kms-url and --kms-identity");
+    }
+    let kms_args = args.kms_url.as_deref().zip(args.kms_identity.as_deref());
+    let storage_key: [u8; 32] = match kms::key_source(
+        dev,
+        args.storage_key.as_deref(),
+        args.storage_key_file.as_deref(),
+        kms_args,
+    )? {
+        kms::KeySource::Raw(hex_key) => hex::decode(hex_key)?
+            .try_into()
+            .map_err(|_| eyre::eyre!("storage key must be 32 bytes"))?,
+        kms::KeySource::File(path) => kms::derive_storage_key(&kms::read_key_file(path)?, &cluster),
+        kms::KeySource::Kms { url, identity } => {
+            kms::derive_storage_key(&kms::fetch(url, identity).await?, &cluster)
+        }
+        kms::KeySource::Dev => {
+            calimero_identity::sha256(format!("calimero-dev-storage-key|{cluster}").as_bytes())
+        }
+    };
+    let peer_measurements = if dev {
+        Measurements::None
+    } else {
+        let profiles = if args.peer_profiles.is_empty() {
+            args.tee_profile.clone().into_iter().collect()
+        } else {
+            args.peer_profiles.clone()
+        };
+        if args.tee_release.is_none() || profiles.is_empty() {
+            eyre::bail!(
+                "a TDX node needs MERO_TEE_VERSION and MERO_TEE_PROFILE (or --peer-profiles) \
+                 to judge its peers' quotes"
             );
         }
-        assert!(
-            filter.contains("debug"),
-            "the blanket level must survive, got: {filter}"
-        );
-    }
-
-    /// The bug this replaces: the quiet prefix and the operator's own directive
-    /// both named the same target, and which one won was left to `EnvFilter`.
-    #[test]
-    fn naming_a_target_replaces_our_directive_rather_than_competing_with_it() {
-        for target in QUIET_TARGETS {
-            let directives = log_directives(Some(&format!("{target}=debug")));
-
-            assert!(
-                !directives.contains(&format!("{target}=warn")),
-                "{target} must not appear twice with two levels, got: {directives}"
-            );
-            assert_eq!(
-                directives.matches(target).count(),
-                1,
-                "{target} must appear exactly once, got: {directives}"
-            );
-            assert!(
-                resolved(&directives).contains(&format!("{target}=debug")),
-                "{target} must end up at debug, got: {}",
-                resolved(&directives)
-            );
+        Measurements::Release {
+            allowed_profiles: profiles,
+            min_version: args.peer_min_release.clone(),
         }
-    }
+    };
+    let outbound = match (&args.settings, &args.outbound) {
+        (Some(path), _) => Some(read_settings(path)?),
+        (None, o) => o.clone(),
+    };
+    let config = Config {
+        node_id,
+        public_url,
+        listen: args.listen.unwrap_or_else(|| ([0, 0, 0, 0], 2528).into()),
+        data_dir,
+        peers,
+        bootstrap: args.bootstrap.unwrap_or(false),
+        cluster,
+        storage_key,
+        attestation: if dev { Mode::Mock } else { Mode::Tdx },
+        allow_mock_peers: dev,
+        sealed_required: !dev,
+        rp_id: args.rp_id.clone().unwrap_or_else(|| "localhost".to_owned()),
+        origins: if args.origins.is_empty() {
+            vec!["http://localhost:3000".to_owned()]
+        } else {
+            args.origins.clone()
+        },
+        release: env!("CARGO_PKG_VERSION").to_owned(),
+        ops_token: args.ops_token.clone(),
+        ops_token_sha256: args.ops_token_sha256.clone(),
+        metrics_listen: args.metrics_listen,
+        replicas: args.replicas.unwrap_or(3),
+        backup_dir: args.backup_dir.clone(),
+        raft: calimero_log::Config::default(),
+        session_key_rotation_secs: args.session_key_rotation_secs.unwrap_or(6 * 3600).max(1800),
+        read_wait: std::time::Duration::from_secs(2),
+        tee_release: args.tee_release.clone(),
+        tee_profile: args.tee_profile.clone(),
+        peer_measurements,
+        clock_offset_ms: 0,
+        budget: None,
+        registry: args.registry_url.clone(),
+        allow_unsigned_bundles: args.allow_unsigned_bundles.unwrap_or(false) || dev,
+        outbound: outbound
+            .map(|o| calimero_outbound::OutboundService::from_settings(&o))
+            .transpose()?
+            .flatten(),
+        apps_domain: args
+            .apps_domain
+            .as_ref()
+            .map(|d| d.trim_matches('.').to_ascii_lowercase()),
+        governance: Governance {
+            releases: authority(args.release_approvals),
+            app_upgrades: authority(args.app_upgrades),
+            outbound: authority(args.outbound_approvals),
+        },
+    };
+    let running = run(config).await?;
+    tokio::signal::ctrl_c().await?;
+    running.stop().await;
+    Ok(())
+}
 
-    /// Asking for one module back must not un-quiet the whole crate: a longer
-    /// target always wins in `EnvFilter`, so both directives can coexist.
-    #[test]
-    fn a_more_specific_target_is_added_without_dropping_the_quieting() {
-        let directives = log_directives(Some("cranelift_codegen::context=debug"));
-
-        assert!(
-            directives.contains("cranelift_codegen=warn"),
-            "the crate-wide quieting must stay, got: {directives}"
-        );
-
-        let filter = resolved(&directives);
-        assert!(
-            filter.contains("cranelift_codegen::context=debug"),
-            "the requested module must be at debug, got: {filter}"
-        );
-        assert!(
-            filter.contains("cranelift_codegen=warn"),
-            "the rest of the crate must stay at warn, got: {filter}"
-        );
-    }
-
-    #[test]
-    fn an_unset_or_blank_rust_log_falls_back_to_the_defaults() {
-        for unset in [None, Some(""), Some("   ")] {
-            let directives = log_directives(unset);
-
-            assert!(
-                directives.ends_with(DEFAULT_DIRECTIVES),
-                "{unset:?} must fall back to the defaults, got: {directives}"
-            );
-            for target in QUIET_TARGETS {
-                assert!(
-                    directives.contains(&format!("{target}=warn")),
-                    "{target} must be quiet by default too, got: {directives}"
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
+    let cli = Cli::parse();
+    // A local cluster's nodes start one after another, so openraft reports the
+    // ones not up yet; that is noise for a developer (RUST_LOG still overrides).
+    let default_filter = if matches!(cli.cmd, Cmd::Local(_)) {
+        "warn,openraft=off"
+    } else {
+        "info,openraft=warn"
+    };
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| default_filter.into()),
+        )
+        .init();
+    let home = cli.node.as_ref().map(|n| cli.home.join(n));
+    let name = cli.node.clone().unwrap_or_default();
+    match cli.cmd {
+        Cmd::Init { node, force } => {
+            let home = need_node(home.as_ref(), "init")?;
+            let file = node_config::path(&home);
+            if file.exists() && !force {
+                eyre::bail!(
+                    "{} exists: `merod --node {name} config ...` changes it, `init --force` replaces it",
+                    file.display(),
                 );
             }
-        }
-    }
-
-    /// One emission test, kept because the levels above are only worth anything
-    /// if they actually gate output. It is a single test with one callsite per
-    /// case, so no callsite's cached decision can leak between cases, and it does
-    /// not race the tests above because they never emit.
-    #[test]
-    fn the_levels_gate_real_output() {
-        struct Buffer(Arc<Mutex<Vec<u8>>>);
-
-        impl Write for Buffer {
-            fn write(&mut self, bytes: &[u8]) -> IoResult<usize> {
-                self.0
-                    .lock()
-                    .expect("log buffer poisoned")
-                    .extend_from_slice(bytes);
-                Ok(bytes.len())
+            if node.node_id.is_none() || node.public_url.is_none() {
+                eyre::bail!("init needs at least --node-id and --public-url");
             }
-
-            fn flush(&mut self) -> IoResult<()> {
-                Ok(())
+            std::fs::create_dir_all(home.join("data"))?;
+            node_config::write(&file, &node)?;
+            println!("{}", file.display());
+            Ok(())
+        }
+        Cmd::Config { node } => {
+            let home = need_node(home.as_ref(), "config")?;
+            let file = node_config::path(&home);
+            if !file.exists() {
+                eyre::bail!("{} does not exist: run `merod init` first", file.display());
             }
+            let merged = node.over(node_config::read(&file)?);
+            node_config::write(&file, &merged)?;
+            print!("{}", std::fs::read_to_string(&file)?);
+            Ok(())
         }
-
-        fn capture(directives: &str, emit: impl FnOnce()) -> String {
-            let buffer = Arc::new(Mutex::new(Vec::new()));
-            let sink = Arc::clone(&buffer);
-
-            let subscriber = registry()
-                .with(
-                    EnvFilter::builder()
-                        .parse(directives)
-                        .expect("directives must parse"),
-                )
-                .with(
-                    layer()
-                        .with_ansi(false)
-                        .with_writer(move || Buffer(Arc::clone(&sink))),
-                );
-
-            tracing::subscriber::with_default(subscriber, emit);
-
-            let bytes = buffer.lock().expect("log buffer poisoned").clone();
-            String::from_utf8(bytes).expect("formatted output must be utf-8")
+        Cmd::Run { node } => {
+            let args = effective(home.as_ref(), node)?;
+            start(home, args).await
         }
-
-        // Under a blanket debug: the compiler's chatter is gone, a warning from
-        // the same target still arrives, and the node's own lines are untouched.
-        let output = capture(&log_directives(Some("debug")), || {
-            tracing::debug!(target: "cranelift_codegen::context", "quieted chatter");
-            tracing::warn!(target: "cranelift_codegen::context", "quieted complaint");
-            tracing::debug!(target: "libp2p_gossipsub::behaviour", "HEARTBEAT: Mesh low");
-            tracing::info!(target: "calimero_node::sync", "performing interval sync");
-        });
-
-        assert!(!output.contains("quieted chatter"), "got: {output}");
-        assert!(output.contains("quieted complaint"), "got: {output}");
-        assert!(output.contains("HEARTBEAT: Mesh low"), "got: {output}");
-        assert!(output.contains("performing interval sync"), "got: {output}");
-
-        // Naming the target opts its debug output back in. A distinct callsite
-        // from the one above, on purpose.
-        let output = capture(&log_directives(Some("cranelift_codegen=debug")), || {
-            tracing::debug!(target: "cranelift_codegen::context", "requested chatter");
-        });
-
-        assert!(output.contains("requested chatter"), "got: {output}");
+        Cmd::Local(args) => local(args).await,
+        Cmd::Inspect(args) => {
+            let data_dir = match &args.data_dir {
+                Some(d) => d.clone(),
+                None => {
+                    let h = need_node(home.as_ref(), "inspect")?;
+                    effective(home.as_ref(), NodeArgs::default())?
+                        .data_dir
+                        .unwrap_or_else(|| h.join("data"))
+                }
+            };
+            inspect(&data_dir, &args)
+        }
+        Cmd::Kms(KmsCmd::DiskKey(cmd)) => cmd.run().await,
     }
 }

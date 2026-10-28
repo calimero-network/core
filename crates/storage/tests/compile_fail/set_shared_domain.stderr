@@ -1,0 +1,21 @@
+error[E0599]: no method named `set_shared_domain` found for mutable reference `&mut calimero_storage::Element` in the current scope
+  --> tests/compile_fail/set_shared_domain.rs:14:23
+   |
+14 |     map.element_mut().set_shared_domain(BTreeSet::new());
+   |                       ^^^^^^^^^^^^^^^^^
+   |
+help: there is a method `set_shared_member_domain` with a similar name
+   |
+14 |     map.element_mut().set_shared_member_domain(BTreeSet::new());
+   |                                  +++++++
+
+error[E0624]: method `set_shared_domain_scoped` is private
+  --> tests/compile_fail/set_shared_domain.rs:15:23
+   |
+15 |     map.element_mut().set_shared_domain_scoped(BTreeMap::new());
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^ private method
+   |
+  ::: src/entities.rs
+   |
+   |     pub(crate) fn set_shared_domain_scoped(&mut self, writers: BTreeMap<AccountId, OpMask>) {
+   |     --------------------------------------------------------------------------------------- private method defined here

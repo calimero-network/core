@@ -1,592 +1,171 @@
 ---
 title: Hardening & Security
-description: Lock down a merod node — auth modes, keeping the admin API private, TLS termination, key storage, and the mock-TEE warning.
+description: What a merod cluster protects and from whom — TDX mode versus --dev, the storage key, how peers and clients judge quotes, governance, the ops token, outbound secrets, and a checklist.
 sidebar:
   order: 12
 ---
 
-import { Steps, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Aside } from '@astrojs/starlight/components';
 
-This page collects the security-relevant decisions for running a `merod` node:
-how authentication is enforced, what must never face the public internet, where
-the node's keys live, and which development-only switches are unsafe in
-production. Configuration keys and CLI flags referenced here are documented in
-full on the [config reference](/operate/config/) and the
-[merod reference](/operate/merod/); the edge/TLS setup is covered end-to-end on
-the [deployment guide](/operate/deployment/).
+A Calimero cluster is built so that whoever runs the machines, Calimero
+included, cannot read apps' data. This page says what holds that up, what an
+operator controls, and which settings break it.
 
-## Authentication modes
+## What the operator can and cannot see
 
-The HTTP server (admin API, JSON-RPC, WebSocket, SSE) is gated by a single
-`server.auth_mode` setting. There are two modes, and the default is `proxy`.
+| The operator can | The operator cannot |
+| --- | --- |
+| Start, stop and place nodes; move app replicas between nodes | Read app state, blobs, account names or credentials: the Ops API has no read path into them |
+| See counts, Raft status and placement (`/ops/status`, `/ops/metrics`) | Open the disks: they are sealed under a key only an attested TD receives |
+| Set quotas and trigger backups | Open a backup: snapshots are sealed under the same key |
+| Make the governance decisions the deployment gave the operator | Make the ones it gave the owners |
 
-| Mode | What it means | Where auth is enforced |
+This holds only for TDX-mode nodes running a mero-tee image the users' clients
+trust. Everything below is about keeping it so.
+
+## What an organization's admins can see
+
+An organization's data is the organization's, as with any workplace tool.
+Private storage keeps a member's data from other members, the operator and
+Calimero, not from the organization: its admins choose which code its apps
+run, so they can reach what those apps hold, members' private data included.
+Tell members so where they join, for example: "Admins of this organization can read your data in its
+apps."
+
+An app a person deploys outside any organization has no admin: only its
+owner reaches it.
+
+## TDX mode and development mode
+
+| | TDX mode (default) | `--dev` |
 | --- | --- | --- |
-| `proxy` (default) | The node does **not** authenticate requests itself. It expects an external authenticating proxy in front of it. | At your reverse proxy / auth proxy. |
-| `embedded` | The node runs the bundled auth service (`mero-auth`) in-process and validates JWTs itself. | Inside the node (see [Auth service & providers](/operate/auth/)). |
+| Quotes | Real TDX quotes (configfs-tsm) | Mock quotes, which no client trusts unless told to |
+| Peers | Must present real quotes matching `--peer-profiles` | Mock peers accepted |
+| Storage key | From mero-kms only | `--storage-key`, `--storage-key-file`, or a key derived from the cluster name |
+| Plain requests | Refused, except `/health` and `/attestation` | Accepted |
+| Raw WASM uploads | Refused unless `--allow-unsigned-bundles` | Accepted |
 
-:::caution
-`proxy` is the default, and on its own it enforces **nothing**. A node started
-with `auth_mode = "proxy"` and a server bind reachable off-host exposes
-unauthenticated node administration. In `proxy` mode you are responsible for
-putting an authenticating proxy in front of the server bind; in `embedded` mode
-the node validates tokens but you still terminate TLS at the edge.
+A `--dev` node's development key is `SHA-256("calimero-dev-storage-key|" +
+cluster)`: anyone can compute it. Never put real data on a `--dev` node.
 
-The node's `Host` and `Origin` check admits every loopback page, so in `proxy` mode any page served from localhost can call the admin API.
-Use `proxy` mode only on a development machine or behind a proxy that checks every caller.
-:::
+## The storage key
 
-You can set the mode at init (`merod init --auth-mode embedded`), in
-`config.toml` (`server.auth_mode`), or override it for a single run
-(`merod run --auth-mode embedded`).
+- K_r is derived from the KMS key and `--cluster`; every value on disk and every
+  snapshot is AES-256-GCM sealed under it, bound to its column, group and key.
+- A TDX node takes the KMS key from mero-kms only, after mero-kms checks the
+  node's quote, and only after the node checks mero-kms's quote against the
+  signed release policy. `--storage-key` and `--storage-key-file` are refused
+  without `--dev`.
+- The disk identity (`--kms-identity`) is shared by the cluster's nodes. It is
+  the handle mero-kms derives the key for; it is not the key, and a host holding
+  it still needs an attested TD to get the key.
 
-## Keep the admin API off public interfaces
+From K_r the cluster also derives the cluster secret peers present, each
+app's TEE key (what `TeeSecret` state opens with), and a stand-in key per
+member and app.
 
-The local HTTP server is separate from the peer-to-peer swarm and they have very
-different exposure defaults:
+## Peer and client trust
 
-| Listener | Config | `merod init` default | Intended exposure |
+Clients and peers judge a node the same way (`calimero_client::attest::verify`):
+
+1. The quote is genuine (Intel DCAP), or a mock quote the caller explicitly
+   allows.
+2. Its report data binds the nonce and the node's transport key.
+3. Its measurements are listed, under an allowed profile, in the signed
+   `published-mrtds.json` of the mero-tee release the node names, fetched and
+   Sigstore-verified; that release is at least the minimum.
+4. TCB status is up to date, it is not a debug TD unless debug profiles are
+   allowed, and the app hash binding holds.
+
+| Side | Profiles | Minimum release | Debug profiles |
 | --- | --- | --- | --- |
-| HTTP server (admin / JSON-RPC / WS / SSE) | `server.listen` | loopback only — `127.0.0.1:2528` and `[::1]:2528` | Private. Reach it through a proxy. |
-| libp2p swarm (peer traffic) | `swarm.listen` | all interfaces — `0.0.0.0:2428` and `[::]:2428` | Public. Peers dial it directly. |
+| A node judging peers | `--peer-profiles` (default `MERO_TEE_PROFILE`) | `--peer-min-release` (default `2.3.109`) | Only if the node itself runs a debug profile |
+| `meroctl` | `--tee-profiles` (required for a real node) | `--min-release` (default `2.3.109`) | `--allow-debug-profiles` |
 
-`merod init --server-host` defaults to `127.0.0.1,::1`, so the admin surface is
-not reachable off-host until you deliberately widen it. The swarm host defaults
-to `0.0.0.0,::` because peers must reach it.
+A profile whose name contains `debug` is a debuggable image: the host can read
+its memory. Never list one for a production cluster.
 
-:::caution[Do not widen the server bind to reach the admin API remotely]
-Binding `server.listen` to `0.0.0.0` to "make the dashboard reachable" publishes
-the admin API, JSON-RPC, and the auth endpoints directly. Keep the server on
-loopback and reach it through a reverse proxy that terminates TLS and (in
-`proxy` mode) enforces authentication. See
-[Put the server behind a reverse proxy](/operate/deployment/#put-the-server-behind-a-reverse-proxy).
-:::
+## Governance
 
-## TLS termination
+Three decisions are each held by exactly one party, chosen when the cluster is
+formed:
 
-The node's HTTP server speaks **plain HTTP and has no built-in TLS**. For any
-access beyond loopback, terminate TLS at a reverse proxy (nginx, Caddy, Traefik,
-…) and forward to the loopback bind. That proxy is also where you enforce
-authentication when running the default `proxy` mode. The
-[deployment guide](/operate/deployment/#put-the-server-behind-a-reverse-proxy)
-has a working nginx sketch, including the WebSocket/SSE upgrade and buffering
-settings those streaming endpoints need.
+| Decision | Flag | Owner side | Operator side |
+| --- | --- | --- | --- |
+| Which mero-tee releases may hold the data | `--release-approvals` | `POST /orgs/{org}/releases`, `/auth/releases` with a passkey | `POST /ops/releases` |
+| Which bundle an app runs | `--app-upgrades` | `POST /apps/{app}/upgrade`, `/orgs/{org}/upgrade` with a passkey | `POST /ops/apps/{app}/upgrade`, `/ops/orgs/{org}/upgrade` |
+| Which URL prefixes apps may call | `--outbound-approvals` | `POST /orgs/{org}/outbound`, `/auth/outbound` with a passkey | `POST /ops/outbound` |
 
-The libp2p swarm is encrypted independently (TLS / Noise over TCP, and QUIC),
-so swarm traffic does not need a TLS proxy — see [Networking](/operate/networking/).
+- The default is `owner` for all three.
+- The party that does not hold a decision is refused (`403`), and the system
+  log refuses the command too.
+- The first leader writes the choice to the system state at genesis; it cannot
+  change afterwards, whatever later starts are given.
+- Every receipt-key quote binds it, so `meroctl attest --context` and
+  `verify_app_cluster` in the clients prove it to users.
 
-## Sealed transport: encrypting to the TEE
+Release approvals are enforced by the replicas holding the data: a node does not
+send an app's Raft entries or snapshots to a peer whose attested release is not
+approved for that app, does not place the app there, and refuses a replica move
+onto it. A new account or organization starts with the release it was created
+on approved.
 
-On a TEE node, TLS at a reverse proxy leaves a gap. The proxy runs outside the
-enclave, so everything that crosses it is readable there: bearer tokens,
-JSON-RPC arguments, results. A genuine quote says what runs inside the TD. It
-says nothing about who reads the bytes on the way in. **Sealed transport**
-closes that gap by encrypting traffic end to end to the attested TD, so the
-proxy carries traffic it cannot read.
+<Aside type="caution">
+  Giving the operator `--app-upgrades` lets the operator choose the code that
+  reads every app's data; giving it `--outbound-approvals` lets it choose where
+  that code may send it. Choose `operator` only where users accept that, and
+  tell them: they can see it in the attestation.
+</Aside>
 
-- At startup the server makes an X25519 **transport key**. It lives only in the
-  process's memory, inside the TD, and a restart replaces it.
-- `POST /admin-api/tee/attest` with `bindTransportKey: true` returns the key as
-  `transportPublicKey` and commits to it in the quote's report data (see
-  [the attestation quote](/protocol/tee-attestation/#the-attestation-quote)).
-  The client verifies the quote with a verifier it trusts, then accepts the key.
-- The client opens a **session** with a
-  [Noise](http://www.noiseprotocol.org/noise.html) `NK` handshake to that key
-  (`Noise_NK_25519_AESGCM_SHA256`, posted to `/sealed/v2/handshake`). The
-  transport key only authenticates the node. The session keys come from both
-  sides' ephemeral keys, which are discarded when the handshake ends.
-- The client wraps each HTTP request (method, path, headers, body), seals it
-  under the session and posts it to `/sealed/v2`
-  (`application/vnd.calimero.sealed`). The node opens it and routes the inner
-  request exactly like a direct one, so auth, permissions and limits apply
-  unchanged. The response streams back in sealed frames as the node produces
-  it.
+## The ops token
 
-**Forward secrecy.** A session lasts at most an hour, and ten minutes unused.
-After that the node drops its keys, and nothing can open what was sent in it,
-not even the transport key. Someone who records traffic and later extracts the
-transport key from the TD can run the handshake again, but the node answers
-with a fresh ephemeral key, so they get different session keys. A client simply
-opens a new session when its old one ends.
+- Prefer `--ops-token-sha256`: the node then holds only the hash, and the
+  machine's configuration and metadata hold nothing usable.
+- `merod` writes `config.toml` with mode `0600` because it may hold
+  `ops-token`.
+- Without either flag the Ops API is off (`403` on every `/ops/*` route).
+- The token reaches only counts, placement, quotas, backups and the decisions
+  governance gave the operator.
 
-A proxy sees opaque POSTs. It cannot read a request or a response. It cannot
-forge a response, or reorder, drop or cut short its frames, without the client
-noticing. It cannot replay a request either: each carries a request id its
-session accepts once.
+## Outbound HTTPS and secrets
 
-Refusals of the envelope itself come back in the clear, since there is nothing
-to seal them under:
+Apps can make HTTPS requests only through the five gates described in
+[Configuration](/operate/config/#outbound). Secrets come from environment
+variables or a loopback sidecar, are bound to packages, signers and hosts, are
+filled in by the node and are redacted from what the app sees. Keep `hosts`
+as narrow as the apps need; `"*"` means any host an installed manifest
+declares.
 
-| Status | Code | Meaning |
+## Files on the host
+
+| File | Holds | Protect |
 | --- | --- | --- |
-| `409` | `stale_transport_key` | The node restarted. Attest again; never take a key from this response. |
-| `403` | `sealed_required` | The node requires sealing and the request was not sealed (see below). |
-| `403` (inside the envelope) | `sealed_route_unguarded` | The node leaves auth to a proxy, and the sealed request named a route that proxy guards (see below). |
-| `503` | `busy` | Too many sessions are being opened, or the node already holds as many sealed request bytes as it allows. Retry after `Retry-After`. |
-| `409` | `unknown_session` | The session expired or the node restarted. Open a new session. Nothing in the request ran, so it is safe to send again. |
-| `408` | `timeout` | The request body did not arrive within two minutes, which a 64 MiB body needs about 4.5 Mbit/s to meet. Nothing in it ran. |
-| `400` | `malformed`, `undecryptable`, `replayed_request`, `unsupported_version` | The envelope was refused. |
-
-**Streams.** Server-sent events are sealed frame by frame like any other
-response, so subscriptions are covered. A stream still open when its session
-expires is cut off without an end frame, and the client reconnects under a new
-session. WebSockets cannot cross a POST; the node answers a sealed upgrade with
-a `501` inside the envelope, so subscribe over SSE instead.
-
-**Limits.** A sealed request body is capped at 64 MiB, and the node buffers it before it can tell whether the request opens.
-It checks the session named in the header first: a body for no open session is refused, and the rest of it is read and discarded rather than held.
-A `Content-Length` over the cap is refused before any of the body is read.
-A session needs no credential, so the node also caps the buffers all sealed requests hold together at 256 MiB, four of the largest: a request that would take it past that is refused with `503 busy` and the rest of its body is discarded.
-A body must arrive within two minutes, or it is refused with `408 timeout` and its share is released.
-That cap protects the node's memory, not the sealed transport's availability.
-One client with one session can fill it with four large uploads, hold it for up to two minutes, and fill it again, and while it is full every sealed request is refused, however small; with `required` set that is nearly the whole API.
-Put per-client concurrency and rate limits on your proxy.
-Responses have no cap: they stream in frames of at most 64 KiB.
-Session and request ids travel in the clear, so a proxy can tell which requests share a session, though not what they contain.
-
-**Behind `NODE_PATH_PREFIX`.** The envelope is served both at the root
-(`/sealed/v2`) and under the prefix (`{prefix}/sealed/v2`), and a request opened
-there is routed under the mount it arrived on. A sealed request therefore reaches
-exactly what a direct request through the same base URL would, whether the proxy
-passes the prefix through or strips it.
-
-### Behind an auth proxy
-
-With `auth_mode = "proxy"`, `merod` guards nothing itself: the proxy in front of
-it checks every request. That proxy sees `POST /sealed/v2` and an opaque body,
-never the route inside. So on such a node a sealed request may reach only what
-`merod` serves **without a credential**:
-
-- `/admin-api/health`, `/admin-api/ready`, `/admin-api/is-authed`,
-  `GET /admin-api/tee/info`, `POST /admin-api/tee/attest`;
-- `POST /admin-api/namespaces/{id}/admit`, on every node. The joiner's signed op
-  is the authorization there ([direct admission](/protocol/direct-admission/#served-without-a-credential));
-- the delegated-execution routes, when `[server.admin] delegated_access` is on:
-  `GET`/`POST /admin-api/contexts/{id}/intents`,
-  `POST /admin-api/contexts/{id}/presence-intents`, and
-  `GET`/`POST /admin-api/groups/{id}/context-intents` and `.../governance-intents`.
-  The warrant (for presence, the signed statement) in the body is the
-  credential there.
-
-Anything else is refused inside the envelope with `403` and code
-`sealed_route_unguarded`, before it runs. Without this rule, a proxy that
-forwards `/sealed/v2` unauthenticated would let anyone reach every route it
-guards by wrapping the request. With embedded auth (`auth_mode = "embedded"`),
-`merod` checks the opened request itself, and everything can be sealed.
-
-**`[server.sealed] forward_auth`** lifts that limit in proxy mode. It names the
-auth service the proxy asks about each request (forward-auth), for example
-`http://127.0.0.1:3001`. `merod` then does for an opened request what the proxy
-would have done had it seen it:
-
-- `/auth/…` and `/admin/…` (login, refresh, the auth service's own API) are
-  forwarded to the auth service, and its answer is sealed back;
-- any other route the rule above would refuse is sent to `/auth/validate` with
-  the request's token, method, URI and host, as the proxy's forward-auth sends
-  them. A refusal comes back sealed as the auth service gave it. An admission
-  puts the identity it names (`X-Auth-User`, `X-Auth-Permissions`,
-  `X-Auth-Account`, `X-Auth-Device`) on the request, replacing any the envelope
-  stated, and routes it.
-
-The auth service stays the one authority: a route is reachable sealed exactly
-when it is reachable through the proxy with the same token. The origin must be
-`http` on a loopback address, since tokens are sent there in the clear; on a TEE
-node that hop never leaves the TD. If the auth service does not answer, the
-request gets `502` and is not routed.
-
-Hosted TEE relays run proxy auth with delegated execution public. With
-`forward_auth` set, a browser can seal its login, reads and event streams to the
-relay's TD as well as its intents; without it, logins and reads go through the
-proxy unsealed. The four ways a client reaches a node, and what each
-can seal, are in [how a client reaches a node](/protocol/client-paths/).
-
-### Requiring sealing
-
-Sealing is opt-in per client, so by default an unsealed client still works, and
-a client that forgets to seal sends its bearer token through the proxy in the
-clear. On a TEE node behind a proxy you do not trust, require it:
-
-```toml
-[server.sealed]
-required = true
-```
-
-The node then answers every unsealed request with `403` and code
-`sealed_required`, except the ones a client needs before it can seal anything:
-`GET /admin-api/health`, `GET /admin-api/ready`, `GET /admin-api/tee/info` and
-`POST /admin-api/tee/attest` (all under the path prefix, if any). `/tee/info`
-names the release the node runs, which a client verifying against signed
-releases needs in order to know which release's measurements to hold the quote
-to. Serving it unsealed exposes nothing new: it and `/tee/attest` answer anyone
-without a credential, sealed or not, and the quote `/tee/attest` returns in the
-clear already carries the measurements of the image `/tee/info` names. The name
-is only the node's claim; a client still requires the quote to match that signed
-release. Login, the admin API, JSON-RPC and SSE all
-have to go through a sealed session. Browser tools that do not seal, such as the
-bundled admin dashboard and auth login pages, stop working, and so does scraping
-`/metrics` over the same listener.
-
-### Rate limit and metrics
-
-Opening a session needs no credential, so the node answers at most 100
-handshakes a second (after a burst of 200), node-wide, and refuses the rest with
-`503`, code `busy` and `Retry-After`. mero-js waits and retries once. The limit is
-node-wide because the node cannot tell clients apart: behind a proxy every
-connection comes from the proxy. Put per-client limits where client addresses are
-known.
-
-Failed logins at `/auth/token` are throttled in two ways. A caller (by the address
-the node sees) gets 5 failures a minute against one account, after which it
-receives `429` with `Retry-After`; other callers are unaffected, so one caller's
-bad guesses cannot lock the owner out. Separately, an account locks for everyone
-after 100 failures an hour from all addresses together, which stops a guess
-spread over many sources. Behind a proxy every caller shares the proxy's address
-and so one per-account bucket; the node does not trust a forwarded header for
-this. Counters are in memory and reset when the node restarts.
-
-When the session table is full, the node drops sessions that never carried a
-request before any that did, so a flood of handshakes displaces its own sessions
-first. Expired sessions are swept every 30 seconds, so their keys are gone within
-half a minute of expiry.
-
-Metrics, on the node's Prometheus registry:
-
-| Metric | Meaning |
-| --- | --- |
-| `sealed_handshakes_total` | Sessions opened. |
-| `sealed_requests_total` | Sealed requests opened and dispatched. |
-| `sealed_refusals_total{code}` | Refusals, by code: of the envelope, of a handshake over the limit or a request over the in-flight budget (`busy`), of an unsealed request while sealing is required (`sealed_required`). |
-| `sealed_sessions` | Sessions whose keys the node holds. |
-
-In mero-js, hand the sealing fetch to the client, with a verifier that checks
-the quote in the page:
-
-```ts
-import { verify as dcapVerify } from '@phala/dcap-qvl';
-import {
-  MeroJs,
-  createQuoteVerifier,
-  createSealedFetch,
-  fetchAttestedTransportKey,
-  trustedMeasurementsFromReleases,
-} from '@calimero-network/mero-js';
-// The node release's published-mrtds.json, shipped with the app.
-import release from './trusted/mero-tee-v2.3.78.published-mrtds.json';
-
-const verifier = createQuoteVerifier({
-  dcapVerify,
-  ...trustedMeasurementsFromReleases([release], { profile: 'locked-read-only' }),
-});
-const mero = new MeroJs({
-  baseUrl,
-  fetch: createSealedFetch({
-    baseUrl,
-    transportPublicKey: () => fetchAttestedTransportKey(teeNode.admin, verifier),
-  }),
-});
-```
-
-The node hands over the Intel-signed collateral with its quote
-(`includeCollateral`), so the page needs nothing but the node. The verifier
-checks the quote's signatures against Intel's root, requires the measurements
-of a trusted image (MRTD and RTMR0–3, all of one release's profile) and an
-allowed TCB status, and requires that the report data is the nonce followed by the
-transport binding. Passing a function lets the client attest again, through
-the same verifier, when the node restarts.
-
-In Rust, `calimero-client` does the same with its `tee` feature, and checks the
-quote itself: `PolicyVerifier` verifies it against Intel's collateral and applies
-a `VerifierPolicy`, which must pin the image you trust: its MRTD and RTMR1–3,
-from the release's `published-mrtds.json`. The MRTD alone measures the
-platform's firmware, which every image shares, so a policy with any of
-RTMR1–3 empty refuses every quote.
-calimero-client-py exposes it from Python.
-
-```rust
-use calimero_client::tee::{sealed::SealedTransport, Attestor, PolicyVerifier, VerifierPolicy};
-
-let mut policy = VerifierPolicy::new([image.mrtd]);
-policy.allowed_rtmr1 = vec![image.rtmr1];
-policy.allowed_rtmr2 = vec![image.rtmr2];
-policy.allowed_rtmr3 = vec![image.rtmr3];
-policy.allowed_tcb_statuses = vec!["UpToDate".into(), "OutOfDate".into()];
-let attestor = Attestor::new(PolicyVerifier::new(policy));
-let connection = ConnectionInfo::new(api_url.clone(), node_name, authenticator, storage)
-    .with_sealed_transport(SealedTransport::attested(api_url, reqwest::Client::new(), attestor));
-```
-
-Every request the connection makes is then sealed, token refreshes included. A
-restarted node is attested again, through the same verifier, before the request
-is resent. A sealed connection refuses to hand out its token for a WebSocket,
-which cannot be sealed.
-
-## Key & identity storage
-
-Everything a node needs to prove who it is and to read its encrypted state lives
-under the node home directory (`<home>/<node-name>`). Treat that directory as
-secret material.
-
-| What | Where | Notes |
-| --- | --- | --- |
-| Node transport identity (private key) | `config.toml` → `[identity] keypair` | Base58-encoded libp2p keypair. This is the node's **private key**, stored in plaintext in the config file. The matching `peer_id` is public. |
-| Application & group state | `<home>/data` (RocksDB) | The `datastore.path` directory. Can be encrypted at rest (see below). |
-| Blobs | `<home>/blobs` | The `blobstore.path` directory. |
-| Embedded-auth store (JWT signing secret, root/client keys) | `<home>/auth` (RocksDB) | Present when `auth_mode = "embedded"` with persistent storage; the auth service's JWT secret is generated and held here. |
-
-The node's protocol-level identities (the per-group signing identities used for
-governance) are derived material managed by the node and stored in the
-datastore; see [Identities](/protocol/identities/) for the protocol model.
-
-:::note[Storage encryption]
-The datastore supports encryption at rest. When an encryption key is available
-the node logs `Storage encryption enabled` at startup and opens the store
-encrypted. Encryption protects state at rest; it does not protect the
-`[identity] keypair` in `config.toml`, which is always plaintext.
-:::
-
-:::caution[Back up and protect the home directory]
-Backing up `config.toml` alone is enough to clone the node's transport identity,
-and losing it loses the identity. Back up the whole home directory, restrict its
-permissions to the service user, and store backups encrypted. Treat
-`config.toml` and the `auth` store as you would any private key file.
-:::
-
-## The `--mock-tee` switch
-
-`merod run --mock-tee` (env `MEROD_MOCK_TEE=true`) makes the node **produce and
-accept mock TEE attestation quotes** instead of real TDX attestation. It exists
-for development and testing only.
-
-The node has a built-in guard: `--mock-tee` is **refused at startup** when the
-config has a real KMS attestation configured (a `tee.kms` block with
-attestation enabled and not accepting mock), with an error like:
-
-```text
---mock-tee refused: a real KMS/attestation is configured. Mock TEE is dev/test
-only and cannot coexist with real attestation.
-```
-
-When mock is allowed, the node logs a loud `MOCK TEE ENABLED — INSECURE,
-DEV/TEST ONLY` warning, and warns again if a KMS is configured at
-all (likely a misconfiguration).
-
-:::caution[Mock TEE is insecure]
-`--mock-tee` bypasses real attestation guarantees entirely. Never set it (or the
-`MEROD_MOCK_TEE` environment variable) on a production node. The related
-config-level switch `tee.kms.attestation.accept_mock` carries the same
-warning — it exists for testing and must stay `false` in production.
-:::
-
-## KMS release-policy verification
-
-A TEE node pulls its storage-encryption keys from the mero-kms KMS only after it
-is satisfied the KMS is running the expected enclave. That decision is governed
-by an **attestation policy** — the allow-listed TDX measurements (MRTD, RTMR0–3)
-and TCB statuses the KMS quote must match. So that the policy itself can't be
-silently swapped, `merod` **verifies the policy with Sigstore before fetching any
-keys**.
-
-When you pin a KMS release version, merod downloads three assets from the
-official mero-tee GitHub release (`mero-kms-v{version}`) — the policy JSON, a
-detached signature, and a Sigstore bundle — and verifies, fail-closed:
-
-- the **Rekor** signed entry timestamp (the transparency-log inclusion proof),
-- the **detached signature** over the exact policy bytes, and
-- the **Fulcio** certificate chain, pinned to a specific GitHub Actions identity:
-  OIDC issuer `https://token.actions.githubusercontent.com`, repository
-  `calimero-network/mero-tee`, workflow `Release mero-kms`, trigger `push`, ref
-  `refs/heads/master`, and the certificate's identity (SAN)
-  `https://github.com/calimero-network/mero-tee/.github/workflows/release-kms.yaml@refs/heads/master`,
-  so another workflow that shares the name does not pass.
-
-If any check fails, startup **errors out** rather than continuing with an
-unverified policy.
-
-You select the release version through one of three environment variables, in
-precedence order — the first one set wins:
-
-| Env var | Precedence |
-| --- | --- |
-| `MERO_KMS_RELEASE_TAG` | highest |
-| `MERO_KMS_VERSION` | middle |
-| `MERO_TEE_VERSION` | lowest |
-
-The value may be a plain version (`2.1.14`) or the prefixed tag
-(`mero-kms-v2.1.14`). With **none** of these set and `USE_ENV_POLICY` unset, no
-release policy is fetched. In a build without `mock-attestation`, `merod run` and
-`merod kms probe` then refuse a `[tee.kms]` whose config allowlists are not enabled
-(`enabled = true`, `accept_mock = false`), before sending the KMS any request.
-
-A valid signature says a file is *some* release's policy, not that it is the one
-asked for, so merod also checks what the signed file says about itself: its
-`role` must be `kms`, its `tag` must be present and be the requested release, and — when
-`MERO_TEE_PROFILE` is set — its `profile` must match. The KMS is checked against
-the file's `kms_allowed_*` lists only; the `node_allowed_*` lists beside them
-describe the nodes that KMS serves and are never read here.
-
-Each image profile has its own KMS, and each KMS its own policy. With
-`MERO_TEE_PROFILE` set, merod fetches that profile's asset,
-`kms-attestation-policy.<profile>.json` (with its `.sig` and
-`.bundle.json`), so a `debug-read-only` node verifies a `debug-read-only` KMS
-against the `debug-read-only` measurements. Only when the release publishes no
-such file does merod fall back to the generic
-`kms-attestation-policy.json`, which is the `locked-read-only` policy. The
-`profile` check still applies to it, so on any other profile the fallback is
-refused rather than trusted. A per-profile policy that is published without its
-signature or bundle is an error, never a reason to try the generic file.
-
-The registers pin the KMS. It runs as a frozen GCP TDX cluster, one per release,
-booted from a locked image, and node keys are derived from a
-cluster root that exists only in the replicas' memory. Its MRTD and RTMR0–2
-measure the firmware, kernel and command line, and its RTMR3 is the image's own
-boot measurement, fixed per image. So a quote whose MRTD and all four RTMRs are in
-the policy's `kms_allowed_mrtd` and `kms_allowed_rtmr0..3` can only come from the
-released KMS image: there is no app owner who could swap the code under the same
-measurements. merod requires every one of those allowlists to be non-empty and
-every register to match; a debug TD never passes, whatever its measurements.
-
-The release to verify against usually arrives from outside the TD (on the node
-image, instance metadata), and every old release's policy is still validly
-signed. `MERO_TEE_MIN_VERSION` sets a floor: a release older than it is refused
-before anything is fetched. The node image bakes its own version in as that
-floor, because the KMS release that admits an image is always cut after the image
-is measured.
-
-### Sealed key release
-
-Verifying the KMS is not enough on its own if the key then crosses the wire in the
-clear: TLS ends wherever `tee.kms.url` points, so an HTTPS proxy in front of
-the genuine KMS could forward every request untouched — both quotes genuine — and
-read the key as it went by. So the key is **sealed to the TD**:
-
-- the KMS's `/attest` quote commits to its X25519 *transport key*, so the node
-  knows that key lives in a genuine KMS;
-- for each release the node makes a one-time X25519 key, and its own get-key
-  quote (and signature) commits to it, so it cannot be swapped in transit;
-- the KMS returns the key encrypted to that one-time key (X25519 → HKDF-SHA256 →
-  AES-256-GCM), which only the attested KMS could have produced and only this TD
-  can open.
-
-merod refuses a KMS that reports no transport key and refuses a key released
-unsealed. A KMS that predates sealed release therefore has to be upgraded before
-nodes running this merod can fetch keys from it.
-
-Because the KMS is verified against the release policy and the key is sealed, a
-node fetching with the release policy accepts a plain `http://` `tee.kms.url`,
-such as the VPC-internal `http://<cluster>.kms.mdma.internal:8080` mdma hands a
-node. An on-path attacker can block the request but cannot read the key or pass
-as the KMS, and TLS would add nothing to that. Without the release policy
-(attestation from `config.toml` only, e.g. `USE_ENV_POLICY=true`) merod still
-requires `https://` or loopback HTTP.
-
-:::note[Air-gapped: `USE_ENV_POLICY=true`]
-Setting `USE_ENV_POLICY=true` **skips the release fetch entirely** and uses the
-policy already provisioned in `config.toml` (see
-[`[tee.kms.attestation]`](/operate/config/#teekmsattestation)). This is
-for controlled / air-gapped deployments where your own tooling fetches and
-verifies the signed policy out of band — it bypasses merod's built-in Sigstore
-check, so the integrity of the in-config policy becomes your responsibility.
-:::
-
-## Hardening pass: an internet-facing node
-
-A concrete, end-to-end pass for a node that must be reachable from the public
-internet (its swarm port is public; its admin surface must not be). Adapt the
-hostnames and key handling to your environment.
-
-<Steps>
-
-1. **Keep the admin surface on loopback.** Leave `server.listen` at its
-   `127.0.0.1` / `[::1]` default and never widen it to `0.0.0.0`. The swarm
-   (`swarm.listen`) stays public on `0.0.0.0` / `::` — peers must dial it.
-
-   ```toml
-   [server]
-   listen = ["/ip4/127.0.0.1/tcp/2528", "/ip6/::1/tcp/2528"]
-   auth_mode = "embedded"
-
-   [swarm]
-   listen = ["/ip4/0.0.0.0/tcp/2428", "/ip4/0.0.0.0/udp/2428/quic-v1"]
-   ```
-
-2. **Turn auth on.** Either run the bundled service
-   (`auth_mode = "embedded"`, above) so the node validates JWTs itself, or keep
-   the default `proxy` mode and put an authenticating proxy in front. Do not run
-   `proxy` mode with the bind reachable off-host and nothing enforcing auth.
-
-3. **Terminate TLS at the edge** and forward to the loopback bind. The node's
-   HTTP server speaks plain HTTP; the reverse proxy is also where `proxy`-mode
-   auth is enforced. See the
-   [reverse-proxy setup](/operate/deployment/#put-the-server-behind-a-reverse-proxy).
-
-4. **Firewall `/metrics`.** The metrics endpoint is part of the same loopback
-   HTTP server — do **not** expose it publicly. Scrape it over loopback (or a
-   private network only your monitoring reaches), and let the host firewall drop
-   off-host traffic to the server port. Reach the dashboard and metrics through
-   the same authenticated proxy, never by widening the bind.
-
-5. **Encrypt state at rest.** Provision the datastore encryption key so the node
-   logs `Storage encryption enabled` at startup. On a TEE deployment, source
-   that key from the KMS and require real attestation — set a
-   `[tee.kms.attestation]` policy with `enabled = true`, `accept_mock =
-   false`, and pin the KMS release version so the
-   [release-policy verification](#kms-release-policy-verification) above runs.
-
-6. **Keep the secrets private.** `config.toml` holds the `[identity] keypair`
-   (the node's private key) in plaintext, and the embedded-auth store holds the
-   JWT signing secret. Restrict the home directory to the service user, store
-   backups encrypted, and never commit either to version control.
-
-7. **No dev switches.** Confirm `--mock-tee` / `MEROD_MOCK_TEE` and
-   `attestation.accept_mock` are all off. A node with a real KMS attestation
-   configured refuses to start with `--mock-tee` at all.
-
-</Steps>
-
-| Surface | Exposure on a hardened internet-facing node |
-| --- | --- |
-| `swarm.listen` (peer traffic) | **Public** — `0.0.0.0` / `::`, encrypted by the wire protocol. |
-| `server.listen` (admin / JSON-RPC / WS / SSE / metrics) | **Loopback only** — reached through an authenticating TLS proxy. |
-| `/metrics` | **Private** — scraped over loopback / a private monitoring network, never public. |
-| `config.toml`, `auth` store, home directory | **Secret** — service-user only, encrypted backups, never committed. |
-
-## Do / don't checklist
-
-<Steps>
-
-1. **Do** keep `server.listen` on loopback (`127.0.0.1` / `::1`) and reach the
-   admin API through a TLS-terminating reverse proxy.
-
-2. **Do** put an authenticating proxy in front of the node in the default
-   `proxy` mode — or switch to `auth_mode = "embedded"` so the node validates
-   tokens itself.
-
-3. **Do** terminate TLS at the edge; the node's HTTP server has no built-in TLS.
-
-4. **Do** back up the whole node home directory, restrict its permissions to the
-   service user, and store backups encrypted. `config.toml` holds the node's
-   private key.
-
-5. **Do** enable datastore encryption at rest for sensitive deployments.
-
-6. **Don't** bind `server.listen` to `0.0.0.0` to expose the admin API or
-   dashboard remotely.
-
-7. **Don't** run `--mock-tee` / `MEROD_MOCK_TEE` or
-   `attestation.accept_mock` outside development.
-
-8. **Don't** enable the auth service's mock-token endpoint in production (see
-   [Auth service & providers](/operate/auth/#mock-token-endpoint)).
-
-9. **Don't** commit `config.toml` or the `auth` store to version control or share
-   them — they contain private key material.
-
-</Steps>
-
-## Next steps
-
-<CardGrid>
-  <LinkCard title="Production deployment" href="/operate/deployment/" description="The reverse-proxy and TLS setup these rules depend on." />
-  <LinkCard title="Auth service & providers" href="/operate/auth/" description="Running the embedded auth service to validate tokens in-node." />
-  <LinkCard title="Configuration reference" href="/operate/config/" description="Every config.toml key referenced in this checklist." />
-</CardGrid>
+| `{home}/{node}/config.toml` | possibly `ops-token`; `storage-key` on dev nodes | mode `0600` (written so) |
+| `--kms-identity` | the disk identity | readable by the node only |
+| `{home}/meroctl/sessions.json` | saved sessions per node | mode `0600` (written so) |
+| `--dev-passkey` files | a software passkey's private key | development only |
+| `--backup-dir` | sealed snapshots | sealed under K_r; keep them anyway |
+
+## Known gaps
+
+The node's own notes (`crates/node/AGENTS.md`) list what is not done:
+no rollback counter (a host could restart a node on old state), no keys per app
+from mero-kms, no placement across zones, no restore of a snapshot into a
+running cluster, no event audiences, no pruning of revoked session ids, and
+search indexes rebuilt from state at each start, and no recovery when every
+mero-kms replica is lost: backups are sealed only under the cluster's key
+(planned: each organization holds a recovery seed that opens its own backups). Sign-up is open; bound it with
+the `maxAccounts` quota.
+
+## Checklist
+
+- [ ] No node runs with `--dev`, `--storage-key`, `--storage-key-file` or
+      `--allow-unsigned-bundles`.
+- [ ] `--peer-profiles` and clients' `--tee-profiles` list only production
+      profiles; no `debug` profile anywhere.
+- [ ] `--peer-min-release` and clients' `--min-release` are at least the release
+      you run, once all nodes run it.
+- [ ] The governance flags are what you told users, on every founding node.
+- [ ] The ops token is configured by hash and stored outside the machines.
+- [ ] `[outbound]` is absent, or `hosts` lists only what apps need.
+- [ ] Quotas, `maxAccounts` included, fit the cluster.

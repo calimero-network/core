@@ -27,6 +27,7 @@ cargo mero build --manifest-path apps/kv-store/Cargo.toml
 | ------------------------ | ---------------------- | ---------------------- |
 | `kv-store`               | Simple key-value store | Basic CRDT usage       |
 | `kv-store-init`          | KV with custom init    | `#[app::init]` pattern |
+| `org-gated`              | Org notes              | `env::caller_org()`: gate methods on the caller's organization role and teams |
 | `kv-store-with-handlers` | KV with event handlers | Event handling         |
 | `sorted-kv-store`        | Ordered KV store       | `SortedMap`: range / prefix / page |
 | `authored-sorted-kv-store` | Shared noticeboard   | `AuthoredSortedMap`: per-entry ownership + prefix slices, and why the two go together |
@@ -325,22 +326,41 @@ rg -n "app::bail!" */src/
 
 ## Workflows
 
-Each app has test workflows in `workflows/` directory:
+Each app's `workflows/` holds merobox workflows
+(`backend: cloud-v2`): a cluster of `merod` processes, accounts signed in with
+passkeys, an organization, the app deployed and called as several accounts.
+Most were migrated from the app's v1 workflows by `merobox cloud port`; each
+one's header lists the v1 steps that have no counterpart in this node and any
+fix made in the migration. Every deployable app has at least one; CI runs them
+all (`.github/workflows/e2e.yml`, gated by
+`scripts/workflows-baseline.json`). See
+[Testing strategy](../docs/src/content/docs/contribute/testing.mdx#core-and-app-workflows).
 
 ```yaml
-# workflows/simple-store.yml
-name: Simple KV Store Test
+# workflows/sorted-kv-store.yml (abridged)
+name: Sorted KV store
+backend: cloud-v2
+cluster: { nodes: 3, base_port: 6000 }
+accounts: [alice, bob]
 steps:
-  - action: create_context
-    app: kv-store
-  - action: call
-    method: set
-    args: '{"key": "test", "value": "hello"}'
-  - action: call
-    method: get
-    args: '{"key": "test"}'
-    expect: '"hello"'
+  - { name: An org, type: create_org, account: alice, org_name: Sorted, outputs: { org: orgId } }
+  - name: The app in it
+    type: deploy
+    account: alice
+    wasm: "{{env.CORE_WASM_DIR}}/sorted_kv_store.wasm"
+    org: "{{org}}"
+    outputs: { app: appId }
+  - { type: call, account: alice, app: "{{app}}", method: set, args: { key: a, value: "1" } }
+  - { type: view, account: alice, app: "{{app}}", method: get, args: { key: a }, expect: "1" }
 ```
+
+```bash
+python3 scripts/build-workflow-fixtures.py           # every app's WASM, into target/workflow-wasm
+MEROD_BINARY=target/debug/merod python3 scripts/run-workflows.py apps/<app>/workflows/<file>.yml
+```
+
+A new workflow needs a `base_port` no other workflow uses (each runs its own
+cluster); add it to the baseline once it passes.
 
 ## Building for Production
 

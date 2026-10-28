@@ -1,4 +1,5 @@
-//! Negative tests for the `#[app::state]` and `#[derive(Mergeable)]` lints.
+//! Negative tests for the `#[app::state]` and `#[derive(Mergeable)]` lints,
+//! and for storage APIs app code must not reach.
 //!
 //! Each `tests/compile_fail/*.rs` is a tiny crate that *should fail* to
 //! compile because it triggers the forbidden-type lint. The matching
@@ -23,6 +24,7 @@ fn compile_fail() {
     t.compile_fail("tests/compile_fail/state_bare_string.rs");
     t.compile_fail("tests/compile_fail/state_hashmap_field.rs");
     t.compile_fail("tests/compile_fail/state_hashmap_in_lww.rs");
+    t.compile_fail("tests/compile_fail/set_shared_domain.rs");
 
     // Feature-SENSITIVE: rustc's "other types implement `RekeyTarget`" help block
     // lists implementors alphabetically (truncated at 8), and the `testing` feature

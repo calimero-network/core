@@ -1,296 +1,319 @@
-name: "KV Store Fuzzy Load Test"
-description: "Long-running fuzzy load test for kv-store application"
-
-# Test configuration
-no_docker: false
-nuke_on_start: true
-nuke_on_end: false
-
-nodes:
-  count: 4
-  image: ghcr.io/calimero-network/merod:edge-profiling
-  prefix: fuzzy-kv-node
-  use_image_entrypoint: true
-
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no counterpart in this node):
+#   assert_log_absent x1: v1 node logs
+#   wait_for_sync x3: replication is synchronous: a read sees every committed write
+name: KV Store Fuzzy Load Test
+description: Long-running fuzzy load test for kv-store application
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 3460
+accounts:
+- fuzzy-kv-node-1
+- fuzzy-kv-node-2
+- fuzzy-kv-node-3
+- fuzzy-kv-node-4
 steps:
-  - name: Install KV Store Application on Node 1
-    type: install_application
-    node: fuzzy-kv-node-1
-    path: dist/com.calimero.kv-store-0.0.0.mpk
-    dev: true
-    outputs:
-      kv_app_id: applicationId
-
-  - name: Create Mesh for KV Store
-    type: create_mesh
-    context_node: fuzzy-kv-node-1
-    application_id: "{{kv_app_id}}"
-    nodes:
-      - fuzzy-kv-node-2
-      - fuzzy-kv-node-3
-      - fuzzy-kv-node-4
-    outputs:
-      kv_context_id: contextId
-      node1_key: memberPublicKey
-
-  - name: Wait for mesh formation and sync
-    type: wait_for_sync
-    context_id: "{{kv_context_id}}"
-    nodes:
-      - fuzzy-kv-node-1
-      - fuzzy-kv-node-2
-      - fuzzy-kv-node-3
-      - fuzzy-kv-node-4
-    timeout: 60
-    check_interval: 2
-
-  - name: Verify all nodes synced
-    type: assert
-    statements:
-      - "is_set({{kv_context_id}})"
-      - "is_set({{node1_key}})"
-      - "is_set({{public_key_fuzzy-kv-node-2}})"
-      - "is_set({{public_key_fuzzy-kv-node-3}})"
-      - "is_set({{public_key_fuzzy-kv-node-4}})"
-
-  # Pre-populate with some initial data
-  - name: Seed initial data
-    type: repeat
-    count: 10
+- name: Install KV Store Application on Node 1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/kv_store.wasm'
+  outputs:
+    kv_app_id_bundle: hash
+  account: fuzzy-kv-node-1
+- type: set
+  values:
+    kv_app_id: com.calimero.kv-store
+- name: Create Mesh for KV Store
+  type: create_org
+  account: fuzzy-kv-node-1
+  org_name: mesh
+  outputs:
+    namespace_id: orgId
+- type: invite
+  account: fuzzy-kv-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: fuzzy-kv-node-2
+  token: '{{_mesh_invite}}'
+- type: invite
+  account: fuzzy-kv-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: fuzzy-kv-node-3
+  token: '{{_mesh_invite}}'
+- type: invite
+  account: fuzzy-kv-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: fuzzy-kv-node-4
+  token: '{{_mesh_invite}}'
+- name: Create Mesh for KV Store
+  type: deploy
+  account: fuzzy-kv-node-1
+  org: '{{namespace_id}}'
+  wasm: '{{env.CORE_WASM_DIR}}/kv_store.wasm'
+  app_name: Create Mesh for KV Store
+  outputs:
+    kv_context_id: contextId
+    node1_key: memberPublicKey
+- name: Verify all nodes synced
+  type: assert
+  statements:
+  - is_set({{kv_context_id}})
+  - is_set({{node1_key}})
+  - is_set({{public_key_fuzzy-kv-node-2}})
+  - is_set({{public_key_fuzzy-kv-node-3}})
+  - is_set({{public_key_fuzzy-kv-node-4}})
+- name: Seed initial data
+  type: repeat
+  count: 10
+  steps:
+  - type: call
+    app: '{{kv_context_id}}'
+    method: set
+    args:
+      key: initial_key_{{iteration}}
+      value: initial_value_{{iteration}}
+    account: fuzzy-kv-node-1
+- name: KV Store Fuzzy Load Test
+  type: fuzzy_test
+  operations:
+  - name: set_and_verify
+    weight: 40
     steps:
-      - type: call
-        node: fuzzy-kv-node-1
-        context_id: "{{kv_context_id}}"
-        method: set
-        args:
-          key: "initial_key_{{iteration}}"
-          value: "initial_value_{{iteration}}"
-
-  - name: Wait for seed data sync
-    type: wait_for_sync
-    context_id: "{{kv_context_id}}"
-    nodes:
-      - fuzzy-kv-node-1
-      - fuzzy-kv-node-2
-      - fuzzy-kv-node-3
-      - fuzzy-kv-node-4
-    timeout: 30
-    check_interval: 2
-
-  # Main fuzzy test for kv-store
-  #
-  # 15 min is the routine baseline used by every CI trigger (push,
-  # workflow_run, workflow_dispatch). The CI workflow overrides this to
-  # 60 min on the nightly schedule (cron 00:00 UTC) for soak coverage.
-  # Override on demand via the workflow_dispatch `duration_override`
-  # input. See `.github/workflows/fuzzy-load-test.yml`.
-  - name: KV Store Fuzzy Load Test
-    type: fuzzy_test
-    duration_minutes: 15
-    context_id: "{{kv_context_id}}"
-    summary_interval_seconds: 60
-    # merobox runs one pattern at a time, so any pause here is pure idle
-    # time on all four nodes. The load comes from back-to-back calls.
-    operation_delay_ms: 0
-    success_threshold: 99.0
-
-    nodes:
-      - name: fuzzy-kv-node-1
-        executor_key: "{{node1_key}}"
-      - name: fuzzy-kv-node-2
-        executor_key: "{{public_key_fuzzy-kv-node-2}}"
-      - name: fuzzy-kv-node-3
-        executor_key: "{{public_key_fuzzy-kv-node-3}}"
-      - name: fuzzy-kv-node-4
-        executor_key: "{{public_key_fuzzy-kv-node-4}}"
-
-    # merobox runs one pattern at a time, so throughput is set by how long a
-    # pattern takes, not by its weight alone. write_burst carries most of the
-    # writes; the 2s cross-node check is kept rare because it is idle time,
-    # and still runs about as often per test as before since patterns run
-    # far faster.
-    operations:
-      # Write-and-verify operations
-      - name: "set_and_verify"
-        weight: 40
-        steps:
-          # Write on random node - auto-captures key and value.
-          # {{random_node}} is picked once per pattern, so the read below hits
-          # the node that wrote: read-your-write, no wait needed.
-          - type: call
-            node: "{{random_node}}"
-            context_id: "{{kv_context_id}}"
-            method: set
-            args:
-              key: "key_{{random_int(1, 10000)}}"
-              value: "value_{{uuid}}_{{timestamp}}"
-            outputs:
-              set_result: result
-          - type: assert
-            non_blocking: true
-            statements:
-              - "is_set({{set_result}})"
-          # Read using auto-captured {{fuzzy_key}} - guaranteed to exist
-          - type: call
-            node: "{{random_node}}"
-            context_id: "{{kv_context_id}}"
-            method: get
-            args:
-              key: "{{fuzzy_key}}"
-            outputs:
-              get_result: result
-          - type: assert
-            non_blocking: true
-            statements:
-              - "is_set({{get_result}})"
-              - "contains({{get_result}}, {{fuzzy_value}})"
-
-      # Write burst: 12 back-to-back writes rotating over all four nodes, so
-      # every node authors deltas at once and has to merge concurrent heads.
-      # Each write gets its own output so a failed call fails its assertion
-      # instead of re-checking an earlier write's result.
-      - name: "write_burst"
-        weight: 25
-        steps:
-          - &kv_burst_write
-            type: call
-            node: fuzzy-kv-node-1
-            context_id: "{{kv_context_id}}"
-            method: set
-            args:
-              key: "key_{{random_int(1, 10000)}}"
-              value: "burst_{{uuid}}_{{timestamp}}"
-            outputs: { w1: result }
-          - { <<: *kv_burst_write, node: fuzzy-kv-node-2, outputs: { w2: result } }
-          - { <<: *kv_burst_write, node: fuzzy-kv-node-3, outputs: { w3: result } }
-          - { <<: *kv_burst_write, node: fuzzy-kv-node-4, outputs: { w4: result } }
-          - { <<: *kv_burst_write, node: fuzzy-kv-node-1, outputs: { w5: result } }
-          - { <<: *kv_burst_write, node: fuzzy-kv-node-2, outputs: { w6: result } }
-          - { <<: *kv_burst_write, node: fuzzy-kv-node-3, outputs: { w7: result } }
-          - { <<: *kv_burst_write, node: fuzzy-kv-node-4, outputs: { w8: result } }
-          - { <<: *kv_burst_write, node: fuzzy-kv-node-1, outputs: { w9: result } }
-          - { <<: *kv_burst_write, node: fuzzy-kv-node-2, outputs: { w10: result } }
-          - { <<: *kv_burst_write, node: fuzzy-kv-node-3, outputs: { w11: result } }
-          - { <<: *kv_burst_write, node: fuzzy-kv-node-4, outputs: { w12: result } }
-          - type: assert
-            non_blocking: true
-            statements:
-              - "is_set({{w1}})"
-              - "is_set({{w2}})"
-              - "is_set({{w3}})"
-              - "is_set({{w4}})"
-              - "is_set({{w5}})"
-              - "is_set({{w6}})"
-              - "is_set({{w7}})"
-              - "is_set({{w8}})"
-              - "is_set({{w9}})"
-              - "is_set({{w10}})"
-              - "is_set({{w11}})"
-              - "is_set({{w12}})"
-
-      # Pure random reads
-      # Tests key-not-found scenarios and random access patterns
-      - name: "random_read"
-        weight: 15
-        steps:
-          - type: call
-            node: "{{random_node}}"
-            context_id: "{{kv_context_id}}"
-            method: get
-            args:
-              key: "key_{{random_int(1, 10000)}}"
-            outputs:
-              get_result: result
-          # Note: This may fail if key doesn't exist - that's expected and tested
-          - type: assert
-            non_blocking: true
-            statements:
-              - "is_set({{get_result}})"
-
-      # List all entries
-      - name: "list_entries"
-        weight: 10
-        steps:
-          - type: call
-            node: "{{random_node}}"
-            context_id: "{{kv_context_id}}"
-            method: entries
-            outputs:
-              entries_result: result
-          - type: assert
-            non_blocking: true
-            statements:
-              - "is_set({{entries_result}})"
-
-      # Cross-node consistency check: the one pattern that has to wait for
-      # propagation, so it is rare by weight but not by count.
-      - name: "cross_node_write_read"
-        weight: 3
-        steps:
-          # Write on one node
-          # Auto-captures: key → {{fuzzy_key}}, value → {{fuzzy_value}}
-          - type: call
-            node: fuzzy-kv-node-1
-            context_id: "{{kv_context_id}}"
-            method: set
-            args:
-              key: "consistency_{{uuid}}"
-              value: "check_{{timestamp}}"
-          # Wait briefly for sync
-          - type: wait
-            seconds: 2
-          # Read on another node using auto-captured {{fuzzy_key}}
-          - type: call
-            node: fuzzy-kv-node-3
-            context_id: "{{kv_context_id}}"
-            method: get
-            args:
-              key: "{{fuzzy_key}}"
-            outputs:
-              consistency_result: result
-          - type: assert
-            non_blocking: true
-            statements:
-              - statement: "contains({{consistency_result}}, {{fuzzy_value}})"
-                message: "Cross-node value should match the set value"
-
-  - name: Final KV Store sync verification
-    type: wait_for_sync
-    context_id: "{{kv_context_id}}"
-    nodes:
-      - fuzzy-kv-node-1
-      - fuzzy-kv-node-2
-      - fuzzy-kv-node-3
-      - fuzzy-kv-node-4
-    timeout: 180
-    check_interval: 2
-
-  # Converging at the end is not enough: a same-DAG / different-root
-  # divergence that stayed stuck for a heartbeat period mid-run and was only
-  # healed later by the recovery sync is still a bug. Transient divergences
-  # (counted in sync_root_hash_divergence_detected_total_total, logged at WARN)
-  # are expected under this load and do not match.
-  - name: No node reported a stuck root-hash divergence
-    type: assert_log_absent
-    nodes: [fuzzy-kv-node-1, fuzzy-kv-node-2, fuzzy-kv-node-3, fuzzy-kv-node-4]
-    patterns:
-      - "DIVERGENCE DETECTED"
-
-  - name: Final KV Store entry count check
-    type: call
-    node: fuzzy-kv-node-1
-    context_id: "{{kv_context_id}}"
-    method: len
-    outputs:
-      final_kv_count: result
-
-  - name: Log final statistics
-    type: assert
-    statements:
-      - "is_set({{final_kv_count}})"
-
-# Configuration options
-stop_all_nodes: false
-restart: false
-wait_timeout: 3600 # 1 hour timeout for long-running test
-
+    - type: call
+      app: '{{kv_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 10000)}}
+        value: value_{{uuid}}_{{timestamp}}
+      account: '{{random_account}}'
+      outputs:
+        set_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{set_result}})
+    - type: call
+      app: '{{kv_context_id}}'
+      method: get
+      args:
+        key: '{{fuzzy_key}}'
+      account: '{{random_account}}'
+      outputs:
+        get_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{get_result}})
+      - contains({{get_result}}, {{fuzzy_value}})
+  - name: write_burst
+    weight: 25
+    steps:
+    - type: call
+      app: '{{kv_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-kv-node-1
+      outputs:
+        w1: rpc
+    - type: call
+      app: '{{kv_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-kv-node-2
+      outputs:
+        w2: rpc
+    - type: call
+      app: '{{kv_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-kv-node-3
+      outputs:
+        w3: rpc
+    - type: call
+      app: '{{kv_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-kv-node-4
+      outputs:
+        w4: rpc
+    - type: call
+      app: '{{kv_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-kv-node-1
+      outputs:
+        w5: rpc
+    - type: call
+      app: '{{kv_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-kv-node-2
+      outputs:
+        w6: rpc
+    - type: call
+      app: '{{kv_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-kv-node-3
+      outputs:
+        w7: rpc
+    - type: call
+      app: '{{kv_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-kv-node-4
+      outputs:
+        w8: rpc
+    - type: call
+      app: '{{kv_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-kv-node-1
+      outputs:
+        w9: rpc
+    - type: call
+      app: '{{kv_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-kv-node-2
+      outputs:
+        w10: rpc
+    - type: call
+      app: '{{kv_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-kv-node-3
+      outputs:
+        w11: rpc
+    - type: call
+      app: '{{kv_context_id}}'
+      method: set
+      args:
+        key: key_{{random_int(1, 10000)}}
+        value: burst_{{uuid}}_{{timestamp}}
+      account: fuzzy-kv-node-4
+      outputs:
+        w12: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{w1}})
+      - is_set({{w2}})
+      - is_set({{w3}})
+      - is_set({{w4}})
+      - is_set({{w5}})
+      - is_set({{w6}})
+      - is_set({{w7}})
+      - is_set({{w8}})
+      - is_set({{w9}})
+      - is_set({{w10}})
+      - is_set({{w11}})
+      - is_set({{w12}})
+  - name: random_read
+    weight: 15
+    steps:
+    - type: call
+      app: '{{kv_context_id}}'
+      method: get
+      args:
+        key: key_{{random_int(1, 10000)}}
+      account: '{{random_account}}'
+      outputs:
+        get_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{get_result}})
+  - name: list_entries
+    weight: 10
+    steps:
+    - type: call
+      app: '{{kv_context_id}}'
+      method: entries
+      args: {}
+      account: '{{random_account}}'
+      outputs:
+        entries_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - is_set({{entries_result}})
+  - name: cross_node_write_read
+    weight: 3
+    steps:
+    - type: call
+      app: '{{kv_context_id}}'
+      method: set
+      args:
+        key: consistency_{{uuid}}
+        value: check_{{timestamp}}
+      account: fuzzy-kv-node-1
+    - type: wait
+      seconds: 2.0
+    - type: call
+      app: '{{kv_context_id}}'
+      method: get
+      args:
+        key: '{{fuzzy_key}}'
+      account: fuzzy-kv-node-3
+      outputs:
+        consistency_result: rpc
+    - type: assert
+      non_blocking: true
+      statements:
+      - statement: contains({{consistency_result}}, {{fuzzy_value}})
+        message: Cross-node value should match the set value
+  accounts:
+  - fuzzy-kv-node-1
+  - fuzzy-kv-node-2
+  - fuzzy-kv-node-3
+  - fuzzy-kv-node-4
+  duration_minutes: 15
+  success_threshold: 99.0
+  operation_delay_ms: 0
+- name: Final KV Store entry count check
+  type: call
+  app: '{{kv_context_id}}'
+  method: len
+  args: {}
+  account: fuzzy-kv-node-1
+  outputs:
+    final_kv_count: rpc
+- name: Log final statistics
+  type: assert
+  statements:
+  - is_set({{final_kv_count}})

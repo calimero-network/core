@@ -20,6 +20,10 @@ wasm_imports! {
         // Source context of an xcall dispatch; writes the register and returns
         // true only when this execution was invoked via `xcall`.
         fn xcall_origin(register_id: RegisterId) -> Bool;
+        // The caller's organization standing (release-v2 cloud apps); writes
+        // the register and returns true only when the app has an organization
+        // and the caller belongs to it.
+        fn caller_org(register_id: RegisterId) -> Bool;
         // --
         fn input(register_id: RegisterId);
         fn value_return(value: Ref<ValueReturn<'_>>);

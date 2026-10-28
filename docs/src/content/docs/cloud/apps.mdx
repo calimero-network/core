@@ -1,0 +1,106 @@
+---
+title: Writing apps for a cluster
+description: What carries over from v1 apps, and what changes — init arguments, identity, organizations and teams, blobs, search, handlers, xcalls, timers, migrations, confirmations, limits.
+sidebar:
+  order: 3
+---
+
+The contract is the same WASM on the same runtime: every app in the apps
+repository builds against the `release-v2` SDK and deploys unchanged
+(`scripts/cloud-v2-smoke.py` there checks all 28).
+
+## What changes
+
+- **Packages.** Install a signed `.mpk` the way v1 did: by `package@version`
+  from the operator's registry (`POST /packages/install`, `meroctl app install
+  PACKAGE@VERSION`) or as a file (`POST /packages`). Every node that runs a
+  release fetches it and checks the publisher's signature, the artifact digests
+  and the hash the fleet recorded; a package keeps the publisher key of its first
+  release. Create an instance with `POST /apps { package, version }`, upgrade with
+  `{ version }`, and delete with `DELETE /apps/{app}`. Raw WASM uploads
+  (`POST /bundles`) are for development clusters only.
+- **Instances, not contexts.** An app instance is created with
+  `POST /apps { name, bundle, initArgs, org?, access?, confirmMethods? }`.
+  `initArgs` (JSON) is what `#[app::init]` receives; a failed init answers
+  `422 INIT_FAILED` instead of leaving a dead instance.
+- **Identity.** There are no devices: `env::account_id()` and `env::executor_id()`
+  are both the caller's account, so apps that key people by either tell them
+  apart. The context id is `SHA-256(app_id)`.
+- **Organizations.** `env::caller_org()` returns the caller's standing in the
+  app's organization — `org`, `role` (`Guest < Member < Admin < Owner`) and the
+  team ids they are in — or `None`. The node already keeps non-members out of an
+  organization's apps; this is for rules inside the app:
+
+  ```rust
+  use calimero_sdk::env::{self, OrgRole};
+
+  pub fn set_pinned(&mut self, text: String) -> app::Result<()> {
+      if !env::caller_org().is_some_and(|o| o.role >= OrgRole::Admin) {
+          app::bail!("admins only");
+      }
+      self.pinned.set(text);
+      Ok(())
+  }
+  ```
+
+  `apps/org-gated` in core is a complete example; `TestHost::set_caller_org`
+  drives it in unit tests.
+- **Teams are v1's subgroups.** A team is open (whoever reaches its parent, or
+  the organization at the top, is a member) or restricted (its members only),
+  nests and moves, keeps the app's metadata (a folder's name and colour), and
+  each member's row has a role — lead, member or read-only — and v1's
+  capability bits. Deploy an app to a team with
+  `access: { kind: "team", team }`: its members reach it, and a read-only
+  member's calls run but one that would write is refused (`403`). A team they
+  neither reach nor manage is invisible to them. Deleting a team deletes the
+  teams and apps below it.
+- **Devices are passkeys.** `env::account_id()` is the person; each passkey on
+  the account is one of their devices (`POST /auth/passkeys/add/*`, and
+  `/auth/me` names the session's `passkeyId`).
+- **Blobs.** `env::blob_*` work as in v1. A blob belongs to the app that wrote
+  or received it (`POST /apps/{app}/blobs`, `GET /apps/{app}/blobs/{id}`, ids
+  base58 or hex); every node holds it, so announcing one is a no-op.
+- **Search.** `#[derive(app::Searchable)]` and `app::search_indexes!` work as in
+  v1: views query the app's own index, kept up to date from the log before the
+  view runs. A declared `#[app::view]` called as a call runs as a view.
+- **Event handlers and xcalls** run once, after the entry that asked for them,
+  on the app's leader — not once per replica. v1's rules hold: only
+  `#[app::handler]` methods run for an event; an xcall reaches only
+  `#[app::xcall]` entry points (`from_same_app`: the same bundle) of apps in the
+  caller's organization, as the calling app, with `env::xcall_origin()`.
+- **Timers and TEE runs.** The cluster is every app's TEE: `#[app::tee(every =
+  "..")]` methods fire once per period, `tee:` handlers run as the TEE, and
+  `TeeOnly` / `TeeSecret` state works; a member's share opens only in their own
+  calls.
+- **Upgrades.** `POST /apps/{app}/upgrade { bundle }` plans the migration from
+  the two bundles' embedded ABIs as v1 did (`#[app::state(version)]` and
+  `#[app::migrate]`), runs your migration check, and refuses a downgrade or a
+  missing edge. Build bundles with `cargo mero build` so they carry their ABI:
+  handlers, xcall entry points, timers and migrations are read from it.
+- **Outbound HTTPS** (`env::http_request`). v1's gate, with the owner in the
+  namespace admin's place: a call (never a view, init or migration, nor a
+  read-only member's call) may send one request under a prefix its signed
+  manifest declares (`outbound` in `[package.metadata.calimero]`), to a host
+  the operator allows, once that prefix was approved for the publisher by
+  whoever the cluster's deployment gave outbound approvals (its governance,
+  which `verify_app_cluster` reports). By the owner: `POST /orgs/{org}/outbound`
+  (or `/auth/outbound` for your own apps) `{ package, prefixes: "manifest" |
+  [...], replace }`, with a passkey assertion (`approve_outbound` in the Rust
+  client). By the operator: `POST /ops/outbound`. Until then
+  the request is refused with `NotApproved` (or `AwaitingApproval` for a prefix
+  a later release added), which the app can show. Secrets the operator holds
+  (`{{secret:NAME}}`) are filled in by the node and redacted from the answer.
+- **Confirmations.** Methods listed in `confirmMethods` need a fresh passkey
+  assertion over the exact call (`callConfirmed` in the clients).
+- **Ordering.** Calls on one instance are applied in one order, so a write never
+  merges with a concurrent one: CRDT collections still work, and plain values do
+  too. There are no offline replicas: a client without the cluster cannot write,
+  so v1's "edits made while partitioned" never happen.
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| Bundle size | 16 MiB |
+| One call's log entry (args + state diff + events) | 1 MiB |
+| Apps, bundle bytes, API keys, organizations per account | quotas, set by the operator (`429 QUOTA_EXCEEDED`) |

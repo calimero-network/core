@@ -1,9 +1,16 @@
 name: Release
 
+# Pushes to master release: binaries, crates, the App Bundle, the Homebrew tap
+# and SDK bump PRs for a new version, and the merod image's version tags. Pushes
+# to the release branch (release-v2-parity) publish only the merod
+# image, under tags of its own (release-v2-edge, release-v2-<short sha>), and
+# keep the binaries as workflow artifacts for 14 days; every release step below
+# is gated on master.
 on:
   push:
     branches:
       - master
+      - release-v2-parity
     paths:
       - Cargo.toml
       - Cargo.lock
@@ -12,8 +19,6 @@ on:
       - ".github/workflows/release.yml"
       - ".github/workflows/deps/**"
       - ".github/actions/**"
-      # COPYed into the profiling image by prebuilt.profiling.Dockerfile.
-      - "scripts/profiling/**"
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
       - "!**/*.mdx"
@@ -32,26 +37,28 @@ permissions:
   contents: read
 
 env:
+  # Linux (x86_64, aarch64): the node, its command line and the app tools.
   BINARIES: |-
     merod
     meroctl
     mero-abi
     cargo-mero
-  AUTH_BINARIES: |-
-    mero-auth
+  # macOS (aarch64): a developer's machine runs no node (Docker does), so the
+  # command line and the app tools only.
+  MACOS_BINARIES: |-
+    meroctl
+    mero-abi
+    cargo-mero
   HOMEBREW_BINARIES: |-
-    merod
     meroctl
     mero-abi
     cargo-mero
   DOCKER_PLATFORMS: ${{ github.event_name != 'push' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
   INCLUDE_AARCH64: ${{ github.event_name != 'push' && 'false' || 'true' }}
-  # Windows ships only merod (the desktop app's version switcher downloads it) and meroctl;
-  # the other binaries were never built for Windows.
-  WINDOWS_BINARIES: |-
-    merod
-    meroctl
-  INCLUDE_WINDOWS: ${{ github.event_name != 'push' && 'false' || 'true' }}
+  # The merobox revision `E2E on the merod image` runs; keep it e2e.yml's MEROBOX_REF.
+  MEROBOX_REF: release-v2-parity
+  # The release branch's image tags are this prefix plus `edge` and the short sha.
+  IMAGE_TAG_PREFIX: ${{ github.ref == 'refs/heads/release-v2-parity' && 'release-v2-' || '' }}
 
 jobs:
   prepare:
@@ -71,9 +78,6 @@ jobs:
       # Whether this change can alter anything this workflow builds (scripts/ci-scope.py).
       build: ${{ steps.scope.outputs.build }}
       target_commit: ${{ steps.version_info.outputs.target_commit }}
-      # PR-only: enables the profiling build and image so fuzzy-load-test.yml can
-      # validate a fresh `pr-<N>-profiling` image before merge.
-      profiling_paths_changed: ${{ steps.profiling_paths.outputs.changed || 'false' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -155,10 +159,10 @@ jobs:
           [ -n "$files" ] || echo "::notice::could not list this change's files; everything builds"
           printf '%s\n' "$files" | python3 scripts/ci-scope.py --workflow release >> "$GITHUB_OUTPUT"
 
-      # Linux x86_64 always (a required check); arm64 on master pushes, which the
-      # multi-arch :edge image needs; macOS and Windows only when this run publishes
-      # binaries, the one job that reads them. Every other master push built them
-      # just to discard them; platforms.yml builds both nightly instead.
+      # Linux x86_64 always (a required check); arm64 on pushes (master and the
+      # release branch), which the multi-arch edge images need; macOS only when this run publishes binaries,
+      # the one job that reads them (platforms.yml builds it nightly). There is no
+      # Windows build: nodes run on Linux TDX hosts only.
       - name: Choose the build targets
         id: build_matrix
         env:
@@ -170,12 +174,11 @@ jobs:
           linux='{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"}'
           arm='{"name":"ubuntu-24.04-arm, aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"}'
           macos='{"name":"macos-latest, aarch64-apple-darwin","runner":"macos-latest","target":"aarch64-apple-darwin"}'
-          windows='{"name":"windows-latest, x86_64-pc-windows-msvc","runner":"windows-latest","target":"x86_64-pc-windows-msvc"}'
           matrix="[$linux]"
           if [ "$EVENT" = push ]; then
             matrix="[$linux,$arm]"
             if [ "$BINARY_RELEASE" = true ]; then
-              matrix="[$linux,$arm,$macos,$windows]"
+              matrix="[$linux,$arm,$macos]"
             fi
           fi
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
@@ -184,7 +187,7 @@ jobs:
       # GITHUB_TOKEN is an integration token, and GitHub rejects release/tag creation whose target
       # is not the branch head; create it now, before master moves, so the later upload only attaches.
       - name: Create release at trigger time
-        if: github.event_name == 'push' && steps.version_info.outputs.binary_release == 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.version_info.outputs.binary_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version_info.outputs.version }}
@@ -203,26 +206,6 @@ jobs:
             exit 1
           fi
 
-      # `gh api` rather than tj-actions/changed-files, to avoid changing the checkout depth.
-      - name: Detect profiling-relevant changes
-        id: profiling_paths
-        if: github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          files=$(gh api \
-            "repos/${GH_REPO}/pulls/${PR_NUMBER}/files" \
-            --paginate --jq '.[].filename')
-          if echo "$files" | grep -qE '^(scripts/profiling/|\.github/workflows/deps/prebuilt\.profiling\.Dockerfile$|\.github/workflows/fuzzy-load-test\.yml$|workflows/fuzzy-tests/)'; then
-            echo "Profiling paths changed — profiling image will be built and fuzzy-load-test will run on this PR"
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "No profiling-relevant changes — skipping profiling build (default PR behaviour)"
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
   build-binaries:
     name: Build Binaries (${{ matrix.name }})
     needs: prepare
@@ -236,15 +219,9 @@ jobs:
       fail-fast: false
     runs-on: ${{ matrix.runner }}
 
-    # Every `run:` below is bash; Windows runners default to pwsh, where these
-    # scripts silently behave differently, so the shell is pinned job-wide.
     defaults:
       run:
         shell: bash
-
-    env:
-      CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout code
@@ -265,18 +242,6 @@ jobs:
           shared-key: release
           save-if: false
 
-      # `rocksdb` uses `bindgen-runtime`, so librocksdb-sys needs libclang everywhere;
-      # the Windows image ships LLVM but nothing points bindgen at it.
-      - name: Point bindgen at the image's LLVM (Windows)
-        if: ${{ needs.prepare.outputs.build == 'true' && (runner.os == 'Windows') }}
-        run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
-
-      # aws-lc-sys (rustls via libp2p-tls) needs NASM on windows-msvc;
-      # unix uses the system assembler.
-      - name: Install NASM (Windows)
-        if: ${{ needs.prepare.outputs.build == 'true' && (runner.os == 'Windows') }}
-        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
-
       - name: Update Bash
         if: ${{ needs.prepare.outputs.build == 'true' && (matrix.runner == 'macos-13' || matrix.runner == 'macos-latest') }}
         run: brew install bash
@@ -292,14 +257,14 @@ jobs:
           fi
           echo "OK: mock-attestation is not enabled in the production merod build"
 
-      # Resolved once so the steps below cannot drift from WINDOWS_BINARIES.
+      # Resolved once so the steps below cannot drift from MACOS_BINARIES.
       - name: Resolve the binaries this target publishes
         if: needs.prepare.outputs.build == 'true'
         run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            printf 'TARGET_BINARIES<<CALIMERO_EOF\n%s\nCALIMERO_EOF\n' "$WINDOWS_BINARIES" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            printf 'TARGET_BINARIES<<CALIMERO_EOF\n%s\nCALIMERO_EOF\n' "$MACOS_BINARIES" >> "$GITHUB_ENV"
           else
-            printf 'TARGET_BINARIES<<CALIMERO_EOF\n%s\n%s\nCALIMERO_EOF\n' "$BINARIES" "$AUTH_BINARIES" >> "$GITHUB_ENV"
+            printf 'TARGET_BINARIES<<CALIMERO_EOF\n%s\nCALIMERO_EOF\n' "$BINARIES" >> "$GITHUB_ENV"
           fi
 
       - name: Build binaries
@@ -322,15 +287,10 @@ jobs:
 
           readarray -t binaries <<< "$TARGET_BINARIES"
 
-          # Only the file inside gains `.exe`; the archive keeps `<binary>_<target>.tar.gz`,
-          # which consumers (the desktop app's merod switcher) resolve by target triple.
-          suffix=""
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            suffix=".exe"
-          fi
-
+          # `<binary>_<target>.tar.gz`: consumers (the Docker image, the Homebrew
+          # formulas) resolve an archive by target triple.
           for binary in "${binaries[@]}"; do
-            tar -czf artifacts/"$binary"_${MATRIX_TARGET}.tar.gz -C target/${MATRIX_TARGET}/release "$binary$suffix"
+            tar -czf artifacts/"$binary"_${MATRIX_TARGET}.tar.gz -C target/${MATRIX_TARGET}/release "$binary"
           done
 
       # A bin target of calimero-tee-attestation behind the `cli` feature, so it cannot join $BINARIES (`-p`).
@@ -354,52 +314,18 @@ jobs:
           tar -czf artifacts/calimero-tee-verify_${MATRIX_TARGET}.tar.gz \
             -C target/${MATRIX_TARGET}/release calimero-tee-verify
 
-      # x86_64 only: every consumer of the profiling image (fuzzy-load-test, the
-      # sync-regression scenarios) runs on amd64, and on the arm64 runner this build
-      # took 22 of the job's 42 minutes, holding back every master push's :edge image.
-      - name: Build profiling binaries (with frame pointers and debug symbols)
-        if: ${{ needs.prepare.outputs.build == 'true' && ((github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && matrix.target == 'x86_64-unknown-linux-gnu') }}
-        env:
-          MATRIX_TARGET: ${{ matrix.target }}
-        run: |
-          readarray -t binaries <<< "$BINARIES"
-          binaries=$(printf -- '-p %s ' "${binaries[@]}")
-
-          # calimero-context/profiling enables Wasmer PerfMap.
-          RUSTFLAGS="-C force-frame-pointers=yes" cargo build $binaries --profile profiling --target ${MATRIX_TARGET} --features calimero-context/profiling
-
-      - name: Compress profiling artifacts using gzip
-        if: ${{ needs.prepare.outputs.build == 'true' && ((github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && matrix.target == 'x86_64-unknown-linux-gnu') }}
-        env:
-          MATRIX_TARGET: ${{ matrix.target }}
-        run: |
-          mkdir -p artifacts-profiling
-
-          readarray -t binaries <<< "$BINARIES"
-
-          for binary in "${binaries[@]}"; do
-            tar -czf artifacts-profiling/"$binary"_${MATRIX_TARGET}.tar.gz -C target/${MATRIX_TARGET}/profiling "$binary"
-          done
-
+      # The release branch publishes no release: its binaries are kept here.
       - name: Upload artifacts
         if: needs.prepare.outputs.build == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: artifacts-${{ matrix.target }}
           path: artifacts/*
-          retention-days: 2
-
-      - name: Upload profiling artifacts
-        if: ${{ needs.prepare.outputs.build == 'true' && ((github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && matrix.target == 'x86_64-unknown-linux-gnu') }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: artifacts-profiling-${{ matrix.target }}
-          path: artifacts-profiling/*
-          retention-days: 2
+          retention-days: ${{ github.ref == 'refs/heads/release-v2-parity' && 14 || 2 }}
 
   release-binaries:
     name: Release Binaries
-    if: needs.prepare.outputs.binary_release == 'true'
+    if: github.ref == 'refs/heads/master' && needs.prepare.outputs.binary_release == 'true'
     runs-on: big-machine
     needs: [prepare, build-binaries]
     concurrency:
@@ -438,13 +364,6 @@ jobs:
           name: artifacts-aarch64-apple-darwin
           path: artifacts/
 
-      - name: Download x86_64 Windows artifacts
-        if: ${{ env.INCLUDE_WINDOWS == 'true' }}
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: artifacts-x86_64-pc-windows-msvc
-          path: artifacts/
-
       - name: Write checksums
         working-directory: artifacts
         run: sha256sum -- * > SHA256SUMS
@@ -476,7 +395,7 @@ jobs:
     name: Release App Bundle
     runs-on: ubuntu-latest
     needs: [prepare]
-    if: needs.prepare.outputs.binary_release == 'true'
+    if: github.ref == 'refs/heads/master' && needs.prepare.outputs.binary_release == 'true'
     concurrency:
       # Per-commit, not per-version: a version key would cancel an older, still-good master push.
       group: ${{ github.workflow }}-release-app-bundle-${{ github.event.pull_request.number || github.sha }}
@@ -517,7 +436,7 @@ jobs:
 
   release-crates:
     name: Release Crates
-    if: needs.prepare.outputs.crate_release == 'true'
+    if: github.ref == 'refs/heads/master' && needs.prepare.outputs.crate_release == 'true'
     runs-on: ubuntu-latest
     needs: [prepare, build-binaries]
 
@@ -594,9 +513,12 @@ jobs:
           release: ${{ needs.prepare.outputs.docker_release }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
           # PRs build the image to prove the Dockerfile still packages the binaries,
-          # but push nothing: no PR job pulls a standard `pr-<N>` image (fuzzy-load-test
-          # pulls `pr-<N>-profiling`, which the profiling job below still pushes).
+          # but push nothing; master pushes the multi-arch (amd64, arm64) image, and
+          # so does the release branch, under its own tags only (IMAGE_TAG_PREFIX).
           push: ${{ github.event_name == 'push' }}
+          tag-prefix: ${{ env.IMAGE_TAG_PREFIX }}
+          # Everything else saves its amd64 image for `E2E on the merod image`.
+          load-to: ${{ github.event_name != 'push' && 'merod-image.tar' || '' }}
           binaries: ${{ env.BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.Dockerfile
           container_name: merod
@@ -604,80 +526,155 @@ jobs:
           include_aarch64: ${{ env.INCLUDE_AARCH64 }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-  release-mero-auth-container:
-    name: Release Mero Auth container
-    needs: [prepare, build-binaries]
-    if: needs.prepare.outputs.build == 'true'
-    concurrency:
-      # Per-commit, not per-version: a version key would cancel an older, still-good master push.
-      group: ${{ github.workflow }}-mero-auth-container-${{ github.event.pull_request.number || github.sha }}
-      cancel-in-progress: true
-    permissions:
-      contents: read
-      packages: write
+      - name: Upload the image
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: merod-image
+          path: merod-image.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  # What `E2E on the merod image` installs: the fixtures its smoke list names
+  # (scripts/workflows-smoke.json), built while the binaries build.
+  image-e2e-fixtures:
+    name: Image E2E fixtures
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true' && github.event_name != 'push'
     runs-on: big-machine
-    timeout-minutes: 120
+    timeout-minutes: 45
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - name: Release
-        uses: ./.github/actions/container-release
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
         with:
-          version: ${{ needs.prepare.outputs.version }}
-          release: ${{ needs.prepare.outputs.docker_release }}
-          prerelease: ${{ needs.prepare.outputs.prerelease }}
-          # Built on PRs, pushed only from master; see release-merod-container.
-          push: ${{ github.event_name == 'push' }}
-          binaries: ${{ env.AUTH_BINARIES }}
-          dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
-          container_name: mero-auth
-          platforms: ${{ env.DOCKER_PLATFORMS }}
-          include_aarch64: ${{ env.INCLUDE_AARCH64 }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          targets: wasm32-unknown-unknown
+          shared-key: wasm-apps
+          save-if: false
 
-  release-merod-profiling-container:
-    name: Release Merod Profiling container
-    # `prepare.outputs.docker_push` already excludes fork PRs, which cannot push to ghcr.
-    if: ${{ needs.prepare.outputs.build == 'true' && (github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') }}
-    needs: [prepare, build-binaries]
-    concurrency:
-      # Per-commit, not per-version: a version key would cancel an older, still-good master push.
-      group: ${{ github.workflow }}-merod-profiling-container-${{ github.event.pull_request.number || github.sha }}
-      cancel-in-progress: true
-    permissions:
-      contents: read
-      packages: write
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
+      - name: Build the smoke list's fixtures
+        run: |
+          set -euo pipefail
+          readarray -t filters < <(jq -r '.fixtures[]' scripts/workflows-smoke.json)
+          python3 scripts/build-workflow-fixtures.py "${filters[@]}"
+
+      - name: Upload them
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-e2e-fixtures
+          path: target/workflow-wasm
+          if-no-files-found: error
+          retention-days: 1
+
+  # The image this run built is tested, not only built: e2e.yml runs every
+  # workflow against a debug `cargo build`, and this runs the smoke list (one
+  # workflow per area, scripts/workflows-smoke.json, every one on the
+  # baseline) and two of merobox's fault examples (a crashed node, a frozen
+  # leader) against the release `merod` inside the image. Master and the
+  # release branch push their image instead; e2e.yml's nightly tests the latest
+  # release's (the release branch's nightly, its release-v2-edge).
+  image-e2e:
+    name: E2E on the merod image
+    needs: [prepare, release-merod-container, image-e2e-fixtures]
     runs-on: big-machine
-    timeout-minutes: 120
+    timeout-minutes: 30
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - name: Release
-        uses: ./.github/actions/container-release-profiling
+      - name: Checkout merobox
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          version: ${{ needs.prepare.outputs.version }}
-          release: ${{ needs.prepare.outputs.docker_release }}
-          prerelease: ${{ needs.prepare.outputs.prerelease }}
-          push: ${{ needs.prepare.outputs.docker_push }}
-          binaries: ${{ env.BINARIES }}
-          dockerfile: .github/workflows/deps/prebuilt.profiling.Dockerfile
-          container_name: merod
-          # amd64 only, like the profiling binaries above: nothing pulls an arm64 variant.
-          platforms: linux/amd64
-          include_aarch64: false
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: calimero-network/merobox
+          ref: ${{ env.MEROBOX_REF }}
+          path: merobox
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install merobox
+        run: pip install ./merobox
+
+      - name: Download the image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: merod-image
+          path: target/image
+
+      - name: Download the fixtures
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image-e2e-fixtures
+          path: target/workflow-wasm
+
+      # merobox runs `merod` processes, not containers: the binary is the
+      # image's own /usr/local/bin/merod, and the image must start it.
+      - name: Take merod out of the image
+        run: |
+          set -euo pipefail
+          image=$(docker load -i target/image/merod-image.tar | sed -n 's/^Loaded image: //p' | head -n1)
+          if [ -z "$image" ]; then
+            echo "::error::merod-image.tar holds no tagged image"
+            exit 1
+          fi
+          echo "testing $image"
+          docker run --rm "$image" --version
+          id=$(docker create "$image")
+          docker cp "$id:/usr/local/bin/merod" target/image/merod
+          docker rm "$id"
+          rm target/image/merod-image.tar
+          echo "MEROD_BINARY=$GITHUB_WORKSPACE/target/image/merod" >> "$GITHUB_ENV"
+
+      - name: Smoke workflows
+        env:
+          MEROBOX_SOAK_REPORT: ${{ github.workspace }}/target/image/soak.json
+        run: python3 scripts/run-workflows.py --smoke --json target/image/workflows.json
+
+      - name: merobox's fault examples
+        if: ${{ !cancelled() }}
+        env:
+          KV_STORE_WASM: ${{ github.workspace }}/target/workflow-wasm/kv_store.wasm
+        run: |
+          set -uo pipefail
+          failed=0
+          for wf in kv-store-failover frozen-leader; do
+            echo "::group::$wf"
+            merobox cloud run "merobox/workflow-examples/cloud-v2/$wf.yml" || { echo "::error::$wf failed"; failed=1; }
+            echo "::endgroup::"
+          done
+          exit "$failed"
+
+      - name: Soak latency and throughput
+        if: ${{ !cancelled() }}
+        run: bash scripts/soak-summary.sh target/image/soak.json "Soak on this run's merod image (smoke list, 30s)"
+
+      - name: Upload the results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-e2e-results
+          path: |
+            target/image/workflows.json
+            target/image/soak.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   brew-update:
     name: Update Homebrew Tap
-    if: needs.prepare.outputs.binary_release == 'true'
+    if: github.ref == 'refs/heads/master' && needs.prepare.outputs.binary_release == 'true'
     runs-on: big-machine
     needs: [prepare, release-binaries]
     permissions: {}
@@ -752,7 +749,7 @@ jobs:
 
   fleet-bump:
     name: Open SDK bump PRs
-    if: needs.prepare.outputs.binary_release == 'true'
+    if: github.ref == 'refs/heads/master' && needs.prepare.outputs.binary_release == 'true'
     needs: [prepare, release-binaries]
     uses: ./.github/workflows/fleet-bump.yml
     with:

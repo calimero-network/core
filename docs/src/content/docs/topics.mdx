@@ -8,44 +8,41 @@ sidebar:
 
 Some subjects span every track. Here's everything on each, in one place.
 
-## CRDTs &amp; merge
+## Replication &amp; consistency
 
-- [Collections](/build/collections/) — the types and when to use them
-- [CRDTs — how they work](/protocol/crdt-internals/) — the merge algorithms
-- [State, Projection &amp; the Root Hash](/protocol/projection/) — how the fold works
-- [Advanced SDK](/build/advanced-sdk/) — custom `Mergeable`, nested collections
-- [Storage performance](/build/storage-complexity/) — merge cost
+- [Replication](/protocol/replication/) — one Raft log per app, snapshots, learners, replica moves
+- [The system group](/protocol/system-group/) — the cluster's own log, and authority checked at apply
+- [The write path](/protocol/write-path/) and [Reads, views &amp; events](/protocol/reads/)
+- [CRDT collections](/protocol/crdt-internals/) — the state format, and why merges no longer drive convergence
 
-## Encryption &amp; security
+## Trust &amp; confidentiality
 
-- [Encryption &amp; Confidentiality](/protocol/encryption/) — what's encrypted vs not
-- [Identities &amp; Keys](/protocol/identities/) and [Key Rotation](/protocol/key-rotation/)
-- [Security hardening](/operate/security/) and the [Auth service](/operate/auth/)
+- [Attestation &amp; receipts](/protocol/tee-attestation/) — quotes, measurement policies, `verify_app_cluster`
+- [Networking &amp; sealed channels](/protocol/networking/)
+- [Encryption](/protocol/encryption/) and [Keys &amp; their lifetimes](/protocol/key-rotation/)
+- [Security &amp; threat model](/protocol/security-model/)
 
-## Performance
+## People, access &amp; authority
 
+- [Accounts, passkeys &amp; sessions](/protocol/identities/) and [Who a run acts as](/protocol/authorship/)
+- [Organizations, teams &amp; access](/protocol/organizations/)
+- [Deployment governance](/protocol/governance/) and [The operator &amp; the Ops API](/protocol/operator/)
+- [Access-controlled storage](/build/permissioned-storage/) — the rules inside an app
+
+## Apps &amp; code
+
+- [Packages &amp; frontends](/protocol/applications/) and [Packaging &amp; signing](/build/packaging-signing/)
+- [App instance lifecycle](/protocol/context-lifecycle/)
+- [Upgrades &amp; migrations](/protocol/upgrades/) and [Migrations](/build/migrations/)
+- [Event handlers &amp; cross-app calls](/protocol/xcall/), [Blobs](/protocol/blobs/), [Presence](/protocol/presence/)
+
+## Performance &amp; limits
+
+- [Limits](/protocol/limits/) — execution, entry, request and quota numbers
 - [Storage performance &amp; big-O](/build/storage-complexity/)
 - [Gotchas &amp; sharp edges](/build/gotchas/)
-- [Observability](/operate/observability/) and [Networking](/operate/networking/)
-
-## Governance &amp; access control
-
-- [Governance](/protocol/governance/) and its [edge cases](/protocol/governance-edge-cases/)
-- [Capability &amp; membership inheritance](/protocol/capability-inheritance/)
-- [Access-controlled storage](/build/permissioned-storage/)
-
-## Sync &amp; convergence
-
-- [Sync &amp; Convergence](/protocol/sync/)
-- [The Write Path](/protocol/write-path/) and [The Receive &amp; Apply Path](/protocol/receive-path/)
-- [Divergence &amp; Recovery](/protocol/divergence-recovery/)
-
-## TEE &amp; fleets
-
-- [TEE Attestation &amp; Fleet Admission](/protocol/tee-attestation/)
-- [Key Rotation](/protocol/key-rotation/) and [Security](/operate/security/)
 
 ## Operations
 
-- [Install](/operate/install/), [Deployment](/operate/deployment/), [Runbooks](/operate/runbooks/)
-- [Troubleshooting](/operate/troubleshooting/) and [Observability](/operate/observability/)
+- [Calimero Cloud](/cloud/overview/), [Quickstart](/cloud/quickstart/), [Operating a cluster](/operate/deployment/)
+- [Operate a Calimero Cluster](/operate/) and the [`merod`](/operate/merod/) and [`meroctl`](/operate/meroctl/) references

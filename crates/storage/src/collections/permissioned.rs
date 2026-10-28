@@ -9,11 +9,15 @@
 //!
 //! # Why a policy layer, not a new enforcement mechanism
 //!
-//! The security boundary is unchanged: it is the merge-time signature check in
-//! [`Interface`](crate::interface::Interface) against the entity's writer set.
-//! A malicious peer that hand-crafts a delta around the WASM still has its write
-//! rejected at merge if the signer is not a writer — exactly as for a bare
-//! `WriterSetCell`. The [`Authorizer`] is **fail-fast UX sugar**: it lets a
+//! The security boundary is the writer-set check in
+//! [`Interface`](crate::interface::Interface), on two paths. On the local write
+//! path every write and delete of the cell's entities, through any method of
+//! the value it holds, is refused unless the caller's account holds the needed
+//! [`OpMask`] in the cell's current writers; that alone protects a node that
+//! runs a call once and commits it (release-v2). At merge a peer that
+//! hand-crafts a delta around the WASM still has its write rejected if the
+//! signer is not a writer — exactly as for a bare `WriterSetCell`. The
+//! [`Authorizer`] is **fail-fast UX sugar**: it lets a
 //! method reject an unauthorised caller early with a clear error, using the same
 //! writer set the merge check resolves. It must therefore only express policies
 //! that reduce to what merge enforces (writer-set membership today); a policy

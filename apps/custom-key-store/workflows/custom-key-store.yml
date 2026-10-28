@@ -1,0 +1,93 @@
+# A workflow for custom-key-store: pages
+# keyed by a newtype slug (`AsRef<[u8]>`), so titles that differ only in case
+# or surrounding space name one page.
+name: Custom key store
+description: A newtype key normalises titles; two members write and read one page
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 6020
+accounts: [alice, bob, carol]
+steps:
+  - name: Alice founds an organization
+    type: create_org
+    account: alice
+    org_name: Wiki
+    outputs: { org: orgId }
+  - name: An invite for Bob
+    type: invite
+    account: alice
+    org: "{{org}}"
+    role: member
+    outputs: { token: token }
+  - name: Bob joins
+    type: redeem_invite
+    account: bob
+    token: "{{token}}"
+  - name: Alice deploys custom-key-store in the organization
+    type: deploy
+    account: alice
+    wasm: "{{env.CORE_WASM_DIR}}/custom_key_store.wasm"
+    app_name: custom-key-store
+    org: "{{org}}"
+    outputs: { app: appId }
+  - name: No such page yet
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: get_page
+    args: { title: Home }
+    expect: null
+  - name: Alice writes Home
+    type: call
+    account: alice
+    app: "{{app}}"
+    method: set_page
+    args: { title: Home, body: welcome }
+  - name: Bob reads it under another spelling of the title
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: get_page
+    args: { title: "  HOME " }
+    expect: welcome
+  - name: Bob rewrites it under a third spelling
+    type: call
+    account: bob
+    app: "{{app}}"
+    method: set_page
+    args: { title: home, body: edited by bob }
+  - name: Alice reads Bob's edit as Home
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: get_page
+    args: { title: Home }
+    expect: edited by bob
+  - name: Another title is another page
+    type: call
+    account: alice
+    app: "{{app}}"
+    method: set_page
+    args: { title: About, body: about us }
+  - name: About reads back
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: get_page
+    args: { title: about }
+    expect: about us
+  - name: Home is unchanged by About
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: get_page
+    args: { title: HOME }
+    expect: edited by bob
+  - name: Carol is outside the organization
+    type: view
+    account: carol
+    app: "{{app}}"
+    method: get_page
+    args: { title: Home }
+    expected_error: NOT_FOUND

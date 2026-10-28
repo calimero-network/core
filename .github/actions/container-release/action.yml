@@ -34,6 +34,20 @@ inputs:
   github-token:
     description: "GitHub token"
     required: true
+  tag-prefix:
+    description: >
+      Tag a branch other than master under tags of its own: `<prefix>edge` and
+      `<prefix><short sha>`, and nothing else (no `edge`, bare sha, version,
+      `latest` or `prerelease`). Empty: master's tags.
+    required: false
+    default: ""
+  load-to:
+    description: >
+      A file to `docker save` the built image to, for a later job to test (a
+      single-platform build that pushes nothing; its attestations are skipped,
+      since nothing would carry them). Empty: nothing is loaded.
+    required: false
+    default: ""
 
 runs:
   using: "composite"
@@ -112,16 +126,21 @@ runs:
           org.opencontainers.image.licenses=MIT OR Apache-2.0
           org.opencontainers.image.authors=Calimero Limited <info@calimero.network>
           org.opencontainers.image.url=https://calimero.network
+          org.opencontainers.image.revision=${{ github.event.pull_request.head.sha || github.sha }}
         DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
         DOCKER_METADATA_PR_HEAD_SHA: true
       with:
         images: ghcr.io/${{ github.repository_owner }}/${{ inputs.container_name }}
+        # The commit is in the labels (org.opencontainers.image.revision), which
+        # e2e.yml's `Latest release image` reads to test that commit's workflows.
         tags: |
-          type=edge
-          type=sha,prefix=,format=short
-          type=raw,value=${{ inputs.version }},enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' }}
-          type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' && inputs.prerelease == 'false' }}
-          type=raw,value=prerelease,enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' && inputs.prerelease == 'true' }}
+          type=edge,enable=${{ inputs.tag-prefix == '' }}
+          type=sha,prefix=,format=short,enable=${{ inputs.tag-prefix == '' }}
+          type=raw,value=${{ inputs.tag-prefix }}edge,enable=${{ inputs.tag-prefix != '' }}
+          type=sha,prefix=${{ inputs.tag-prefix }},format=short,enable=${{ inputs.tag-prefix != '' }}
+          type=raw,value=${{ inputs.version }},enable=${{ github.ref == 'refs/heads/master' && inputs.tag-prefix == '' && inputs.release == 'true' }}
+          type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && inputs.tag-prefix == '' && inputs.release == 'true' && inputs.prerelease == 'false' }}
+          type=raw,value=prerelease,enable=${{ github.ref == 'refs/heads/master' && inputs.tag-prefix == '' && inputs.release == 'true' && inputs.prerelease == 'true' }}
         labels: ${{ env.LABELS }}
         annotations: ${{ env.LABELS }}
 
@@ -142,15 +161,40 @@ runs:
           echo "annotations=" >> "$GITHUB_OUTPUT"
         fi
 
+    - name: Check what to load
+      if: ${{ inputs.load-to != '' }}
+      shell: bash
+      env:
+        PUSH: ${{ inputs.push }}
+        PLATFORMS: ${{ inputs.platforms }}
+      run: |
+        if [ "$PUSH" = true ] || [[ "$PLATFORMS" == *","* ]]; then
+          echo "::error::load-to takes a single-platform build that pushes nothing (push=$PUSH, platforms=$PLATFORMS)"
+          exit 1
+        fi
+
     - name: Build and push image
       uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
       with:
         context: .
         file: ${{ inputs.dockerfile }}
         push: ${{ inputs.push == 'true' }}
+        load: ${{ inputs.load-to != '' }}
         platforms: ${{ inputs.platforms }}
         tags: ${{ steps.metadata.outputs.tags }}
         labels: ${{ steps.metadata.outputs.labels }}
         annotations: ${{ steps.resolve-annotations.outputs.annotations }}
-        provenance: mode=max
-        sbom: generator=docker/buildkit-syft-scanner:stable-1@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
+        provenance: ${{ inputs.load-to == '' && 'mode=max' || 'false' }}
+        sbom: ${{ inputs.load-to == '' && 'generator=docker/buildkit-syft-scanner:stable-1@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9' || 'false' }}
+
+    - name: Save the image
+      if: ${{ inputs.load-to != '' }}
+      shell: bash
+      env:
+        LOAD_TO: ${{ inputs.load-to }}
+        TAGS: ${{ steps.metadata.outputs.tags }}
+      run: |
+        set -euo pipefail
+        readarray -t tags < <(grep . <<<"$TAGS")
+        docker save -o "$LOAD_TO" "${tags[@]}"
+        ls -l "$LOAD_TO"

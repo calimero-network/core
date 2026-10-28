@@ -5,10 +5,14 @@ use calimero_primitives::search::{
     SearchDoc, SearchFieldKind, SearchFieldSchema, SearchIndexSchema, SearchMode, SearchOrder,
     SearchRequest, SearchValue,
 };
-use calimero_search::{SearchConfig, SearchService};
-use calimero_store::db::InMemoryDB;
-use calimero_store::Store;
-use std::sync::Arc;
+use calimero_search::index::{ContextIndex, SchemaOptions};
+
+/// An index over an in-memory directory, as merod opens one.
+fn open_index(schema: &SearchIndexSchema) -> ContextIndex {
+    let dir = Box::new(tantivy::directory::RamDirectory::create());
+    let (index, _state) = ContextIndex::open(dir, schema, SchemaOptions::default()).unwrap();
+    index.expect("a new index opens fresh")
+}
 
 fn schema() -> SearchIndexSchema {
     SearchIndexSchema {
@@ -66,11 +70,7 @@ fn by_ts(descending: bool) -> SearchOrder {
 
 #[test]
 fn hits_come_back_by_a_number_field_and_page_in_that_order() {
-    let service = SearchService::new(
-        Store::new(Arc::new(InMemoryDB::owned())),
-        SearchConfig::default(),
-    );
-    let (index, _) = service.open_index(&[7; 32], &schema()).unwrap();
+    let index = open_index(&schema());
     // Relevance would put the doc that says "hello" twice first.
     let docs = [
         doc(1, "hello hello hello", 10),
@@ -137,11 +137,7 @@ fn a_snippet_comes_from_the_field_that_matched() {
             },
         ],
     };
-    let service = SearchService::new(
-        Store::new(Arc::new(InMemoryDB::owned())),
-        SearchConfig::default(),
-    );
-    let (index, _) = service.open_index(&[8; 32], &schema).unwrap();
+    let index = open_index(&schema);
     let doc = SearchDoc {
         id: [1; 32],
         fields: vec![
@@ -200,11 +196,7 @@ fn a_prefix_query_marks_the_words_it_completed() {
             },
         ],
     };
-    let service = SearchService::new(
-        Store::new(Arc::new(InMemoryDB::owned())),
-        SearchConfig::default(),
-    );
-    let (index, _) = service.open_index(&[9; 32], &schema).unwrap();
+    let index = open_index(&schema);
     let doc = SearchDoc {
         id: [1; 32],
         fields: vec![

@@ -1,0 +1,201 @@
+# A workflow for org-gated:
+# the app reads the caller's standing in its organization (`env::caller_org`)
+# and gates each method on it: members read, admins write the pinned note, and
+# only a team's members write that team's note.
+name: Org-gated notes
+description: env::caller_org roles and teams gate an app's methods, as owner, admin, member and guest
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 6050
+accounts: [alice, bob, carol, dave]
+steps:
+  - name: Alice founds an organization
+    type: create_org
+    account: alice
+    org_name: Gated
+    outputs: { org: orgId }
+  - name: An invite for Bob
+    type: invite
+    account: alice
+    org: "{{org}}"
+    role: member
+    outputs: { token: token }
+  - name: Bob joins
+    type: redeem_invite
+    account: bob
+    token: "{{token}}"
+  - name: Alice deploys org-gated in the organization
+    type: deploy
+    account: alice
+    wasm: "{{env.CORE_WASM_DIR}}/org_gated.wasm"
+    app_name: org-gated
+    org: "{{org}}"
+    outputs: { app: appId }
+  - name: An admin invite for Carol
+    type: invite
+    account: alice
+    org: "{{org}}"
+    role: admin
+    outputs: { admin_token: token }
+  - name: Carol joins as admin
+    type: redeem_invite
+    account: carol
+    token: "{{admin_token}}"
+  - name: A guest invite for Dave
+    type: invite
+    account: alice
+    org: "{{org}}"
+    role: guest
+    outputs: { guest_token: token }
+  - name: Dave joins as a guest
+    type: redeem_invite
+    account: dave
+    token: "{{guest_token}}"
+  - name: Alice reads her standing
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: whoami
+    outputs: { alice_standing: result }
+  - name: Alice is the organization's owner
+    type: json_assert
+    statements:
+      - 'json_subset({{alice_standing}}, {"org": "{{org}}", "role": "owner", "teams": []})'
+  - name: Bob reads his standing
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: whoami
+    outputs: { bob_standing: result }
+  - name: Bob is a member
+    type: json_assert
+    statements:
+      - 'json_subset({{bob_standing}}, {"role": "member"})'
+  - name: Dave reads his standing
+    type: view
+    account: dave
+    app: "{{app}}"
+    method: whoami
+    outputs: { dave_standing: result }
+  - name: Dave is a guest
+    type: json_assert
+    statements:
+      - 'json_subset({{dave_standing}}, {"role": "guest"})'
+  - name: The owner pins a note
+    type: call
+    account: alice
+    app: "{{app}}"
+    method: set_pinned
+    args: { text: welcome }
+  - name: A member reads it
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: pinned
+    expect: welcome
+  - name: A member may not pin
+    type: call
+    account: bob
+    app: "{{app}}"
+    method: set_pinned
+    args: { text: bob was here }
+    expected_failure: true
+    outputs: { bob_pin: error }
+  - name: The app refused it as admins-only
+    type: assert
+    statements:
+      - contains("{{bob_pin}}", "admins only")
+  - name: An admin may pin
+    type: call
+    account: carol
+    app: "{{app}}"
+    method: set_pinned
+    args: { text: pinned by carol }
+  - name: The admin's note stands, not the member's
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: pinned
+    expect: pinned by carol
+  - name: A guest may not read the pinned note
+    type: view
+    account: dave
+    app: "{{app}}"
+    method: pinned
+    expected_failure: true
+    outputs: { dave_read: error }
+  - name: The app refused it as members-only
+    type: assert
+    statements:
+      - contains("{{dave_read}}", "members only")
+  - name: Alice makes a team
+    type: create_team
+    account: alice
+    org: "{{org}}"
+    team_name: writers
+    outputs: { team: teamId }
+  - name: Bob joins the team
+    type: team_add
+    account: alice
+    org: "{{org}}"
+    team: "{{team}}"
+    members: [bob]
+    role: member
+  - name: Bob's standing names the team
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: whoami
+    outputs: { bob_in_team: result }
+    retry_for: 5
+  - name: The team is Bob's
+    type: json_assert
+    statements:
+      - 'json_subset({{bob_in_team}}, {"teams": ["{{team}}"]})'
+  - name: A team member writes the team's note
+    type: call
+    account: bob
+    app: "{{app}}"
+    method: set_team_note
+    args: { team: "{{team}}", text: draft one }
+  - name: An admin outside the team may not
+    type: call
+    account: carol
+    app: "{{app}}"
+    method: set_team_note
+    args: { team: "{{team}}", text: carol's edit }
+    expected_failure: true
+    outputs: { carol_note: error }
+  - name: The app refused it as team-only
+    type: assert
+    statements:
+      - contains("{{carol_note}}", "members of that team only")
+  - name: The team's note is Bob's
+    type: view
+    account: carol
+    app: "{{app}}"
+    method: team_note
+    args: { team: "{{team}}" }
+    expect: draft one
+  - name: Bob leaves the team
+    type: team_remove
+    account: alice
+    org: "{{org}}"
+    team: "{{team}}"
+    members: [bob]
+  - name: Then Bob may not write the team's note
+    type: call
+    account: bob
+    app: "{{app}}"
+    method: set_team_note
+    args: { team: "{{team}}", text: after leaving }
+    expected_failure: true
+    retry_for: 5
+  - name: The note is unchanged
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: team_note
+    args: { team: "{{team}}" }
+    expect: draft one

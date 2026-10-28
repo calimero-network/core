@@ -1,197 +1,155 @@
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no counterpart in this node):
+#   login (unknown) x2: checks what the dropped steps did
+#   wait_for_sync x2: replication is synchronous: a read sees every committed write
 name: Blobs Rust Example
 description: Upload, announce, discover and delete blobs using the Rust SDK example.
-
-force_pull_image: true
-
-auth_mode: embedded
-
-nodes:
-  count: 2
-  image: ghcr.io/calimero-network/merod:edge
-  prefix: rust-blob
-
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 3580
+accounts:
+- rust-blob-1
+- rust-blob-2
 steps:
-  # First login on a fresh embedded-auth node bootstraps its root key
-  # and seeds merobox's token cache; every step below runs authenticated.
-  - name: Login on rust-blob-1
-    type: login
-    node: rust-blob-1
-    username: dev
-    password: dev-password
-
-  - name: Login on rust-blob-2
-    type: login
-    node: rust-blob-2
-    username: dev
-    password: dev-password
-
-  - name: Install Rust blobs app on inviter
-    type: install_application
-    node: rust-blob-1
-    path: "../../dist/com.calimero.blobs-0.0.0.mpk"
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Create Mesh
-    type: create_mesh
-    context_node: rust-blob-1
-    application_id: "{{app_id}}"
-    nodes:
-      - rust-blob-2
-    outputs:
-      context_id: contextId
-      inviter_key: memberPublicKey
-
-  - name: Upload sample PNG blob
-    type: upload_blob
-    node: rust-blob-1
-    file_path: static/sample.png
-    context_id: "{{context_id}}"
-    outputs:
-      png_blob_id: blob_id
-      png_blob_size: size
-
-  - name: Register PNG metadata
-    type: call
-    node: rust-blob-1
-    context_id: "{{context_id}}"
-    method: upload_file
-    args:
-      name: screenshot.png
-      blob_id: "{{png_blob_id}}"
-      size: "{{png_blob_size}}"
-      mime_type: image/png
-    outputs:
-      png_file_id: result.output
-
-  - name: Assert PNG registered
-    type: assert
-    statements:
-      - "is_set({{png_file_id}})"
-
-  - name: Upload sample TXT blob
-    type: upload_blob
-    node: rust-blob-1
-    file_path: static/test.txt
-    context_id: "{{context_id}}"
-    outputs:
-      txt_blob_id: blob_id
-      txt_blob_size: size
-
-  - name: Register TXT metadata
-    type: call
-    node: rust-blob-1
-    context_id: "{{context_id}}"
-    method: upload_file
-    args:
-      name: readme.txt
-      blob_id: "{{txt_blob_id}}"
-      size: "{{txt_blob_size}}"
-      mime_type: text/plain
-    outputs:
-      txt_file_id: result.output
-
-  - name: Assert TXT registered
-    type: assert
-    statements:
-      - "is_set({{txt_file_id}})"
-
-  - name: Wait for announcements
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - rust-blob-1
-      - rust-blob-2
-    timeout: 60
-    trigger_sync: true
-    expect:
-      method: get_blob_id_hex
-      args:
-        file_id: "{{txt_file_id}}"
-      equals:
-        output: "{{txt_blob_id}}"
-
-  - name: List files on inviter
-    type: call
-    node: rust-blob-1
-    context_id: "{{context_id}}"
-    method: list_files
-    outputs:
-      inviter_files: result.output
-
-  - name: Assert inviter sees two files
-    type: assert
-    statements:
-      - "contains({{inviter_files}}, '{{png_file_id}}')"
-      - "contains({{inviter_files}}, '{{txt_file_id}}')"
-
-  - name: List files on invitee
-    type: call
-    node: rust-blob-2
-    context_id: "{{context_id}}"
-    method: list_files
-    outputs:
-      invitee_files: result.output
-
-  - name: Assert invitee sees two files
-    type: assert
-    statements:
-      - "contains({{invitee_files}}, '{{png_file_id}}')"
-      - "contains({{invitee_files}}, '{{txt_file_id}}')"
-
-  - name: Get PNG file blob id
-    type: call
-    node: rust-blob-1
-    context_id: "{{context_id}}"
-    method: get_blob_id_hex
-    args:
-      file_id: "{{png_file_id}}"
-    outputs:
-      retrieved_png_blob: result.output
-
-  - name: Assert PNG blob id matches
-    type: assert
-    statements:
-      - "equal({{retrieved_png_blob}}, {{png_blob_id}})"
-
-  - name: Delete PNG file
-    type: call
-    node: rust-blob-1
-    context_id: "{{context_id}}"
-    method: delete_file
-    args:
-      file_id: "{{png_file_id}}"
-
-  - name: Wait for delete propagation
-    type: wait_for_sync
-    context_id: "{{context_id}}"
-    nodes:
-      - rust-blob-1
-      - rust-blob-2
-    timeout: 60
-    trigger_sync: true
-    expect:
-      method: search_files
-      args:
-        query: screenshot
-      equals:
-        output: []
-
-  - name: List files after delete
-    type: call
-    node: rust-blob-2
-    context_id: "{{context_id}}"
-    method: list_files
-    outputs:
-      final_files: result.output
-
-  - name: Assert only one file remains
-    type: assert
-    statements:
-      - "contains({{final_files}}, '{{txt_file_id}}')"
-      - "not_contains({{final_files}}, '{{png_file_id}}')"
-
-stop_all_nodes: false
-restart: false
-wait_timeout: 120
+- name: Install Rust blobs app on inviter
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/blobs.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: rust-blob-1
+- type: set
+  values:
+    app_id: com.calimero.blobs
+- name: Create Mesh
+  type: create_org
+  account: rust-blob-1
+  org_name: mesh
+  outputs:
+    namespace_id: orgId
+- type: invite
+  account: rust-blob-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: rust-blob-2
+  token: '{{_mesh_invite}}'
+- name: Create Mesh
+  type: deploy
+  account: rust-blob-1
+  org: '{{namespace_id}}'
+  wasm: '{{env.CORE_WASM_DIR}}/blobs.wasm'
+  app_name: Create Mesh
+  outputs:
+    context_id: contextId
+    inviter_key: memberPublicKey
+- name: Upload sample PNG blob
+  type: upload_blob
+  app: '{{context_id}}'
+  file_path: static/sample.png
+  account: rust-blob-1
+  outputs:
+    png_blob_id: blob_id
+    png_blob_size: size
+- name: Register PNG metadata
+  type: call
+  app: '{{context_id}}'
+  method: upload_file
+  args:
+    name: screenshot.png
+    blob_id: '{{png_blob_id}}'
+    size: '{{png_blob_size}}'
+    mime_type: image/png
+  account: rust-blob-1
+  outputs:
+    png_file_id: result
+- name: Assert PNG registered
+  type: assert
+  statements:
+  - is_set({{png_file_id}})
+- name: Upload sample TXT blob
+  type: upload_blob
+  app: '{{context_id}}'
+  file_path: static/test.txt
+  account: rust-blob-1
+  outputs:
+    txt_blob_id: blob_id
+    txt_blob_size: size
+- name: Register TXT metadata
+  type: call
+  app: '{{context_id}}'
+  method: upload_file
+  args:
+    name: readme.txt
+    blob_id: '{{txt_blob_id}}'
+    size: '{{txt_blob_size}}'
+    mime_type: text/plain
+  account: rust-blob-1
+  outputs:
+    txt_file_id: result
+- name: Assert TXT registered
+  type: assert
+  statements:
+  - is_set({{txt_file_id}})
+- name: List files on inviter
+  type: call
+  app: '{{context_id}}'
+  method: list_files
+  args: {}
+  account: rust-blob-1
+  outputs:
+    inviter_files: result
+- name: Assert inviter sees two files
+  type: assert
+  statements:
+  - contains({{inviter_files}}, '{{png_file_id}}')
+  - contains({{inviter_files}}, '{{txt_file_id}}')
+- name: List files on invitee
+  type: call
+  app: '{{context_id}}'
+  method: list_files
+  args: {}
+  account: rust-blob-2
+  outputs:
+    invitee_files: result
+- name: Assert invitee sees two files
+  type: assert
+  statements:
+  - contains({{invitee_files}}, '{{png_file_id}}')
+  - contains({{invitee_files}}, '{{txt_file_id}}')
+- name: Get PNG file blob id
+  type: call
+  app: '{{context_id}}'
+  method: get_blob_id_hex
+  args:
+    file_id: '{{png_file_id}}'
+  account: rust-blob-1
+  outputs:
+    retrieved_png_blob: result
+- name: Assert PNG blob id matches
+  type: assert
+  statements:
+  - equal({{retrieved_png_blob}}, {{png_blob_id}})
+- name: Delete PNG file
+  type: call
+  app: '{{context_id}}'
+  method: delete_file
+  args:
+    file_id: '{{png_file_id}}'
+  account: rust-blob-1
+- name: List files after delete
+  type: call
+  app: '{{context_id}}'
+  method: list_files
+  args: {}
+  account: rust-blob-2
+  outputs:
+    final_files: result
+- name: Assert only one file remains
+  type: assert
+  statements:
+  - contains({{final_files}}, '{{txt_file_id}}')
+  - not_contains({{final_files}}, '{{png_file_id}}')

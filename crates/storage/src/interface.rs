@@ -300,6 +300,24 @@ enum RemoveMode {
     Relocate,
 }
 
+/// What a cell's writers let an account put into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PutGrant {
+    /// `WRITE`: any write.
+    Write,
+    /// `WRITE_ONCE` alone, in a set granting nothing beside it: one write.
+    WriteOnce,
+}
+
+/// The operation a local write of a writer-set-guarded entity performs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GuardedWrite {
+    /// An insert, update or write-once write.
+    Put,
+    /// A removal.
+    Delete,
+}
+
 /// A resolved local `Shared` stamp authorization: the writer set to persist
 /// paired with the signer to record. Produced by
 /// [`Interface::authorize_local_shared_stamp`].
@@ -476,18 +494,20 @@ impl<S: StorageAdaptor> Interface<S> {
         }
     }
 
-    /// Enforce `WRITE` for an upsert of `id`, or settle it as a written-once write
-    /// where the writer holds `WRITE_ONCE` alone in a set granting nothing beside it.
-    fn enforce_put_mask(
-        signer_account: &AccountId,
+    /// What `account` may put into a cell whose writers are `writers`: the one
+    /// definition of "may write" a member or anchor upsert is judged by, at merge
+    /// ([`Self::enforce_put_mask`]) and on the local write path
+    /// ([`Self::refuse_local_guarded_write`]).
+    ///
+    /// `WRITE` writes freely. `WRITE_ONCE` writes once, and only in a set that
+    /// grants nothing beside it.
+    fn put_grant(
+        account: &AccountId,
         writers: &BTreeMap<AccountId, OpMask>,
-        id: Id,
-        data: &[u8],
-        signature_data: &SignatureData,
-    ) -> Result<Option<Settled>, StorageError> {
-        let granted = writers.get(signer_account).copied().unwrap_or(OpMask::NONE);
+    ) -> Result<PutGrant, StorageError> {
+        let granted = writers.get(account).copied().unwrap_or(OpMask::NONE);
         if granted.contains(OpMask::WRITE) {
-            return Ok(None);
+            return Ok(PutGrant::Write);
         }
         if !granted.contains(OpMask::WRITE_ONCE) {
             return Err(StorageError::ActionNotAllowed(
@@ -498,6 +518,80 @@ impl<S: StorageAdaptor> Interface<S> {
             return Err(StorageError::ActionNotAllowed(
                 "a write-once grant beside other grants writes nothing".to_owned(),
             ));
+        }
+        Ok(PutGrant::WriteOnce)
+    }
+
+    /// Refuse a local write or delete of a writer-set-guarded entity (a `Shared`
+    /// anchor or a `SharedMember`) by an account its cell's current writers do not
+    /// grant the operation.
+    ///
+    /// Every mutating method of a guarded collection reaches storage through the
+    /// local write path, so this is where they are all checked: a cell's own
+    /// `insert`, and every insert, update and removal through `get_mut` into the
+    /// collection it holds, at any depth. The caller is [`env::account_id`](crate::env::account_id),
+    /// and its writers are the ones the merge path
+    /// resolves ([`Self::resolve_anchor_writers`]), which include a rotation this
+    /// run asked for. The mask rules are the merge path's
+    /// ([`Self::put_grant`], [`Self::enforce_op_mask`]).
+    ///
+    /// Before this, such a write was saved unsigned, for peers to refuse at merge.
+    /// A node that runs the app once and commits what it wrote (release-v2) has no
+    /// such peer, so the write would land. Refusing it here, before anything is
+    /// stored, makes the collection method return the error, which the app's
+    /// method returns. It never traps.
+    ///
+    /// A merge replays writes other nodes already verified, so it is not checked
+    /// here. Nor is a cell's genesis (see the body).
+    pub(crate) fn refuse_local_guarded_write(
+        id: Id,
+        storage_type: &StorageType,
+        op: GuardedWrite,
+    ) -> Result<(), StorageError> {
+        if crate::env::in_merge_mode() {
+            return Ok(());
+        }
+        let anchor = match storage_type {
+            StorageType::SharedMember { anchor, .. } => *anchor,
+            StorageType::Shared { .. } => id,
+            _ => return Ok(()),
+        };
+        // A cell's genesis: its anchor, and its value entry, written by whoever
+        // constructs the cell, with the writers the constructor names. Neither is
+        // stored yet, so the write reaches nothing a writer set guards. (A lazily
+        // created cell's genesis comes after its policy's guard: `materialize`.)
+        let genesis = op == GuardedWrite::Put
+            && (id == anchor || id == crate::collections::cell_value_id(anchor))
+            && <Index<S>>::get_metadata(id)?.is_none();
+        if genesis {
+            return Ok(());
+        }
+        let writers = Self::resolve_anchor_writers(anchor);
+        let account: AccountId = crate::env::account_id().into();
+        let refused = match op {
+            GuardedWrite::Put => Self::put_grant(&account, &writers).err(),
+            GuardedWrite::Delete => Self::enforce_op_mask(&account, OpMask::DELETE, &writers).err(),
+        };
+        match refused {
+            None => Ok(()),
+            Some(StorageError::ActionNotAllowed(why)) => Err(StorageError::ActionNotAllowed(
+                format!("the caller may not write this cell: {why}"),
+            )),
+            Some(other) => Err(other),
+        }
+    }
+
+    /// Enforce `WRITE` for an upsert of `id`, or settle it as a written-once write
+    /// where the writer holds `WRITE_ONCE` alone in a set granting nothing beside it.
+    fn enforce_put_mask(
+        signer_account: &AccountId,
+        writers: &BTreeMap<AccountId, OpMask>,
+        id: Id,
+        data: &[u8],
+        signature_data: &SignatureData,
+    ) -> Result<Option<Settled>, StorageError> {
+        if Self::put_grant(signer_account, writers)? == PutGrant::Write {
+            return Ok(None);
         }
         refuse_oversized_written_once(data)?;
         match <Index<S>>::get_metadata(id)? {
@@ -1329,6 +1423,11 @@ impl<S: StorageAdaptor> Interface<S> {
         // `save_raw`: a refusal there would leave both behind.
         refuse_unbound_owned_entity(child.id(), &child.element().metadata)?;
         Self::refuse_local_cell_owned_entity(child.id(), parent_id, &child.element().metadata)?;
+        Self::refuse_local_guarded_write(
+            child.id(),
+            &child.element().metadata.storage_type,
+            GuardedWrite::Put,
+        )?;
         // A node refuses a write of a deleted written-once key from a peer, so
         // it refuses its own too, before the link would lift the tombstone.
         if let StorageType::User { rules, .. } = &child.element().metadata.storage_type {
@@ -3587,6 +3686,17 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         }
 
+        // A writer-set-guarded entity is removed only by a caller holding
+        // `DELETE`. A re-key relocation re-inserts what it removes, and that
+        // insert is checked as a write.
+        if mode == RemoveMode::Delete {
+            Self::refuse_local_guarded_write(
+                child_id,
+                &metadata.storage_type,
+                GuardedWrite::Delete,
+            )?;
+        }
+
         // If this is a local user action, set the nonce. The owner may delete
         // an entry that is not immutable, and a moderator any entry naming
         // their anchor; anyone else's delete stays unsigned, and every node
@@ -4714,6 +4824,9 @@ impl<S: StorageAdaptor> Interface<S> {
         data: Vec<u8>,
         metadata: Metadata,
     ) -> Result<Option<[u8; 32]>, StorageError> {
+        // `add_child_to` checks this before it links a child, while a cell's
+        // genesis is still unstored; every other write is checked here.
+        Self::refuse_local_guarded_write(id, &metadata.storage_type, GuardedWrite::Put)?;
         Self::save_raw_stamped(id, data, metadata, true, false, HeldRow::Unread)
     }
 

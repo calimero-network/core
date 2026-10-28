@@ -1,167 +1,121 @@
-description: >
-  Four nodes discover each other with mDNS switched off, and a write travels
-  between two peers that are both joiners — neither of them the node that
-  created the namespace.
-
-  Why a second, larger case
-  -------------------------
-
-  The 2-node companion
-  (`discovery-bootstrap-only-2node.yml`) proves a bootstrap address can be
-  dialled at all. It cannot distinguish that from a fleet where only the one
-  connection it needs happens to form: with two peers there is exactly one edge,
-  and the writer is always either the namespace creator or its only peer.
-
-  Four nodes make the gossipsub mesh a real graph and put a write on an edge
-  that no invitation flow established: node-3 writes, node-4 reads. Both are
-  joiners, so the payload has to cross a link between two peers that only know
-  of each other through the bootstrap roster and kad — the namespace creator is
-  not on the path. A partially-populated routing table, or a mesh that forms
-  only towards the node everyone was invited by, converges in the 2-node case
-  and fails here.
-
-  Four rather than eight: `mesh-soak-8node` already owns the upper end of the
-  mesh-size range, and it is a soak with a 70s idle tail. This scenario is meant
-  to be cheap enough to run on every PR.
-
-  See the 2-node file for the full background on why mDNS is load-bearing in
-  the flat-bridge suite, how `restart: true` + `mdns: false` forces bootstrap
-  discovery, why there are no log-pattern assertions, and what this shape still
-  does not cover (rendezvous). Same merobox >= 0.6.57 requirement.
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no counterpart in this node):
+#   login (unknown) x4: checks what the dropped steps did
+#   wait_for_sync x2: replication is synchronous: a read sees every committed write
 name: E2E Discovery - Bootstrap Only, No mDNS (4 nodes)
+description: 'Four nodes discover each other with mDNS switched off, and a write travels between two peers
+  that are both joiners — neither of them the node that created the namespace.
 
-force_pull_image: false
+  Why a second, larger case -------------------------
 
-restart: true
+  The 2-node companion (`discovery-bootstrap-only-2node.yml`) proves a bootstrap address can be dialled
+  at all. It cannot distinguish that from a fleet where only the one connection it needs happens to form:
+  with two peers there is exactly one edge, and the writer is always either the namespace creator or its
+  only peer.
 
-auth_mode: embedded
+  Four nodes make the gossipsub mesh a real graph and put a write on an edge that no invitation flow established:
+  node-3 writes, node-4 reads. Both are joiners, so the payload has to cross a link between two peers
+  that only know of each other through the bootstrap roster and kad — the namespace creator is not on
+  the path. A partially-populated routing table, or a mesh that forms only towards the node everyone was
+  invited by, converges in the 2-node case and fails here.
 
-nodes:
-  count: 4
-  image: ghcr.io/calimero-network/merod:edge
-  prefix: e2e-node
-  mdns: false
+  Four rather than eight: `mesh-soak-8node` already owns the upper end of the mesh-size range, and it
+  is a soak with a 70s idle tail. This scenario is meant to be cheap enough to run on every PR.
 
+  See the 2-node file for the full background on why mDNS is load-bearing in the flat-bridge suite, how
+  `restart: true` + `mdns: false` forces bootstrap discovery, why there are no log-pattern assertions,
+  and what this shape still does not cover (rendezvous). Same merobox >= 0.6.57 requirement.
+
+  '
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 4220
+accounts:
+- e2e-node-1
+- e2e-node-2
+- e2e-node-3
+- e2e-node-4
 steps:
-  - name: Login on e2e-node-1
-    type: login
-    node: e2e-node-1
-    username: dev
-    password: dev-password
-
-  - name: Login on e2e-node-2
-    type: login
-    node: e2e-node-2
-    username: dev
-    password: dev-password
-
-  - name: Login on e2e-node-3
-    type: login
-    node: e2e-node-3
-    username: dev
-    password: dev-password
-
-  - name: Login on e2e-node-4
-    type: login
-    node: e2e-node-4
-    username: dev
-    password: dev-password
-
-  - name: Install application on node-1
-    type: install_application
-    node: e2e-node-1
-    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Create the mesh - namespace, context and every joiner
-    type: create_mesh
-    context_node: e2e-node-1
-    application_id: '{{app_id}}'
-    nodes:
-      - e2e-node-2
-      - e2e-node-3
-      - e2e-node-4
-    outputs:
-      ns: namespaceId
-      ctx: contextId
-
-  # Barrier before the write, not decoration. `join_context` returns when the
-  # join is accepted, while the joiner's context state materialises a moment
-  # later; writing into that gap gets `Uninitialized` ("context state not
-  # initialized, awaiting state sync"), which merobox hides behind a retry. The
-  # 2-node companion hit exactly that and passed anyway, logging two ERRORs
-  # unrelated to discovery.
-  - name: Settle the joins before the write
-    type: wait_for_sync
-    context_id: '{{ctx}}'
-    nodes:
-      - e2e-node-1
-      - e2e-node-2
-      - e2e-node-3
-      - e2e-node-4
-    timeout: 60
-    check_interval: 2
-    trigger_sync: true
-    expect:
-      method: len
-      equals:
-        output: 0
-
-  # The point of the scenario: a joiner-to-joiner write. Node-1 created the
-  # namespace and invited everyone, so every peer has a reason to talk to it.
-  # Nothing gave node-3 and node-4 a reason to know each other beyond the
-  # bootstrap roster they started with.
-  - name: Node-3 writes a key
-    type: call
-    node: e2e-node-3
-    context_id: '{{ctx}}'
-    method: set
-    args:
-      key: "from_node_3"
-      value: "joiner_to_joiner"
-
-  - name: Converge all four peers
-    type: wait_for_sync
-    context_id: '{{ctx}}'
-    nodes:
-      - e2e-node-1
-      - e2e-node-2
-      - e2e-node-3
-      - e2e-node-4
-    timeout: 60
-    check_interval: 2
-    trigger_sync: true
-    expect:
-      method: get
-      args:
-        key: "from_node_3"
-      equals:
-        output: "joiner_to_joiner"
-
-  - name: Node-4 reads node-3's key
-    type: call
-    node: e2e-node-4
-    context_id: '{{ctx}}'
-    method: get
-    args:
-      key: "from_node_3"
-    outputs:
-      n4_reads_n3: result
-
-  - name: Node-2 reads node-3's key
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx}}'
-    method: get
-    args:
-      key: "from_node_3"
-    outputs:
-      n2_reads_n3: result
-
-  - name: Assert the joiner-to-joiner write reached the other joiners
-    type: json_assert
-    statements:
-      - 'json_equal({{n4_reads_n3}}, {"output": "joiner_to_joiner"})'
-      - 'json_equal({{n2_reads_n3}}, {"output": "joiner_to_joiner"})'
+- name: Install application on node-1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: e2e-node-1
+- type: set
+  values:
+    app_id: com.calimero.scaffolding-e2e
+- name: Create the mesh - namespace, context and every joiner
+  type: create_org
+  account: e2e-node-1
+  org_name: mesh
+  outputs:
+    namespace_id: orgId
+- type: invite
+  account: e2e-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: e2e-node-2
+  token: '{{_mesh_invite}}'
+- type: invite
+  account: e2e-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: e2e-node-3
+  token: '{{_mesh_invite}}'
+- type: invite
+  account: e2e-node-1
+  org: '{{namespace_id}}'
+  role: member
+  outputs:
+    _mesh_invite: token
+- type: redeem_invite
+  account: e2e-node-4
+  token: '{{_mesh_invite}}'
+- name: Create the mesh - namespace, context and every joiner
+  type: deploy
+  account: e2e-node-1
+  org: '{{namespace_id}}'
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Create the mesh - namespace, context and every joiner
+  outputs:
+    ctx: contextId
+- name: Node-3 writes a key
+  type: call
+  app: '{{ctx}}'
+  method: set
+  args:
+    key: from_node_3
+    value: joiner_to_joiner
+  account: e2e-node-3
+- name: Node-4 reads node-3's key
+  type: call
+  app: '{{ctx}}'
+  method: get
+  args:
+    key: from_node_3
+  account: e2e-node-4
+  outputs:
+    n4_reads_n3: rpc
+- name: Node-2 reads node-3's key
+  type: call
+  app: '{{ctx}}'
+  method: get
+  args:
+    key: from_node_3
+  account: e2e-node-2
+  outputs:
+    n2_reads_n3: rpc
+- name: Assert the joiner-to-joiner write reached the other joiners
+  type: json_assert
+  statements:
+  - 'json_equal({{n4_reads_n3}}, {"output": "joiner_to_joiner"})'
+  - 'json_equal({{n2_reads_n3}}, {"output": "joiner_to_joiner"})'

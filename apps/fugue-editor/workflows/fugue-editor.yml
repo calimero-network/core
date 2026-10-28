@@ -1,0 +1,125 @@
+# A workflow for fugue-editor (its benchmark is
+# crates/runtime/tests/fugue_wall.rs): two members edit one FugueText
+# document, by position and by delta, and read the merged text back.
+name: Fugue editor
+description: FugueText inserts and deltas by two members, read back whole and by range
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 6040
+accounts: [alice, bob, carol]
+steps:
+  - name: Alice founds an organization
+    type: create_org
+    account: alice
+    org_name: Docs
+    outputs: { org: orgId }
+  - name: An invite for Bob
+    type: invite
+    account: alice
+    org: "{{org}}"
+    role: member
+    outputs: { token: token }
+  - name: Bob joins
+    type: redeem_invite
+    account: bob
+    token: "{{token}}"
+  - name: Alice deploys fugue-editor in the organization
+    type: deploy
+    account: alice
+    wasm: "{{env.CORE_WASM_DIR}}/fugue_editor.wasm"
+    app_name: fugue-editor
+    org: "{{org}}"
+    outputs: { app: appId }
+  - name: A new document is empty
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: get_length
+    expect: 0
+  - name: Alice types hello
+    type: call
+    account: alice
+    app: "{{app}}"
+    method: insert_text
+    args: { position: 0, text: hello }
+  - name: Bob appends world
+    type: call
+    account: bob
+    app: "{{app}}"
+    method: insert_text
+    args: { position: 5, text: " world" }
+  - name: Alice reads both edits
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: get_text
+    expect: hello world
+  - name: Bob capitalises the first word by delta (delete one, insert one)
+    type: call
+    account: bob
+    app: "{{app}}"
+    method: apply_delta
+    args:
+      changes:
+        - delete: 1
+        - insert: H
+  - name: Alice inserts a comma by delta (retain five, insert)
+    type: call
+    account: alice
+    app: "{{app}}"
+    method: apply_delta
+    args:
+      changes:
+        - retain: 5
+        - insert: ","
+  - name: The merged text
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: get_text
+    expect: Hello, world
+  - name: Its length
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: get_length
+    expect: 12
+  - name: One character
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: char_at
+    args: { position: 5 }
+    expect: ","
+  - name: Past the end is nothing
+    type: view
+    account: alice
+    app: "{{app}}"
+    method: char_at
+    args: { position: 12 }
+    expect: null
+  - name: A range
+    type: view
+    account: bob
+    app: "{{app}}"
+    method: text_range
+    args: { start: 7, end: 12 }
+    expect: world
+  - name: The edits were published as events
+    type: events
+    account: alice
+    app: "{{app}}"
+    outputs: { evs: events }
+  - name: Creation, both inserts and the delta's delete are among them
+    type: assert
+    statements:
+      - contains("{{evs}}", "DocumentCreated")
+      - contains("{{evs}}", "TextInserted")
+      - contains("{{evs}}", "TextDeleted")
+  - name: Carol is outside the organization
+    type: view
+    account: carol
+    app: "{{app}}"
+    method: get_text
+    expected_error: NOT_FOUND

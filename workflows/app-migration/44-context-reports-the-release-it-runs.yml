@@ -1,204 +1,137 @@
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no counterpart in this node):
+#   assert_api_response x3: v1 admin API
+#   delete_context (unknown) x1: checks what the dropped steps did
+#   delete_namespace x1: v1 namespace deletion
+#   script x1: scripts drive v1 node RPC URLs
+#   wait_for_sync x1: replication is synchronous: a read sees every committed write
+# Fixed in the migration (converter bugs): a cascade upgrade_group
+# upgrades every app in the namespace's teams; of get_migration_status
+# only the outputs that mean the same here are kept.
 name: 44 - A context reports the release it runs, not the latest install (2-node)
-description: >
-  Node 2 joins a v1 context, then installs v2 ahead of the admin's upgrade.
-  v1 and v2 share one application id, so the application row now names v2
-  while the context still runs v1: GET /admin-api/contexts/{id} must say
-  1.0.0. The admin then cascades the namespace to v2 and node 2 activates
-  it; from then on the context reports 2.0.0.
+description: 'Node 2 joins a v1 context, then installs v2 ahead of the admin''s upgrade. v1 and v2 share
+  one application id, so the application row now names v2 while the context still runs v1: GET /admin-api/contexts/{id}
+  must say 1.0.0. The admin then cascades the namespace to v2 and node 2 activates it; from then on the
+  context reports 2.0.0.
 
-no_docker: false
-nuke_on_start: true
-nuke_on_end: false
-
-nodes:
-  count: 2
-  image: merod:local
-  prefix: app-migration-running
-  base_port: 10290
-  base_rpc_port: 10390
-
+  '
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 3390
+accounts:
+- app-migration-running-1
+- app-migration-running-2
 steps:
-  - name: Install scenario-pure-bugfix-v1 on node 1
-    type: install_application
-    node: app-migration-running-1
-    path: dist/com.calimero.scenario-pure-bugfix-1.0.0.mpk
-    dev: true
-    outputs:
-      app_v1: applicationId
-
-  - name: Create namespace (v1) on node 1
-    type: create_namespace
-    node: app-migration-running-1
-    application_id: "{{app_v1}}"
-    outputs:
-      namespace_id: namespaceId
-
-  - name: Create Open subgroup under namespace
-    type: create_group_in_namespace
-    node: app-migration-running-1
-    namespace_id: "{{namespace_id}}"
-    group_name: "running-scenario-subgroup"
-    outputs:
-      group_id: groupId
-
-  - name: Mark subgroup as Open
-    type: set_subgroup_visibility
-    node: app-migration-running-1
-    group_id: "{{group_id}}"
-    visibility: open
-
-  - name: Create context in subgroup on node 1 (v1)
-    type: create_context
-    node: app-migration-running-1
-    application_id: "{{app_v1}}"
-    group_id: "{{group_id}}"
-    outputs:
-      ctx_id: contextId
-
-  - name: Write v1 item k1=10 on node 1
-    type: call
-    node: app-migration-running-1
-    context_id: "{{ctx_id}}"
-    method: add_value
-    args:
-      key: "k1"
-      value: 10
-
-  - name: Create namespace invitation for node 2
-    type: create_namespace_invitation
-    node: app-migration-running-1
-    namespace_id: "{{namespace_id}}"
-    outputs:
-      namespace_invitation: invitation
-
-  - name: Node 2 joins namespace
-    type: join_namespace
-    node: app-migration-running-2
-    namespace_id: "{{namespace_id}}"
-    invitation: "{{namespace_invitation}}"
-
-  - name: Node 2 materialises subgroup membership via inheritance
-    type: join_subgroup_inheritance
-    node: app-migration-running-2
-    group_id: "{{group_id}}"
-
-  - name: Node 2 joins the context
-    type: join_context
-    node: app-migration-running-2
-    context_id: "{{ctx_id}}"
-
-  - name: Wait for v1 state to sync to node 2
-    type: wait_for_sync
-    context_id: "{{ctx_id}}"
-    nodes:
-      - app-migration-running-1
-      - app-migration-running-2
-    timeout: 90
-    trigger_sync: true
-
-  - name: Node 2 reports v1 before any upgrade
-    type: assert_api_response
-    node: app-migration-running-2
-    path: /admin-api/contexts/{{ctx_id}}
-    match:
-      data.applicationVersion: 1.0.0
-
-  # Installed before the admin upgrades, so nothing can switch the context yet.
-  - name: Node 2 installs v2 ahead of the upgrade
-    type: install_application
-    node: app-migration-running-2
-    path: dist/com.calimero.scenario-pure-bugfix-2.0.0.mpk
-    dev: true
-    outputs:
-      app_v2: applicationId
-
-  - name: Both releases share one application id
-    type: json_assert
-    statements:
-      - 'equal("{{app_v2}}", "{{app_v1}}")'
-
-  - name: Node 2 still reports v1 after installing v2
-    type: assert_api_response
-    node: app-migration-running-2
-    path: /admin-api/contexts/{{ctx_id}}
-    match:
-      data.applicationVersion: 1.0.0
-
-  # v1's sum is off by one: 11 proves v1 is what runs.
-  - name: Node 2 runs v1
-    type: call
-    node: app-migration-running-2
-    context_id: "{{ctx_id}}"
-    method: sum_all_values
-    outputs:
-      sum_before: result
-
-  - name: Assert the off-by-one v1 sum on node 2
-    type: json_assert
-    statements:
-      - 'json_equal({{sum_before}}, {"output": 11})'
-
-  - name: Install scenario-pure-bugfix-v2 on node 1
-    type: install_application
-    node: app-migration-running-1
-    path: dist/com.calimero.scenario-pure-bugfix-2.0.0.mpk
-    dev: true
-
-  - name: Cascade namespace v1 to v2 (initiated by node 1)
-    type: upgrade_group
-    node: app-migration-running-1
-    group_id: "{{namespace_id}}"
-    target_application_id: "{{app_v2}}"
-    cascade: true
-
-  - name: Wait for the cascade to reach node 2
-    type: wait
-    seconds: 15
-
-  - name: Node 2 activates the upgrade
-    type: script
-    script: workflows/app-migration/activate-upgrade.sh
-    target: local
-    args:
-      - app-migration-running-2
-      - "{{namespace_id}}"
-      - "from-target"
-      - "200"
-      - '.data.targetApplicationId == "{{app_v2}}" and .data.switchedContexts <= 1 and .data.failedContexts == []'
-
-  - name: Node 2 reports v2 after activating
-    type: assert_api_response
-    node: app-migration-running-2
-    path: /admin-api/contexts/{{ctx_id}}
-    match:
-      data.applicationVersion: 2.0.0
-
-  - name: Node 2 runs the fixed release
-    type: call
-    node: app-migration-running-2
-    context_id: "{{ctx_id}}"
-    method: sum_all_values
-    outputs:
-      sum_after: result
-
-  - name: Assert the fixed sum on node 2
-    type: json_assert
-    statements:
-      - 'json_equal({{sum_after}}, {"output": 10})'
-
-  - name: Delete context
-    type: delete_context
-    node: app-migration-running-1
-    context_id: "{{ctx_id}}"
-
-  - name: Delete subgroup
-    type: delete_group
-    node: app-migration-running-1
-    group_id: "{{group_id}}"
-
-  - name: Delete namespace
-    type: delete_namespace
-    node: app-migration-running-1
-    namespace_id: "{{namespace_id}}"
-
-stop_all_nodes: false
+- name: Install scenario-pure-bugfix-v1 on node 1
+  type: install_package
+  mpk: '{{env.CORE_WASM_DIR}}/dist/com.calimero.scenario-pure-bugfix-1.0.0.mpk'
+  outputs:
+    app_v1: package
+    app_v1_version: version
+  account: app-migration-running-1
+- name: Create namespace (v1) on node 1
+  type: create_org
+  org_name: Create namespace (v1) on node 1
+  outputs:
+    namespace_id: orgId
+  account: app-migration-running-1
+- name: Create Open subgroup under namespace
+  type: create_team
+  org: '{{namespace_id}}'
+  team_name: running-scenario-subgroup
+  join: invite
+  outputs:
+    group_id: teamId
+  account: app-migration-running-1
+- name: Mark subgroup as Open
+  type: team_update
+  org: '{{namespace_id}}'
+  team: '{{group_id}}'
+  join: everyone
+  account: app-migration-running-1
+- name: Create context in subgroup on node 1 (v1)
+  type: deploy
+  account: app-migration-running-1
+  package: '{{app_v1}}'
+  version: '{{app_v1_version}}'
+  app_name: Create context in subgroup on node 1 (v1)
+  org: '{{namespace_id}}'
+  access:
+    kind: team
+    team: '{{group_id}}'
+  outputs:
+    ctx_id: contextId
+- name: Write v1 item k1=10 on node 1
+  type: call
+  app: '{{ctx_id}}'
+  method: add_value
+  args:
+    key: k1
+    value: 10
+  account: app-migration-running-1
+- name: Create namespace invitation for node 2
+  type: invite
+  org: '{{namespace_id}}'
+  role: member
+  account: app-migration-running-1
+  outputs:
+    namespace_invitation: token
+- name: Node 2 joins namespace
+  type: redeem_invite
+  token: '{{namespace_invitation}}'
+  account: app-migration-running-2
+- name: Node 2 materialises subgroup membership via inheritance
+  type: team_join
+  org: '{{namespace_id}}'
+  team: '{{group_id}}'
+  account: app-migration-running-2
+- name: Node 2 installs v2 ahead of the upgrade
+  type: install_package
+  mpk: '{{env.CORE_WASM_DIR}}/dist/com.calimero.scenario-pure-bugfix-2.0.0.mpk'
+  outputs:
+    app_v2: package
+    app_v2_version: version
+  account: app-migration-running-2
+- name: Both releases share one application id
+  type: json_assert
+  statements:
+  - equal("{{app_v2}}", "{{app_v1}}")
+- name: Node 2 runs v1
+  type: call
+  app: '{{ctx_id}}'
+  method: sum_all_values
+  args: {}
+  account: app-migration-running-2
+  outputs:
+    sum_before: rpc
+- name: Assert the off-by-one v1 sum on node 2
+  type: json_assert
+  statements:
+  - 'json_equal({{sum_before}}, {"output": 11})'
+- name: Cascade namespace v1 to v2 (initiated by node 1)
+  type: upgrade_app
+  app: '{{ctx_id}}'
+  version: '{{app_v2_version}}'
+  account: app-migration-running-1
+- name: Wait for the cascade to reach node 2
+  type: wait
+  seconds: 15.0
+- name: Node 2 runs the fixed release
+  type: call
+  app: '{{ctx_id}}'
+  method: sum_all_values
+  args: {}
+  account: app-migration-running-2
+  outputs:
+    sum_after: rpc
+- name: Assert the fixed sum on node 2
+  type: json_assert
+  statements:
+  - 'json_equal({{sum_after}}, {"output": 10})'
+- name: Delete subgroup
+  type: team_delete
+  org: '{{namespace_id}}'
+  team: '{{group_id}}'
+  account: app-migration-running-1

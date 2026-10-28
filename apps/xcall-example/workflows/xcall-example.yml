@@ -1,101 +1,94 @@
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.
 name: XCall Ping-Pong (same-namespace demo)
-description: >
-  Minimal "how to use xcall" demo. Two contexts in the SAME namespace ping each
-  other's `pong` entry point; each pong increments the target's counter.
+description: 'Minimal "how to use xcall" demo. Two contexts in the SAME namespace ping each other''s `pong`
+  entry point; each pong increments the target''s counter.
 
-  Note on the trust model: cross-context calls are gated by the namespace
-  boundary — a context may only xcall a target in its own namespace (see
-  `xcall.yml` for the full authorization test, including the cross-namespace
-  and non-entry-point denials). This demo therefore keeps both contexts in one
-  namespace so the calls are permitted.
+  Note on the trust model: cross-context calls are gated by the namespace boundary — a context may only
+  xcall a target in its own namespace (see `xcall.yml` for the full authorization test, including the
+  cross-namespace and non-entry-point denials). This demo therefore keeps both contexts in one namespace
+  so the calls are permitted.
 
-force_pull_image: false
-
-nodes:
-  count: 1
-  image: merod:local
-  prefix: rust-xcall
-
+  '
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 5060
+accounts:
+- rust-xcall-1
 steps:
-  - name: Install app
-    type: install_application
-    node: rust-xcall-1
-    path: ../../dist/com.calimero.xcall-example-0.0.0.mpk
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Create shared namespace
-    type: create_namespace
-    node: rust-xcall-1
-    application_id: "{{app_id}}"
-    outputs:
-      ns: namespaceId
-
-  - name: Create Context A
-    type: create_context
-    node: rust-xcall-1
-    application_id: "{{app_id}}"
-    group_id: "{{ns}}"
-    outputs:
-      ctx_a: contextId
-
-  - name: Create Context B (same namespace)
-    type: create_context
-    node: rust-xcall-1
-    application_id: "{{app_id}}"
-    group_id: "{{ns}}"
-    outputs:
-      ctx_b: contextId
-
-  - name: Ping A -> B
-    type: call
-    node: rust-xcall-1
-    context_id: "{{ctx_a}}"
-    method: ping
-    args:
-      target_context: "{{ctx_b}}"
-
-  - name: Wait for xcall to execute
-    type: wait
-    seconds: 8
-
-  - name: Read B counter
-    type: call
-    node: rust-xcall-1
-    context_id: "{{ctx_b}}"
-    method: get_counter
-    outputs:
-      b_counter: result.output
-  - name: Assert B received the ping (counter 1)
-    type: json_assert
-    statements:
-      - "equal({{b_counter}}, 1)"
-
-  - name: Ping B -> A
-    type: call
-    node: rust-xcall-1
-    context_id: "{{ctx_b}}"
-    method: ping
-    args:
-      target_context: "{{ctx_a}}"
-
-  - name: Wait for xcall to execute
-    type: wait
-    seconds: 8
-
-  - name: Read A counter
-    type: call
-    node: rust-xcall-1
-    context_id: "{{ctx_a}}"
-    method: get_counter
-    outputs:
-      a_counter: result.output
-  - name: Assert A received the ping (counter 1)
-    type: json_assert
-    statements:
-      - "equal({{a_counter}}, 1)"
-
-stop_all_nodes: true
-restart: false
-wait_timeout: 120
+- name: Install app
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/xcall_example.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: rust-xcall-1
+- type: set
+  values:
+    app_id: com.calimero.xcall-example
+- name: Create shared namespace
+  type: create_org
+  org_name: Create shared namespace
+  outputs:
+    ns: orgId
+  account: rust-xcall-1
+- name: Create Context A
+  type: deploy
+  account: rust-xcall-1
+  wasm: '{{env.CORE_WASM_DIR}}/xcall_example.wasm'
+  app_name: Create Context A
+  org: '{{ns}}'
+  outputs:
+    ctx_a: contextId
+- name: Create Context B (same namespace)
+  type: deploy
+  account: rust-xcall-1
+  wasm: '{{env.CORE_WASM_DIR}}/xcall_example.wasm'
+  app_name: Create Context B (same namespace)
+  org: '{{ns}}'
+  outputs:
+    ctx_b: contextId
+- name: Ping A -> B
+  type: call
+  app: '{{ctx_a}}'
+  method: ping
+  args:
+    target_context: '{{ctx_b}}'
+  account: rust-xcall-1
+- name: Wait for xcall to execute
+  type: wait
+  seconds: 8.0
+- name: Read B counter
+  type: call
+  app: '{{ctx_b}}'
+  method: get_counter
+  args: {}
+  account: rust-xcall-1
+  outputs:
+    b_counter: result
+- name: Assert B received the ping (counter 1)
+  type: json_assert
+  statements:
+  - equal({{b_counter}}, 1)
+- name: Ping B -> A
+  type: call
+  app: '{{ctx_b}}'
+  method: ping
+  args:
+    target_context: '{{ctx_a}}'
+  account: rust-xcall-1
+- name: Wait for xcall to execute
+  type: wait
+  seconds: 8.0
+- name: Read A counter
+  type: call
+  app: '{{ctx_a}}'
+  method: get_counter
+  args: {}
+  account: rust-xcall-1
+  outputs:
+    a_counter: result
+- name: Assert A received the ping (counter 1)
+  type: json_assert
+  statements:
+  - equal({{a_counter}}, 1)

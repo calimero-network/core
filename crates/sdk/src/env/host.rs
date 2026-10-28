@@ -84,6 +84,8 @@ struct MockHost {
     /// Every device each account has called as, which the mock reports as
     /// that account's bound devices (`env::account_device_keys`).
     account_devices: BTreeMap<[u8; 32], Vec<[u8; 32]>>,
+    /// What `env::caller_org` reports (`TestHost::set_caller_org`).
+    caller_org: Option<crate::env::CallerOrg>,
     /// The namespace TEE key `env::tee_sealing_key` reports; `None` (no TEE)
     /// until a test sets one.
     tee_sealing_key: Option<[u8; 32]>,
@@ -108,6 +110,7 @@ impl Default for MockHost {
             blob_announce_should_fail: false,
             tee_trigger: false,
             account_devices: BTreeMap::new(),
+            caller_org: None,
             tee_sealing_key: None,
         }
     }
@@ -304,6 +307,14 @@ pub(crate) fn xcall_origin() -> Option<[u8; 32]> {
     // `TestHost` drives methods directly rather than via xcall dispatch, so a
     // hosted call has no cross-context origin.
     None
+}
+
+pub(crate) fn caller_org() -> Option<crate::env::CallerOrg> {
+    with(|h| h.caller_org.clone())
+}
+
+pub(crate) fn set_caller_org(org: Option<crate::env::CallerOrg>) {
+    with(|h| h.caller_org = org);
 }
 
 pub(crate) fn input() -> Option<Vec<u8>> {

@@ -2,8 +2,8 @@
 //!
 //! Each test builds state through the public collections, then plays a peer:
 //! first an honest one writing through the API as someone without authority
-//! (refused locally, except in a writer-set cell, whose writes every peer
-//! checks against the cell), then a patched one that skips the API and hands `Interface::apply_action`
+//! (refused locally, in a writer-set cell too), then a patched one that skips
+//! the API and hands `Interface::apply_action`
 //! the exact bytes a forged write would carry. The first must be refused
 //! locally. The second may be stored, since the stamp it claims is one the
 //! receiver cannot tie to the enclosing entry, but must never be READ: every
@@ -664,7 +664,7 @@ fn shared_cell() -> Root<WriterSetCell<SharedTags>> {
 
 #[test]
 #[serial]
-fn a_writer_set_guards_the_second_level_too() {
+fn a_writer_set_refuses_the_second_level_too() {
     let cell = shared_cell();
     let map = cell.get().expect("get");
     let inner = map.get("k").expect("get").expect("k").into_inner();
@@ -676,18 +676,26 @@ fn a_writer_set_guards_the_second_level_too() {
         "level 2 is a member of the same cell"
     );
 
-    // A non-writer's level-2 write carries the cell's member stamp, so the
-    // cell's writer set decides it on every node that applies it.
+    // A non-writer's level-2 write is refused by the collection, and stores nothing.
     let mallory = SigningKey::from_bytes(&[0xB0; 32]);
     act_as(*account_of_key(&mallory).as_bytes());
     let map = cell.get().expect("get");
     let mut inner = map.get("k").expect("get").expect("k").into_inner();
-    let _ = inner.insert("y".to_owned(), reg(2)).expect("lands locally");
+    let refused = inner.insert("y".to_owned(), reg(2));
     assert!(
-        matches!(stamp_of(inner.entry_id("y")), StorageType::SharedMember { anchor: a, .. } if a == anchor),
-        "a non-writer's level-2 write is stamped as a member of the cell"
+        matches!(
+            refused,
+            Err(crate::collections::StoreError::StorageError(
+                StorageError::ActionNotAllowed(_)
+            ))
+        ),
+        "a non-writer's level-2 write is refused locally: {refused:?}"
     );
+    assert!(<Index<MainStorage>>::get_metadata(inner.entry_id("y"))
+        .expect("metadata")
+        .is_none());
 
+    // And a peer still refuses one that reaches it signed by a non-writer.
     let id = inner.entry_id("z");
     let action = build_signed_member_action(
         true,
@@ -698,8 +706,6 @@ fn a_writer_set_guards_the_second_level_too() {
         &mallory,
         vec![ChildInfo::new(inner.id(), [0; 32], Metadata::default())],
     );
-    // A member write whose signer is outside the writer set is refused as
-    // `InvalidSignature` (`sharedmember-signer-not-in-writer-set`).
     let applied = MainInterface::apply_action(action, &apply_ctx_for(account_of_key(&mallory)));
     assert!(
         matches!(applied, Err(StorageError::InvalidSignature)),

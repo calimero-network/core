@@ -1,0 +1,43 @@
+[package]
+name = "calimero-kms-client"
+version = "0.0.0"
+description = "The mero-kms client a TEE node fetches its storage and disk keys with"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+base64.workspace = true
+camino = { workspace = true, features = ["serde1"] }
+clap = { workspace = true, features = ["derive"] }
+curve25519-dalek.workspace = true
+eyre.workspace = true
+hex.workspace = true
+libp2p-identity = { workspace = true, features = ["ed25519", "peerid"] }
+rand.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+ring.workspace = true
+semver = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+tracing.workspace = true
+url = { workspace = true, features = ["serde"] }
+zeroize.workspace = true
+
+calimero-primitives.workspace = true
+calimero-tee-attestation.workspace = true
+calimero-tee-release.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
+
+[features]
+# DEV/TEST ONLY: accept mock KMS attestation. Default off.
+mock-attestation = ["calimero-tee-attestation/mock-attestation"]

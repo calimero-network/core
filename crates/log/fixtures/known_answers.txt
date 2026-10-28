@@ -1,0 +1,14 @@
+# Known-answer vectors for what calimero-log writes to disk: name, then hex.
+# Computed outside this crate (Python's hmac, hashlib and cryptography's
+# AESGCM), so a change here is a change of the on-disk format: existing nodes
+# could no longer open their stores. Such a change needs a migration test.
+#
+# storage key: 0x42 * 32
+# snapshot_key: HMAC-SHA256(storage key, "calimero.log.snapshot.v1")
+snapshot_key aff1ebeba682d88eefcd90cdb1f6515637831c961e458d7234a76b3cdae66d33
+# hider_key: HMAC-SHA256(storage key, "calimero.log.hidden-keys.v1")
+hider_key de31de8887c65be6db4d82710ae1e4209b92977757332bbb693ffbf2a47435bf
+# hidden_row: hide(hider, group 7, tag 3, b"app-key") = tag || HMAC(hider, group_be || tag || key)
+hidden_row 037be43774cd252342dec5f3f6b2447c8a789b1797d6bc3286d45632b98408d689
+# sealed_row: nonce 00..0b || AES-256-GCM(storage key, nonce, aad "calimero.kat", b"sealed-under-aes-256-gcm")
+sealed_row 000102030405060708090a0b76bbf0b1d448df7ef3622161fcbc3e481faffb5c8d2e8184a3754abd808616b2d4fd22fd4d3d4cb0

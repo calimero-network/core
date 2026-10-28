@@ -3,6 +3,7 @@ use std::io::{Cursor, Error, Read};
 use calimero_primitives::{blobs::BlobId, context::ContextId};
 
 use futures_util::{StreamExt, TryStreamExt};
+use sha2::Digest;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -19,6 +20,9 @@ pub enum BlobHandle {
     Write(BlobWriteHandle),
     /// A handle for reading data from an existing blob.
     Read(BlobReadHandle),
+    /// A blob being written through a [`BlobHost`](crate::logic::BlobHost):
+    /// buffered here, handed to the node on the run's outcome at close.
+    Buffer(Vec<u8>),
 }
 
 /// A handle for managing an asynchronous blob write operation.
@@ -62,6 +66,9 @@ pub struct BlobReadHandle {
     current_chunk_cursor: Option<Cursor<Vec<u8>>>,
     /// The current reading position within the blob.
     position: u64,
+    /// Every byte is in `current_chunk_cursor` already (a release-v2
+    /// `BlobHost` read): there is no stream to open.
+    loaded: bool,
 }
 
 impl core::fmt::Debug for BlobReadHandle {
@@ -91,6 +98,22 @@ impl VMHostFunctions<'_> {
     /// * `HostError::TooManyBlobHandles` if the maximum number of handles is exceeded.
     /// * `HostError::IntegerOverflow` on `u64` overflow.
     pub fn blob_create(&mut self) -> VMLogicResult<u64> {
+        if self.borrow_logic().context.blobs.is_some() {
+            self.check_blob_handle_limit()?;
+            return self.with_logic_mut(|logic| {
+                let fd = logic.next_blob_fd;
+                logic.next_blob_fd = logic
+                    .next_blob_fd
+                    .checked_add(1)
+                    .ok_or(VMLogicError::HostError(HostError::IntegerOverflow))?;
+                drop(
+                    logic
+                        .blob_handles
+                        .insert(fd, BlobHandle::Buffer(Vec::new())),
+                );
+                Ok(fd)
+            });
+        }
         if self.borrow_logic().node_client.is_none() {
             return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
         }
@@ -163,7 +186,8 @@ impl VMHostFunctions<'_> {
         let data = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_data_ptr)? };
         let data_len = data.len();
 
-        if self.borrow_logic().node_client.is_none() {
+        if self.borrow_logic().node_client.is_none() && self.borrow_logic().context.blobs.is_none()
+        {
             return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
         }
 
@@ -177,6 +201,20 @@ impl VMHostFunctions<'_> {
 
         let data = self.read_guest_memory_slice(&data)?.to_vec();
 
+        // A host-backed blob is buffered, within the same per-run budget.
+        if matches!(
+            self.borrow_logic().blob_handles.get(&fd),
+            Some(BlobHandle::Buffer(_))
+        ) {
+            return self.with_logic_mut(|logic| {
+                logic.charge_blob_write(data_len)?;
+                if let Some(BlobHandle::Buffer(buf)) = logic.blob_handles.get_mut(&fd) {
+                    buf.extend_from_slice(&data);
+                }
+                Ok(data_len)
+            });
+        }
+
         // Clone the sender (validating the fd is a write handle) so the chunk
         // can be streamed outside the logic borrow. The channel is bounded, so
         // `send` awaits when the buffer is full — this backpressure keeps
@@ -188,7 +226,9 @@ impl VMHostFunctions<'_> {
                 .ok_or(VMLogicError::HostError(HostError::InvalidBlobHandle))?;
             match handle {
                 BlobHandle::Write(w) => Ok(w.sender.clone()),
-                BlobHandle::Read(_) => Err(VMLogicError::HostError(HostError::InvalidBlobHandle)),
+                BlobHandle::Read(_) | BlobHandle::Buffer(_) => {
+                    Err(VMLogicError::HostError(HostError::InvalidBlobHandle))
+                }
             }
         })?;
 
@@ -257,7 +297,8 @@ impl VMHostFunctions<'_> {
             return Err(HostError::InvalidMemoryAccess.into());
         }
 
-        if self.borrow_logic().node_client.is_none() {
+        if self.borrow_logic().node_client.is_none() && self.borrow_logic().context.blobs.is_none()
+        {
             return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
         }
 
@@ -291,6 +332,11 @@ impl VMHostFunctions<'_> {
                 *blob_id_.as_ref()
             }
             BlobHandle::Read(read_handle) => *read_handle.blob_id.as_ref(),
+            BlobHandle::Buffer(bytes) => {
+                let id: [u8; DIGEST_SIZE] = sha2::Sha256::digest(&bytes).into();
+                self.with_logic_mut(|logic| logic.new_blobs.push((id, bytes)));
+                id
+            }
         };
 
         // Now write the blob_id into the guest buffer.
@@ -349,6 +395,11 @@ impl VMHostFunctions<'_> {
 
         let blob_id = BlobId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&blob_id)?);
         let context_id = self.read_own_context_id(&context_id)?;
+
+        // A cloud app's blobs are on every replica already: nothing to announce.
+        if self.borrow_logic().context.blobs.is_some() {
+            return Ok(u32::from(self.host_blob(*blob_id.as_ref())?.is_some()));
+        }
 
         let node_client = match &self.borrow_logic().node_client {
             Some(client) => client.clone(),
@@ -411,6 +462,15 @@ impl VMHostFunctions<'_> {
         //         offset and the read is bounds-checked. See `read_guest_memory_typed`.
         let blob_id = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_blob_id_ptr)? };
 
+        if self.borrow_logic().context.blobs.is_some() {
+            self.check_blob_handle_limit()?;
+            let blob_id = *self.read_guest_memory_sized::<DIGEST_SIZE>(&blob_id)?;
+            let bytes = self
+                .host_blob(blob_id)?
+                .ok_or(VMLogicError::HostError(HostError::BlobNotHeldForContext))?;
+            return self.open_loaded(BlobId::from(blob_id), bytes);
+        }
+
         let Some(node_client) = self.borrow_logic().node_client.clone() else {
             return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
         };
@@ -441,6 +501,7 @@ impl VMHostFunctions<'_> {
                 stream: None,
                 current_chunk_cursor: None,
                 position: 0,
+                loaded: false,
             });
 
             // TODO: verify if we need to drop it here or just ignore the value:
@@ -498,6 +559,14 @@ impl VMHostFunctions<'_> {
         let blob_id = BlobId::from(*self.read_guest_memory_sized::<DIGEST_SIZE>(&blob_id)?);
         let context_id = self.read_own_context_id(&context_id)?;
 
+        // Every replica holds a cloud app's blobs: there are no peers to ask.
+        if self.borrow_logic().context.blobs.is_some() {
+            if self.host_blob(*blob_id.as_ref())?.is_none() {
+                return Ok(0);
+            }
+            return self.blob_open(src_blob_id_ptr);
+        }
+
         let node_client = match &self.borrow_logic().node_client {
             Some(client) => client.clone(),
             None => return Err(VMLogicError::HostError(HostError::BlobsNotSupported)),
@@ -527,6 +596,41 @@ impl VMHostFunctions<'_> {
         // The blob is local now (or was already); hand back an ordinary read
         // handle rather than duplicating `blob_open`'s bookkeeping.
         self.blob_open(src_blob_id_ptr)
+    }
+
+    /// A blob's bytes through the run's [`BlobHost`](crate::logic::BlobHost):
+    /// one this run wrote, else one held for its app.
+    fn host_blob(&self, blob: [u8; DIGEST_SIZE]) -> VMLogicResult<Option<Vec<u8>>> {
+        let logic = self.borrow_logic();
+        if let Some((_, bytes)) = logic.new_blobs.iter().find(|(id, _)| *id == blob) {
+            return Ok(Some(bytes.clone()));
+        }
+        let Some(host) = logic.context.blobs.as_ref() else {
+            return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
+        };
+        host.get(blob, &*logic.storage)
+            .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))
+    }
+
+    /// A read handle over bytes already in memory: the cursor holds them all,
+    /// so `blob_read` never opens a stream or asks a node client.
+    fn open_loaded(&mut self, blob_id: BlobId, bytes: Vec<u8>) -> VMLogicResult<u64> {
+        self.with_logic_mut(|logic| -> VMLogicResult<u64> {
+            let fd = logic.next_blob_fd;
+            logic.next_blob_fd = logic
+                .next_blob_fd
+                .checked_add(1)
+                .ok_or(VMLogicError::HostError(HostError::IntegerOverflow))?;
+            let handle = BlobHandle::Read(BlobReadHandle {
+                blob_id,
+                stream: None,
+                current_chunk_cursor: (!bytes.is_empty()).then(|| Cursor::new(bytes)),
+                position: 0,
+                loaded: true,
+            });
+            drop(logic.blob_handles.insert(fd, handle));
+            Ok(fd)
+        })
     }
 
     fn check_blob_handle_limit(&self) -> VMLogicResult<()> {
@@ -585,11 +689,12 @@ impl VMHostFunctions<'_> {
             unsafe { self.read_guest_memory_typed::<sys::BufferMut<'_>>(dest_data_ptr)? };
         let data_len = dest_data.len();
 
-        // Check if blob functionality is available
-        let node_client = match &self.borrow_logic().node_client {
-            Some(client) => client.clone(),
-            None => return Err(VMLogicError::HostError(HostError::BlobsNotSupported)),
-        };
+        // Check if blob functionality is available. A host-backed handle was
+        // loaded at open and never needs the node client.
+        let node_client = self.borrow_logic().node_client.clone();
+        if node_client.is_none() && self.borrow_logic().context.blobs.is_none() {
+            return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
+        }
 
         // Validate buffer size
         if data_len > self.borrow_logic().limits.max_blob_chunk_size {
@@ -622,7 +727,7 @@ impl VMHostFunctions<'_> {
 
             let read_handle = match handle {
                 BlobHandle::Read(r) => r,
-                BlobHandle::Write(_) => {
+                BlobHandle::Write(_) | BlobHandle::Buffer(_) => {
                     return Err(VMLogicError::HostError(HostError::InvalidBlobHandle))
                 }
             };
@@ -654,7 +759,14 @@ impl VMHostFunctions<'_> {
                 }
             }
 
+            if read_handle.loaded {
+                return Ok(output_buffer.len() as u64);
+            }
+
             if read_handle.stream.is_none() {
+                let Some(node_client) = node_client.as_ref() else {
+                    return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
+                };
                 // `block_in_place` hands the blocking wait off the async worker;
                 // a bare `Handle::block_on` panics when called on a runtime
                 // thread.
@@ -741,7 +853,7 @@ impl VMHostFunctions<'_> {
 
                 let read_handle = match handle {
                     BlobHandle::Read(r) => r,
-                    BlobHandle::Write(_) => {
+                    BlobHandle::Write(_) | BlobHandle::Buffer(_) => {
                         return Err(VMLogicError::HostError(HostError::InvalidBlobHandle))
                     }
                 };
@@ -781,6 +893,99 @@ mod tests {
         assert!(matches!(
             err,
             VMLogicError::HostError(HostError::BlobsNotSupported)
+        ));
+    }
+
+    /// The release-v2 node's blob store: blobs held for the run's app.
+    #[derive(Debug, Default)]
+    struct HostBlobs(std::collections::HashMap<[u8; DIGEST_SIZE], Vec<u8>>);
+
+    impl crate::logic::BlobHost for HostBlobs {
+        fn get(
+            &self,
+            blob: [u8; DIGEST_SIZE],
+            _state: &dyn crate::store::Storage,
+        ) -> Result<Option<Vec<u8>>, String> {
+            Ok(self.0.get(&blob).cloned())
+        }
+    }
+
+    /// A run with a `BlobHost` and no node client.
+    macro_rules! run_with_host {
+        ($storage:expr, $limits:expr, $host:expr) => {{
+            let mut context = VMContext::new(
+                Cow::Owned(vec![]),
+                [0u8; DIGEST_SIZE],
+                [0u8; DIGEST_SIZE],
+                calimero_account::AccountId::from([0u8; DIGEST_SIZE]),
+            );
+            context.blobs = Some(std::sync::Arc::new($host));
+            let mut store = Store::default();
+            let memory =
+                wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
+            let mut logic = VMLogic::new($storage, None, context, $limits, None);
+            let _ = logic.with_memory(memory);
+            (logic, store)
+        }};
+    }
+
+    /// Without a node client, a run with a `BlobHost` writes a blob onto its
+    /// outcome (id `SHA-256(bytes)`), reads back the one it wrote, and a later
+    /// run reads it from the host; an id the host does not hold for the app
+    /// does not open.
+    #[test]
+    fn a_host_backed_run_writes_blobs_onto_its_outcome_and_reads_them_back() {
+        let data = b"a scene, a signature, a png";
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = run_with_host!(&mut storage, &limits, HostBlobs::default());
+        let id = {
+            let mut host = logic.host_functions(store.as_store_mut());
+            let fd = host.blob_create().unwrap();
+            host.borrow_memory().write(400, data).unwrap();
+            prepare_guest_buf_descriptor(&host, 100, 400, data.len() as u64);
+            assert_eq!(host.blob_write(fd, 100).unwrap(), data.len() as u64);
+            prepare_guest_buf_descriptor(&host, 200, 600, DIGEST_SIZE as u64);
+            assert_eq!(host.blob_close(fd, 200).unwrap(), 1);
+            let mut id = [0u8; DIGEST_SIZE];
+            host.borrow_memory().read(600, &mut id).unwrap();
+
+            // The run reads back what it wrote, before the node stored it.
+            prepare_guest_buf_descriptor(&host, 300, 600, DIGEST_SIZE as u64);
+            let rfd = host.blob_open(300).unwrap();
+            prepare_guest_buf_descriptor(&host, 320, 800, 64);
+            assert_eq!(host.blob_read(rfd, 320).unwrap(), data.len() as u64);
+            let mut back = vec![0u8; data.len()];
+            host.borrow_memory().read(800, &mut back).unwrap();
+            assert_eq!(back, data);
+            assert_eq!(host.blob_read(rfd, 320).unwrap(), 0);
+            assert_eq!(host.borrow_logic().new_blobs, vec![(id, data.to_vec())]);
+            id
+        };
+        let expected: [u8; DIGEST_SIZE] = sha2::Sha256::digest(data).into();
+        assert_eq!(id, expected);
+
+        // A later run: the host holds it for the app.
+        let mut held = HostBlobs::default();
+        let _prev = held.0.insert(id, data.to_vec());
+        let mut storage = SimpleMockStorage::new();
+        let (mut logic, mut store) = run_with_host!(&mut storage, &limits, held);
+        let mut host = logic.host_functions(store.as_store_mut());
+        host.borrow_memory().write(600, &id).unwrap();
+        prepare_guest_buf_descriptor(&host, 300, 600, DIGEST_SIZE as u64);
+        let rfd = host.blob_open(300).unwrap();
+        prepare_guest_buf_descriptor(&host, 320, 800, 5);
+        assert_eq!(host.blob_read(rfd, 320).unwrap(), 5);
+        prepare_guest_buf_descriptor(&host, 320, 800, 64);
+        assert_eq!(host.blob_read(rfd, 320).unwrap(), data.len() as u64 - 5);
+
+        // An id the host does not hold for this app.
+        host.borrow_memory()
+            .write(600, &[9u8; DIGEST_SIZE])
+            .unwrap();
+        assert!(matches!(
+            host.blob_open(300).unwrap_err(),
+            VMLogicError::HostError(HostError::BlobNotHeldForContext)
         ));
     }
 
@@ -1361,6 +1566,7 @@ mod tests {
             stream: None,
             current_chunk_cursor: None,
             position: 0,
+            loaded: false,
         };
 
         let debug_str = format!("{handle:?}");
@@ -1379,6 +1585,7 @@ mod tests {
             stream: None,
             current_chunk_cursor: None,
             position: 0,
+            loaded: false,
         });
 
         let debug_str = format!("{read_handle:?}");

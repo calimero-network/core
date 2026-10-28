@@ -11,12 +11,6 @@ use std::process::Command;
 
 use toml::Value;
 
-#[cfg(feature = "fetch")]
-mod fetch;
-
-#[cfg(feature = "fetch")]
-pub use fetch::{fetch_and_extract, required_sha256};
-
 /// Read `[workspace.metadata.workspaces].version` from the workspace root Cargo.toml.
 /// Used so binaries and crates get the release version instead of the workspace
 /// placeholder `0.0.0`. Returns `None` if not found (e.g. not in a workspace).

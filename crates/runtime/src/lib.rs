@@ -390,6 +390,27 @@ impl Engine {
     }
 }
 
+/// What a release-v2 cloud node gives one run, beyond the call itself.
+#[derive(Clone, Debug, Default)]
+pub struct CloudRun {
+    /// The caller's organization standing, as `env::caller_org` reads it.
+    pub caller_org: Option<Vec<u8>>,
+    /// Full-text search over the app's own indexes (views only).
+    pub search: Option<Arc<dyn logic::SearchHost>>,
+    /// The app's blob store.
+    pub blobs: Option<Arc<dyn logic::BlobHost>>,
+    /// The context that dispatched this run with `xcall`, as `env::xcall_origin`.
+    pub xcall_origin: Option<ContextId>,
+    /// The node fired this run itself (an `#[app::tee]` timer); the cluster
+    /// is the app's TEE authority.
+    pub tee_trigger: bool,
+    /// The keys behind the sealing host functions for this run.
+    pub sealing: logic::SealingContext,
+    /// Outbound HTTPS (`http_request`): the node gives one only to a run that
+    /// writes, of an app whose owner approved what it declares.
+    pub outbound: Option<Arc<dyn logic::OutboundHost>>,
+}
+
 /// A compiled WASM module ready for execution.
 ///
 /// Cheap to clone: `wasmer::Engine` and `wasmer::Module` are both
@@ -497,12 +518,97 @@ impl Module {
         outbound: Option<Arc<dyn logic::OutboundHost>>,
         remote_delta: bool,
     ) -> RuntimeResult<Outcome> {
+        self.run_inner(
+            context,
+            account,
+            executor,
+            method,
+            input,
+            storage,
+            private_storage,
+            node_client,
+            xcall_origin,
+            tee_trigger,
+            sealing,
+            search,
+            outbound,
+            remote_delta,
+            None,
+            None,
+        )
+    }
+
+    /// [`Self::run`] for the release-v2 cloud node: the caller's private
+    /// storage, and what [`CloudRun`] gives the run.
+    #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
+    pub fn run_cloud<'a>(
+        &'a self,
+        context: ContextId,
+        account: AccountId,
+        executor: PublicKey,
+        method: &str,
+        input: &'a [u8],
+        storage: &'a mut dyn Storage,
+        private_storage: Option<&'a mut dyn Storage>,
+        cloud: CloudRun,
+    ) -> RuntimeResult<Outcome> {
+        let CloudRun {
+            caller_org,
+            search,
+            blobs,
+            xcall_origin,
+            tee_trigger,
+            sealing,
+            outbound,
+        } = cloud;
+        self.run_inner(
+            context,
+            account,
+            executor,
+            method,
+            input,
+            storage,
+            private_storage,
+            None,
+            xcall_origin,
+            tee_trigger,
+            sealing,
+            search,
+            outbound,
+            false,
+            caller_org,
+            blobs,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
+    fn run_inner<'a>(
+        &'a self,
+        context: ContextId,
+        account: AccountId,
+        executor: PublicKey,
+        method: &str,
+        input: &'a [u8],
+        storage: &'a mut dyn Storage,
+        private_storage: Option<&'a mut dyn Storage>,
+        node_client: Option<NodeClient>,
+        xcall_origin: Option<ContextId>,
+        tee_trigger: bool,
+        sealing: logic::SealingContext,
+        search: Option<Arc<dyn logic::SearchHost>>,
+        outbound: Option<Arc<dyn logic::OutboundHost>>,
+        remote_delta: bool,
+        caller_org: Option<Vec<u8>>,
+        blobs: Option<Arc<dyn logic::BlobHost>>,
+    ) -> RuntimeResult<Outcome> {
         let context_id = context;
         debug!(%context_id, method, "Running WASM method");
         debug!(%context_id, method, input_len = input.len(), "WASM execution input");
 
         let mut context = VMContext::new(input.into(), *context_id, *executor, account);
         context.xcall_origin = xcall_origin.map(|origin| *origin);
+        context.caller_org = caller_org;
+        context.blobs = blobs;
         context.tee_trigger = tee_trigger;
         context.sealing = sealing;
         context.search = search;

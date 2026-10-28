@@ -1,8 +1,10 @@
 name: Crypto Vectors
 
-# Fast, Docker-free canary: the crypto known-answer vectors must still produce
-# the same hashed, derived and sealed bytes. Fixtures live in
-# crates/*/fixtures/known_answers.txt - this workflow only runs them.
+# Fast canary: the crypto known-answer vectors must still produce the same
+# hashed, derived and sealed bytes. Fixtures live in crates/*/fixtures/
+# known_answers.txt (calimero-log's: what a node writes to disk, computed
+# outside the crate) and in tests (the storage key K_r); this only runs them.
+# A change to one is a change of a stored format and needs a migration.
 
 permissions:
   contents: read
@@ -14,7 +16,8 @@ on:
       - "Cargo.toml"
       - "crates/crypto/**"
       - "crates/primitives/**"
-      - "crates/store/encryption/**"
+      - "crates/log/**"
+      - "crates/node/src/kms.rs"
       - ".github/workflows/crypto-vectors.yml"
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
@@ -22,6 +25,7 @@ on:
   push:
     branches:
       - master
+      - release-v2-parity
 
 env:
   # As ci-checks.yml compiles with, so the ci-checks cache this restores is reusable.
@@ -47,4 +51,7 @@ jobs:
           save-if: false
 
       - name: Known-answer vectors
-        run: cargo test -p calimero-store-encryption -p calimero-crypto -p calimero-primitives --all-features
+        run: |
+          cargo test -p calimero-crypto -p calimero-primitives --all-features
+          cargo test -p calimero-log --lib known_answers
+          cargo test -p calimero-node --lib kms::tests::the_storage_key_derivation_is_unchanged

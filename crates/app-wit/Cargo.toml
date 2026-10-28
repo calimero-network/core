@@ -1,0 +1,12 @@
+[package]
+name = "calimero-app-wit"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "The calimero:app WIT world and its import allow-list"
+publish = false
+
+[dev-dependencies]
+wit-parser.workspace = true

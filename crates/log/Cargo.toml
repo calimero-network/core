@@ -1,0 +1,41 @@
+[package]
+name = "calimero-log"
+description = "Replicated log for Calimero: one Raft group per app, on openraft"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+base64.workspace = true
+eyre.workspace = true
+openraft = { version = "0.9.25", features = ["serde", "storage-v2"] }
+redb = "2.6"
+ring.workspace = true
+rocksdb.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "rt", "fs", "io-util"] }
+tracing.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+hex.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[features]
+# `Engine::lose_unsynced_writes`: a deterministic crash before the commit index
+# and applied batches reach the disk, for tests.
+testing = []
+
+[lib]
+bench = false
+
+[[bench]]
+name = "log"
+harness = false
+

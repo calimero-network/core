@@ -1,12 +1,10 @@
 //! TDX quote generation (Linux) and mock attestation for non-Linux platforms.
 
+use crate::quote::Quote;
+#[cfg(feature = "mock-attestation")]
+use crate::quote::{CertificationData, QeReportCertificationDataInfo, QuoteBody, QuoteHeader};
 #[cfg(any(target_os = "linux", feature = "mock-attestation"))]
 use base64::{engine::general_purpose::STANDARD as base64_engine, Engine};
-use calimero_server_primitives::admin::Quote;
-#[cfg(feature = "mock-attestation")]
-use calimero_server_primitives::admin::{
-    CertificationData, QeReportCertificationDataInfo, QuoteBody, QuoteHeader,
-};
 #[cfg(target_os = "linux")]
 use configfs_tsm::create_tdx_quote;
 #[cfg(target_os = "linux")]

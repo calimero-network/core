@@ -1,6 +1,6 @@
 ---
 title: Development Workflow
-description: How to build, run, and test Calimero Core, plus the commit/PR conventions, the Rust style rules, and where design docs live.
+description: How to build, run and test Calimero Core — the toolchain, a local cluster, separate merod processes, logs, the checks to run before a PR, and the conventions.
 sidebar:
   label: Development
   order: 3
@@ -8,176 +8,171 @@ sidebar:
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-This page is the practical loop: build, run, test, and the conventions your PR
-has to satisfy before it merges. Commands here are the same ones CI runs (see
-`.github/workflows/ci-checks.yml`).
+The practical loop: build, run a cluster, test, and the conventions a PR has to
+meet.
 
 ## Prerequisites
 
-The toolchain is pinned in `rust-toolchain.toml` (stable Rust). To build and run
-example apps you also need the WASM target:
+- **Linux.** `merod` and the node's tests need Linux (x86_64 or aarch64). On
+  macOS, run the node in Docker ([Install](/operate/install/#first-run-on-macos-a-node-in-docker))
+  and build `meroctl` natively; run the node's test suites in a Linux
+  container or VM.
+- **Rust** pinned by `rust-toolchain.toml` (`1.98.0`, with `clippy` and
+  `rustfmt`), and the WASM target:
 
-```sh
-rustup target add wasm32-unknown-unknown
-```
+  ```bash
+  rustup target add wasm32-unknown-unknown
+  ```
+
+- **System packages:** `clang`, `libclang-dev`, `make`, `pkg-config`,
+  `libssl-dev`.
+- **cargo mero**, to build apps with their embedded ABI:
+
+  ```bash
+  PATH="$(scripts/setup-cargo-mero.sh):$PATH"
+  ```
 
 ## Build
 
-```sh
-# Build the whole workspace (debug)
-cargo build
-
-# Release build
-cargo build --release
-
-# Typecheck without producing artifacts
-cargo check --workspace
+```bash
+cargo build -p merod -p meroctl          # the two binaries
+cargo check --workspace                  # everything
+cargo mero build --manifest-path apps/kv-store/Cargo.toml   # one app, with its ABI
+./scripts/build-all-apps.sh              # every app in apps/
 ```
 
-Building the example WASM apps is a separate step (apps compile to
-`wasm32-unknown-unknown`):
-
-```sh
-# Build one app; `cargo mero` embeds the ABI a bare `cargo build` leaves out
-PATH="$(scripts/setup-cargo-mero.sh):$PATH"
-cargo mero build --manifest-path apps/kv-store/Cargo.toml
-
-# Build all example apps
-./scripts/build-all-apps.sh
-```
-
-<Aside type="note">
-  CI's build step runs both: `./scripts/build-all-apps.sh` followed by
-  `cargo build --workspace --all-targets --tests`. Building the apps first is
-  expected — several workspace tests load the compiled WASM artifacts.
-</Aside>
+The node reads timers, handlers, xcall entry points, migrations and search
+exports from the bundle's embedded ABI, so build apps the node will run with
+`cargo mero build`; a plain `cargo build --target wasm32-unknown-unknown`
+bundle runs, but without those.
 
 ## Run local nodes
 
-`merod` is the node daemon; each node is initialized once, then run. To bring up
-two nodes that talk to each other:
+The quickest cluster is one process:
+
+```bash
+cargo run -p merod -- local            # 3 nodes on 127.0.0.1:2501-2503, state in .merod-local/
+cargo run -p merod -- local --fresh    # start over
+```
+
+then, in another terminal:
+
+```bash
+cargo run -p meroctl -- node add local http://127.0.0.1:2501/ --allow-mock
+cargo run -p meroctl -- login --dev-passkey ./dev-passkey.json --name dev
+cargo run -p meroctl -- app install --path target/wasm32-unknown-unknown/app-release/kv_store.wasm
+```
+
+`merod local` runs every node in one process, with mock attestation and the
+development storage key. To exercise separate processes (crashes, restarts,
+a frozen node), run each node yourself:
 
 <Steps>
 
-1. Initialize and run the first node.
-   `init` defaults to `--auth-mode proxy`, which authenticates no caller, so any page served from localhost can reach the admin API.
-   Use it only on a development machine:
+1. Initialize three nodes under a scratch home:
 
-   ```sh
-   merod --node node1 init --server-port 2428 --swarm-port 2528 --mdns
-   merod --node node1 run
+   ```bash
+   export CALIMERO_HOME=$PWD/.nodes
+   P=1=http://127.0.0.1:2601/,2=http://127.0.0.1:2602/,3=http://127.0.0.1:2603/
+   for i in 1 2 3; do
+     merod --node n$i init --dev --node-id $i --listen 127.0.0.1:260$i \
+       --public-url http://127.0.0.1:260$i/ --peers $P --ops-token devtoken
+   done
+   merod --node n1 config --bootstrap
    ```
 
-2. Initialize the second node so it can find the first:
+2. Run each in its own terminal:
 
-   ```sh
-   merod --node node2 init --server-port 2429 --swarm-port 2529 --mdns
-   merod --node node2 run
+   ```bash
+   merod --node n1 run
+   merod --node n2 run
+   merod --node n3 run
    ```
 
-   `--mdns` is on both, and it is load-bearing rather than tidy-up. mDNS is off by
-   default, and two nodes with no bootstrap peer and no rendezvous have no other
-   way to find each other. Leaving it off does not fail cleanly: the nodes start,
-   the join is accepted locally, and it then times out waiting for a group key —
-   so it reads as a broken join rather than as two nodes that never met.
-
-   To point the second node at the first explicitly instead, you need node1's
-   **peer id** — a bare `/ip4/…/tcp/…` is rejected at startup with "Failed to
-   parse peer id from addr":
-
-   ```sh
-   # with node1 running
-   curl -s localhost:2428/admin-api/network/status | jq -r .localPeerId
-
-   merod --node node2 init --server-port 2429 --swarm-port 2529 \
-     --boot-nodes /ip4/127.0.0.1/tcp/2528/p2p/<node1-peer-id>
-   merod --node node2 run
-   ```
-
-3. Drive nodes from the CLI with `meroctl`, or turn up logging with `RUST_LOG`:
-
-   ```sh
-   RUST_LOG=debug merod --node node1 run
-   ```
+3. Point `meroctl` at any of them with `--allow-mock`.
 
 </Steps>
 
+All three share the default `--cluster dev`, so they derive the same
+development storage key. Add `--origins` for a browser frontend on another
+port, and `--registry-url` to install `PACKAGE@VERSION`.
+
 <Aside type="note">
-  Node state and config live under `~/.calimero/<node>/` (e.g.
-  `~/.calimero/node/config.toml`), outside the repository.
+  A node's configuration and data live under `$CALIMERO_HOME/<node>/`
+  (default `~/.calimero/<node>/`), outside the repository. `meroctl` keeps its
+  saved nodes and sessions under `$CALIMERO_HOME/meroctl/`.
 </Aside>
 
-## Test
+## Logs
 
-```sh
-# Run the full workspace test suite
-cargo test
-
-# CI runs with output shown
-cargo test -- --nocapture
+```bash
+RUST_LOG=debug merod --node n1 run
+RUST_LOG=info,calimero_node=debug,openraft=info merod --node n1 run
 ```
 
-<Aside type="caution">
-  Some networking tests bind to real interfaces. CI sets a `TEST_HOSTS`
-  environment variable (a comma-separated list including `127.0.0.1`, `0.0.0.0`,
-  and the machine's primary interface IP). If host-dependent tests fail locally,
-  set it yourself, e.g. `TEST_HOSTS=127.0.0.1,0.0.0.0`.
-</Aside>
+`run` defaults to `info,openraft=warn`, `local` to `warn,openraft=off`. Keep
+account ids and user or app content out of `info!` and above:
+`scripts/check-no-user-data-at-info.py` fails a change that logs them.
 
-## The pre-PR gate
+## Before a PR
 
-Run every check CI's required `Rust` status waits on, read straight from
-`.github/workflows/ci-checks.yml` so the list cannot drift:
+Run these locally; they are what the required checks are built from:
 
-```sh
-./scripts/check-like-ci.py                 # all of it
-./scripts/check-like-ci.py --list          # what it runs, in order
-./scripts/check-like-ci.py --only clippy   # a subset, by name
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
+cargo clippy -p calimero-tee-attestation -p calimero-node --all-targets \
+  --features calimero-tee-attestation/mock-attestation,calimero-node/outbound-testing -- -D warnings
 ```
 
-The rest of the Definition of Done (proof for a bug fix, docs, review) is in
-the root [`AGENTS.md`](https://github.com/calimero-network/core/blob/master/AGENTS.md#definition-of-done).
+then the tests for what you changed ([Testing](/contribute/testing/) has the
+fixtures they need), for example:
+
+```bash
+cargo test -p calimero-node
+cargo test -p merod -p meroctl
+```
+
+`./scripts/check-like-ci.py` runs every job the required `Rust` check waits
+on, read from `.github/workflows/ci-checks.yml` (`--list` shows them,
+`--only <name>` runs some). Always run clippy with `-D warnings`:
+`-A warnings` allows every lint and can only pass.
 
 <Aside type="note">
   A pre-commit hook runs `cargo fmt --check` on staged Rust files. It installs
-  itself during any `cargo build` / `cargo test` via the `calimero-git-hooks`
-  build script — no husky or pnpm required, and it works from linked git
-  worktrees. The hook sources live in `.githooks/`. To format manually, run
-  `cargo fmt`.
-
-  Migrating from the old husky setup: if `git config --get core.hooksPath`
-  prints `.husky`, clear it once with `git config --unset core.hooksPath`.
+  itself during any `cargo build` or `cargo test` through the
+  `calimero-git-hooks` build script, works from linked worktrees, and lives in
+  `.githooks/`. If `git config --get core.hooksPath` prints `.husky`, clear it
+  once with `git config --unset core.hooksPath`.
 </Aside>
 
-## Commit & PR conventions
+## Commit and PR conventions
 
-Commit subjects and PR titles follow the [commit rule](https://github.com/calimero-network/core/blob/master/CODING_STANDARDS.md#commits)
-in the coding standards.
+Commit subjects and PR titles follow the
+[commit rule](https://github.com/calimero-network/core/blob/master/CODING_STANDARDS.md#commits)
+in the coding standards. For pull requests:
 
-For pull requests:
+- A PR focuses on functionality or style, not both.
+- The PR template's **Description**, **Test plan** and **Documentation update**
+  sections are filled in, and its Trust boundary block where a trust-boundary
+  path is touched.
+- A bug fix shows its reproduction and before and after output; the
+  reproducing test stays as the regression test.
+- Maintainers squash-and-merge; resolve each review conversation as you address
+  it.
 
-- The project uses a **fork-and-pull** workflow; base your PR on the `master`
-  branch.
-- A PR should focus on **either functionality or style, not both**.
-- PRs must follow the template, with **Description**, **Test plan**, and
-  **Documentation update** sections, and link any related issue.
-- Maintainers **squash-and-merge** approved PRs; resolve each review
-  conversation as you address it.
+The rest of the Definition of Done is in the root
+[`AGENTS.md`](https://github.com/calimero-network/core/blob/master/AGENTS.md#definition-of-done).
 
 ## Style rules
 
-The imports, module layout, error handling, dead-code and trust-boundary rules
-are in [`CODING_STANDARDS.md`](https://github.com/calimero-network/core/blob/master/CODING_STANDARDS.md).
+Imports, module layout, error handling, dead code and trust boundaries are in
+[`CODING_STANDARDS.md`](https://github.com/calimero-network/core/blob/master/CODING_STANDARDS.md).
 
 ## Where design docs live
 
 | Location | What's there |
 | --- | --- |
-| `docs/` | The Astro Starlight documentation site (this site) — all authored docs. |
-| `AGENTS.md` (root + per-package) | Quick orientation for each area of the tree; a good first read for any crate. |
+| `docs/` | This documentation site (Astro Starlight). |
+| `AGENTS.md` (root and per crate) | Orientation for each part of the tree; `crates/node/AGENTS.md` is the node's mental model. |
 | `CODING_STANDARDS.md` | How code in the repository is written. |
-
-<Aside type="tip">
-  When adding a non-trivial design, state the _why_ directly in code comments
-  rather than pointing at issue numbers.
-</Aside>

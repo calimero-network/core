@@ -1,343 +1,201 @@
+# Migrated from this file's v1 workflow by `merobox cloud port`.
+# Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no counterpart in this node):
+#   login (unknown) x2: checks what the dropped steps did
+#   wait_for_sync x3: replication is synchronous: a read sees every committed write
+# Migration note: v1's inherited joiner held no row of its own, so its capability
+#   bitmask read 0; joining an open team here writes a plain row, which takes the
+#   member's organization value (docs/src/content/docs/protocol/organizations.mdx,
+#   Capabilities), and that is what is checked
 name: E2E KV Store - Join Subgroup Via Inheritance Endpoint
-description: >
-  Acceptance test for issue #2357 (`feat(context): add
-  POST /admin-api/groups/:group_id/join-via-inheritance`).
-
-  The new endpoint lets a namespace member materialize their inherited
-  Open-subgroup membership without an admin-signed
-  `SignedGroupOpenInvitation` and without first knowing a child context
-  id. This workflow proves the endpoint:
-
-    1. Authorises an inherited member to receive the group key by
-       publishing `RootOp::MemberJoinedOpen` on their behalf, waiting
-       for the resulting `KeyDelivery` before returning 200.
-    2. Allows the subsequent `join_context` (or any later op) for any
-       context under the subgroup to author *and* decrypt traffic
-       successfully — i.e. the joiner's `sender_key` is populated and
-       bidirectional read/write converges.
-    3. Surfaces the inherited joiner in `list_group_members` on their
-       own node — the effective-membership contract from issue #2371.
-       `join_subgroup_inheritance` writes no `GroupMember` row (the
-       apply path `execute_member_joined_open` is validate-only), so
-       before the fix `GET /admin-api/groups/<id>/members` returned
-       only the explicit members and apps keying "is the caller a
-       member?" off that list saw `false` for any inherited joiner.
-    4. Resolves the inherited joiner through `get_member_capabilities`
-       — the sibling membership endpoint, issue #2378. Before that fix
-       it gated on a direct-row lookup only and bailed "identity is not
-       a member" for the very joiner `list_group_members` reported in
-       point 3, leaving the two endpoints contradictory.
-
-  Pre-#2357 the only way to materialize the inherited path was to
-  discover a child context id and call `join_context` against it
-  (which would in turn publish `MemberJoinedOpen` per #2351). This
-  workflow exercises the new top-level entry point instead.
-
-force_pull_image: false
-
-auth_mode: embedded
-
-nodes:
-  count: 2
-  image: merod:local
-  prefix: join-inherit-node
-
+description: "Acceptance test for issue #2357 (`feat(context): add POST /admin-api/groups/:group_id/join-via-inheritance`).\n\
+  The new endpoint lets a namespace member materialize their inherited Open-subgroup membership without\
+  \ an admin-signed `SignedGroupOpenInvitation` and without first knowing a child context id. This workflow\
+  \ proves the endpoint:\n\n  1. Authorises an inherited member to receive the group key by\n     publishing\
+  \ `RootOp::MemberJoinedOpen` on their behalf, waiting\n     for the resulting `KeyDelivery` before returning\
+  \ 200.\n  2. Allows the subsequent `join_context` (or any later op) for any\n     context under the\
+  \ subgroup to author *and* decrypt traffic\n     successfully — i.e. the joiner's `sender_key` is populated\
+  \ and\n     bidirectional read/write converges.\n  3. Surfaces the inherited joiner in `list_group_members`\
+  \ on their\n     own node — the effective-membership contract from issue #2371.\n     `join_subgroup_inheritance`\
+  \ writes no `GroupMember` row (the\n     apply path `execute_member_joined_open` is validate-only),\
+  \ so\n     before the fix `GET /admin-api/groups/<id>/members` returned\n     only the explicit members\
+  \ and apps keying \"is the caller a\n     member?\" off that list saw `false` for any inherited joiner.\n\
+  \  4. Resolves the inherited joiner through `get_member_capabilities`\n     — the sibling membership\
+  \ endpoint, issue #2378. Before that fix\n     it gated on a direct-row lookup only and bailed \"identity\
+  \ is not\n     a member\" for the very joiner `list_group_members` reported in\n     point 3, leaving\
+  \ the two endpoints contradictory.\n\nPre-#2357 the only way to materialize the inherited path was to\
+  \ discover a child context id and call `join_context` against it (which would in turn publish `MemberJoinedOpen`\
+  \ per #2351). This workflow exercises the new top-level entry point instead.\n"
+backend: cloud-v2
+cluster:
+  nodes: 3
+  base_port: 4390
+accounts:
+- join-inherit-node-1
+- join-inherit-node-2
 steps:
-  # First login on a fresh embedded-auth node bootstraps its root key
-  # and seeds merobox's token cache; every step below runs authenticated.
-  - name: Login on join-inherit-node-1
-    type: login
-    node: join-inherit-node-1
-    username: dev
-    password: dev-password
-
-  - name: Login on join-inherit-node-2
-    type: login
-    node: join-inherit-node-2
-    username: dev
-    password: dev-password
-
-  # ── Phase 1: Bootstrap mesh, namespace, Open subgroup, context ────
-
-  - name: Install application on node-1
-    type: install_application
-    node: join-inherit-node-1
-    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
-    dev: true
-    outputs:
-      app_id: applicationId
-
-  - name: Node-1 creates namespace
-    type: create_namespace
-    node: join-inherit-node-1
-    application_id: '{{app_id}}'
-    outputs:
-      namespace_id: namespaceId
-
-  - name: Invite node-2 to namespace
-    type: create_namespace_invitation
-    node: join-inherit-node-1
-    namespace_id: '{{namespace_id}}'
-    outputs:
-      ns_invite: invitation
-
-  - name: Node-2 joins namespace
-    type: join_namespace
-    node: join-inherit-node-2
-    namespace_id: '{{namespace_id}}'
-    invitation: '{{ns_invite}}'
-    outputs:
-      node2_identity: memberIdentity
-      node2_account: memberAccount
-
-  - name: Node-1 creates Open subgroup inside namespace
-    type: create_group_in_namespace
-    node: join-inherit-node-1
-    namespace_id: '{{namespace_id}}'
-    group_name: open-subgroup
-    outputs:
-      subgroup_id: groupId
-
-  - name: Mark subgroup as Open
-    type: set_subgroup_visibility
-    node: join-inherit-node-1
-    group_id: '{{subgroup_id}}'
-    visibility: open
-
-  - name: Node-1 creates context inside Open subgroup
-    type: create_context
-    node: join-inherit-node-1
-    application_id: '{{app_id}}'
-    group_id: '{{subgroup_id}}'
-    outputs:
-      ctx_id: contextId
-      # The key node-1 executes context calls as. It is the context creation
-      # that mints it — namespace creation answers with a namespace id and
-      # nothing else.
-      node1_key: memberPublicKey
-
-  - name: Wait for subgroup visibility + context-registered ops to propagate
-    # Same rationale as group-open-self-join-key-delivery.yml: node-2
-    # needs the Open-visibility row and the context-registered op
-    # before its inheritance check can succeed.
-    type: wait
-    seconds: 10
-
-  # ── Phase 2: node-2 calls the NEW endpoint (no join_context yet) ──
-  # This is the operation under test. node-2 has not called
-  # join_context for any context inside the subgroup; the new endpoint
-  # must (a) accept the call because their inherited membership path
-  # is valid, (b) fetch the subgroup key from a peer via the
-  # `OpenSubgroupJoinRequest` direct-stream protocol (mirroring
-  # `request_namespace_join`), (c) store the key locally + publish
-  # `MemberJoinedOpen` for peer convergence, and (d) return 200 with
-  # `was_inherited: true` deterministically.
-
-  - name: Node-2 calls join-via-inheritance endpoint
-    # Requires merobox >= 0.6.13 (PR adds the JoinSubgroupInheritanceStep)
-    # backed by calimero-client-py >= 0.6.11 (Python wrapper for the new
-    # core method). Both companion PRs ship in lockstep with this one.
-    type: join_subgroup_inheritance
-    node: join-inherit-node-2
-    group_id: '{{subgroup_id}}'
-    outputs:
-      inherit_member_pk: memberPublicKey
-      inherit_was_inherited: wasInherited
-
-  - name: Assert inheritance materialisation (member set)
-    type: assert
-    statements:
-      - "is_set({{inherit_member_pk}})"
-
-  - name: Assert was_inherited is true
-    # Use `json_assert` (not `assert`) so the literal `true` is parsed
-    # as a JSON boolean, matching the bool that flows out of
-    # `JoinSubgroupInheritanceStep._export_variables`. The `assert`
-    # step's `equal(...)` would compare bool `True` vs the unparsed
-    # string `'True'` and fail on the type mismatch.
-    type: json_assert
-    statements:
-      - 'json_equal({{inherit_was_inherited}}, true)'
-
-  # ── Phase 2b: list_group_members reflects the inherited joiner ────
-  # Issue #2371 regression. node-2 just joined `subgroup` via
-  # inheritance and has NOT yet called `join_context` — so it holds no
-  # explicit `GroupMember` row anywhere in the subgroup. Listing the
-  # subgroup members on node-2's own node must still include node-2:
-  # the admin-api handler unions the stored rows with
-  # `enumerate_inherited_members`. Before the fix this assertion fails
-  # — an inherited member was absent from `members[]` entirely.
-
-  - name: 'Node-2 lists subgroup members (issue #2371)'
-    type: list_group_members
-    node: join-inherit-node-2
-    group_id: '{{subgroup_id}}'
-    outputs:
-      subgroup_members: members
-
-  - name: Assert inherited joiner appears in the member list
-    type: assert
-    statements:
-      # node-2 joined `subgroup` via inheritance and holds no explicit
-      # `GroupMember` row. Before the #2371 fix it was absent from
-      # `members[]`; the admin-api handler now unions inherited members
-      # in, so node-2 must appear in the listed members.
-      #
-      # Compared by ACCOUNT, not by the `memberPublicKey` the join step
-      # returns: the listing names members by the principal their rows are
-      # keyed by, and a key would never match one however present the
-      # member is.
-      - 'contains({{subgroup_members}}, {{node2_account}})'
-
-  # ── Phase 2c: get_member_capabilities accepts the inherited joiner ─
-  # Issue #2378 regression. `list_group_members` (Phase 2b) now reports
-  # node-2 as an effective member of `subgroup`; the sibling endpoint
-  # `GET /admin-api/groups/<id>/members/<member>/capabilities` must
-  # agree. node-2 holds no explicit `GroupMember` row, so before the
-  # #2378 fix this call bailed with "identity is not a member of
-  # group ..." — the handler gated on a direct-row lookup only and the
-  # two membership endpoints contradicted each other. After the fix the
-  # call succeeds and returns `0`: an inherited member holds no explicit
-  # per-member bitmask in the subgroup (their access derives from the
-  # Open-subgroup chain), so `0` correctly means "member, no extra
-  # delegated bits."
-
-  - name: 'Node-2 reads its own capabilities (issue #2378)'
-    type: get_member_capabilities
-    node: join-inherit-node-2
-    group_id: '{{subgroup_id}}'
-    member_id: '{{node2_account}}'
-    outputs:
-      inherit_member_caps: capabilities
-
-  - name: Assert inherited joiner resolves to a 0 capability bitmask
-    # `json_assert` so the literal `0` is parsed as a JSON number rather
-    # than the string `'0'`. The decisive signal is that the step above
-    # succeeds at all — pre-#2378 it errored before returning any value,
-    # failing the workflow outright.
-    type: json_assert
-    statements:
-      - 'json_equal({{inherit_member_caps}}, 0)'
-
-  # ── Phase 3: node-2 joins the context (key already delivered) ─────
-  # This call should now be cheap because the group key is already
-  # local — `join_context` will see the inherited path, find the key
-  # in store, and skip the MemberJoinedOpen+KeyDelivery wait.
-
-  - name: Node-2 joins context (post-inheritance materialisation)
-    type: join_context
-    node: join-inherit-node-2
-    context_id: '{{ctx_id}}'
-    outputs:
-      node2_key: memberPublicKey
-
-  - name: Assert bootstrap shape
-    type: assert
-    statements:
-      - "is_set({{namespace_id}})"
-      - "is_set({{subgroup_id}})"
-      - "is_set({{ctx_id}})"
-      - "is_set({{node1_key}})"
-      - "is_set({{node2_identity}})"
-      - "is_set({{node2_key}})"
-
-  - name: Initial sync to settle Root state
-    type: wait_for_sync
-    context_id: '{{ctx_id}}'
-    nodes:
-      - join-inherit-node-1
-      - join-inherit-node-2
-    timeout: 60
-    check_interval: 2
-
-  # ── Phase 4: Round 1 — node-1 writes, node-2 reads ────────────────
-
-  - name: Round 1 — node-1 writes
-    type: call
-    node: join-inherit-node-1
-    context_id: '{{ctx_id}}'
-    method: set
-    args:
-      key: "from_admin"
-      value: "node1_msg"
-    executor_public_key: '{{node1_key}}'
-
-  - name: Round 1 sync
-    type: wait_for_sync
-    context_id: '{{ctx_id}}'
-    nodes:
-      - join-inherit-node-1
-      - join-inherit-node-2
-    timeout: 30
-    check_interval: 2
-    expect:
-      method: get
-      args:
-        key: "from_admin"
-      equals:
-        output: "node1_msg"
-
-  - name: Node-2 reads node-1's write
-    type: call
-    node: join-inherit-node-2
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "from_admin"
-    executor_public_key: '{{node2_key}}'
-    outputs:
-      node2_read_admin: result
-
-  # ── Phase 5: Round 2 — node-2 writes, node-1 reads ────────────────
-  # The endpoint's contract: after it returns 200, the joiner can
-  # author ops with the group key. If KeyDelivery never landed
-  # (pre-#2357 bug or regression), node-2's write fails to sign with
-  # the group key and node-1's read returns null/empty.
-
-  - name: Round 2 — node-2 (inherited self-joiner) writes
-    type: call
-    node: join-inherit-node-2
-    context_id: '{{ctx_id}}'
-    method: set
-    args:
-      key: "from_joiner"
-      value: "node2_msg"
-    executor_public_key: '{{node2_key}}'
-
-  - name: Round 2 sync
-    type: wait_for_sync
-    context_id: '{{ctx_id}}'
-    nodes:
-      - join-inherit-node-1
-      - join-inherit-node-2
-    timeout: 30
-    check_interval: 2
-    expect:
-      method: get
-      args:
-        key: "from_joiner"
-      equals:
-        output: "node2_msg"
-
-  - name: Node-1 reads node-2's write
-    type: call
-    node: join-inherit-node-1
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "from_joiner"
-    executor_public_key: '{{node1_key}}'
-    outputs:
-      node1_read_joiner: result
-
-  # ── Phase 6: Assertions ───────────────────────────────────────────
-
-  - name: Assert both directions converged
-    type: assert
-    statements:
-      - "is_set({{node2_read_admin}})"
-      - "is_set({{node1_read_joiner}})"
-      - 'contains({{node2_read_admin}}, "node1_msg")'
-      - 'contains({{node1_read_joiner}}, "node2_msg")'
-
-stop_all_nodes: false
+- name: Install application on node-1
+  type: upload_bundle
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  outputs:
+    app_id_bundle: hash
+  account: join-inherit-node-1
+- type: set
+  values:
+    app_id: com.calimero.scaffolding-e2e
+- name: Node-1 creates namespace
+  type: create_org
+  org_name: Node-1 creates namespace
+  outputs:
+    namespace_id: orgId
+  account: join-inherit-node-1
+- name: Invite node-2 to namespace
+  type: invite
+  org: '{{namespace_id}}'
+  role: member
+  account: join-inherit-node-1
+  outputs:
+    ns_invite: token
+- name: Node-2 joins namespace
+  type: redeem_invite
+  token: '{{ns_invite}}'
+  account: join-inherit-node-2
+- type: whoami
+  account: join-inherit-node-2
+  outputs:
+    node2_identity: publicKey
+    node2_account: publicKey
+- name: Node-1 creates Open subgroup inside namespace
+  type: create_team
+  org: '{{namespace_id}}'
+  team_name: open-subgroup
+  join: invite
+  outputs:
+    subgroup_id: teamId
+  account: join-inherit-node-1
+- name: Mark subgroup as Open
+  type: team_update
+  org: '{{namespace_id}}'
+  team: '{{subgroup_id}}'
+  join: everyone
+  account: join-inherit-node-1
+- name: Node-1 creates context inside Open subgroup
+  type: deploy
+  account: join-inherit-node-1
+  wasm: '{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm'
+  app_name: Node-1 creates context inside Open subgroup
+  org: '{{namespace_id}}'
+  access:
+    kind: team
+    team: '{{subgroup_id}}'
+  outputs:
+    ctx_id: contextId
+    node1_key: memberPublicKey
+- name: Wait for subgroup visibility + context-registered ops to propagate
+  type: wait
+  seconds: 10.0
+- name: Node-2 calls join-via-inheritance endpoint
+  type: team_join
+  org: '{{namespace_id}}'
+  team: '{{subgroup_id}}'
+  account: join-inherit-node-2
+  outputs:
+    inherit_member_pk: memberPublicKey
+    inherit_was_inherited: wasInherited
+- name: Assert inheritance materialisation (member set)
+  type: assert
+  statements:
+  - is_set({{inherit_member_pk}})
+- name: Assert was_inherited is true
+  type: json_assert
+  statements:
+  - json_equal({{inherit_was_inherited}}, true)
+- name: 'Node-2 lists subgroup members (issue #2371)'
+  type: team_get
+  org: '{{namespace_id}}'
+  team: '{{subgroup_id}}'
+  account: join-inherit-node-2
+  outputs:
+    subgroup_members: members
+- name: Assert inherited joiner appears in the member list
+  type: assert
+  statements:
+  - contains({{subgroup_members}}, {{node2_account}})
+- name: 'Node-2 reads its own capabilities (issue #2378)'
+  type: member_capabilities
+  org: '{{namespace_id}}'
+  member: '{{node2_account}}'
+  account: join-inherit-node-2
+  team: '{{subgroup_id}}'
+  outputs:
+    inherit_member_caps: capabilities
+- name: Node-2's organization-wide capabilities
+  type: member_capabilities
+  org: '{{namespace_id}}'
+  member: '{{node2_account}}'
+  account: join-inherit-node-2
+  outputs:
+    org_member_caps: capabilities
+- name: Assert the joined row takes the member's organization value
+  type: json_assert
+  statements:
+  - json_equal({{inherit_member_caps}}, {{org_member_caps}})
+- name: Node-2 joins context (post-inheritance materialisation)
+  type: whoami
+  account: join-inherit-node-2
+  outputs:
+    node2_key: publicKey
+- name: Assert bootstrap shape
+  type: assert
+  statements:
+  - is_set({{namespace_id}})
+  - is_set({{subgroup_id}})
+  - is_set({{ctx_id}})
+  - is_set({{node1_key}})
+  - is_set({{node2_identity}})
+  - is_set({{node2_key}})
+- name: Round 1 — node-1 writes
+  type: call
+  app: '{{ctx_id}}'
+  method: set
+  args:
+    key: from_admin
+    value: node1_msg
+  account: join-inherit-node-1
+  as_key: '{{node1_key}}'
+- name: Node-2 reads node-1's write
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: from_admin
+  account: join-inherit-node-2
+  as_key: '{{node2_key}}'
+  outputs:
+    node2_read_admin: rpc
+- name: Round 2 — node-2 (inherited self-joiner) writes
+  type: call
+  app: '{{ctx_id}}'
+  method: set
+  args:
+    key: from_joiner
+    value: node2_msg
+  account: join-inherit-node-2
+  as_key: '{{node2_key}}'
+- name: Node-1 reads node-2's write
+  type: call
+  app: '{{ctx_id}}'
+  method: get
+  args:
+    key: from_joiner
+  account: join-inherit-node-1
+  as_key: '{{node1_key}}'
+  outputs:
+    node1_read_joiner: rpc
+- name: Assert both directions converged
+  type: assert
+  statements:
+  - is_set({{node2_read_admin}})
+  - is_set({{node1_read_joiner}})
+  - contains({{node2_read_admin}}, "node1_msg")
+  - contains({{node1_read_joiner}}, "node2_msg")

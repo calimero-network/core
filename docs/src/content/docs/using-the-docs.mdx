@@ -16,8 +16,8 @@ page from a "look it up" page at a glance.
 
 <CardGrid>
   <LinkCard title="Build" href="/build/" description="You're writing a Calimero app on the SDK." />
-  <LinkCard title="Operate" href="/operate/" description="You're running and configuring nodes." />
-  <LinkCard title="Protocol Reference" href="/protocol/overview/" description="You're reimplementing a node, or want the model." />
+  <LinkCard title="Operate" href="/operate/" description="You're running a cluster: merod, meroctl, the Ops API." />
+  <LinkCard title="Protocol Reference" href="/protocol/overview/" description="You want to know how a cluster works, and why." />
   <LinkCard title="Contribute" href="/contribute/" description="You're working on Calimero Core itself." />
 </CardGrid>
 
@@ -32,25 +32,28 @@ Every track separates learning-oriented pages from reference:
 | **Reference** | Exhaustive look-up | Search / scan, don't read cover to cover |
 | **Deep dives** | Implementation internals | When you want the "why" and the sharp edges |
 
-The Protocol Reference adds a few more groups (_The core model_, _The planes_,
-_Moving &amp; reconciling_, _Subsystems_) because it's a sequence — it follows one
-operation from birth to convergence.
+The Protocol Reference groups its pages differently (_The model_, _The call
+path_, _Trust_, _People &amp; authority_, _Apps_, _Reference_) because it is a
+sequence: it follows one call from a client's sealed request to a committed
+log entry, then widens out.
 
 ## Page conventions
 
 - **Callouts.** `:::note` is context, `:::tip` is a shortcut, `:::caution` is a
-  footgun. In the Protocol spec, a **`Normative`** caution marks a MUST/SHOULD
-  requirement an independent implementation has to satisfy.
+  footgun. In the Protocol Reference, a _v1 comparison_ note says what a
+  mechanism replaced and why.
 - **Diagrams** are animated — hit **▶ Replay** to step through a flow again.
-- **Code blocks** have a copy button; spec sections give exact byte layouts.
-- **Pre-1.0.** Everything here is accurate to current code but may change before
-  1.0; the byte-level details are versioned (see the spec's versioning note).
+- **Code blocks** have a copy button; where a format matters (report data,
+  receipts, key layouts) the page gives it exactly.
+- **Release candidate.** Everything here is meant to match current code, which
+  may still change; request and entry formats are not yet versioned. What is
+  not done yet is named where it matters.
 
 ## Two faster ways in
 
 <CardGrid>
-  <LinkCard title="Journeys by goal" href="/journeys/" description="Curated cross-track paths: build an app, run a fleet, reimplement a node." />
-  <LinkCard title="Browse by topic" href="/topics/" description="Everything on CRDTs, encryption, performance, governance…" />
+  <LinkCard title="Journeys by goal" href="/journeys/" description="Curated cross-track paths: build an app, run a cluster, understand how it works." />
+  <LinkCard title="Browse by topic" href="/topics/" description="Everything on replication, trust, access, apps, limits…" />
 </CardGrid>
 
 <Aside type="tip">

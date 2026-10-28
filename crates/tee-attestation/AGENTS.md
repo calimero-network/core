@@ -5,8 +5,8 @@ Generates and verifies Intel TDX attestation quotes, binding them to a nonce and
 ## Package Identity
 
 - **Crate**: `calimero-tee-attestation`
-- **Entry**: `src/lib.rs`
-- **Key deps**: `tdx-quote` (parses raw TDX quote bytes), `dcap-qvl` (Intel DCAP collateral fetch + cryptographic quote verification), `calimero-server-primitives` (the serializable `Quote`/`QuoteHeader`/`QuoteBody`/`CertificationData` types), `base64`/`hex` (encoding), `eyre` (internal error plumbing), `tracing`. Linux-only: `configfs-tsm` (real quote generation via the kernel TSM configfs interface), `tdx_workload_attestation` (MRTD/launch-measurement retrieval), `reqwest` (cloud metadata detection)
+- **Entry**: `src/lib.rs`; the serializable `Quote`/`QuoteHeader`/`QuoteBody`/`CertificationData` types are this crate's own (`src/quote.rs`)
+- **Key deps**: `tdx-quote` (parses raw TDX quote bytes), `dcap-qvl` (Intel DCAP collateral fetch + cryptographic quote verification), `base64`/`hex` (encoding), `eyre` (internal error plumbing), `tracing`. Linux-only: `configfs-tsm` (real quote generation via the kernel TSM configfs interface), `tdx_workload_attestation` (MRTD/launch-measurement retrieval), `reqwest` (cloud metadata detection)
 
 ## Commands
 
@@ -37,7 +37,7 @@ cargo build -p calimero-tee-attestation --features mock-attestation
 cargo test -p calimero-tee-attestation --features mock-attestation
 ```
 
-Consumers propagate it explicitly: `calimero-server/mock-attestation`, `calimero-node/mock-attestation`, `merod/mock-attestation` all fan out to `calimero-tee-attestation/mock-attestation`. **No shipped crate lists it in default features**, and `.github/workflows/release.yml` fails the release if `cargo tree -e features -i calimero-tee-attestation -p merod` resolves it.
+Consumers propagate it explicitly to `calimero-tee-attestation/mock-attestation`. **No shipped crate lists it in default features**, and `.github/workflows/release.yml` fails the release if `cargo tree -e features -i calimero-tee-attestation -p merod` resolves it.
 
 > **External consumers (mero-tee):** enabling `mock-attestation` re-exposes `is_mock_quote` / `verify_mock_attestation`. A consumer that calls those symbols must enable the feature explicitly; with it off they will not resolve.
 
@@ -104,7 +104,7 @@ Two properties carry over from the library and matter more here, because the con
 | `TeeInfo` | struct | `cloud_provider: String`, `os_image: String`, `mrtd: String` (hex) |
 | `AttestationError` | enum | `NotSupported`, `QuoteGenerationFailed`, `QuoteParsingFailed`, `QuoteConversionFailed`, `QuoteVerificationFailed`, `CollateralFetchFailed`, `InvalidNonce`, `InvalidApplicationHash`, `NonceMismatch { expected, actual }`, `ApplicationHashMismatch { expected, actual }`, `InfoRetrievalFailed`, `SystemTimeError` - all carry `String` context, no source-error chaining |
 
-`Quote`/`QuoteHeader`/`QuoteBody`/`CertificationData`/`QeReportCertificationDataInfo` are re-exported through `calimero_server_primitives::admin`, not defined in this crate - this crate only builds and consumes them (`Quote: TryFrom<tdx_quote::Quote>`).
+`Quote`/`QuoteHeader`/`QuoteBody`/`CertificationData`/`QeReportCertificationDataInfo` are defined here (`quote.rs`, the same wire shape as v1's `calimero_server_primitives::admin`) with `Quote: TryFrom<tdx_quote::Quote>`; mero-kms and the gates in mero-tee import them from `calimero_tee_attestation` once they move past core rev 23cf02c.
 
 ## Mental Model: Generate vs Verify
 
@@ -121,7 +121,7 @@ Mock quotes (`is_mock_quote`, magic header `MOCK_QUOTE_HEADER = b"MOCK_TDX_QUOTE
 
 ## Relationship to the KMS
 
-This crate has no KMS-specific code - it is a generic TDX quote generate/verify library. The KMS is mero-kms running as a GCP TDX cluster, and its client lives in `crates/merod/src/kms/mod.rs`: `merod` calls `generate_attestation` to produce its own quote when requesting a key, and calls `verify_attestation` / `verify_mock_attestation` to check the quote the KMS returns from `/attest` before trusting a fetched storage encryption key. Pinning that quote's MRTD and RTMR0-3 to the release policy, and the mock/real decision with its `accept_mock` enforcement (reject a mock quote unless explicitly allowed), are entirely the caller's responsibility - this crate just answers "is this quote's binding and signature valid," it never decides whether mock is acceptable.
+This crate has no KMS-specific code - it is a generic TDX quote generate/verify library. The KMS is mero-kms running as a GCP TDX cluster, and its client lives in `crates/kms-client` (`calimero-kms-client`): `merod` calls `generate_attestation` to produce its own quote when requesting a key, and calls `verify_attestation` / `verify_mock_attestation` to check the quote the KMS returns from `/attest` before trusting a fetched storage encryption key. Pinning that quote's MRTD and RTMR0-3 to the release policy, and the mock/real decision with its `accept_mock` enforcement (reject a mock quote unless explicitly allowed), are entirely the caller's responsibility - this crate just answers "is this quote's binding and signature valid," it never decides whether mock is acceptable.
 
 ## Key Files
 
