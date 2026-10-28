@@ -121,8 +121,9 @@ pub use self::contexts::{
 };
 pub use self::deny_list::DenyListRepository;
 pub use self::device_link::{
-    bind_device_everywhere, bind_known_devices, plan_carried_link, publish_carried_link,
-    replay_known_revocations, withdraw_device_in, CarriedLink, CarriedLinkRefusal,
+    bind_device_everywhere, bind_known_devices, link_holder_device, plan_carried_link,
+    publish_carried_link, replay_known_revocations, withdraw_device_in, CarriedLink,
+    CarriedLinkRefusal,
 };
 pub use self::forgotten::{ForgottenNamespace, ForgottenNamespaces};
 pub use self::ops::group::shared_writers_rotated::require_context_not_rotated;
@@ -175,8 +176,8 @@ pub use self::namespace::{
     NamespaceOpLogService, NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
 };
 pub use self::node_device::{
-    account_for_context, account_for_group, AccountRoot, DeviceSecret, ImportedRoot,
-    KnownDeviceCert, NodeDevice, NodeDeviceRepository, RevocationTarget,
+    account_for_context, account_for_group, AccountNamespaceFounder, AccountRoot, DeviceSecret,
+    ImportedRoot, KnownDeviceCert, NodeDevice, NodeDeviceRepository, RevocationTarget,
 };
 pub use self::owner_guard::{check_root_proof, owner_op_counter, GuardedOp, OwnerGuardRefusal};
 pub use self::pending_admission::{pending_standing, PendingStanding};

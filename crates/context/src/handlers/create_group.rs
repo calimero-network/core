@@ -20,6 +20,26 @@ use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, MetadataRepository,
 };
 
+impl ContextManager {
+    /// The root-derived founder, only for the account's own namespace salt: any other salt
+    /// founds an ordinary root with this node's identity.
+    fn account_namespace_founder(
+        &self,
+        salt: Option<[u8; 32]>,
+        parent_group_id: Option<ContextGroupId>,
+    ) -> eyre::Result<Option<calimero_governance_store::AccountNamespaceFounder>> {
+        let Some(salt) = salt.filter(|_| parent_group_id.is_none()) else {
+            return Ok(None);
+        };
+        let root = calimero_governance_store::NodeDeviceRepository::new(&self.datastore)
+            .require_account_root()?;
+        if salt != root.account_namespace_salt() {
+            return Ok(None);
+        }
+        root.account_namespace_founder().map(Some)
+    }
+}
+
 impl Handler<CreateGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <CreateGroupRequest as Message>::Result>;
 
@@ -91,6 +111,17 @@ impl Handler<CreateGroupRequest> for ContextManager {
             Some(_) => (None, None),
         };
 
+        // The account namespace is founded by a key and credential derived from the account
+        // root, so a restored holder re-creates the genesis it lost byte for byte.
+        let account_founder = match self.account_namespace_founder(salt, parent_group_id) {
+            Ok(founder) => founder,
+            Err(err) => {
+                return ActorResponse::reply(Err(
+                    err.wrap_err("failed to derive the account namespace's founder")
+                ))
+            }
+        };
+
         let Some(namespace_anchor_group_id) = parent_group_id.or(root_id) else {
             return ActorResponse::reply(Err(eyre::eyre!(
                 "internal: neither a parent nor a root id"
@@ -143,6 +174,11 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 Err(err) => return ActorResponse::reply(Err(err)),
             };
             (account, None)
+        } else if let Some(founder) = &account_founder {
+            (
+                founder.credential.statement.account,
+                Some(founder.credential.clone()),
+            )
         } else {
             match crate::join_credential::build(&self.datastore, &namespace_id, &admin_identity) {
                 Ok(credential) => {
@@ -376,7 +412,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     //
                     // Minted whatever the visibility. On an Open chain the namespace key
                     // covers the group (`key_covering_group`); no reader may serve this row.
-                    let group_key: [u8; 32] = rand::rng().random();
+                    let group_key: [u8; 32] = account_founder
+                        .as_ref()
+                        .map_or_else(|| rand::rng().random(), |founder| *founder.group_key);
                     let key_id = GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
                     group_key_id = Some(key_id);
                     tracing::debug!(
@@ -414,6 +452,10 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 }
 
                 let signer_sk = PrivateKey::from(sk_bytes);
+                let genesis_sk = account_founder.as_ref().map_or_else(
+                    || PrivateKey::from(sk_bytes),
+                    |founder| PrivateKey::from(*founder.signer.as_bytes()),
+                );
                 // Strict-tree refactor: GroupCreated is now an atomic
                 // create+nest op. It ONLY applies to subgroups — the namespace
                 // root itself has no parent by definition.
@@ -516,7 +558,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         &node_client,
                         &ack_router,
                         namespace_id.to_bytes().into(),
-                        &signer_sk,
+                        &genesis_sk,
                         genesis_op,
                     )
                     .await
@@ -685,6 +727,24 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     // long predates this, so they apply it as they always have.
                     // That is the whole reason this is an op rather than a wider
                     // `NamespaceCreated`, which would have been a wire change.
+                    // The genesis names no node, so bind it before it signs anything else.
+                    if account_founder.is_some() {
+                        if let Ok(root) =
+                            calimero_governance_store::NodeDeviceRepository::new(&datastore)
+                                .require_account_root()
+                        {
+                            crate::handlers::ensure_account_namespace::bind_holder_node(
+                                &datastore,
+                                &node_client,
+                                &ack_router,
+                                namespace_id,
+                                &signer_sk,
+                                &root,
+                            )
+                            .await;
+                        }
+                    }
+
                     if parent_group_id.is_none() {
                         match calimero_governance_store::sign_apply_and_publish(
                             &datastore,
@@ -1449,6 +1509,53 @@ mod tests {
                 .expect("read the founding record"),
             Some((founder, SALT)),
             "the genesis carried the salt, so the apply recorded the pair"
+        );
+    }
+
+    /// The root-derived founder and key are for the account's own namespace salt only: any other
+    /// salt founds with this node's identity, so no derived key signs or seals for it.
+    #[actix::test]
+    async fn only_the_accounts_own_salt_takes_the_root_derived_founder() {
+        let store = store();
+        let root = calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+        let derived = root.account_namespace_founder().expect("derive");
+
+        let harness = actor::over(store.clone()).await;
+        let create = |salt: [u8; 32]| CreateGroupRequest {
+            salt: Some(salt),
+            bytecode_id: None,
+            application_id: None,
+            name: None,
+            parent_group_id: None,
+            restricted: true,
+        };
+        let own = harness
+            .manager
+            .send(create(root.account_namespace_salt()))
+            .await
+            .expect("the manager answers")
+            .expect("the account namespace is created");
+        let other = harness
+            .manager
+            .send(create(SALT))
+            .await
+            .expect("the manager answers")
+            .expect("another salt founds an ordinary root");
+
+        let key_of = |group: ContextGroupId| {
+            calimero_governance_store::GroupKeyring::new(&store, group)
+                .load_current_key()
+                .expect("read")
+                .expect("a root holds a key")
+                .1
+        };
+        assert_eq!(key_of(own.group_id), *derived.group_key);
+        assert_ne!(
+            key_of(other.group_id),
+            *derived.group_key,
+            "another salt took the account's derived key"
         );
     }
 

@@ -157,6 +157,9 @@ pub struct ReadinessManager {
   `calimero_context::governance_broadcast::verify_readiness_beacon`
   (signature + namespace member set). A beacon that fails the membership
   check falls through to the stranded-member arm and is otherwise dropped.
+  A beacon on this node's own account namespace that advertises governance the
+  node lacks also cues a pull from its signer, debounced per (namespace, peer),
+  so a restored holder reaches a surviving device whose key it has not learned.
   It used to be rescuable by a verifiable admission proof it carried; that
   path existed so an invitation could be claimed by broadcast, which direct
   admission replaced — the invitation names who may admit it, and the
