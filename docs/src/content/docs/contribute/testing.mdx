@@ -132,6 +132,11 @@ MEROD_BINARY=target/debug/merod python3 scripts/cloud-v2-workflows.py [FILE...]
 python3 scripts/cloud-v2-workflows.py --shard 2/4 --list   # what CI's shard 2 runs
 ```
 
+Every workflow names its own `cluster.base_port` and no two overlap, so the four
+shards of one checkout can run side by side, each with its own `--json`. To run
+the same workflows from two checkouts at once, give each a band of its own with
+`--port-offset N` (or `CLOUD_V2_PORT_OFFSET`), e.g. 10000 and 20000.
+
 `scripts/cloud-v2-workflows-baseline.json` lists the workflows that pass; one
 of them failing fails CI. Add a workflow to it once it passes, and its measured
 duration to `scripts/cloud-v2-workflows-durations.json` (the shards are packed
