@@ -56,8 +56,10 @@ SMOKE = Path(__file__).with_name("cloud-v2-workflows-smoke.json")
 #: Seconds assumed for a workflow with no measured duration.
 DEFAULT_SECONDS = 20.0
 BLOB_FIXTURES = "static/generated/"
-#: merobox's own default when a workflow names no base_port.
+#: merobox's own defaults when a workflow names no base_port or node count
+#: (`merobox/cloud_v2/workflow.py`, `cluster.py`).
 MEROBOX_BASE_PORT = 2700
+MEROBOX_NODES = 3
 
 
 def all_workflows() -> list[str]:
@@ -97,7 +99,7 @@ def shift_ports(workflow, offset: int) -> None:
         spec = wf.get("cluster")
         if spec is not None:
             port = int(spec.get("base_port", MEROBOX_BASE_PORT)) + offset
-            if port < 1024 or port + int(spec.get("nodes", 3)) > 65535:
+            if port < 1024 or port + int(spec.get("nodes", MEROBOX_NODES)) > 65535:
                 raise ValueError(f"--port-offset {offset} puts {path}'s nodes at {port}+")
             spec["base_port"] = port
         return wf
