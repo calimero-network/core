@@ -11,19 +11,19 @@ A confidential cloud for collaborative apps. Apps are written in Rust or JavaScr
 - **Directory**: before working in a crate, app or tool, read the `AGENTS.md` in its directory (the `CLAUDE.md` beside it is a symlink); [crates/AGENTS.md](crates/AGENTS.md) indexes the crates and [architecture](docs/src/content/docs/contribute/architecture.mdx) shows how they connect.
 - **Glossary**: when a term is unclear, read the [glossary](docs/src/content/docs/protocol/glossary.mdx); v1's names map to these: namespace = organization, group = team, context = app instance, application = signed package (see [meroctl](docs/src/content/docs/operate/meroctl.mdx)).
 - **Nodes**: before running `merod` by hand, read [Run local nodes](docs/src/content/docs/contribute/development.mdx#run-local-nodes); every flag is in the [merod reference](docs/src/content/docs/operate/merod.mdx).
-- **Tests**: before writing a test or merobox scenario, reading node logs, or debugging a CI failure, read [Testing strategy](docs/src/content/docs/contribute/testing.mdx).
+- **Tests**: before writing a test or scenario file, reading node logs, or debugging a CI failure, read [Testing strategy](docs/src/content/docs/contribute/testing.mdx).
 - **Issues**: before filing an engineering issue, fill in the [`technical_issue`](.github/ISSUE_TEMPLATE/technical_issue.md) template.
 
 ## Testing
 
 - **Reproduce first**: write the failing test at the layer a user hits the bug and watch it go red before changing code.
-- **Blind spot**: merobox scenarios run one build on fresh state, so they never test backward compatibility; an on-disk or wire format change needs its own migration test.
+- **Blind spot**: scenarios and the process suite run one build on fresh state, so they never test backward compatibility; an on-disk or wire format change needs its own migration test.
 
 ## Definition of Done
 
 - **Gates**: run `./scripts/check-like-ci.py` before opening a PR; it reads `.github/workflows/ci-checks.yml` and runs every job the required `Rust` check waits on (`--list` shows them, `--only <name>` runs a subset).
   Run clippy by hand with `-D warnings`, as CI does; `-A warnings` allows every lint and can only pass.
-- **Proof**: a bug fix's PR description shows the reproduction (test, command or merobox scenario) and its before and after output; the reproducing test stays as the regression test.
+- **Proof**: a bug fix's PR description shows the reproduction (test, command or scenario file) and its before and after output; the reproducing test stays as the regression test.
 - **Docs**: update the README, `AGENTS.md`, crate docs or `docs/` page the change makes stale, no later than one day after merge.
 - **Merge**: a PR merges when CI is green, every meroreviewer and Cursor Bugbot thread is fixed or answered and resolved, and branch protection's human review is approved.
   The `resolve-bot-review-comments`, `babysit` and `code-review` skills drive that loop.

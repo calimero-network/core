@@ -4,9 +4,10 @@ Example and test WebAssembly applications demonstrating Calimero SDK usage.
 
 ## Package Identity
 
-- **Target**: `wasm32-unknown-unknown`
-- **SDK**: `calimero-sdk`
-- **Storage**: `calimero-storage` (CRDTs)
+- **Target**: `wasm32-unknown-unknown` (wasmer apps); `wasm32-wasip2` for the
+  [component apps](#component-apps-calimero-app-sdk-wasm32-wasip2)
+- **SDK**: `calimero-sdk` (wasmer apps); `calimero-app-sdk` (component apps)
+- **Storage**: `calimero-storage` (CRDTs) for wasmer apps; tables for component apps
 
 ## Commands
 
@@ -26,11 +27,12 @@ cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 | App                      | Purpose                | Good Example For       |
 | ------------------------ | ---------------------- | ---------------------- |
 | `kv-store`               | Simple key-value store (component SDK) | `Table` + `Counter`, events, a typed error, a `confirm` method; `TestApp` tests and `scenarios/*.json`. Its wasmer build, the node tests' fixture, is `wasmer-fixtures/kv-store` |
-| `kv-store-init`          | KV with custom init    | `#[app::init]` pattern |
+| `kv-store-init`          | KV with custom init (component SDK) | `#[app::init]` seeding the first state as the owner |
 | `org-gated`              | Org notes (component SDK) | `env::org_role` / `env::in_team`: gate methods on the caller's organization role and teams; `scenarios/cluster/` changes a team mid-run |
 | `wasmer-fixtures/org-gated` | Org notes (v1 SDK)  | The wasmer fixture `crates/node/tests/cluster.rs` loads (`org_gated.wasm`) for `env::caller_org()` |
 | `kv-store-with-handlers` | KV with event handlers | Event handling         |
-| `sorted-kv-store`        | Ordered KV store       | `SortedMap`: range / prefix / page |
+| `sorted-kv-store`        | Ordered KV store (component SDK) | A `Table` read in key order: range / prefix / page / first / last through its cursor |
+| `sorted-set-store`       | Ordered set (component SDK) | A `Table` whose record is the element: range / prefix / page / min / max |
 | `authored-sorted-kv-store` | Shared noticeboard (component SDK) | Per-note authors checked against `env::caller()`, topic slices through a `Table` index, and why the two go together |
 | `indexed-issue-tracker`  | Issue tracker (component SDK) | `Table` indexes, a label table and maintained counts: filter, count and page by field values without scanning |
 | `indexed-forum`          | Forum (component SDK)  | Tables with compound and optional-field indexes and maintained counts; a tag index as one row per tag; v1's `Moderated`/`Frozen`/`Authored` policies as explicit checks against `env::caller()` and a moderators table |
@@ -44,7 +46,7 @@ cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 | `kv-store-with-shared-storage` | Writer-set KV (component SDK) | A writer set as table rows plus an explicit check, and its rotation. The wasmer `SharedStorage` build is `wasmer-fixtures/kv-store-with-shared-storage` |
 | `wasmer-fixtures/*`      | Wasmer builds of ported apps | Kept for the node's tests, the size gate and the release bundle; same crate and wasm names as before the port |
 | `kv-store-with-user-and-frozen-storage` | Per-user + immutable KV (component SDK) | Rows keyed by the caller's account (v1's `UserStorage`), content-addressed rows hashed with `sha2` (v1's `FrozenStorage`) |
-| `custom-key-store`       | Custom key type        | `AsRef<[u8]>` newtype keys, and the tail rule owned collections add |
+| `custom-key-store`       | Custom key type (component SDK) | A `ToKeyPart` newtype key (`Slug` over a `String`, normalized), and why a struct without it does not compile |
 | `private_data`           | Node-local secrets     | `#[app::private]`; public hashes in an `AuthoredMap` under creator-named ids |
 | `tee-dice` / `tee-cards` | TEE-decided games      | `TeeOnly`, `TeeSecret`, `#[app::tee]` handlers and timers |
 | `blobs`                  | Blob storage demo      | Blob operations; file records as the uploader's own `AuthoredMap` entries |
@@ -52,20 +54,29 @@ cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 | `fugue-editor`           | Collaborative text (Fugue) | `FugueText` CRDT       |
 | `fugue-collab`           | Collaborative text (Fugue), with deletes | E2E guest |
 | `rich-collab`            | Collaborative rich text (blocks, marks) | `RichDocument` / `RichText` E2E guest |
-| `team-metrics-macro`     | Metrics with macros    | Macro usage            |
-| `team-metrics-custom`    | Metrics custom impl    | Custom CRDT usage      |
+| `team-metrics-macro`     | Team metrics (component SDK) | Per-team counts as a plain record: what v1's `#[derive(Mergeable)]` becomes when one log orders every call |
+| `team-metrics-custom`    | Team metrics with badges (component SDK) | A bitmask field set by read-modify-write: what v1's custom `#[app::mergeable]` rule becomes |
 | `xcall-example`          | Cross-context calls    | XCall pattern          |
 | `outbound-probe`         | Outbound HTTPS         | `env::http_request` from each kind of run; E2E fixture for the outbound gates, against the test build's `.test` echo |
 
 ## Component apps (`calimero-app-sdk`, `wasm32-wasip2`)
 
-`rooms`, `org-gated`, `authored-sorted-kv-store`, `indexed-issue-tracker`, `kv-store-with-user-and-frozen-storage`, `components-demo`, `name-registry-admin` and every app ported to the component SDK are standalone
+Seventeen apps are on the component SDK: `rooms`, `authored-sorted-kv-store`,
+`components-demo`, `custom-key-store`, `indexed-forum`, `indexed-issue-tracker`,
+`kv-store`, `kv-store-init`, `kv-store-with-shared-storage`,
+`kv-store-with-user-and-frozen-storage`, `name-registry-admin`, `org-gated`
+(package `org-gated-notes`), `permissions-showcase`, `sorted-kv-store`,
+`sorted-set-store`, `team-metrics-custom` and `team-metrics-macro`. The wasmer
+builds of `kv-store`, `kv-store-with-shared-storage` and `org-gated` stay as
+fixtures in `wasmer-fixtures/`. The other apps stay on the wasmer SDK until the
+component SDK has what they use (blobs, xcall, search, event handlers, TEE
+methods, outbound requests, migrations, CRDT types). Component apps are standalone
 crates (`[workspace]` in their `Cargo.toml`, `calimero-app-sdk` by path), not
 members of the core workspace, so `cargo test --manifest-path apps/<app>/Cargo.toml`
 runs them (CI's "Cargo test (standalone v2 apps)" loop lists each). Storage is
 `Table<Record>`, `UnorderedMap` and `Counter`; ownership and permission rules are
 explicit checks against `env::caller()` / `env::org_role()`, stated in each app's
-doc comment. Their merobox workflows are replaced by scenario files:
+doc comment. Their end-to-end tests are scenario files:
 
 - `scenarios/<name>.json`: app-level steps in the format of
   `crates/app-sdk/src/testing/scenario.rs`, run by the app's `tests/scenarios.rs`
@@ -271,7 +282,7 @@ overflow-checks = true
 
 ### Unit Testing Pattern (`TestHost`)
 
-Exercise app logic as plain Rust - no WASM build, no node, no merobox - with
+Exercise app logic as plain Rust - no WASM build, no node - with
 the in-process harness `calimero_sdk::testing::TestHost`. It runs your methods
 against an in-memory mock host that records events/logs and serves a
 configurable executor identity, so you get millisecond `#[cfg(test)]`

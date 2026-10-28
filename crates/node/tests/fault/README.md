@@ -1,9 +1,12 @@
 # Process-level tests (`merod run --dev`, one process per node)
 
 Black-box tests of a 3-node cluster whose nodes are separate `merod` processes, so
-a test can SIGKILL, SIGSTOP, restart or upgrade one node. They replace merobox's
-cloud-v2 backend: its examples, its fuzzy load and soak report, and the
-release-image smoke.
+a test can SIGKILL, SIGSTOP, restart or upgrade one node. They replaced merobox's
+cloud-v2 backend, which core no longer uses: its examples, its fuzzy load and
+soak report, and the release-image smoke. CI runs them in `e2e.yml`'s
+`process-suite` (nightly `--nightly`, and `release-process-suite` against the
+latest release image's `merod`) and in `release.yml`'s `E2E on the merod image`
+(`--smoke`).
 
 | File | What it is |
 | --- | --- |
@@ -14,7 +17,7 @@ release-image smoke.
 
 ## Tests
 
-| Test | Sets | Replaces | Checks |
+| Test | Sets | Replaces (merobox's, unless noted) | Checks |
 | --- | --- | --- | --- |
 | `kv-failover` | pr, smoke | merobox `workflow-examples/cloud-v2/kv-store-failover.yml` | kill node 1, read through the survivors, write with 2 of 3, restart it; freeze node 2, write through node 3, thaw; node 2 then node 1 catch up (stale reads at the write's index); indices increase |
 | `frozen-leader` | pr, smoke | `frozen-leader.yml` | SIGSTOP the app's leader; a write through a follower lands within 10 s; the thawed leader reads it |
@@ -50,8 +53,8 @@ Inputs: `--merod`/`--meroctl` (else `RV2_MEROD`/`RV2_MEROCTL`, else
 `--kv-mpk`/`--kv-mpk-next` (`KV_STORE_MPK`/`KV_STORE_MPK_NEXT`, default
 `dist/com.calimero.kv-store-{1.0.0,1.1.0}.mpk`), `--upgrade-merod` (default: a
 copy of merod with one byte appended, CI's `merod-next`), `--rooms-wasm`,
-`--soak-seconds` (`SOAK_SECONDS`, `MEROBOX_FUZZY_SECONDS`), `--soak-report`
-(`SOAK_REPORT`, `MEROBOX_SOAK_REPORT`), `--json` (results), `--seed`,
+`--soak-seconds` (`SOAK_SECONDS`, or the old `MEROBOX_FUZZY_SECONDS`), `--soak-report`
+(`SOAK_REPORT`, or the old `MEROBOX_SOAK_REPORT`), `--json` (results), `--seed`,
 `--workdir` (default `target/fault-suite`; `/dev/shm/...` keeps the disk free),
 `--keep` (keep passing tests' directories too; a failed test's is always kept,
 with `nodeN.log`).

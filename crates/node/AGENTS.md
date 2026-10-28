@@ -154,7 +154,7 @@ is its command line.
   leader would otherwise hold a write for the 30 s HTTP timeout. Calls without a
   client key get a node key (`node:…`, kept 10 min) first, so a retry replays a call
   that did commit. System-log forwards keep the long timeout: some system commands
-  are not idempotent yet. Regression: `frozen-leader` in `tests/fault/suite.py` (merobox's `frozen-leader.yml`).
+  are not idempotent yet. Regression: `frozen-leader` in `tests/fault/suite.py`.
 - **Leader races**: `Group::propose` takes no leadership round before a call's
   append, so a deposed leader may run a call on stale state; its entry never
   commits, or commits as a no-op (`base_index` ≠ the app's last entry,
@@ -466,13 +466,17 @@ cargo test -p calimero-node    # 3-node cluster in process, sealed, real WASM
 # component fixtures (apps/v2-fixtures/{kv,org-gated}, apps/rooms) are built on first use by
 # tests/common/mod.rs into target/app-components (needs the wasm32-wasip2 target)
 cargo test --release -p calimero-node --test rooms   # Rooms A1 (shared scenario), A3, A5
-# A4, the fault test (merod run --dev processes on ports 7600-7699, above the merobox
-# workflows', shifted by WORKFLOW_PORT_OFFSET when set; release merod and
+# every scenario file on an in-process cluster (runner: tests/harness/scenario.rs): apps/*/scenarios/*.json
+# (+ <name>.org.json), apps/*/scenarios/cluster/**/*.json, workflows/**/scenarios/**/*.json;
+# tests/scenarios-skip.txt lists the ones reported, not run (docs: contribute/testing#scenarios)
+cargo test -p calimero-node --test scenarios [-- FILTER]   # SCENARIO_FILTER, SCENARIO_SHARD=k/n
+# A4, the fault test (merod run --dev processes on ports 7600-7699, shifted by
+# WORKFLOW_PORT_OFFSET when set; release merod and
 # meroctl in RV2_BIN_DIR, default target/release; the cached Rooms component)
 python3 -I crates/node/tests/fault/rooms_fault.py --iterations 200 --seed 1
 # the process suite (tests/fault/README.md): crash/freeze/restart, frozen leader, orgs and
-# keys, signed packages, rolling upgrade under load, the kv-store soak (merobox's cloud-v2
-# examples and fuzzy load); kv_store.wasm and dist/com.calimero.kv-store-{1.0.0,1.1.0}.mpk
+# keys, signed packages, rolling upgrade under load, the kv-store soak; kv_store.wasm (the
+# wasmer apps/wasmer-fixtures/kv-store) and dist/com.calimero.kv-store-{1.0.0,1.1.0}.mpk
 python3 -I crates/node/tests/fault/suite.py [--only NAME,..] [--iterations N] [--nightly]
 python3 -I crates/node/tests/fault/suite.py --smoke --merod PATH   # the release image's set
 python3 -I crates/node/tests/fault/suite.py --only kv-soak --soak-report soak.json   # soak.py report renders it
