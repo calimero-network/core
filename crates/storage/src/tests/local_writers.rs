@@ -257,3 +257,79 @@ fn a_cell_created_for_others_still_constructs() {
         .insert(LwwRegister::new("bob".to_owned()))
         .expect("the owner writes");
 }
+
+/// `Element::set_shared_member_domain` is public, so app code can stamp one of
+/// its collections a member of an anchor that does not exist. Through the
+/// collections nothing lands: the local check resolves that anchor's writers to
+/// the empty set, and the made-up anchor is not a cell's creation (neither the
+/// anchor's own id nor its value id).
+#[test]
+#[serial]
+fn a_member_of_a_made_up_anchor_is_refused_through_the_collections() {
+    use crate::entities::Data;
+
+    env::reset_for_testing();
+    act_as(ALICE);
+    let fake = crate::address::Id::new([0x5A; 32]);
+    let mut map = Root::new(Settings::new);
+    (*map).element_mut().set_shared_member_domain(fake);
+    let refused = map.insert("k".to_owned(), LwwRegister::new("v".to_owned()));
+    assert!(is_refusal(&refused), "{refused:?}");
+    assert!(!stored(map.entry_id("k")), "nothing is stored for it");
+
+    // Saving the map itself as such a member is refused the same way: it is
+    // already stored, so this is no creation.
+    let saved = crate::interface::Interface::<MainStorage>::save(&mut *map);
+    assert!(
+        matches!(saved, Err(StorageError::ActionNotAllowed(_))),
+        "{saved:?}"
+    );
+}
+
+/// What the creation exemption does let app code do, through the raw
+/// `Interface` with an element it builds itself: store a member at the very id
+/// it names as its anchor (or at that anchor's value id). That is a cell's
+/// creation as the local check sees it. The entity's writers then resolve to
+/// the empty set (its anchor is no `Shared` entity), so nobody can change or
+/// remove it afterwards. This is the app writing its own state, which #4721's
+/// ruling accepts: it froze an entity of its own and reached nobody else's.
+#[test]
+#[serial]
+fn a_self_anchored_member_from_the_raw_interface_lands_and_is_frozen() {
+    use crate::entities::{Data, Element, StorageType};
+    use crate::interface::Interface;
+    use crate::tests::common::Paragraph;
+
+    env::reset_for_testing();
+    act_as(ALICE);
+    let _root = Root::new(Settings::new);
+    let id = crate::address::Id::new([0x5B; 32]);
+    let mut element = Element::new(Some(id));
+    element.set_shared_member_domain(id);
+    let mut member = Paragraph::new_from_element("mine", element);
+    let added = Interface::<MainStorage>::add_child_to(crate::address::Id::root(), &mut member);
+    assert!(matches!(added, Ok(true)), "{added:?}");
+    assert!(matches!(
+        <Index<MainStorage>>::get_metadata(id).unwrap().unwrap().storage_type,
+        StorageType::SharedMember { anchor, .. } if anchor == id
+    ));
+
+    // Its writers are nobody, so no account changes or removes it, its
+    // creator included.
+    for who in [ALICE, BOB] {
+        act_as(who);
+        member.text = format!("changed by {who:?}");
+        member.element_mut().update();
+        let saved = Interface::<MainStorage>::save(&mut member);
+        assert!(
+            matches!(saved, Err(StorageError::ActionNotAllowed(_))),
+            "{saved:?}"
+        );
+        let removed = Interface::<MainStorage>::remove_child_from(crate::address::Id::root(), id);
+        assert!(
+            matches!(removed, Err(StorageError::ActionNotAllowed(_))),
+            "{removed:?}"
+        );
+    }
+    assert!(stored(id));
+}

@@ -648,7 +648,7 @@ mod tests {
         guarded
             .inner
             .element_mut()
-            .set_shared_domain(writers.clone());
+            .set_shared_domain_scoped(crate::entities::full_mask(writers.clone()));
         let _ignored = guarded.insert("x".to_owned()).expect("insert");
 
         let set_id = guarded.inner.id();

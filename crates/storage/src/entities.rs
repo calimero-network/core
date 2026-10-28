@@ -433,21 +433,16 @@ impl Element {
         self.update(); // Mark as dirty
     }
 
-    /// Helper to set the storage domain to `Shared` (an anchor entity). Every
-    /// writer gets [`OpMask::FULL`] — the default group-writable behaviour. Use
-    /// [`set_shared_domain_scoped`](Self::set_shared_domain_scoped) to grant
-    /// restricted masks.
-    pub fn set_shared_domain(&mut self, writers: BTreeSet<AccountId>) {
-        self.metadata.storage_type = StorageType::Shared {
-            writers: full_mask(writers),
-            signature_data: None, // Will be signed later
-        };
-        self.update(); // Mark as dirty
-    }
-
-    /// Like [`set_shared_domain`](Self::set_shared_domain) but with explicit
-    /// per-writer [`OpMask`]s.
-    pub fn set_shared_domain_scoped(&mut self, writers: BTreeMap<AccountId, OpMask>) {
+    /// Set the storage domain to `Shared` (an anchor entity) with these
+    /// per-writer [`OpMask`]s; [`full_mask`] grants every writer `FULL`.
+    ///
+    /// Crate-only: a `Shared` entity is a cell anchor, and only the SDK's cells
+    /// (`WriterSetCell`, under `SharedStorage`, `PermissionedStorage`, `Ownable`)
+    /// create one. The local write path takes a `Shared` entity that is not
+    /// stored yet as a cell's creation, which any caller may make, so app code
+    /// that could stamp an arbitrary entity `Shared` would create a guarded
+    /// entity whose writers exclude it (`tests/compile_fail/set_shared_domain.rs`).
+    pub(crate) fn set_shared_domain_scoped(&mut self, writers: BTreeMap<AccountId, OpMask>) {
         self.metadata.storage_type = StorageType::Shared {
             writers,
             signature_data: None, // Will be signed later
