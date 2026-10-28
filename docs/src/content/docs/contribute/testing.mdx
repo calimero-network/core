@@ -28,7 +28,8 @@ frozen leader behaves, and a green scenario does not localize a logic bug.
 ## Fixtures
 
 The cluster and CLI tests load compiled apps from
-`target/wasm32-unknown-unknown/app-release/`. Build them first:
+`target/wasm32-unknown-unknown/app-release/` (`org-gated` there is the wasmer
+fixture, `apps/wasmer-fixtures/org-gated`). Build them first:
 
 ```bash
 cargo build -p kv-store -p org-gated -p outbound-probe \
