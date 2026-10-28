@@ -3712,8 +3712,12 @@ async fn blob_download(
     // After the gate: one who can't reach the app learns nothing of it (404).
     no_component_blobs(&app)?;
     let raw = parse_blob_id(&id)?;
-    if !node.blob_held(&app, &raw).await? {
-        return Err(ApiError::not_found("no such blob in this app"));
+    // The app's leader decides: a replica that has not applied a delete yet
+    // still holds the mark and the bytes.
+    match node.blob_held_strong(&app, &raw).await {
+        Some(true) => {}
+        Some(false) => return Err(ApiError::not_found("no such blob in this app")),
+        None => return Err(ApiError::unavailable("the app's leader did not answer")),
     }
     let hex_id = hex::encode(raw);
     let bytes = match node
