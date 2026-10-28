@@ -78,8 +78,15 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
     }
 }
 
+/// Numbers the clusters this process starts (`Cluster::name`).
+static NEXT_CLUSTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// `n` nodes started in this process, each in its own temp dir.
 pub struct Cluster {
+    /// The cluster's name, its own in this process and run: the peer secret
+    /// is derived from it, so a node of another test's cluster that a reused
+    /// port leads to refuses this one's Raft messages instead of applying them.
+    pub name: String,
     pub nodes: Vec<Option<Running>>,
     pub urls: Vec<String>,
     pub _dirs: Vec<tempfile::TempDir>,
@@ -95,7 +102,7 @@ impl Cluster {
         // test can take it meanwhile: a cluster that loses that race starts
         // again on other ports.
         let mut attempt = 0;
-        let (nodes, urls, dirs) = loop {
+        let (name, nodes, urls, dirs) = loop {
             attempt += 1;
             let ports: Vec<u16> = (0..n).map(|_| free_port()).collect();
             let urls: Vec<String> = ports
@@ -107,12 +114,18 @@ impl Cluster {
                 .enumerate()
                 .map(|(i, u)| (i as u64 + 1, u.clone()))
                 .collect();
+            let name = format!(
+                "test-{}-{}",
+                std::process::id(),
+                NEXT_CLUSTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            );
             let mut nodes = Vec::new();
             let mut dirs = Vec::new();
             let mut failed = None;
             for i in 0..ports.len() {
                 let dir = tempfile::tempdir().unwrap();
                 let mut config = node_config(i as u64 + 1, &peers, dir.path());
+                config.cluster.clone_from(&name);
                 configure(&mut config);
                 match run(config).await {
                     Ok(r) => nodes.push(Some(r)),
@@ -124,7 +137,7 @@ impl Cluster {
                 dirs.push(dir);
             }
             match failed {
-                None => break (nodes, urls, dirs),
+                None => break (name, nodes, urls, dirs),
                 Some(e) if attempt < 3 => {
                     eprintln!("cluster start failed ({e:#}); retrying on other ports");
                     for r in nodes.into_iter().flatten() {
@@ -135,6 +148,7 @@ impl Cluster {
             }
         };
         let c = Self {
+            name,
             nodes,
             urls,
             _dirs: dirs,

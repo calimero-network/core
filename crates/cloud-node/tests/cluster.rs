@@ -44,6 +44,7 @@ impl Cluster {
             .collect();
         let dir = tempfile::tempdir().unwrap();
         let mut config = node_config(id, &peers, dir.path());
+        config.cluster.clone_from(&self.name);
         config.bootstrap = false;
         self.nodes.push(Some(run(config).await.unwrap()));
         self._dirs.push(dir);
