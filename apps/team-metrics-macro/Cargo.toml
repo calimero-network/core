@@ -1,28 +1,20 @@
 [package]
 name = "team-metrics-macro"
-version.workspace = true
-authors.workspace = true
-edition.workspace = true
-repository.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Per-team win, loss and draw counts on the v2 app SDK"
 
 [lib]
-# `rlib` (alongside the wasm `cdylib`) lets the convergence integration test in
-# `tests/` import the app type; harmless for the wasm build.
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
-calimero-sdk.workspace = true
-calimero-storage.workspace = true
+calimero-app-sdk = { path = "../../crates/app-sdk" }
 
-[dev-dependencies]
-# Enables `register_crdt_merge` + the native mock host so `TestHost` can drive
-# CRDT state under `cargo test`.
-calimero-storage = { workspace = true, features = ["testing"] }
-# Convergence tests are serial: `converge_app` clears/repopulates the
-# process-global merge registry per run.
-serial_test.workspace = true
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-app-sdk = { path = "../../crates/app-sdk", features = ["testing"] }
+calimero-app-build = { path = "../../crates/app-build" }
+serde_json = "1"
 
-[package.metadata.calimero]
-package = "com.calimero.team-metrics-macro"
-name = "Team Metrics Macro"
+# Standalone, like the SDK's sample guest: the tests build this crate for wasm32-wasip2.
+[workspace]
