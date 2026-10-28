@@ -1,0 +1,420 @@
+{
+  "name": "E2E KV Store - Kick Sticks, Admin Re-Add Is The Way Back (Open Subgroup)",
+  "description": "A kick must stick. An Open subgroup admits any parent member holding `CAN_JOIN_OPEN_SUBGROUPS` automatically, so inheritance is the back door that would otherwise make a subgroup kick meaningless: the kicked member simply re-inherits and walks straight back in. This flow pins that door shut, and pins the one door that stays open — an admin re-adding them.\nRemoving a member now writes a re-entry block alongside the deny-list entry. The two are different things and the distinction is the point of this test: the deny-list *silences* them (their state deltas are dropped at the receive filter) and is retracted the moment any member row is written; the re-entry block *authorizes* and deliberately survives a member-row write, so a re-join attempt fails instead of silently succeeding. Only an admin `MemberAdded` lifts it.\nScenario (3 nodes, single Open subgroup):\n\n  1. node-2 inherits Open-subgroup membership and self-joins via\n     `join_subgroup_inheritance` so the subgroup key lands locally.\n  2. node-2 writes; node-3 reads — proves the joiner-as-author\n     direction works pre-kick.\n  3. Admin (node-1) removes node-2 from the subgroup.\n  4. node-2's next write is rejected by the local apply path or the\n     peers' deny-list filter. `expected_failure: true` asserts the\n     write does not reach node-3.\n  5. node-2 calls `join_subgroup_inheritance` again — and is now\n     REJECTED. Its `CAN_JOIN_OPEN_SUBGROUPS` cap at the namespace is\n     still intact and its inheritance path is fully resolvable, so\n     the ONLY thing standing in its way is the re-entry block. That\n     makes this step a tight test of the block itself rather than of\n     some incidental loss of authority.\n  6. node-2 stays out: absent from the member list, still unable to\n     write.\n  7. Admin (node-1) re-adds node-2 with `add_group_members`. This is\n     the sole way back for a removed member. The block lifts, a fresh\n     `KeyDelivery` lands, and node-2 writes again; node-3 reads it.\n     Bidirectional convergence is the success signal.\n\nWhat this test does NOT cover (intentionally — different test):\n  * The admin re-add cycle on a *Restricted* subgroup (no\n    inheritance path in play) is covered by\n    `group-kick-and-readd-deny-list.yml`.\n  * Voluntary `leave_group` and what it takes to come back from it\n    is covered by `group-leave-then-rejoin-via-inheritance.yml`.\n\nMero-chat user-visible failure mode this guards against: \"I kicked someone from a public channel and they just walked straight back in.\"\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  login (unknown) x3: checks what the dropped steps did",
+    "  wait_for_sync x5: replication is synchronous: a read sees every committed write"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "kick-rejoin-node-1",
+    "kick-rejoin-node-2",
+    "kick-rejoin-node-3"
+  ],
+  "steps": [
+    {
+      "name": "Install application on node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "kick-rejoin-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.scaffolding-e2e"
+      }
+    },
+    {
+      "name": "Node-1 creates namespace",
+      "type": "create_org",
+      "org_name": "Node-1 creates namespace",
+      "outputs": {
+        "namespace_id": "orgId"
+      },
+      "account": "kick-rejoin-node-1"
+    },
+    {
+      "name": "Invite node-2 to namespace",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "kick-rejoin-node-1",
+      "outputs": {
+        "invite_node2": "token"
+      }
+    },
+    {
+      "name": "Invite node-3 to namespace",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "kick-rejoin-node-1",
+      "outputs": {
+        "invite_node3": "token"
+      }
+    },
+    {
+      "name": "Node-2 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{invite_node2}}",
+      "account": "kick-rejoin-node-2"
+    },
+    {
+      "type": "whoami",
+      "account": "kick-rejoin-node-2",
+      "outputs": {
+        "identity_node2": "publicKey",
+        "account_node2": "publicKey"
+      }
+    },
+    {
+      "name": "Node-3 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{invite_node3}}",
+      "account": "kick-rejoin-node-3"
+    },
+    {
+      "type": "whoami",
+      "account": "kick-rejoin-node-3",
+      "outputs": {
+        "account_node3": "publicKey"
+      }
+    },
+    {
+      "name": "Node-1 creates Open subgroup inside namespace",
+      "type": "create_team",
+      "org": "{{namespace_id}}",
+      "team_name": "open-channel",
+      "join": "invite",
+      "outputs": {
+        "subgroup_id": "teamId"
+      },
+      "account": "kick-rejoin-node-1"
+    },
+    {
+      "name": "Mark subgroup as Open",
+      "type": "team_update",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "join": "everyone",
+      "account": "kick-rejoin-node-1"
+    },
+    {
+      "name": "Node-1 creates context inside Open subgroup",
+      "type": "deploy",
+      "account": "kick-rejoin-node-1",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "app_name": "Node-1 creates context inside Open subgroup",
+      "org": "{{namespace_id}}",
+      "access": {
+        "kind": "team",
+        "team": "{{subgroup_id}}"
+      },
+      "outputs": {
+        "ctx_id": "contextId"
+      }
+    },
+    {
+      "name": "Wait for subgroup visibility + context-registered ops to propagate",
+      "type": "wait",
+      "seconds": 10.0
+    },
+    {
+      "name": "Node-2 self-joins Open subgroup via inheritance endpoint (#2360)",
+      "type": "team_join",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "account": "kick-rejoin-node-2"
+    },
+    {
+      "name": "Node-2 joins context (key already local from inheritance)",
+      "type": "whoami",
+      "account": "kick-rejoin-node-2",
+      "outputs": {
+        "node2_key": "publicKey"
+      }
+    },
+    {
+      "name": "Node-3 self-joins Open subgroup via inheritance endpoint (#2360)",
+      "type": "team_join",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "account": "kick-rejoin-node-3"
+    },
+    {
+      "name": "Node-3 joins context (key already local from inheritance)",
+      "type": "whoami",
+      "account": "kick-rejoin-node-3",
+      "outputs": {
+        "node3_key": "publicKey"
+      }
+    },
+    {
+      "name": "Pre-kick — node-2 writes",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set",
+      "args": {
+        "key": "pre_kick",
+        "value": "node2_msg_before_kick"
+      },
+      "account": "kick-rejoin-node-2",
+      "as_key": "{{node2_key}}"
+    },
+    {
+      "name": "Pre-kick — node-3 reads node-2's write",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get",
+      "args": {
+        "key": "pre_kick"
+      },
+      "account": "kick-rejoin-node-3",
+      "as_key": "{{node3_key}}",
+      "outputs": {
+        "pre_kick_read": "rpc"
+      }
+    },
+    {
+      "name": "Assert pre-kick converged",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{pre_kick_read}}, {\"output\": \"node2_msg_before_kick\"})"
+      ]
+    },
+    {
+      "name": "Admin (node-1) removes node-2 from Open subgroup",
+      "type": "team_remove",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "members": [
+        "{{account_node2}}"
+      ],
+      "account": "kick-rejoin-node-1"
+    },
+    {
+      "name": "Confirm node-2 is gone from subgroup membership on admin",
+      "type": "team_get",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "account": "kick-rejoin-node-1",
+      "outputs": {
+        "members_after_kick": "members"
+      }
+    },
+    {
+      "name": "Assert node-2 absent from subgroup after kick",
+      "type": "assert",
+      "statements": [
+        "not_contains({{members_after_kick}}, {{account_node2}})"
+      ]
+    },
+    {
+      "name": "Cross-peer confirm node-3 also sees node-2 gone",
+      "type": "team_get",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "account": "kick-rejoin-node-3",
+      "outputs": {
+        "members_after_kick_node3": "members"
+      }
+    },
+    {
+      "name": "Assert cross-peer view agrees on the kick",
+      "type": "assert",
+      "statements": [
+        "not_contains({{members_after_kick_node3}}, {{account_node2}})"
+      ]
+    },
+    {
+      "name": "Post-kick — node-2 attempts to write (must fail or be dropped)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set",
+      "args": {
+        "key": "post_kick_should_drop",
+        "value": "this_must_not_appear"
+      },
+      "account": "kick-rejoin-node-2",
+      "as_key": "{{node2_key}}",
+      "expected_failure": true
+    },
+    {
+      "name": "Drain in-flight gossip before negative-control read",
+      "type": "wait",
+      "seconds": 5.0
+    },
+    {
+      "name": "Negative control — node-3 must NOT see the dropped write",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get",
+      "args": {
+        "key": "post_kick_should_drop"
+      },
+      "account": "kick-rejoin-node-3",
+      "as_key": "{{node3_key}}",
+      "outputs": {
+        "post_kick_drop_check": "rpc"
+      }
+    },
+    {
+      "name": "Assert dropped value is genuinely absent on node-3 BEFORE rejoin",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{post_kick_drop_check}}, {\"output\": null})"
+      ]
+    },
+    {
+      "name": "Node-2 attempts to re-inherit into the subgroup (must be rejected)",
+      "type": "team_join",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "account": "kick-rejoin-node-2",
+      "expected_failure": true
+    },
+    {
+      "name": "Confirm subgroup membership after the rejected re-inheritance",
+      "type": "team_get",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "account": "kick-rejoin-node-1",
+      "outputs": {
+        "members_after_failed_rejoin": "members"
+      }
+    },
+    {
+      "name": "Assert the kicked member is still out",
+      "type": "assert",
+      "statements": [
+        "not_contains({{members_after_failed_rejoin}}, {{account_node2}})",
+        "contains({{members_after_failed_rejoin}}, {{account_node3}})"
+      ]
+    },
+    {
+      "name": "Node-2 still cannot write after the rejected re-inheritance",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set",
+      "args": {
+        "key": "after_failed_rejoin_should_drop",
+        "value": "this_must_not_appear_either"
+      },
+      "account": "kick-rejoin-node-2",
+      "as_key": "{{node2_key}}",
+      "expected_failure": true
+    },
+    {
+      "name": "Admin (node-1) re-adds node-2 to the subgroup",
+      "type": "team_add",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "members": [
+        "{{identity_node2}}"
+      ],
+      "role": "member",
+      "account": "kick-rejoin-node-1"
+    },
+    {
+      "name": "Confirm subgroup membership shape after the admin re-add",
+      "type": "team_get",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "account": "kick-rejoin-node-1",
+      "outputs": {
+        "members_after_rejoin": "members"
+      }
+    },
+    {
+      "name": "Assert the re-added member is back in the list",
+      "type": "assert",
+      "statements": [
+        "contains({{members_after_rejoin}}, {{account_node2}})",
+        "contains({{members_after_rejoin}}, {{account_node3}})"
+      ]
+    },
+    {
+      "name": "Post-re-add — node-2 writes",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set",
+      "args": {
+        "key": "post_rejoin",
+        "value": "node2_msg_after_rejoin"
+      },
+      "account": "kick-rejoin-node-2",
+      "as_key": "{{node2_key}}"
+    },
+    {
+      "name": "Post-rejoin — node-3 reads node-2's write",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get",
+      "args": {
+        "key": "post_rejoin"
+      },
+      "account": "kick-rejoin-node-3",
+      "as_key": "{{node3_key}}",
+      "outputs": {
+        "post_rejoin_read": "rpc"
+      }
+    },
+    {
+      "name": "Assert post-rejoin write reached node-3",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{post_rejoin_read}}, {\"output\": \"node2_msg_after_rejoin\"})"
+      ]
+    },
+    {
+      "name": "Confirm dropped-during-kick write was NOT delivered post-re-add",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get",
+      "args": {
+        "key": "post_kick_should_drop"
+      },
+      "account": "kick-rejoin-node-3",
+      "as_key": "{{node3_key}}",
+      "outputs": {
+        "dropped_lookup": "rpc"
+      }
+    },
+    {
+      "name": "Assert dropped value was indeed dropped",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{dropped_lookup}}, {\"output\": null})"
+      ]
+    },
+    {
+      "name": "Confirm the write attempted during the rejected re-join was NOT delivered",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get",
+      "args": {
+        "key": "after_failed_rejoin_should_drop"
+      },
+      "account": "kick-rejoin-node-3",
+      "as_key": "{{node3_key}}",
+      "outputs": {
+        "failed_rejoin_drop_lookup": "rpc"
+      }
+    },
+    {
+      "name": "Assert the rejected re-join leaked no write access",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{failed_rejoin_drop_lookup}}, {\"output\": null})"
+      ]
+    }
+  ]
+}

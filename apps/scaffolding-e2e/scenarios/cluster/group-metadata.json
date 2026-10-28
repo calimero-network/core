@@ -1,0 +1,323 @@
+{
+  "name": "E2E KV Store - Group Metadata",
+  "description": "End-to-end coverage for the generic metadata records introduced in core #2338. Exercises all six merobox workflow step types (set/get group, member, context metadata) and the CAN_MANAGE_METADATA = 256 capability gate:\n\n  1. Bootstrap a namespace + Open subgroup + group-registered context\n     on node-1.\n  2. Write MetadataRecord values on the namespace, subgroup, and\n     context (name + opaque `data` map).\n  3. Invite node-2 into the namespace, add it to the subgroup, sync.\n  4. Read each record back from node-2 and json_assert the contents.\n  5. Confirm node-2 cannot set group metadata without\n     CAN_MANAGE_METADATA (expected_failure), then grant the\n     capability and confirm the same call succeeds.\n  6. Confirm a member may always set its own member metadata with\n     no capability granted.\n\nStep types covered: set_group_metadata, get_group_metadata, set_member_metadata, get_member_metadata, set_context_metadata, get_context_metadata. Mirrors merobox/workflow-examples/ workflow-group-metadata-example.yml but adapted to the scaffolding-e2e harness (e2e-node prefix, the scaffolding-e2e .mpk bundle, force_pull_image: false — CI builds merod:local locally).\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  get_context_metadata (unknown) x1: checks what the dropped steps did",
+    "  get_group_metadata (on a namespace) x1: checks what the dropped steps did",
+    "  get_member_metadata x2: member metadata is v1 governance",
+    "  json_assert statement on a dropped step's output x9: checks what the dropped steps did",
+    "  login (unknown) x2: checks what the dropped steps did",
+    "  set_context_metadata (unknown) x1: checks what the dropped steps did",
+    "  set_group_metadata (on a namespace) x1: checks what the dropped steps did",
+    "  set_member_metadata x3: member metadata is v1 governance",
+    "  sync_group x1: replication is synchronous",
+    "  wait_for_sync x7: replication is synchronous: a read sees every committed write"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "e2e-node-1",
+    "e2e-node-2"
+  ],
+  "steps": [
+    {
+      "name": "Install application on node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "e2e-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.scaffolding-e2e"
+      }
+    },
+    {
+      "name": "Assert application installed",
+      "type": "assert",
+      "statements": [
+        "is_set({{app_id}})"
+      ]
+    },
+    {
+      "name": "Create namespace on node-1",
+      "type": "create_org",
+      "org_name": "Create namespace on node-1",
+      "outputs": {
+        "ns": "orgId"
+      },
+      "account": "e2e-node-1"
+    },
+    {
+      "name": "Assert namespace created",
+      "type": "assert",
+      "statements": [
+        "is_set({{ns}})"
+      ]
+    },
+    {
+      "name": "Create subgroup in namespace",
+      "type": "create_team",
+      "org": "{{ns}}",
+      "team_name": "general",
+      "join": "invite",
+      "outputs": {
+        "sub": "teamId"
+      },
+      "account": "e2e-node-1"
+    },
+    {
+      "name": "Assert subgroup created",
+      "type": "assert",
+      "statements": [
+        "is_set({{sub}})"
+      ]
+    },
+    {
+      "name": "Wait for subgroup governance propagation",
+      "type": "wait",
+      "seconds": 5.0
+    },
+    {
+      "name": "Create context in subgroup",
+      "type": "deploy",
+      "account": "e2e-node-1",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "app_name": "Create context in subgroup",
+      "org": "{{ns}}",
+      "access": {
+        "kind": "team",
+        "team": "{{sub}}"
+      },
+      "outputs": {
+        "ctx": "contextId"
+      }
+    },
+    {
+      "name": "Assert context created",
+      "type": "assert",
+      "statements": [
+        "is_set({{ctx}})"
+      ]
+    },
+    {
+      "name": "Set subgroup metadata",
+      "type": "team_update",
+      "org": "{{ns}}",
+      "team": "{{sub}}",
+      "metadata": {
+        "name": "general",
+        "data": {
+          "topic": "everything",
+          "archived": "false"
+        }
+      },
+      "account": "e2e-node-1"
+    },
+    {
+      "name": "Create namespace invitation",
+      "type": "invite",
+      "org": "{{ns}}",
+      "role": "member",
+      "account": "e2e-node-1",
+      "outputs": {
+        "invitation": "token"
+      }
+    },
+    {
+      "name": "Node-2 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{invitation}}",
+      "account": "e2e-node-2"
+    },
+    {
+      "type": "whoami",
+      "account": "e2e-node-2",
+      "outputs": {
+        "node2_id": "publicKey",
+        "node2_account": "publicKey"
+      }
+    },
+    {
+      "name": "Assert node-2 joined",
+      "type": "assert",
+      "statements": [
+        "is_set({{node2_id}})"
+      ]
+    },
+    {
+      "name": "Add node-2 to subgroup",
+      "type": "team_add",
+      "org": "{{ns}}",
+      "team": "{{sub}}",
+      "members": [
+        "{{node2_id}}"
+      ],
+      "role": "member",
+      "account": "e2e-node-1"
+    },
+    {
+      "name": "Wait for member gossip",
+      "type": "wait",
+      "seconds": 10.0
+    },
+    {
+      "name": "Settle after subgroup sync",
+      "type": "wait",
+      "seconds": 5.0
+    },
+    {
+      "name": "Get subgroup metadata from node-2",
+      "type": "team_get",
+      "org": "{{ns}}",
+      "team": "{{sub}}",
+      "account": "e2e-node-2",
+      "outputs": {
+        "sub_name": "name",
+        "sub_topic": "data.topic",
+        "sub_archived": "data.archived"
+      }
+    },
+    {
+      "name": "Assert subgroup metadata",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{sub_name}}, \"general\")",
+        "json_equal({{sub_topic}}, \"everything\")",
+        "json_equal({{sub_archived}}, \"false\")"
+      ]
+    },
+    {
+      "name": "Settle after member metadata sync",
+      "type": "wait",
+      "seconds": 5.0
+    },
+    {
+      "name": "Get node-1's account",
+      "type": "whoami",
+      "outputs": {
+        "node1_account": "publicKey"
+      },
+      "account": "e2e-node-1"
+    },
+    {
+      "name": "Node-2 tries to rename subgroup without capability",
+      "type": "team_update",
+      "org": "{{ns}}",
+      "team": "{{sub}}",
+      "metadata": {
+        "name": "should-fail",
+        "data": {}
+      },
+      "account": "e2e-node-2",
+      "expected_failure": true
+    },
+    {
+      "name": "Grant node-2 CAN_MANAGE_METADATA on namespace",
+      "type": "capabilities",
+      "org": "{{ns}}",
+      "capabilities": 256,
+      "account": "e2e-node-1",
+      "member": "{{node2_account}}"
+    },
+    {
+      "name": "Grant node-2 CAN_MANAGE_METADATA on subgroup",
+      "type": "capabilities",
+      "org": "{{ns}}",
+      "capabilities": 256,
+      "account": "e2e-node-1",
+      "member": "{{node2_account}}",
+      "team": "{{sub}}"
+    },
+    {
+      "name": "Settle after capability sync",
+      "type": "wait",
+      "seconds": 5.0
+    },
+    {
+      "name": "Node-2 sets subgroup metadata with capability",
+      "type": "team_update",
+      "org": "{{ns}}",
+      "team": "{{sub}}",
+      "metadata": {
+        "name": "renamed-by-node2",
+        "data": {}
+      },
+      "account": "e2e-node-2"
+    },
+    {
+      "name": "Settle after subgroup metadata sync",
+      "type": "wait",
+      "seconds": 5.0
+    },
+    {
+      "name": "Get subgroup metadata from node-1 after rename",
+      "type": "team_get",
+      "org": "{{ns}}",
+      "team": "{{sub}}",
+      "account": "e2e-node-1",
+      "outputs": {
+        "sub_name2": "name"
+      }
+    },
+    {
+      "name": "Assert subgroup renamed by node-2",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{sub_name2}}, \"renamed-by-node2\")"
+      ]
+    },
+    {
+      "name": "Node-2 updates subgroup metadata after grant",
+      "type": "team_update",
+      "org": "{{ns}}",
+      "team": "{{sub}}",
+      "metadata": {
+        "name": "general-updated",
+        "data": {
+          "topic": "random-banter",
+          "archived": "true"
+        }
+      },
+      "account": "e2e-node-2"
+    },
+    {
+      "name": "Settle after subgroup metadata update sync",
+      "type": "wait",
+      "seconds": 5.0
+    },
+    {
+      "name": "Get subgroup metadata from node-1 after update",
+      "type": "team_get",
+      "org": "{{ns}}",
+      "team": "{{sub}}",
+      "account": "e2e-node-1",
+      "outputs": {
+        "sub_name3": "name",
+        "sub_topic3": "data.topic",
+        "sub_archived3": "data.archived"
+      }
+    },
+    {
+      "name": "Assert subgroup updated by node-2",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{sub_name3}}, \"general-updated\")",
+        "json_equal({{sub_topic3}}, \"random-banter\")",
+        "json_equal({{sub_archived3}}, \"true\")"
+      ]
+    },
+    {
+      "name": "Settle after cross-member metadata sync",
+      "type": "wait",
+      "seconds": 5.0
+    }
+  ]
+}

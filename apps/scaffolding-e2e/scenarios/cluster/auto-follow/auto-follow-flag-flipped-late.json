@@ -1,0 +1,244 @@
+{
+  "name": "Auto-follow flag flipped late (backfill control test)",
+  "description": "Workflow 3 of the #2422 regression test plan — the temporally-relaxed variant of workflow 2.\nBoth this workflow and workflow 2 exercise the SAME code path:\n  OpEvent::AutoFollowSet { member = self, contexts: true }\n    → crates/context/src/auto_follow.rs::handle_auto_follow_enabled\n    → group_store::enumerate_group_contexts (capped at BACKFILL_LIMIT)\n    → JoinContextRequest per enumerated context\n(covered by unit tests at\n  crates/context/src/auto_follow.rs::tests::handler_routing\n for the four AutoFollowEnabledDecision branches).\n\nThe difference between the two is timing only:\n  - Workflow 2 (`auto-follow-backfill-on-join.yml`) flips the\n    contexts flag 5s after `add_group_members` — tight enough that\n    the AutoFollowSet event arrives at node-2's handler while the\n    MemberAdded apply is freshly committed.\n  - Workflow 3 (this one) waits 15s between `add_group_members` and\n    the flag flip, so MemberAdded apply has fully settled on node-2\n    before AutoFollowSet arrives. The backfill enumeration then\n    runs against a quiescent store.\n\nExpected on master: PASS. The AutoFollowSet → backfill path is exercised in production on every legitimate flag flip and is unit-tested in handler_routing.\nWhy both 2 and 3 exist: if workflow 2 fails and workflow 3 passes, the gap is a tight-timing race between MemberAdded write and AutoFollowSet read on the same store. If both fail, the backfill enumeration itself is broken. If both pass, the AutoFollowSet cascade is healthy and the actual #2422 surface is elsewhere (workflow 4 or 5, or the on-join-with-flag-already-on path that neither workflow today reproduces — see workflow 2's description for what's needed to cover that).\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  login (unknown) x2: checks what the dropped steps did",
+    "  set_member_auto_follow (unknown) x2: checks what the dropped steps did",
+    "  wait_for_sync x3: replication is synchronous: a read sees every committed write"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "af-late-flip-node-1",
+    "af-late-flip-node-2"
+  ],
+  "steps": [
+    {
+      "name": "Install application on node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "af-late-flip-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.scaffolding-e2e"
+      }
+    },
+    {
+      "name": "Node-1 creates namespace",
+      "type": "create_org",
+      "org_name": "Node-1 creates namespace",
+      "outputs": {
+        "namespace_id": "orgId"
+      },
+      "account": "af-late-flip-node-1"
+    },
+    {
+      "name": "Node-1 captures its account",
+      "type": "whoami",
+      "outputs": {
+        "node1_account": "publicKey"
+      },
+      "account": "af-late-flip-node-1"
+    },
+    {
+      "name": "Node-1 creates subgroup",
+      "type": "create_team",
+      "org": "{{namespace_id}}",
+      "team_name": "auto-follow-late-flip",
+      "join": "invite",
+      "outputs": {
+        "group_id": "teamId"
+      },
+      "account": "af-late-flip-node-1"
+    },
+    {
+      "name": "Wait for admin self-flip to apply",
+      "type": "wait",
+      "seconds": 3.0
+    },
+    {
+      "name": "Node-1 creates context-A",
+      "type": "deploy",
+      "account": "af-late-flip-node-1",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "app_name": "Node-1 creates context-A",
+      "org": "{{namespace_id}}",
+      "access": {
+        "kind": "team",
+        "team": "{{group_id}}"
+      },
+      "outputs": {
+        "ctx_a": "contextId",
+        "node1_key_a": "memberPublicKey"
+      }
+    },
+    {
+      "name": "Node-1 writes into context-A",
+      "type": "call",
+      "app": "{{ctx_a}}",
+      "method": "set",
+      "args": {
+        "key": "alpha",
+        "value": "from-A"
+      },
+      "account": "af-late-flip-node-1",
+      "as_key": "{{node1_key_a}}"
+    },
+    {
+      "name": "Node-1 creates context-B",
+      "type": "deploy",
+      "account": "af-late-flip-node-1",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "app_name": "Node-1 creates context-B",
+      "org": "{{namespace_id}}",
+      "access": {
+        "kind": "team",
+        "team": "{{group_id}}"
+      },
+      "outputs": {
+        "ctx_b": "contextId",
+        "node1_key_b": "memberPublicKey"
+      }
+    },
+    {
+      "name": "Node-1 writes into context-B",
+      "type": "call",
+      "app": "{{ctx_b}}",
+      "method": "set",
+      "args": {
+        "key": "beta",
+        "value": "from-B"
+      },
+      "account": "af-late-flip-node-1",
+      "as_key": "{{node1_key_b}}"
+    },
+    {
+      "name": "Node-1 creates context-C",
+      "type": "deploy",
+      "account": "af-late-flip-node-1",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "app_name": "Node-1 creates context-C",
+      "org": "{{namespace_id}}",
+      "access": {
+        "kind": "team",
+        "team": "{{group_id}}"
+      },
+      "outputs": {
+        "ctx_c": "contextId",
+        "node1_key_c": "memberPublicKey"
+      }
+    },
+    {
+      "name": "Node-1 writes into context-C",
+      "type": "call",
+      "app": "{{ctx_c}}",
+      "method": "set",
+      "args": {
+        "key": "gamma",
+        "value": "from-C"
+      },
+      "account": "af-late-flip-node-1",
+      "as_key": "{{node1_key_c}}"
+    },
+    {
+      "name": "Node-1 invites node-2 to namespace",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "af-late-flip-node-1",
+      "outputs": {
+        "ns_invite": "token"
+      }
+    },
+    {
+      "name": "Node-2 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{ns_invite}}",
+      "account": "af-late-flip-node-2"
+    },
+    {
+      "type": "whoami",
+      "account": "af-late-flip-node-2",
+      "outputs": {
+        "node2_identity": "publicKey",
+        "node2_account": "publicKey"
+      }
+    },
+    {
+      "name": "Node-1 adds node-2 to subgroup",
+      "type": "team_add",
+      "org": "{{namespace_id}}",
+      "team": "{{group_id}}",
+      "members": [
+        "{{node2_identity}}"
+      ],
+      "role": "member",
+      "account": "af-late-flip-node-1"
+    },
+    {
+      "name": "Settle period — node-2 fully joined, flag still false",
+      "type": "wait",
+      "seconds": 15.0
+    },
+    {
+      "name": "Node-2 reads context-A",
+      "type": "call",
+      "app": "{{ctx_a}}",
+      "method": "get",
+      "args": {
+        "key": "alpha"
+      },
+      "account": "af-late-flip-node-2",
+      "outputs": {
+        "n2_read_a": "rpc"
+      }
+    },
+    {
+      "name": "Node-2 reads context-B",
+      "type": "call",
+      "app": "{{ctx_b}}",
+      "method": "get",
+      "args": {
+        "key": "beta"
+      },
+      "account": "af-late-flip-node-2",
+      "outputs": {
+        "n2_read_b": "rpc"
+      }
+    },
+    {
+      "name": "Node-2 reads context-C",
+      "type": "call",
+      "app": "{{ctx_c}}",
+      "method": "get",
+      "args": {
+        "key": "gamma"
+      },
+      "account": "af-late-flip-node-2",
+      "outputs": {
+        "n2_read_c": "rpc"
+      }
+    },
+    {
+      "name": "Assert backfill enumerated all pre-existing contexts",
+      "type": "assert",
+      "statements": [
+        "is_set({{n2_read_a}})",
+        "is_set({{n2_read_b}})",
+        "is_set({{n2_read_c}})",
+        "contains({{n2_read_a}}, \"from-A\")",
+        "contains({{n2_read_b}}, \"from-B\")",
+        "contains({{n2_read_c}}, \"from-C\")"
+      ]
+    }
+  ]
+}

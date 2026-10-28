@@ -1,0 +1,144 @@
+{
+  "name": "Outbound probe with outbound off",
+  "description": "With outbound off, a request traps the run and its write is not committed",
+  "comment": [
+    "A workflow for outbound-probe on a node with outbound requests off",
+    "(merod's default: no `[outbound]` settings). outbound.yml drives every gate",
+    "with the test build's `.test` echo; this one needs no test build and checks",
+    "what holds on every node by default: nothing leaves, and a run that asked is",
+    "not committed."
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "alice",
+    "bob",
+    "carol"
+  ],
+  "steps": [
+    {
+      "name": "Alice founds an organization",
+      "type": "create_org",
+      "account": "alice",
+      "org_name": "Probes",
+      "outputs": {
+        "org": "orgId"
+      }
+    },
+    {
+      "name": "An invite for Bob",
+      "type": "invite",
+      "account": "alice",
+      "org": "{{org}}",
+      "role": "member",
+      "outputs": {
+        "token": "token"
+      }
+    },
+    {
+      "name": "Bob joins",
+      "type": "redeem_invite",
+      "account": "bob",
+      "token": "{{token}}"
+    },
+    {
+      "name": "Alice deploys outbound-probe in the organization",
+      "type": "deploy",
+      "account": "alice",
+      "wasm": "{{env.CORE_WASM_DIR}}/outbound_probe.wasm",
+      "app_name": "outbound-probe",
+      "org": "{{org}}",
+      "outputs": {
+        "app": "appId"
+      }
+    },
+    {
+      "name": "Nothing stored yet",
+      "type": "view",
+      "account": "bob",
+      "app": "{{app}}",
+      "method": "last",
+      "expect": ""
+    },
+    {
+      "name": "A request to the declared prefix traps while outbound is off",
+      "type": "call",
+      "account": "alice",
+      "app": "{{app}}",
+      "method": "probe",
+      "args": {
+        "path": "hello",
+        "body": "hi"
+      },
+      "expected_failure": true,
+      "outputs": {
+        "refused_off": "error"
+      }
+    },
+    {
+      "name": "The node had no outbound client to give the run",
+      "type": "assert",
+      "statements": [
+        "contains(\"{{refused_off}}\", \"OutboundUnavailable\")"
+      ]
+    },
+    {
+      "name": "Any other URL traps too",
+      "type": "call",
+      "account": "bob",
+      "app": "{{app}}",
+      "method": "probe_url",
+      "args": {
+        "url": "https://example.com/"
+      },
+      "expected_failure": true,
+      "outputs": {
+        "other": "error"
+      }
+    },
+    {
+      "name": "For the same reason",
+      "type": "assert",
+      "statements": [
+        "contains(\"{{other}}\", \"OutboundUnavailable\")"
+      ]
+    },
+    {
+      "name": "The write made before a request is not committed when the run traps",
+      "type": "call",
+      "account": "alice",
+      "app": "{{app}}",
+      "method": "probe_twice",
+      "expected_failure": true
+    },
+    {
+      "name": "A view never reaches the network",
+      "type": "view",
+      "account": "bob",
+      "app": "{{app}}",
+      "method": "probe_in_view",
+      "expected_failure": true
+    },
+    {
+      "name": "No trapped run left anything behind",
+      "type": "view",
+      "account": "bob",
+      "app": "{{app}}",
+      "method": "last",
+      "expect": ""
+    },
+    {
+      "name": "Carol is outside the organization",
+      "type": "call",
+      "account": "carol",
+      "app": "{{app}}",
+      "method": "probe",
+      "args": {
+        "path": "x",
+        "body": "y"
+      },
+      "expected_error": "NOT_FOUND"
+    }
+  ]
+}

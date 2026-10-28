@@ -1,0 +1,241 @@
+{
+  "name": "E2E Account Root - Back Up and Restore",
+  "description": "The acceptance test for `merod account export|import` (#3335). The account root is the one key that can certify a replacement device after every device is lost, and until these commands existed the recovery property the account model is built around was structurally available but not deliverable: the key survives a namespace-identity rotation and does not survive losing the disk.\nOffline by necessity, which is what shapes the whole scenario: `account export` opens the datastore directly and RocksDB's lock is exclusive, so the node is stopped and a one-shot container (`node_exec`) runs the command over the same data directory. `docker exec` cannot do it — that needs a *running* container — and the admin api deliberately does not serve the recovery key.\nWhat each phase proves, and why it is not redundant:\n\n  1. Enrol an account on node-2 so there is a real root to back up, and settle\n     so the device link has actually propagated.\n\n  2. Export it. The phrase is captured through the step's `stdout_first_line`\n     output — a single-value command prints its value first and advisory text\n     after.\n\n  3. Importing over an existing root is REFUSED without `--force`\n     (`expected_failure: true`). A root that has already certified devices has\n     no second copy, so a silent overwrite strands every account it owned. The\n     guard lives in the repository, under the same lock as the write, so this\n     asserts the real boundary rather than a CLI convenience.\n\n  4. Force-import a DIFFERENT, known phrase, then export again and assert the\n     export now returns that phrase. This is what makes phase 5 mean anything:\n     without it, \"the account came back\" would also be true of an import that\n     did nothing at all. Asserted by equality against a literal, because\n     `json_assert` has no inequality operator — proving the root changed by\n     showing what it changed *to*.\n\n     Node-2 is enrolled and linked by this point, so this is also the one place\n     the suite exercises a forced import over a LIVE store: the device row\n     belonging to the replaced root is released here. The assertion for that\n     behaviour is a unit test rather than a step, because checking it over the\n     wire would mean restarting the node purely to read its device back — the\n     phase wipes it moments later regardless.\n\n  5. WIPE node-2's data directory. Everything above proves the encoding round\n     trips; restoring a key into the store it came from proves nothing about\n     recovery. Nothing informative about node-2 survives here except the phrase\n     — no config, no identity, no datastore, no blobs. What remains is an empty\n     home directory, the same state merobox leaves before `merod init`.\n\n     Then re-init, import (with NO `--force`: an empty store has no root to\n     refuse to replace, and needing the flag would be a bug), restart, and log\n     in — a fresh node auto-creates its admin on first login.\n\n  6. Rejoin and prove it came back as itself. The node's IDENTITY is new, so it\n     needs a fresh invitation; the ACCOUNT is not, which is the whole point.\n     Enrolling mints a NEW device under the RESTORED root, and the account id\n     it derives must equal the one from before the wipe — nothing per-namespace\n     was backed up, because the nonce is derived from the root secret and the\n     namespace id.\n\n     Then the assertion the account model is actually FOR: the recovered\n     device writes a value guarded by a writer set granted before the wipe, with\n     no new grant and no rotation. Id equality only proves the account is\n     recomputable; this proves it is usable. node-1 admits the write solely by\n     resolving a signing key it has never seen to the granted account, via the\n     link op the recovered node published when it rejoined — so an\n     implementation keyed by device, or one resolving a signer from anything\n     but its binding at the write's cut, fails here and nowhere earlier. Paired\n     with an assertion that the writer set is unchanged, which is what\n     separates \"the gate admitted the right account\" from \"the gate gave up\".\n\n     Finally it reads a value written before the wipe. That is the\n     peer-assisted half: a node holding no scope key of its own can only read\n     that if a peer delivered the current key to its new device. A recovery\n     that restored the identity but not access passes the account assertion\n     and fails this one.\n\nDeliberately NOT asserted: that `account show` reports the same id before and after enrolment. It does not (#3366) — before enrolment the read API reports the op-adapter's stand-in — so this scenario reads its account only from enrolment, which is the value writes attribute to.\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  json_assert statement on a dropped step's output x1: checks what the dropped steps did",
+    "  login (unknown) x3: checks what the dropped steps did",
+    "  node_exec (unknown) x6: checks what the dropped steps did",
+    "  script x1: scripts drive v1 node RPC URLs",
+    "  start_node x1: a user's node going offline has no counterpart in a cluster",
+    "  stop_node x1: a user's node going offline has no counterpart in a cluster",
+    "  wait_for_sync x8: replication is synchronous: a read sees every committed write"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "backup-node-1",
+    "backup-node-2"
+  ],
+  "steps": [
+    {
+      "name": "Install application on backup-node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "backup-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.scaffolding-e2e"
+      }
+    },
+    {
+      "name": "Node-1 creates the namespace",
+      "type": "create_org",
+      "org_name": "Node-1 creates the namespace",
+      "outputs": {
+        "namespace_id": "orgId"
+      },
+      "account": "backup-node-1"
+    },
+    {
+      "name": "Invite node-2",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "backup-node-1",
+      "outputs": {
+        "invitation": "token"
+      }
+    },
+    {
+      "name": "Node-2 joins the namespace",
+      "type": "redeem_invite",
+      "token": "{{invitation}}",
+      "account": "backup-node-2"
+    },
+    {
+      "name": "Node-1 creates the context",
+      "type": "deploy",
+      "account": "backup-node-1",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "app_name": "Node-1 creates the context",
+      "org": "{{namespace_id}}",
+      "outputs": {
+        "context_id": "contextId"
+      }
+    },
+    {
+      "name": "What node-2 speaks for",
+      "type": "whoami",
+      "outputs": {
+        "original_account": "publicKey"
+      },
+      "account": "backup-node-2"
+    },
+    {
+      "name": "Node-1 grants node-2's account write access to the shared value",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "shared_add_writer",
+      "args": {
+        "writer": "{{original_account}}"
+      },
+      "account": "backup-node-1"
+    },
+    {
+      "name": "The writer set before the disk dies",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "shared_get_writers",
+      "args": {},
+      "account": "backup-node-1",
+      "outputs": {
+        "writers_before_wipe": "rpc"
+      }
+    },
+    {
+      "name": "Node-2 writes the guarded value under that grant",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "shared_set",
+      "args": {
+        "value": "written-by-the-original-device"
+      },
+      "account": "backup-node-2"
+    },
+    {
+      "name": "Node-1 accepted the granted device's write",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "shared_get",
+      "args": {},
+      "account": "backup-node-1",
+      "outputs": {
+        "shared_before_wipe": "rpc"
+      }
+    },
+    {
+      "name": "The grant worked before the disk died",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{shared_before_wipe}}, {\"output\": \"written-by-the-original-device\"})"
+      ]
+    },
+    {
+      "name": "Node-2 writes a value before losing the disk",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "set",
+      "args": {
+        "key": "survives-the-wipe",
+        "value": "written-before-the-disk-died"
+      },
+      "account": "backup-node-2"
+    },
+    {
+      "name": "Invite the recovered node back",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "backup-node-1",
+      "outputs": {
+        "rejoin_invitation": "token"
+      }
+    },
+    {
+      "name": "The recovered node rejoins the namespace",
+      "type": "redeem_invite",
+      "token": "{{rejoin_invitation}}",
+      "account": "backup-node-2"
+    },
+    {
+      "name": "Enrol a device into the recovered account",
+      "type": "whoami",
+      "outputs": {
+        "recovered_account": "publicKey"
+      },
+      "account": "backup-node-2"
+    },
+    {
+      "name": "The recovered node owns the same account as before the wipe",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{recovered_account}}, {{original_account}})"
+      ]
+    },
+    {
+      "name": "The recovered device writes the guarded value under the original grant",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "shared_set",
+      "args": {
+        "value": "written-by-the-recovered-device"
+      },
+      "account": "backup-node-2"
+    },
+    {
+      "name": "What node-1 holds after the recovered device wrote",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "shared_get",
+      "args": {},
+      "account": "backup-node-1",
+      "outputs": {
+        "shared_after_recovery": "rpc"
+      }
+    },
+    {
+      "name": "Node-1 accepted the write from a device it had never seen granted",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{shared_after_recovery}}, {\"output\": \"written-by-the-recovered-device\"})"
+      ]
+    },
+    {
+      "name": "The writer set after recovery",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "shared_get_writers",
+      "args": {},
+      "account": "backup-node-1",
+      "outputs": {
+        "writers_after_recovery": "rpc"
+      }
+    },
+    {
+      "name": "No grant was added for the recovered device",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{writers_after_recovery}}, {{writers_before_wipe}})"
+      ]
+    },
+    {
+      "name": "The recovered node can read what it wrote before the wipe",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "get",
+      "args": {
+        "key": "survives-the-wipe"
+      },
+      "account": "backup-node-2",
+      "outputs": {
+        "recovered_value": "rpc"
+      }
+    },
+    {
+      "name": "Its pre-wipe data came back with it",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{recovered_value}}, {\"output\": \"written-before-the-disk-died\"})"
+      ]
+    }
+  ]
+}

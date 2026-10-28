@@ -1,0 +1,317 @@
+{
+  "name": "E2E KV Store - Restricted Subgroup Add Then Bidirectional Write",
+  "description": "Regression guard for the admin-issued add path on Restricted subgroups. Today `group-membership.yml` adds → removes → asserts revoked, but never asserts the post-add write actually authors cleanly and decrypts on a third peer. That gap means a regression in the `MemberAdded` → `KeyDelivery` chain for Restricted subgroups could ship without an E2E catching it.\nDistinguishes itself from sibling tests:\n  * `group-open-self-join-key-delivery.yml` — Open subgroup,\n    inheritance path. The joiner publishes `MemberJoinedOpen`,\n    not the admin.\n  * `group-join-via-inheritance.yml` — Open subgroup, new\n    inheritance endpoint. Same direction problem as above.\n  * `group-membership.yml` — adds then removes; doesn't\n    bidirectionally read after add.\nPhase 5 additionally pins the ACCOUNT-addressed add and `update_member_role`, neither of which any other workflow covers. This workflow exercises the admin-issued direct-add path (`add_group_members`), which publishes a regular `MemberJoined` governance op carrying the wrapped subgroup key. The receiver's apply must (a) install node-2's direct row and (b) populate `sender_key` so node-2 can author state-DAG ops that node-3 can decrypt.\nThe subgroup is marked Restricted right after it is created (the default is Open), and its visibility is read back and asserted rather than merely assumed.\nMero-chat user-visible failure mode this guards against: \"I added someone to a private channel via Members → Add, they appear in the member list, but their messages never show up for the rest of us (and vice-versa)\" — symptom of a regression in the `MemberJoined` → `KeyDelivery` → `sender_key` populate chain on the admin-add path.\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  login (unknown) x3: checks what the dropped steps did",
+    "  wait_for_sync x8: replication is synchronous: a read sees every committed write",
+    "Migration note: v1's check that the listing names node-3's account and not its member",
+    "  key is dropped: the node has no member key apart from the account (the account's",
+    "  public key is its id, and a team row carries both forms), so the two cannot differ"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "private-add-node-1",
+    "private-add-node-2",
+    "private-add-node-3"
+  ],
+  "steps": [
+    {
+      "name": "Install application on node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "private-add-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.scaffolding-e2e"
+      }
+    },
+    {
+      "name": "Node-1 creates namespace",
+      "type": "create_org",
+      "org_name": "Node-1 creates namespace",
+      "outputs": {
+        "namespace_id": "orgId"
+      },
+      "account": "private-add-node-1"
+    },
+    {
+      "name": "Capture node-1's signing key",
+      "type": "whoami",
+      "outputs": {
+        "node1_key": "publicKey"
+      },
+      "account": "private-add-node-1"
+    },
+    {
+      "name": "Invite node-2 to namespace",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "private-add-node-1",
+      "outputs": {
+        "invite_node2": "token"
+      }
+    },
+    {
+      "name": "Invite node-3 to namespace",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "private-add-node-1",
+      "outputs": {
+        "invite_node3": "token"
+      }
+    },
+    {
+      "name": "Node-2 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{invite_node2}}",
+      "account": "private-add-node-2"
+    },
+    {
+      "type": "whoami",
+      "account": "private-add-node-2",
+      "outputs": {
+        "identity_node2": "publicKey",
+        "account_node2": "publicKey"
+      }
+    },
+    {
+      "name": "Node-3 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{invite_node3}}",
+      "account": "private-add-node-3"
+    },
+    {
+      "type": "whoami",
+      "account": "private-add-node-3",
+      "outputs": {
+        "identity_node3": "publicKey",
+        "account_node3": "publicKey"
+      }
+    },
+    {
+      "name": "Node-1 creates the subgroup",
+      "type": "create_team",
+      "org": "{{namespace_id}}",
+      "team_name": "private-channel",
+      "join": "invite",
+      "outputs": {
+        "subgroup_id": "teamId"
+      },
+      "account": "private-add-node-1"
+    },
+    {
+      "name": "Node-1 marks the subgroup Restricted",
+      "type": "team_update",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "join": "invite",
+      "account": "private-add-node-1"
+    },
+    {
+      "name": "Read the subgroup's visibility back",
+      "type": "team_get",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "account": "private-add-node-1",
+      "outputs": {
+        "subgroup_visibility": "subgroupVisibility"
+      }
+    },
+    {
+      "name": "Assert the subgroup is Restricted",
+      "type": "assert",
+      "statements": [
+        "equals({{subgroup_visibility}}, restricted)"
+      ]
+    },
+    {
+      "name": "Admin adds only node-2 to subgroup",
+      "type": "team_add",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "members": [
+        "{{identity_node2}}"
+      ],
+      "role": "member",
+      "account": "private-add-node-1"
+    },
+    {
+      "name": "Node-1 creates context inside Restricted subgroup",
+      "type": "deploy",
+      "account": "private-add-node-1",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "app_name": "Node-1 creates context inside Restricted subgroup",
+      "org": "{{namespace_id}}",
+      "access": {
+        "kind": "team",
+        "team": "{{subgroup_id}}"
+      },
+      "outputs": {
+        "ctx_id": "contextId"
+      }
+    },
+    {
+      "name": "Node-2 joins context",
+      "type": "whoami",
+      "account": "private-add-node-2",
+      "outputs": {
+        "node2_key": "publicKey"
+      }
+    },
+    {
+      "name": "Negative control — node-3 (namespace-only) cannot join context",
+      "type": "http",
+      "method": "get",
+      "path": "apps/{{ctx_id}}",
+      "account": "private-add-node-3",
+      "expected_failure": true
+    },
+    {
+      "name": "Round 1 — admin writes",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set",
+      "args": {
+        "key": "from_admin",
+        "value": "admin_msg"
+      },
+      "account": "private-add-node-1",
+      "as_key": "{{node1_key}}"
+    },
+    {
+      "name": "Round 1 — node-2 reads admin's write",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get",
+      "args": {
+        "key": "from_admin"
+      },
+      "account": "private-add-node-2",
+      "as_key": "{{node2_key}}",
+      "outputs": {
+        "node2_read_admin": "rpc"
+      }
+    },
+    {
+      "name": "Assert inbound direction works",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{node2_read_admin}}, {\"output\": \"admin_msg\"})"
+      ]
+    },
+    {
+      "name": "Round 2 — node-2 (admin-added member) writes",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set",
+      "args": {
+        "key": "from_member",
+        "value": "node2_msg"
+      },
+      "account": "private-add-node-2",
+      "as_key": "{{node2_key}}"
+    },
+    {
+      "name": "Round 2 — admin reads node-2's write",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get",
+      "args": {
+        "key": "from_member"
+      },
+      "account": "private-add-node-1",
+      "as_key": "{{node1_key}}",
+      "outputs": {
+        "admin_read_node2": "rpc"
+      }
+    },
+    {
+      "name": "Assert outbound direction works (admin reads member's write)",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{admin_read_node2}}, {\"output\": \"node2_msg\"})"
+      ]
+    },
+    {
+      "name": "Promote node-2 to Admin of the subgroup, named by account",
+      "type": "team_add",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "members": [
+        "{{account_node2}}"
+      ],
+      "role": "lead",
+      "account": "private-add-node-1"
+    },
+    {
+      "name": "Node-2 exercises its new grant, adding node-3 by account",
+      "type": "team_add",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "members": [
+        "{{account_node3}}"
+      ],
+      "role": "member",
+      "account": "private-add-node-2"
+    },
+    {
+      "name": "List subgroup members",
+      "type": "team_get",
+      "org": "{{namespace_id}}",
+      "team": "{{subgroup_id}}",
+      "account": "private-add-node-1",
+      "outputs": {
+        "subgroup_members": "members"
+      }
+    },
+    {
+      "name": "Assert the listing names the accounts, not the keys",
+      "type": "assert",
+      "statements": [
+        "contains({{subgroup_members}}, {{account_node2}})",
+        "contains({{subgroup_members}}, {{account_node3}})"
+      ]
+    },
+    {
+      "name": "Node-3 joins the context it was refused in Phase 2",
+      "type": "whoami",
+      "account": "private-add-node-3",
+      "outputs": {
+        "node3_key": "publicKey"
+      }
+    },
+    {
+      "name": "Node-3 reads the write authored by the key-added member",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get",
+      "args": {
+        "key": "from_member"
+      },
+      "account": "private-add-node-3",
+      "as_key": "{{node3_key}}",
+      "outputs": {
+        "node3_read": "rpc"
+      }
+    },
+    {
+      "name": "Assert the account-added member decrypts the subgroup",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{node3_read}}, {\"output\": \"node2_msg\"})"
+      ]
+    }
+  ]
+}

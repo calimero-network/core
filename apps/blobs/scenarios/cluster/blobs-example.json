@@ -1,0 +1,394 @@
+{
+  "name": "Blob API Example Workflow",
+  "description": "Test the Blob API",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  login (unknown) x2: checks what the dropped steps did",
+    "  wait_for_sync x4: replication is synchronous: a read sees every committed write"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "node-blob-1",
+    "node-blob-2"
+  ],
+  "steps": [
+    {
+      "name": "Install Application on Node 1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/blobs.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "node-blob-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.blobs"
+      }
+    },
+    {
+      "name": "Create Mesh",
+      "type": "create_org",
+      "account": "node-blob-1",
+      "org_name": "mesh",
+      "outputs": {
+        "namespace_id": "orgId"
+      }
+    },
+    {
+      "type": "invite",
+      "account": "node-blob-1",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "outputs": {
+        "_mesh_invite": "token"
+      }
+    },
+    {
+      "type": "redeem_invite",
+      "account": "node-blob-2",
+      "token": "{{_mesh_invite}}"
+    },
+    {
+      "name": "Create Mesh",
+      "type": "deploy",
+      "account": "node-blob-1",
+      "org": "{{namespace_id}}",
+      "wasm": "{{env.CORE_WASM_DIR}}/blobs.wasm",
+      "app_name": "Create Mesh",
+      "outputs": {
+        "context_id": "contextId",
+        "inviter_key": "memberPublicKey"
+      }
+    },
+    {
+      "name": "Upload Real PNG to Blob Storage",
+      "type": "upload_blob",
+      "app": "{{context_id}}",
+      "file_path": "static/sample.png",
+      "account": "node-blob-1",
+      "outputs": {
+        "png_blob_id": "blob_id",
+        "png_blob_size": "size"
+      }
+    },
+    {
+      "name": "Register PNG in Contract",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "upload_file",
+      "args": {
+        "name": "screenshot.png",
+        "blob_id": "{{png_blob_id}}",
+        "size": "{{png_blob_size}}",
+        "mime_type": "image/png"
+      },
+      "account": "node-blob-1",
+      "outputs": {
+        "file_0_id": "result"
+      }
+    },
+    {
+      "name": "Verify PNG Upload Response",
+      "type": "assert",
+      "statements": [
+        "is_set({{file_0_id}})"
+      ]
+    },
+    {
+      "name": "Upload Real TXT to Blob Storage",
+      "type": "upload_blob",
+      "app": "{{context_id}}",
+      "file_path": "static/test.txt",
+      "account": "node-blob-1",
+      "outputs": {
+        "txt_blob_id": "blob_id",
+        "txt_blob_size": "size"
+      }
+    },
+    {
+      "name": "Register TXT in Contract",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "upload_file",
+      "args": {
+        "name": "readme.txt",
+        "blob_id": "{{txt_blob_id}}",
+        "size": "{{txt_blob_size}}",
+        "mime_type": "text/plain"
+      },
+      "account": "node-blob-1",
+      "outputs": {
+        "file_1_id": "result"
+      }
+    },
+    {
+      "name": "Verify TXT Upload Response",
+      "type": "assert",
+      "statements": [
+        "is_set({{file_1_id}})"
+      ]
+    },
+    {
+      "name": "List Files from Inviter Node",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "list_files",
+      "args": {},
+      "account": "node-blob-1",
+      "outputs": {
+        "files_node1": "result"
+      }
+    },
+    {
+      "name": "Verify Inviter Sees Both Files",
+      "type": "assert",
+      "statements": [
+        "is_set({{files_node1}})"
+      ]
+    },
+    {
+      "name": "List Files from Invitee Node",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "list_files",
+      "args": {},
+      "account": "node-blob-2",
+      "outputs": {
+        "files_node2": "result"
+      }
+    },
+    {
+      "name": "Verify Invitee Sees Both Files (Blob Discovery Working)",
+      "type": "assert",
+      "statements": [
+        "is_set({{files_node2}})"
+      ]
+    },
+    {
+      "name": "Get PNG File Details",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "get_file",
+      "args": {
+        "file_id": "{{file_0_id}}"
+      },
+      "account": "node-blob-1",
+      "outputs": {
+        "png_file_record": "result"
+      }
+    },
+    {
+      "name": "Verify PNG File Record",
+      "type": "assert",
+      "statements": [
+        "is_set({{png_file_record}})"
+      ]
+    },
+    {
+      "name": "Get TXT File Details",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "get_file",
+      "args": {
+        "file_id": "{{file_1_id}}"
+      },
+      "account": "node-blob-1",
+      "outputs": {
+        "txt_file_record": "result"
+      }
+    },
+    {
+      "name": "Verify TXT File Record",
+      "type": "assert",
+      "statements": [
+        "is_set({{txt_file_record}})"
+      ]
+    },
+    {
+      "name": "Get Blob ID for PNG (for download)",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "get_blob_id_hex",
+      "args": {
+        "file_id": "{{file_0_id}}"
+      },
+      "account": "node-blob-1",
+      "outputs": {
+        "retrieved_png_blob_id": "result"
+      }
+    },
+    {
+      "name": "Verify Blob ID Matches Upload",
+      "type": "assert",
+      "statements": [
+        "is_set({{retrieved_png_blob_id}})"
+      ]
+    },
+    {
+      "name": "Get Blob ID from Invitee Node",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "get_blob_id_hex",
+      "args": {
+        "file_id": "{{file_1_id}}"
+      },
+      "account": "node-blob-2",
+      "outputs": {
+        "retrieved_txt_blob_id": "result"
+      }
+    },
+    {
+      "name": "Verify Cross-Node Blob ID Consistency",
+      "type": "assert",
+      "statements": [
+        "is_set({{retrieved_txt_blob_id}})"
+      ]
+    },
+    {
+      "name": "Search for PNG Files",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "search_files",
+      "args": {
+        "query": "png"
+      },
+      "account": "node-blob-1",
+      "outputs": {
+        "png_search_results": "result"
+      }
+    },
+    {
+      "name": "Verify PNG Search Results",
+      "type": "assert",
+      "statements": [
+        "is_set({{png_search_results}})"
+      ]
+    },
+    {
+      "name": "Search for All Files (Case-Insensitive)",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "search_files",
+      "args": {
+        "query": "e"
+      },
+      "account": "node-blob-1",
+      "outputs": {
+        "all_search_results": "result"
+      }
+    },
+    {
+      "name": "Verify Search Finds Multiple Files",
+      "type": "assert",
+      "statements": [
+        "is_set({{all_search_results}})"
+      ]
+    },
+    {
+      "name": "Get Storage Statistics",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "get_stats",
+      "args": {},
+      "account": "node-blob-1",
+      "outputs": {
+        "stats_output": "result"
+      }
+    },
+    {
+      "name": "Verify Stats Output",
+      "type": "assert",
+      "statements": [
+        "is_set({{stats_output}})"
+      ]
+    },
+    {
+      "name": "Get Total Files Size",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "get_total_files_size",
+      "args": {},
+      "account": "node-blob-1",
+      "outputs": {
+        "total_size": "result"
+      }
+    },
+    {
+      "name": "Verify Total Size Calculation",
+      "type": "assert",
+      "statements": [
+        "is_set({{total_size}})"
+      ]
+    },
+    {
+      "name": "Delete PNG File",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "delete_file",
+      "args": {
+        "file_id": "{{file_0_id}}"
+      },
+      "account": "node-blob-1"
+    },
+    {
+      "name": "List Files After Deletion (Inviter)",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "list_files",
+      "args": {},
+      "account": "node-blob-1",
+      "outputs": {
+        "files_after_delete_node1": "result"
+      }
+    },
+    {
+      "name": "Verify Inviter Shows Only One File",
+      "type": "assert",
+      "statements": [
+        "is_set({{files_after_delete_node1}})"
+      ]
+    },
+    {
+      "name": "List Files After Deletion (Invitee)",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "list_files",
+      "args": {},
+      "account": "node-blob-2",
+      "outputs": {
+        "files_after_delete_node2": "result"
+      }
+    },
+    {
+      "name": "Verify Deletion Propagated to Invitee",
+      "type": "assert",
+      "statements": [
+        "is_set({{files_after_delete_node2}})"
+      ]
+    },
+    {
+      "name": "Verify Updated Total Size After Deletion",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "get_total_files_size",
+      "args": {},
+      "account": "node-blob-1",
+      "outputs": {
+        "total_size_after_delete": "result"
+      }
+    },
+    {
+      "name": "Verify Size Reduced by Deleted File",
+      "type": "assert",
+      "statements": [
+        "is_set({{total_size_after_delete}})"
+      ]
+    }
+  ]
+}

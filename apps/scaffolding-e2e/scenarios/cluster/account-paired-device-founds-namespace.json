@@ -1,0 +1,144 @@
+{
+  "name": "E2E Account - A Paired Device Founds A Namespace",
+  "description": "A paired device is a device of the account, so it must be able to start a project as the account and put the devices that belong there on that project's guest list. A node with no root of its own failed `create_namespace` at the credential build, while a node initialised normally, which is what the desktop ships, re-minted its device under its own root, founded the namespace as a stranger account, and destroyed its pairing without a word.\nThe other half of the rule is the one that says no: a sibling scoped to an application the new namespace does not serve is left where the holder put it.\nThe cast:\n\n  * node-1 - Alice's laptop. Holds the account root, installs both\n    applications, creates namespace A and certifies the other two devices.\n  * node-2 - Alice's phone. Paired into namespace A, scoped to app A, a\n    member of nothing. It then founds namespace C as Alice's account.\n  * node-3 - Alice's tablet. Paired scoped to app B, and no namespace targets\n    app B - so the account namespace is the only place it is bound, which is\n    what pairing into a scope the account serves nowhere yet leaves behind.\n\nWhat each step is load-bearing for:\n\n  1. The phone resolves its own binding in A. That is the proof it folded its\n     own link, which is the op that hands it its certificate and names its\n     certifier.\n  2. The phone waits until it can read the tablet's scope back. That value\n     exists nowhere but the replicated registry, so it is the proof the phone\n     folded what the laptop published there - and the barrier that keeps the\n     founding below from racing the fold.\n  3. `create_namespace` on node-2 succeeds and the phone lists C with its\n     target.\n  4. The phone still speaks as Alice's account and as the same device after\n     founding C. This is the assertion that goes red before the fix: the\n     creation succeeds, but as a fresh device of node-2's own account.\n  5. The laptop is bound in C, published by the phone. A founder that is not\n     the holder carries every sibling whose scope covers what it founded.\n  6. The tablet is NOT bound in C. Its scope names app B alone, so it stays\n     in the account namespace, which is where it started.\n\nnode-2 is initialised the default way, root and all, because that is the posture the desktop ships and the one where the failure is silent.\nNot asserted here: node-1 listing C, which is the account namespace's job and is pinned by its own scenario, and what the laptop or the tablet make of C. What IS asserted, as of the registry, is step 5: the phone carries the laptop into C. The phone signed no certificate for the laptop and never could - only the account root can - so the certificate it publishes there can only have been read out of the account namespace.\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  account_devices (unknown) x1: checks what the dropped steps did",
+    "  assert_api_response x4: v1 admin API",
+    "  login (unknown) x3: checks what the dropped steps did",
+    "  node_identity output accountNamespaceId (v1 device key) x1: checks what the dropped steps did"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "paired-founder-node-1",
+    "paired-founder-node-2",
+    "paired-founder-node-3"
+  ],
+  "steps": [
+    {
+      "name": "Install app A on node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_bundle": "hash"
+      },
+      "account": "paired-founder-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app": "com.calimero.scaffolding-e2e"
+      }
+    },
+    {
+      "name": "Install app B on node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_b_bundle": "hash"
+      },
+      "account": "paired-founder-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_b": "com.calimero.scaffolding-e2e-multi"
+      }
+    },
+    {
+      "name": "Two applications, not one installed twice",
+      "type": "assert",
+      "statements": [
+        "is_set({{app}})",
+        "is_set({{app_b}})",
+        "{{app}} != {{app_b}}"
+      ]
+    },
+    {
+      "name": "Node-1 creates namespace A",
+      "type": "create_org",
+      "org_name": "Node-1 creates namespace A",
+      "outputs": {
+        "ns_a": "orgId"
+      },
+      "account": "paired-founder-node-1"
+    },
+    {
+      "name": "What node-1 speaks as",
+      "type": "whoami",
+      "outputs": {
+        "alice_account": "publicKey",
+        "alice_device": "passkeyId",
+        "alice_root": "publicKey"
+      },
+      "account": "paired-founder-node-1"
+    },
+    {
+      "name": "Pair node-2 onto Alice's account, listening on A and the account namespace",
+      "type": "add_device",
+      "account": "paired-founder-node-1",
+      "device": "paired-founder-node-2"
+    },
+    {
+      "name": "What node-2 speaks as",
+      "type": "whoami",
+      "outputs": {
+        "paired_account": "publicKey",
+        "paired_device": "passkeyId"
+      },
+      "account": "paired-founder-node-2"
+    },
+    {
+      "name": "The phone is a device of Alice's account",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{paired_account}}, {{alice_account}})",
+        "json_not_equal({{paired_device}}, {{alice_device}})"
+      ]
+    },
+    {
+      "name": "Pair node-3, scoped to app B, following the account namespace",
+      "type": "add_device",
+      "account": "paired-founder-node-1",
+      "device": "paired-founder-node-3"
+    },
+    {
+      "name": "What node-3 speaks as",
+      "type": "whoami",
+      "outputs": {
+        "tablet_device": "passkeyId"
+      },
+      "account": "paired-founder-node-3"
+    },
+    {
+      "name": "Node-2 founds namespace C as Alice's account",
+      "type": "create_org",
+      "org_name": "Node-2 founds namespace C as Alice's account",
+      "outputs": {
+        "ns_c": "orgId"
+      },
+      "account": "paired-founder-node-2"
+    },
+    {
+      "name": "What node-2 speaks as after founding C",
+      "type": "whoami",
+      "outputs": {
+        "founder_account": "publicKey",
+        "founder_device": "passkeyId"
+      },
+      "account": "paired-founder-node-2"
+    },
+    {
+      "name": "Founding C did not change what the phone speaks as",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{founder_account}}, {{alice_account}})",
+        "json_equal({{founder_device}}, {{paired_device}})"
+      ]
+    }
+  ]
+}

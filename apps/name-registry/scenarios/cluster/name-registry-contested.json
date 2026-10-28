@@ -1,0 +1,372 @@
+{
+  "name": "Name Registry — Two Members, One Username, One Owner",
+  "description": "Two members on two nodes claim the same username, and the namespace's attested TEE authority decides which of them owns it. Every node must then name the same owner, and the other claimant must see its claim as lost. The owner lets the name go, the TEE answers with a vacancy, and the other member claims it again and gets it, at the next epoch.\nWHY THIS GOES RED WITHOUT A REGISTRY. With the name in an owned map, each claimant holds its own entry and every node reports both as holders; with a key-only map, each node keeps whichever claim it applied first. Either way the two nodes cannot agree on one owner. Here only the TEE writes verdicts, so the owner the player's node reports is the owner the owner's node reports.\nTHE NEGATIVE CONTROL runs first: with no authoring policy the enclave is a member but not an authority, so the first claim must stay pending.\nNODES MUST BE BUILT WITH `--features mock-attestation`, as for tee-dice-roll. No `login` steps: the `tee_*` steps and the policy script talk to the admin API with no Authorization header.\nRun locally, with a mock-attestation merod:\n  cargo build -p merod --release --features mock-attestation\n  cd apps/name-registry\n  merobox bootstrap run workflows/name-registry-contested.yml \\\n    --image merod:local-mock-tee --e2e-mode\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  assert_api_response x1: v1 admin API",
+    "  assert_log_absent x2: v1 node logs",
+    "  assert_log_present x1: v1 node logs",
+    "  assert_tee_member (unknown) x1: checks what the dropped steps did",
+    "  script x1: scripts drive v1 node RPC URLs",
+    "  set_tee_admission_policy (unknown) x1: checks what the dropped steps did",
+    "  tee_fleet_join (unknown) x3: checks what the dropped steps did",
+    "  wait_for_sync x3: replication is synchronous: a read sees every committed write",
+    "Migration note: v1's first check, a claim staying pending before the namespace's TEE",
+    "  admission policy let an enclave author, is dropped: the converter drops the policy",
+    "  and the fleet join, and a cluster is the TEE from its start, so there is no time",
+    "  before one may act. The contest checks after it stand",
+    "Migration note: v1's two claims were concurrent and both pending until an enclave",
+    "  ruled; the cluster runs the TEE resolve as soon as the first claim commits, so the",
+    "  second claimant is refused (`another account owns this name`), the outcome v1's",
+    "  verdict gave it. Every check on one owner and one loser after it stands"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "names-owner",
+    "names-player",
+    "names-enclave"
+  ],
+  "steps": [
+    {
+      "name": "Install name-registry on the owner",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/name_registry.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "names-owner"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.name-registry"
+      }
+    },
+    {
+      "name": "Create Mesh",
+      "type": "create_org",
+      "account": "names-owner",
+      "org_name": "mesh",
+      "outputs": {
+        "namespace_id": "orgId"
+      }
+    },
+    {
+      "type": "invite",
+      "account": "names-owner",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "outputs": {
+        "_mesh_invite": "token"
+      }
+    },
+    {
+      "type": "redeem_invite",
+      "account": "names-player",
+      "token": "{{_mesh_invite}}"
+    },
+    {
+      "name": "Create Mesh",
+      "type": "deploy",
+      "account": "names-owner",
+      "org": "{{namespace_id}}",
+      "wasm": "{{env.CORE_WASM_DIR}}/name_registry.wasm",
+      "app_name": "Create Mesh",
+      "outputs": {
+        "context_id": "contextId"
+      }
+    },
+    {
+      "name": "Assert the mesh came up",
+      "type": "assert",
+      "statements": [
+        "is_set({{context_id}})",
+        "is_set({{namespace_id}})"
+      ]
+    },
+    {
+      "name": "Account of the owner node",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "me",
+      "args": {},
+      "account": "names-owner",
+      "outputs": {
+        "owner_account": "result"
+      }
+    },
+    {
+      "name": "Account of the player node",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "me",
+      "args": {},
+      "account": "names-player",
+      "outputs": {
+        "player_account": "result"
+      }
+    },
+    {
+      "name": "Assert the two nodes are two accounts",
+      "type": "assert",
+      "statements": [
+        "not_equal({{owner_account}}, {{player_account}})"
+      ]
+    },
+    {
+      "name": "Let the policy settle",
+      "type": "wait",
+      "seconds": 8.0
+    },
+    {
+      "name": "Let root membership settle",
+      "type": "wait",
+      "seconds": 10.0
+    },
+    {
+      "name": "Let the authoring policy reach the enclave",
+      "type": "wait",
+      "seconds": 10.0
+    },
+    {
+      "name": "The owner node claims rose",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "claim",
+      "args": {
+        "name": "rose",
+        "display": "Rose from the owner node"
+      },
+      "account": "names-owner"
+    },
+    {
+      "name": "The player claims rose too",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "claim",
+      "args": {
+        "name": "rose",
+        "display": "Rose from the player node"
+      },
+      "account": "names-player",
+      "expected_failure": true,
+      "outputs": {
+        "player_claim_refusal": "error"
+      }
+    },
+    {
+      "name": "The registry refused the second claimant",
+      "type": "assert",
+      "statements": [
+        "contains(\"{{player_claim_refusal}}\", \"another account owns this name\")"
+      ]
+    },
+    {
+      "name": "Let the enclave write its verdict",
+      "type": "wait",
+      "seconds": 5.0
+    },
+    {
+      "name": "The owner node reads who owns rose",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "owner_of",
+      "args": {
+        "name": "rose"
+      },
+      "account": "names-owner",
+      "outputs": {
+        "rose_on_owner": "rpc"
+      }
+    },
+    {
+      "name": "The player node reads who owns rose",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "owner_of",
+      "args": {
+        "name": "rose"
+      },
+      "account": "names-player",
+      "outputs": {
+        "rose_on_player": "rpc"
+      }
+    },
+    {
+      "name": "Assert both nodes name one owner, and it is one of the claimants",
+      "type": "json_assert",
+      "statements": [
+        "json_not_equal({{rose_on_owner}}, {\"output\": null})",
+        "json_equal({{rose_on_owner}}, {{rose_on_player}})"
+      ]
+    },
+    {
+      "name": "The owner node's view of rose",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "status",
+      "args": {
+        "name": "rose"
+      },
+      "account": "names-owner",
+      "outputs": {
+        "status_on_owner": "rpc"
+      }
+    },
+    {
+      "name": "The player node's view of rose",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "status",
+      "args": {
+        "name": "rose"
+      },
+      "account": "names-player",
+      "outputs": {
+        "status_on_player": "rpc"
+      }
+    },
+    {
+      "name": "Assert one claimant won and the other lost",
+      "type": "json_assert",
+      "statements": [
+        "json_not_equal({{status_on_owner}}, {{status_on_player}})"
+      ]
+    },
+    {
+      "name": "The owner node lets rose go",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "let_go",
+      "args": {
+        "name": "rose"
+      },
+      "account": "names-owner"
+    },
+    {
+      "name": "The player lets rose go",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "let_go",
+      "args": {
+        "name": "rose"
+      },
+      "account": "names-player"
+    },
+    {
+      "name": "Let the enclave answer the release",
+      "type": "wait",
+      "seconds": 15.0
+    },
+    {
+      "name": "Rose is free on the player node",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "owner_of",
+      "args": {
+        "name": "rose"
+      },
+      "account": "names-player",
+      "outputs": {
+        "rose_freed": "rpc"
+      }
+    },
+    {
+      "name": "Assert nobody owns rose",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{rose_freed}}, {\"output\": null})"
+      ]
+    },
+    {
+      "name": "The player claims rose again",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "claim",
+      "args": {
+        "name": "rose",
+        "display": "Rose, second epoch"
+      },
+      "account": "names-player"
+    },
+    {
+      "name": "Let the enclave grant it",
+      "type": "wait",
+      "seconds": 15.0
+    },
+    {
+      "name": "The owner node reads who owns rose now",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "owner_of",
+      "args": {
+        "name": "rose"
+      },
+      "account": "names-owner",
+      "outputs": {
+        "rose_second_on_owner": "result"
+      }
+    },
+    {
+      "name": "The player node reads who owns rose now",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "owner_of",
+      "args": {
+        "name": "rose"
+      },
+      "account": "names-player",
+      "outputs": {
+        "rose_second_on_player": "result"
+      }
+    },
+    {
+      "name": "Assert the player owns rose on both nodes",
+      "type": "assert",
+      "statements": [
+        "equal({{rose_second_on_owner}}, {{player_account}})",
+        "equal({{rose_second_on_player}}, {{player_account}})"
+      ]
+    },
+    {
+      "name": "A member cannot run the TEE resolver",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "resolve_name",
+      "args": {
+        "name": "early_bird"
+      },
+      "account": "names-owner",
+      "expected_failure": true
+    },
+    {
+      "name": "Give any leaked write time to propagate",
+      "type": "wait",
+      "seconds": 10.0
+    },
+    {
+      "name": "Rose is still the player's on the owner node",
+      "type": "call",
+      "app": "{{context_id}}",
+      "method": "owner_of",
+      "args": {
+        "name": "rose"
+      },
+      "account": "names-owner",
+      "outputs": {
+        "rose_final": "result"
+      }
+    },
+    {
+      "name": "Assert no member write landed",
+      "type": "assert",
+      "statements": [
+        "equal({{rose_final}}, {{player_account}})"
+      ]
+    }
+  ]
+}
