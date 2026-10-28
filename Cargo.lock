@@ -37,7 +37,7 @@ dependencies = [
  "futures-util",
  "log",
  "once_cell",
- "parking_lot",
+ "parking_lot 0.12.5",
  "pin-project-lite",
  "smallvec",
  "tokio",
@@ -1483,7 +1483,7 @@ dependencies = [
  "indexmap 2.14.2",
  "libp2p",
  "lz4_flex",
- "parking_lot",
+ "parking_lot 0.13.0",
  "prometheus-client",
  "rand 0.10.2",
  "rand_chacha 0.10.0",
@@ -2705,7 +2705,7 @@ dependencies = [
  "bitflags 2.11.0",
  "crossterm_winapi",
  "document-features",
- "parking_lot",
+ "parking_lot 0.12.5",
  "rustix 1.1.4",
  "winapi",
 ]
@@ -3037,9 +3037,9 @@ dependencies = [
  "cfg-if",
  "crossbeam-utils",
  "hashbrown 0.14.5",
- "lock_api",
+ "lock_api 0.4.14",
  "once_cell",
- "parking_lot_core",
+ "parking_lot_core 0.9.12",
 ]
 
 [[package]]
@@ -4438,7 +4438,7 @@ dependencies = [
  "ipconfig",
  "moka",
  "once_cell",
- "parking_lot",
+ "parking_lot 0.12.5",
  "rand 0.9.2",
  "resolv-conf",
  "smallvec",
@@ -4463,7 +4463,7 @@ dependencies = [
  "moka",
  "ndk-context",
  "once_cell",
- "parking_lot",
+ "parking_lot 0.12.5",
  "rand 0.10.2",
  "resolv-conf",
  "smallvec",
@@ -5440,9 +5440,9 @@ checksum = "0c2cdeb66e45e9f36bfad5bbdb4d2384e70936afbee843c6f6543f0c551ebb25"
 
 [[package]]
 name = "libc"
-version = "0.2.189"
+version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "libloading"
@@ -5561,7 +5561,7 @@ dependencies = [
  "multiaddr",
  "multihash",
  "multistream-select",
- "parking_lot",
+ "parking_lot 0.12.5",
  "pin-project",
  "quick-protobuf",
  "rand 0.8.5",
@@ -5605,7 +5605,7 @@ dependencies = [
  "hickory-resolver 0.25.2",
  "libp2p-core",
  "libp2p-identity",
- "parking_lot",
+ "parking_lot 0.12.5",
  "smallvec",
  "tracing",
 ]
@@ -6120,6 +6120,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lock_api"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65d91b22da179613dcf4d6ec8349563f52a363f6849e03b00dd0a185ec4a59af"
+dependencies = [
+ "scopeguard",
+]
+
+[[package]]
 name = "log"
 version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6309,7 +6318,7 @@ dependencies = [
  "jsonwebtoken 11.1.0",
  "lazy_static",
  "mockall",
- "parking_lot",
+ "parking_lot 0.13.0",
  "rand 0.10.2",
  "regex",
  "reqwest 0.12.28",
@@ -6620,7 +6629,7 @@ dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
  "equivalent",
- "parking_lot",
+ "parking_lot 0.12.5",
  "portable-atomic",
  "smallvec",
  "tagptr",
@@ -7468,8 +7477,18 @@ version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a"
 dependencies = [
- "lock_api",
- "parking_lot_core",
+ "lock_api 0.4.14",
+ "parking_lot_core 0.9.12",
+]
+
+[[package]]
+name = "parking_lot"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9cf937ca4e1d0b7578784559063422fc39ae7c5a00f02471f2614d5486fd226"
+dependencies = [
+ "lock_api 0.5.0",
+ "parking_lot_core 0.10.0",
 ]
 
 [[package]]
@@ -7481,6 +7500,18 @@ dependencies = [
  "cfg-if",
  "libc",
  "redox_syscall 0.5.18",
+ "smallvec",
+ "windows-link",
+]
+
+[[package]]
+name = "parking_lot_core"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cfff060068cc18aa7815010fcaf80c68c7fb9e85fc7f5c0f9bf142c21d19826"
+dependencies = [
+ "libc",
+ "redox_syscall 0.9.5",
  "smallvec",
  "windows-link",
 ]
@@ -7961,7 +7992,7 @@ checksum = "cf41c1a7c32ed72abe5082fb19505b969095c12da9f5732a4bc9878757fd087c"
 dependencies = [
  "dtoa",
  "itoa",
- "parking_lot",
+ "parking_lot 0.12.5",
  "prometheus-client-derive-encode",
 ]
 
@@ -8411,6 +8442,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox_syscall"
+version = "0.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "580c875845b41ecb1564ad1ae4703044cef774145e3d7a94dc2b3fa7c97868fd"
+dependencies = [
+ "bitflags 2.11.0",
+]
+
+[[package]]
 name = "redox_users"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8453,7 +8493,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "itoa",
  "micromap",
- "parking_lot",
+ "parking_lot 0.12.5",
  "percent-encoding",
  "serde_json",
 ]
@@ -9687,7 +9727,7 @@ dependencies = [
  "futures-util",
  "log",
  "once_cell",
- "parking_lot",
+ "parking_lot 0.12.5",
  "serial_test_derive",
 ]
 
@@ -9947,9 +9987,9 @@ checksum = "826167069c09b99d56f31e9ae5c99049e932a98c9dc2dac47645b08dbbf76ba7"
 
 [[package]]
 name = "smallvec"
-version = "1.15.1"
+version = "1.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
 
 [[package]]
 name = "snafu"
@@ -10115,7 +10155,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a18596f8c785a729f2819c0f6a7eae6ebeebdfffbfe4214ae6b087f690e31901"
 dependencies = [
  "new_debug_unreachable",
- "parking_lot",
+ "parking_lot 0.12.5",
  "phf_shared",
  "precomputed-hash",
 ]
@@ -10725,7 +10765,7 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
+ "parking_lot 0.12.5",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2 0.6.5",
@@ -10959,7 +10999,7 @@ dependencies = [
  "cookie",
  "futures-util",
  "http",
- "parking_lot",
+ "parking_lot 0.12.5",
  "pin-project-lite",
  "tower-layer",
  "tower-service",
@@ -11055,7 +11095,7 @@ dependencies = [
  "base64 0.22.1",
  "futures",
  "http",
- "parking_lot",
+ "parking_lot 0.12.5",
  "rand 0.9.2",
  "serde",
  "serde_json",
@@ -12715,7 +12755,7 @@ dependencies = [
  "futures",
  "log",
  "nohash-hasher",
- "parking_lot",
+ "parking_lot 0.12.5",
  "pin-project",
  "rand 0.8.5",
  "static_assertions",
@@ -12730,7 +12770,7 @@ dependencies = [
  "futures",
  "log",
  "nohash-hasher",
- "parking_lot",
+ "parking_lot 0.12.5",
  "pin-project",
  "rand 0.9.2",
  "static_assertions",
