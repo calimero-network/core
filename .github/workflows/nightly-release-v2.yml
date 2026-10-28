@@ -1,0 +1,51 @@
+name: Nightly (release-v2)
+
+# GitHub runs `schedule` only from the default branch (master). The release-v2
+# release branch, release-v2-parity, never merges into master, so this file on
+# master starts that branch's nightly: each workflow below runs from the
+# branch's own copy (`--ref`), as a workflow_dispatch run that its nightly
+# inputs make behave as a scheduled one:
+#
+#   - e2e.yml: the 15-minute soak in every shard, the shards against the
+#     branch's own image (ghcr.io/<owner>/merod:release-v2-edge, which
+#     release.yml pushes on every merge), and the merod flamegraph;
+#   - fuzz.yml: the 30-minute run of every target (its `nightly` job runs on
+#     any event but pull_request);
+#   - platforms.yml: the macOS build, reported in an issue of its own
+#     ("Nightly platform build is failing on release-v2-parity").
+#
+# It checks out nothing. A workflow_dispatch made with GITHUB_TOKEN starts a
+# run (the one exception to GITHUB_TOKEN events starting none); `actions:
+# write` is all it needs. Docs: contribute/testing, "Release branch", on
+# release-v2-parity.
+
+on:
+  schedule:
+    # Off the hour, and clear of master's own nightlies (02:37, 03:00, 03:23).
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  dispatch:
+    name: Dispatch release-v2-parity's nightly
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BRANCH: release-v2-parity
+    steps:
+      - name: E2E (soak, release-v2-edge image, flamegraph)
+        run: gh workflow run e2e.yml --ref "$BRANCH" -f nightly=true -f release_image=release-v2-edge
+
+      - name: Fuzz (30 minutes per target)
+        if: ${{ !cancelled() }}
+        run: gh workflow run fuzz.yml --ref "$BRANCH"
+
+      - name: Platforms (macOS)
+        if: ${{ !cancelled() }}
+        run: gh workflow run platforms.yml --ref "$BRANCH" -f nightly=true
