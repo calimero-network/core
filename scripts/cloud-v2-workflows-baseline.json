@@ -33,6 +33,7 @@
   "apps/nested-crdt-test/workflows/nested-crdt-test.yml",
   "apps/org-gated/workflows/org-gated.yml",
   "apps/outbound-probe/workflows/outbound-off.yml",
+  "apps/outbound-probe/workflows/outbound.yml",
   "apps/permissions-showcase/workflows/permissions-showcase.yml",
   "apps/private_data/workflows/example.yml",
   "apps/private_data/workflows/private-data.yml",

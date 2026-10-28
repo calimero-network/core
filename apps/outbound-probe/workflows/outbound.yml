@@ -7,6 +7,17 @@
 #   start_node x1: a user's node going offline has no counterpart in a cluster
 #   stop_node x1: a user's node going offline has no counterpart in a cluster
 #   wait_for_sync x1: replication is synchronous: a read sees every committed write
+# Changed for release-v2:
+#   - The probe is installed as its signed release (`install_package`) and the
+#     app deployed from it: the node hands an outbound client only to a signed
+#     release declaring its URL prefixes, never to an uploaded .wasm.
+#   - The namespace's approval and revocation (v1's approve-outbound.sh) are
+#     `POST /orgs/{org}/outbound` with the owner's passkey.
+#   - v1's per-node operator switch (enable-outbound.sh; "outbound-b never
+#     turns it on") has no counterpart: `cluster.settings` is the cluster's one
+#     outbound config, and a call runs on the app's leader whichever node took
+#     it. Outbound off is outbound-off.yml; here outbound-b's call goes through
+#     the same gates as outbound-a's.
 name: Outbound Requests — Every Gate, End To End
 description: "An app method asks its node for one HTTPS request (`env::http_request`). The node makes\
   \ it only when its operator turned outbound requests on for the host, the app's signed manifest declares\
@@ -60,15 +71,13 @@ accounts:
 - outbound-a
 - outbound-b
 steps:
-- name: Install the probe on outbound-a
-  type: upload_bundle
-  wasm: '{{env.CORE_WASM_DIR}}/outbound_probe.wasm'
-  outputs:
-    app_id_bundle: hash
+- name: Install the probe's signed release
+  type: install_package
   account: outbound-a
-- type: set
-  values:
-    app_id: com.calimero.outbound-probe
+  mpk: '{{env.CORE_WASM_DIR}}/dist/com.calimero.outbound-probe-1.0.0.mpk'
+  outputs:
+    pkg: package
+    ver: version
 - name: Create Mesh
   type: create_org
   account: outbound-a
@@ -88,7 +97,8 @@ steps:
   type: deploy
   account: outbound-a
   org: '{{namespace_id}}'
-  wasm: '{{env.CORE_WASM_DIR}}/outbound_probe.wasm'
+  package: '{{pkg}}'
+  version: '{{ver}}'
   app_name: Create Mesh
   outputs:
     context_id: contextId
@@ -96,15 +106,6 @@ steps:
   type: assert
   statements:
   - is_set({{context_id}})
-- name: Before the operator turns it on, a request traps the run
-  type: call
-  app: '{{context_id}}'
-  method: probe
-  args:
-    path: check
-    body: n=0
-  account: outbound-a
-  expected_failure: true
 - name: A declared URL the namespace has not approved
   type: call
   app: '{{context_id}}'
@@ -120,6 +121,13 @@ steps:
   - contains({{unapproved}}, refused:)
   - contains({{unapproved}}, [NotApproved])
   - not_contains({{unapproved}}, 200 {)
+- name: The namespace approves the manifest's prefixes for the probe's publisher
+  type: http
+  method: post
+  path: orgs/{{namespace_id}}/outbound
+  body:
+    package: com.calimero.outbound-probe
+  account: outbound-a
 - name: Probe the declared prefix, naming the secret in a header and the body
   type: call
   app: '{{context_id}}'
@@ -206,7 +214,7 @@ steps:
   type: json_assert
   statements:
   - json_equal({{a_last}}, {{b_last}})
-- name: outbound-b's operator never turned outbound on, so its own probe traps
+- name: outbound-b's call runs on the leader, through the same gates
   type: call
   app: '{{context_id}}'
   method: probe
@@ -214,7 +222,21 @@ steps:
     path: check
     body: n=2
   account: outbound-b
-  expected_failure: true
+  outputs:
+    b_probed: rpc
+- name: Assert outbound-b's request went out too
+  type: assert
+  statements:
+  - regex({{b_probed}}, 200 \{)
+- name: The namespace revokes every prefix it approved
+  type: http
+  method: post
+  path: orgs/{{namespace_id}}/outbound
+  body:
+    package: com.calimero.outbound-probe
+    prefixes: []
+    replace: true
+  account: outbound-a
 - name: The same declared URL, after the revocation
   type: call
   app: '{{context_id}}'

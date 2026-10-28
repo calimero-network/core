@@ -7,7 +7,9 @@ workflows name as `{{env.CORE_WASM_DIR}}`:
   `workflows/app-migration/build-wasms.sh` bundles (`cargo mero bundle --dev`,
   same `--package` / `--app-version`, the no-ABI bundle and the
   frontend-release pair), plus its `app.wasm` as `<crate>.wasm`: a workflow
-  installs the signed release by name and upgrades by version;
+  installs the signed release by name and upgrades by version; and
+  outbound-probe's release (outbound.yml installs it: outbound requests are
+  served only to a signed release declaring its URL prefixes);
 - `<crate>.wasm` for every app under apps/ (`cargo mero build`, so each carries
   its ABI, which the node reads): a workflow uploads it as a bundle;
 - `dist/<package>-1.0.0.mpk` for a multi-service manifest
@@ -112,6 +114,16 @@ def fixtures() -> list[dict]:
                 "frontend_dir": f"apps/migrations/frontend-release/v{v}",
             }
         )
+    # outbound-probe as the signed release it must be: the node hands an
+    # outbound client only to a release that declares its URL prefixes.
+    out.append(
+        {
+            "dir": "apps/outbound-probe",
+            "crate": "outbound-probe",
+            "package": "com.calimero.outbound-probe",
+            "version": "1.0.0",
+        }
+    )
     for f in out:
         f["mpk"] = f"dist/{f['package']}-{f['version']}.mpk"
     return out
