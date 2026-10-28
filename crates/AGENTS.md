@@ -8,7 +8,7 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 
 ## Binaries
 
-- [merod](merod/AGENTS.md) (`merod`) - the node: `init`, `run`, `config`, `local`, `inspect`, `kms disk-key`; turns `NodeArgs` into `calimero_node::Config`.
+- [merod](merod/AGENTS.md) (`merod`) - the node: `init`, `run`, `config`, `local`, `inspect`, `kms disk-key`, `attest`; turns `NodeArgs` into `calimero_node::Config`.
 - [meroctl](meroctl/AGENTS.md) (`meroctl`) - the command line for nodes, v1's command tree over the attested, sealed client.
 
 ## The node

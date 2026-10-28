@@ -118,6 +118,10 @@ is its command line.
   (`GET /attestation?purpose=receipts`, report data `nonce || receipt_key_binding`),
   and `GET /apps/{app}/attestation` gathers every replica's
   (`Client::verify_app_cluster`).
+- **Release attestations** (`attest.rs`, `release_attestation`, `serve_release`): a
+  quote over a manager's nonce and `ReleaseClaim`, for `merod attest` before the node
+  has any key. Not a route of a running node: `serve_release` is its own tiny server
+  (that one route, `MAX_CONCURRENT_RELEASE_QUOTES`), run only by `merod attest --serve`.
 - **The host's key space** (`app::RESERVED`, `\0calimero.*`): private spaces, writer
   sets, blob marks. App code's overlay answers nothing there and a run that tries is
   refused; the host writes with `Overlay::set_host` and reads with

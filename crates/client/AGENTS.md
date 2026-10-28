@@ -13,6 +13,17 @@ refuses every real quote, `Pinned` checks fixed allowlists, `Release` fetches th
 Sigstore-verified `published-mrtds.json` of the release the node names and requires a
 matching allowed profile; then `policy_valid` (TCB status, debug TD, app-hash binding).
 mero-js `src/cloud-v2/attestation.ts` implements the same check; change both or neither.
+The quote step itself (`verify_quote`, then `judge` for a real quote's registers) is
+shared by `verify`, `verify_receipt_key` and `attest::release::verify_release`.
+
+Release attestations (`attest/release.rs`, made by `merod attest`): a quote a node makes
+before it holds any key, report data
+`nonce || SHA-256("calimero.tee-attest.release.v1" || u32-BE-length-prefixed merodVersion,
+merodSha256, teeRelease, teeProfile, identity)`. `verify_release` refuses another format,
+nonce or claim, then runs the same quote check (a `Release` policy reads the release the
+claim names) and refuses an envelope whose registers or profile are not the verified
+quote's. `fetch_release_attestation` gets one from `GET /attestation/release`. Only
+managers use it (mdma, `meroctl attest-release`); mero-js has no counterpart.
 
 Errors: `Error::Api` is the node's answer (`{ error, message, details }`);
 `Error::Transport` is not reaching, attesting or understanding it. One envelope
