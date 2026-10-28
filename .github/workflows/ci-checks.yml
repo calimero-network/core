@@ -236,6 +236,17 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --workspace --doc
 
+      - name: Cargo test (standalone v2 apps)
+        if: ${{ !cancelled() }}
+        # Rooms and the v2 fixtures are workspaces of their own, so the workspace run above
+        # never reaches their harness tests. One target dir serves the three.
+        env:
+          CARGO_TARGET_DIR: target/standalone-apps
+        run: |
+          for app in apps/rooms apps/v2-fixtures/kv apps/v2-fixtures/org-gated; do
+            cargo test --manifest-path "$app/Cargo.toml"
+          done
+
   rust-features:
     name: Rust feature-gated tests
     needs: scope

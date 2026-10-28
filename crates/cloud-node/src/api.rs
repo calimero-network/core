@@ -1189,11 +1189,30 @@ async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Bod
         ));
     }
     let hash = hex::encode(sha256(&body));
-    // Refuse what does not compile before replicating it.
-    let _module = node
-        .executor
-        .module(&hash, &body)
-        .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))?;
+    // Refuse what its executor does not take before replicating it: a core
+    // module must compile on wasmer, a component must pass the engine's prepare.
+    match crate::types::Executor::of(&body) {
+        crate::types::Executor::Wasmer => {
+            let _module = node
+                .executor
+                .module(&hash, &body)
+                .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))?;
+        }
+        crate::types::Executor::Component => {
+            // A refused component is a bad request, as a core module wasmer can't
+            // compile is (`400 BAD_BUNDLE`).
+            let _prepared = node
+                .prepare_bytes(&hash, body.to_vec())
+                .await
+                .map_err(|e| {
+                    if e.code == crate::node::BAD_BUNDLE {
+                        ApiError::bad_request(crate::node::BAD_BUNDLE, &e.message)
+                    } else {
+                        e
+                    }
+                })?;
+        }
+    }
     node.replicate_bundle(&hash, &body).await?;
     let _ok = node
         .sys_write(&SystemCmd::PutBundle {
@@ -1461,6 +1480,21 @@ async fn app_create(
         &owner,
     )
     .await?;
+    // The executor is decided once, here, from the WASM the bundle names (a
+    // package's service, or the raw upload), and recorded with the app.
+    let executor = node.executor_of(&bundle).await?;
+    let confirm_methods = match executor {
+        crate::types::Executor::Wasmer => body.confirm_methods,
+        // A component's confirm methods are its ABI's (S5), never the request's.
+        crate::types::Executor::Component => {
+            if serde_json::to_vec(&body.init_args).map_or(0, |a| a.len())
+                > crate::node::MAX_ARGS_BYTES
+            {
+                return Err(crate::node::args_too_large());
+            }
+            Vec::new()
+        }
+    };
     // Only nodes on an approved release (the owner's, or the operator's where
     // the deployment gave it release approvals) may hold the app.
     let approved = node.sys(|s| s.approved_for(body.org.as_deref(), &owner).cloned());
@@ -1486,7 +1520,8 @@ async fn app_create(
                 owner,
                 org: body.org,
                 access,
-                confirm_methods: body.confirm_methods,
+                confirm_methods,
+                executor,
                 replicas,
                 created_at: now_secs(),
                 init_args: body.init_args,
@@ -1874,6 +1909,152 @@ fn answer(node: &Node, app_id: &str, a: Applied) -> Response {
     }
 }
 
+/// The 422/503 of a component's run that did not end `Ok` (spec section 5, D23, D36).
+fn component_failure(
+    index: u64,
+    status: &Status,
+    error: &Value,
+    timeout: bool,
+) -> Option<ApiError> {
+    if timeout {
+        return Some(crate::node::timeout_error());
+    }
+    match status {
+        Status::Ok => None,
+        Status::AppError => Some(
+            ApiError::new(422, "APP_ERROR", "the app refused the call").with_details(json!({
+                "index": index,
+                "code": error["code"],
+                "fields": error["fields"],
+            })),
+        ),
+        Status::Trap => Some(
+            ApiError::new(422, "TRAP", "the run trapped").with_details(json!({
+                "index": index,
+                "kind": error["kind"],
+                "detail": error["detail"],
+            })),
+        ),
+    }
+}
+
+/// A component call's answer. Its events are the ones the caller is in the
+/// audience of (R9).
+fn component_answer(
+    node: &Node,
+    app_id: &str,
+    caller: &Caller,
+    a: crate::component::Applied,
+) -> Response {
+    if a.conflict {
+        return ApiError::unavailable(
+            "the call raced a leader change; retry with the same idempotency key",
+        )
+        .into_response();
+    }
+    if a.error.as_str() == Some(crate::node::NOT_REACHED) {
+        return ApiError::not_found(crate::node::NOT_REACHED).into_response();
+    }
+    if a.error.as_str() == Some(crate::node::READ_ONLY) {
+        return ApiError::forbidden(crate::node::READ_ONLY).into_response();
+    }
+    if let Some(e) = component_failure(a.index, &a.status, &a.error, a.timeout) {
+        return e.into_response();
+    }
+    let account = caller.account();
+    let events: Vec<Value> = node.sys(|s| {
+        let Some(app) = s.apps.get(app_id) else {
+            return Vec::new();
+        };
+        a.events
+            .iter()
+            .filter(|e| s.receives(app, &e.audience, account, account))
+            .map(|e| json!({ "kind": e.kind, "data": e.data }))
+            .collect()
+    });
+    let receipt = node.receipt(app_id, a.index, &a.result);
+    Json(json!({ "index": a.index, "result": a.result, "events": events, "receipt": receipt }))
+        .into_response()
+}
+
+/// `/intents` for a component app: the ABI of the bundle the app group runs
+/// (Ruling 40) decides whether it is a view and whether it needs a passkey.
+async fn component_intents(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    p: Principal,
+    body: IntentBody,
+) -> Result<Response, ApiError> {
+    let app_id = app.app_id.clone();
+    let method = node
+        .prepared_for(&node.running_bundle(app))
+        .await?
+        .abi
+        .methods
+        .get(&body.method)
+        .cloned();
+    let caller = p.caller.clone();
+    // A declared view runs as one, whichever way it is invoked (v1's rule): it
+    // reads the latest state and writes nothing.
+    if method
+        .as_ref()
+        .is_some_and(|m| m.kind == calimero_app_host::MethodKind::View && !m.confirm)
+    {
+        let a = node
+            .view(&ViewRequest {
+                app_id: app_id.clone(),
+                method: body.method,
+                args: body.args,
+                caller: p.caller,
+                strong: true,
+                min_index: 0,
+            })
+            .await?;
+        return Ok(component_answer(
+            node,
+            &app_id,
+            &caller,
+            crate::component::Applied {
+                index: a.index,
+                status: a.status,
+                result: a.result,
+                error: a.error,
+                events: Vec::new(),
+                conflict: false,
+                timeout: a.timeout,
+            },
+        ));
+    }
+    // Confirm flags come from the running bundle's ABI (S5), never from the app record.
+    let consent_value = if method.as_ref().is_some_and(|m| m.confirm) {
+        Some(consent(node, &p, &app_id, &body.method, &body.args, body.confirm).await?)
+    } else {
+        None
+    };
+    let unconfirmed = consent_value.is_none();
+    let (method_name, args) = (body.method.clone(), body.args.clone());
+    let applied = match node
+        .call_component(&CallRequest {
+            idempotency_key: body.idempotency_key,
+            consent: consent_value,
+            ..CallRequest::new(app_id.clone(), body.method, body.args, p.caller.clone())
+        })
+        .await
+    {
+        // The replica that runs it found a confirm method this node's ABI did not
+        // know (it was stale): the step-up is the usual `412 CONFIRM_REQUIRED` with
+        // a challenge (SDK reference), as on the wasmer path.
+        Err(e) if unconfirmed && e.details["code"] == "ConfirmRequired" => {
+            return Err(consent(node, &p, &app_id, &method_name, &args, None)
+                .await
+                .err()
+                .unwrap_or(e));
+        }
+        other => other?,
+    };
+    Ok(component_answer(node, &app_id, &caller, applied))
+}
+
 async fn intents(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -1884,6 +2065,9 @@ async fn intents(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, &body.method, true).await?;
+    if app.executor == crate::types::Executor::Component {
+        return component_intents(&node, &app, p, body).await;
+    }
     // A declared view runs as one, whichever way it is invoked (v1's rule): it
     // reads the latest state, writes nothing, and may search.
     if node.facts(&app.bundle).await.views.contains(&body.method) {
@@ -1979,6 +2163,18 @@ async fn views(
             min_index: body.min_index,
         })
         .await?;
+    if app.executor == crate::types::Executor::Component {
+        return Ok(
+            match component_failure(a.index, &a.status, &a.error, a.timeout) {
+                Some(e) => e.into_response(),
+                None => {
+                    let receipt = node.receipt(&app_id, a.index, &a.result);
+                    Json(json!({ "index": a.index, "result": a.result, "receipt": receipt }))
+                        .into_response()
+                }
+            },
+        );
+    }
     Ok(match a.status {
         Status::Ok => {
             let receipt = node.receipt(&app_id, a.index, &a.result);
@@ -2000,10 +2196,16 @@ struct EventsQuery {
     from: u64,
 }
 
+/// The app's events from `from`, then live. A component's event carries its
+/// audience (R9) and goes to `subscriber` (`None`: anonymous) only if the system
+/// state, when it is sent, says it still reaches the app and is in the audience,
+/// so a member removed from the org or the team stops receiving at once. An
+/// event of an app on wasmer has no audience and goes out as before.
 fn local_events(
-    node: &Node,
+    node: &Arc<Node>,
     app_id: &str,
     from: u64,
+    subscriber: Option<String>,
 ) -> Option<impl Stream<Item = Result<Event, Infallible>>> {
     let g = node.hosted(app_id)?;
     let (backlog, rx) = g.read_local(|m, _| {
@@ -2017,7 +2219,21 @@ fn local_events(
             let fresh = last.is_none_or(|l| (e.index, e.seq) > l);
             async move { fresh }
         });
-    let stream = futures_util::stream::iter(backlog).chain(live).map(|e| {
+    let (node, app) = (Arc::clone(node), app_id.to_owned());
+    let receives = move |e: &crate::types::EventRecord| match &e.audience {
+        None => true,
+        Some(audience) => node.sys(|s| {
+            s.apps.get(&app).is_some_and(|a| {
+                s.receives(a, audience, e.caller.as_deref(), subscriber.as_deref())
+            })
+        }),
+    };
+    let stream = futures_util::stream::iter(backlog).chain(live);
+    let stream = stream.filter(move |e| {
+        let ok = receives(e);
+        async move { ok }
+    });
+    let stream = stream.map(|e| {
         Ok(Event::default()
             .id(format!("{}:{}", e.index, e.seq))
             .event(e.kind.clone())
@@ -2062,9 +2278,10 @@ async fn events(
 ) -> Result<Response, ApiError> {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    let _p = gate(&node, &headers, &app, "*", false).await?;
+    let p = gate(&node, &headers, &app, "*", false).await?;
+    let subscriber = p.caller.account().map(str::to_owned);
     let slot = StreamSlot::take(&node)?;
-    if let Some(stream) = local_events(&node, &app_id, q.from) {
+    if let Some(stream) = local_events(&node, &app_id, q.from, subscriber.clone()) {
         let stream = stream.map(move |e| {
             let _held = &slot;
             e
@@ -2083,7 +2300,11 @@ async fn events(
     let resp = node
         .peer_stream(
             &addr,
-            &format!("internal/events?app={app_id}&from={}", q.from),
+            &format!(
+                "internal/events?app={app_id}&from={}&subscriber={}",
+                q.from,
+                subscriber.unwrap_or_default()
+            ),
         )
         .await
         .map_err(|e| ApiError::unavailable(&e.to_string()))?;
@@ -3458,6 +3679,8 @@ async fn blob_upload(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, "__blob", true).await?;
+    // After the gate: one who can't reach the app learns nothing of it (404).
+    no_component_blobs(&app)?;
     if p.caller.account().is_none() {
         return Err(ApiError::unauthenticated("sign in to upload"));
     }
@@ -3486,6 +3709,8 @@ async fn blob_download(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let _p = gate(&node, &headers, &app, "__blob", false).await?;
+    // After the gate: one who can't reach the app learns nothing of it (404).
+    no_component_blobs(&app)?;
     let raw = parse_blob_id(&id)?;
     if !node.blob_held(&app, &raw).await? {
         return Err(ApiError::not_found("no such blob in this app"));
@@ -3504,6 +3729,18 @@ async fn blob_download(
         bytes,
     )
         .into_response())
+}
+
+/// The blob routes are the wasmer executor's: a component has no blobs until R8.
+fn no_component_blobs(app: &crate::types::AppRecord) -> Result<(), ApiError> {
+    if app.executor == crate::types::Executor::Component {
+        return Err(ApiError::new(
+            409,
+            "NOT_SUPPORTED",
+            "this app is a component: blobs are not available to it yet (R8)",
+        ));
+    }
+    Ok(())
 }
 
 /// Whether `account` may manage `app`'s data (its owner, or an admin of its
@@ -3528,6 +3765,8 @@ async fn blob_list(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let _p = gate(&node, &headers, &app, "__blob", false).await?;
+    // After the gate: one who can't reach the app learns nothing of it (404).
+    no_component_blobs(&app)?;
     let stats = node.storage_stats(&app).await?;
     Ok(Json(json!({
         "blobs": stats.blobs.iter().map(|(id, size)| blob_json(id, *size)).collect::<Vec<_>>(),
@@ -3543,6 +3782,8 @@ async fn blob_info(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let _p = gate(&node, &headers, &app, "__blob", false).await?;
+    // After the gate: one who can't reach the app learns nothing of it (404).
+    no_component_blobs(&app)?;
     let raw = parse_blob_id(&id)?;
     let stats = node.storage_stats(&app).await?;
     let size = stats
@@ -3565,6 +3806,8 @@ async fn blob_delete(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, "__blob", true).await?;
+    // After the gate: one who can't reach the app learns nothing of it (404).
+    no_component_blobs(&app)?;
     if !manages_app(&node, &app, p.caller.account()) {
         return Err(ApiError::forbidden(
             "only the app's owner or an org admin deletes its blobs",
@@ -3613,6 +3856,14 @@ async fn app_abi(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let _p = gate(&node, &headers, &app, "*", false).await?;
+    if app.executor == crate::types::Executor::Component {
+        // The ABI the component embeds (its `calimero:abi` section), of the
+        // bundle the app group runs.
+        let bundle = node.running_bundle(&app);
+        let wasm = node.bundle_wasm(&bundle).await?;
+        let abi = crate::component::embedded_abi(&wasm);
+        return Ok(Json(json!({ "bundle": bundle, "abi": abi })));
+    }
     let wasm = node.bundle_wasm(&app.bundle).await?;
     let abi = calimero_wasm_abi::embed::read_embedded_state_schema(&wasm);
     Ok(Json(json!({ "bundle": app.bundle, "abi": abi })))
@@ -3730,8 +3981,7 @@ async fn internal_call(
     Json(req): Json<CallRequest>,
 ) -> ApiResult {
     peer_only(&node, &headers)?;
-    let a = node.call_here(&req).await?;
-    Ok(Json(serde_json::to_value(a).unwrap_or_default()))
+    Ok(Json(node.call_here_any(&req).await?))
 }
 
 async fn internal_view(
@@ -3771,6 +4021,9 @@ struct InternalEvents {
     app: String,
     #[serde(default)]
     from: u64,
+    /// The account a component's events are filtered for; empty: anonymous.
+    #[serde(default)]
+    subscriber: String,
 }
 
 async fn internal_events(
@@ -3779,7 +4032,8 @@ async fn internal_events(
     Query(q): Query<InternalEvents>,
 ) -> Result<Response, ApiError> {
     peer_only(&node, &headers)?;
-    let stream = local_events(&node, &q.app, q.from)
+    let subscriber = Some(q.subscriber).filter(|s| !s.is_empty());
+    let stream = local_events(&node, &q.app, q.from, subscriber)
         .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
     Ok(Sse::new(stream)
         .keep_alive(KeepAlive::default())

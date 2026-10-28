@@ -304,7 +304,20 @@ pub struct Db {
     pub(crate) snapshot_sealer: Sealer,
     pub(crate) hider: hmac::Key,
     pub(crate) snapshot_dir: PathBuf,
+    /// Groups whose unsynced writes (the commit index, applied batches) are
+    /// dropped, as a crash before they reached the disk would (feature `testing`).
+    #[cfg(feature = "testing")]
+    pub(crate) losing: std::sync::RwLock<std::collections::HashSet<GroupId>>,
+    /// The directory it was opened in, which names it to [`crate::testing`].
+    #[cfg(feature = "testing")]
+    pub(crate) dir: PathBuf,
 }
+
+/// Groups whose applies are held back, by the directory their node opened
+/// (feature `testing`; see [`crate::testing::hold_apply`]).
+#[cfg(feature = "testing")]
+pub(crate) static HELD: std::sync::Mutex<Vec<(PathBuf, GroupId)>> =
+    std::sync::Mutex::new(Vec::new());
 
 impl Db {
     /// Open (or create) the database under `dir`: the store in `dir/store`,
@@ -340,7 +353,37 @@ impl Db {
                 &derive(key, "calimero.log.hidden-keys.v1"),
             ),
             snapshot_dir,
+            #[cfg(feature = "testing")]
+            losing: std::sync::RwLock::default(),
+            #[cfg(feature = "testing")]
+            dir: dir.to_owned(),
         }))
+    }
+
+    /// Whether `group`'s applies are held back on this node (feature `testing`).
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub(crate) fn apply_held(&self, group: GroupId) -> bool {
+        HELD.lock()
+            .map(|h| h.iter().any(|(d, g)| *g == group && *d == self.dir))
+            .unwrap_or(false)
+    }
+
+    /// Whether `group`'s unsynced writes are being dropped (feature `testing`).
+    #[must_use]
+    pub(crate) fn losing_unsynced(&self, group: GroupId) -> bool {
+        #[cfg(feature = "testing")]
+        {
+            self.losing
+                .read()
+                .map(|l| l.contains(&group))
+                .unwrap_or(false)
+        }
+        #[cfg(not(feature = "testing"))]
+        {
+            let _ = group;
+            false
+        }
     }
 
     fn cf(&self, col: Column) -> eyre::Result<Arc<BoundColumnFamily<'_>>> {
@@ -998,6 +1041,9 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         // replays the log up to one above it; the leader sends the rest.
         // Tests: `a_lost_or_older_commit_index_is_learned_again`,
         // `an_in_memory_machine_applies_each_entry_once_after_losing_its_commit_index`.
+        if self.db.losing_unsynced(self.group) {
+            return Ok(());
+        }
         let mut tx = Transaction::default();
         self.db
             .stage_meta(&mut tx, self.group, "committed", &committed)

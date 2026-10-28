@@ -30,7 +30,7 @@ rules:
   cache-poisoning:
     ignore:
       - abi-contract.yml:85
-      - ci-checks.yml:351
+      - ci-checks.yml:362
       - docs-ci.yml:29
       - e2e.yml:526
       - e2e.yml:673

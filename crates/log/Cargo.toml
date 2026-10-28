@@ -27,6 +27,11 @@ hex.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
+[features]
+# `Engine::lose_unsynced_writes`: a deterministic crash before the commit index
+# and applied batches reach the disk, for tests.
+testing = []
+
 [lib]
 bench = false
 

@@ -1,0 +1,20 @@
+[package]
+name = "rooms"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rooms: the first reference app on the v2 app SDK (spec section 12)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-app-sdk = { path = "../../crates/app-sdk" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-app-sdk = { path = "../../crates/app-sdk", features = ["testing"] }
+calimero-app-build = { path = "../../crates/app-build" }
+serde_json = "1"
+
+# Standalone, like the SDK's sample guest: the test builds this crate for wasm32-wasip2.
+[workspace]

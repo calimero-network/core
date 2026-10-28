@@ -70,6 +70,8 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
         tee_release: None,
         tee_profile: None,
         peer_measurements: calimero_cloud_client::Measurements::None,
+        clock_offset_ms: 0,
+        budget: None,
         registry: None,
         allow_unsigned_bundles: true,
         outbound: None,
@@ -80,6 +82,18 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
 
 /// Numbers the clusters this process starts (`Cluster::name`).
 static NEXT_CLUSTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A cluster name of its own in this process and run (`test-{pid}-{n}`). The
+/// peer secret is derived from it, so a node of another test's cluster that a
+/// reused port leads to refuses this one's Raft messages instead of applying
+/// them. Every test that starts nodes names their cluster with it.
+pub fn cluster_name() -> String {
+    format!(
+        "test-{}-{}",
+        std::process::id(),
+        NEXT_CLUSTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
 
 /// `n` nodes started in this process, each in its own temp dir.
 pub struct Cluster {
@@ -114,11 +128,7 @@ impl Cluster {
                 .enumerate()
                 .map(|(i, u)| (i as u64 + 1, u.clone()))
                 .collect();
-            let name = format!(
-                "test-{}-{}",
-                std::process::id(),
-                NEXT_CLUSTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            );
+            let name = cluster_name();
             let mut nodes = Vec::new();
             let mut dirs = Vec::new();
             let mut failed = None;

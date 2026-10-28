@@ -1,0 +1,21 @@
+[package]
+name = "v2-fixture-org-gated"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Cluster-test fixture on the v2 app SDK"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-app-sdk = { path = "../../../crates/app-sdk" }
+serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-app-sdk = { path = "../../../crates/app-sdk", features = ["testing"] }
+calimero-app-build = { path = "../../../crates/app-build" }
+serde_json = "1"
+
+# Standalone, like the SDK's sample guest: the test builds this crate for wasm32-wasip2.
+[workspace]

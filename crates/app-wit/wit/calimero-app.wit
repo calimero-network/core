@@ -1,0 +1,106 @@
+package calimero:app@0.5.0;
+
+interface types {
+  type account-id = string;
+  type org-id = string;
+  type team-id = string;
+  type blob-id = string;
+  type action-id = string;
+  record api-key-caller { key-id: string, account: account-id }
+  variant caller { account(account-id), api-key(api-key-caller), public, system, app(string) }
+  enum org-role { owner, admin, member, guest }
+  record org-membership { org: org-id, role: org-role }
+  variant audience {
+    all, caller, accounts(list<account-id>), team(team-id),
+    org-members(org-id), org-admins(org-id),
+  }
+  record event { name: string, data: list<u8>, audience: audience }
+  record app-error { code: string, message: string }
+  record blob-info { size: u64, sha256: list<u8>, mime: string }
+  enum invocation-kind { call, view, action, timer, xcall-deliver, init, migrate }
+}
+
+interface storage {
+  get: func(key: list<u8>) -> option<list<u8>>;
+  put: func(key: list<u8>, value: list<u8>);
+  delete: func(key: list<u8>);
+  add: func(key: list<u8>, delta: s64);   // commutative, no read; value is a CBOR integer (D47)
+  resource cursor { next: func(max: u32) -> list<tuple<list<u8>, list<u8>>>; }
+  range: func(start: list<u8>, end: list<u8>, reverse: bool) -> cursor;
+}
+
+// Available only while handling kind = migrate (D38). `storage` reads the old state
+// (writes to it trap HostDenied); `rebuild` reads and writes the new version's keyspace.
+interface rebuild {
+  use storage.{cursor};
+  get: func(key: list<u8>) -> option<list<u8>>;
+  put: func(key: list<u8>, value: list<u8>);
+  delete: func(key: list<u8>);
+  add: func(key: list<u8>, delta: s64);
+  range: func(start: list<u8>, end: list<u8>, reverse: bool) -> cursor;
+}
+
+interface context {
+  use types.{caller as caller-t, account-id, org-id, team-id, org-role as org-role-t, org-membership, action-id};
+  caller: func() -> caller-t;
+  app-id: func() -> string;
+  app-owner: func() -> account-id;
+  org: func() -> option<org-id>;
+  org-role: func(account: account-id) -> option<org-role-t>;
+  org-role-strict: func(account: account-id) -> option<org-role-t>; // read-index on the system group
+  orgs-of: func(account: account-id) -> list<org-membership>;     // the app's own org only (D75); partners with R1
+  in-team: func(account: account-id, team: team-id) -> bool;
+  applied-index: func() -> u64;
+  unique-id: func() -> string;   // <leader term>.<call seq>.<n>; calls, timers, init, xcall delivery (D52)
+  start-action: func(method: string, args: list<u8>) -> result<action-id, string>; // calls and timers (D17)
+  // time and randomness: wasi:clocks and wasi:random, served by the host (D19)
+}
+
+interface events {
+  use types.{event};
+  emit: func(e: event) -> result<_, string>;
+}
+
+interface blobs {
+  use types.{blob-id, blob-info};
+  info: func(id: blob-id) -> option<blob-info>;
+  grant: func(id: blob-id, ttl-seconds: u32) -> string;
+}
+
+interface xcall {
+  send: func(app: string, method: string, args: list<u8>) -> result<_, string>; // outbox; delivered after commit
+}
+
+// Available only while handling kind = action (D12, D17)
+interface action {
+  key: func() -> string;                                                    // this action run's idempotency key
+  view: func(method: string, args: list<u8>) -> result<list<u8>, string>;
+  call: func(method: string, args: list<u8>) -> result<list<u8>, string>;   // one log entry, key derived from key()
+}
+
+world app {
+  import storage;
+  import rebuild;
+  import context;
+  import events;
+  import blobs;
+  import xcall;
+  import action;
+
+  // WASI 0.2.12, what wasmtime 50 and componentize-js 0.23 ship (D43); implemented by the host (section 4 table).
+  // The nine stubbed interfaces of D44 are accepted at install but are not part of the world.
+  import wasi:io/error@0.2.12;
+  import wasi:io/poll@0.2.12;
+  import wasi:io/streams@0.2.12;
+  import wasi:clocks/wall-clock@0.2.12;
+  import wasi:clocks/monotonic-clock@0.2.12;
+  import wasi:random/random@0.2.12;
+  import wasi:cli/stdout@0.2.12;
+  import wasi:cli/stderr@0.2.12;
+  import wasi:cli/environment@0.2.12;
+  import wasi:http/types@0.2.12;
+  import wasi:http/outgoing-handler@0.2.12; // usable in actions only (D12)
+
+  use types.{invocation-kind, app-error};
+  export handle: func(kind: invocation-kind, method: string, args: list<u8>) -> result<list<u8>, app-error>;
+}

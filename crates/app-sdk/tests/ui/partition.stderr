@@ -1,0 +1,5 @@
+error: partition is reserved (D48)
+ --> tests/ui/partition.rs:4:21
+  |
+4 | #[table(key = "id", partition = "org")]
+  |                     ^^^^^^^^^

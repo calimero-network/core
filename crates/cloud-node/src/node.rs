@@ -1,7 +1,7 @@
 //! The node: hosts the system group and its app groups, routes calls to each
 //! group's leader, and talks to peers over attested sealed channels.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
@@ -23,7 +23,14 @@ use crate::attest::{HttpAttestor, Mode, Policy};
 use crate::error::ApiError;
 use crate::services::{AppBlobs, BundleFacts, Search};
 use crate::system::{output, SystemCmd, SystemMachine, SystemState};
-use crate::types::{now_ms, AppRecord, Caller, NodeRecord};
+use crate::types::{now_ms, AppRecord, Caller, Executor as Kind, NodeRecord};
+
+mod component;
+
+pub use component::{
+    app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, BAD_BUNDLE,
+    MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL,
+};
 
 /// The system group's id.
 pub const SYSTEM_GROUP: GroupId = 1;
@@ -120,6 +127,12 @@ pub struct Config {
     /// The operator's outbound HTTPS policy (`[outbound]` in `--settings`);
     /// `None`: `http_request` traps in every run.
     pub outbound: Option<Arc<calimero_outbound::OutboundService>>,
+    /// Where app time starts relative to this host's clock, in ms (D19), for
+    /// component apps. `0` in production; tests move a node's app clock with it.
+    pub clock_offset_ms: i64,
+    /// The limits of every component call and view; `None` is `Budget::call()`.
+    /// Tests only.
+    pub budget: Option<calimero_app_host::Budget>,
 }
 
 /// Request to run a method.
@@ -221,6 +234,9 @@ pub struct ViewAnswer {
     pub status: Status,
     pub result: Value,
     pub error: Value,
+    /// A component's view hit its deadline: answered `503 TIMEOUT` (D36).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub timeout: bool,
 }
 
 /// Shared node state.
@@ -229,7 +245,28 @@ pub struct Node {
     pub engine: Arc<Engine>,
     pub system: Arc<Group<SystemMachine>>,
     apps: RwLock<HashMap<GroupId, Arc<Group<AppMachine>>>>,
+    /// Runs the apps whose bundle is a v1 core module (wasmer).
     pub executor: Executor,
+    /// Runs the apps whose bundle is a `calimero:app` component (one wasmtime
+    /// engine for all of them, spec section 5); compiled artifacts cached under
+    /// `<data_dir>/components`, each with a MAC under a key derived from K_r (S8).
+    wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
+    /// Prepared components per bundle hash.
+    prepared: Mutex<HashMap<String, calimero_app_host::Prepared>>,
+    /// One lock per bundle being prepared, so concurrent first uses wait for one
+    /// prepare instead of each compiling it (Ruling 44).
+    preparing: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// How many times this node ran the engine's `prepare` (feature `testing`).
+    #[cfg(feature = "testing")]
+    prepares: std::sync::atomic::AtomicU64,
+    /// App time of component apps ([`Clock`]).
+    clock: Clock,
+    /// Per component app group: the term this node last led it in, and its
+    /// execution counter in that term (`id_seq`, D52).
+    id_seqs: Mutex<HashMap<GroupId, (u64, u64)>>,
+    /// Component app groups whose timer ticks are being run now (one round per
+    /// app at a time).
+    ticking: Mutex<HashSet<GroupId>>,
     pub transport: Arc<calimero_sealed::SealedTransport>,
     /// Signs receipts for the results this node returns. Made in memory at
     /// start, never stored; its public half is attested (`purpose=receipts`).
@@ -310,6 +347,12 @@ impl Transport for PeerTransport {
     }
 }
 
+/// What the wasmer path answers a component app that reaches it: its
+/// commands (blobs, follow-ups, xcalls) are the wasmer executor's; a component
+/// has no blobs until R8 and no xcalls until D25.
+pub const COMPONENT_REFUSES: &str =
+    "this app is a component: the wasmer executor's commands (blobs, xcalls, follow-ups) do not reach it";
+
 /// The error of a call a read-only member made that would have written.
 pub const READ_ONLY: &str = "read-only in this team: the call would write";
 
@@ -361,6 +404,14 @@ impl Node {
                 unsealed_paths: vec!["/attestation".into(), "/health".into()],
             },
         ));
+        // Compiled components live in the node's data directory, which the host can
+        // write: each artifact carries a MAC under a key derived from K_r, so only this
+        // cluster's own compilations are ever loaded (S8, Ruling 38).
+        let wasm = Arc::new(calimero_app_engine_wasmtime::WasmtimeEngine::new(
+            config.data_dir.join("components"),
+            &component::component_cache_key(&config.storage_key),
+        )?);
+        let clock = Clock::new(config.clock_offset_ms);
         let secret = hmac::sign(
             &hmac::Key::new(hmac::HMAC_SHA256, &config.storage_key),
             format!("calimero.cluster.v1|{}", config.cluster).as_bytes(),
@@ -372,6 +423,14 @@ impl Node {
             system,
             apps: RwLock::new(HashMap::new()),
             executor: Executor::default(),
+            wasm,
+            prepared: Mutex::new(HashMap::new()),
+            preparing: Mutex::new(HashMap::new()),
+            #[cfg(feature = "testing")]
+            prepares: std::sync::atomic::AtomicU64::new(0),
+            clock,
+            id_seqs: Mutex::new(HashMap::new()),
+            ticking: Mutex::new(HashSet::new()),
             transport: sealed,
             receipt_key: ed25519_dalek::SigningKey::from_bytes(&calimero_identity::random::<32>()),
             peers: Mutex::new(HashMap::new()),
@@ -890,7 +949,15 @@ impl Node {
                     continue;
                 }
             };
-            let needs_init = g.read_local(|m, _| !m.state.initialized && m.state.bundle.is_none());
+            // A wasmer app is initialized once it has a bundle; a component app may
+            // be given one by an upgrade before its init applied (its init timed
+            // out), and still needs its init then, on that bundle.
+            let needs_init = g.read_local(|m, _| {
+                !m.state.initialized
+                    && (m.state.bundle.is_none()
+                        || (m.state.executor() == Some(Kind::Component)
+                            && m.state.init_error.is_none()))
+            });
             if needs_init && g.status().is_leader {
                 if let Err(e) = self.init_app(&g, &app).await {
                     debug!(app = %app.app_id, error = %e.message, "init not yet possible");
@@ -1340,6 +1407,9 @@ impl Node {
     }
 
     async fn init_app(&self, g: &Group<AppMachine>, app: &AppRecord) -> Result<Applied, ApiError> {
+        if app.executor == Kind::Component {
+            return self.init_component(g, app).await;
+        }
         let module = self.module_for(&app.bundle).await?;
         let owner = Caller::Account {
             account: app.owner.clone(),
@@ -1449,15 +1519,27 @@ impl Node {
         if req.trigger.is_none() {
             self.sys_fresh().await;
         }
+        if req.host && req.method == "__upgrade" {
+            return self.upgrade_local(g, req).await;
+        }
+        // Everything below runs a wasmer app's code or writes its keyspace; a
+        // component's calls are `call_component`'s, and its blobs wait for R8.
+        if g.read_local(|m, _| m.state.executor()) == Some(Kind::Component) {
+            return Ok(Applied {
+                index: g.applied(),
+                status: Status::AppError,
+                result: Value::Null,
+                error: Value::String(COMPONENT_REFUSES.into()),
+                events: Vec::new(),
+                conflict: false,
+            });
+        }
         let bundle = g.read_local(|m, _| m.state.bundle.clone());
         let module = match bundle.as_deref() {
             Some(b) => self.module_for(b).await.ok(),
             None => None,
         };
         let now = now_ms();
-        if req.host && req.method == "__upgrade" {
-            return self.upgrade_local(g, req).await;
-        }
         if req.host && req.method == "__blob_forget" {
             let cmd = AppCmd::BlobForget {
                 id: req.args["id"].as_str().unwrap_or_default().to_owned(),
@@ -1640,6 +1722,37 @@ impl Node {
             .get("migrate")
             .and_then(Value::as_str)
             .map(str::to_owned);
+        // An upgrade never moves an app between executors (either way, state or
+        // none) until rebuild migrations (D38) exist: the two keep different
+        // state formats. Judged from the target's WASM against the executor
+        // the app's state names, or, before its `init` applied (none named yet),
+        // the one the replicated app record names (decided once, at creation).
+        let recorded = self
+            .sys(|s| s.apps.get(&req.app_id).map(|a| a.executor))
+            .unwrap_or(Kind::Wasmer);
+        let from = g.read_local(|m, _| m.state.executor()).unwrap_or(recorded);
+        let to = self
+            .executor_of(&bundle)
+            .await
+            .map_err(|e| WriteError::Unavailable(e.message))?;
+        if from != to {
+            return Ok(Applied {
+                index: g.applied(),
+                status: Status::AppError,
+                result: Value::Null,
+                error: Value::String(format!(
+                    "upgrade refused: {} runs on {}, the app on {}; an upgrade across executors waits for rebuild migrations (D38)",
+                    bundle,
+                    executor_name(to),
+                    executor_name(from),
+                )),
+                events: Vec::new(),
+                conflict: false,
+            });
+        }
+        if from == Kind::Component {
+            return self.upgrade_component(g, &bundle, migrate.as_deref()).await;
+        }
         let module = self
             .module_for(&bundle)
             .await
@@ -1752,9 +1865,15 @@ impl Node {
     /// as an entry that also records it done, so a new leader neither skips
     /// nor repeats one.
     pub async fn drive(&self, g: &Group<AppMachine>, app: &AppRecord) {
-        let (bundle, initialized) =
-            g.read_local(|m, _| (m.state.bundle.clone(), m.state.initialized));
-        let (Some(bundle), true) = (bundle, initialized) else {
+        let (bundle, initialized, executor) = g.read_local(|m, _| {
+            (
+                m.state.bundle.clone(),
+                m.state.initialized,
+                m.state.executor(),
+            )
+        });
+        // A component's timers are `tick_timers`'s; it has no follow-ups.
+        let (Some(bundle), true, Some(Kind::Wasmer)) = (bundle, initialized, executor) else {
             return;
         };
         let facts = self.facts(&bundle).await;
@@ -1878,6 +1997,12 @@ impl Node {
             &keyed
         };
         let app = self.app(&req.app_id).await?;
+        // A component's calls are `call_component`'s (the API routes them there);
+        // what reaches here for one is a wasmer app's xcall or follow-up, which
+        // a component does not take (D25).
+        if app.executor == Kind::Component && !req.host {
+            return Err(ApiError::new(409, "NOT_SUPPORTED", COMPONENT_REFUSES));
+        }
         // The entry carries the arguments, so arguments past the cap never
         // fit: refuse here rather than forward a megabyte to the leader first.
         let args_len = serde_json::to_vec(&req.args).map_or(0, |a| a.len())
@@ -1929,6 +2054,19 @@ impl Node {
         Err(ApiError::unavailable("the app has no leader"))
     }
 
+    /// Answer an internal call (from a peer), for either executor: run it here,
+    /// without forwarding further. The node's own commands (`req.host`) are the
+    /// node's whatever the executor.
+    pub async fn call_here_any(&self, req: &CallRequest) -> Result<Value, ApiError> {
+        let app = self.app(&req.app_id).await?;
+        if app.executor == Kind::Component && !req.host {
+            let a = self.call_here_component(&app, req).await?;
+            return serde_json::to_value(a).map_err(|e| ApiError::internal(&e.to_string()));
+        }
+        let a = self.call_here(req).await?;
+        serde_json::to_value(a).map_err(|e| ApiError::internal(&e.to_string()))
+    }
+
     /// Answer an internal call (from a peer): run it here, without forwarding further.
     pub async fn call_here(&self, req: &CallRequest) -> Result<Applied, ApiError> {
         let app = self.app(&req.app_id).await?;
@@ -1957,6 +2095,9 @@ impl Node {
         g: &Group<AppMachine>,
         req: &ViewRequest,
     ) -> Result<ViewAnswer, ApiError> {
+        if g.read_local(|m, _| m.state.executor()) == Some(Kind::Component) {
+            return self.view_local_component(g, req).await;
+        }
         let bundle = g
             .read_local(|m, _| m.state.bundle.clone())
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
@@ -1981,12 +2122,18 @@ impl Node {
                 status: out.status,
                 result: out.result,
                 error: out.error,
+                timeout: false,
             }
         }))
     }
 
     /// Run a read-only method. Its writes, if any, are discarded.
     pub async fn view(&self, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
+        let app = self.app(&req.app_id).await?;
+        if app.executor == Kind::Component {
+            self.abi_gate(&app, &req.method, &req.caller, true, false)
+                .await?;
+        }
         // Like calls, ride out an election (e.g. right after the leader moved off).
         let mut last = None;
         for _attempt in 0..30 {
@@ -2138,6 +2285,14 @@ impl Node {
             }
         }
         Ok(written)
+    }
+}
+
+/// The executor's name, as an error names it.
+const fn executor_name(e: Kind) -> &'static str {
+    match e {
+        Kind::Wasmer => "wasmer (a core module)",
+        Kind::Component => "wasmtime (a component)",
     }
 }
 
