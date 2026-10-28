@@ -1,0 +1,152 @@
+{
+  "name": "31 — admin logical abort drops the pending marker (PR-6d, node-log validated)",
+  "description": "Single-node v1→v2 cascade whose pending migration marker is dropped by the native merobox `abort_migration` step (PR-6d task 6d.6 step 3). The node that initiates the cascade applies the migration eagerly, so the context commits to v2 before the abort runs; the abort is a LOGICAL abort that drops the pending marker but does NOT recall the already-committed context. This validates the abort RPC end-to-end (handler runs, marker dropped, no recall). The pre-commit window where the abort keeps a context on v1 only exists on a non-initiating node that has not yet lazy-applied — that cross-node path is exhaustively unit covered in abort_migration.rs and is intentionally out of scope for this deterministic single-node e2e.\nTask 6d.4 shipped the logical-abort surface as a core RPC + admin HTTP route:\n  - `ContextClient::abort_migration` →\n    `crates/context/src/handlers/abort_migration.rs::abort_group_migration`\n  - `POST /admin-api/groups/:namespace_id/migration/abort`\n    (`crates/server/src/admin/service.rs`).\nIt flips the group's pending migration target BACK to the pre-migration v1 app id and drops the pending migration marker, so a not-yet-applied lazy context stops migrating on its next access. It is a **logical** abort — no byte snapshot, no restore; an already-committed v2 context is NOT recalled. Non-admin callers are rejected by the same admin-capability gate the `/groups/:id/upgrade*` routes use (`MembershipRepository::require_admin` in the `AbortMigrationRequest` handler).\nThe full target-flip + idempotency + admin-gate behaviour is exhaustively unit covered in `crates/context/src/handlers/abort_migration.rs` (tests `abort_flips_target_back_and_drops_migration`, `abort_mixed_state_group_flips_target_to_pre_migration_v1`, `abort_is_idempotent_noop_when_nothing_pending`, `abort_unknown_group_is_noop`).\nThe abort is issued by merobox's first-class `abort_migration` step type (merobox 0.6.36, calimero-client-py 0.6.18), which calls `abort_migration(namespace_id)` against the node's RPC and returns `{namespace_id, aborted}`. The abort handler admin-gates against the node's own identity (the namespace admin in this single-node scenario). The load-bearing proof is the node log line the handler emits (\"migration logically aborted: target flipped back ...\"), plus the post-abort access returning v1 — both asserted below.\nBecause migration_v2 defaults ON (PR-6b task 6b.8), the migration runs natively — no merobox feature flag is needed.\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  abort_migration (unknown) x1: checks what the dropped steps did",
+    "  assert_log_present x1: v1 node logs",
+    "  delete_context (unknown) x1: checks what the dropped steps did",
+    "  delete_namespace x1: v1 namespace deletion",
+    "  uninstall_application (unknown) x1: checks what the dropped steps did",
+    "Fixed in the migration (converter bugs): a cascade upgrade_group",
+    "upgrades every app in the namespace's teams; of get_migration_status",
+    "only the outputs that mean the same here are kept."
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "app-migration-admin-abort-1"
+  ],
+  "steps": [
+    {
+      "name": "Install scenario-migration-check-pass-v1",
+      "type": "install_package",
+      "mpk": "{{env.CORE_WASM_DIR}}/dist/com.calimero.scenario-migration-check-pass-1.0.0.mpk",
+      "outputs": {
+        "app_v1": "package",
+        "app_v1_version": "version"
+      },
+      "account": "app-migration-admin-abort-1"
+    },
+    {
+      "name": "Create namespace (anchors app_v1)",
+      "type": "create_org",
+      "org_name": "Create namespace (anchors app_v1)",
+      "outputs": {
+        "namespace_id": "orgId"
+      },
+      "account": "app-migration-admin-abort-1"
+    },
+    {
+      "name": "Create descendant subgroup",
+      "type": "create_team",
+      "org": "{{namespace_id}}",
+      "team_name": "admin-abort-subgroup",
+      "join": "invite",
+      "outputs": {
+        "group_id": "teamId"
+      },
+      "account": "app-migration-admin-abort-1"
+    },
+    {
+      "name": "Create context in subgroup (v1)",
+      "type": "deploy",
+      "account": "app-migration-admin-abort-1",
+      "package": "{{app_v1}}",
+      "version": "{{app_v1_version}}",
+      "app_name": "Create context in subgroup (v1)",
+      "org": "{{namespace_id}}",
+      "access": {
+        "kind": "team",
+        "team": "{{group_id}}"
+      },
+      "outputs": {
+        "ctx_id": "contextId"
+      }
+    },
+    {
+      "name": "Seed v1 item alpha",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set_item",
+      "args": {
+        "key": "alpha",
+        "value": "a"
+      },
+      "account": "app-migration-admin-abort-1"
+    },
+    {
+      "name": "Seed v1 item bravo",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set_item",
+      "args": {
+        "key": "bravo",
+        "value": "b"
+      },
+      "account": "app-migration-admin-abort-1"
+    },
+    {
+      "name": "Install scenario-migration-check-pass-v2",
+      "type": "install_package",
+      "mpk": "{{env.CORE_WASM_DIR}}/dist/com.calimero.scenario-migration-check-pass-2.0.0.mpk",
+      "outputs": {
+        "app_v2": "package",
+        "app_v2_version": "version"
+      },
+      "account": "app-migration-admin-abort-1"
+    },
+    {
+      "name": "Assert both versions share one application id (bundle same-id)",
+      "type": "json_assert",
+      "statements": [
+        "equal(\"{{app_v1}}\", \"{{app_v2}}\")"
+      ]
+    },
+    {
+      "name": "Cascade namespace v1 → v2 (commits v2, records the pending marker)",
+      "type": "upgrade_app",
+      "app": "{{ctx_id}}",
+      "version": "{{app_v2_version}}",
+      "account": "app-migration-admin-abort-1"
+    },
+    {
+      "name": "Wait for the migration to settle",
+      "type": "wait",
+      "seconds": 15.0
+    },
+    {
+      "name": "Wait for the abort to be persisted",
+      "type": "wait",
+      "seconds": 3.0
+    },
+    {
+      "name": "Read schema_info after the abort",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "schema_info",
+      "args": {},
+      "account": "app-migration-admin-abort-1",
+      "outputs": {
+        "post_abort_schema": "rpc"
+      }
+    },
+    {
+      "name": "Assert the already-committed context is NOT recalled (stays v2)",
+      "type": "json_assert",
+      "statements": [
+        "json_subset({{post_abort_schema}}, {\"output\": {\"schema_version\": \"2.0.0\", \"item_count\": 2}})"
+      ]
+    },
+    {
+      "name": "Delete subgroup",
+      "type": "team_delete",
+      "org": "{{namespace_id}}",
+      "team": "{{group_id}}",
+      "account": "app-migration-admin-abort-1"
+    }
+  ]
+}
