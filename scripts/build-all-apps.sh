@@ -15,7 +15,6 @@ APPS=(
     "apps/collaborative-editor/Cargo.toml"
     "apps/components-demo/Cargo.toml"
     "apps/fugue-collab/Cargo.toml"
-    "apps/indexed-issue-tracker/Cargo.toml"
     "apps/kv-store-init/Cargo.toml"
     "apps/kv-store-with-handlers/Cargo.toml"
     "apps/wasmer-fixtures/kv-store-with-shared-storage/Cargo.toml"

@@ -32,7 +32,7 @@ cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 | `kv-store-with-handlers` | KV with event handlers | Event handling         |
 | `sorted-kv-store`        | Ordered KV store       | `SortedMap`: range / prefix / page |
 | `authored-sorted-kv-store` | Shared noticeboard (component SDK) | Per-note authors checked against `env::caller()`, topic slices through a `Table` index, and why the two go together |
-| `indexed-issue-tracker`  | Issue tracker          | `IndexedMap` + `#[derive(app::Indexed)]`: filter, count and page by field values without scanning |
+| `indexed-issue-tracker`  | Issue tracker (component SDK) | `Table` indexes, a label table and maintained counts: filter, count and page by field values without scanning |
 | `indexed-forum`          | Forum (component SDK)  | Tables with compound and optional-field indexes and maintained counts; a tag index as one row per tag; v1's `Moderated`/`Frozen`/`Authored` policies as explicit checks against `env::caller()` and a moderators table |
 | `search-chat`            | Chat with full-text search | `#[derive(app::Searchable)]` + `app::search_indexes!`: the node indexes a map on its own; a view queries it with `Query` and gets entries read back from state. Example and E2E fixture for search |
 | `permissions-showcase`   | Team space (component SDK) | One table per v1 write policy, each an explicit check: values written only in `init`, write-once messages, moderator-removed announcements, author-owned pages and revisions, evidence keyed by its SHA-256 |
@@ -59,7 +59,7 @@ cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 
 ## Component apps (`calimero-app-sdk`, `wasm32-wasip2`)
 
-`rooms`, `org-gated`, `authored-sorted-kv-store` and every app ported to the component SDK are standalone
+`rooms`, `org-gated`, `authored-sorted-kv-store`, `indexed-issue-tracker` and every app ported to the component SDK are standalone
 crates (`[workspace]` in their `Cargo.toml`, `calimero-app-sdk` by path), not
 members of the core workspace, so `cargo test --manifest-path apps/<app>/Cargo.toml`
 runs them (CI's "Cargo test (standalone v2 apps)" loop lists each). Storage is

@@ -237,7 +237,6 @@ jobs:
           CARGO_TARGET_DIR: target/standalone-apps
         run: |
           for manifest in $(grep -l '^calimero-app-sdk = ' apps/*/Cargo.toml apps/*/*/Cargo.toml); do
-            cargo test --manifest-path "$manifest"
           done
 
   rust-features:

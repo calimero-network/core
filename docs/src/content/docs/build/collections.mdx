@@ -103,7 +103,11 @@ merge behavior.
   from `UnorderedMap` to `IndexedMap` needs no migration. A validity marker makes
   each node rebuild its own indexes on the first query after anything changed the
   entries behind them (a sync, a merge, a new index declaration); that first query
-  is `O(n)`, every one after it `O(log n + k)`. See `apps/indexed-issue-tracker`.
+  is `O(n)`, every one after it `O(log n + k)`. On the component SDK a `Table`
+  declares the same lookups (`#[table(index(..), count(..))]`), a list field
+  becomes a table of its own, and the indexes are replicated state, so no
+  replica ever rebuilds them: see `apps/indexed-issue-tracker`, and
+  `apps/indexed-forum` for compound and optional-field indexes.
 - **`Vector`** — append + index. `push` assigns each element a stable id, so
   iteration order is preserved across reloads.
 - **`LwwRegister<T>`** — wrap any scalar that should follow last-writer-wins.
