@@ -188,3 +188,7 @@ wildcard name is the front's job. See
 - [ ] Quotas are set for your cluster (`meroctl ops set-quotas`).
 - [ ] Something collects `/ops/metrics` from every node through the sealed
       channel; see [Observability](/operate/observability/#collecting-metrics).
+- [ ] Every app you deploy that keeps a writer-guarded cell (`SharedStorage`,
+      `PermissionedStorage`, `Ownable`) was built on an SDK with the local
+      writer check (core#4721). One built on `0.12.0-rc.3` or earlier lets a
+      non-writer write the cell; rebuild it and upgrade the app first.
