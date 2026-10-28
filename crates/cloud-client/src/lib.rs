@@ -594,6 +594,33 @@ impl Client {
         Ok(resp.bytes().await.map_err(eyre::Report::from)?.to_vec())
     }
 
+    /// Create an app instance from a package release (the newest without
+    /// `version`; a package with several services names one), installed from
+    /// the registry first if the cluster lacks it. `options` as [`Self::create_app`].
+    pub async fn create_app_from_package(
+        &self,
+        name: &str,
+        package: &str,
+        version: Option<&str>,
+        service: Option<&str>,
+        options: Value,
+    ) -> Result<String> {
+        let mut body = json!({ "name": name, "package": package });
+        if let Some(b) = body.as_object_mut() {
+            if let Some(v) = version {
+                let _prev = b.insert("version".into(), json!(v));
+            }
+            if let Some(s) = service {
+                let _prev = b.insert("service".into(), json!(s));
+            }
+            for (k, v) in options.as_object().into_iter().flatten() {
+                let _prev = b.insert(k.clone(), v.clone());
+            }
+        }
+        let v = self.post("apps", body).await?;
+        Ok(v["appId"].as_str().unwrap_or_default().to_owned())
+    }
+
     /// Create an app instance from a bundle; `options` may set `org`, `access`, `confirmMethods`.
     pub async fn create_app(&self, name: &str, bundle: &str, options: Value) -> Result<String> {
         let mut body = json!({ "name": name, "bundle": bundle });
@@ -616,6 +643,18 @@ impl Client {
         passkey: &mut dyn Passkey,
     ) -> Result<Value> {
         self.confirmed(Method::POST, path, body, passkey).await
+    }
+
+    /// End every session of this account, on every device.
+    pub async fn sign_out_everywhere(&self) -> Result<Value> {
+        self.post("auth/logout-all", json!({})).await
+    }
+
+    /// DELETE `path`, answering a `412 CONFIRM_REQUIRED` as
+    /// [`Self::post_confirmed`] does.
+    pub async fn delete_confirmed(&self, path: &str, passkey: &mut dyn Passkey) -> Result<Value> {
+        self.confirmed(Method::DELETE, path, json!({}), passkey)
+            .await
     }
 
     /// `method` on `path`, answering a `412 CONFIRM_REQUIRED` with a passkey

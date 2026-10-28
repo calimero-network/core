@@ -247,7 +247,7 @@ async fn main() -> eyre::Result<()> {
         Cmd::Logout { all } => {
             if *all {
                 env.authenticate().await?;
-                let _ = env.client.post("auth/logout-all", json!({})).await?;
+                let _ = env.client.sign_out_everywhere().await?;
             }
             env.home.save_session(&env.url, None)?;
             return Ok(());

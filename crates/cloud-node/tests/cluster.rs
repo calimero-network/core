@@ -3854,3 +3854,47 @@ async fn a_stopped_nodes_store_can_be_inspected() {
         "{opened}"
     );
 }
+
+/// The client's own calls for what the Python client and merobox reach through
+/// it: an app from a package release, a confirmed DELETE (an organization) and
+/// signing out on every device.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_client_creates_from_a_package_deletes_confirmed_and_signs_out_everywhere() {
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let _ = alice
+        .upload_package(mpk("com.test.client", "1.0.0", &kv_wasm(), &publisher))
+        .await
+        .unwrap();
+    let app = alice
+        .create_app_from_package("kv", "com.test.client", Some("1.0.0"), None, json!({}))
+        .await
+        .unwrap();
+    let _ = alice
+        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .await
+        .unwrap();
+
+    let org = alice
+        .post("orgs", json!({ "name": "doomed" }))
+        .await
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let path = format!("orgs/{org}");
+    let refused = alice.delete(&path).await.unwrap_err();
+    assert_eq!(refused.code(), Some("CONFIRM_REQUIRED"));
+    let _ = alice.delete_confirmed(&path, &mut pk).await.unwrap();
+    let status = |e: calimero_cloud_client::Error| match e {
+        calimero_cloud_client::Error::Api { status, .. } => status,
+        calimero_cloud_client::Error::Transport(e) => panic!("{e}"),
+    };
+    assert_eq!(status(alice.get(&path).await.unwrap_err()), 404);
+
+    let laptop = c.client(1);
+    let _s = laptop.sign_in(&mut pk).await.unwrap();
+    let _ = alice.sign_out_everywhere().await.unwrap();
+    assert_eq!(status(laptop.get("auth/me").await.unwrap_err()), 401);
+}
