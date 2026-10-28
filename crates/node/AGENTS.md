@@ -144,9 +144,30 @@ is its command line.
   membership, build release; per-group Raft term, lags and quorum age; store
   sizes; and, from `metrics::track` on the router, requests by route template
   and status, error codes, latency per route group and body bytes), never
-  names, ids or state: labels are templates, groups, codes and numbers
+  names or state: labels are templates, groups, codes and numbers, and ids only
+  on the usage series below
   (regression: `metrics_count_requests_errors_and_raft_without_naming_anyone`). `--metrics-listen` (`Config::metrics_listen`) serves the same text
   at plain-HTTP `GET /metrics` for a scraper, nothing else (`api::plain_metrics`).
+- **Usage metering** (`usage.rs`, `Node::usage`; billed from `/metrics`):
+  `calimero_app_{calls_total{kind},wasm_cpu_seconds_total,wasm_memory_byte_seconds_total,outbound_requests_total,state_bytes,blob_bytes}`,
+  labelled `app` and `org` (the payer: org id, or `account:{owner}` for a
+  personal app; `usage::payer`). Every WASM run goes through `Node::metered`
+  (`off_workers` plus `usage::measure`: thread CPU time, `CLOCK_THREAD_CPUTIME_ID`,
+  around the run on its one thread; wall time off Unix), so CPU is counted on
+  the node that ran the WASM: the leader for calls, `init`, migrations,
+  follow-ups and timers (followers apply diffs and count nothing), the
+  answering replica for a view. A call is counted once, after its proposal, by
+  the run whose answer stood (not a conflict, not a component timeout); a
+  discarded run adds only CPU and memory. Memory = the module's declared
+  linear memory (`usage::declared_memory`, learned in `module_for` and
+  `prepare_now`) × wall time: a floor, as the runtimes do not report an
+  instance's peak. Outbound counts requests handed to the transport
+  (`OutboundService::for_run_counted`). `sample_usage` fills the state and blob
+  gauges every `usage::SAMPLE_EVERY` (5 min, `lib.rs`); `metrics_response`
+  drops the series of apps no longer hosted here. In memory: counters restart
+  at zero with the process. Regression:
+  `app_usage_is_counted_on_the_node_that_ran_the_wasm`; docs: Observability,
+  "Usage metering".
 - **Ops replica moves** run on the app group's leader; any other replica answers
   `421 NOT_LEADER` with `details.leaderUrl` before writing anything.
 - **Forwards are bounded**: a call or read forwarded to an app's leader waits at most

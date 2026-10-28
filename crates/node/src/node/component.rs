@@ -28,11 +28,12 @@ use calimero_log::{Group, GroupId, Proposal, WriteError};
 use serde_json::{json, Value};
 use tracing::debug;
 
-use super::{off_workers, status_of, CallRequest, Node, ViewAnswer, ViewRequest};
+use super::{status_of, CallRequest, Node, ViewAnswer, ViewRequest};
 use crate::app::{AppMachine, Status};
 use crate::component::{Applied, CallEntry, ComponentCmd, Outcome, SysDirectory, TickEntry};
 use crate::error::ApiError;
 use crate::types::{now_ms, AppRecord, Caller, Executor};
+use crate::usage::{Kind as RunKind, Meter};
 
 /// App time (D16, D19): this host's clock plus a shared offset. It stamps a
 /// component's entries and timer slots, nothing else; sessions, tokens and
@@ -277,6 +278,7 @@ impl Node {
     /// Prepares `bundle` and keeps the result ([`Self::prepared_for`]).
     async fn prepare_now(&self, bundle: &str) -> Result<Prepared, ApiError> {
         let component = self.bundle_wasm(bundle).await?;
+        self.usage.learn(bundle, &component);
         let prepared = self.prepare_bytes(bundle, component).await?;
         // Components no app uses any more (an upgrade's old bundle, a deleted app)
         // are dropped as a new one comes in, so `prepared` stays bounded by the live
@@ -354,16 +356,20 @@ impl Node {
 
     /// [`Self::run_component`] for a run that becomes a log entry (call, tick,
     /// `init`), which runs inside `Group::propose_led`, on the machine's read lock,
-    /// for up to its deadline: off the async workers ([`off_workers`]).
+    /// for up to its deadline: off the async workers ([`Node::metered`], which
+    /// adds what it took to `meter`'s app).
     fn run_logged(
         &self,
+        meter: &Meter,
         prepared: &Prepared,
         app_id: &str,
         state: Arc<dyn calimero_app_host::StateView>,
         applied: u64,
         invocation: Invocation,
     ) -> Outcome {
-        off_workers(|| self.run_component(prepared, app_id, state, applied, invocation))
+        self.metered(meter, || {
+            self.run_component(prepared, app_id, state, applied, invocation)
+        })
     }
 
     /// The next `(id_term, id_seq)` for a run this node leads in `term` (D52,
@@ -424,6 +430,7 @@ impl Node {
             return Err(args_too_large());
         }
         let mut timed_out = false;
+        let meter = self.meter(&app.app_id, &bundle);
         let p = g
             .propose_led(|m, applied, leadership| {
                 if m.state.initialized || m.state.init_error.is_some() {
@@ -434,6 +441,7 @@ impl Node {
                     self.next_id(g.id(), leadership.term, m.state.component.head.last_id);
                 let outcome = match &prepared {
                     Ok(prepared) => self.run_logged(
+                        &meter,
                         prepared,
                         &app.app_id,
                         m.view(),
@@ -479,6 +487,9 @@ impl Node {
             serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))?;
         let a = to_wasmer_applied(a);
         self.count_conflict(&a);
+        if prepared.is_ok() && !a.conflict {
+            self.usage.called(&meter, RunKind::Mutation);
+        }
         Ok(a)
     }
 
@@ -563,7 +574,8 @@ impl Node {
         timer: &str,
         slot: u64,
     ) -> Result<(), WriteError> {
-        let _p = g
+        let meter = self.meter(app_id, &prepared.hash);
+        let p = g
             .propose_led(|m, applied, leadership| {
                 // An upgrade applied since the round read the ABI: the next poll
                 // reads the new one.
@@ -577,6 +589,7 @@ impl Node {
                 let (id_term, id_seq) =
                     self.next_id(g.id(), leadership.term, m.state.component.head.last_id);
                 let outcome = self.run_logged(
+                    &meter,
                     prepared,
                     app_id,
                     m.view(),
@@ -612,6 +625,10 @@ impl Node {
                 }))))
             })
             .await?;
+        // A tick that timed out was not logged and runs again.
+        if p.appended {
+            self.usage.called(&meter, RunKind::FollowUp);
+        }
         Ok(())
     }
 
@@ -653,9 +670,12 @@ impl Node {
         };
         let args = args_bytes(&req.args);
         let mut refused = None;
+        let meter = self.meter(&req.app_id, &bundle);
+        let mut answered = false;
         let p = g
             .propose_led(|m, applied, leadership| {
                 refused = None;
+                answered = false;
                 // A retry of a call that committed is its recorded answer, whatever
                 // the bundle runs now (D70): the replay comes before the ABI check.
                 if let Some(key) = &req.idempotency_key {
@@ -686,6 +706,7 @@ impl Node {
                 let (id_term, id_seq) =
                     self.next_id(g.id(), leadership.term, m.state.component.head.last_id);
                 let outcome = self.run_logged(
+                    &meter,
                     &prepared,
                     &req.app_id,
                     m.view(),
@@ -707,6 +728,7 @@ impl Node {
                     let a = Applied::unlogged(applied, outcome);
                     return Proposal::Reply(serde_json::to_vec(&a).unwrap_or_default());
                 }
+                answered = true;
                 // Events are logged side effects too (Ruling 41): an emit-only call
                 // is refused like one that writes keys.
                 if read_only && (!outcome.diff.is_empty() || !outcome.events.is_empty()) {
@@ -743,6 +765,9 @@ impl Node {
             let _prev = self
                 .conflicts
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        if answered && !a.conflict {
+            self.usage.called(&meter, RunKind::Mutation);
         }
         Ok(a)
     }
@@ -928,12 +953,19 @@ impl Node {
                 timer: None,
             },
         );
+        let meter = self.meter(&req.app_id, &bundle);
         // A view may run up to its deadline: off the async workers.
-        let out = tokio::task::spawn_blocking(move || {
-            node.run_component(&prepared, &app_id, state, applied, invocation)
+        let (out, run) = tokio::task::spawn_blocking(move || {
+            crate::usage::measure(|| {
+                node.run_component(&prepared, &app_id, state, applied, invocation)
+            })
         })
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
+        self.usage.ran(&meter, run);
+        if !out.is_timeout() {
+            self.usage.called(&meter, RunKind::View);
+        }
         Ok(ViewAnswer {
             index: applied,
             timeout: out.is_timeout(),
