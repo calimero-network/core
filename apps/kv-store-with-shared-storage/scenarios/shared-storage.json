@@ -1,0 +1,269 @@
+[
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "setShared",
+  "args": {
+   "value": "initial-from-node1"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "getShared",
+  "args": {},
+  "expect": {
+   "ok": "initial-from-node1"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "getShared",
+  "args": {},
+  "expect": {
+   "ok": "initial-from-node1"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "mapSet",
+  "args": {
+   "key": "greeting",
+   "value": "hello"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "mapGet",
+  "args": {
+   "key": "greeting"
+  },
+  "expect": {
+   "ok": "hello"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "myAccount",
+  "args": {},
+  "expect": {
+   "ok": "@bob"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "tryRotateWriters",
+  "args": {
+   "newWriters": [
+    "@bob"
+   ]
+  },
+  "expect": {
+   "ok": false
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "rotateWriters",
+  "args": {
+   "newWriters": [
+    "@bob"
+   ]
+  },
+  "expect": {
+   "error": "NotWriter",
+   "fields": {
+    "field": "value"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "writerCount",
+  "args": {},
+  "expect": {
+   "ok": "1"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "setShared",
+  "args": {
+   "value": "before-rotation-from-node2"
+  },
+  "expect": {
+   "error": "NotWriter",
+   "fields": {
+    "field": "value"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "rotateWriters",
+  "args": {
+   "newWriters": [
+    "@bob"
+   ]
+  },
+  "expect": {
+   "ok": null
+  },
+  "events": {
+   "bob": [
+    "SharedSet",
+    "WritersRotated"
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "writerCount",
+  "args": {},
+  "expect": {
+   "ok": "1"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "setShared",
+  "args": {
+   "value": "post-rotation-from-node2"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "getShared",
+  "args": {},
+  "expect": {
+   "ok": "post-rotation-from-node2"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "setShared",
+  "args": {
+   "value": "owner-after-rotation"
+  },
+  "expect": {
+   "error": "NotWriter",
+   "fields": {
+    "field": "value"
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "mapSet",
+  "args": {
+   "key": "evil",
+   "value": "forged"
+  },
+  "expect": {
+   "error": "NotWriter",
+   "fields": {
+    "field": "map"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "mapGet",
+  "args": {
+   "key": "evil"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "mapSet",
+  "args": {
+   "key": "evil",
+   "value": "fine"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "mapGet",
+  "args": {
+   "key": "evil"
+  },
+  "expect": {
+   "ok": "fine"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "tryRotateWriters",
+  "args": {
+   "newWriters": [
+    "@bob",
+    "@owner"
+   ]
+  },
+  "expect": {
+   "ok": true
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "writerCount",
+  "args": {},
+  "expect": {
+   "ok": "2"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "rotateWriters",
+  "args": {
+   "newWriters": []
+  },
+  "expect": {
+   "error": "NoWriters"
+  }
+ },
+ {
+  "as": "@anonymous",
+  "op": "view",
+  "method": "getShared",
+  "args": {},
+  "expect": {
+   "refused": "UNAUTHENTICATED"
+  }
+ }
+]

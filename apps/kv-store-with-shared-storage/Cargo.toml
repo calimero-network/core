@@ -1,0 +1,22 @@
+[package]
+name = "kv-store-with-shared-storage"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "A key-value store guarded by writer sets, on the component SDK"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-app-sdk = { path = "../../crates/app-sdk" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-app-sdk = { path = "../../crates/app-sdk", features = ["testing"] }
+calimero-app-build = { path = "../../crates/app-build" }
+serde_json = "1"
+
+# Standalone, like the SDK's sample guest: the tests build this crate for wasm32-wasip2.
+# The wasmer build (SharedStorage, crate `kv-store-with-shared-storage` in the core
+# workspace) is apps/wasmer-fixtures/kv-store-with-shared-storage.
+[workspace]
