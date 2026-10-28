@@ -1,30 +1,20 @@
 [package]
 name = "name-registry-admin"
-version.workspace = true
-authors.workspace = true
-edition.workspace = true
-repository.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2021"
 publish = false
+description = "Usernames on the component SDK: one owner per name, decided by the admins"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-thiserror.workspace = true
-calimero-sdk.workspace = true
-calimero-storage.workspace = true
+calimero-app-sdk = { path = "../../crates/app-sdk" }
 
-[package.metadata.workspaces]
-independent = true
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-app-sdk = { path = "../../crates/app-sdk", features = ["testing"] }
+calimero-app-build = { path = "../../crates/app-build" }
+serde_json = "1"
 
-[dev-dependencies]
-# Enables `register_crdt_merge` + the native mock host so `TestHost` can drive
-# CRDT state under `cargo test`.
-calimero-storage = { workspace = true, features = ["testing"] }
-
-# The scenario in `workflows/` installs this by package id, so the bundle name
-# it names — `com.calimero.name-registry-admin-0.0.0.mpk` — comes from here.
-[package.metadata.calimero]
-package = "com.calimero.name-registry-admin"
-name = "Name Registry (Admin)"
+# Standalone, like apps/rooms: the tests build this crate for wasm32-wasip2.
+[workspace]

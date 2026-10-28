@@ -354,7 +354,9 @@ against the writer set / owner. A forged write does not survive convergence.
   contests). `status` is `Free`, `Pending`, `Owned`, `Lost` or `Contested`, and
   `owner_of` is `Some` only once a verdict names an owner. See
   [choosing a collection](/build/choosing-state/#unique-names-registry),
-  `apps/name-registry` (`Tee`) and `apps/name-registry-admin` (`Admin`).
+  and `apps/name-registry` (`Tee`). `apps/name-registry-admin` is the `Admin`
+  rules on the component SDK: claim, verdict and admin tables, an admin check in
+  `resolve`, and the first claim the log applied winning.
 
 ## Immutable / content-addressed
 

@@ -37,7 +37,7 @@ cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 | `search-chat`            | Chat with full-text search | `#[derive(app::Searchable)]` + `app::search_indexes!`: the node indexes a map on its own; a view queries it with `Query` and gets entries read back from state. Example and E2E fixture for search |
 | `permissions-showcase`   | Team space (component SDK) | One table per v1 write policy, each an explicit check: values written only in `init`, write-once messages, moderator-removed announcements, author-owned pages and revisions, evidence keyed by its SHA-256 |
 | `name-registry`          | Usernames              | `Registry<K, V>`: one owner per name, decided by a TEE; claim, `#[app::tee]` resolve and timer sweep, release and re-claim |
-| `name-registry-admin`    | Usernames              | `Registry<K, V, Admin>`: one owner per name, decided by the admins; the creator is the first admin, `set_admins` hands the role on, a lost claim is renewed with `rebid` after a release |
+| `name-registry-admin`    | Usernames (component SDK) | v1's `Registry<K, V, Admin>` as claim, verdict and admin tables: one owner per name, decided by the admins (the first claim applied wins); the app owner is the first admin, `setAdmins` hands the role on, a lost claim is renewed with `rebid` after a release |
 | `migrations/migration-suite-v1..v5` | Migration chain (each `vN` migrates from `vN-1`) | additive, remove, rename, type-change |
 | `migrations/scenario-*-v{1,2}` | Standalone v1+v2 fixture pairs (each pair self-contained) | new-method, new-enum-variant, pure-bugfix, crdt-native, struct-to-enum, field-split, field-remove-archive, invariant-reshuffle |
 | `components-demo`        | Access-control patterns (component SDK) | An owned cell, a writer set and a role registry (v1's `Ownable`, `PermissionedStorage`, `AccessControl`), each a table plus a check against `env::caller()` |
@@ -59,7 +59,7 @@ cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 
 ## Component apps (`calimero-app-sdk`, `wasm32-wasip2`)
 
-`rooms`, `org-gated`, `authored-sorted-kv-store`, `indexed-issue-tracker`, `kv-store-with-user-and-frozen-storage`, `components-demo` and every app ported to the component SDK are standalone
+`rooms`, `org-gated`, `authored-sorted-kv-store`, `indexed-issue-tracker`, `kv-store-with-user-and-frozen-storage`, `components-demo`, `name-registry-admin` and every app ported to the component SDK are standalone
 crates (`[workspace]` in their `Cargo.toml`, `calimero-app-sdk` by path), not
 members of the core workspace, so `cargo test --manifest-path apps/<app>/Cargo.toml`
 runs them (CI's "Cargo test (standalone v2 apps)" loop lists each). Storage is

@@ -44,6 +44,7 @@ NOT_APPS = {
     "migrations": "the migration fixtures (FIXTURES, built by build-wasms.sh's list)",
     "rooms": "a calimero:app component (the v2 SDK), built by calimero-app-build for wasm32-wasip2, not cargo mero; the node's tests and the fault script run it",
     "org-gated": "a calimero:app component; its scenarios/ replace the workflow (the wasmer fixture is apps/wasmer-fixtures/org-gated)",
+    "name-registry-admin": "a calimero:app component; its scenarios/ replace the workflow",
     "components-demo": "a calimero:app component; its scenarios/ replace the workflow",
     "kv-store-with-user-and-frozen-storage": "a calimero:app component; its scenarios/ replace the workflows",
     "indexed-issue-tracker": "a calimero:app component; its scenarios/ replace the workflow",
