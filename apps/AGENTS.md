@@ -15,7 +15,7 @@ Example and test WebAssembly applications demonstrating Calimero SDK usage.
 rustup target add wasm32-unknown-unknown
 
 # Build one app (emits + embeds the ABI)
-cargo mero build --manifest-path apps/kv-store/Cargo.toml
+cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 
 # Build all apps
 ./scripts/build-all-apps.sh
@@ -25,22 +25,23 @@ cargo mero build --manifest-path apps/kv-store/Cargo.toml
 
 | App                      | Purpose                | Good Example For       |
 | ------------------------ | ---------------------- | ---------------------- |
-| `kv-store`               | Simple key-value store | Basic CRDT usage       |
+| `kv-store`               | Simple key-value store (component SDK) | `Table` + `Counter`, events, a typed error, a `confirm` method; `TestApp` tests and `scenarios/*.json`. Its wasmer build, the node tests' fixture, is `wasmer-fixtures/kv-store` |
 | `kv-store-init`          | KV with custom init    | `#[app::init]` pattern |
 | `org-gated`              | Org notes              | `env::caller_org()`: gate methods on the caller's organization role and teams |
 | `kv-store-with-handlers` | KV with event handlers | Event handling         |
 | `sorted-kv-store`        | Ordered KV store       | `SortedMap`: range / prefix / page |
 | `authored-sorted-kv-store` | Shared noticeboard   | `AuthoredSortedMap`: per-entry ownership + prefix slices, and why the two go together |
 | `indexed-issue-tracker`  | Issue tracker          | `IndexedMap` + `#[derive(app::Indexed)]`: filter, count and page by field values without scanning |
-| `indexed-forum`          | Forum                  | `Moderated<IndexedMap>` posts with a three-part compound index over a list and an optional-field index, a `Frozen<String>` charter, `AuthoredSortedMap` comments and `AuthoredMap` votes (one entry per voter); post ids minted to name their author, read with `get_by` |
+| `indexed-forum`          | Forum (component SDK)  | Tables with compound and optional-field indexes and maintained counts; a tag index as one row per tag; v1's `Moderated`/`Frozen`/`Authored` policies as explicit checks against `env::caller()` and a moderators table |
 | `search-chat`            | Chat with full-text search | `#[derive(app::Searchable)]` + `app::search_indexes!`: the node indexes a map on its own; a view queries it with `Query` and gets entries read back from state. Example and E2E fixture for search |
-| `permissions-showcase`   | Team space             | One field per write policy: `Frozen<T>` values, `WriteOnce` messages, `ModeratedOnce` announcements, an `Authored` page with nested revisions (read by naming its author), `ContentAddressed<IndexedMap>` evidence |
+| `permissions-showcase`   | Team space (component SDK) | One table per v1 write policy, each an explicit check: values written only in `init`, write-once messages, moderator-removed announcements, author-owned pages and revisions, evidence keyed by its SHA-256 |
 | `name-registry`          | Usernames              | `Registry<K, V>`: one owner per name, decided by a TEE; claim, `#[app::tee]` resolve and timer sweep, release and re-claim |
 | `name-registry-admin`    | Usernames              | `Registry<K, V, Admin>`: one owner per name, decided by the admins; the creator is the first admin, `set_admins` hands the role on, a lost claim is renewed with `rebid` after a release |
 | `migrations/migration-suite-v1..v5` | Migration chain (each `vN` migrates from `vN-1`) | additive, remove, rename, type-change |
 | `migrations/scenario-*-v{1,2}` | Standalone v1+v2 fixture pairs (each pair self-contained) | new-method, new-enum-variant, pure-bugfix, crdt-native, struct-to-enum, field-split, field-remove-archive, invariant-reshuffle |
 | `components-demo`        | Access-control components | `Ownable`, `PermissionedStorage`, `AccessControl` |
-| `kv-store-with-shared-storage` | Writer-set KV    | `SharedStorage` and writer rotation |
+| `kv-store-with-shared-storage` | Writer-set KV (component SDK) | A writer set as table rows plus an explicit check, and its rotation. The wasmer `SharedStorage` build is `wasmer-fixtures/kv-store-with-shared-storage` |
+| `wasmer-fixtures/*`      | Wasmer builds of ported apps | Kept for the node's tests, the size gate and the release bundle; same crate and wasm names as before the port |
 | `kv-store-with-user-and-frozen-storage` | Per-user + immutable KV | `UserStorage`, `FrozenStorage` |
 | `custom-key-store`       | Custom key type        | `AsRef<[u8]>` newtype keys, and the tail rule owned collections add |
 | `private_data`           | Node-local secrets     | `#[app::private]`; public hashes in an `AuthoredMap` under creator-named ids |
@@ -75,10 +76,10 @@ app-name/
 
 ### Basic App Pattern
 
-- ✅ DO: Follow `kv-store/src/lib.rs` as reference
+- ✅ DO: Follow `wasmer-fixtures/kv-store/src/lib.rs` as reference (the component SDK's is `kv-store/src/lib.rs`)
 
 ```rust
-// Simplified example based on apps/kv-store/src/lib.rs
+// Simplified example based on apps/wasmer-fixtures/kv-store/src/lib.rs
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
@@ -296,7 +297,8 @@ cargo mero build --manifest-path apps/<app>/Cargo.toml
 
 | File                                | Purpose         |
 | ----------------------------------- | --------------- |
-| `kv-store/src/lib.rs`               | Basic CRDT app  |
+| `wasmer-fixtures/kv-store/src/lib.rs` | Basic CRDT app  |
+| `kv-store/src/lib.rs`               | Basic component app |
 | `components-demo/src/lib.rs`        | Auth patterns   |
 | `kv-store-with-handlers/src/lib.rs` | Event handlers  |
 | `blobs/src/lib.rs`                  | Blob operations |
