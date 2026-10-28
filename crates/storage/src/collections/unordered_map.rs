@@ -1850,7 +1850,9 @@ mod tests {
         // collection by a writer set.
         let mut guarded = UnorderedMap::<String, String>::new();
         let writers: BTreeSet<AccountId> = std::iter::once(AccountId::from([7u8; 32])).collect();
-        guarded.element_mut().set_shared_domain(writers.clone());
+        guarded
+            .element_mut()
+            .set_shared_domain_scoped(crate::entities::full_mask(writers.clone()));
         let _ignored = guarded
             .insert("k".to_owned(), "v".to_owned())
             .expect("insert into guarded map");
@@ -1891,7 +1893,9 @@ mod tests {
         // blessed nested-CRDT mutation API.
         let mut guarded = UnorderedMap::<String, String>::new();
         let writers: BTreeSet<AccountId> = std::iter::once(AccountId::from([7u8; 32])).collect();
-        guarded.element_mut().set_shared_domain(writers.clone());
+        guarded
+            .element_mut()
+            .set_shared_domain_scoped(crate::entities::full_mask(writers.clone()));
         {
             let mut value = guarded
                 .entry("k".to_owned())
