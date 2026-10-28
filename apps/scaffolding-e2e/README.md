@@ -45,7 +45,7 @@ Output: `dist/com.calimero.scaffolding-e2e-0.0.0.mpk`, landing in the workspace 
 The wasm sits at the bundle's top level, so no `service_name` is needed to run it.
 
 The two-service variant now builds from `apps/scaffolding-e2e-multi`, a manifest-only crate that stages this crate's own wasm under two service names, `store-a` and `store-b`.
-It exercises merod's multi-service install and `service_name` selection path, via `workflows/group-multi-service.yml`.
+It exercises merod's multi-service install and `service_name` selection path, via `scenarios/cluster/group-multi-service.json`.
 
 ## State Structure
 
@@ -123,4 +123,4 @@ Handler methods increment the `handler_counter` (CRDT G-Counter) which can be qu
 
 ## Testing
 
-The consolidated workflow in `workflows/e2e.yml` covers all feature areas with separate contexts to avoid state interference. See the workflow file for detailed test scenarios.
+The consolidated cluster scenario `scenarios/cluster/e2e.json` covers all feature areas with separate contexts to avoid state interference; the other files in `scenarios/cluster/` each cover one flow. Run them with `cargo test -p calimero-node --test scenarios -- apps/scaffolding-e2e/`.

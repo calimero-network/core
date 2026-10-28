@@ -18,10 +18,10 @@ it to the player and seals the rest back. `reshuffle` is an
 minute, and it shuffles a fresh deck whenever there is none or it is spent.
 
 > **Mock attestation.** Nobody but the TEE can deal or see the deck only if the
-> enclave is genuine. The workflows here run with mock attestation: the
-> namespace's TEE admission policy sets `acceptMock` (`accept_mock` in the
-> merobox step) and lists the all-zero measurements a mock quote reports, and
-> the authoring policy's `allowedMrtd` does the same. Production needs a real
+> enclave is genuine. The scenarios here run with mock attestation: the
+> cluster's nodes report mock quotes and the cluster is every app's TEE, so no
+> admission or authoring policy is set (v1's workflows set `acceptMock` and the
+> all-zero measurements a mock quote reports). Production needs a real
 > attestation policy: `acceptMock` false, `allowedMrtd` and `allowedRtmr1` to
 > `allowedRtmr3` naming the approved image (or `signedRelease`), the real MRTD
 > in the authoring policy, and a `merod` that does not run with `--mock-tee`.
@@ -65,12 +65,13 @@ Produces `res/tee_cards.wasm`.
 
 ## End to end
 
-`workflows/tee-cards-failover.yml` runs two mock-TEE authorities: the timer
-shuffles the deck, one enclave is stopped, and every later draw is still dealt
-by the other. It needs a merod built with `--features mock-attestation`:
+`scenarios/cluster/tee-cards.json` plays the game on an in-process cluster: a
+draw asks the TEE (a `tee:` handler the app's leader runs once), which deals
+from a deck only it reads, sealed to the player, and each player reads only
+their own hand. v1's failover, late-TEE and key-rotation workflows had no
+counterpart on a cluster and were deleted
+([Testing strategy](../../docs/src/content/docs/contribute/testing.mdx#workflows-deleted-in-the-migration)).
 
 ```bash
-cargo build -p merod --release --features mock-attestation
-merobox bootstrap run workflows/tee-cards-failover.yml \
-  --image merod:local-mock-tee --e2e-mode
+cargo test -p calimero-node --test scenarios -- apps/tee-cards/
 ```
