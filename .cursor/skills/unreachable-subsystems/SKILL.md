@@ -51,8 +51,9 @@ keep walking. Do not stop at the first reference you find.
 
 ## Worked example — the one that prompted this
 
-(From v1: the crates it names, `calimero-server`, `calimero-client` and v1's
-`meroctl`, were deleted with the v1 node. The method is what carries over.)
+(From v1: the crates it names, v1's `calimero-server`, `calimero-client` and
+`meroctl`, were deleted with the v1 node; today's `calimero-client` is a
+different crate. The method is what carries over.)
 
 `crates/primitives/src/identity.rs` held `Did`, `RootKey`, `ClientKey` and
 `ContextUser`. `RootKey` carried a `wallet_address`, dating it to wallet-login,

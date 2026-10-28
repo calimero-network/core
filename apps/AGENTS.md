@@ -334,7 +334,7 @@ one's header lists the v1 steps that have no counterpart in this node and any
 fix made in the migration. Every deployable app has at least one; CI runs them
 all (`.github/workflows/e2e.yml`, gated by
 `scripts/workflows-baseline.json`). See
-[Testing strategy](../docs/src/content/docs/contribute/testing.mdx#release-v2-workflows).
+[Testing strategy](../docs/src/content/docs/contribute/testing.mdx#core-and-app-workflows).
 
 ```yaml
 # workflows/sorted-kv-store.yml (abridged)

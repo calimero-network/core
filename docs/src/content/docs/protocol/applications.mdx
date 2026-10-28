@@ -25,7 +25,7 @@ There are two ways in:
 
 - `POST /packages/install { package, version }` fetches `package@version` from
   the operator's registry (`--registry-url`, `calimero-app-downloader`'s
-  `HttpRegistry`), the way v1 installs.
+  `HttpRegistry`).
 - `POST /packages` takes an uploaded `.mpk`.
 
 Before the system log records anything (`InstallPackage`), the node that took
@@ -51,7 +51,7 @@ declared outbound prefixes.
 A package's name is the identity apps, approvals and frontends refer to. Pinning
 the first release's key means nobody but that publisher can ship a later
 "version" of it into the cluster, and it is what outbound approvals are granted
-to: `(package, signer)`, as in v1.
+to: `(package, signer)`.
 :::
 
 ## Where the bytes live
@@ -59,7 +59,7 @@ to: `(package, signer)`, as in v1.
 - A **registry** release is never passed between nodes. Each node that needs
   to run it fetches it from the registry itself (`Node::release_wasm`), refuses
   bytes whose hash differs from the one the log recorded, and verifies the
-  release again before using its WASM. That is v1's one-source rule: the
+  release again before using its WASM. That is the one-source rule: the
   registry is the only place a registry release comes from.
 - An **uploaded** release has no registry. The `.mpk` is stored on a majority
   of nodes before the log records it; a node that lacks it fetches it from a

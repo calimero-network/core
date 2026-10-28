@@ -42,7 +42,7 @@ See [Install & first run](https://calimero-network.github.io/core/operate/instal
 
 | I want to… | Start here |
 |-------|------|
-| Understand release-v2 and try it | [Cloud](https://calimero-network.github.io/core/cloud/overview/) — overview, quickstart, writing apps |
+| Understand Calimero and try it | [Cloud](https://calimero-network.github.io/core/cloud/overview/) — overview, quickstart, writing apps |
 | Write a Calimero app | [Build](https://calimero-network.github.io/core/build/) — SDK, collections, examples |
 | Run a cluster | [Operate](https://calimero-network.github.io/core/operate/) — install, deployment, `merod`/`meroctl`, configuration, the node API |
 | Understand the model | [Protocol Reference](https://calimero-network.github.io/core/protocol/overview/) |

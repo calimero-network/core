@@ -8,8 +8,9 @@ sidebar:
 
 An app's state is built from the collection types in
 `calimero_storage::collections` (`UnorderedMap`, `Vector`, `LwwRegister`,
-`Counter`, the text types, `SharedStorage`, …), the same SDK and storage crate
-v1 used. On a cluster they remain the **storage format** and the **API** apps
+`Counter`, the text types, `SharedStorage`, …), the SDK and storage crate v1
+apps were built with (components built with `calimero-app-sdk` have their own
+collections). On a cluster they remain the **storage format** and the **API** apps
 program against. What changed is what makes replicas agree: not a merge, but a
 log. [Collections](/build/collections/) is the guide to choosing one; this page
 explains what is underneath.
@@ -72,7 +73,7 @@ ordering, text editing, per-writer access — rather than its merge semantics.
   written by the node in the same entry as the run's other writes
   ([Who a run acts as](/protocol/authorship/#writers-of-shared-cells)).
 - **The ordered index** (`storage_index_*`, used by sorted collections) is not
-  provided by the cloud node: index writes report "not persisted" and the
+  provided by the node: index writes report "not persisted" and the
   collections fall back to reading without it.
 - **Migrations** rewrite the root entity through the storage crate
   (`write_root_state`), stamped after the entry it replaces

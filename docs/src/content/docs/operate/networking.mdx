@@ -7,7 +7,7 @@ sidebar:
 
 import { Aside } from '@astrojs/starlight/components';
 
-A release-v2 node has one network surface: an HTTP listener. Clients and peers
+A node has one network surface: an HTTP listener. Clients and peers
 both reach it at the node's public URL, and everything except `/health` and
 `/attestation` travels inside the sealed channel. v1's libp2p swarm, gossip,
 mDNS, rendezvous, relays, DHT and NAT traversal are gone: nodes of a cluster
@@ -98,4 +98,4 @@ signature before a byte is served.
 | --- | --- |
 | `2528` | The default `--listen` port. |
 | `2501`–`2503` | `merod local` (`--base-port 2500`, nodes 1–3). |
-| `2428` | Exposed by the `Dockerfile`, used by nothing in release-v2. |
+| `2428` | Exposed by the `Dockerfile`, used by nothing. |

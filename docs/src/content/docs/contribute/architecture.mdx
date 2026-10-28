@@ -1,6 +1,6 @@
 ---
 title: Architecture Orientation
-description: How the release-v2 node is put together — merod and meroctl over calimero-node, the system group and app groups, the path of a call, and which crates do what.
+description: How the node is put together — merod and meroctl over calimero-node, the system group and app groups, the path of a call, and which crates do what.
 sidebar:
   label: Architecture
   order: 2
@@ -9,7 +9,7 @@ sidebar:
 import { Aside } from '@astrojs/starlight/components';
 import SeqDiagram from '../../../components/SeqDiagram.astro';
 
-This page orients you in the release-v2 workspace: the two binaries, what is
+This page orients you in the workspace: the two binaries, what is
 inside a node, and the path a call takes. The full crate list is in the
 [crate guide](/contribute/crate-guide/); each crate's `AGENTS.md` has the detail.
 
@@ -81,11 +81,15 @@ sync manager, gossip, the DAG) is deleted.
 - **System writes** (sign-up, installs, org changes) go to the system leader
   the same way; authority is checked when they apply.
 
-## What is still v1
+## The two app runtimes
 
 The SDK (`calimero-sdk`, `calimero-storage`, `calimero-sys`,
-`calimero-wasm-abi`) and the WASM runtime (`calimero-runtime`) are the same
-ones v1 apps were built against, so every v1 app deploys unchanged. The runtime
+`calimero-wasm-abi`) and the WASM runtime (`calimero-runtime`, wasmer) are the
+ones v1 apps were built against, so every v1 app deploys unchanged. Beside them,
+`calimero:app` components (the WIT world in `calimero-app-wit`, built with
+`calimero-app-sdk` and `calimero-app-build`) run on wasmtime
+(`calimero-app-engine-wasmtime`) through the host core `calimero-app-host`. The
+node picks the runtime once per app, from the WASM its bundle names. `calimero-runtime`
 still links a few v1 node crates: `calimero-node-primitives` (which brings
 `calimero-governance-types`, `calimero-network-primitives`,
 `calimero-blobstore` and `calimero-utils-actix`), `calimero-context-config`,

@@ -68,7 +68,7 @@ counter is refused.
 :::note[v1 comparison]
 v1 rotated a scope's symmetric key whenever a member was removed, re-wrapped it
 to every remaining member by ECDH, and let a member that missed a delivery pull
-the key back. Members of a cloud app hold no key to its data, so removing one
+the key back. Members of an app on a cluster hold no key to its data, so removing one
 is a system command that takes effect on the next request; there is nothing to
 rotate.
 :::

@@ -1,14 +1,13 @@
 ---
 title: Presence
-description: Ephemeral "who is here and what are they doing" for app frontends — kept in every node's memory, never in a log, with v1's rules for ordering, heartbeats and expiry.
+description: Ephemeral "who is here and what are they doing" for app frontends — kept in every node's memory, never in a log, with its rules for ordering, heartbeats and expiry.
 sidebar:
   order: 22
 ---
 
 **Presence** is what each person's device says about itself right now: online,
 a cursor, a selection. It changes many times a second and is worthless a few
-seconds later, so it never goes into a log (`crates/node/src/presence.rs`,
-v1's awareness channel).
+seconds later, so it never goes into a log (`crates/node/src/presence.rs`).
 
 ## How it moves
 
@@ -24,7 +23,7 @@ v1's awareness channel).
   event, then a `presence` event per change (`state: null` when someone left).
   It counts against the node's stream limit.
 
-## v1's rules
+## Rules
 
 | Rule | Why |
 | --- | --- |

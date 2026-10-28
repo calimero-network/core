@@ -15,7 +15,7 @@ its id. The same store holds bundles and uploaded `.mpk` releases.
 Each node keeps blobs in its own RocksDB `blobs` column, sealed under the
 cluster's storage key like everything else ([Storage schema](/protocol/storage/)).
 A blob's id is `hex(SHA-256(bytes))`; the API also accepts the base58 form apps
-print (v1's `BlobId`).
+print (`BlobId`).
 
 - **Writes reach a majority.** Storing a blob writes it locally and pushes it to
   every other node (`internal/blob`); the write succeeds once a majority of the

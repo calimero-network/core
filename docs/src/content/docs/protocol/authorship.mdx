@@ -24,7 +24,7 @@ one (`types::Caller`).
 
 `env::context_id()` is the running app's own context id, and `env::caller_org()`
 is the caller's standing in the app's organization (its id, role and teams), or
-nothing. A person has one identity everywhere: release-v2 has no device keys,
+nothing. A person has one identity everywhere: there are no device keys,
 so apps that tell people apart by `executor_id` still do, and two of one
 person's devices are the same author.
 
@@ -37,8 +37,8 @@ Some runs are the node's, not a person's:
   this way.
 - **Cross-app calls** run in the target app as `App { app: origin }`, with
   `env::xcall_origin()` set to the calling app's context id. Only
-  `#[app::xcall]` entry points may run this way, under v1's rules
-  ([Event handlers & cross-app calls](/protocol/xcall/)).
+  `#[app::xcall]` entry points may run this way, under the rules in
+  [Event handlers & cross-app calls](/protocol/xcall/).
 - **Timers** (`#[app::tee(every = "…")]`) and **`tee:` handlers** run as the
   app's **TEE authority** (below).
 
@@ -70,7 +70,7 @@ the node derives from the storage key for each app
 - **A member key per account** stands in for that member's devices. A TEE run
   that seals a share for a member seals it to their member key; only a run whose
   caller is that member opens it with that key. In v1 the share was sealed to
-  each of the member's devices; a cloud member reads through the node instead.
+  each of the member's devices; a member reads through the node instead.
 
 ## Private spaces
 

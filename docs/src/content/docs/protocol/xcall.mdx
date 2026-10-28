@@ -40,7 +40,7 @@ did when every v1 node applied every delta itself.
 
 ## Authorization
 
-v1's three checks still hold, now enforced by the node that runs the target:
+Three checks hold, enforced by the node that runs the target:
 
 1. **Entry point.** An event may run only a method the bundle's ABI marks
    `#[app::handler]` (a `tee:` handler is the app's own TEE run). An xcall may

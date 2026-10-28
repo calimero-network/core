@@ -64,7 +64,7 @@ recent upgrade runs. Each metadata value is at most 16 KiB of JSON.
 
 ## Teams
 
-Teams are v1's subgroups (`types::Team`). They nest (`parent`), move
+Teams (`types::Team`, v1's subgroups) nest (`parent`), move
 (`UpdateTeam { parent }`, never under themselves), and are one of two kinds:
 
 - **Open** (`join: everyone`): whoever reaches the parent team — at the top,
@@ -80,7 +80,7 @@ organization admin, **manages** it: renames it, adds and removes members,
 creates teams under it, moves it within what they manage, and deletes it.
 
 - A member who leaves a team, or whom a manager removes, does not come back by
-  inheritance (`Team::removed`, v1's `MemberLeft` and `MemberRemoved`), so
+  inheritance (`Team::removed`), so
   leaving an open team sticks. They return only when a manager adds them again
   or they redeem an invite that names the team; they cannot rejoin by
   themselves.

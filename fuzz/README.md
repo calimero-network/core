@@ -20,7 +20,7 @@ After one script run has copied the root lock in, replay a crash with `cargo +ni
 | `session_token` | `peek_session` and `verify_session` on a token a request carries | no panic, and a token that verifies under the node's key verifies under no other |
 | `quote_parse` | `quote_report_data` and `verify_evidence` on a TDX quote a node or peer presents (release build: no mock path) | no panic, and nothing verifies without collateral |
 
-v1's `wire_decode`, `provider_record`, `signed_ops` and `governance_apply` fuzzed gossip, sync, blob-provider and governance-op decoding, which release-v2 deleted: the untrusted bytes a node reads now arrive through the sealed channel (`sealed_request`) and its authority is passkeys and sessions (`passkey_verify`, `session_token`) checked against attested peers (`quote_parse`).
+v1's `wire_decode`, `provider_record`, `signed_ops` and `governance_apply` fuzzed gossip, sync, blob-provider and governance-op decoding, which are gone with v1's node: the untrusted bytes a node reads now arrive through the sealed channel (`sealed_request`) and its authority is passkeys and sessions (`passkey_verify`, `session_token`) checked against attested peers (`quote_parse`).
 
 Private entry points are reached through `fuzz_api` modules compiled only under `cfg(fuzzing)`; they wrap the real function and hold no logic.
 Seeds, where a target has them, live in `fuzz/seeds/<target>/`; a target that guards a fixed finding includes its reproduction input.

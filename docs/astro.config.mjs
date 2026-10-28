@@ -8,7 +8,7 @@ export default defineConfig({
   site: 'https://calimero-network.github.io',
   // GitHub project Pages serve under /<repo>/. Change if a custom domain is used.
   base: '/core',
-  // Pages release-v2 replaced (v1's sync, governance ops, delegation): old links
+  // Pages for v1's sync, governance ops and delegation, now deleted: old links
   // land on the page that now covers the subject.
   redirects: {
     '/protocol/operations/': '/core/protocol/replication/',
@@ -81,7 +81,7 @@ export default defineConfig({
           items: ['using-the-docs', 'journeys', 'topics'],
         },
         {
-          // The cloud-only release candidate (release-v2 branches).
+          // Overview, quickstart and writing apps.
           label: 'Get started',
           items: ['cloud/overview', 'cloud/quickstart', 'cloud/apps'],
         },

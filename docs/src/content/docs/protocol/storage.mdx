@@ -15,7 +15,7 @@ Everything a node persists is in its data directory (`--data-dir`, by default
 └── log.redb.migrated   (only if the node was upgraded from the previous format)
 ```
 
-The database is opened with the column and table options v1's store used
+The database is opened with tuned column and table options
 (`calimero-log`'s `tuning`): compression, bloom filters, one bounded block
 cache (128 MiB). Log appends, votes and blobs are synced writes; RocksDB shares
 one WAL sync between the groups writing at once, and groups never queue behind
