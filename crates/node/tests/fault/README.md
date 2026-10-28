@@ -11,7 +11,6 @@ release-image smoke.
 | `rv2.py` | The cluster: ports, flags, kill/pause/resume/restart, per-node binaries, a package registry on 127.0.0.1, meroctl per account home |
 | `soak.py` | Soak metrics and the report format (`{"version": 1, "runs": [...]}`), `soak.py report` renders it |
 | `rooms_fault.py`, `linearizable.py` | Rooms under a randomized nemesis, checked for linearizability and idempotency (A4) |
-| `ci-jobs.yml.txt` | The GitHub Actions jobs proposed for the suite (not wired in) |
 
 ## Tests
 
@@ -34,7 +33,7 @@ one build) and no `rooms-fault`.
 ```bash
 cargo build --release -p merod -p meroctl
 cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
-for v in 1.0.0 1.1.0; do (cd apps/kv-store && cargo mero bundle --dev --no-icon --app-version "$v"); done
+for v in 1.0.0 1.1.0; do (cd apps/wasmer-fixtures/kv-store && cargo mero bundle --dev --no-icon --app-version "$v"); done
 cargo test --release -p calimero-node --test rooms    # the Rooms component, for rooms-fault only
 
 python3 -I crates/node/tests/fault/suite.py --list

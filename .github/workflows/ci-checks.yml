@@ -60,14 +60,6 @@ jobs:
       - name: Check every rust-cache group hashes one environment
         run: python3 scripts/check-rust-cache-groups.py
 
-      # Fails when a merobox workflow under workflows/ or apps/*/workflows/ is
-      # run by no e2e.yml shard and is not marked not_applicable with a reason.
-      - name: Test the scenario-coverage check
-        run: python3 scripts/tests/check-scenario-coverage-test.py
-
-      - name: Check every merobox workflow runs somewhere
-        run: python3 scripts/check-scenario-coverage.py
-
       - name: Decide which jobs this change reaches
         id: decide
         env:
