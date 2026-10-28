@@ -65,8 +65,10 @@ app-name/
 ├── README.md                 # App documentation
 ├── src/
 │   └── lib.rs                # App implementation
-└── workflows/
-    └── *.yml                 # Test workflows (merobox)
+└── scenarios/
+    ├── <name>.json           # App-level scenario (harness and cluster)
+    ├── <name>.org.json       # Its organization (optional)
+    └── cluster/*.json        # Cluster scenarios (node-level steps)
 ```
 
 ## Patterns
@@ -282,7 +284,7 @@ mod tests {
 - `view(|s| ...)` reads via `&self` without committing.
 - `call_as(executor, |s| ...)` runs a mutation as a specific identity (multi-author CRDT tests).
 - `events()` / `logs()` return what `app::emit!` / `app::log!` produced.
-- Unsupported in-process: `env::xcall`, networked blobs, `ed25519_verify` (they panic if hit) - test those paths with merobox workflows.
+- Unsupported in-process: `env::xcall`, networked blobs, `ed25519_verify` (they panic if hit) - test those paths with cluster scenarios.
 
 ### Building an App
 
@@ -324,43 +326,55 @@ rg -n "#\[derive.*Error" */src/
 rg -n "app::bail!" */src/
 ```
 
-## Workflows
+## Scenarios
 
-Each app's `workflows/` holds merobox workflows
-(`backend: cloud-v2`): a cluster of `merod` processes, accounts signed in with
-passkeys, an organization, the app deployed and called as several accounts.
-Most were migrated from the app's v1 workflows by `merobox cloud port`; each
-one's header lists the v1 steps that have no counterpart in this node and any
-fix made in the migration. Every deployable app has at least one; CI runs them
-all (`.github/workflows/e2e.yml`, gated by
-`scripts/workflows-baseline.json`). See
-[Testing strategy](../docs/src/content/docs/contribute/testing.mdx#core-and-app-workflows).
+An app's end-to-end tests are scenario files under `scenarios/`, run on an
+in-process cluster (three nodes, sealed channels, the real WASM) by
+`cargo test -p calimero-node --test scenarios`; each file gets a cluster of
+its own. Two formats
+([Testing strategy](../docs/src/content/docs/contribute/testing.mdx#scenarios)):
 
-```yaml
-# workflows/sorted-kv-store.yml (abridged)
-name: Sorted KV store
-backend: cloud-v2
-cluster: { nodes: 3, base_port: 6000 }
-accounts: [alice, bob]
-steps:
-  - { name: An org, type: create_org, account: alice, org_name: Sorted, outputs: { org: orgId } }
-  - name: The app in it
-    type: deploy
-    account: alice
-    wasm: "{{env.CORE_WASM_DIR}}/sorted_kv_store.wasm"
-    org: "{{org}}"
-    outputs: { app: appId }
-  - { type: call, account: alice, app: "{{app}}", method: set, args: { key: a, value: "1" } }
-  - { type: view, account: alice, app: "{{app}}", method: get, args: { key: a }, expect: "1" }
+- **App-level**, `scenarios/<name>.json`: the step array of
+  `calimero_app_sdk::testing::scenario` (`call`/`view`/`tick`/`advance`/
+  `removeMember`, `as`, `expect`, `save`, `$var`, `@account`, `events`). The
+  app's own `tests/scenarios.rs` runs it in the harness; the cluster runner
+  builds the app, creates the organization of `<name>.org.json`
+  (`{ "admins": [], "members": [], "guests": [], "teams": { "t": ["acct"] } }`,
+  the owner is `owner`) with invites and teams, deploys the app in it and runs
+  the same steps, `as` each account's client, step `i` on node `i % 3`, the app
+  clock starting at `1_700_000_100_000`.
+- **Cluster**, `scenarios/cluster/**/*.json`: node-level steps a harness cannot
+  run (orgs, invites, teams, packages, upgrades, blobs, raw HTTP). An object in
+  merobox's cloud-v2 workflow format as JSON; the former `workflows/*.yml` were
+  converted by `scripts/workflow-to-scenario.py`, and the converter stays for
+  any workflow still in YAML.
+
+```json
+{
+  "name": "Sorted KV store",
+  "cluster": { "nodes": 3 },
+  "accounts": ["alice", "bob"],
+  "steps": [
+    { "type": "create_org", "account": "alice", "org_name": "Sorted", "outputs": { "org": "orgId" } },
+    { "type": "deploy", "account": "alice", "wasm": "{{env.CORE_WASM_DIR}}/sorted_kv_store.wasm",
+      "org": "{{org}}", "outputs": { "app": "appId" } },
+    { "type": "call", "account": "alice", "app": "{{app}}", "method": "set", "args": { "key": "a", "value": "1" } },
+    { "type": "view", "account": "alice", "app": "{{app}}", "method": "get", "args": { "key": "a" }, "expect": "1" }
+  ]
+}
 ```
 
 ```bash
-python3 scripts/build-workflow-fixtures.py           # every app's WASM, into target/workflow-wasm
-MEROD_BINARY=target/debug/merod python3 scripts/run-workflows.py apps/<app>/workflows/<file>.yml
+cargo test -p calimero-node --test scenarios                       # every scenario
+SCENARIO_FILTER=apps/<app>/ cargo test -p calimero-node --test scenarios
+SCENARIO_SHARD=2/4 cargo test -p calimero-node --test scenarios -- --test-threads 2
+cargo test -p calimero-node --test scenarios -- --list
 ```
 
-A new workflow needs a `base_port` no other workflow uses (each runs its own
-cluster); add it to the baseline once it passes.
+`{{env.CORE_WASM_DIR}}/<crate>.wasm` and `.../dist/<package>-<version>.mpk`
+are built on first use when missing (`cargo mero build`;
+`scripts/build-workflow-fixtures.py` for signed releases). A scenario that
+cannot pass yet goes in `crates/node/tests/scenarios-skip.txt` with its reason.
 
 ## Building for Production
 

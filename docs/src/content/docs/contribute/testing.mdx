@@ -19,7 +19,8 @@ freezes, restarts, upgrades) is covered by merobox scenarios.
 | Cluster | `crates/node/tests/cluster.rs` | The node end to end in one process: sign-up, installs, calls, views, events, orgs and teams, upgrades and migrations, blobs, follow-ups, governance, replica moves | Seconds to minutes |
 | CLI | `crates/merod/tests/cli.rs`, `crates/meroctl/tests/cli.rs` | `merod init/config/run/inspect` through the binary; every `meroctl` command group against a local cluster | Seconds to minutes |
 | App logic | `TestHost` in `crates/sdk/src/testing.rs`, `converge` in `crates/storage/src/testing.rs` | An app's methods, events and migrations; that a state type converges | Milliseconds |
-| Scenarios | merobox `cloud-v2` backend | Separate `merod` processes: crash, freeze, restart and upgrade under load | Slow |
+| Scenario files | `apps/*/scenarios/`, `workflows/**/scenarios/`, run by `crates/node/tests/scenarios.rs` | An app or a flow end to end on an in-process cluster, written as data: orgs, teams, invites, packages, upgrades, blobs, calls as several accounts | Seconds per file |
+| Process scenarios | merobox `cloud-v2` backend | Separate `merod` processes: crash, freeze, restart and upgrade under load | Slow |
 
 Use both ends. A green cluster test does not prove a process restart or a
 frozen leader behaves, and a green scenario does not localize a logic bug.
@@ -95,6 +96,158 @@ reordered operations. The app-author guide is [Testing your app](/build/testing/
   did for v1; it still matters for code that also targets v1.
 </Aside>
 
+## Scenarios
+
+Scenario files are end-to-end tests written as data: each runs on an
+in-process cluster of its own (`crates/node/tests/harness/cluster.rs`: real
+`run`, mock attestation, sealed channels, the real WASM, a package registry on
+loopback), driven only through `calimero-client`. One test binary runs every
+file it finds:
+
+```bash
+cargo test -p calimero-node --test scenarios                       # all of them
+SCENARIO_FILTER=apps/blobs/,app-migration/02 cargo test -p calimero-node --test scenarios
+cargo test -p calimero-node --test scenarios -- fugue-collab        # a filter argument does the same
+SCENARIO_SHARD=3/4 cargo test -p calimero-node --test scenarios -- --test-threads 2
+cargo test -p calimero-node --test scenarios -- --list              # what would run
+```
+
+It has its own test main (`harness = false`): `--test-threads N` (default 2)
+scenarios run at once, each on its own cluster; `SCENARIO_SHARD=k/n` keeps every
+n-th file of the sorted list starting at the k-th, so n shards split the files
+evenly and deterministically. A file listed in
+`crates/node/tests/scenarios-skip.txt` (`<path> <reason>`) is reported ignored
+until `--include-ignored` (or `SCENARIO_INCLUDE_SKIPPED=1`).
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `SCENARIO_FILTER` | all | Comma-separated substrings; a path containing any of them runs |
+| `SCENARIO_SHARD` | none | `k/n`: the k-th of n shards (1-based) |
+| `SCENARIO_WAIT_CAP_SECS` | `2` | Longest a `wait` step sleeps, unless it says `"exact": true`: the cluster replicates synchronously, and the ported waits were for v1's gossip |
+| `SCENARIO_FUZZY_SECONDS` | `10` | How long a `fuzzy_test` runs (soak lengths are the Python suite's) |
+| `SCENARIO_TIMEOUT_SECS` | `600` | A scenario still running after this fails |
+| `SCENARIO_REPEAT_CAP` | none | Most iterations of a `repeat` step |
+| `CORE_WASM_DIR` | `$CARGO_TARGET_DIR/workflow-wasm` | Where `{{env.CORE_WASM_DIR}}` fixtures live |
+
+Fixtures are built on first use when missing: `<crate>.wasm` by
+`cargo mero build` of that app (the repository's own cargo-mero first:
+`CARGO_MERO_BIN_DIR`, then the target's `debug/`), a signed
+`dist/<package>-<version>.mpk` by `scripts/build-workflow-fixtures.py`, and the
+blobs size sweep's `static/generated/blob-<N>mib.bin` as random bytes in memory.
+`python3 scripts/build-workflow-fixtures.py` builds them all ahead of time.
+
+### App-level scenarios
+
+`apps/<app>/scenarios/<name>.json` is the step array of
+`calimero_app_sdk::testing::scenario` (`call`, `view`, `tick`, `advance`,
+`removeMember`; `as`, `expect`, `save`, `$var`, `@account`, `events`), the same
+file the app's own `tests/scenarios.rs` runs in the harness. Beside it,
+`<name>.org.json` is the organization it needs:
+
+```json
+{ "admins": ["ada"], "members": ["bob", "cy"], "guests": ["gus"], "teams": { "sales": ["bob"] } }
+```
+
+The owner is always `owner`; an omitted key is empty, and no file means the
+owner alone. On the cluster the runner builds the app (a component with
+`calimero_app_build::build_component_cached`, a wasmer app with
+`cargo mero build`), signs every account up, creates the organization, invites
+each account with its role, creates the teams and adds their members, deploys
+the app in the organization and runs the steps: step `i` on node `i % 3`, as
+its `as` account's own client. `@name` is that account's id; a string that is
+exactly a team's name in `args` is that team's id on the cluster (and a team id
+in a result reads back as its name). The app clock starts at
+`1_700_000_100_000` (a 15-minute slot boundary, the harness tests' time zero);
+`advance` moves every node's clock, `tick` waits until the timer's due slot is
+applied everywhere. Events are each account's live stream from the log's start.
+
+### Cluster scenarios
+
+`apps/<app>/scenarios/cluster/**/*.json` and `workflows/**/scenarios/**/*.json`
+hold node-level steps a harness cannot run. A file is an object:
+
+```json
+{
+  "name": "Blobs across nodes",
+  "description": "...",
+  "comment": ["what the YAML's header said: v1 steps dropped in the port, fixes"],
+  "cluster": { "nodes": 3, "settings": "[outbound]\nenabled = true\n..." },
+  "accounts": ["alice", "bob"],
+  "variables": {},
+  "steps": [
+    { "type": "create_org", "account": "alice", "org_name": "Blobs", "outputs": { "org": "orgId" } },
+    { "type": "deploy", "account": "alice", "org": "{{org}}",
+      "wasm": "{{env.CORE_WASM_DIR}}/blobs.wasm", "outputs": { "app": "contextId" } },
+    { "type": "upload_blob", "account": "bob", "app": "{{app}}", "file_path": "static/test.txt",
+      "outputs": { "blob": "blob_id" } },
+    { "type": "download_blob", "account": "alice", "app": "{{app}}", "blob_id": "{{blob}}",
+      "expected_size": 13 },
+    { "type": "assert", "statements": ["is_set({{blob}})"] }
+  ]
+}
+```
+
+It is merobox's cloud-v2 workflow format as JSON, so a workflow converts
+mechanically (`scripts/workflow-to-scenario.py FILE.yml [--delete]`; it drops
+`base_port` and `binary` and refuses what it cannot carry over, naming why).
+`cluster.settings` is the TOML every node starts with (its `[outbound]` table;
+the test build has `outbound-testing`). Every account in `accounts` is signed
+up with its own soft passkey on node 1 and talks to node `index % nodes` (an
+explicit `"node": N`, 1-based, overrides).
+
+Conventions, as merobox's runner had them:
+
+- `{{name}}` placeholders: a string that is one placeholder keeps the value's
+  type; one inside text is spliced in (`json.dumps` of a non-string). Dotted
+  paths reach into values (`{{accounts.alice.account_id}}`, `{{env.HOME}}`),
+  `{{a ?? b}}` takes the first that resolves, and an unresolved one fails the
+  step. Set for you: `accounts.<name>.{account_id,public_key}`,
+  `public_key_<name>`, `env.*`, `ops_token`.
+- `outputs: { var: path }` stores a path of the step's result (`""` the whole
+  result); a call's or view's result also has `rpc.output` (its result, as v1's
+  JSON-RPC envelope had it).
+- `expected_error: CODE` makes a refusal with that API code the step's success,
+  `expected_failure: true` any refusal, `allow_failure: true` either outcome;
+  an output whose path starts with `error` then holds the refusal's text.
+  `expect` compares a step's `result`; `retry_for: S` retries a failing step for
+  S seconds; `max_seconds: S` fails one that succeeds too late.
+- `assert` statements: `is_set(A)`, `is_empty(A)`, `contains(A, B)`,
+  `not_contains(A, B)`, `regex(A, P)`, `equal(A, B)` / `not_equal(A, B)`
+  (also `equals` / `not_equals`), `A op B` for `== != >= > <= <` (numeric when
+  both sides are numbers); `non_blocking: true` reports without failing.
+  `json_assert`: `json_equal`, `json_not_equal`, `json_subset` (and unprefixed).
+  Operands are evaluated as merobox did, with Python's semantics
+  (`crates/node/tests/harness/py.rs`): `str` of a map is its Python repr,
+  `1 == 1.0`, a whole `{{name}}` keeps its type and names a variable directly
+  (no dotted paths), and an unresolved one fails its statement.
+- `repeat { count, steps }` sets `iteration` (from 0) and `iteration_node`
+  (from 1). `fuzzy_test { operations: [{ name, weight, steps }], accounts,
+  success_threshold, operation_delay_ms }` picks weighted operations at random
+  for `SCENARIO_FUZZY_SECONDS`, with `{{random_account}}`,
+  `{{random_int(a, b)}}`, `{{uuid}}`, `{{timestamp}}` and, after a call,
+  `{{fuzzy_<arg>}}`; it passes at `success_threshold` percent.
+
+Step types (fields as in merobox; each acting step names an `account`, or an
+`api_key`, or `as_key`, an account's public key):
+
+| Area | Steps |
+| --- | --- |
+| Apps | `deploy` (`wasm` or `package` + `version`/`service`; `org`, `access`, `init_args`, `confirm_methods`, `app_name`) answers `appId`, `contextId`, `bundle`, `memberPublicKey`; `upload_bundle` (`hash`); `create_app`; `upgrade_app` (`version`/`package`/`bundle`/`migrate`, approved with the account's passkey when the node asks); `delete_app`; `migration_status` (`apps`) |
+| Packages | `install_package` (`mpk`: published to the cluster's registry, then `POST /packages/install`; answers `package`, `version`), `packages`, `uninstall_package` |
+| Calls | `call` (`args`, `confirm`, `idempotency_key`), `view` (`stale`, `min_index`), `wait_for` (`equals`/`contains`, `timeout`, `interval`), `events` (`from`, `count`, `timeout`) |
+| Accounts | `whoami` (adds `publicKey`), `add_device` (another passkey on the account; `device` then acts as it), `create_api_key` |
+| Orgs | `create_org`, `invite` (`role`, `teams`), `redeem_invite`, `remove_member`, `set_role`, `capabilities`, `member_capabilities` |
+| Teams | `create_team` (`team_name`, `join`, `parent`), `team_add` (`members`, `role`, `lead`, `capabilities`), `team_remove`, `team_update` (`join`, `metadata`, `team_name`, `parent`), `team_get`, `team_list`, `team_join`, `team_delete` |
+| Blobs | `upload_blob` (`file_path`: beside the scenario or any directory above it; answers `blobId`, `blob_id`, `size`), `download_blob` (`expected_size`, `expected_sha256`), `list_blobs`, `blob_info`, `delete_blob` |
+| Presence | `publish_presence` (`seq`, `state`), `presence` |
+| Approvals | `transfer_app`, `approve_release`, `approve_outbound`, `upgrade_org`, `upgrade_run`, `retry_upgrade_run` |
+| Raw | `http` (`method`, `path`, `body`; a `412 CONFIRM_REQUIRED` answered with the passkey) |
+| Flow | `wait` (`seconds`, capped; `exact`), `set` (`values`), `assert`, `json_assert`, `repeat`, `fuzzy_test`, `find_leader` |
+
+Node process faults (`kill_node`, `pause_node`, `resume_node`, `start_node`,
+`restart_node`, `ops`) are not steps here: a scenario naming one is refused.
+They need real processes, and run in the Python fault suite.
+
 ## Scenario tests with merobox
 
 [merobox](https://github.com/calimero-network/merobox)'s `cloud-v2` backend
@@ -116,32 +269,11 @@ regression scenario there.
 
 ### Core and app workflows
 
-Core's workflows (`workflows/`: app migrations, sync, fuzzy loads) and every
-app's (`apps/*/workflows/`) are merobox workflows for the `cloud-v2` backend.
-Most were migrated from v1's workflows of the same names, in place, by
-`merobox cloud port`; each file's header lists the v1 steps that have no
-counterpart on a cluster (gossip waits, node logs and admin-API reads, scripts,
-partitions of a user's node) and every fix made in the migration, with its
-reason. They are maintained by hand from here on. An app with no v1 workflow
-(or none that applied) has one written for the cluster, so every deployable app
-has at least one. Run them against a build:
-
-```bash
-python3 scripts/build-workflow-fixtures.py      # the releases and WASM they install
-MEROD_BINARY=target/debug/merod python3 scripts/run-workflows.py [FILE...]
-python3 scripts/run-workflows.py --shard 2/4 --list   # what CI's shard 2 runs
-```
-
-Every workflow names its own `cluster.base_port` and no two overlap, so the four
-shards of one checkout can run side by side, each with its own `--json`. To run
-the same workflows from two checkouts at once, give each a band of its own with
-`--port-offset N` (or `WORKFLOW_PORT_OFFSET`), e.g. 10000 and 20000.
-
-`scripts/workflows-baseline.json` lists the workflows that pass; one
-of them failing fails CI. Add a workflow to it once it passes, and its measured
-duration to `scripts/workflows-durations.json` (the shards are packed
-by it). A workflow not on the baseline still runs and is reported, so a fix
-shows up as a pass.
+Core's and the apps' functional workflows (`workflows/**/*.yml`,
+`apps/*/workflows/**/*.yml`) were converted to cluster scenarios
+([Scenarios](#scenarios)) by `scripts/workflow-to-scenario.py` and run in
+process; merobox keeps what needs separate processes. The table below is the
+record of the v1 workflows deleted when they were ported to the cluster.
 
 #### Workflows deleted in the migration
 
