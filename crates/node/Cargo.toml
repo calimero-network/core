@@ -71,9 +71,17 @@ calimero-outbound = { workspace = true, features = ["outbound-testing"] }
 # One synced write timed beside the cluster bench, on the disk it runs on.
 rocksdb.workspace = true
 tempfile.workspace = true
+# The cluster scenario runner reads `cluster.settings` (TOML) and crate manifests.
+toml.workspace = true
 
 [lib]
 bench = false
+
+# Every scenario file on its own cluster, with its own main: selection by
+# SCENARIO_FILTER / SCENARIO_SHARD, skips from tests/scenarios-skip.txt.
+[[test]]
+name = "scenarios"
+harness = false
 
 # Not criterion: a few seconds of load per row, printed once and written as JSON.
 [[bench]]
