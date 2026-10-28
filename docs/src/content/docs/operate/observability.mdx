@@ -8,8 +8,8 @@ sidebar:
 import { Aside } from '@astrojs/starlight/components';
 
 A node reports through three routes and its log. None of them carries app
-state, names or credentials: by design the operator sees counts and Raft
-status only.
+state, names or credentials: by design the operator sees counts, Raft status
+and, for billing, each app's usage under its opaque id.
 
 | Source | Access | What |
 | --- | --- | --- |
@@ -25,10 +25,14 @@ The `_total` metrics are counters, `http_request_duration_seconds` is a
 histogram, and the rest are gauges. "Here" means as this node sees it;
 directory counts are the same on every node once it has caught up.
 
-No label carries an app, account or organization id, a name, or anything from
-a request: labels are route templates (`/apps/{app}/intents`), route groups,
-status classes, the node's error codes, group numbers and node ids. Whoever
-scrapes the metrics is the operator, who learns counts and nothing more.
+No label carries a name or anything from a request: labels are route
+templates (`/apps/{app}/intents`), route groups, status classes, the node's
+error codes, group numbers and node ids. The one exception is the
+[usage metering](#usage-metering) family `calimero_app_*`, labelled with an
+app's id and its payer's id (an organization, or a personal app's owner
+account) so it can be billed; those are opaque random ids, never names. Whoever
+scrapes the metrics is the operator, who learns counts, and which app ids use
+how much, and nothing more.
 
 Where v1's merod exported the same measure, the name and labels are v1's
 (`http_requests_total`, `http_request_duration_seconds`, `merod_build_info`,
@@ -80,6 +84,80 @@ declared as a view counts under `calls`. The request metrics are kept per
 process: a test that runs several nodes in one process sees their sum on each
 node.
 
+## Usage metering
+
+The `calimero_app_*` metrics meter each app for request-based billing on shared
+clusters: calls, WASM CPU and memory while the app runs, state and blob bytes,
+and outbound requests. Instance-based billing on dedicated clusters needs none
+of it (it bills node lifetime, which the control plane knows from its VMs).
+Code: `crates/node/src/usage.rs`.
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `calimero_app_calls_total` | counter | `app`, `org`, `kind` | WASM calls this node ran for the app whose answer stood. `kind` is `mutation` (a call through `/intents`, the app's `init`, an upgrade's migration), `view` (a view, strong or stale, and a declared `#[app::view]` called through `/intents`) or `followup` (an event handler, a timer, an xcall, counted on the app it called). |
+| `calimero_app_wasm_cpu_seconds_total` | counter | `app`, `org` | CPU seconds the app's WASM runs took on this node: the run's **thread CPU time** (`CLOCK_THREAD_CPUTIME_ID` around the run, which runs on one thread) on Linux and other Unix systems; wall time elsewhere (the metric's `# HELP` says which). Includes the host functions the run called (state reads, sealing), not the time an outbound request waits (that runs on a thread of its own). |
+| `calimero_app_wasm_memory_byte_seconds_total` | counter | `app`, `org` | Linear memory bytes × wall seconds of the app's runs on this node. The bytes are the linear memory the module declares at instantiation, a floor of the run's peak: the runtime does not report how far an instance grew yet. |
+| `calimero_app_outbound_requests_total` | counter | `app`, `org` | Outbound HTTPS requests the app's runs on this node sent. A request the gate refused, or a malformed one, never left the node and is not counted; one that failed on the network is. |
+| `calimero_app_state_bytes` | gauge | `app`, `org` | Key and value bytes of the app's state on this replica (blob marks excluded), sampled every 5 minutes. Logical bytes: the store's sealing and indexes are not counted. |
+| `calimero_app_blob_bytes` | gauge | `app`, `org` | Bytes of the blobs the app holds, on this replica, sampled with the state. |
+
+**Labels.** `app` is the app's id (as `/apps` lists it). `org` is who pays: the
+organization's id for an org app, `account:{owner account id}` for a personal
+app (`:` is not in an id's alphabet, so the two never collide). A transfer to
+another payer starts a new series from zero. No other label exists.
+
+**Where a run is counted.** On the node that ran the WASM, once:
+
+- an app's calls, `init`, migrations, timers and follow-ups run on the app's
+  leader, which counts them; followers apply the leader's diff and run nothing,
+  so they count nothing for those entries;
+- a strong view runs on the leader, a stale view on the replica that answered
+  it;
+- a run whose result was thrown away (a leader race's entry that applied as a
+  conflict and ran again, an entry a deposed leader built, a component's
+  timeout) adds its CPU and memory but no call: the call is counted by the run
+  whose answer stood.
+
+So the cluster's total for an app is the sum over its nodes for the counters,
+and any one replica for the gauges (every replica holds the same state; do
+not sum them).
+
+**Series per app.** A counter's series appears once it counts something, and
+`calimero_app_blob_bytes` once the app holds a blob, so an app that takes
+mutations and views costs 5 series on each node that runs or hosts it
+(`mutation`, `view`, CPU, memory, state bytes) and up to 8 with blobs,
+follow-ups and outbound requests. An app's series leave the node's output once
+it is deleted or its replica moves off the node.
+
+**Restarts.** The counters are in memory and start from zero when merod
+starts; `increase()` and `rate()` treat the drop as a counter reset. Runs made
+after the last scrape before a crash are not counted.
+
+Queries for each billing meter (MetricsQL; PromQL reads them the same way):
+
+```text
+# Mutations and views, per app and payer, over the last hour
+sum by (org, app) (increase(calimero_app_calls_total{kind="mutation"}[1h]))
+sum by (org, app) (increase(calimero_app_calls_total{kind="view"}[1h]))
+sum by (org, app) (increase(calimero_app_calls_total{kind="followup"}[1h]))
+
+# vCPU-seconds while the app's WASM ran
+sum by (org, app) (increase(calimero_app_wasm_cpu_seconds_total[1h]))
+
+# Memory GB-seconds while the app's WASM ran
+sum by (org, app) (increase(calimero_app_wasm_memory_byte_seconds_total[1h])) / 1e9
+
+# Outbound requests
+sum by (org, app) (increase(calimero_app_outbound_requests_total[1h]))
+
+# State and blob GB-months over a 30-day month: the average size, one replica
+max by (org, app) (avg_over_time(calimero_app_state_bytes[30d])) / 1e9
+max by (org, app) (avg_over_time(calimero_app_blob_bytes[30d])) / 1e9
+```
+
+For storage, `max by` picks one replica's sample rather than summing the
+replicas; multiply by the replica count if storage is priced per stored copy.
+
 ## Collecting metrics
 
 `/ops/metrics` is inside the sealed channel, which Prometheus cannot open. Give
@@ -87,8 +165,9 @@ the node `--metrics-listen ADDR` (`metrics-listen` in `config.toml`) and it
 serves the same text at `http://ADDR/metrics`, in plain HTTP, with no other
 route. It asks for no credential (sending the ops token in the clear would
 leak the Ops API's credential), so bind it to an address only your collector
-reaches, such as the host's private interface. The text holds counts and this
-node's group indexes, never names or state.
+reaches, such as the host's private interface. The text holds counts, this
+node's group indexes and the per-app usage under app and payer ids, never
+names or state.
 
 Calimero's own fleet keeps the collection outside this repository: the
 mero-tee node image starts merod with `MEROD_METRICS_LISTEN=127.0.0.1:9464`

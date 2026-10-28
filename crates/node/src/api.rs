@@ -4197,6 +4197,10 @@ fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
         }
     }
     crate::metrics::render_raft(&mut out, &samples);
+    // Per-app usage: only the apps this node hosts keep their series.
+    let here: std::collections::HashSet<&str> = hosted.iter().map(|(a, _)| a.as_str()).collect();
+    node.usage.retain(|app| here.contains(app));
+    node.usage.render(&mut out);
     crate::metrics::render_node(&mut out, node.config.node_id, disk);
     crate::metrics::render_process(&mut out);
     crate::metrics::render(&mut out);

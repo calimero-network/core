@@ -37,6 +37,7 @@
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -432,6 +433,21 @@ impl OutboundService {
         approval: Option<Approval>,
         context: String,
     ) -> Option<Arc<dyn OutboundHost>> {
+        self.for_run_counted(app, declared, approval, context, Arc::default())
+    }
+
+    /// [`Self::for_run`], adding one to `sent` for each request it hands the
+    /// transport: a refused or malformed request left nothing and counts
+    /// nothing. The node meters an app's outbound requests with it.
+    #[must_use]
+    pub fn for_run_counted(
+        self: &Arc<Self>,
+        app: AppIdentity,
+        declared: Vec<String>,
+        approval: Option<Approval>,
+        context: String,
+        sent: Arc<AtomicU64>,
+    ) -> Option<Arc<dyn OutboundHost>> {
         let declared: BTreeSet<String> = declared
             .into_iter()
             .filter(|u| u.len() <= MAX_URL && prefix(u).is_some())
@@ -445,6 +461,7 @@ impl OutboundService {
             declared,
             approval,
             context,
+            sent,
         }))
     }
 
@@ -598,6 +615,8 @@ struct RunOutbound {
     declared: BTreeSet<String>,
     approval: Option<Approval>,
     context: String,
+    /// Requests handed to the transport.
+    sent: Arc<AtomicU64>,
 }
 
 impl OutboundHost for RunOutbound {
@@ -617,6 +636,7 @@ impl OutboundHost for RunOutbound {
                 return Err(reason.to_string());
             }
         };
+        let _before = self.sent.fetch_add(1, Ordering::Relaxed);
         let result = self.service.transport.send(&prepared);
         let (status, mut body) = match result {
             Ok(answer) => answer,

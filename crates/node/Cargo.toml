@@ -53,6 +53,10 @@ calimero-wasm-abi.workspace = true
 calimero-sealed.workspace = true
 calimero-tee-attestation.workspace = true
 
+# Thread CPU time of a WASM run (`usage::measure`).
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [build-dependencies]
 toml.workspace = true
 

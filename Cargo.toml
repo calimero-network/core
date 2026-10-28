@@ -281,6 +281,7 @@ itertools = "0.15.0"
 jsonschema = { version = "0.60", default-features = false }
 jsonwebtoken = { version = "11.0.0", features = ["aws_lc_rs"] }
 lazy_static = "1.4"
+libc = "0.2"
 libp2p = "0.56.0"
 lz4_flex = "0.14"
 libp2p-identity = "0.2.12"

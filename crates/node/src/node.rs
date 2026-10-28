@@ -24,6 +24,7 @@ use crate::error::ApiError;
 use crate::services::{AppBlobs, BundleFacts, Search};
 use crate::system::{output, SystemCmd, SystemMachine, SystemState};
 use crate::types::{now_ms, AppRecord, Caller, Executor as Kind, NodeRecord};
+use crate::usage::{Kind as RunKind, Meter, Usage};
 
 mod component;
 
@@ -300,6 +301,8 @@ pub struct Node {
     /// Entries this node appended that applied as conflicts (built on state
     /// that changed before they applied) and were run again.
     pub conflicts: std::sync::atomic::AtomicU64,
+    /// Per-app usage of the runs this node made, for `/metrics` ([`crate::usage`]).
+    pub usage: Usage,
 }
 
 /// One read-index round on the system group at a time. A caller may take the
@@ -445,6 +448,7 @@ impl Node {
             peer_releases: Mutex::new(HashMap::new()),
             sys_reads: ReadRounds::default(),
             conflicts: std::sync::atomic::AtomicU64::new(0),
+            usage: Usage::default(),
             starting: tokio::sync::Mutex::new(()),
             search: Search::default(),
             facts: Mutex::new(HashMap::new()),
@@ -1084,6 +1088,7 @@ impl Node {
         &self,
         app_id: &str,
         bundle: &str,
+        sent: Arc<std::sync::atomic::AtomicU64>,
     ) -> Option<Arc<dyn calimero_runtime::logic::OutboundHost>> {
         let service = self.config.outbound.as_ref()?;
         let release = self.release_of(bundle)?;
@@ -1104,11 +1109,12 @@ impl Node {
                 approval,
             ))
         })?;
-        service.for_run(
+        service.for_run_counted(
             identity,
             release.version.outbound.clone(),
             approval,
             app_id.to_owned(),
+            sent,
         )
     }
 
@@ -1403,6 +1409,7 @@ impl Node {
 
     async fn module_for(&self, bundle: &str) -> Result<Arc<calimero_runtime::Module>, ApiError> {
         let wasm = self.bundle_wasm(bundle).await?;
+        self.usage.learn(bundle, &wasm);
         self.executor
             .module(bundle, &wasm)
             .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))
@@ -1420,12 +1427,13 @@ impl Node {
         let app_id = app.app_id.clone();
         let init_args = app.init_args.clone();
         let env = self.env(&app.app_id, &owner);
+        let meter = self.meter(&app.app_id, &app.bundle);
         let p = g
             .propose(|m, _| {
                 if m.state.initialized || m.state.bundle.is_some() {
                     return Proposal::Reply(Vec::new());
                 }
-                let outcome = off_workers(|| {
+                let outcome = self.metered(&meter, || {
                     Executor::run(
                         &module,
                         &app_id,
@@ -1453,7 +1461,51 @@ impl Node {
         let applied: Applied =
             serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))?;
         self.count_conflict(&applied);
+        if !applied.conflict {
+            self.usage.called(&meter, RunKind::Mutation);
+        }
         Ok(applied)
+    }
+
+    /// Where a run of `app_id` on `bundle` is billed ([`crate::usage`]). Read
+    /// before the run's proposal, outside the app group's locks.
+    pub(crate) fn meter(&self, app_id: &str, bundle: &str) -> Meter {
+        Meter {
+            app: app_id.to_owned(),
+            payer: self
+                .sys(|s| s.apps.get(app_id).map(crate::usage::payer))
+                .unwrap_or_default(),
+            bundle: bundle.to_owned(),
+        }
+    }
+
+    /// Run `f`, one WASM run, off the async workers ([`off_workers`]), and add
+    /// the CPU and memory it took to `meter`'s app: on the thread that runs
+    /// it, on this node, whatever becomes of its result.
+    pub(crate) fn metered<R>(&self, meter: &Meter, f: impl FnOnce() -> R) -> R {
+        let (out, run) = off_workers(|| crate::usage::measure(f));
+        self.usage.ran(meter, run);
+        out
+    }
+
+    /// Sample the state and blob bytes of every app hosted here
+    /// (`calimero_app_state_bytes`, `calimero_app_blob_bytes`). Each app's scan
+    /// holds its group's read lock, as `GET /apps/{app}/storage` does.
+    pub fn sample_usage(&self) {
+        let hosted: Vec<(String, String)> = self.sys(|s| {
+            s.apps
+                .values()
+                .map(|a| (a.app_id.clone(), crate::usage::payer(a)))
+                .collect()
+        });
+        for (app, payer) in hosted {
+            let Some(g) = self.hosted(&app) else {
+                continue;
+            };
+            let stats = g.read_local(|m, _| m.storage_stats());
+            self.usage
+                .stored(&app, &payer, stats.bytes, stats.blob_bytes);
+        }
     }
 
     /// Count an appended entry that applied as a conflict.
@@ -1605,12 +1657,18 @@ impl Node {
         // A call writes: it may call out, under what its app declares and its
         // owner approved. Views, inits, migrations and a read-only member's
         // calls get no client.
+        let meter = self.meter(&req.app_id, bundle.as_deref().unwrap_or_default());
         if !read_only {
-            env.outbound = bundle
-                .as_deref()
-                .and_then(|b| self.outbound_for(&req.app_id, b));
+            env.outbound = bundle.as_deref().and_then(|b| {
+                self.outbound_for(
+                    &req.app_id,
+                    b,
+                    self.usage.outbound(&meter.app, &meter.payer),
+                )
+            });
         }
         let mut fresh_blobs = Vec::new();
+        let mut ran = false;
         let p = g
             .propose(|m, applied| {
                 if let Some(key) = &req.idempotency_key {
@@ -1636,7 +1694,8 @@ impl Node {
                         ..Outcome::default()
                     },
                     (Some(module), None) => {
-                        let (outcome, _ret) = off_workers(|| {
+                        ran = true;
+                        let (outcome, _ret) = self.metered(&meter, || {
                             Executor::run_bytes(
                                 module,
                                 &req.app_id,
@@ -1699,6 +1758,14 @@ impl Node {
             .map_err(|e| WriteError::Unavailable(e.to_string()))?;
         if p.appended {
             self.count_conflict(&applied);
+        }
+        // Counted once, by the run whose answer stood: a conflict runs again.
+        if ran && !applied.conflict {
+            let kind = match req.trigger {
+                None => RunKind::Mutation,
+                Some(_) => RunKind::FollowUp,
+            };
+            self.usage.called(&meter, kind);
         }
         if p.appended && !applied.conflict {
             self.kick.notify_one();
@@ -1787,6 +1854,8 @@ impl Node {
             }
         }
         let env = self.env(&req.app_id, &req.caller);
+        let meter = self.meter(&req.app_id, &bundle);
+        let mut ran = false;
         let p = g
             .propose(|m, _| {
                 if let Some(stale) = m.stale_module(current.as_deref()) {
@@ -1794,7 +1863,8 @@ impl Node {
                 }
                 let outcome = match &migrate {
                     Some(method) => {
-                        let outcome = off_workers(|| {
+                        ran = true;
+                        let outcome = self.metered(&meter, || {
                             Executor::migrate(
                                 &module,
                                 &req.app_id,
@@ -1821,6 +1891,9 @@ impl Node {
             .map_err(|e| WriteError::Unavailable(e.to_string()))?;
         if p.appended {
             self.count_conflict(&applied);
+        }
+        if ran && !applied.conflict {
+            self.usage.called(&meter, RunKind::Mutation);
         }
         Ok(applied)
     }
@@ -2105,10 +2178,11 @@ impl Node {
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
         let module = self.module_for(&bundle).await?;
         let mut env = self.env(&req.app_id, &req.caller);
-        Ok(g.read_local(|m, applied| {
+        let meter = self.meter(&req.app_id, &bundle);
+        let answer = g.read_local(|m, applied| {
             // Search answers from indexes brought up to this very state.
             env.search = self.search.for_view(&module, &bundle, m, applied);
-            let out = off_workers(|| {
+            let out = self.metered(&meter, || {
                 Executor::run(
                     &module,
                     &req.app_id,
@@ -2126,7 +2200,9 @@ impl Node {
                 error: out.error,
                 timeout: false,
             }
-        }))
+        });
+        self.usage.called(&meter, RunKind::View);
+        Ok(answer)
     }
 
     /// Run a read-only method. Its writes, if any, are discarded.

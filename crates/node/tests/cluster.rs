@@ -2493,6 +2493,26 @@ async fn outbound_requests_need_the_owners_approval() {
         revoked.as_str().unwrap().contains("[NotApproved]"),
         "{revoked}"
     );
+
+    // Usage: of the four probes only the approved one left the node, counted
+    // on the node that ran it (`calimero_app_outbound_requests_total`).
+    let alice_id = alice.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut sent = 0.0;
+    for i in 0..3 {
+        let ops = c.client(i);
+        ops.use_api_key("ops-secret").await;
+        let text = ops.get_text("ops/metrics").await.unwrap();
+        sent += sample(
+            &text,
+            "calimero_app_outbound_requests_total",
+            &format!("app=\"{app}\",org=\"account:{alice_id}\""),
+        )
+        .unwrap_or(0.0);
+    }
+    assert_eq!(sent, 1.0);
 }
 
 // ---------------------------------------------------------------- governance
@@ -3822,6 +3842,179 @@ async fn metrics_can_be_scraped_on_their_own_listener() {
     assert!(default.nodes[0].as_ref().unwrap().metrics_addr.is_none());
 }
 
+/// The value of the `metric{labels}` series in a Prometheus text, if present.
+/// `labels` is the inside of the braces, in the order the node writes them.
+fn sample(text: &str, metric: &str, labels: &str) -> Option<f64> {
+    let head = format!("{metric}{{{labels}}} ");
+    text.lines()
+        .find_map(|l| l.strip_prefix(&head))
+        .map(|v| v.parse().unwrap())
+}
+
+/// Per-app usage for billing on `/metrics`: each run is counted on the node
+/// that ran its WASM (calls and strong views on the app's leader, a stale view
+/// on the replica that answered it), never on the replicas that applied the
+/// entry, so the cluster's sum is the number of runs. Series are labelled
+/// with the app's id and its payer: the organization, or `account:{owner}`
+/// for a personal app. State bytes are a gauge every replica reports alike.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.metrics_listen = Some("127.0.0.1:0".parse().unwrap());
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice-the-billed").await;
+    let alice_id = alice.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({ "org": org })).await;
+    let (personal, _) = deploy(&alice, "mine", kv_wasm(), json!({})).await;
+    for i in 0..3 {
+        let _ = alice
+            .call(
+                &app,
+                "set",
+                json!({ "key": format!("k{i}"), "value": "v" }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    for _ in 0..2 {
+        let v = alice
+            .view(&app, "get", json!({ "key": "k0" }), Consistency::Strong)
+            .await
+            .unwrap();
+        assert_eq!(v.result, json!("v"));
+    }
+    let _ = alice
+        .call(&personal, "set", json!({ "key": "a", "value": "b" }), None)
+        .await
+        .unwrap();
+
+    // A stale view runs on the replica that answers it, here a follower.
+    let leader = c.app_leader(&app).unwrap();
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let applied_on = |i: usize| {
+        c.nodes[i]
+            .as_ref()
+            .unwrap()
+            .node
+            .hosted(&app)
+            .unwrap()
+            .applied()
+    };
+    let at = applied_on(leader);
+    let stale = c.nodes[follower]
+        .as_ref()
+        .unwrap()
+        .node
+        .view(&calimero_node::node::ViewRequest {
+            app_id: app.clone(),
+            method: "get".to_owned(),
+            args: json!({ "key": "k0" }),
+            caller: calimero_node::types::Caller::Account {
+                account: alice_id.clone(),
+            },
+            strong: false,
+            min_index: at,
+        })
+        .await
+        .unwrap();
+    assert_eq!(stale.result, json!("v"));
+
+    // Every replica applied every entry; then each samples its state.
+    for i in 0..3 {
+        for _ in 0..100 {
+            if applied_on(i) >= at {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    for r in c.nodes.iter().flatten() {
+        r.node.sample_usage();
+    }
+    let http = reqwest::Client::new();
+    let mut texts = Vec::new();
+    for r in c.nodes.iter().flatten() {
+        let addr = r.metrics_addr.unwrap();
+        let text = http
+            .get(format!("http://{addr}/metrics"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        texts.push(text);
+    }
+    let in_org = format!("app=\"{app}\",org=\"{org}\"");
+    let mine = format!("app=\"{personal}\",org=\"account:{alice_id}\"");
+    let calls = |labels: &str, kind: &str| -> Vec<f64> {
+        texts
+            .iter()
+            .map(|t| {
+                sample(
+                    t,
+                    "calimero_app_calls_total",
+                    &format!("{labels},kind=\"{kind}\""),
+                )
+                .unwrap_or(0.0)
+            })
+            .collect()
+    };
+    // `init` and the three `set`s: four mutations in all, not one per replica.
+    let mutations = calls(&in_org, "mutation");
+    assert_eq!(mutations.iter().sum::<f64>(), 4.0, "{mutations:?}");
+    let views = calls(&in_org, "view");
+    assert_eq!(views.iter().sum::<f64>(), 3.0, "{views:?}");
+    assert!(
+        views[follower] >= 1.0,
+        "the stale view ran on {follower}: {views:?}"
+    );
+    assert_eq!(calls(&in_org, "followup").iter().sum::<f64>(), 0.0);
+    assert_eq!(calls(&mine, "mutation").iter().sum::<f64>(), 2.0);
+    for (i, t) in texts.iter().enumerate() {
+        let ran = mutations[i] + views[i];
+        let cpu = sample(t, "calimero_app_wasm_cpu_seconds_total", &in_org);
+        let memory = sample(t, "calimero_app_wasm_memory_byte_seconds_total", &in_org);
+        if ran > 0.0 {
+            assert!(cpu.unwrap() > 0.0, "node {i}:\n{t}");
+            assert!(memory.unwrap() > 0.0, "node {i}:\n{t}");
+        } else {
+            assert_eq!(cpu, None, "node {i} ran nothing:\n{t}");
+        }
+        assert_eq!(
+            sample(t, "calimero_app_outbound_requests_total", &in_org),
+            None,
+            "a series appears once it counts something"
+        );
+        assert!(t.contains("# TYPE calimero_app_calls_total counter"), "{t}");
+        assert!(t.contains("# TYPE calimero_app_state_bytes gauge"), "{t}");
+        assert!(!t.contains("alice-the-billed"), "a name leaked:\n{t}");
+    }
+    let state: Vec<f64> = texts
+        .iter()
+        .map(|t| sample(t, "calimero_app_state_bytes", &in_org).unwrap())
+        .collect();
+    assert!(state[0] > 0.0, "{state:?}");
+    assert!(
+        state.iter().all(|s| *s == state[0]),
+        "replicas agree: {state:?}"
+    );
+    assert_eq!(
+        sample(&texts[0], "calimero_app_blob_bytes", &in_org),
+        None,
+        "no blobs, no series"
+    );
+}
+
 // ---------------------------------------------------------------- inspection
 
 /// `merod inspect`: a stopped node's data directory, read
@@ -4040,12 +4233,21 @@ async fn metrics_count_requests_errors_and_raft_without_naming_anyone() {
         let _ = line("process_cpu_seconds_total ");
     }
     assert!(metrics.contains("# TYPE http_request_duration_seconds histogram"));
-    for secret in [
-        app.as_str(),
-        alice_id.as_str(),
-        "alice-the-metrics-user",
-        "no-such-app",
-    ] {
+    // Ids are labels of the per-app usage series (`calimero_app_*`) only, which
+    // bill an app to its payer; a name or a request's path never is.
+    assert!(metrics.contains(&format!("app=\"{app}\",org=\"account:{alice_id}\"")));
+    let elsewhere: String = metrics
+        .lines()
+        .filter(|l| !l.starts_with("calimero_app_"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for secret in [app.as_str(), alice_id.as_str()] {
+        assert!(
+            !elsewhere.contains(secret),
+            "{secret} leaked outside the usage series"
+        );
+    }
+    for secret in ["alice-the-metrics-user", "no-such-app"] {
         assert!(
             !metrics.contains(secret),
             "{secret} leaked into the metrics"
