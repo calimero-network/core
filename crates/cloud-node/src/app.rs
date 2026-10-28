@@ -2111,6 +2111,31 @@ mod tests {
         assert_eq!(kept, vec!["k3", "node:k4", "k5"]);
     }
 
+    /// D74 (v0.26) on wasmer: the cap never takes a class below its floor; a burst
+    /// of `node:` keys past the cap leaves a caller's own record to answer its retry.
+    #[test]
+    fn a_burst_of_node_keys_does_not_evict_a_callers_record_below_its_floor_on_wasmer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut m) = machine(&dir);
+        m.idem_limits = crate::idempotency::Limits {
+            keep: [2, 1],
+            cap: 5,
+        };
+        let caller = Caller::Account {
+            account: "acct".into(),
+        };
+        let cmd = call(&m, "mine", 1_000, &[], 0);
+        let _a = apply(&mut m, 1, &cmd);
+        for n in 0..20u64 {
+            let cmd = call(&m, &format!("node:c-{n}"), 1_000 + n, &[], 0);
+            let _a = apply(&mut m, n + 2, &cmd);
+        }
+        assert!(
+            m.replay(&caller, "mine").is_some(),
+            "a caller's record below its floor was evicted"
+        );
+    }
+
     /// Wasmer retention is a function of the applied entries alone: two replicas
     /// fed the same entries keep the same records.
     #[test]

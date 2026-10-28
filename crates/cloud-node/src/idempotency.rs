@@ -115,7 +115,8 @@ pub fn record(tx: &mut StateTx<'_>, rows: &Rows, rings: &mut [Ring; 2], key: &st
 /// Forget what D74 lets go, given the newest applied entry's timestamp: in each
 /// class, oldest first, every record whose expiry is at or before `newest_ts_ms`,
 /// but never one of the class's newest `limits.keep`; then, while the app holds
-/// more than `limits.cap`, the oldest record of either class. `stamps` reads a
+/// more than `limits.cap`, the oldest record of a class still above its floor (the
+/// cap never takes a class below its floor, D74 in spec v0.26). `stamps` reads a
 /// stored record's `(expires_ms, index of the entry that wrote it)`.
 pub fn expire(
     tx: &mut StateTx<'_>,
@@ -148,10 +149,11 @@ pub fn expire(
         }
     }
     while rings[0].len() + rings[1].len() > limits.cap {
-        // The front of each non-empty ring, with the index of the entry that
-        // wrote it (a slot whose record is gone counts as oldest).
+        // The front of each ring above its floor, with the index of the entry that
+        // wrote it (a slot whose record is gone counts as oldest). A ring at or
+        // below its floor is never evicted from (D74).
         let front = |c: usize, ring: Ring| -> Option<(Vec<u8>, Option<Vec<u8>>, u64)> {
-            (ring.first < ring.next).then(|| {
+            (ring.len() > limits.keep[c]).then(|| {
                 let slot = (rows.ring)(c as u8, ring.first);
                 let key = tx.get(&slot);
                 let index = key

@@ -1015,6 +1015,33 @@ mod tests {
         assert_eq!(kept, vec!["k3", "node:k4", "k5"]);
     }
 
+    /// D74 (v0.26): the cap never takes a class below its floor. A burst of keyless
+    /// calls (`node:` keys) past the cap (scaled to 5, floors to 2 caller / 1 node)
+    /// leaves a caller's own record, inside its 24 h, to answer its retry.
+    #[test]
+    fn a_burst_of_node_keys_does_not_evict_a_callers_record_below_its_floor() {
+        let mut r = Rig::new();
+        r.machine.idem_limits = crate::idempotency::Limits {
+            keep: [2, 1],
+            cap: 5,
+        };
+        let _i = r.apply(1, &init(0));
+        let _a = r.apply(2, &call_at(1, "mine", 1_000));
+        for n in 0..20u64 {
+            let index = n + 3;
+            let _a = r.apply(
+                index,
+                &call_at(index - 1, &format!("node:c-{n}"), 1_000 + n),
+            );
+        }
+        assert!(
+            honoured(&r, "mine"),
+            "a caller's record below its floor was evicted"
+        );
+        let rings = r.machine.state.component.head.idempotency;
+        assert!(rings[0].next - rings[0].first >= 1 && rings[1].next - rings[1].first >= 1);
+    }
+
     /// Retention is a function of the applied entries alone: two replicas fed the
     /// same entries keep the same records (no node clock is read).
     #[test]
