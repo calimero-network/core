@@ -1,0 +1,77 @@
+# Alerts for merod (release-v2), from "What to watch" in
+# docs/src/content/docs/operate/observability.mdx. Thresholds are starting
+# points: tune them to your cluster.
+groups:
+  - name: merod
+    rules:
+      - alert: MerodNoSystemLeader
+        expr: sum(calimero_group_leader{group="system"}) != 1
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "The system group has {{ $value }} leaders, not 1: no sign-ins, installs or org changes"
+      - alert: MerodNodeDown
+        expr: up{job="merod"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.instance }} is not answering its metrics listener"
+      - alert: MerodSystemVotersLow
+        expr: max(calimero_system_voters) < 3
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "The system group has {{ $value }} voters"
+      - alert: MerodApplyLag
+        expr: max by (instance, group) (calimero_group_apply_lag) > 100
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }} is {{ $value }} entries behind applying group {{ $labels.group }}"
+      - alert: MerodFollowerLag
+        expr: max by (group, peer) (calimero_group_follower_lag) > 1000
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Node {{ $labels.peer }} is {{ $value }} entries behind in group {{ $labels.group }}"
+      - alert: MerodLeaderWithoutQuorum
+        expr: max by (instance, group) (calimero_group_quorum_ack_age_ms) > 2000
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }} leads group {{ $labels.group }} but no quorum acknowledged it for {{ $value }} ms"
+      - alert: MerodFrequentElections
+        expr: sum by (group) (changes(calimero_group_term[10m])) > 3
+        labels: { severity: warning }
+        annotations:
+          summary: "Group {{ $labels.group }} changed leader {{ $value }} times in 10 minutes"
+      - alert: MerodBuildConflictsRising
+        expr: sum(rate(calimero_build_conflicts_total[10m])) > 0.1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Leaders keep losing builds to leader changes or concurrent writes"
+      - alert: MerodServerErrors
+        expr: sum by (group) (rate(calimero_http_requests_total{status=~"5..",group!~"raft|internal"}[5m])) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} 5xx answers per second on {{ $labels.group }}"
+      - alert: MerodSlowCalls
+        expr: histogram_quantile(0.99, sum by (le) (rate(calimero_http_request_duration_seconds_bucket{group="calls"}[5m]))) > 2
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Call p99 is {{ $value }} s"
+      - alert: MerodEventStreamsNearLimit
+        expr: max by (instance) (calimero_event_streams) > 3500
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }} has {{ $value }} open streams; new ones answer 429 past 4096"
+      - alert: MerodMixedReleases
+        expr: count(count by (release) (calimero_build_info)) > 1
+        for: 30m
+        labels: { severity: info }
+        annotations:
+          summary: "Nodes run {{ $value }} different releases"
