@@ -16,7 +16,7 @@ cargo build -p kv-store --target wasm32-unknown-unknown
 To extract the ABI from the compiled WASM:
 
 ```bash
-calimero-abi extract target/wasm32-unknown-unknown/debug/kv_store.wasm -o apps/kv-store/res/abi.json
+calimero-abi extract target/wasm32-unknown-unknown/debug/kv_store.wasm -o apps/wasmer-fixtures/kv-store/res/abi.json
 ```
 
 ## Canonical Types

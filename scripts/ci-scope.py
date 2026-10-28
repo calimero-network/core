@@ -132,7 +132,7 @@ def cargo_mero_fixtures():
 JOBS = {
     "storage_cost": (lambda: ["tools/storage-cost"], True, ("scripts/check-storage-cost.sh",)),
     "wasm_size": (
-        lambda: ["apps/kv-store", "apps/kv-store-with-handlers", "apps/scaffolding-e2e", "tools/cargo-mero"],
+        lambda: ["apps/wasmer-fixtures/kv-store", "apps/kv-store-with-handlers", "apps/scaffolding-e2e", "tools/cargo-mero"],
         False,
         ("scripts/check-wasm-size.sh", *CARGO_MERO_SETUP),
     ),

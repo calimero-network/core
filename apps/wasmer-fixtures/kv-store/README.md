@@ -20,7 +20,7 @@ cargo mero build
 To extract the ABI from the compiled WASM:
 
 ```bash
-calimero-abi extract target/wasm32-unknown-unknown/debug/kv_store.wasm -o apps/kv-store/res/abi.json
+calimero-abi extract target/wasm32-unknown-unknown/debug/kv_store.wasm -o apps/wasmer-fixtures/kv-store/res/abi.json
 ```
 
 ## State Schema
@@ -42,7 +42,7 @@ You can also extract the state schema from a compiled WASM file:
 
 ```bash
 # Extract state schema from WASM
-./target/debug/calimero-abi state apps/kv-store/res/kv_store.wasm -o state-schema.json
+./target/debug/calimero-abi state apps/wasmer-fixtures/kv-store/res/kv_store.wasm -o state-schema.json
 ```
 
 Both methods produce the same format, which can be used with `merodb`:

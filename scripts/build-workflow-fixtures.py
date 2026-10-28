@@ -55,11 +55,17 @@ def apps() -> list[dict]:
     package id and services (a multi-service manifest builds no crate of its
     own: each service names the crate it runs)."""
     out = []
-    for cargo in sorted(ROOT.glob("apps/*/Cargo.toml")):
+    # apps/wasmer-fixtures/<app> holds the wasmer builds of apps ported to the
+    # component SDK; they keep their crate (and wasm) names.
+    cargos = [*ROOT.glob("apps/*/Cargo.toml"), *ROOT.glob("apps/wasmer-fixtures/*/Cargo.toml")]
+    for cargo in sorted(cargos):
         d = cargo.parent
         if d.name in NOT_APPS:
             continue
         data = _cargo(d)
+        # A component crate (the v2 SDK) is built by calimero-app-build, not cargo mero.
+        if "calimero-app-sdk" in data.get("dependencies", {}):
+            continue
         pkg = data["package"]
         meta = pkg.get("metadata", {}).get("calimero", {})
         services = {s["name"]: s.get("crate", pkg["name"]) for s in meta.get("services", [])}
@@ -67,7 +73,7 @@ def apps() -> list[dict]:
             continue
         out.append(
             {
-                "app": d.name,
+                "app": d.relative_to(ROOT / "apps").as_posix(),
                 "crate": None if services else pkg["name"],
                 "package": meta.get("package") or f"com.calimero.{d.name}",
                 "services": services,

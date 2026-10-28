@@ -20,7 +20,7 @@ exclude = [
     "./apps/fugue-editor",
     "./apps/fugue-collab",
     "./apps/rich-collab",
-    "./apps/kv-store",
+    "./apps/wasmer-fixtures/kv-store",
     "./apps/org-gated",
     "./apps/custom-key-store",
     "./apps/migration-harness-example",
@@ -144,7 +144,7 @@ members = [
 
     "./apps/scaffolding-e2e",
     "./apps/scaffolding-e2e-multi",
-    "./apps/kv-store",
+    "./apps/wasmer-fixtures/kv-store",
     "./apps/org-gated",
     "./apps/custom-key-store",
     "./apps/migration-harness-example",
@@ -434,7 +434,7 @@ calimero-utils-fs = { path = "./crates/utils/fs" }
 calimero-wasm-abi = { path = "./crates/wasm-abi" }
 mero-abi = { path = "./tools/calimero-abi" }
 mero-sign = { path = "./tools/mero-sign" }
-kv-store = { path = "./apps/kv-store" }
+kv-store = { path = "./apps/wasmer-fixtures/kv-store" }
 xcall-example = { path = "./apps/xcall-example" }
 
 [profile.dev]

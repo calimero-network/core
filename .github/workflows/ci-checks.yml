@@ -392,7 +392,7 @@ jobs:
         env:
           WASM_PROFILING: "true"
         run: |
-          cargo mero build --manifest-path apps/kv-store/Cargo.toml
+          cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
           cargo mero build --manifest-path apps/kv-store-with-handlers/Cargo.toml
           cargo mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
 

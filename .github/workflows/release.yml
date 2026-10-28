@@ -418,7 +418,7 @@ jobs:
         uses: ./.github/actions/setup-cargo-mero
 
       - name: Build the kv-store bundle
-        run: cargo mero bundle --dev --no-icon --app-version "${NEEDS_PREPARE_OUTPUTS_VERSION}" --manifest-path apps/kv-store/Cargo.toml --output dist/kv-store-test-fixture.mpk
+        run: cargo mero bundle --dev --no-icon --app-version "${NEEDS_PREPARE_OUTPUTS_VERSION}" --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml --output dist/kv-store-test-fixture.mpk
         env:
           NEEDS_PREPARE_OUTPUTS_VERSION: ${{ needs.prepare.outputs.version }}
 

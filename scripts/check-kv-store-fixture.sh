@@ -11,7 +11,7 @@ cd "$(git rev-parse --show-toplevel)"
 PATH="$(scripts/setup-cargo-mero.sh):$PATH"
 
 mpk="$(mktemp -d)/kv-store.mpk"
-cargo mero bundle --dev --no-icon --manifest-path apps/kv-store/Cargo.toml --output "$mpk"
+cargo mero bundle --dev --no-icon --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml --output "$mpk"
 abi="$(tar -xOzf "$mpk" abi.json)"
 manifest="$(tar -xOzf "$mpk" manifest.json)"
 
