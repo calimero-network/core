@@ -197,8 +197,15 @@ async fn a_redb_data_dir_is_migrated_on_open() {
     assert_eq!(disk.read_local(|m, _| m.get("d")).as_deref(), Some("5"));
 
     // Reopened, nothing is migrated again and the state is still there.
+    // Groups' tasks hold the store a moment after `shutdown`; RocksDB's lock
+    // refuses a second open until the last one lets go.
     engine.shutdown().await;
+    let store = engine.store_watch();
     drop((mem, disk, engine));
+    let started = std::time::Instant::now();
+    while store.is_open() && started.elapsed() < Duration::from_secs(10) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     let engine = Engine::open(1, dir.path(), &KEY, Arc::new(Nowhere), config).unwrap();
     let disk = engine.start_group(7, Disk::default()).await.unwrap();
     assert_eq!(disk.read_local(|m, _| m.get("d")).as_deref(), Some("5"));
