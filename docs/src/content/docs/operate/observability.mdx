@@ -82,7 +82,7 @@ which is what you need before a [replica move](/operate/runbooks/#move-an-apps-r
 
 ```bash
 RUST_LOG=debug merod --node n1 run
-RUST_LOG=info,calimero_cloud_node=debug,openraft=info merod --node n1 run
+RUST_LOG=info,calimero_node=debug,openraft=info merod --node n1 run
 ```
 
 Account ids and anything a user or an app wrote stay out of `info!` and

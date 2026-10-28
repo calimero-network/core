@@ -14,7 +14,7 @@
 //! 1 ÷ (syncs per call × sync time).
 //!
 //! ```text
-//! cargo bench -p calimero-cloud-node --bench cluster_throughput -- [--secs 10] [--peer-rtt-ms 2] [--out FILE.json]
+//! cargo bench -p calimero-node --bench cluster_throughput -- [--secs 10] [--peer-rtt-ms 2] [--out FILE.json]
 //! ```
 //!
 //! `--peer-rtt-ms` puts a delay proxy in front of each node for the traffic
@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use calimero_cloud_client::Client;
+use calimero_client::Client;
 use serde_json::{json, Value};
 
 #[path = "../tests/harness/cluster.rs"]
@@ -284,7 +284,7 @@ fn pipe(mut from: TcpStream, mut to: TcpStream, delay: Duration) {
 /// Point every node's peer URLs, except its own, at a delay proxy in front of
 /// that peer: `rtt` / 2 each way. One proxy per node, made the first time a
 /// node names it.
-fn delayed_peers(rtt: Duration) -> impl Fn(&mut calimero_cloud_node::Config) {
+fn delayed_peers(rtt: Duration) -> impl Fn(&mut calimero_node::Config) {
     let proxies: Mutex<HashMap<String, String>> = Mutex::default();
     move |cfg| {
         let own = cfg.public_url.clone();

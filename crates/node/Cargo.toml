@@ -1,5 +1,5 @@
 [package]
-name = "calimero-cloud-node"
+name = "calimero-node"
 description = "Calimero cloud node (release-v2): attested, one Raft log per app, sealed client API"
 version.workspace = true
 authors.workspace = true
@@ -40,7 +40,7 @@ calimero-app-downloader.workspace = true
 calimero-app-engine-wasmtime.workspace = true
 calimero-app-host.workspace = true
 calimero-bundle.workspace = true
-calimero-cloud-client.workspace = true
+calimero-client.workspace = true
 calimero-identity.workspace = true
 calimero-kms-client.workspace = true
 calimero-log.workspace = true
@@ -60,8 +60,8 @@ toml.workspace = true
 calimero-app-build.workspace = true
 # Itself with `testing`, so the cluster tests can move app time (`Node::advance_clock`)
 # and the log can lose its unsynced writes on a stop (the D52 restart test).
-calimero-cloud-node = { workspace = true, features = ["testing"] }
-calimero-cloud-client = { workspace = true, features = ["testing"] }
+calimero-node = { workspace = true, features = ["testing"] }
+calimero-client = { workspace = true, features = ["testing"] }
 flate2.workspace = true
 sha2.workspace = true
 tar.workspace = true

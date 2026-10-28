@@ -157,7 +157,7 @@ jobs:
       - name: Build merod with outbound-testing
         run: |
           set -euo pipefail
-          cargo build -p merod --features calimero-cloud-node/outbound-testing
+          cargo build -p merod --features calimero-node/outbound-testing
           cp "$CARGO_TARGET_DIR/debug/merod" target/e2e/merod-outbound
 
       - name: Upload them

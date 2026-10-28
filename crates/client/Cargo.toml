@@ -1,5 +1,5 @@
 [package]
-name = "calimero-cloud-client"
+name = "calimero-client"
 description = "Client for the Calimero cloud (release-v2): attestation, sealed channel, passkeys, calls"
 version.workspace = true
 authors.workspace = true
@@ -31,7 +31,7 @@ calimero-tee-release.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
-calimero-cloud-node.workspace = true
+calimero-node.workspace = true
 tempfile.workspace = true
 
 [features]

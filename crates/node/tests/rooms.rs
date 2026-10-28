@@ -10,10 +10,10 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use calimero_cloud_client::{Client, Consistency, Error as ClientError};
-use calimero_cloud_node::app::Status as AppStatus;
-use calimero_cloud_node::node::due_slot;
+use calimero_client::{Client, Consistency, Error as ClientError};
 use calimero_identity::testing::SoftAuthenticator;
+use calimero_node::app::Status as AppStatus;
+use calimero_node::node::due_slot;
 use common::{Cluster, ORIGIN};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
@@ -26,7 +26,7 @@ const SLOT_MS: u64 = 900_000;
 /// A three-node cluster whose app clock starts at `T0`, so the scenario's absolute times
 /// are neither in the past nor the future of the app.
 async fn cluster_at_t0() -> Cluster {
-    let now = i64::try_from(calimero_cloud_node::types::now_ms()).unwrap();
+    let now = i64::try_from(calimero_node::types::now_ms()).unwrap();
     let offset = i64::try_from(T0).unwrap() - now;
     Cluster::start_with(3, |c| c.clock_offset_ms = offset).await
 }
@@ -676,7 +676,7 @@ async fn no_double_booking_under_contention() {
     }
 
     // A slot well after now, so no timer releases it during the test.
-    let now = calimero_cloud_node::types::now_ms();
+    let now = calimero_node::types::now_ms();
     let start = (now / SLOT_MS + 100) * SLOT_MS;
     let args = json!({ "roomId": "r1", "start": start.to_string(), "slotCount": 1, "title": "x" });
     let outcomes = futures_util::future::join_all(members.iter().enumerate().map(|(k, cl)| {
@@ -753,7 +753,7 @@ async fn followers_honour_min_index_and_hide_titles() {
         )
         .await
         .unwrap();
-    let now = calimero_cloud_node::types::now_ms();
+    let now = calimero_node::types::now_ms();
     let start = ((now / SLOT_MS + 100) * SLOT_MS).to_string();
     // A follower that misses the booking and is read right after it restarts, before it
     // caught up: only `minIndex` makes it wait.

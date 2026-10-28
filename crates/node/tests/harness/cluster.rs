@@ -9,10 +9,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use calimero_cloud_client::{Client, Policy};
-use calimero_cloud_node::attest::Mode;
-use calimero_cloud_node::{run, Config, Running};
+use calimero_client::{Client, Policy};
 use calimero_identity::testing::SoftAuthenticator;
+use calimero_node::attest::Mode;
+use calimero_node::{run, Config, Running};
 
 pub const ORIGIN: &str = "http://localhost:3000";
 
@@ -69,7 +69,7 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
         read_wait: Duration::from_secs(2),
         tee_release: None,
         tee_profile: None,
-        peer_measurements: calimero_cloud_client::Measurements::None,
+        peer_measurements: calimero_client::Measurements::None,
         clock_offset_ms: 0,
         budget: None,
         registry: None,

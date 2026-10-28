@@ -66,7 +66,7 @@ member and app.
 
 ## Peer and client trust
 
-Clients and peers judge a node the same way (`calimero_cloud_client::attest::verify`):
+Clients and peers judge a node the same way (`calimero_client::attest::verify`):
 
 1. The quote is genuine (Intel DCAP), or a mock quote the caller explicitly
    allows.
@@ -148,7 +148,7 @@ declares.
 
 ## Known gaps
 
-The node's own notes (`crates/cloud-node/AGENTS.md`) list what is not done:
+The node's own notes (`crates/node/AGENTS.md`) list what is not done:
 no rollback counter (a host could restart a node on old state), no keys per app
 from mero-kms, no placement across zones, no restore of a snapshot into a
 running cluster, no event audiences, no pruning of revoked session ids, and

@@ -1,7 +1,7 @@
 //! G1 measurements (spec D32, plan Task 13 Step 1) on the in-process three-node cluster.
 //! Ignored by default; run in release on an otherwise idle machine:
 //!
-//! `cargo test --release -p calimero-cloud-node --test bench -- --ignored --nocapture --test-threads 1`
+//! `cargo test --release -p calimero-node --test bench -- --ignored --nocapture --test-threads 1`
 //!
 //! Each measurement prints one `MEASURE` line. Engine-level numbers (fuel, engine time,
 //! fresh instance, spin) invoke the node's own engine on the leader's applied state with
@@ -18,9 +18,9 @@ use calimero_app_host::{
     Budget, Caller, Engine, HostCore, Invocation, InvocationKind, Outcome, Prepared, Status,
     TrapKind,
 };
-use calimero_cloud_client::{Client, Consistency};
-use calimero_cloud_node::component::SysDirectory;
-use calimero_cloud_node::Running;
+use calimero_client::{Client, Consistency};
+use calimero_node::component::SysDirectory;
+use calimero_node::Running;
 use common::{signed_up, Cluster};
 use serde_json::{json, Value};
 
@@ -60,7 +60,7 @@ fn invoke(
         method: method.to_owned(),
         args: serde_json::to_vec(args).unwrap(),
         caller,
-        entry_ts_ms: calimero_cloud_node::types::now_ms(),
+        entry_ts_ms: calimero_node::types::now_ms(),
         id_term: 1_000_000,
         id_seq: 1,
         seed: [7; 32],
@@ -117,7 +117,7 @@ async fn g1_measurements() {
     let lr = c.nodes[leader].as_ref().unwrap();
     let prepared = lr.node.prepared_for(&bundle).await.unwrap();
     let caller = || Caller::Account(owner_id.clone());
-    let far = (calimero_cloud_node::types::now_ms() / SLOT_MS + 1_000) * SLOT_MS;
+    let far = (calimero_node::types::now_ms() / SLOT_MS + 1_000) * SLOT_MS;
 
     // 1. book: fuel and engine time (instantiate + handle, wall) on the leader's state.
     for slots in [1u32, 2] {

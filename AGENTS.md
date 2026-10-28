@@ -1,6 +1,6 @@
 # Calimero Core - AI Agent Guidance
 
-A confidential cloud for collaborative apps (release-v2). Apps are written in Rust or JavaScript and compiled to WASM; each app instance is replicated by its own Raft log across attested TDX nodes (`merod`, inside it `calimero-cloud-node`), which clients reach through a sealed channel after verifying the node's attestation. `meroctl` is the command line. v1's peer-to-peer node is deleted; the SDK and WASM runtime are unchanged.
+A confidential cloud for collaborative apps (release-v2). Apps are written in Rust or JavaScript and compiled to WASM; each app instance is replicated by its own Raft log across attested TDX nodes (`merod`, inside it `calimero-node`), which clients reach through a sealed channel after verifying the node's attestation. `meroctl` is the command line. v1's peer-to-peer node is deleted; the SDK and WASM runtime are unchanged.
 
 ## Where to read
 

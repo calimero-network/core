@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use calimero_app_build::build_component_cached;
-use calimero_cloud_client::{Client, Policy};
-use calimero_cloud_node::attest::Mode;
-use calimero_cloud_node::{run, Config, Running};
+use calimero_client::{Client, Policy};
 use calimero_identity::testing::SoftAuthenticator;
+use calimero_node::attest::Mode;
+use calimero_node::{run, Config, Running};
 
 /// The fixture `name` ("kv" or "org-gated") as a component, built on first use and cached
 /// by source hash under `target/app-components` (the fixture, the SDK crates, the toolchain and
@@ -128,7 +128,7 @@ impl Cluster {
                     read_wait: Duration::from_secs(2),
                     tee_release: None,
                     tee_profile: None,
-                    peer_measurements: calimero_cloud_client::Measurements::None,
+                    peer_measurements: calimero_client::Measurements::None,
                     clock_offset_ms: 0,
                     budget: None,
                     registry: None,

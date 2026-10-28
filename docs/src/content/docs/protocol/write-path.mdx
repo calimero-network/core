@@ -18,7 +18,7 @@ group, so it can authenticate the caller and find the app; if it is not the
 app's leader, it forwards the call to a node that is. Clients reach a node in
 one of three ways, and all three end up in the same handlers:
 
-- **A program** (`calimero-cloud-client`, mero-js, calimero-client-py,
+- **A program** (`calimero-client`, mero-js, calimero-client-py,
   `meroctl`) verifies the node's attestation and seals every request
   ([Networking & sealed channels](/protocol/networking/)).
 - **A browser page on a configured origin** (`--origins`) does the same through

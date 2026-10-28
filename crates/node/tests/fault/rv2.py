@@ -38,12 +38,12 @@ def b64url(b: bytes) -> str:
 
 
 def dev_storage_key(cluster: str) -> bytes:
-    # crates/cloud-node/src/main.rs: sha256("calimero-dev-storage-key|{cluster}")
+    # crates/node/src/main.rs: sha256("calimero-dev-storage-key|{cluster}")
     return hashlib.sha256(f"calimero-dev-storage-key|{cluster}".encode()).digest()
 
 
 def cluster_secret(cluster: str) -> str:
-    # crates/cloud-node/src/node.rs Node::start: HMAC-SHA256(storage_key, "calimero.cluster.v1|{cluster}")
+    # crates/node/src/node.rs Node::start: HMAC-SHA256(storage_key, "calimero.cluster.v1|{cluster}")
     mac = hmac.new(dev_storage_key(cluster), f"calimero.cluster.v1|{cluster}".encode(), hashlib.sha256)
     return b64url(mac.digest())
 

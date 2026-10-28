@@ -11,10 +11,10 @@ import SeqDiagram from '../../../components/SeqDiagram.astro';
 This reference explains how a Calimero cluster works and why it is built that
 way. It follows one **call** from the client that makes it to the log entry
 that records it, rather than touring the crates. The crates are
-[`merod`](/operate/merod/) (the node binary), `calimero-cloud-node` (everything
+[`merod`](/operate/merod/) (the node binary), `calimero-node` (everything
 the node does), `calimero-log` (the replicated log), `calimero-sealed` (the
 encrypted transport), `calimero-identity` (passkeys, sessions, API keys) and
-`calimero-cloud-client` (the Rust client, whose attestation check every client
+`calimero-client` (the Rust client, whose attestation check every client
 and peer shares).
 
 :::tip[New here? Read these first, in order]

@@ -8,8 +8,8 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use calimero_cloud_client::{Client, Consistency};
-use calimero_cloud_node::types::Executor;
+use calimero_client::{Client, Consistency};
+use calimero_node::types::Executor;
 use common::{signed_up, Cluster};
 use serde_json::{json, Value};
 

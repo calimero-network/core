@@ -1,4 +1,4 @@
-# calimero-cloud-client
+# calimero-client
 
 Rust client for the release-v2 cloud: verifies the node's attestation
 (`attest.rs`, shared with the node), seals every request (`calimero-sealed`),
@@ -26,10 +26,10 @@ while the node answers `503` or cannot be reached (`Error::is_unavailable`;
 200 ms doubling to 2 s, 6 retries). A call that did commit is answered from its
 record. Confirm calls (`call_confirmed`) are not retried: their challenge is
 single-use. Tests: `retry_tests`, and `calls_without_a_key_each_run_once` in
-`crates/cloud-node/tests/cluster.rs`.
+`crates/node/tests/cluster.rs`.
 
 The command line over this client is `meroctl` (`crates/meroctl`).
 
 ```bash
-cargo test -p calimero-cloud-client
+cargo test -p calimero-client
 ```

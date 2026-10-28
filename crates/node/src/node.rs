@@ -110,7 +110,7 @@ pub struct Config {
     pub tee_release: Option<String>,
     pub tee_profile: Option<String>,
     /// Which TD images a peer's real quote may come from.
-    pub peer_measurements: calimero_cloud_client::Measurements,
+    pub peer_measurements: calimero_client::Measurements,
     /// The package registry every node fetches releases from (`--registry-url`).
     pub registry: Option<String>,
     /// Take raw WASM uploads (`POST /bundles`), which carry no publisher
@@ -499,7 +499,7 @@ impl Node {
                     .config
                     .tee_profile
                     .as_deref()
-                    .is_some_and(calimero_cloud_client::attest::is_debug_profile),
+                    .is_some_and(calimero_client::attest::is_debug_profile),
             },
         };
         let t = Arc::new(calimero_sealed::client::SealedTransport::attested(
@@ -735,8 +735,8 @@ impl Node {
         app_id: &str,
         index: u64,
         result: &Value,
-    ) -> calimero_cloud_client::attest::Receipt {
-        use calimero_cloud_client::attest::Receipt;
+    ) -> calimero_client::attest::Receipt {
+        use calimero_client::attest::Receipt;
         use ed25519_dalek::Signer;
         let result_hash = Receipt::hash_result(result);
         let msg = Receipt::message(app_id, index, &result_hash, self.config.node_id);

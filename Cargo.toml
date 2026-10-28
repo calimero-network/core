@@ -127,10 +127,10 @@ members = [
     "./crates/log",
     "./crates/sealed",
     "./crates/identity",
-    "./crates/cloud-node",
+    "./crates/node",
     "./crates/outbound",
     "./crates/kms-client",
-    "./crates/cloud-client",
+    "./crates/client",
     "./crates/merod",
     "./crates/meroctl",
 
@@ -417,9 +417,9 @@ calimero-runtime = { path = "./crates/runtime" }
 calimero-log = { path = "./crates/log" }
 calimero-sealed = { path = "./crates/sealed" }
 calimero-identity = { path = "./crates/identity" }
-calimero-cloud-node = { path = "./crates/cloud-node" }
+calimero-node = { path = "./crates/node" }
 calimero-kms-client = { path = "./crates/kms-client" }
-calimero-cloud-client = { path = "./crates/cloud-client" }
+calimero-client = { path = "./crates/client" }
 calimero-search = { path = "./crates/search" }
 calimero-sdk = { path = "./crates/sdk" }
 calimero-sdk-macros = { path = "./crates/sdk/macros" }

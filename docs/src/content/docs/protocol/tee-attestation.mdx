@@ -8,7 +8,7 @@ sidebar:
 Every node runs inside an Intel TDX VM built from a signed **mero-tee
 release**. Before a client or another node sends it anything, it asks the node
 for a **quote** — a hardware-signed statement of what the VM is running — and
-checks it. The check lives in one place, `calimero_cloud_client::attest`,
+checks it. The check lives in one place, `calimero_client::attest`,
 shared by the Rust client, `meroctl`, calimero-client-py and every node judging
 its peers; mero-js's `src/cloud-v2/attestation.ts` implements the same check.
 

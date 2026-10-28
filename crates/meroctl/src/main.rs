@@ -1,7 +1,7 @@
 //! `meroctl`: the command line for Calimero nodes (`merod`).
 //!
 //! v1's command tree over the release-v2 API. Every request goes through the
-//! attested, sealed client the SDKs use (`calimero-cloud-client`): the node's
+//! attested, sealed client the SDKs use (`calimero-client`): the node's
 //! quote is checked before anything is sent. Where v1 had an "application"
 //! this has a signed package (`app`); a context is an app instance
 //! (`context`); a namespace is an organization (`namespace`); a group is one
@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use calimero_cloud_client::Consistency;
+use calimero_client::Consistency;
 use calimero_identity::testing::SoftAuthenticator;
 use clap::{Parser, Subcommand};
 use eyre::bail;

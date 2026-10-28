@@ -9,9 +9,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use calimero_cloud_client::{Client, Consistency, Error, Policy};
-use calimero_cloud_node::run;
+use calimero_client::{Client, Consistency, Error, Policy};
 use calimero_identity::testing::SoftAuthenticator;
+use calimero_node::run;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 
@@ -57,7 +57,7 @@ impl Cluster {
 /// challenge is still used once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_sign_in_begun_on_one_node_finishes_on_another() {
-    use calimero_cloud_client::Passkey;
+    use calimero_client::Passkey;
     let c = Cluster::start(3).await;
     let (_alice, mut pk) = signed_up(&c, 0, "alice").await;
     let begin = c
@@ -454,7 +454,7 @@ async fn backups_are_encrypted_and_restorable() {
         .path();
     let raw = std::fs::read(&file).unwrap();
     assert!(!String::from_utf8_lossy(&raw).contains("plaintext-value"));
-    let (_index, data) = calimero_cloud_node::backup::latest(&dir, &node.config.storage_key, &app)
+    let (_index, data) = calimero_node::backup::latest(&dir, &node.config.storage_key, &app)
         .unwrap()
         .unwrap();
     // The app's rows are in it, opened with the storage key.
@@ -1272,7 +1272,7 @@ async fn views_search_the_apps_own_index_as_it_changes() {
         .is_err());
 }
 
-async fn set(cl: &Client, app: &str, v: &str) -> Result<(), Box<calimero_cloud_client::Error>> {
+async fn set(cl: &Client, app: &str, v: &str) -> Result<(), Box<calimero_client::Error>> {
     cl.call(app, "set", json!({ "key": "k", "value": v }), None)
         .await
         .map(drop)
@@ -1310,7 +1310,7 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
         .as_str()
         .unwrap()
         .to_owned();
-    let refused = |e: calimero_cloud_client::Error, why: &str| {
+    let refused = |e: calimero_client::Error, why: &str| {
         let e = e.to_string();
         assert!(e.contains(why), "{e}");
     };
@@ -2555,7 +2555,7 @@ async fn the_nodes_own_commands_cannot_be_called_as_methods() {
             &public,
             "__upgrade",
             json!({}),
-            calimero_cloud_client::Consistency::Strong
+            calimero_client::Consistency::Strong
         )
         .await
         .is_err(),
@@ -2637,7 +2637,7 @@ async fn a_write_too_large_for_the_log_is_refused_at_once_on_every_node() {
 /// needed. It uninstalls only what it installed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_operator_installs_the_releases_it_upgrades_to() {
-    use calimero_cloud_node::system::{Authority, Governance};
+    use calimero_node::system::{Authority, Governance};
     let c = Cluster::start_with(3, |cfg| {
         cfg.governance = Governance {
             app_upgrades: Authority::Operator,
@@ -2707,7 +2707,7 @@ async fn the_operator_installs_the_releases_it_upgrades_to() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
-    use calimero_cloud_node::system::{Authority, Governance};
+    use calimero_node::system::{Authority, Governance};
     let (owner, operator) = (Authority::Owner, Authority::Operator);
     let deployments = [
         Governance {
@@ -2760,14 +2760,14 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
             ))
             .await
             .unwrap();
-        let mut doc: calimero_cloud_client::attest::AttestationDoc =
+        let mut doc: calimero_client::attest::AttestationDoc =
             serde_json::from_value(docs["replicas"][0]["attestation"].clone()).unwrap();
         let mock = Policy {
             allow_mock: true,
             ..Policy::default()
         };
         assert!(
-            calimero_cloud_client::attest::verify_receipt_key(&doc, &nonce, &mock)
+            calimero_client::attest::verify_receipt_key(&doc, &nonce, &mock)
                 .await
                 .is_ok()
         );
@@ -2775,7 +2775,7 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
         forged.app_upgrades = if op(g.app_upgrades) { owner } else { operator };
         doc.governance = Some(forged);
         assert!(
-            calimero_cloud_client::attest::verify_receipt_key(&doc, &nonce, &mock)
+            calimero_client::attest::verify_receipt_key(&doc, &nonce, &mock)
                 .await
                 .is_err(),
             "{g:?}: a forged governance verified"
@@ -3314,7 +3314,7 @@ async fn presence_reaches_every_node_and_expires() {
         );
     }
     tokio::time::sleep(Duration::from_millis(
-        calimero_cloud_node::presence::PRESENCE_TTL_MS + 1_500,
+        calimero_node::presence::PRESENCE_TTL_MS + 1_500,
     ))
     .await;
     for cl in [&alice, &bob, &carol] {
@@ -3368,7 +3368,7 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
         .unwrap()
         .to_owned();
 
-    let label = calimero_cloud_node::app_host::label("com.test.site");
+    let label = calimero_node::app_host::label("com.test.site");
     let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
     let host = format!("{label}.localhost");
     let origin = format!("http://{host}:{port}");
@@ -3837,13 +3837,13 @@ async fn a_stopped_nodes_store_can_be_inspected() {
         .unwrap();
     c.stop(1).await;
     let dir = c._dirs[1].path().to_owned();
-    let raw = calimero_cloud_node::inspect::inspect(&dir, None).unwrap();
+    let raw = calimero_node::inspect::inspect(&dir, None).unwrap();
     let groups = raw["groups"].as_object().unwrap();
     assert!(groups.contains_key("1"), "the system group: {raw}");
     assert!(groups.len() >= 2, "the app's group too: {raw}");
     assert!(raw["blobs"].as_u64().unwrap() >= 1, "the bundle: {raw}");
     assert!(groups["1"]["logEntries"].as_u64().unwrap() > 0);
-    let opened = calimero_cloud_node::inspect::inspect(&dir, Some([42u8; 32])).unwrap();
+    let opened = calimero_node::inspect::inspect(&dir, Some([42u8; 32])).unwrap();
     assert!(
         opened["groups"]["1"]["values"]
             .as_object()
@@ -3884,9 +3884,9 @@ async fn the_client_creates_from_a_package_deletes_confirmed_and_signs_out_every
     let refused = alice.delete(&path).await.unwrap_err();
     assert_eq!(refused.code(), Some("CONFIRM_REQUIRED"));
     let _ = alice.delete_confirmed(&path, &mut pk).await.unwrap();
-    let status = |e: calimero_cloud_client::Error| match e {
-        calimero_cloud_client::Error::Api { status, .. } => status,
-        calimero_cloud_client::Error::Transport(e) => panic!("{e}"),
+    let status = |e: calimero_client::Error| match e {
+        calimero_client::Error::Api { status, .. } => status,
+        calimero_client::Error::Transport(e) => panic!("{e}"),
     };
     assert_eq!(status(alice.get(&path).await.unwrap_err()), 404);
 

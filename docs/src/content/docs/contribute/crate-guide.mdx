@@ -23,11 +23,11 @@ beside it) has its commands and detail. The same index, for agents, is
 
 | Crate | Package | What it is |
 | --- | --- | --- |
-| `crates/cloud-node` | `calimero-cloud-node` | The node: system group, app groups, executor glue, routing, the HTTP API and Ops API, packages, follow-ups, blobs, presence, search, app frontends, backups, the storage key. |
+| `crates/node` | `calimero-node` | The node: system group, app groups, executor glue, routing, the HTTP API and Ops API, packages, follow-ups, blobs, presence, search, app frontends, backups, the storage key. |
 | `crates/log` | `calimero-log` | Multi-group Raft (openraft) over one sealed RocksDB per node; snapshots; the `log.redb` migration. |
 | `crates/sealed` | `calimero-sealed` | The sealed HTTP transport (wire format v2), server middleware and client; byte-compatible with mero-js. |
 | `crates/identity` | `calimero-identity` | WebAuthn passkeys, session tokens, API keys, confirm challenges; `testing`: a software authenticator. |
-| `crates/cloud-client` | `calimero-cloud-client` | The Rust client: attestation check (shared with peers), sealed requests, sign-in, calls and views. |
+| `crates/client` | `calimero-client` | The Rust client: attestation check (shared with peers), sealed requests, sign-in, calls and views. |
 | `crates/kms-client` | `calimero-kms-client` | The mero-kms client: release-policy check, key release, `kms disk-key`. |
 | `crates/outbound` | `calimero-outbound` | The gated outbound HTTPS client and secrets a run may use. |
 | `crates/search` | `calimero-search` | Per-app full-text search (tantivy), built in memory from apps' search exports. |

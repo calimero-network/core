@@ -2,7 +2,7 @@
 //! apps keep running on wasmer.
 //!
 //! `fixtures/datadir-a09547b2b.tar.gz` is one node's data directory as
-//! release-v2-parity at `a09547b2b` wrote it (its own `calimero-cloud-node`, run in
+//! release-v2-parity at `a09547b2b` wrote it (its own `calimero-node`, run in
 //! process: one node on port 39517, storage key `[42; 32]`, a `kv-store` app with
 //! `a = 1` and `b = 2`); `fixture.json` inside it names the app, its bundle and
 //! its owner. Neither its directory record nor its group's state names an executor.
@@ -10,10 +10,10 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use calimero_cloud_node::attest::Mode;
-use calimero_cloud_node::node::{CallRequest, ViewRequest};
-use calimero_cloud_node::types::{Caller, Executor};
-use calimero_cloud_node::{run, Config};
+use calimero_node::attest::Mode;
+use calimero_node::node::{CallRequest, ViewRequest};
+use calimero_node::types::{Caller, Executor};
+use calimero_node::{run, Config};
 use serde_json::{json, Value};
 
 fn config(dir: &std::path::Path, port: u16) -> Config {
@@ -48,7 +48,7 @@ fn config(dir: &std::path::Path, port: u16) -> Config {
         read_wait: Duration::from_secs(2),
         tee_release: None,
         tee_profile: None,
-        peer_measurements: calimero_cloud_client::Measurements::None,
+        peer_measurements: calimero_client::Measurements::None,
         clock_offset_ms: 0,
         budget: None,
         registry: None,

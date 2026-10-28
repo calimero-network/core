@@ -14,7 +14,7 @@ of one method. On a cluster, only the app group's **leader** runs calls; the
 other replicas apply what the run produced ([Replication](/protocol/replication/)).
 
 The runtime is `calimero-runtime` on wasmer, the same one v1 used. The node
-calls it through `Module::run_cloud` (`crates/cloud-node/src/app.rs`,
+calls it through `Module::run_cloud` (`crates/node/src/app.rs`,
 `Executor`), compiling each bundle once and caching the module by its hash.
 
 ## One run

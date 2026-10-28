@@ -125,7 +125,7 @@ fn path(p: &Path) -> &str {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn every_command_group_works_against_a_cluster() {
     let dir = tempfile::tempdir().unwrap();
-    let cluster = calimero_cloud_node::local::start(
+    let cluster = calimero_node::local::start(
         3,
         free_base_port(),
         &dir.path().join("cluster"),

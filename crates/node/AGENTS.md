@@ -1,4 +1,4 @@
-# calimero-cloud-node (the inside of `merod`)
+# calimero-node (the inside of `merod`)
 
 The release-v2 cloud node: an attested TEE node that hosts the cluster's system
 group and the app groups placed on it. Design: the "Calimero Confidential Cloud"
@@ -75,7 +75,7 @@ is its command line.
   another release ships stays). Raw `POST /bundles` is development only
   (`allow_unsigned_bundles`, on with `--dev`).
 - **Governance** (`system::Governance`, `Authority`, shared with clients in
-  `calimero_cloud_client::attest`): three decisions, each held by exactly one
+  `calimero_client::attest`): three decisions, each held by exactly one
   party chosen at deployment, `owner` (default) or `operator`:
   `--release-approvals` (which mero-tee releases may hold the data),
   `--app-upgrades`, `--outbound-approvals`. The first leader writes
@@ -326,7 +326,7 @@ is its command line.
   release-policy-verified KMS, key sealed to the TD). The boot script uses the same
   client for the data disk's key (`merod kms disk-key`). The cluster's nodes share
   the disk identity, so they share K_r.
-- **Peers' quotes** are judged like a client's (`calimero_cloud_client::Measurements`):
+- **Peers' quotes** are judged like a client's (`calimero_client::Measurements`):
   in TDX mode the signed mero-tee release the peer names, profiles from
   `--peer-profiles` (default: this node's `MERO_TEE_PROFILE`), floor `--peer-min-release`.
 - **Session keys** rotate: the system leader adds K_s v+1 once the current key is
@@ -456,16 +456,16 @@ for a in blobs kv-store-with-handlers kv-store-with-shared-storage search-chat x
   migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2 \
   migrations/scenario-identity-downgrade-v1 migrations/scenario-identity-downgrade-v2; do
   cargo mero build --manifest-path apps/$a/Cargo.toml; done
-cargo test -p calimero-cloud-node    # 3-node cluster in process, sealed, real WASM
+cargo test -p calimero-node    # 3-node cluster in process, sealed, real WASM
 # component fixtures (apps/v2-fixtures/{kv,org-gated}, apps/rooms) are built on first use by
 # tests/common/mod.rs into target/app-components (needs the wasm32-wasip2 target)
-cargo test --release -p calimero-cloud-node --test rooms   # Rooms A1 (shared scenario), A3, A5
+cargo test --release -p calimero-node --test rooms   # Rooms A1 (shared scenario), A3, A5
 # A4, the fault test (merod run --dev processes on ports 7600-7699, above the merobox
 # workflows', shifted by CLOUD_V2_PORT_OFFSET when set; release merod and
 # meroctl in RV2_BIN_DIR, default target/release; the cached Rooms component)
-python3 -I crates/cloud-node/tests/fault/rooms_fault.py --iterations 200 --seed 1
+python3 -I crates/node/tests/fault/rooms_fault.py --iterations 200 --seed 1
 # calls/s and p50/p99 through that cluster (harness: tests/harness/cluster.rs), as JSON:
-cargo bench -p calimero-cloud-node --bench cluster_throughput -- --secs 15 --out cluster.json
+cargo bench -p calimero-node --bench cluster_throughput -- --secs 15 --out cluster.json
 cargo run -p merod -- --help
 cargo run -p merod -- local   # dev cluster: 3 nodes on :2501-2503 (`local.rs`)
 cargo run -p merod -- --node n1 inspect [--storage-key-file F]   # a stopped node's store (v1's merodb; `inspect.rs`)

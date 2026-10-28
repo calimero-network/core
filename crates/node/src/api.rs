@@ -438,7 +438,7 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
     let report = if receipts {
         let mut r = [0; 64];
         r[..32].copy_from_slice(&nonce);
-        r[32..].copy_from_slice(&calimero_cloud_client::attest::receipt_key_binding(
+        r[32..].copy_from_slice(&calimero_client::attest::receipt_key_binding(
             &node.receipt_public(),
             &governance,
         ));

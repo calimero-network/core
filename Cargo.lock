@@ -1151,12 +1151,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero-cloud-client"
+name = "calimero-client"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
- "calimero-cloud-node",
  "calimero-identity",
+ "calimero-node",
  "calimero-sealed",
  "calimero-tee-attestation",
  "calimero-tee-release",
@@ -1174,62 +1174,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "url",
-]
-
-[[package]]
-name = "calimero-cloud-node"
-version = "0.0.0"
-dependencies = [
- "axum",
- "base64 0.23.1",
- "borsh",
- "calimero-account",
- "calimero-app-build",
- "calimero-app-downloader",
- "calimero-app-engine-wasmtime",
- "calimero-app-host",
- "calimero-bundle",
- "calimero-cloud-client",
- "calimero-cloud-node",
- "calimero-identity",
- "calimero-kms-client",
- "calimero-log",
- "calimero-outbound",
- "calimero-prelude",
- "calimero-primitives",
- "calimero-runtime",
- "calimero-sealed",
- "calimero-search",
- "calimero-storage",
- "calimero-tee-attestation",
- "calimero-wasm-abi",
- "camino",
- "ed25519-dalek 3.0.0",
- "eyre",
- "flate2",
- "futures-util",
- "hex",
- "reqwest 0.12.28",
- "ring",
- "rocksdb",
- "semver",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "tantivy",
- "tar",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "toml",
- "tower",
- "tower-http 0.7.1",
- "tracing",
- "url",
- "wasmparser 0.262.0",
- "zeroize",
 ]
 
 [[package]]
@@ -1369,6 +1313,62 @@ dependencies = [
  "tokio-util",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "calimero-node"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "borsh",
+ "calimero-account",
+ "calimero-app-build",
+ "calimero-app-downloader",
+ "calimero-app-engine-wasmtime",
+ "calimero-app-host",
+ "calimero-bundle",
+ "calimero-client",
+ "calimero-identity",
+ "calimero-kms-client",
+ "calimero-log",
+ "calimero-node",
+ "calimero-outbound",
+ "calimero-prelude",
+ "calimero-primitives",
+ "calimero-runtime",
+ "calimero-sealed",
+ "calimero-search",
+ "calimero-storage",
+ "calimero-tee-attestation",
+ "calimero-wasm-abi",
+ "camino",
+ "ed25519-dalek 3.0.0",
+ "eyre",
+ "flate2",
+ "futures-util",
+ "hex",
+ "reqwest 0.12.28",
+ "ring",
+ "rocksdb",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tantivy",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "toml",
+ "tower",
+ "tower-http 0.7.1",
+ "tracing",
+ "url",
+ "wasmparser 0.262.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -5827,9 +5827,9 @@ name = "meroctl"
 version = "0.0.0"
 dependencies = [
  "calimero-bundle",
- "calimero-cloud-client",
- "calimero-cloud-node",
+ "calimero-client",
  "calimero-identity",
+ "calimero-node",
  "clap",
  "dirs",
  "ed25519-dalek 3.0.0",
@@ -5850,11 +5850,11 @@ dependencies = [
 name = "merod"
 version = "0.0.0"
 dependencies = [
- "calimero-cloud-client",
- "calimero-cloud-node",
+ "calimero-client",
  "calimero-identity",
  "calimero-kms-client",
  "calimero-log",
+ "calimero-node",
  "calimero-outbound",
  "clap",
  "dirs",

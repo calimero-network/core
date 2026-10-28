@@ -19,9 +19,9 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use calimero_cloud_client::{Client, Consistency, Policy};
-use calimero_cloud_node::{run, Running};
+use calimero_client::{Client, Consistency, Policy};
 use calimero_identity::testing::SoftAuthenticator;
+use calimero_node::{run, Running};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};

@@ -8,16 +8,16 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 
 ## Binaries
 
-- [merod](merod/AGENTS.md) (`merod`) - the node: `init`, `run`, `config`, `local`, `inspect`, `kms disk-key`; turns `NodeArgs` into `calimero_cloud_node::Config`.
+- [merod](merod/AGENTS.md) (`merod`) - the node: `init`, `run`, `config`, `local`, `inspect`, `kms disk-key`; turns `NodeArgs` into `calimero_node::Config`.
 - [meroctl](meroctl/AGENTS.md) (`meroctl`) - the command line for nodes, v1's command tree over the attested, sealed client.
 
 ## The node
 
-- [cloud-node](cloud-node/AGENTS.md) (`calimero-cloud-node`) - the node itself: system group, app groups, routing, the HTTP and Ops API, packages, follow-ups, blobs, presence, search, app frontends, backups, storage key. Its `AGENTS.md` is the node's mental model.
+- [node](node/AGENTS.md) (`calimero-node`) - the node itself: system group, app groups, routing, the HTTP and Ops API, packages, follow-ups, blobs, presence, search, app frontends, backups, storage key. Its `AGENTS.md` is the node's mental model.
 - [log](log/AGENTS.md) (`calimero-log`) - multi-group Raft (openraft) over one sealed RocksDB per node; snapshots; the `log.redb` migration.
 - [sealed](sealed/AGENTS.md) (`calimero-sealed`) - the sealed HTTP transport (wire format v2), server middleware and client; byte-compatible with mero-js.
 - [identity](identity/AGENTS.md) (`calimero-identity`) - WebAuthn passkeys, session tokens, API keys, confirm challenges.
-- [cloud-client](cloud-client/AGENTS.md) (`calimero-cloud-client`) - the Rust client; `attest::verify` is the one quote check clients and peers share.
+- [client](client/AGENTS.md) (`calimero-client`) - the Rust client; `attest::verify` is the one quote check clients and peers share.
 - [kms-client](kms-client/AGENTS.md) (`calimero-kms-client`) - the mero-kms client: release policy, key release, `kms disk-key`.
 - [outbound](outbound/AGENTS.md) (`calimero-outbound`) - the gated outbound HTTPS client and secrets for runs.
 - [search](search/AGENTS.md) (`calimero-search`) - per-app full-text search (tantivy), derived in memory.
@@ -83,7 +83,7 @@ as current is stale.
 
 ```bash
 cargo build -p merod -p meroctl
-cargo test -p <package>                  # e.g. calimero-cloud-node, meroctl, calimero-log
+cargo test -p <package>                  # e.g. calimero-node, meroctl, calimero-log
 cargo clippy -p <package> --all-targets -- -D warnings
 ```
 

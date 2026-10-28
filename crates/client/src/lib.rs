@@ -44,7 +44,7 @@ const CALL_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// A new idempotency key for a call the caller gave none. It only has to
 /// outlive this client's own retries, so it takes the node's short-lived class:
-/// a key starting `node:` (`calimero_cloud_node::app::NODE_KEY_PREFIX`) is kept
+/// a key starting `node:` (`calimero_node::app::NODE_KEY_PREFIX`) is kept
 /// 10 minutes, a caller's own key 24 hours.
 fn new_call_key() -> String {
     format!(

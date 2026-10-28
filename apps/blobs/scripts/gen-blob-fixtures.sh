@@ -15,7 +15,7 @@
 # content makes each run's blob genuinely absent on the fetching node.
 #
 # WHY THESE SIZES: release-v2 keeps one blob to 47 MiB (MAX_BLOB_BYTES,
-# crates/cloud-node/src/node.rs: it reaches the other nodes base64-encoded in
+# crates/node/src/node.rs: it reaches the other nodes base64-encoded in
 # one sealed request). 1/5/10/40 MiB must transfer byte-exact between nodes, 40
 # being the largest that fits; 50/100/250 MiB (v1's sweep, whose ceiling was
 # 500 MiB) must be refused naming the limit. Keep this default in step with the

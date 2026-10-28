@@ -36,17 +36,17 @@ description: "An app method asks its node for one HTTPS request (`env::http_requ
   \ and the write made\n    before it is not committed.\n  * Views never reach the network: `probe_in_view`\
   \ traps.\n  * The request runs once, on the executing node: outbound-b holds the same\n    stored outcome\
   \ after sync, logs no request of its own, and its own\n    `probe` traps because its operator never\
-  \ turned outbound on.\n\nMEROD MUST BE BUILT WITH `--features calimero-cloud-node/outbound-testing`,\
+  \ turned outbound on.\n\nMEROD MUST BE BUILT WITH `--features calimero-node/outbound-testing`,\
   \ which compiles `[outbound.testing]`; every node starts with `cluster.settings` below (`merod run\
   \ --settings`), and a build without the feature refuses it.\nRun locally, with an outbound-testing merod:\n\
-  \  cargo build -p merod --features calimero-cloud-node/outbound-testing\n  python3 scripts/build-cloud-v2-fixtures.py\
+  \  cargo build -p merod --features calimero-node/outbound-testing\n  python3 scripts/build-cloud-v2-fixtures.py\
   \ outbound-probe\n  MEROD_OUTBOUND_BINARY=target/debug/merod python3 scripts/cloud-v2-workflows.py \\\n  \
   \  apps/outbound-probe/workflows/outbound.yml\n"
 backend: cloud-v2
 cluster:
   nodes: 3
   base_port: 3860
-  # A merod built with `--features calimero-cloud-node/outbound-testing`
+  # A merod built with `--features calimero-node/outbound-testing`
   # (e2e.yml's fixtures build it), else MEROD_BINARY's, which refuses the
   # settings below.
   binary: '{{env.MEROD_OUTBOUND_BINARY ?? env.MEROD_BINARY}}'

@@ -107,7 +107,7 @@ port, and `--registry-url` to install `PACKAGE@VERSION`.
 
 ```bash
 RUST_LOG=debug merod --node n1 run
-RUST_LOG=info,calimero_cloud_node=debug,openraft=info merod --node n1 run
+RUST_LOG=info,calimero_node=debug,openraft=info merod --node n1 run
 ```
 
 `run` defaults to `info,openraft=warn`, `local` to `warn,openraft=off`. Keep
@@ -121,15 +121,15 @@ Run these locally; they are what the required checks are built from:
 ```bash
 cargo fmt --check
 cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
-cargo clippy -p calimero-tee-attestation -p calimero-cloud-node --all-targets \
-  --features calimero-tee-attestation/mock-attestation,calimero-cloud-node/outbound-testing -- -D warnings
+cargo clippy -p calimero-tee-attestation -p calimero-node --all-targets \
+  --features calimero-tee-attestation/mock-attestation,calimero-node/outbound-testing -- -D warnings
 ```
 
 then the tests for what you changed ([Testing](/contribute/testing/) has the
 fixtures they need), for example:
 
 ```bash
-cargo test -p calimero-cloud-node
+cargo test -p calimero-node
 cargo test -p merod -p meroctl
 ```
 
@@ -174,5 +174,5 @@ Imports, module layout, error handling, dead code and trust boundaries are in
 | Location | What's there |
 | --- | --- |
 | `docs/` | This documentation site (Astro Starlight). |
-| `AGENTS.md` (root and per crate) | Orientation for each part of the tree; `crates/cloud-node/AGENTS.md` is the node's mental model. |
+| `AGENTS.md` (root and per crate) | Orientation for each part of the tree; `crates/node/AGENTS.md` is the node's mental model. |
 | `CODING_STANDARDS.md` | How code in the repository is written. |

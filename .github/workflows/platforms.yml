@@ -149,7 +149,7 @@ jobs:
 
       # meroctl's attestation check, sealed channel and sessions, on the platform.
       - name: Test the client
-        run: cargo test -p calimero-cloud-client -p calimero-sealed -p calimero-identity
+        run: cargo test -p calimero-client -p calimero-sealed -p calimero-identity
 
   # A red scheduled run is otherwise read by nobody: keep one open issue for it.
   report:

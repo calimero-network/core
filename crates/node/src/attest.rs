@@ -1,7 +1,7 @@
 //! Quote generation for this node; the document and its verification live in
-//! `calimero-cloud-client`, shared with every client.
+//! `calimero-client`, shared with every client.
 
-pub use calimero_cloud_client::attest::*;
+pub use calimero_client::attest::*;
 
 /// Where quotes come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use calimero_cloud_client::{Client, Consistency};
+use calimero_client::{Client, Consistency};
 use serde_json::{json, Value};
 
 #[path = "harness/cluster.rs"]

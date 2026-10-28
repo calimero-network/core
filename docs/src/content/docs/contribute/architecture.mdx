@@ -1,6 +1,6 @@
 ---
 title: Architecture Orientation
-description: How the release-v2 node is put together — merod and meroctl over calimero-cloud-node, the system group and app groups, the path of a call, and which crates do what.
+description: How the release-v2 node is put together — merod and meroctl over calimero-node, the system group and app groups, the path of a call, and which crates do what.
 sidebar:
   label: Architecture
   order: 2
@@ -17,10 +17,10 @@ inside a node, and the path a call takes. The full crate list is in the
 
 | Binary | Crate | Is |
 | --- | --- | --- |
-| `merod` | `crates/merod` | A thin command line: it turns flags, `MEROD_*` variables and `config.toml` (`node_config::NodeArgs`) into `calimero_cloud_node::Config` and calls `calimero_cloud_node::run`. Also `local`, `inspect` and `kms disk-key`. |
-| `meroctl` | `crates/meroctl` | v1's command tree over `calimero-cloud-client`: every request is attested and sealed. |
+| `merod` | `crates/merod` | A thin command line: it turns flags, `MEROD_*` variables and `config.toml` (`node_config::NodeArgs`) into `calimero_node::Config` and calls `calimero_node::run`. Also `local`, `inspect` and `kms disk-key`. |
+| `meroctl` | `crates/meroctl` | v1's command tree over `calimero-client`: every request is attested and sealed. |
 
-Everything a node does is in `calimero-cloud-node` (`crates/cloud-node`).
+Everything a node does is in `calimero-node` (`crates/node`).
 v1's actor-based node (`NodeManager`, `ContextManager`, `NetworkManager`, the
 sync manager, gossip, the DAG) is deleted.
 
@@ -29,18 +29,18 @@ sync manager, gossip, the DAG) is deleted.
 | Part | Where | Does |
 | --- | --- | --- |
 | Log engine | `calimero-log` | Multi-group Raft (openraft) over one sealed RocksDB per node: logs, votes, state, blobs and snapshots. |
-| System group | `cloud-node/src/system.rs` (group 1) | The fleet, app directory, packages and bundle hashes, accounts, passkeys, API keys, refresh tokens, session keys, organizations, teams, invites, quotas, governance. Commands carry their actor and are authorized in `apply`, so the log decides. Kept in memory, checkpointed with snapshots. |
-| App groups | `cloud-node/src/app.rs` | One Raft group per app instance on its replicas. State lives on disk as hidden rows of the group; only a small head is in memory. |
+| System group | `node/src/system.rs` (group 1) | The fleet, app directory, packages and bundle hashes, accounts, passkeys, API keys, refresh tokens, session keys, organizations, teams, invites, quotas, governance. Commands carry their actor and are authorized in `apply`, so the log decides. Kept in memory, checkpointed with snapshots. |
+| App groups | `node/src/app.rs` | One Raft group per app instance on its replicas. State lives on disk as hidden rows of the group; only a small head is in memory. |
 | Executor | `app::Executor` over `calimero-runtime` | Runs a call's WASM on the leader against a copy-on-write overlay and returns `{ result, diff, events }`. |
-| Node | `cloud-node/src/node.rs` | Routing to leaders, placement, reconciling hosted groups with the directory, follow-ups (event handlers, xcalls, timers), blob replication, backups. |
-| API | `cloud-node/src/api.rs` | The HTTP routes (`router`): `/auth`, `/packages`, `/bundles`, `/apps`, `/orgs`, `/invites`, `/ops`, `/internal`. |
+| Node | `node/src/node.rs` | Routing to leaders, placement, reconciling hosted groups with the directory, follow-ups (event handlers, xcalls, timers), blob replication, backups. |
+| API | `node/src/api.rs` | The HTTP routes (`router`): `/auth`, `/packages`, `/bundles`, `/apps`, `/orgs`, `/invites`, `/ops`, `/internal`. |
 | Sealed transport | `calimero-sealed` | Wraps the router from outside; opens sealed requests and routes them afresh. |
 | Identity | `calimero-identity` | WebAuthn verification, session tokens, API keys, confirm challenges. |
-| Attestation | `calimero-tee-attestation`, `calimero-cloud-client::attest`, `calimero-tee-release` | Quote generation, and the one verification clients and peers share. |
-| Packages | `cloud-node/src/packages.rs`, `calimero-bundle`, `calimero-app-downloader` | Signed `.mpk` verification and registry fetches. |
+| Attestation | `calimero-tee-attestation`, `calimero-client::attest`, `calimero-tee-release` | Quote generation, and the one verification clients and peers share. |
+| Packages | `node/src/packages.rs`, `calimero-bundle`, `calimero-app-downloader` | Signed `.mpk` verification and registry fetches. |
 | Outbound | `calimero-outbound` | The gated HTTPS client a run may use. |
 | Search, presence, frontends | `services.rs`, `presence.rs`, `app_host.rs`, `calimero-search` | Derived in-memory search indexes, ephemeral presence, app frontends on their own origins. |
-| Storage key | `cloud-node/src/kms.rs`, `calimero-kms-client` | K_r from mero-kms. |
+| Storage key | `node/src/kms.rs`, `calimero-kms-client` | K_r from mero-kms. |
 
 ## The path of a call
 
@@ -93,7 +93,7 @@ still links a few v1 node crates: `calimero-node-primitives` (which brings
 guide marks them.
 
 <Aside type="note">
-  This is the map, not the territory. Read `crates/cloud-node/AGENTS.md` for the
+  This is the map, not the territory. Read `crates/node/AGENTS.md` for the
   node's full mental model, and each crate's `src/lib.rs` docs before relying on
   a boundary.
 </Aside>

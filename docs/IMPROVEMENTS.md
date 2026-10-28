@@ -104,7 +104,7 @@ polished product. Grouped by theme; check items off as they land.
 - [ ] 80. Reconcile `minRuntimeVersion` docs vs the bundle-manifest reality.
 - [ ] 81. Sweep remaining `:::caution` markers and resolve where possible.
 - [ ] 82. Cross-check every config default against a freshly generated config.
-- [x] 83. Verify every node API route against `router` in `crates/cloud-node/src/api.rs`.
+- [x] 83. Verify every node API route against `router` in `crates/node/src/api.rs`.
 - [ ] 84. Add a status badge convention per chapter (stable/draft/planned).
 - [ ] 85. CI drift check: generated refs vs committed.
 - [ ] 86. Remove stale references to the legacy architecture site.

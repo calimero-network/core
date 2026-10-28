@@ -506,7 +506,7 @@ From a code read of `b07423114` (master matches):
 - Host functions are bound over a raw-pointer `FunctionEnv` with panics caught. In v2 they are generated from WIT, and a host panic becomes `Trap(Fault)`.
 - Guest memory is read through `MemoryView`. In v2 the component model's canonical ABI does the copying.
 - `enable_perfmap` profiling has a wasmtime equivalent (`profiling_strategy`), behind the same feature flag.
-- merod-v2 currently compiles each bundle once with `Engine::default()` and caches it in memory (`crates/cloud-node/src/app.rs:436-456`). Step 1 above replaces that with a disk cache that survives restarts.
+- merod-v2 currently compiles each bundle once with `Engine::default()` and caches it in memory (`crates/node/src/app.rs:436-456`). Step 1 above replaces that with a disk cache that survives restarts.
 
 ## 6. Guest toolchains
 
@@ -681,7 +681,7 @@ The runtime must hold three properties: a call sees only its own app's state, no
 | S9 | Outbound HTTP only from actions, which run on the leader, and only to hosts declared in the signed manifest; never from calls or views | Undeclared-host and view tests |
 | S10 | App logs and traps never contain arguments, results or account ids outside the owner-only log route | `check-no-user-data-at-info` as a CI gate on the runtime crates |
 
-Review findings that this spec closes by design: issue 1 (S3, S4), issue 6 (S5), issue 8 (writer rotation goes away with storage wrappers), issue 11 (xcall becomes an outbox in the WIT world, never silently dropped). The rest of the review's blockers sit outside the runtime and stay with the cloud-node work.
+Review findings that this spec closes by design: issue 1 (S3, S4), issue 6 (S5), issue 8 (writer rotation goes away with storage wrappers), issue 11 (xcall becomes an outbox in the WIT world, never silently dropped). The rest of the review's blockers sit outside the runtime and stay with the node work.
 
 Tenant isolation (D14): on shared plans, apps of different customers run in one process inside one enclave, separated by the wasmtime sandbox, per-app encryption keys, a fresh instance per call and Spectre mitigations. A sandbox escape would expose other tenants on that node. The security docs say this plainly; Enterprise gets dedicated clusters in separate trust domains.
 

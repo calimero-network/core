@@ -7,7 +7,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use calimero_cloud_client::{Client, Consistency, Policy};
+use calimero_client::{Client, Consistency, Policy};
 use calimero_identity::testing::SoftAuthenticator;
 use common::{signed_up, Cluster, ORIGIN};
 use futures_util::StreamExt;
@@ -388,7 +388,7 @@ async fn backups_are_encrypted_and_restorable() {
         .path();
     let raw = std::fs::read(&file).unwrap();
     assert!(!String::from_utf8_lossy(&raw).contains("plaintext-value"));
-    let (_index, data) = calimero_cloud_node::backup::latest(&dir, &node.config.storage_key, &app)
+    let (_index, data) = calimero_node::backup::latest(&dir, &node.config.storage_key, &app)
         .unwrap()
         .unwrap();
     // The app's rows are in it, opened with the storage key (the log's sealed
@@ -768,7 +768,7 @@ async fn an_app_answers_to_its_context_id_too() {
     assert_eq!(v.result, json!("1"));
 }
 
-async fn set(cl: &Client, app: &str, v: &str) -> Result<(), Box<calimero_cloud_client::Error>> {
+async fn set(cl: &Client, app: &str, v: &str) -> Result<(), Box<calimero_client::Error>> {
     cl.call(app, "set", json!({ "key": "k", "value": v }), None)
         .await
         .map(drop)
@@ -1276,8 +1276,8 @@ async fn unique_ids_differ_within_a_term_and_across_leaders() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_system_caller_is_refused_where_the_abi_does_not_allow_it() {
-    use calimero_cloud_node::node::CallRequest;
-    use calimero_cloud_node::types::Caller;
+    use calimero_node::node::CallRequest;
+    use calimero_node::types::Caller;
 
     let c = Cluster::start(3).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
@@ -2064,7 +2064,7 @@ async fn the_abi_gate_reads_the_bundle_the_app_runs() {
     let _p = g
         .propose(|m, _| {
             calimero_log::Proposal::Append(
-                serde_json::to_vec(&calimero_cloud_node::component::ComponentCmd::Upgrade {
+                serde_json::to_vec(&calimero_node::component::ComponentCmd::Upgrade {
                     bundle: kv.clone(),
                     base_index: m.state.last_index,
                 })
@@ -2099,11 +2099,11 @@ async fn the_abi_gate_reads_the_bundle_the_app_runs() {
         .as_ref()
         .unwrap()
         .node
-        .call_component(&calimero_cloud_node::node::CallRequest::new(
+        .call_component(&calimero_node::node::CallRequest::new(
             app.clone(),
             "wipe".into(),
             json!({}),
-            calimero_cloud_node::types::Caller::Account { account },
+            calimero_node::types::Caller::Account { account },
         ))
         .await
         .unwrap_err();
@@ -2265,7 +2265,7 @@ async fn concurrent_first_uses_of_a_bundle_prepare_it_once() {
 /// holds is the system log's, not a leader-side re-check.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_leader_checks_upgrade_authority_again() {
-    use calimero_cloud_node::system::SystemCmd;
+    use calimero_node::system::SystemCmd;
 
     let c = Cluster::start(3).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
@@ -2333,7 +2333,7 @@ async fn the_leader_checks_upgrade_authority_again() {
                     bundle: v2.clone(),
                     by_operator: false,
                     actor: id.clone(),
-                    at: calimero_cloud_node::types::now_secs(),
+                    at: calimero_node::types::now_secs(),
                     run: None,
                     consent: json!({}),
                 })
@@ -2389,7 +2389,7 @@ async fn hosted_on(
     c: &Cluster,
     i: usize,
     app: &str,
-) -> Arc<calimero_log::Group<calimero_cloud_node::app::AppMachine>> {
+) -> Arc<calimero_log::Group<calimero_node::app::AppMachine>> {
     for _ in 0..200 {
         if let Some(g) = c.nodes[i].as_ref().unwrap().node.hosted(app) {
             return g;
@@ -2692,7 +2692,7 @@ async fn read_everywhere(
 /// a leader change.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn wasmer_and_component_apps_share_a_cluster() {
-    use calimero_cloud_node::types::Executor;
+    use calimero_node::types::Executor;
 
     let mut c = Cluster::start(3).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
@@ -2826,8 +2826,8 @@ async fn the_abi_storage_and_blob_routes_answer_for_a_component() {
     );
     assert_eq!(storage["blobs"], json!(0));
 
-    let refused = |e: calimero_cloud_client::Error| match e {
-        calimero_cloud_client::Error::Api { status, code, .. } => (status, code),
+    let refused = |e: calimero_client::Error| match e {
+        calimero_client::Error::Api { status, code, .. } => (status, code),
         other => panic!("{other:?}"),
     };
     let id = "00".repeat(32);
@@ -2971,7 +2971,7 @@ async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor(
         assert_eq!(bundle, Some(fixed.clone()), "node {i}");
         assert_eq!(
             executor,
-            Some(calimero_cloud_node::types::Executor::Component),
+            Some(calimero_node::types::Executor::Component),
             "node {i}"
         );
         assert!(initialized, "node {i}");
@@ -2985,7 +2985,7 @@ async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_component_sees_no_organization_but_its_own() {
     use calimero_app_host::{Directory as _, OrgRole};
-    use calimero_cloud_node::component::SysDirectory;
+    use calimero_node::component::SysDirectory;
 
     let c = Cluster::start(3).await;
     let (alice, _a) = signed_up(&c, 0, "alice").await;
@@ -3064,8 +3064,8 @@ async fn the_blob_routes_hide_a_private_component_app_from_outsiders() {
     let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
     let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
     let id = "00".repeat(32);
-    let status = |e: calimero_cloud_client::Error| match e {
-        calimero_cloud_client::Error::Api { status, code, .. } => (status, code),
+    let status = |e: calimero_client::Error| match e {
+        calimero_client::Error::Api { status, code, .. } => (status, code),
         other => panic!("{other:?}"),
     };
     let not_found = (404, "NOT_FOUND".to_owned());
@@ -3169,7 +3169,7 @@ async fn a_confirm_method_a_stale_front_missed_still_asks_for_a_passkey() {
     let _p = g
         .propose(|m, _| {
             calimero_log::Proposal::Append(
-                serde_json::to_vec(&calimero_cloud_node::component::ComponentCmd::Upgrade {
+                serde_json::to_vec(&calimero_node::component::ComponentCmd::Upgrade {
                     bundle: kv.clone(),
                     base_index: m.state.last_index,
                 })
@@ -3212,7 +3212,7 @@ async fn a_refused_component_upload_is_a_400_like_wasmers() {
     broken.extend_from_slice(&[0; 16]);
     let e = alice.upload_bundle(broken).await.unwrap_err();
     let status = match &e {
-        calimero_cloud_client::Error::Api { status, .. } => *status,
+        calimero_client::Error::Api { status, .. } => *status,
         other => panic!("{other:?}"),
     };
     assert_eq!((status, e.code()), (400, Some("BAD_BUNDLE")), "{e}");

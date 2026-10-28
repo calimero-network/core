@@ -27,7 +27,7 @@ Skip this section only for pure docs/chore PRs.
 
 mero-js and calimero-client-py mirror the node's HTTP API, the sealed wire
 format (`crates/sealed`) and the attestation check
-(`crates/cloud-client/src/attest.rs`) by hand. `e2e.yml`'s `clients` job runs
+(`crates/client/src/attest.rs`) by hand. `e2e.yml`'s `clients` job runs
 both against this PR's `merod`:
 
 - [ ] Changed a route, request or answer: updated both clients, or linked their PRs

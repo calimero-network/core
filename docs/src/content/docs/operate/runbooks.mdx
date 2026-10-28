@@ -103,7 +103,7 @@ on a node with `meroctl ops backup` (it answers `{ written }`).
 
 <Aside type="caution" title="Restore is not implemented">
   There is no route or command that restores a snapshot into a running
-  cluster (the node's notes list it as not done). `calimero_cloud_node::backup::latest`
+  cluster (the node's notes list it as not done). `calimero_node::backup::latest`
   opens the newest snapshot of an app with K_r, which is what a restore tool
   would build on. The system group (accounts, organizations, the directory) is
   not in these backups; it lives in memory on every node and in their Raft

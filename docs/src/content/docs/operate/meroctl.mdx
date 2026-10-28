@@ -9,7 +9,7 @@ sidebar:
 import { Aside } from '@astrojs/starlight/components';
 
 `meroctl` is the command line for Calimero nodes. It keeps v1's command tree
-over the release-v2 API, through `calimero-cloud-client`: before anything is
+over the release-v2 API, through `calimero-client`: before anything is
 sent it fetches the node's attestation and judges the quote, then every request
 travels in the sealed channel. The source is `crates/meroctl/src`.
 

@@ -198,7 +198,7 @@ pub struct SystemState {
     pub rotated_refresh: BTreeMap<String, RefreshRecord>,
 }
 
-pub use calimero_cloud_client::attest::{Authority, Governance};
+pub use calimero_client::attest::{Authority, Governance};
 
 /// Whose release approvals a change is to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

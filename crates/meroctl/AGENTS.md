@@ -1,7 +1,7 @@
 # meroctl
 
 The command line for Calimero nodes (`merod`): v1's command tree over the
-release-v2 API, through `calimero-cloud-client` (every request attested and
+release-v2 API, through `calimero-client` (every request attested and
 sealed; the node's quote is judged before anything is sent).
 
 | v1 | here | API |

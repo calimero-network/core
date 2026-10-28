@@ -9,7 +9,7 @@ sidebar:
 import { Aside } from '@astrojs/starlight/components';
 
 A `merod` node serves one HTTP API on its `--listen` address. The route table is
-`router` in `crates/cloud-node/src/api.rs`; this page lists every route in it.
+`router` in `crates/node/src/api.rs`; this page lists every route in it.
 v1's separate admin API, JSON-RPC endpoint, WebSocket and SSE server are gone:
 calls, reads, events and administration are all routes of this one API.
 
@@ -26,7 +26,7 @@ calls, reads, events and administration are all routes of this one API.
   them.
 - Requests are limited to 64 MiB.
 
-Use a client that does this: `meroctl`, `calimero-cloud-client` (Rust), mero-js
+Use a client that does this: `meroctl`, `calimero-client` (Rust), mero-js
 `CalimeroClient`, or calimero-client-py `CloudClient`. A hand-written `curl`
 reaches only `/health` and `/attestation` on a TDX node.
 
