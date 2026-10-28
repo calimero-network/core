@@ -30,6 +30,9 @@ pub mod types;
 
 pub use node::{Config, Node};
 
+/// How long [`Running::stop`] waits for the node's store to close.
+pub const STOP_WAIT: Duration = Duration::from_secs(10);
+
 /// A running node.
 pub struct Running {
     pub node: Arc<Node>,
@@ -43,6 +46,9 @@ pub struct Running {
 impl Running {
     /// Stop serving and stop every group.
     /// Open streams (event subscriptions) get two seconds to drain.
+    /// Returns once the node's store is closed (or after [`STOP_WAIT`]): a
+    /// task still running then (a reconcile pass, a peer post, a group's Raft
+    /// task) holds the store and its lock, which `inspect` or a restart needs.
     pub async fn stop(self) {
         self.shutdown.cancel();
         let mut server = self.server;
@@ -53,6 +59,12 @@ impl Running {
             server.abort();
         }
         self.node.engine.shutdown().await;
+        let store = self.node.engine.store_watch();
+        drop(self.node);
+        let started = tokio::time::Instant::now();
+        while store.is_open() && started.elapsed() < STOP_WAIT {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 }
 
