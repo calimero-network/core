@@ -47,6 +47,16 @@ pub const NODE_KEY_MIN_KEEP: u64 = 1_000;
 /// first (D74; D61's figure, now an upper bound).
 pub const IDEMPOTENCY_MAX_RECORDS: u64 = 100_000;
 
+/// The most records one entry's apply drops (by time and by the cap together, D74
+/// in spec v0.26: expiry and eviction do a bounded amount of work per entry; what's
+/// left carries over to later entries). Each dropped record costs about two reads
+/// and two deletes, so an entry does at most ~16k row operations: an apply batch of
+/// a few hundred KB and a few milliseconds on every replica, where an app the
+/// previous release let hold 1,000,000 records per class would otherwise drop ~1.9M
+/// in one batch on its first entry after the upgrade (about 470 entries now). An app
+/// in its steady state drops far fewer per entry, so the budget never shows.
+pub const EXPIRY_STEP: u64 = 4_096;
+
 /// The keys of one class in the order their records were written, oldest first.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ring {
@@ -84,6 +94,8 @@ pub struct Limits {
     pub keep: [u64; 2],
     /// Records kept per app at most.
     pub cap: u64,
+    /// Records one entry's apply drops at most.
+    pub step: u64,
 }
 
 impl Default for Limits {
@@ -91,6 +103,7 @@ impl Default for Limits {
         Self {
             keep: [IDEMPOTENCY_MIN_KEEP, NODE_KEY_MIN_KEEP],
             cap: IDEMPOTENCY_MAX_RECORDS,
+            step: EXPIRY_STEP,
         }
     }
 }
@@ -127,7 +140,9 @@ pub fn record(tx: &mut StateTx<'_>, rows: &Rows, rings: &mut [Ring; 2], key: &st
 /// timestamp of its own, which expires nothing by time),
 /// but never one of the class's newest `limits.keep`; then, while the app holds
 /// more than `limits.cap`, the oldest record of a class still above its floor (the
-/// cap never takes a class below its floor, D74 in spec v0.26). `stamps` reads a
+/// cap never takes a class below its floor, D74 in spec v0.26). Together they drop
+/// at most `limits.step` records ([`EXPIRY_STEP`]); what's left waits for the next
+/// entries. `stamps` reads a
 /// stored record's `(expires_ms, index of the entry that wrote it)`.
 pub fn expire(
     tx: &mut StateTx<'_>,
@@ -137,11 +152,13 @@ pub fn expire(
     now_ms: Option<u64>,
     stamps: impl Fn(&[u8]) -> Option<(u64, u64)>,
 ) {
+    // Records this entry may still drop (`limits.step`); the rest waits for the next.
+    let mut budget = limits.step;
     for (c, ring) in rings.iter_mut().enumerate() {
         let Some(now_ms) = now_ms else {
             break;
         };
-        while ring.first < ring.next {
+        while ring.first < ring.next && budget > 0 {
             if ring.len() <= limits.keep[c] {
                 break;
             }
@@ -160,9 +177,10 @@ pub fn expire(
             tx.delete_hidden(rows.tag, &key);
             tx.delete(slot);
             ring.first += 1;
+            budget -= 1;
         }
     }
-    while rings[0].len() + rings[1].len() > limits.cap {
+    while rings[0].len() + rings[1].len() > limits.cap && budget > 0 {
         // The front of each ring above its floor, with the index of the entry that
         // wrote it (a slot whose record is gone counts as oldest). A ring at or
         // below its floor is never evicted from (D74).
@@ -193,5 +211,6 @@ pub fn expire(
         }
         tx.delete(slot);
         rings[c].first += 1;
+        budget -= 1;
     }
 }

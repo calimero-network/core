@@ -2098,6 +2098,7 @@ mod tests {
         m.idem_limits = crate::idempotency::Limits {
             keep: [0, 0],
             cap: 3,
+            ..crate::idempotency::Limits::default()
         };
         let caller = Caller::Account {
             account: "acct".into(),
@@ -2123,6 +2124,7 @@ mod tests {
         m.idem_limits = crate::idempotency::Limits {
             keep: [2, 1],
             cap: 5,
+            ..crate::idempotency::Limits::default()
         };
         let caller = Caller::Account {
             account: "acct".into(),
@@ -2174,6 +2176,59 @@ mod tests {
         assert!(m.replay(&caller, "later").is_some());
     }
 
+    /// D74 (v0.26), the upgrade from a release that kept up to 1,000,000 records per
+    /// class: the first entries under the new cap drop the excess a bounded number per
+    /// entry (scaled down: 60 records kept under the old limits, then a cap of 10 and a
+    /// step of 7), never more per entry, and the rest carries over until the app is
+    /// under the cap.
+    #[test]
+    fn records_over_the_new_cap_drain_a_bounded_number_per_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut m) = machine(&dir);
+        m.idem_limits = crate::idempotency::Limits {
+            keep: [0, 0],
+            cap: 1_000_000,
+            step: u64::MAX,
+        };
+        for n in 0..60u64 {
+            let cmd = call(&m, &format!("k{n}"), 1_000 + n, &[], 0);
+            let _a = apply(&mut m, n + 1, &cmd);
+        }
+        let held = |m: &AppMachine| m.state.expiry.iter().map(|r| r.next - r.first).sum::<u64>();
+        assert_eq!(held(&m), 60);
+        // The new release: a cap of 10, at most 7 dropped per entry.
+        m.idem_limits = crate::idempotency::Limits {
+            keep: [0, 0],
+            cap: 10,
+            step: 7,
+        };
+        let mut index = 61;
+        let mut entries = 0;
+        while held(&m) > 10 && entries < 50 {
+            let before = held(&m);
+            let mut cmd = call(&m, "unused", 2_000, &[], 0);
+            if let AppCmd::Call(c) = &mut cmd {
+                c.idempotency_key = None;
+            }
+            let _a = apply(&mut m, index, &cmd);
+            assert!(
+                before - held(&m) <= 7,
+                "one entry dropped {} records",
+                before - held(&m)
+            );
+            index += 1;
+            entries += 1;
+        }
+        assert_eq!(held(&m), 10, "the excess never drained");
+        assert!(entries >= 7, "drained in {entries} entries");
+        // The newest stay.
+        let caller = Caller::Account {
+            account: "acct".into(),
+        };
+        assert!(m.replay(&caller, "k59").is_some());
+        assert!(m.replay(&caller, "k0").is_none());
+    }
+
     /// Wasmer retention is a function of the applied entries alone: two replicas
     /// fed the same entries keep the same records.
     #[test]
@@ -2188,6 +2243,7 @@ mod tests {
             m.idem_limits = crate::idempotency::Limits {
                 keep: [0, 0],
                 cap: 4,
+                ..crate::idempotency::Limits::default()
             };
             for (n, key) in keys.iter().enumerate() {
                 let cmd = call(&m, key, 1_000 + n as u64 * 4 * MIN, &[], 0);

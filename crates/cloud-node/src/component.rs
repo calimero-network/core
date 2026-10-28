@@ -1043,6 +1043,7 @@ mod tests {
         r.machine.idem_limits = crate::idempotency::Limits {
             keep: [0, 0],
             cap: 3,
+            ..crate::idempotency::Limits::default()
         };
         let _i = r.apply(1, &init(0));
         for (n, key) in ["k1", "node:k2", "k3", "node:k4", "k5"].iter().enumerate() {
@@ -1065,6 +1066,7 @@ mod tests {
         r.machine.idem_limits = crate::idempotency::Limits {
             keep: [2, 1],
             cap: 5,
+            ..crate::idempotency::Limits::default()
         };
         let _i = r.apply(1, &init(0));
         let _a = r.apply(2, &call_at(1, "mine", 1_000));
@@ -1115,6 +1117,7 @@ mod tests {
             r.machine.idem_limits = crate::idempotency::Limits {
                 keep: [0, 0],
                 cap: 4,
+                ..crate::idempotency::Limits::default()
             };
             let _i = r.apply(1, &init(0));
             let keys = ["a", "node:b", "c", "node:d", "e", "f"];
