@@ -9752,15 +9752,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "team-metrics-custom"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "serial_test",
-]
-
-[[package]]
 name = "tee-cards"
 version = "0.0.0"
 dependencies = [

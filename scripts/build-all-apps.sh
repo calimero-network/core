@@ -30,7 +30,6 @@ APPS=(
     "apps/scaffolding-e2e/Cargo.toml"
     "apps/search-chat/Cargo.toml"
     "apps/state-schema-conformance/Cargo.toml"
-    "apps/team-metrics-custom/Cargo.toml"
     "apps/xcall-example/Cargo.toml"
 )
 

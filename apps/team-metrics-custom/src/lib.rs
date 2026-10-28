@@ -1,93 +1,38 @@
-//! Team Metrics — app-defined merge.
+//! Team metrics with badges: wins, losses, draws and an achievement bitmask per team.
 //!
-//! The sibling of `team-metrics-macro`, which uses `#[derive(Mergeable)]` and
-//! lets the storage layer converge everything structurally. This one declares a
-//! rule of its own, and the difference is visible in exactly one field.
+//! The sibling of `team-metrics-macro`; the difference is the `badges` field, a plain `u64`
+//! with one bit per badge, which `award_badge` ORs a bit into.
 //!
-//! ## What `#[app::mergeable]` buys, and what it does not
-//!
-//! `wins` / `losses` / `draws` are `Counter`s. They converge whether or not this
-//! app declares anything: a counter is stored as its own child entity and the
-//! storage layer merges it by summing per-writer contributions. Removing
-//! `#[app::mergeable]` would not change them.
-//!
-//! `badges` is a plain `u64` bitmask. It lives in the value blob, and without a
-//! declared rule the blob resolves last-write-wins — one node's badges survive
-//! and the other node's are discarded. `#[app::mergeable]` makes bitwise-OR the
-//! rule instead, so a team awarded badge 1 on one node and badge 2 on another
-//! ends up holding BOTH on both nodes.
-//!
-//! Union is the distinguishing case on purpose. `max` would not be: it returns
-//! one of its two inputs, and so does last-write-wins, so the two agree whenever
-//! LWW happens to pick the larger side — a test built on `max` passes with the
-//! merge rule deleted. `1 | 2 == 3` is a value neither input holds, so only a
-//! dispatched merge can produce it.
-//!
-//! ## The contract
-//!
-//! Dispatch hands merge authority to this code, so `merge` must be
-//! deterministic, commutative, associative, idempotent and **total**. The last
-//! is the trap: returning `Err` is not validation, it is a refusal to converge —
-//! the entity stays divergent and repair retries it forever. Reject bad input in
-//! `set_streak`, not here.
+//! What no longer exists: in v1 this app declared its own merge rule (`#[app::mergeable]`,
+//! `badges |= other.badges`) so that two replicas awarding different badges concurrently
+//! converged to the union instead of last-write-wins. Here one Raft log orders every call and
+//! each `award_badge` reads the current mask before setting its bit, so concurrent awards
+//! already end up holding both badges; there are no replicas to merge and no merge rule to
+//! declare.
 
-#![allow(
-    unused_crate_dependencies,
-    reason = "Dependencies used in build process"
-)]
+use calimero_app_sdk::prelude::*;
 
-use calimero_sdk::abi::AbiType;
-use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use calimero_storage::collections::crdt_meta::MergeError;
-use calimero_storage::collections::{Counter, Mergeable, UnorderedMap};
-
-/// Per-team statistics, merged by this app rather than by the storage layer.
-///
-/// `#[app::mergeable]` gives the type a `CustomTypeId` that is stamped on every
-/// entry holding it, so the merge point dispatches here instead of resolving the
-/// entry by last-write-wins. It also generates the `RekeyTarget` impl that a
-/// hand-written `Mergeable` used to have to supply by itself — forgetting which
-/// silently lost the counters' concurrent increments.
-#[app::mergeable]
-#[derive(Debug, Default, BorshSerialize, BorshDeserialize, AbiType)]
-#[borsh(crate = "calimero_sdk::borsh")]
+/// One team's statistics.
+#[derive(Record)]
+#[table(key = "team_id")]
 pub struct TeamStats {
-    pub wins: Counter,
-    pub losses: Counter,
-    pub draws: Counter,
-    /// Achievement bitmask — one bit per badge.
-    ///
-    /// A plain `u64`, deliberately: it is the one field whose convergence
-    /// depends on the rule below rather than on the storage layer.
+    pub team_id: String,
+    pub wins: u64,
+    pub losses: u64,
+    pub draws: u64,
+    /// Achievement bitmask, one bit per badge (0-63).
     pub badges: u64,
 }
 
-impl Mergeable for TeamStats {
-    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-        // The counters would converge without this — they are child entities
-        // with their own merge. Delegating keeps the root-conflict path
-        // consistent with the per-entity one.
-        self.wins.merge(&other.wins)?;
-        self.losses.merge(&other.losses)?;
-        self.draws.merge(&other.draws)?;
-
-        // The part that only happens because this rule is dispatched. OR is
-        // commutative, associative and idempotent — a grow-only set of badges —
-        // and, unlike `max`, its result is a value NEITHER side held, so it
-        // cannot be mistaken for last-write-wins picking a winner.
-        self.badges |= other.badges;
-
-        Ok(())
-    }
+#[app::state(version = 1)]
+pub struct TeamMetricsApp {
+    teams: Table<TeamStats>,
 }
 
-/// Application state
-#[app::state(emits = MetricsEvent)]
-pub struct TeamMetricsApp {
-    /// Maps team_id → team statistics
-    /// Values are merged by `TeamStats`'s own rule; see the module docs.
-    pub teams: UnorderedMap<String, TeamStats>,
+#[app::error]
+pub enum Error {
+    TeamNotFound { team_id: String },
+    BadgeOutOfRange { badge: u32 },
 }
 
 #[app::event]
@@ -97,137 +42,116 @@ pub enum MetricsEvent {
     DrawRecorded { team_id: String, total: u64 },
 }
 
+/// Which count a call changes.
+#[derive(Clone, Copy)]
+enum Outcome {
+    Win,
+    Loss,
+    Draw,
+}
+
 #[app::logic]
 impl TeamMetricsApp {
     #[app::init]
-    pub fn init() -> TeamMetricsApp {
-        TeamMetricsApp {
-            teams: UnorderedMap::new(),
-        }
+    pub fn init() -> app::Result<Self> {
+        Ok(Self::load())
     }
 
+    /// Adds a win; returns the team's wins.
     pub fn record_win(&mut self, team_id: String) -> app::Result<u64> {
-        let mut stats = self.teams.entry(team_id.clone())?.or_default()?;
-
-        stats.wins.increment()?;
-        let total = stats.wins.value()?;
-
-        app::emit!(MetricsEvent::WinRecorded { team_id, total });
-
-        Ok(total)
+        self.record(team_id, Outcome::Win)
     }
 
+    /// Adds a loss; returns the team's losses.
     pub fn record_loss(&mut self, team_id: String) -> app::Result<u64> {
-        let mut stats = self.teams.entry(team_id.clone())?.or_default()?;
-
-        stats.losses.increment()?;
-        let total = stats.losses.value()?;
-
-        app::emit!(MetricsEvent::LossRecorded { team_id, total });
-
-        Ok(total)
+        self.record(team_id, Outcome::Loss)
     }
 
+    /// Adds a draw; returns the team's draws.
     pub fn record_draw(&mut self, team_id: String) -> app::Result<u64> {
-        let mut stats = self.teams.entry(team_id.clone())?.or_default()?;
-
-        stats.draws.increment()?;
-        let total = stats.draws.value()?;
-
-        app::emit!(MetricsEvent::DrawRecorded { team_id, total });
-
-        Ok(total)
+        self.record(team_id, Outcome::Draw)
     }
 
-    /// Award a badge (0-63). Validation belongs here, on the write path — NOT
-    /// in `merge`, where an `Err` would stop the entity converging.
-    pub fn award_badge(&mut self, team_id: String, badge: u64) -> app::Result<u64> {
+    /// Awards badge `badge` (0-63); returns the team's mask. `BadgeOutOfRange` past 63.
+    pub fn award_badge(&mut self, team_id: String, badge: u32) -> app::Result<u64> {
         if badge > 63 {
-            app::bail!("badge out of range");
+            app::bail!(Error::BadgeOutOfRange { badge });
         }
-
-        let mut stats = self.teams.entry(team_id)?.or_default()?;
-        stats.badges |= 1_u64 << badge;
-
-        Ok(stats.badges)
+        let mut s = self.stats_or_new(team_id)?;
+        s.badges |= 1_u64 << badge;
+        let badges = s.badges;
+        self.teams.upsert(s)?;
+        Ok(badges)
     }
 
     /// How many badges the team holds.
-    ///
-    /// Exposed so an e2e assertion can be a plain integer comparison: the
-    /// individual bits depend on each node's device id and are not predictable
-    /// from a workflow, and relying on the assertion evaluator to provide
-    /// `bin(..).count('1')` would be betting on its expression support.
+    #[app::view]
     pub fn get_badge_count(&self, team_id: String) -> app::Result<u32> {
-        let Some(stats) = self.teams.get(&team_id)? else {
-            app::bail!("Team not found");
-        };
-
-        Ok(stats.badges.count_ones())
+        Ok(self.stats(team_id)?.badges.count_ones())
     }
 
+    /// The team's badge mask.
+    #[app::view]
     pub fn get_badges(&self, team_id: String) -> app::Result<u64> {
-        let Some(stats) = self.teams.get(&team_id)? else {
-            app::bail!("Team not found");
-        };
-
-        Ok(stats.badges)
+        Ok(self.stats(team_id)?.badges)
     }
 
+    /// The team's wins; `TeamNotFound` before its first record.
+    #[app::view]
     pub fn get_wins(&self, team_id: String) -> app::Result<u64> {
-        let Some(stats) = self.teams.get(&team_id)? else {
-            app::bail!("Team not found");
-        };
-
-        Ok(stats.wins.value()?)
+        Ok(self.stats(team_id)?.wins)
     }
 
+    /// The team's losses; `TeamNotFound` before its first record.
+    #[app::view]
     pub fn get_losses(&self, team_id: String) -> app::Result<u64> {
-        let Some(stats) = self.teams.get(&team_id)? else {
-            app::bail!("Team not found");
-        };
-
-        Ok(stats.losses.value()?)
+        Ok(self.stats(team_id)?.losses)
     }
 
+    /// The team's draws; `TeamNotFound` before its first record.
+    #[app::view]
     pub fn get_draws(&self, team_id: String) -> app::Result<u64> {
-        let Some(stats) = self.teams.get(&team_id)? else {
-            app::bail!("Team not found");
+        Ok(self.stats(team_id)?.draws)
+    }
+
+    fn stats(&self, team_id: String) -> app::Result<TeamStats> {
+        match self.teams.get(&team_id)? {
+            Some(s) => Ok(s),
+            None => Err(Error::TeamNotFound { team_id }.into()),
+        }
+    }
+
+    fn stats_or_new(&self, team_id: String) -> app::Result<TeamStats> {
+        Ok(self.teams.get(&team_id)?.unwrap_or(TeamStats {
+            team_id,
+            wins: 0,
+            losses: 0,
+            draws: 0,
+            badges: 0,
+        }))
+    }
+
+    fn record(&mut self, team_id: String, outcome: Outcome) -> app::Result<u64> {
+        let mut s = self.stats_or_new(team_id.clone())?;
+        let (total, event) = match outcome {
+            Outcome::Win => {
+                s.wins += 1;
+                let total = s.wins;
+                (total, MetricsEvent::WinRecorded { team_id, total })
+            }
+            Outcome::Loss => {
+                s.losses += 1;
+                let total = s.losses;
+                (total, MetricsEvent::LossRecorded { team_id, total })
+            }
+            Outcome::Draw => {
+                s.draws += 1;
+                let total = s.draws;
+                (total, MetricsEvent::DrawRecorded { team_id, total })
+            }
         };
-
-        Ok(stats.draws.value()?)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use calimero_sdk::testing::TestHost;
-
-    use super::*;
-
-    #[test]
-    fn records_accumulate_per_team() {
-        let mut app = TestHost::new(TeamMetricsApp::init);
-
-        assert_eq!(app.call(|s| s.record_win("red".into())).unwrap(), 1);
-        assert_eq!(app.call(|s| s.record_win("red".into())).unwrap(), 2);
-        app.call(|s| s.record_loss("red".into())).unwrap();
-        app.call(|s| s.record_draw("red".into())).unwrap();
-
-        assert_eq!(app.view(|s| s.get_wins("red".into())).unwrap(), 2);
-        assert_eq!(app.view(|s| s.get_losses("red".into())).unwrap(), 1);
-        assert_eq!(app.view(|s| s.get_draws("red".into())).unwrap(), 1);
-    }
-
-    #[test]
-    fn teams_are_independent() {
-        let mut app = TestHost::new(TeamMetricsApp::init);
-
-        app.call(|s| s.record_win("red".into())).unwrap();
-        app.call(|s| s.record_win("blue".into())).unwrap();
-        app.call(|s| s.record_win("blue".into())).unwrap();
-
-        assert_eq!(app.view(|s| s.get_wins("red".into())).unwrap(), 1);
-        assert_eq!(app.view(|s| s.get_wins("blue".into())).unwrap(), 2);
+        self.teams.upsert(s)?;
+        env::emit(event, Audience::All)?;
+        Ok(total)
     }
 }
