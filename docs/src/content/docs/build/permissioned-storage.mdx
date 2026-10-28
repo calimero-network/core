@@ -185,9 +185,9 @@ impl KvStore {
 
 ## User-owned and write-once storage
 
-From `apps/kv-store-with-user-and-frozen-storage`. `UserStorage<T>` gives each
-identity its own slot keyed by `account_id()`; `FrozenStorage<T>` is
-content-addressed and immutable.
+`UserStorage<T>` gives each identity its own slot keyed by `account_id()`;
+`FrozenStorage<T>` is content-addressed and immutable. This is the v1 shape of
+`apps/kv-store-with-user-and-frozen-storage`:
 
 ```rust
 #[app::state(emits = for<'a> Event<'a>)]
@@ -212,6 +212,37 @@ impl KvStore {
         let hash = self.frozen_items.insert(value)?;
         Ok(hex::encode(hash))
     }
+}
+```
+
+The app itself is now on the component SDK (`calimero-app-sdk`), where both
+rules are a table plus a check: a per-account row is keyed by the caller's
+account, so a setter has no way to name anyone else's, and a frozen row is keyed
+by the SHA-256 of its content (hashed in the guest with `sha2`), inserted once
+and never changed:
+
+```rust
+#[derive(Record)]
+#[table(key = "account")]
+pub struct UserValue { pub account: String, pub value: String }
+
+#[derive(Record)]
+#[table(key = "hash")]
+pub struct Frozen { pub hash: String, pub value: String }
+
+pub fn set_user_simple(&mut self, value: String) -> app::Result<()> {
+    let account = guards::require_member()?; // the caller; never an argument
+    self.user_simple.upsert(UserValue { account, value })?;
+    Ok(())
+}
+
+pub fn add_frozen(&mut self, value: String) -> app::Result<String> {
+    guards::require_member()?;
+    let hash = content_hash(&value); // hex SHA-256 of v1's borsh bytes
+    if !self.frozen.contains(&hash)? {
+        self.frozen.insert(Frozen { hash: hash.clone(), value })?;
+    }
+    Ok(hash)
 }
 ```
 

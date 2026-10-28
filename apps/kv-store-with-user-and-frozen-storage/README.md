@@ -1,52 +1,25 @@
-# KV Store Application
+# kv-store-with-user-and-frozen-storage
 
-A simple key-value store application built with Calimero SDK.
+A key-value store on the component SDK (`calimero-app-sdk`) with two more kinds
+of state beside the shared items, each a table plus a rule (v1 used
+`UserStorage` and `FrozenStorage`):
 
-## Building
+- **Per-account values**: `setUserSimple` / `setUserNested` write rows keyed by
+  `env::caller()`'s account and take no account argument, so an account writes
+  only its own. `getUserSimpleFor(userKey)` reads anyone's.
+- **Frozen values**: `addFrozen(value)` stores the value under the hex SHA-256
+  of its borsh encoding (as v1 did, so the hashes are v1's), computed in the
+  guest with `sha2`; nothing ever changes or removes one, and the same content
+  again returns the same hash. `getFrozen(hashHex)` reads it.
 
-To build the application for WASM:
+Shared items: `set`, `get`, `entries`, `len`, `getResult`, `getUnchecked` (traps
+on a missing key, on purpose), `remove`, `clear`. Every method needs an org
+member (or above).
 
 ```bash
-rustup target add wasm32-unknown-unknown
-cargo build -p kv-store --target wasm32-unknown-unknown
+cargo test --manifest-path apps/kv-store-with-user-and-frozen-storage/Cargo.toml
 ```
 
-## ABI Extraction
-
-To extract the ABI from the compiled WASM:
-
-```bash
-calimero-abi extract target/wasm32-unknown-unknown/debug/kv_store.wasm -o apps/wasmer-fixtures/kv-store/res/abi.json
-```
-
-## Canonical Types
-
-The ABI uses the following canonical WASM types:
-
-- **Scalar types**: `bool`, `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `string`, `bytes`
-- **Collection types**: `list<T>`, `map<string,V>`
-- **Nullable types**: `Option<T>` is represented as nullable `T`
-- **Result types**: `Result<T,E>` is normalized to return `T` with errors handled separately
-
-## Type Normalization Rules
-
-- `usize`/`isize` → `u32`/`i32` (wasm32)
-- `&str` → `string`
-- `Vec<T>` → `list<T>`
-- `Option<T>` → nullable `T`
-- `Result<T,E>` → `T` (error handling separate)
-- Custom types → `$ref` to type name (use `#[app::abi_type]` to expand)
-
-## Type Expansion
-
-By default, custom types are referenced using `$ref` in the ABI. To expand a type definition in the ABI, use the `#[app::abi_type]` macro:
-
-```rust
-#[app::abi_type]
-pub struct MyCustomType {
-    field1: String,
-    field2: i32,
-}
-```
-
-This will expand the type definition in the ABI's `types` section, making it available for reference by other types. 
+`tests/scenarios.rs` runs `scenarios/user-storage.json` and
+`scenarios/frozen-storage.json`, the former merobox workflows, in the harness;
+the cluster runs the same files.

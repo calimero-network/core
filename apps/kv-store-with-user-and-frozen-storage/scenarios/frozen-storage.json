@@ -1,0 +1,15 @@
+[
+  { "as": "owner", "op": "call", "method": "set", "args": { "key": "my_key1", "value": "my_value1" } },
+  { "as": "owner", "op": "call", "method": "addFrozen", "args": { "value": "SomeFrozenString" },
+    "expect": { "ok": "c8acd3c44a96324de12a82dd674aa1c93a635fbb76a852ae14363f9b1971beb1" }, "save": "h1" },
+  { "as": "owner", "op": "view", "method": "getFrozen", "args": { "hashHex": "$h1" }, "expect": { "ok": "SomeFrozenString" } },
+  { "as": "bob", "op": "view", "method": "getFrozen", "args": { "hashHex": "$h1" }, "expect": { "ok": "SomeFrozenString" } },
+  { "as": "bob", "op": "call", "method": "addFrozen", "args": { "value": "SomeFrozenString2" },
+    "expect": { "ok": "ceaa4337dea4ad0ced60eb2c58a7b69ecab93fe07ee76e0ad2fd5dcb4001f5ff" }, "save": "h2" },
+  { "as": "owner", "op": "view", "method": "getFrozen", "args": { "hashHex": "$h2" }, "expect": { "ok": "SomeFrozenString2" } },
+  { "as": "bob", "op": "call", "method": "addFrozen", "args": { "value": "SomeFrozenString" }, "expect": { "ok": "$h1" } },
+  { "as": "owner", "op": "view", "method": "getFrozen", "args": { "hashHex": "0000000000000000000000000000000000000000000000000000000000000000" },
+    "expect": { "error": "FrozenNotFound", "fields": { "hash": "0000000000000000000000000000000000000000000000000000000000000000" } } },
+  { "as": "owner", "op": "view", "method": "getFrozen", "args": { "hashHex": "nothex" }, "expect": { "error": "BadHash" } },
+  { "as": "bob", "op": "view", "method": "get", "args": { "key": "my_key1" }, "expect": { "ok": "my_value1" } }
+]

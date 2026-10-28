@@ -17,8 +17,6 @@ APPS=(
     "apps/fugue-collab/Cargo.toml"
     "apps/kv-store-init/Cargo.toml"
     "apps/kv-store-with-handlers/Cargo.toml"
-    "apps/wasmer-fixtures/kv-store-with-shared-storage/Cargo.toml"
-    "apps/kv-store-with-user-and-frozen-storage/Cargo.toml"
     "apps/tee-dice/Cargo.toml"
     "apps/tee-cards/Cargo.toml"
     "apps/name-registry/Cargo.toml"

@@ -330,7 +330,8 @@ against the writer set / owner. A forged write does not survive convergence.
 - **`UserStorage<T>`** — *per-user slots keyed by identity*. Each executor can
   only write its own slot (`insert` targets `env::account_id()`); reads are
   unrestricted (`get` for the current user, `get_for_user(key)` for any). Use for
-  per-user preferences or state. See `apps/kv-store-with-user-and-frozen-storage`.
+  per-user preferences or state. `apps/kv-store-with-user-and-frozen-storage`
+  shows the same rule on the component SDK: a table keyed by the caller's account.
 
 - **`SharedStorage<T>` / `Ownable<T>` / `PermissionedStorage<T, A>`** —
   *writer-set guarded*. The value lives behind a set of authorized writer
@@ -360,8 +361,9 @@ against the writer set / owner. A forged write does not survive convergence.
 - **`FrozenStorage<T>`** — a map whose key is the `SHA256` of the value. Entries
   are immutable: no overwrite, no remove. `insert(value)` returns the hash;
   concurrent inserts of identical content de-duplicate automatically. Use for
-  archives, static assets, or any content-addressed immutable data. See
-  `apps/kv-store-with-user-and-frozen-storage`.
+  archives, static assets, or any content-addressed immutable data.
+  `apps/kv-store-with-user-and-frozen-storage` shows the same rule on the
+  component SDK: a table keyed by a SHA-256 the guest computes, never updated.
 
 - **`ContentAddressed<C>`** — the same rule over any keyed collection with
   `[u8; 32]` keys: `ContentAddressed<IndexedMap<[u8; 32], Event>>` is an

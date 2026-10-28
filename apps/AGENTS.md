@@ -43,7 +43,7 @@ cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 | `components-demo`        | Access-control components | `Ownable`, `PermissionedStorage`, `AccessControl` |
 | `kv-store-with-shared-storage` | Writer-set KV (component SDK) | A writer set as table rows plus an explicit check, and its rotation. The wasmer `SharedStorage` build is `wasmer-fixtures/kv-store-with-shared-storage` |
 | `wasmer-fixtures/*`      | Wasmer builds of ported apps | Kept for the node's tests, the size gate and the release bundle; same crate and wasm names as before the port |
-| `kv-store-with-user-and-frozen-storage` | Per-user + immutable KV | `UserStorage`, `FrozenStorage` |
+| `kv-store-with-user-and-frozen-storage` | Per-user + immutable KV (component SDK) | Rows keyed by the caller's account (v1's `UserStorage`), content-addressed rows hashed with `sha2` (v1's `FrozenStorage`) |
 | `custom-key-store`       | Custom key type        | `AsRef<[u8]>` newtype keys, and the tail rule owned collections add |
 | `private_data`           | Node-local secrets     | `#[app::private]`; public hashes in an `AuthoredMap` under creator-named ids |
 | `tee-dice` / `tee-cards` | TEE-decided games      | `TeeOnly`, `TeeSecret`, `#[app::tee]` handlers and timers |
@@ -59,7 +59,7 @@ cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 
 ## Component apps (`calimero-app-sdk`, `wasm32-wasip2`)
 
-`rooms`, `org-gated`, `authored-sorted-kv-store`, `indexed-issue-tracker` and every app ported to the component SDK are standalone
+`rooms`, `org-gated`, `authored-sorted-kv-store`, `indexed-issue-tracker`, `kv-store-with-user-and-frozen-storage` and every app ported to the component SDK are standalone
 crates (`[workspace]` in their `Cargo.toml`, `calimero-app-sdk` by path), not
 members of the core workspace, so `cargo test --manifest-path apps/<app>/Cargo.toml`
 runs them (CI's "Cargo test (standalone v2 apps)" loop lists each). Storage is

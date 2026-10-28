@@ -217,7 +217,8 @@ let theirs = profiles.get_for_user(&bob_key)?;         // anyone's slot, read-on
 ```
 
 A member cannot overwrite another member's slot — that rule is enforced at merge, not
-just locally. See `apps/kv-store-with-user-and-frozen-storage`.
+just locally. On the component SDK the same rule is a table keyed by the caller's
+account, as in `apps/kv-store-with-user-and-frozen-storage`.
 
 ### An open keyspace with per-entry owners via `AuthoredMap`
 
