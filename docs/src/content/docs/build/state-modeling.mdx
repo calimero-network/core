@@ -59,7 +59,7 @@ design question is *what should concurrent writes do*:
 
 The recursive-merge property is the lever you compose with: a
 `UnorderedMap<String, LwwRegister<String>>` is "a map where each key is its own
-last-writer-wins cell" — the pattern `apps/kv-store` uses. A
+last-writer-wins cell" — the pattern `apps/wasmer-fixtures/kv-store` uses. A
 `UnorderedMap<String, Counter>` is "a count per key." Build the behavior you want by
 nesting.
 

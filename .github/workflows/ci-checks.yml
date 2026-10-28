@@ -230,12 +230,12 @@ jobs:
 
       - name: Cargo test (standalone v2 apps)
         if: ${{ !cancelled() }}
-        # Rooms and the v2 fixtures are workspaces of their own, so the workspace run above
-        # never reaches their harness tests. One target dir serves the three.
+        # Rooms, the v2 fixtures and the ported apps are workspaces of their own, so the workspace run above
+        # never reaches their harness tests. One target dir serves them all.
         env:
           CARGO_TARGET_DIR: target/standalone-apps
         run: |
-          for app in apps/rooms apps/v2-fixtures/kv apps/v2-fixtures/org-gated; do
+          for app in apps/rooms apps/v2-fixtures/kv apps/v2-fixtures/org-gated apps/kv-store; do
             cargo test --manifest-path "$app/Cargo.toml"
           done
 

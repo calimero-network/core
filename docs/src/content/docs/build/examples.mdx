@@ -39,7 +39,7 @@ the source is short enough to read end to end.
 
 | Example | Teaches | Documented in |
 |---------|---------|---------------|
-| [`kv-store`](https://github.com/calimero-network/core/tree/master/apps/kv-store) | A map of last-writer-wins values; events; `entry` / `get_mut` patterns **(walkthrough below)** | [Collections](/build/collections/) |
+| [`kv-store`](https://github.com/calimero-network/core/tree/master/apps/kv-store) | The component SDK's basic app: a `Table` of entries, a `Counter`, events, a typed error and a `confirm` method; tests on `TestApp` and scenario files **(walkthrough below)** | [Build your first app](/build/tutorial/) |
 | [`kv-store-init`](https://github.com/calimero-network/core/tree/master/apps/kv-store-init) | Seeding initial state from an `#[app::init]` constructor | [SDK macros](/build/sdk-macros/) |
 | [`kv-store-with-handlers`](https://github.com/calimero-network/core/tree/master/apps/kv-store-with-handlers) | Routing emitted events to handler methods; a CRDT `Counter` **(walkthrough below)** | [SDK macros](/build/sdk-macros/) |
 
@@ -89,52 +89,63 @@ the source is short enough to read end to end.
 | [`migrations`](https://github.com/calimero-network/core/tree/master/apps/migrations) | Schema-versioning scenarios — adding, removing, renaming, and retyping fields across versions | [Migrations](/build/migrations/) |
 
 <Aside type="tip" title="Run the tests first">
-  Every app builds and tests natively — no node, no WASM. From the repo root,
-  `cargo test -p kv-store` (swap in any app's crate name) drives the methods
-  through `TestHost` and asserts on state. It is the fastest way to see an app's
-  behavior before installing it.
+  Every app tests without a node. A wasmer app tests natively from the repo
+  root: `cargo test -p kv-store-with-handlers` (swap in any app's crate name)
+  drives the methods through `TestHost`. A component app (its own `[workspace]`,
+  such as `apps/kv-store`) runs `cargo test` in its directory, which builds the
+  component and runs it on the real engine through `TestApp`. Either is the
+  fastest way to see an app's behavior before installing it.
 </Aside>
 
 ## kv-store
 
-The canonical starting point: a string→string key/value store where each value
-follows last-writer-wins. It also shows off the `entry` / `get_mut` access
-patterns and emits an event on every mutation.
+The canonical starting point, on the component SDK (`calimero-app-sdk`, built for
+`wasm32-wasip2` into a `calimero:app` component): a string→string store whose
+writes the app's log orders, so a later write to a key replaces an earlier one.
+The wasmer build of the same store, which the node's own tests run, is
+`apps/wasmer-fixtures/kv-store`.
 
 **State shape** ([`apps/kv-store/src/lib.rs`](https://github.com/calimero-network/core/tree/master/apps/kv-store/src/lib.rs)):
 
 ```rust
-#[app::state(emits = for<'a> Event<'a>)]
+#[derive(Record)]
+#[table(key = "key")]
+pub struct Entry {
+    pub key: String,
+    pub value: String,
+}
+
+#[app::state(version = 1)]
 pub struct KvStore {
-    items: UnorderedMap<String, LwwRegister<String>>,
+    entries: Table<Entry>,
+    size: Counter,
 }
 ```
 
-The `UnorderedMap<String, LwwRegister<String>>` pattern is the bread and butter
-of Calimero state: an add-wins map whose values are each a last-writer-wins
-register, so concurrent writes to the *same* key resolve by timestamp while
-writes to *different* keys all survive a merge.
+A `Table` holds records under their key (and any indexes, unique constraints and
+counts the `#[table]` attribute declares); a `Counter` is changed only by adding,
+so two increments never race.
 
-**Key methods:**
+**Key methods** (ABI names are camelCase; `u64` travels as a decimal string):
 
 | Method | What it does |
 |--------|--------------|
-| `set(key, value)` | Insert or overwrite a key; emits `Inserted` or `Updated`. |
-| `update_if_exists(key, value)` | Mutate in place via `get_mut` only when the key exists; returns whether it landed. |
-| `get_or_insert(key, value)` | Read-or-create via the `entry` API; returns the resulting value. |
-| `get(key)` / `get_unchecked(key)` / `get_result(key)` | Three read variants: optional, panicking, and erroring (`Error::NotFound`). |
-| `entries()` | Collect all pairs into a `BTreeMap<String, String>`. |
-| `len()` / `remove(key)` / `clear()` | Count, delete one, delete all (`Cleared`). |
+| `set { key, value }` | Insert or overwrite a key; emits `Inserted` or `Updated`. |
+| `updateIfExists { key, value }` | Replace only an existing key; returns whether it did. |
+| `getOrInsert { key, value }` | Read-or-create; returns the value the key holds after the call. |
+| `get` / `getUnchecked` / `getResult` `{ key }` | Three read views: optional, trapping, and erroring (`NotFound { key }`). |
+| `entries` | Every pair as a JSON object ordered by key. |
+| `len` / `remove { key }` / `clear` | Count, delete one (`Removed`), delete all (`Cleared`; a `confirm` method, so it needs a passkey confirmation). |
 
-**Build & run.** From the app directory, `cargo mero bundle --dev --no-icon`
-signs a bundle into the repo root's `dist/`, named after the manifest's
-`package` and `version`. Then follow the [Quickstart](/build/quickstart/) to
-install and call it:
+**Build & run.** `cargo test` in `apps/kv-store` builds the component and runs
+`tests/harness.rs` and every `scenarios/*.json` on the real engine. From the repo
+root, build the component and create a context from it on a development cluster:
 
 ```sh
-meroctl --node node1 app install --path dist/com.calimero.kv-store-0.0.0.mpk
-meroctl --node node1 call set --context <context-id> \
-  --args '{"key": "hello", "value": "world"}'
+cargo run -p calimero-app-build -- apps/kv-store --out kv_store.wasm
+meroctl context create --name my-kv --path kv_store.wasm --alias my-kv
+meroctl call -c my-kv set --args '{"key": "hello", "value": "world"}'
+meroctl call -c my-kv get --args '{"key": "hello"}' --view
 ```
 
 ## kv-store-with-handlers
@@ -159,7 +170,7 @@ pub struct KvStore {
 
 | Method | What it does |
 |--------|--------------|
-| `set` / `remove` / `clear` | Same as `kv-store`, but `emit!` pairs the event with a handler name (e.g. `"insert_handler"`). |
+| `set` / `remove` / `clear` | Like the wasmer `kv-store` (`apps/wasmer-fixtures/kv-store`), but `emit!` pairs the event with a handler name (e.g. `"insert_handler"`). |
 | `insert_handler` / `update_handler` / `remove_handler` / `clear_handler` | The handler callbacks; each logs and bumps `handler_counter`. |
 | `get_handler_execution_count()` | The global G-Counter sum of handler runs across nodes. |
 | `get_handlers_called()` / `get_unique_handlers_called()` / `was_handler_called(name)` | Introspect which handlers ran. |

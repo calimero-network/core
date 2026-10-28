@@ -287,7 +287,7 @@ than kept unrun. Each, and why nothing replaces it (or what does):
 | `apps/fugue-collab/workflows/fugue-collab-figure2.yml` | the Fugue paper's Figure 2, three isolated replicas typing at positions of their own unsynced views and merged after: a cluster orders every edit against one current text, so there is no concurrent merge (the other fugue-collab workflows cover editing) |
 | `apps/fugue-collab/workflows/fugue-collab-large-paste.yml` | a paste merged across a libp2p partition: a cluster has no partitioned user replica (concurrent edits: the other fugue-collab workflows) |
 | `apps/fugue-collab/workflows/fugue-collab-partition-heal.yml` | two sides of a network partition typing at the same position and merging when it heals: a cluster has no partitioned user replica and no merge |
-| `apps/wasmer-fixtures/kv-store/workflows/ephemeral-open-subgroup-e2e.yml` | presence over v1's WS/SSE for a member inheriting an open subgroup, checked by a script on v1's endpoints (ephemeral-presence-e2e covers presence) |
+| `apps/kv-store/workflows/ephemeral-open-subgroup-e2e.yml` | presence over v1's WS/SSE for a member inheriting an open subgroup, checked by a script on v1's endpoints (ephemeral-presence-e2e covers presence) |
 | `apps/nested-crdt-test/workflows/nested-crdt-offline-catchup.yml` | an offline node catching up over v1's HashComparison sync: a cluster replicates by its Raft log |
 | `apps/rich-collab/workflows/rich-catchup.yml` | offline and replaced nodes catching up over v1's HashComparison sync: a cluster replicates by its Raft log |
 | `apps/scaffolding-e2e/workflows/account-namespace-left-unfollows.yml` | v1 devices following and unfollowing an account's namespaces: a device is a passkey of the account and follows nothing |

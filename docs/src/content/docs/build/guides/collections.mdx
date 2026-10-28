@@ -36,7 +36,9 @@ rule of each.
 
 ## Read and write it
 
-This is `apps/kv-store` — an `UnorderedMap` whose values are `LwwRegister<String>`:
+This is `apps/wasmer-fixtures/kv-store`, the wasmer build of the store — an
+`UnorderedMap` whose values are `LwwRegister<String>` (`apps/kv-store` is the same
+store on the component SDK, a `Table` of records):
 
 ```rust
 use calimero_sdk::app;

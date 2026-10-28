@@ -68,7 +68,7 @@ merge behavior.
 - **`UnorderedMap` / `UnorderedSet`** — your defaults. Both are *add-wins*:
   concurrent inserts all survive a merge. Values in a map merge recursively, so
   a `UnorderedMap<String, LwwRegister<String>>` gives you per-key last-writer-wins
-  (the pattern `apps/kv-store` uses).
+  (the pattern `apps/wasmer-fixtures/kv-store` uses).
 - **`SortedMap` / `SortedSet`** — same CRDT as the unordered pair, but they also
   maintain a node-local ordered index, unlocking `range(a..b)`, `prefix(p)`,
   `page(offset, limit)`, `first()`, and `last()`. The index is **not**
