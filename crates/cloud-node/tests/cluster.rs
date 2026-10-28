@@ -3742,11 +3742,7 @@ async fn an_owner_transfers_an_app_with_their_passkey() {
         .unwrap_err();
     assert!(!e.to_string().contains("CONFIRM_REQUIRED"), "{e}");
     let _ = alice
-        .post_confirmed(
-            &format!("apps/{app}/transfer"),
-            json!({ "to": bob_id }),
-            &mut alice_pk,
-        )
+        .transfer_app(&app, &bob_id, &mut alice_pk)
         .await
         .unwrap();
     let a = bob.get(&format!("apps/{app}")).await.unwrap();

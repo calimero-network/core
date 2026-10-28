@@ -824,6 +824,22 @@ impl Client {
         .await
     }
 
+    /// Hand an app to another account (an org app only to one of the org's
+    /// members): the owner's, approved with their passkey.
+    pub async fn transfer_app(
+        &self,
+        app: &str,
+        to: &str,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.post_confirmed(
+            &format!("apps/{}/transfer", path_segment(app)),
+            json!({ "to": to }),
+            passkey,
+        )
+        .await
+    }
+
     /// Set an organization's metadata (an admin's, or a holder of
     /// `MANAGE_METADATA`).
     pub async fn set_org_metadata(&self, org: &str, metadata: Value) -> Result<Value> {
