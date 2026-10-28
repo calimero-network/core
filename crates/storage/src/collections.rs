@@ -1690,6 +1690,20 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         if entry.is_some() && !self.storage.domain.is_open() {
             crate::domain::check_authority(&self.storage.domain)?;
         }
+        // An edit in place is written back when the guard drops, where an error
+        // has nowhere to go. So a cell's member is refused here, up front, to a
+        // caller its writers do not let write it.
+        if let (Some(entry), crate::domain::Domain::Anchor(anchor)) = (&entry, &self.storage.domain)
+        {
+            <Interface<S>>::refuse_local_guarded_write(
+                entry.id(),
+                &StorageType::SharedMember {
+                    anchor: *anchor,
+                    signature_data: None,
+                },
+                crate::interface::GuardedWrite::Put,
+            )?;
+        }
 
         Ok(entry.map(|entry| EntryMut {
             collection: CollectionMut::new(self),
