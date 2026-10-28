@@ -58,23 +58,27 @@ metrics have no release-v2 counterpart: those subsystems are gone.
 | `calimero_group_leader` | `group` | `1` when this node leads the group. |
 | `calimero_group_apply_lag` | `group` | Entries in this node's log of the group that it has not applied yet. |
 | `calimero_group_follower_lag` | `group`, `peer` | On the group's leader: how many entries the follower `peer` (a node id) is behind. |
-| `calimero_group_quorum_ack_age_ms` | `group` | On the group's leader: milliseconds since a quorum last acknowledged it. |
+| `calimero_group_quorum_ack_age_seconds` | `group` | On the group's leader: seconds since a quorum last acknowledged it. |
 | `calimero_group_snapshot_index` | `group` | The index this node's latest snapshot of the group covers. |
 | `merod_build_info` | `version`, `peer_id` | Always `1`; `version` is the build's release, `peer_id` this node's id (v1's label; release-v2 has no libp2p identity). |
-| `storage_disk_usage_bytes` | `store` | Disk a store takes, in allocated blocks: `datastore` (the sealed store: log, state and blobs) and `snapshots`. |
-| `process_start_time_seconds` | | When this node's process started, in Unix seconds. |
+| `storage_disk_usage_bytes` | `store` | Disk a store takes, in allocated blocks, sampled at most every 30 s: `datastore` (the sealed store: log, state and blobs; v1's separate `blobstore` series is part of it) and `snapshots`. |
+| `process_start_time_seconds` | | When this node's process started, in Unix seconds (from `/proc` on Linux; elsewhere when it started serving). |
 | `process_resident_memory_bytes`, `process_virtual_memory_bytes` | | Memory, from `/proc/self/status` (Linux). |
 | `process_threads`, `process_open_fds` | | Threads and open file descriptors (Linux). |
 | `process_cpu_seconds_total` | | Counter: user and system CPU seconds (Linux). |
-| `http_requests_total` | `method`, `path`, `status`, `group` | Counter: requests answered, by method, route template (`path`) and status class (`2xx`, `4xx`, ...), including peers' (`internal`, `raft`). |
-| `calimero_http_errors_total` | `group`, `code` | Counter: error answers by the node's error code (`NOT_FOUND`, `QUOTA_EXCEEDED`, `TOO_LARGE`, ...; anything else is `OTHER`). |
+| `http_requests_total` | `method`, `path`, `status`, `group` | Counter: requests answered, by method, route template (`path`) and status class (`2xx`, `4xx`, ...; `cancelled` when the caller went away before the answer), including peers' (`internal`, `raft`). |
+| `calimero_http_errors_total` | `group`, `code` | Counter: error answers by the node's error code (`NOT_FOUND`, `QUOTA_EXCEEDED`, `TOO_LARGE`, ...; anything else, and a refusal without a code such as a malformed body's, is `OTHER`). |
 | `http_request_duration_seconds` | `method`, `path`, `status`, `group` | Histogram: time to a response's head (buckets 1 ms doubling to 16 s); `group` is the route group (`calls`, `views`, `sign_in`, `account`, `apps`, `blobs`, `streams`, `orgs`, `packages`, `ops`, `raft`, `internal`, `attestation`, `health`, `other`). |
 | `calimero_http_requests_in_flight` | `group` | Requests being handled now. |
-| `calimero_http_request_bytes_total` | `group` | Counter: request body bytes, as each request declared them. |
+| `calimero_http_request_bytes_total` | `group` | Counter: request body bytes, as each body's length says, at most the sealed cap (64 MiB) per request. |
 | `calimero_http_response_bytes_total` | `group` | Counter: response body bytes, where the length was known up front (streams count 0). |
 
-The request metrics are kept per process: a test that runs several nodes in
-one process sees their sum on each node.
+The request metrics count what the router matched: a request no route
+matches (404, 405), the sealed layer's own refusals and handshakes, and app
+frontends (`--apps-domain`) are not counted. A call (`/intents`) of a method
+declared as a view counts under `calls`. The request metrics are kept per
+process: a test that runs several nodes in one process sees their sum on each
+node.
 
 ## Collecting metrics
 

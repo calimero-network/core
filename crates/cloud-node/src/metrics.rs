@@ -70,7 +70,7 @@ struct Registry {
     durations: BTreeMap<HttpKey, Histogram>,
     /// group → requests being handled now.
     in_flight: BTreeMap<&'static str, i64>,
-    /// group → request body bytes, as each request declared them.
+    /// group → request body bytes, as each body's length says (capped).
     request_bytes: BTreeMap<&'static str, u64>,
     /// group → response body bytes, where the length was known up front.
     response_bytes: BTreeMap<&'static str, u64>,
@@ -78,18 +78,45 @@ struct Registry {
 
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(Mutex::default);
 
-/// When this process started serving, for `process_start_time_seconds`.
+/// When this process started, for `process_start_time_seconds`: from the
+/// kernel on Linux, else when the node started serving.
 static STARTED: LazyLock<f64> = LazyLock::new(|| {
+    #[cfg(target_os = "linux")]
+    if let Some(at) = linux_start_time() {
+        return at;
+    }
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0.0, |d| d.as_secs_f64())
 });
 
+/// The process's start in Unix seconds: boot time (`btime` in `/proc/stat`)
+/// plus its `starttime` ticks after boot (`/proc/self/stat`, field 22).
+#[cfg(target_os = "linux")]
+fn linux_start_time() -> Option<f64> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let boot = std::fs::read_to_string("/proc/stat").ok()?;
+    start_time(&stat, &boot)
+}
+
+#[cfg(target_os = "linux")]
+fn start_time(stat: &str, boot: &str) -> Option<f64> {
+    let (_, rest) = stat.rsplit_once(')')?;
+    let ticks: u64 = rest.split_whitespace().nth(19)?.parse().ok()?;
+    let btime: u64 = boot
+        .lines()
+        .find_map(|l| l.strip_prefix("btime "))?
+        .trim()
+        .parse()
+        .ok()?;
+    Some(btime as f64 + ticks as f64 / USER_HZ)
+}
+
 fn registry() -> std::sync::MutexGuard<'static, Registry> {
     REGISTRY.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Record the process's start; called once when the node starts serving.
+/// Read the process's start time; called once when the node starts serving.
 pub fn mark_started() {
     let _ = *STARTED;
 }
@@ -108,7 +135,7 @@ pub fn group(route: &str) -> &'static str {
         "/internal/raft" => "raft",
         "/apps/{app}/intents" => "calls",
         "/apps/{app}/views" => "views",
-        _ if route.starts_with("/auth/passkey") || route == "/auth/refresh" => "sign_in",
+        _ if route.starts_with("/auth/passkey/") || route == "/auth/refresh" => "sign_in",
         _ if route.starts_with("/auth") => "account",
         _ if in_app("/events") || in_app("/presence") => "streams",
         _ if in_app("/blobs") => "blobs",
@@ -148,39 +175,97 @@ fn status_class(status: u16) -> &'static str {
     }
 }
 
-/// The layer: count, time and size every request the router matched.
-pub async fn track(route: Option<MatchedPath>, request: Request, next: Next) -> Response {
-    let route = route.map_or_else(|| "unmatched".to_owned(), |r| r.as_str().to_owned());
+/// A body length fit to count: what the body says it holds, never more than
+/// the sealed cap, which no request or answer of the node's passes. A caller's
+/// `Content-Length` on an unsealed route is its own claim.
+fn body_bytes(exact: Option<u64>) -> u64 {
+    let cap = calimero_sealed::server::MAX_SEALED_BYTES as u64;
+    exact.unwrap_or(0).min(cap)
+}
+
+/// One request in flight: counted as `cancelled` if its future is dropped
+/// before the handler answers (a client gone, a stream reset, the sealed
+/// connection closed), so the gauge never leaks and the request is counted.
+struct InFlight {
+    group: &'static str,
+    key: Option<(String, String)>,
+    started: Instant,
+}
+
+impl InFlight {
+    fn start(group: &'static str, method: String, route: String) -> Self {
+        *registry().in_flight.entry(group).or_default() += 1;
+        Self {
+            group,
+            key: Some((method, route)),
+            started: Instant::now(),
+        }
+    }
+
+    /// The handler answered `response`.
+    fn answered(mut self, response: &Response) {
+        let Some((method, route)) = self.key.take() else {
+            return;
+        };
+        let status = response.status().as_u16();
+        // A refusal no `ApiError` built (an extractor's, the body limit's)
+        // carries no code.
+        let code = response
+            .extensions()
+            .get::<ErrorCode>()
+            .map(|c| code_label(&c.0))
+            .or_else(|| (status >= 400).then(|| "OTHER".to_owned()));
+        let sent = body_bytes(response.body().size_hint().exact());
+        let mut r = registry();
+        r.finish((method, route, status_class(status)), self.started);
+        if let Some(code) = code {
+            let n = r.errors.entry((self.group, code)).or_default();
+            *n = n.saturating_add(1);
+        }
+        let n = r.response_bytes.entry(self.group).or_default();
+        *n = n.saturating_add(sent);
+        // Release the registry before `self` drops, which takes it again.
+        drop(r);
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        let mut r = registry();
+        if let Some((method, route)) = self.key.take() {
+            r.finish((method, route, "cancelled"), self.started);
+        }
+        *r.in_flight.entry(self.group).or_default() -= 1;
+    }
+}
+
+impl Registry {
+    fn finish(&mut self, key: HttpKey, started: Instant) {
+        let n = self.requests.entry(key.clone()).or_default();
+        *n = n.saturating_add(1);
+        self.durations
+            .entry(key)
+            .or_default()
+            .observe(started.elapsed().as_secs_f64());
+    }
+}
+
+/// The layer: count, time and size every request the router matched. It is a
+/// `route_layer`, so a request no route matched (404, 405) is not counted, nor
+/// is what is answered before the router: the sealed layer's own refusals and
+/// handshakes, and app frontends (`app_host`).
+pub async fn track(route: MatchedPath, request: Request, next: Next) -> Response {
+    let route = route.as_str().to_owned();
     let group = group(&route);
-    let method = request.method().as_str().to_owned();
-    let declared = request
-        .headers()
-        .get(axum::http::header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0);
+    let declared = body_bytes(request.body().size_hint().exact());
     {
         let mut r = registry();
-        *r.in_flight.entry(group).or_default() += 1;
-        *r.request_bytes.entry(group).or_default() += declared;
+        let n = r.request_bytes.entry(group).or_default();
+        *n = n.saturating_add(declared);
     }
-    let started = Instant::now();
+    let flight = InFlight::start(group, request.method().as_str().to_owned(), route);
     let response = next.run(request).await;
-    let took = started.elapsed().as_secs_f64();
-    let key = (method, route, status_class(response.status().as_u16()));
-    let code = response
-        .extensions()
-        .get::<ErrorCode>()
-        .map(|c| code_label(&c.0));
-    let sent = response.body().size_hint().exact().unwrap_or(0);
-    let mut r = registry();
-    *r.in_flight.entry(group).or_default() -= 1;
-    *r.requests.entry(key.clone()).or_default() += 1;
-    if let Some(code) = code {
-        *r.errors.entry((group, code)).or_default() += 1;
-    }
-    r.durations.entry(key).or_default().observe(took);
-    *r.response_bytes.entry(group).or_default() += sent;
+    flight.answered(&response);
     response
 }
 
@@ -371,15 +456,16 @@ pub fn render_raft(out: &mut String, samples: &[RaftSample]) {
     }
     family(
         out,
-        "calimero_group_quorum_ack_age_ms",
-        "On the group's leader: since a quorum last acknowledged it.",
+        "calimero_group_quorum_ack_age_seconds",
+        "On the group's leader: seconds since a quorum last acknowledged it.",
     );
     for s in samples {
         if let Some(ms) = s.quorum_ack_ms {
             let _w = writeln!(
                 out,
-                "calimero_group_quorum_ack_age_ms{{group=\"{}\"}} {ms}",
-                s.group
+                "calimero_group_quorum_ack_age_seconds{{group=\"{}\"}} {}",
+                s.group,
+                ms as f64 / 1000.0
             );
         }
     }
@@ -428,10 +514,48 @@ fn allocated(m: &std::fs::Metadata) -> u64 {
     m.len()
 }
 
+/// How long a disk sample serves scrapes: v1 sampled every 30 s too.
+const DISK_SAMPLE_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Per data directory: the last `(datastore, snapshots)` disk sample and when
+/// it was taken.
+type DiskSamples = BTreeMap<std::path::PathBuf, (Instant, (u64, u64))>;
+static DISK: Mutex<DiskSamples> = Mutex::new(BTreeMap::new());
+
+/// `(datastore, snapshots)` disk use under `data_dir`, walked on a blocking
+/// thread at most once per [`DISK_SAMPLE_EVERY`], never on an async worker.
+pub async fn disk_sample(data_dir: &std::path::Path) -> (u64, u64) {
+    let cached = DISK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(data_dir)
+        .copied();
+    if let Some((at, sample)) = cached {
+        if at.elapsed() < DISK_SAMPLE_EVERY {
+            return sample;
+        }
+    }
+    let dir = data_dir.to_owned();
+    let sample = tokio::task::spawn_blocking(move || {
+        (
+            disk_usage(&dir.join("store"), 1),
+            disk_usage(&dir.join("snapshots"), 2),
+        )
+    })
+    .await
+    .unwrap_or_default();
+    let _old = DISK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(data_dir.to_owned(), (Instant::now(), sample));
+    sample
+}
+
 /// v1's node gauges: `merod_build_info` (`peer_id` is the node id; release-v2
 /// has no libp2p identity) and `storage_disk_usage_bytes` per store
-/// (`datastore` is the sealed RocksDB store: log, state and blobs).
-pub fn render_node(out: &mut String, node_id: u64, data_dir: &std::path::Path) {
+/// (`datastore` is the sealed RocksDB store: log, state and blobs), from
+/// [`disk_sample`].
+pub fn render_node(out: &mut String, node_id: u64, (datastore, snapshots): (u64, u64)) {
     let _w = writeln!(
         out,
         "# HELP merod_build_info Always 1, labelled with this node's version and id.\n# TYPE merod_build_info gauge\nmerod_build_info{{version=\"{}\",peer_id=\"{node_id}\"}} 1",
@@ -439,9 +563,7 @@ pub fn render_node(out: &mut String, node_id: u64, data_dir: &std::path::Path) {
     );
     let _w = writeln!(
         out,
-        "# HELP storage_disk_usage_bytes Disk this node's stores take (allocated blocks), by store.\n# TYPE storage_disk_usage_bytes gauge\nstorage_disk_usage_bytes{{store=\"datastore\"}} {}\nstorage_disk_usage_bytes{{store=\"snapshots\"}} {}",
-        disk_usage(&data_dir.join("store"), 1),
-        disk_usage(&data_dir.join("snapshots"), 2),
+        "# HELP storage_disk_usage_bytes Disk this node's stores take (allocated blocks), by store.\n# TYPE storage_disk_usage_bytes gauge\nstorage_disk_usage_bytes{{store=\"datastore\"}} {datastore}\nstorage_disk_usage_bytes{{store=\"snapshots\"}} {snapshots}",
     );
 }
 
@@ -522,6 +644,33 @@ pub fn render_process(out: &mut String) {
 mod tests {
     use super::*;
 
+    /// The router's route templates, read from its source.
+    fn router_templates() -> Vec<&'static str> {
+        let source = include_str!("api.rs");
+        let router = &source[source.find("pub fn router(").unwrap()..];
+        router
+            .split(".route(")
+            .skip(1)
+            .filter_map(|r| r.trim_start().strip_prefix('"')?.split('"').next())
+            .collect()
+    }
+
+    #[test]
+    fn every_route_the_router_serves_has_a_group() {
+        let templates = router_templates();
+        assert!(templates.len() > 50, "{templates:?}");
+        let other: Vec<_> = templates.iter().filter(|t| group(t) == "other").collect();
+        assert!(other.is_empty(), "routes without a group: {other:?}");
+    }
+
+    #[test]
+    fn a_body_counts_at_most_the_sealed_cap() {
+        let cap = calimero_sealed::server::MAX_SEALED_BYTES as u64;
+        assert_eq!(body_bytes(Some(u64::MAX)), cap);
+        assert_eq!(body_bytes(Some(12)), 12);
+        assert_eq!(body_bytes(None), 0);
+    }
+
     #[test]
     fn every_route_template_has_a_group_and_ids_never_become_labels() {
         assert_eq!(group("/apps/{app}/intents"), "calls");
@@ -529,13 +678,14 @@ mod tests {
         assert_eq!(group("/apps/{app}/presence/stream"), "streams");
         assert_eq!(group("/apps/{app}/blobs/{id}/info"), "blobs");
         assert_eq!(group("/auth/passkey/login/finish"), "sign_in");
+        assert_eq!(group("/auth/passkeys/add/begin"), "account");
+        assert_eq!(group("/auth/passkeys/{cred}"), "account");
         assert_eq!(group("/auth/apikeys/{key}"), "account");
         assert_eq!(group("/orgs/{org}/teams/{team}"), "orgs");
         assert_eq!(group("/invites/{token}/redeem"), "orgs");
         assert_eq!(group("/internal/raft"), "raft");
         assert_eq!(group("/internal/system/index"), "internal");
         assert_eq!(group("/ops/metrics"), "ops");
-        assert_eq!(group("unmatched"), "other");
     }
 
     #[test]
@@ -559,6 +709,20 @@ mod tests {
         assert!(parse_cpu_seconds(&own).is_some());
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_start_time_is_boot_time_plus_the_processs_start_ticks() {
+        let stat = "42 (a) b) S 1 42 42 0 -1 4194560 100 0 0 0 7 3 0 0 20 0 8 0 250 0";
+        assert_eq!(start_time(stat, "cpu 1 2\nbtime 1000\n"), Some(1002.5));
+        assert_eq!(start_time(stat, "cpu 1 2\n"), None);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let own = linux_start_time().unwrap();
+        assert!(own <= now + 1.0 && own > now - 86_400.0 * 365.0, "{own}");
+    }
+
     #[test]
     fn statuses_are_labelled_by_class() {
         assert_eq!(status_class(200), "2xx");
@@ -576,6 +740,55 @@ mod tests {
         assert!(disk_usage(dir.path(), 1) >= 128 * 1024);
         assert!(disk_usage(dir.path(), 0) < 128 * 1024, "depth 0 skips sub/");
         assert_eq!(disk_usage(&dir.path().join("missing"), 1), 0);
+    }
+
+    fn tracked(route: &str, handler: axum::routing::MethodRouter) -> axum::Router {
+        axum::Router::new()
+            .route(route, handler)
+            .route_layer(axum::middleware::from_fn(track))
+    }
+
+    #[tokio::test]
+    async fn a_declared_length_can_neither_overflow_nor_wrap_the_byte_counters() {
+        use tower::ServiceExt as _;
+        let app = tracked("/health", axum::routing::get(|| async { "ok" }));
+        for _ in 0..3 {
+            let request = Request::builder()
+                .uri("/health")
+                .header(axum::http::header::CONTENT_LENGTH, i64::MAX.to_string())
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let answer = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(answer.status(), 200);
+        }
+        let r = registry();
+        let bytes = r.request_bytes.get("health").copied().unwrap_or(0);
+        assert!(
+            bytes <= 3 * calimero_sealed::server::MAX_SEALED_BYTES as u64,
+            "{bytes}"
+        );
+        assert_eq!(r.in_flight.get("health").copied(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn a_dropped_request_leaves_nothing_in_flight_and_counts_as_cancelled() {
+        use tower::ServiceExt as _;
+        let app = tracked(
+            "/attestation",
+            axum::routing::get(std::future::pending::<&'static str>),
+        );
+        let request = Request::builder()
+            .uri("/attestation")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let waited =
+            tokio::time::timeout(std::time::Duration::from_millis(20), app.oneshot(request)).await;
+        assert!(waited.is_err(), "the handler never answers");
+        let r = registry();
+        assert_eq!(r.in_flight.get("attestation").copied(), Some(0));
+        let key = ("GET".to_owned(), "/attestation".to_owned(), "cancelled");
+        assert_eq!(r.requests.get(&key).copied(), Some(1));
+        assert_eq!(r.durations.get(&key).map(|h| h.count), Some(1));
     }
 
     #[test]

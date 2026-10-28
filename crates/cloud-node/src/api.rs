@@ -3818,17 +3818,19 @@ async fn ops_metrics(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     operator(&node, &headers)?;
-    Ok(metrics_response(&node))
+    let disk = crate::metrics::disk_sample(&node.config.data_dir).await;
+    Ok(metrics_response(&node, disk))
 }
 
 /// `GET /metrics` on `--metrics-listen`: the same text, in plain HTTP.
 pub async fn plain_metrics(State(node): State<Arc<Node>>) -> Response {
-    metrics_response(&node)
+    let disk = crate::metrics::disk_sample(&node.config.data_dir).await;
+    metrics_response(&node, disk)
 }
 
 /// Prometheus text: directory counts, this node's groups and streams, system
 /// membership, the build's release; never names or state.
-fn metrics_response(node: &Node) -> Response {
+fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
     use std::fmt::Write as _;
     let (nodes, apps, accounts, orgs, packages, bundle_bytes) = node.sys(|s| {
         (
@@ -3937,7 +3939,7 @@ fn metrics_response(node: &Node) -> Response {
         }
     }
     crate::metrics::render_raft(&mut out, &samples);
-    crate::metrics::render_node(&mut out, node.config.node_id, &node.config.data_dir);
+    crate::metrics::render_node(&mut out, node.config.node_id, disk);
     crate::metrics::render_process(&mut out);
     crate::metrics::render(&mut out);
     let _r = writeln!(
