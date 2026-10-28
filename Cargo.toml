@@ -76,6 +76,9 @@ exclude = [
     "./apps/scaffolding-e2e",
     "./apps/scaffolding-e2e-multi",
     "./crates/build-utils",
+    "./apps/wasmer-fixtures/kv-store",
+    "./apps/wasmer-fixtures/kv-store-with-shared-storage",
+    "./apps/wasmer-fixtures/org-gated",
 ]
 
 [workspace]
@@ -195,6 +198,9 @@ members = [
     "./tools/storage-cost",
     "./tools/state-disk-cost",
     "./tools/search-bench",
+    "./apps/wasmer-fixtures/kv-store",
+    "./apps/wasmer-fixtures/kv-store-with-shared-storage",
+    "./apps/wasmer-fixtures/org-gated",
 ]
 
 [workspace.dependencies]
