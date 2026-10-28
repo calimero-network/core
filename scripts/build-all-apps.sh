@@ -21,7 +21,7 @@ APPS=(
     "apps/indexed-issue-tracker/Cargo.toml"
     "apps/kv-store-init/Cargo.toml"
     "apps/kv-store-with-handlers/Cargo.toml"
-    "apps/kv-store-with-shared-storage/Cargo.toml"
+    "apps/wasmer-fixtures/kv-store-with-shared-storage/Cargo.toml"
     "apps/kv-store-with-user-and-frozen-storage/Cargo.toml"
     "apps/tee-dice/Cargo.toml"
     "apps/tee-cards/Cargo.toml"

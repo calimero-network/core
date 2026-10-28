@@ -9,7 +9,7 @@ Read it beside its two neighbours:
 | app | what it shows |
 |---|---|
 | [`sorted-kv-store`](../sorted-kv-store) | the same ordered reads, no ownership — anyone may overwrite anything |
-| [`kv-store-with-shared-storage`](../kv-store-with-shared-storage) | ownership by a *writer set* for the whole collection, rather than per entry |
+| [`kv-store-with-shared-storage`](../wasmer-fixtures/kv-store-with-shared-storage) | ownership by a *writer set* for the whole collection, rather than per entry |
 | **this one** | ownership **per entry**, plus the ordered reads |
 
 ## The key shape, which is the whole lesson

@@ -337,7 +337,7 @@ against the writer set / owner. A forged write does not survive convergence.
   takes a policy `A` (e.g. `OwnerAcl`, `WriterSetAcl`, `ProtocolAuthorizer`) for
   per-operation granularity (read / write / delete / admin). Writers are
   rotatable (`rotate_writers`) and rotation is itself authenticated. See
-  `apps/kv-store-with-shared-storage`.
+  `apps/wasmer-fixtures/kv-store-with-shared-storage`.
 
 - **`AccessControl`** — a role registry built on `SharedStorage` whose writer set
   is the admin tier. Admins grant/revoke named roles (`grant(role, who)`,

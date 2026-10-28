@@ -207,7 +207,7 @@ jobs:
       - name: Build the node test fixtures
         run: |
           cargo build -p kv-store -p org-gated -p outbound-probe --target wasm32-unknown-unknown --profile app-release
-          for a in blobs kv-store-with-handlers kv-store-with-shared-storage search-chat xcall-example tee-cards tee-dice \
+          for a in blobs kv-store-with-handlers wasmer-fixtures/kv-store-with-shared-storage search-chat xcall-example tee-cards tee-dice \
             migrations/migration-suite-v1 migrations/migration-suite-v2-add-field \
             migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2 \
             migrations/scenario-identity-downgrade-v1 migrations/scenario-identity-downgrade-v2; do

@@ -6,7 +6,7 @@
 //!
 //! * [`sorted-kv-store`](../../sorted-kv-store) is the same ordered reads with
 //!   no ownership — anyone may overwrite anything.
-//! * [`kv-store-with-shared-storage`](../../kv-store-with-shared-storage) is
+//! * [`kv-store-with-shared-storage`](../../wasmer-fixtures/kv-store-with-shared-storage) is
 //!   ownership by a *writer set* for the whole collection, rather than
 //!   per entry.
 //!

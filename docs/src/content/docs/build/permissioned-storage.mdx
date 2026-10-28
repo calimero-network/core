@@ -140,7 +140,7 @@ capability that `UserStorage` does not offer.
 
 ## Group-writable storage in practice
 
-From `apps/kv-store-with-shared-storage`. A `SharedStorage<T>` field guards
+From `apps/wasmer-fixtures/kv-store-with-shared-storage`. A `SharedStorage<T>` field guards
 **everything inside it** — when the wrapper holds a collection, every entry
 inherits the `SharedMember` stamp, so a non-writer's delta to *any* entry is
 rejected at merge, not just the wrapper.
