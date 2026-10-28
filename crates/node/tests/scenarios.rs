@@ -188,11 +188,24 @@ fn run_one(root: &Path, path: &str, kind: Kind) -> Result<(), String> {
         .build()
         .map_err(|e| e.to_string())?;
     let full = root.join(path);
+    let limit = std::env::var("SCENARIO_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(600);
     rt.block_on(async move {
-        match kind {
-            Kind::App => scenario::run_app_scenario(&full).await,
-            Kind::Cluster => scenario::run_cluster_scenario(&full).await,
-        }
+        let run = async {
+            match kind {
+                Kind::App => scenario::run_app_scenario(&full).await,
+                Kind::Cluster => scenario::run_cluster_scenario(&full).await,
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(limit), run)
+            .await
+            .unwrap_or_else(|_| {
+                Err(format!(
+                    "did not finish within {limit}s (SCENARIO_TIMEOUT_SECS)"
+                ))
+            })
     })
 }
 
@@ -282,7 +295,7 @@ fn main() {
                         *passed.lock().unwrap() += 1;
                     }
                     Err(e) => {
-                        let _ = writeln!(out, "test {path} ... FAILED ({secs:.1}s)");
+                        let _ = writeln!(out, "test {path} ... FAILED ({secs:.1}s)\n{e}");
                         failed.lock().unwrap().push((path, e));
                     }
                 }
