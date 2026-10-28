@@ -4072,17 +4072,19 @@ async fn ops_metrics(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     operator(&node, &headers)?;
-    Ok(metrics_response(&node))
+    let disk = crate::metrics::disk_sample(&node.config.data_dir).await;
+    Ok(metrics_response(&node, disk))
 }
 
 /// `GET /metrics` on `--metrics-listen`: the same text, in plain HTTP.
 pub async fn plain_metrics(State(node): State<Arc<Node>>) -> Response {
-    metrics_response(&node)
+    let disk = crate::metrics::disk_sample(&node.config.data_dir).await;
+    metrics_response(&node, disk)
 }
 
 /// Prometheus text: directory counts, this node's groups and streams, system
 /// membership, the build's release; never names or state.
-fn metrics_response(node: &Node) -> Response {
+fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
     use std::fmt::Write as _;
     let (nodes, apps, accounts, orgs, packages, bundle_bytes) = node.sys(|s| {
         (
@@ -4177,6 +4179,23 @@ fn metrics_response(node: &Node) -> Response {
             s.group, s.applied
         );
     }
+    // Raft per group (the system group as `system`), disk, then requests.
+    let mut samples = vec![crate::metrics::raft_sample(
+        "system".to_owned(),
+        &node.system,
+    )];
+    for app in node.sys(|s| s.apps.keys().cloned().collect::<Vec<_>>()) {
+        if let Some(g) = node.hosted(&app) {
+            samples.push(crate::metrics::raft_sample(
+                g.status().group.to_string(),
+                &g,
+            ));
+        }
+    }
+    crate::metrics::render_raft(&mut out, &samples);
+    crate::metrics::render_node(&mut out, node.config.node_id, disk);
+    crate::metrics::render_process(&mut out);
+    crate::metrics::render(&mut out);
     let _r = writeln!(
         out,
         "# HELP calimero_build_info This node's release.\n# TYPE calimero_build_info gauge\ncalimero_build_info{{release=\"{}\"}} 1",
@@ -4716,6 +4735,9 @@ pub fn router(node: Arc<Node>) -> Router {
             delete(ops_package_version_uninstall),
         )
         .route("/ops/quotas", get(ops_quotas_get).post(ops_quotas_set))
+        // Counted, timed and sized per route template (`metrics::track`);
+        // inside the sealed envelope, so it sees what each handler answered.
+        .route_layer(axum::middleware::from_fn(crate::metrics::track))
         // Bundles (peer blob pushes, uploads) exceed axum's 2 MiB default; the sealed envelope caps requests at 64 MiB.
         .layer(axum::extract::DefaultBodyLimit::max(
             calimero_sealed::server::MAX_SEALED_BYTES,

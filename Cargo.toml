@@ -390,7 +390,6 @@ wit-bindgen = "0.63.0"
 wit-component = "0.262.0"
 wit-parser = "0.262.0"
 zeroize = "1.8"
-zip = { version = "9.0", default-features = false, features = ["deflate"] }
 
 pyo3 = "0.20"
 

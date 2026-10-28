@@ -23,6 +23,7 @@ pub mod idempotency;
 pub mod inspect;
 pub mod kms;
 pub mod local;
+pub mod metrics;
 pub mod node;
 pub mod packages;
 pub mod presence;
@@ -119,6 +120,7 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         &axum::middleware::from_fn_with_state(Arc::clone(&node), app_host::layer),
         app,
     );
+    crate::metrics::mark_started();
     let stop = shutdown.clone();
     let server = tokio::spawn(async move {
         let svc = axum::ServiceExt::<axum::extract::Request>::into_make_service(app);
