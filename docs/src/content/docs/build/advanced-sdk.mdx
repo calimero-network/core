@@ -34,8 +34,8 @@ pub trait Mergeable {
 
 The simplest path is `#[derive(Mergeable)]`, which calls `merge` on every field.
 You hand-write the impl only when you need custom behavior (validation, logging,
-business rules, skipping a field). The hand-rolled version from
-`apps/team-metrics-custom` delegates field-by-field to each `Counter`:
+business rules, skipping a field). A hand-rolled impl that delegates
+field-by-field to each `Counter`:
 
 ```rust
 #[derive(Debug, Default, BorshSerialize, BorshDeserialize)]
@@ -57,6 +57,12 @@ impl Mergeable for TeamStats {
     }
 }
 ```
+
+`apps/team-metrics-custom` showed this (with a `badges |= other.badges` rule) on
+this SDK until it moved to the component SDK, where one Raft log orders every
+call and there is no merge to write: its `award_badge` reads the current mask
+and sets a bit, so concurrent awards both land. Its doc comment says what
+replaced the merge rule.
 
 `#[derive(Mergeable)]` works on **structs only** (every field must itself be
 `Mergeable`). For an **enum**, wrap it in `LwwRegister<MyEnum>` instead of

@@ -9,9 +9,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 The [`apps/`](https://github.com/calimero-network/core/tree/master/apps)
 directory is the best ground truth for writing a Calimero app: every example is
-a real crate that builds to WASM with [`cargo mero build`](/build/cargo-mero/)
-and has a native [`TestHost`](/build/quickstart/) test suite under `tests/` or in
-a `#[cfg(test)]` module. This page walks the ones worth reading first.
+a real crate. A wasmer app builds to WASM with
+[`cargo mero build`](/build/cargo-mero/) and has a native
+[`TestHost`](/build/quickstart/) test suite under `tests/` or in a
+`#[cfg(test)]` module; a component app (marked "on the component SDK") builds
+to a `wasm32-wasip2` component with `calimero-app-build` and tests on
+`TestApp` plus its `scenarios/*.json`. This page walks the ones worth reading
+first.
 
 ## How to read these
 
@@ -40,14 +44,14 @@ the source is short enough to read end to end.
 | Example | Teaches | Documented in |
 |---------|---------|---------------|
 | [`kv-store`](https://github.com/calimero-network/core/tree/master/apps/kv-store) | The component SDK's basic app: a `Table` of entries, a `Counter`, events, a typed error and a `confirm` method; tests on `TestApp` and scenario files **(walkthrough below)** | [Build your first app](/build/tutorial/) |
-| [`kv-store-init`](https://github.com/calimero-network/core/tree/master/apps/kv-store-init) | Seeding initial state from an `#[app::init]` constructor | [SDK macros](/build/sdk-macros/) |
+| [`kv-store-init`](https://github.com/calimero-network/core/tree/master/apps/kv-store-init) | On the component SDK: seeding the first state from an `#[app::init]` constructor, which runs once as the app's owner | [SDK macros](/build/sdk-macros/) |
 | [`kv-store-with-handlers`](https://github.com/calimero-network/core/tree/master/apps/kv-store-with-handlers) | Routing emitted events to handler methods; a CRDT `Counter` **(walkthrough below)** | [SDK macros](/build/sdk-macros/) |
 
 ### Storage & access control
 
 | Example | Teaches | Documented in |
 |---------|---------|---------------|
-| [`kv-store-with-shared-storage`](https://github.com/calimero-network/core/tree/master/apps/wasmer-fixtures/kv-store-with-shared-storage) | `SharedStorage`: group-writable state guarded by a rotatable writer set | [Permissioned storage](/build/permissioned-storage/) |
+| [`kv-store-with-shared-storage`](https://github.com/calimero-network/core/tree/master/apps/kv-store-with-shared-storage) | On the component SDK: group-writable state guarded by a writer set kept as table rows, checked on every write, and its rotation. The wasmer `SharedStorage` build is [`wasmer-fixtures/kv-store-with-shared-storage`](https://github.com/calimero-network/core/tree/master/apps/wasmer-fixtures/kv-store-with-shared-storage) | [Permissioned storage](/build/permissioned-storage/) |
 | [`kv-store-with-user-and-frozen-storage`](https://github.com/calimero-network/core/tree/master/apps/kv-store-with-user-and-frozen-storage) | On the component SDK: per-account rows keyed by the caller (v1's `UserStorage`) and content-addressed rows hashed in the guest (v1's `FrozenStorage`) | [Permissioned storage](/build/permissioned-storage/) |
 | [`components-demo`](https://github.com/calimero-network/core/tree/master/apps/components-demo) | On the component SDK: the three access-control patterns v1 shipped as `Ownable`, `PermissionedStorage` and `AccessControl` (an owned cell, a writer set, admins granting named roles), each a table plus a check against the caller | [Permissioned storage](/build/permissioned-storage/) |
 | [`tee-dice`](https://github.com/calimero-network/core/tree/master/apps/tee-dice) | `TeeOnly` state and an `#[app::tee]` method: a dice roll only an attested TEE can write | [TEE authorship](/protocol/tee-authorship/) |
@@ -60,12 +64,12 @@ the source is short enough to read end to end.
 
 | Example | Teaches | Documented in |
 |---------|---------|---------------|
-| [`sorted-kv-store`](https://github.com/calimero-network/core/tree/master/apps/sorted-kv-store) | `SortedMap`: a key-ordered map with range / prefix / pagination | [Collections](/build/collections/) |
-| [`sorted-set-store`](https://github.com/calimero-network/core/tree/master/apps/sorted-set-store) | `SortedSet`: an ordered add-wins set with range / prefix / pagination | [Collections](/build/collections/) |
+| [`sorted-kv-store`](https://github.com/calimero-network/core/tree/master/apps/sorted-kv-store) | On the component SDK: a `Table` read in key order, with range / prefix / pagination / first / last through its cursor | [Collections](/build/collections/) |
+| [`sorted-set-store`](https://github.com/calimero-network/core/tree/master/apps/sorted-set-store) | On the component SDK: an ordered set as a `Table` whose record is the element, with range / prefix / pagination / min / max | [Collections](/build/collections/) |
 | [`indexed-issue-tracker`](https://github.com/calimero-network/core/tree/master/apps/indexed-issue-tracker) | On the component SDK: a `Table` with a compound `(status, createdAt)` index, an assignee index, a label table and maintained counts; list views by status, label and assignee, newest first, without scanning | [Collections](/build/collections/) · [Storage complexity](/build/storage-complexity/) |
 | [`indexed-forum`](https://github.com/calimero-network/core/tree/master/apps/indexed-forum) | On the component SDK: tables with compound and optional-field indexes and maintained counts, a tag index as one row per tag, and v1's `Moderated` / `Frozen` / `Authored` policies as explicit checks against `env::caller()` | [Choosing state](/build/choosing-state/) · [Collections](/build/collections/) · [Storage complexity](/build/storage-complexity/) |
 | [`permissions-showcase`](https://github.com/calimero-network/core/tree/master/apps/permissions-showcase) | On the component SDK: one table per v1 write policy (`Frozen`, `WriteOnce`, `ModeratedOnce`, `Authored`, `ContentAddressed`), each an explicit check against `env::caller()` | [Choosing state](/build/choosing-state/) |
-| [`custom-key-store`](https://github.com/calimero-network/core/tree/master/apps/custom-key-store) | Custom key types via an `AsRef<[u8]>` newtype | [Collections](/build/collections/) |
+| [`custom-key-store`](https://github.com/calimero-network/core/tree/master/apps/custom-key-store) | On the component SDK: a custom key type, a `ToKeyPart` newtype (`Slug`) that normalizes titles | [Collections](/build/collections/#key-types) |
 | [`search-chat`](https://github.com/calimero-network/core/tree/master/apps/search-chat) | Full-text search: `#[derive(app::Searchable)]` on the message type, `app::search_indexes!` naming the map, and a `search` view with word, prefix, substring and fuzzy queries, a sender filter and a time range, beside the in-WASM scan it replaces | [Search your app's data](/build/guides/search/) |
 
 ### CRDTs & advanced state
@@ -77,8 +81,8 @@ the source is short enough to read end to end.
 | [`fugue-collab`](https://github.com/calimero-network/core/tree/master/apps/fugue-collab) | A `FugueText` document edited from several real nodes, with anchors and id-carrying events | [Build a collaborative editor](/build/guides/collaborative-text/) |
 | [`rich-collab`](https://github.com/calimero-network/core/tree/master/apps/rich-collab) | A `RichDocument`: blocks, formatting marks, split and merge, undo | [Build a collaborative editor](/build/guides/collaborative-text/) |
 | [`nested-crdt-test`](https://github.com/calimero-network/core/tree/master/apps/nested-crdt-test) | Nesting collections inside collection values (maps of maps, vectors of counters) | [Advanced SDK](/build/advanced-sdk/) |
-| [`team-metrics-macro`](https://github.com/calimero-network/core/tree/master/apps/team-metrics-macro) | Nested CRDT structs via `#[derive(Mergeable)]` **(walkthrough below)** | [SDK macros](/build/sdk-macros/) |
-| [`team-metrics-custom`](https://github.com/calimero-network/core/tree/master/apps/team-metrics-custom) | A hand-written `Mergeable` for merge logic the derive can't express **(walkthrough below)** | [Advanced SDK](/build/advanced-sdk/) |
+| [`team-metrics-macro`](https://github.com/calimero-network/core/tree/master/apps/team-metrics-macro) | On the component SDK: per-team counts as a plain `Table` record, what v1's `#[derive(Mergeable)]` struct became **(walkthrough below)** | [SDK macros](/build/sdk-macros/) |
+| [`team-metrics-custom`](https://github.com/calimero-network/core/tree/master/apps/team-metrics-custom) | On the component SDK: the same counts plus a badge bitmask set by read-modify-write, what v1's hand-written merge rule became **(walkthrough below)** | [Advanced SDK](/build/advanced-sdk/) |
 | [`blobs`](https://github.com/calimero-network/core/tree/master/apps/blobs) | Blob storage: hold file metadata + announce blobs to the context **(walkthrough below)** | [Blobs](/build/guides/blobs/) |
 | [`xcall-example`](https://github.com/calimero-network/core/tree/master/apps/xcall-example) | Cross-context calls + the `#[app::xcall]` entry-point gate **(walkthrough below)** | [Cross-context calls](/build/guides/cross-context/) |
 
@@ -231,47 +235,51 @@ interleave `insert_text` / `delete_text` calls and read
 
 ## team-metrics (macro & custom)
 
-Two sibling apps that store **nested CRDT structs** as map values — a
-`TeamStats` of three `Counter`s per team — and differ only in how that struct
-merges. They are the clearest illustration of `#[derive(Mergeable)]` versus a
-hand-written merge.
+Two sibling apps on the component SDK that keep a `TeamStats` record per team —
+wins, losses and draws, and in `team-metrics-custom` a badge bitmask — and show
+what v1's merge code becomes when one Raft log orders every call. In v1,
+`team-metrics-macro` derived `Mergeable` for a struct of `Counter`s and
+`team-metrics-custom` hand-wrote a merge (`badges |= other.badges`); for the
+v1 SDK's derive and a hand-written impl, see [SDK macros](/build/sdk-macros/)
+and [Advanced SDK](/build/advanced-sdk/).
 
 **State shape** ([`apps/team-metrics-macro/src/lib.rs`](https://github.com/calimero-network/core/tree/master/apps/team-metrics-macro/src/lib.rs)):
 
 ```rust
-#[derive(Debug, Default, Mergeable, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
+#[derive(Record)]
+#[table(key = "team_id")]
 pub struct TeamStats {
-    pub wins: Counter,
-    pub losses: Counter,
-    pub draws: Counter,
+    pub team_id: String,
+    pub wins: u64,
+    pub losses: u64,
+    pub draws: u64,
 }
 
-#[app::state(emits = MetricsEvent)]
+#[app::state(version = 1)]
 pub struct TeamMetricsApp {
-    pub teams: UnorderedMap<String, TeamStats>,
+    teams: Table<TeamStats>,
 }
 ```
 
-In `team-metrics-macro`, `#[derive(Mergeable)]` writes the merge for you — it
-just merges each field, which works because every field is itself a CRDT. The
-`team-metrics-custom` app has the identical state but writes
-`impl Mergeable for TeamStats { fn merge(...) }` (and a matching `RekeyTarget`)
-by hand, for when you need merge logic the derive can't express — see
-[Advanced SDK](/build/advanced-sdk/). Reach for the derive unless you have a
-reason not to.
+A record call reads the team's row (or starts one at zero), adds one, and
+upserts it; two members recording a win at once are two entries in the log,
+each adding one, so there is nothing to merge. `team-metrics-custom` adds
+`badges: u64`, and `award_badge` ORs a bit into the current mask, so two
+concurrent awards both land without a merge rule.
 
-**Key methods** (identical across both):
+**Key methods** (ABI names are camelCase; `u64` travels as a decimal string):
 
 | Method | What it does |
 |--------|--------------|
-| `record_win(team_id)` / `record_loss` / `record_draw` | `entry(team_id).or_default()`, increment the matching counter, return the new total, emit an event. |
-| `get_wins(team_id)` / `get_losses` / `get_draws` | Read a team's counter; errors if the team is unknown. |
+| `recordWin { teamId }` / `recordLoss` / `recordDraw` | Add one to the matching count, return the new total, emit `WinRecorded` / `LossRecorded` / `DrawRecorded`. |
+| `getWins { teamId }` / `getLosses` / `getDraws` | Read a team's count; `TeamNotFound { teamId }` before its first record. |
+| `awardBadge { teamId, badge }` / `getBadges` / `getBadgeCount` | `team-metrics-custom` only: set bit `badge` and return the mask; read the mask or how many bits it holds. |
 
-**Build & run.** `cargo mero bundle --dev --no-icon` produces
-`dist/com.calimero.team-metrics-macro-0.0.0.mpk` (or
-`com.calimero.team-metrics-custom-0.0.0.mpk`); install and call per the
-[Quickstart](/build/quickstart/).
+**Build & run.** `cargo test --manifest-path apps/team-metrics-macro/Cargo.toml`
+(or `team-metrics-custom`) builds the component and runs its harness tests and
+`scenarios/*.json`. `cargo run -p calimero-app-build -- apps/team-metrics-macro
+--out team_metrics_macro.wasm` builds the component to install as in
+[kv-store](#kv-store).
 
 ## blobs
 

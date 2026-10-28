@@ -74,7 +74,10 @@ merge behavior.
   `page(offset, limit)`, `first()`, and `last()`. The index is **not**
   synchronized — each node keeps its own and rebuilds it after sync if stale — so
   you pay a little write overhead. They are the `BTreeMap`/`BTreeSet` to the
-  unordered types' `HashMap`/`HashSet`. See `apps/sorted-kv-store`.
+  unordered types' `HashMap`/`HashSet`. `apps/sorted-kv-store` and
+  `apps/sorted-set-store` make the same reads on the component SDK, where a
+  `Table` keeps its records in key order and `range` / `prefix` / `page` /
+  `first` / `last` read through its cursor, with no node-local index.
 - **`IndexedMap`** — an `UnorderedMap` whose value type declares what it is
   looked up by, so a list view is a seek instead of a scan over every entry.
   Derive the declaration and query by index name:
@@ -229,8 +232,8 @@ let mut scores: UnorderedMap<u64, LwwRegister<String>> = UnorderedMap::new();
 ```
 
 The fix is a thin **newtype** that wraps an already-byte-encodable representation and
-forwards `AsRef<[u8]>` to it. This is the `apps/custom-key-store` pattern — and it is
-also where you put key normalization or validation:
+forwards `AsRef<[u8]>` to it. It is also where you put key normalization or
+validation:
 
 ```rust
 #[derive(Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -257,6 +260,35 @@ The same shape works for an id newtype over `[u8; 32]`. For a numeric key, wrap 
 **big-endian** bytes (`u64::to_be_bytes()`) so that — in a `SortedMap` — byte order
 matches numeric order; see [Modeling your state](/build/state-modeling/) for why
 little-endian keys sort incorrectly.
+
+On the component SDK a key is a tuple of typed parts (string, int, bytes, bool,
+none) rather than raw bytes, so the newtype says which part it is by
+implementing `ToKeyPart`; a struct without it is rejected at compile time the
+same way. `apps/custom-key-store` is this pattern there, with the normalization
+in the constructor:
+
+```rust
+use calimero_app_sdk::prelude::*;
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct Slug(String);
+
+impl Slug {
+    fn new(raw: &str) -> Self { Self(raw.trim().to_lowercase()) }
+}
+
+impl ToKeyPart for Slug {          // one string key part: slugs sort as their strings
+    fn to_key_part(&self) -> KeyPart { KeyPart::Str(self.0.clone()) }
+}
+
+#[app::state(version = 1)]
+pub struct CustomKeyStore {
+    pages: UnorderedMap<Slug, String>,
+}
+```
+
+An id over `[u8; 32]` maps to a bytes part and a `u64` to an int part, which
+sorts numerically with no byte-order trick.
 
 ## Access-controlled collections
 

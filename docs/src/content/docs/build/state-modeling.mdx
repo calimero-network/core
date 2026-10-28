@@ -200,8 +200,9 @@ let window = log.range(start.to_be_bytes()..end.to_be_bytes())?;
 ```
 
 The index is **not** synchronized — each node rebuilds its own after sync — so you
-pay a little write overhead but ordering is always correct post-merge. See
-`apps/sorted-kv-store`.
+pay a little write overhead but ordering is always correct post-merge.
+`apps/sorted-kv-store` makes the same ordered reads on the component SDK, where
+a `Table` keeps its records in key order.
 
 ### Per-user data with `UserStorage`
 
