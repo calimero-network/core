@@ -3936,3 +3936,48 @@ async fn calls_without_a_key_each_run_once() {
         .unwrap();
     assert_eq!(replay.index, again.index, "a given key is answered once");
 }
+
+/// A grant or a revocation committed through one node holds at once for a call
+/// through another: access is judged on the app record as of the fresh system
+/// read the request makes, not on the record read before it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn access_changed_through_one_node_holds_at_once_through_another() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let access = format!("apps/{app}/access");
+    for round in 0..20 {
+        let _ok = alice
+            .post(&access, json!({ "access": { "kind": "owner" } }))
+            .await
+            .unwrap();
+        let refused = bob
+            .call(&app, "set", json!({ "key": "k", "value": "no" }), None)
+            .await
+            .expect_err("a revoked account is refused at once");
+        assert_eq!(
+            refused.code(),
+            Some("NOT_FOUND"),
+            "round {round}: {refused}"
+        );
+        let _ok = alice
+            .post(
+                &access,
+                json!({ "access": { "kind": "accounts", "accounts": [bob_id] } }),
+            )
+            .await
+            .unwrap();
+        let _r = bob
+            .call(&app, "set", json!({ "key": "k", "value": "yes" }), None)
+            .await
+            .unwrap_or_else(|e| {
+                panic!("round {round}: a granted account is admitted at once: {e}")
+            });
+    }
+}

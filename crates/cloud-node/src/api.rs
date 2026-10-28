@@ -1643,7 +1643,7 @@ async fn app_get(
         p.within(&node, &app)?;
     }
     let account = p.as_ref().and_then(|p| p.caller.account());
-    if !node.sys(|s| s.may_reach(&app, account)) {
+    if !reaches(&node, &app, account) {
         return Err(ApiError::not_found("no such app"));
     }
     Ok(Json(serde_json::to_value(app).unwrap_or_default()))
@@ -1677,6 +1677,18 @@ pub async fn read_only_in(
     }
 }
 
+/// Whether `account` may reach `app`, judged on the app's record as applied
+/// now. Handlers read the record before `principal` makes its fresh system
+/// read, so the record in hand can predate a grant or revocation committed
+/// through another node; this reads it again.
+fn reaches(node: &Node, app: &crate::types::AppRecord, account: Option<&str>) -> bool {
+    node.sys(|s| {
+        s.apps
+            .get(&app.app_id)
+            .is_some_and(|now| s.may_reach(now, account))
+    })
+}
+
 async fn gate(
     node: &Node,
     headers: &HeaderMap,
@@ -1697,8 +1709,7 @@ async fn gate(
     if p.is_none() {
         node.sys_fresh().await;
     }
-    let reaches = node.sys(|s| s.may_reach(app, account));
-    if !reaches {
+    if !reaches(node, app, account) {
         return Err(if p.is_none() {
             ApiError::unauthenticated("sign in to use this app")
         } else {
@@ -2711,7 +2722,7 @@ async fn alias_set(
     let app = node.canonical_app_id(&body.app);
     let rec = node.app(&app).await?;
     p.within(&node, &rec)?;
-    if !node.sys(|s| s.may_reach(&rec, Some(&account))) {
+    if !reaches(&node, &rec, Some(&account)) {
         return Err(ApiError::not_found("no such app"));
     }
     let _ok = node
