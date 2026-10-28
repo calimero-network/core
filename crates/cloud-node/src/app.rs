@@ -790,6 +790,8 @@ impl AppMachine {
     /// Apply one entry of an app on wasmer. An entry that is not of that format
     /// (a component's) changes nothing.
     fn apply_wasmer(&mut self, tx: &mut StateTx<'_>, index: u64, command: &[u8]) -> Vec<u8> {
+        // The entry's own timestamp, for idempotency expiry (only calls carry one).
+        let mut entry_ts_ms = None;
         let applied = match serde_json::from_slice::<AppCmd>(command) {
             Ok(AppCmd::Init {
                 bundle,
@@ -878,6 +880,7 @@ impl AppMachine {
                         Some(Trigger::XCall { .. }) | None => {}
                     }
                 }
+                entry_ts_ms = Some(call.ts_ms);
                 if !a.conflict {
                     self.state.newest_ts_ms = self.state.newest_ts_ms.max(call.ts_ms);
                 }
@@ -897,14 +900,14 @@ impl AppMachine {
                 conflict: true,
             },
         };
-        // D74: what has expired by the newest applied call's timestamp goes, on
-        // every entry, and the app keeps at most the cap.
+        // D74 (spec v0.26): what has expired by the earlier of the newest applied
+        // call's timestamp and this entry's own goes, and the app keeps at most the cap.
         crate::idempotency::expire(
             tx,
             &IDEM_ROWS,
             &mut self.state.expiry,
             self.idem_limits,
-            self.state.newest_ts_ms,
+            crate::idempotency::expiry_now(self.state.newest_ts_ms, entry_ts_ms),
             |raw| {
                 serde_json::from_slice::<IdemRecord>(raw)
                     .ok()
@@ -2134,6 +2137,41 @@ mod tests {
             m.replay(&caller, "mine").is_some(),
             "a caller's record below its floor was evicted"
         );
+    }
+
+    /// D74 (v0.26) on wasmer: one entry stamped 25 h ahead by a skewed leader can't
+    /// expire what is written after it (expiry is against the earlier of the newest
+    /// applied entry's timestamp and the applying entry's own).
+    #[test]
+    fn one_skewed_entry_does_not_expire_the_records_written_after_it_on_wasmer() {
+        const MIN: u64 = 60 * 1000;
+        const HOUR: u64 = 60 * MIN;
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut m) = machine(&dir);
+        m.idem_limits.keep = [0, 0];
+        let caller = Caller::Account {
+            account: "acct".into(),
+        };
+        let t0 = 1_000_000;
+        // The skewed entry carries no key: nothing of its own sits in the rings.
+        let mut skewed = call(&m, "unused", t0 + 25 * HOUR, &[], 0);
+        if let AppCmd::Call(c) = &mut skewed {
+            c.idempotency_key = None;
+        }
+        let _a = apply(&mut m, 1, &skewed);
+        for (index, key, ts) in [
+            (2, "after", t0 + MIN),
+            (3, "later", t0 + 2 * MIN),
+            (4, "x", t0 + 3 * MIN),
+        ] {
+            let cmd = call(&m, key, ts, &[], 0);
+            let _a = apply(&mut m, index, &cmd);
+        }
+        assert!(
+            m.replay(&caller, "after").is_some(),
+            "a record written after the skew expired"
+        );
+        assert!(m.replay(&caller, "later").is_some());
     }
 
     /// Wasmer retention is a function of the applied entries alone: two replicas

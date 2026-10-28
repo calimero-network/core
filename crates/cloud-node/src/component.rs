@@ -516,15 +516,16 @@ impl AppMachine {
         }
     }
 
-    /// Forget what D74 lets go, by the newest applied entry's timestamp.
-    fn expire_component(&mut self, tx: &mut StateTx<'_>) {
-        let newest = self.state.component.head.last_ts_ms;
+    /// Forget what D74 lets go, against the earlier of the newest applied entry's
+    /// timestamp and this entry's own (`idempotency::expiry_now`).
+    fn expire_component(&mut self, tx: &mut StateTx<'_>, entry_ts_ms: Option<u64>) {
+        let now = idempotency::expiry_now(self.state.component.head.last_ts_ms, entry_ts_ms);
         idempotency::expire(
             tx,
             &IDEM_ROWS,
             &mut self.state.component.head.idempotency,
             self.idem_limits,
-            newest,
+            now,
             stamps,
         );
     }
@@ -580,6 +581,12 @@ impl AppMachine {
         command: &[u8],
     ) -> Vec<u8> {
         let cmd = serde_json::from_slice::<ComponentCmd>(command);
+        let entry_ts_ms = match &cmd {
+            Ok(ComponentCmd::Init { ts_ms, .. }) => Some(*ts_ms),
+            Ok(ComponentCmd::Call(call)) => Some(call.ts_ms),
+            Ok(ComponentCmd::Tick(tick)) => Some(tick.ts_ms),
+            Ok(ComponentCmd::Upgrade { .. }) | Err(_) => None,
+        };
         match &cmd {
             Ok(ComponentCmd::Init {
                 id_term, id_seq, ..
@@ -660,7 +667,7 @@ impl AppMachine {
                 timeout: false,
             },
         };
-        self.expire_component(tx);
+        self.expire_component(tx, entry_ts_ms);
         serde_json::to_vec(&applied).unwrap_or_default()
     }
 }
@@ -1074,6 +1081,29 @@ mod tests {
         );
         let rings = r.machine.state.component.head.idempotency;
         assert!(rings[0].next - rings[0].first >= 1 && rings[1].next - rings[1].first >= 1);
+    }
+
+    /// D74 (v0.26): a record expires against the earlier of the newest applied entry's
+    /// timestamp and the applying entry's own, so one entry stamped 25 h ahead by a
+    /// skewed leader can't expire what is written after it.
+    #[test]
+    fn one_skewed_entry_does_not_expire_the_records_written_after_it() {
+        const MIN: u64 = 60 * 1000;
+        const HOUR: u64 = 60 * MIN;
+        let mut r = Rig::new();
+        r.machine.idem_limits.keep = [0, 0];
+        let t0 = 1_000_000;
+        let _i = r.apply(1, &init(0));
+        // The skewed entry carries no key: nothing of its own sits in the rings.
+        let _a = r.apply(2, &with_ts(&call(1, None, Vec::new()), t0 + 25 * HOUR));
+        let _a = r.apply(3, &call_at(2, "after", t0 + MIN));
+        let _a = r.apply(4, &call_at(3, "later", t0 + 2 * MIN));
+        let _a = r.apply(5, &call_at(4, "x", t0 + 3 * MIN));
+        assert!(
+            honoured(&r, "after"),
+            "a record written after the skew expired"
+        );
+        assert!(honoured(&r, "later"));
     }
 
     /// Retention is a function of the applied entries alone: two replicas fed the

@@ -102,6 +102,16 @@ pub struct Rows {
     pub ring: fn(u8, u64) -> Vec<u8>,
 }
 
+/// The time records expire against when an entry stamped `entry_ts_ms` applies
+/// (D74, spec v0.26): the earlier of the newest applied entry's timestamp and the
+/// entry's own, never a node's clock. So every replica expires the same records, and
+/// one entry stamped by a skewed leader can't expire everything written after it.
+/// `None` for an entry with no timestamp of its own.
+#[must_use]
+pub fn expiry_now(newest_ts_ms: u64, entry_ts_ms: Option<u64>) -> Option<u64> {
+    entry_ts_ms.map(|ts| ts.min(newest_ts_ms))
+}
+
 /// Store `record` under `key` (the stored key, `caller|key`) and append the key
 /// to its class's ring.
 pub fn record(tx: &mut StateTx<'_>, rows: &Rows, rings: &mut [Ring; 2], key: &str, record: &[u8]) {
@@ -112,8 +122,9 @@ pub fn record(tx: &mut StateTx<'_>, rows: &Rows, rings: &mut [Ring; 2], key: &st
     ring.next += 1;
 }
 
-/// Forget what D74 lets go, given the newest applied entry's timestamp: in each
-/// class, oldest first, every record whose expiry is at or before `newest_ts_ms`,
+/// Forget what D74 lets go: in each class, oldest first, every record whose expiry
+/// is at or before `now_ms` (see [`expiry_now`]; `None` for an entry with no
+/// timestamp of its own, which expires nothing by time),
 /// but never one of the class's newest `limits.keep`; then, while the app holds
 /// more than `limits.cap`, the oldest record of a class still above its floor (the
 /// cap never takes a class below its floor, D74 in spec v0.26). `stamps` reads a
@@ -123,10 +134,13 @@ pub fn expire(
     rows: &Rows,
     rings: &mut [Ring; 2],
     limits: Limits,
-    newest_ts_ms: u64,
+    now_ms: Option<u64>,
     stamps: impl Fn(&[u8]) -> Option<(u64, u64)>,
 ) {
     for (c, ring) in rings.iter_mut().enumerate() {
+        let Some(now_ms) = now_ms else {
+            break;
+        };
         while ring.first < ring.next {
             if ring.len() <= limits.keep[c] {
                 break;
@@ -139,7 +153,7 @@ pub fn expire(
             let live = tx
                 .get_hidden(rows.tag, &key)
                 .and_then(|r| stamps(&r))
-                .is_some_and(|(expires_ms, _)| expires_ms > newest_ts_ms);
+                .is_some_and(|(expires_ms, _)| expires_ms > now_ms);
             if live {
                 break;
             }
