@@ -3898,3 +3898,45 @@ async fn the_client_creates_from_a_package_deletes_confirmed_and_signs_out_every
     let _ = alice.sign_out_everywhere().await.unwrap();
     assert_eq!(status(laptop.get("auth/me").await.unwrap_err()), 401);
 }
+
+/// D70: the client gives every call a key of its own (resent unchanged on a
+/// 503), so two calls made without one are two calls, never one replayed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn calls_without_a_key_each_run_once() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 1, "alice").await;
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let a = alice
+        .call(&app, "set", json!({ "key": "k", "value": "1" }), None)
+        .await
+        .unwrap();
+    let b = alice
+        .call(&app, "set", json!({ "key": "k", "value": "1" }), None)
+        .await
+        .unwrap();
+    assert!(
+        b.index > a.index,
+        "the second call ran: {} then {}",
+        a.index,
+        b.index
+    );
+    let again = alice
+        .call(
+            &app,
+            "set",
+            json!({ "key": "k", "value": "2" }),
+            Some("mine"),
+        )
+        .await
+        .unwrap();
+    let replay = alice
+        .call(
+            &app,
+            "set",
+            json!({ "key": "k", "value": "3" }),
+            Some("mine"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.index, again.index, "a given key is answered once");
+}
