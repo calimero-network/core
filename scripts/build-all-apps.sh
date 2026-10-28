@@ -14,7 +14,6 @@ APPS=(
     "apps/blobs/Cargo.toml"
     "apps/collaborative-editor/Cargo.toml"
     "apps/fugue-collab/Cargo.toml"
-    "apps/kv-store-init/Cargo.toml"
     "apps/kv-store-with-handlers/Cargo.toml"
     "apps/tee-dice/Cargo.toml"
     "apps/tee-cards/Cargo.toml"
