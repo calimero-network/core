@@ -30,7 +30,7 @@ Changes in v0.12, from the developer agent's review of v0.11:
 
 Changes in v0.11, from the developer agent's review of v0.10:
 
-- D39: host-owned records (idempotency, timer slots, actions, xcall state) live outside the app keyspace; app keys are (app id, generation, table, …).
+- D39: host-owned records (idempotency, timer slots, actions, xcall state) live outside the app's state keyspace; state keys are (app id, generation, table, …).
 - D40: the action runner pauses during a rebuild; a sub-call that meets `503 MIGRATING` waits without spending an attempt.
 - D41: the switch marks the old generation dropped; replicas reclaim it in the background.
 - D42: during a rebuild each generation counts against the quota on its own.
@@ -145,7 +145,7 @@ Added in v0.3, to settle the questions that would otherwise force a rewrite duri
 | D11 | Migrations run in chunks across log entries when they exceed one entry's limits; writes get `503 MIGRATING` meanwhile, views keep serving. Since v0.10 the chunks build a new keyspace instead of rewriting records in place (D38) | The spec's single-entry `migrate()` can't exceed 10,000 writes or 8 MiB | — |
 | D12 | Outbound HTTP runs only in actions (`@app.action`): outside the log, 10 s budget, no direct state access; they write by calling normal methods, each its own entry | A call never waits on the network, so the log never stalls and the 2 s limit holds | — |
 | D13 | Every invocation has an explicit caller: account or API key, `System` for timers and `migrate`, `App(source)` for delivered xcalls, the owner for `init`; actions pass on the caller who started them | Access checks must not quietly pass for timers or xcalls | — |
-| D14 | Free, Basic and Premium apps share a process, isolated by the wasmtime sandbox, per-app keys, a fresh instance per call and Spectre mitigations; Enterprise gets dedicated clusters | Matches the spec's plans; the executor keeps engines movable into worker processes later | A sandbox escape in wasmtime, or a customer requirement for process isolation |
+| D14 | Free, Basic and Premium apps share a process, isolated by the wasmtime sandbox, per-app encryption keys, a fresh instance per call and Spectre mitigations; Enterprise gets dedicated clusters | Matches the spec's plans; the executor keeps engines movable into worker processes later | A sandbox escape in wasmtime, or a customer requirement for process isolation |
 
 Added in v0.4:
 
@@ -634,7 +634,7 @@ static migrateContacts(from: CrmV1, to: Crm, cursor?: Cursor): Cursor | "done" {
 }
 ```
 
-A migration is a rebuild (D38). The new bundle reads the old state, which it can't modify, and writes the new version with all its indexes into a separate keyspace, one batch per log entry. Meanwhile calls return `503 MIGRATING` with a retry hint, timer ticks pause, running actions stop and re-run after the switch (D40), xcall deliveries are held (D29), views run on the old bundle against the old state, and the console shows progress. A trap or unique clash stops the rebuild: the owner deploys a fixed bundle, which discards the new keyspace and starts over, or abandons the upgrade and keeps the old version. When the last batch commits, one entry switches the app to the new bundle and keyspace; the old generation is marked dropped and reclaimed in the background (D41). Idempotency records, timer slots, pending actions and xcall state are host records outside the app keyspace, so they survive the switch (D39). Read-time upgrade helpers (`Table.upgrade(from, fn)`) remain for additive changes that need no rebuild.
+A migration is a rebuild (D38). The new bundle reads the old state, which it can't modify, and writes the new version with all its indexes into a separate keyspace, one batch per log entry. Meanwhile calls return `503 MIGRATING` with a retry hint, timer ticks pause, running actions stop and re-run after the switch (D40), xcall deliveries are held (D29), views run on the old bundle against the old state, and the console shows progress. A trap or unique clash stops the rebuild: the owner deploys a fixed bundle, which discards the new keyspace and starts over, or abandons the upgrade and keeps the old version. When the last batch commits, one entry switches the app to the new bundle and keyspace; the old generation is marked dropped and reclaimed in the background (D41). Idempotency records, timer slots, pending actions and xcall state are host records outside the app's state keyspace, so they survive the switch (D39). Read-time upgrade helpers (`Table.upgrade(from, fn)`) remain for additive changes that need no rebuild.
 
 ## 8. Platform requirements from the reference apps
 
@@ -683,7 +683,7 @@ The runtime must hold three properties: a call sees only its own app's state, no
 
 Review findings that this spec closes by design: issue 1 (S3, S4), issue 6 (S5), issue 8 (writer rotation goes away with storage wrappers), issue 11 (xcall becomes an outbox in the WIT world, never silently dropped). The rest of the review's blockers sit outside the runtime and stay with the cloud-node work.
 
-Tenant isolation (D14): on shared plans, apps of different customers run in one process inside one enclave, separated by the wasmtime sandbox, per-app keys, a fresh instance per call and Spectre mitigations. A sandbox escape would expose other tenants on that node. The security docs say this plainly; Enterprise gets dedicated clusters in separate trust domains.
+Tenant isolation (D14): on shared plans, apps of different customers run in one process inside one enclave, separated by the wasmtime sandbox, per-app encryption keys, a fresh instance per call and Spectre mitigations. A sandbox escape would expose other tenants on that node. The security docs say this plainly; Enterprise gets dedicated clusters in separate trust domains.
 
 Bundle signing (D18): method attributes and outbound hosts are trusted only because the developer signed them. The node checks every bundle against the signer registered for that app before installing it.
 
@@ -691,7 +691,7 @@ Key lifecycle (D24): the owner registers, rotates and revokes signing keys with 
 
 Time (D21, D26): against the operator, app time is within the Roughtime tolerance plus 2 s, checked every 60 s, with the TD's TSC measuring elapsed time between checks; merod-v2 reads only the TSC-backed monotonic clock. The majority rule only guards against a single faulty host, because the operator controls every host's clock. A node that fails its Roughtime check stops stamping entries, and followers won't elect it because vote requests carry signed Roughtime responses. Timers, expiries and leases are only as trustworthy as this bound. An operator who blocks Roughtime can stop writes; that is a denial of service the operator already has, not a new one. Working answer to Q15: the TDX module controls the TD's TSC and the host can't change its offset after the TD is built; the host-chosen TSC frequency is still to confirm in Intel's documentation.
 
-Dependency: S3 and D14 rely on per-app storage keys. Today the cluster uses one key (review, area 6). Deriving per-app keys belongs to the keys work under the Architecture Specification; this spec requires it before any shared-plan app holds real data.
+Dependency: S3 and D14 rely on per-app storage keys. Today the cluster uses one key (review, area 6). Deriving per-app encryption keys belongs to the keys work under the Architecture Specification; this spec requires it before any shared-plan app holds real data.
 
 ## 10. Testing and conformance
 
