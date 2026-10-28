@@ -59,6 +59,12 @@ cluster)`: anyone can compute it. Never put real data on a `--dev` node.
 - The disk identity (`--kms-identity`) is shared by the cluster's nodes. It is
   the handle mero-kms derives the key for; it is not the key, and a host holding
   it still needs an attested TD to get the key.
+- mero-kms releases the key to any TD that matches the release policy, and a
+  node fetches it before it serves anything. A deployment that wants to check
+  a fresh TD first (its image, its merod) asks it for a release attestation
+  (`merod attest`, or `merod attest --serve` while it boots) and hands over the
+  cluster's identity only once that verifies
+  ([release attestations](/protocol/tee-attestation/#release-attestations)).
 
 From K_r the cluster also derives the cluster secret peers present, each
 app's TEE key (what `TeeSecret` state opens with), and a stand-in key per

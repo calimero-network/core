@@ -1,4 +1,4 @@
-//! `merod init`, `config`, `run` and `inspect`, through the binary: v1's
+//! `merod init`, `config`, `run`, `inspect` and `attest`, through the binary: v1's
 //! command line over the node.
 
 use std::io::{Read, Write};
@@ -152,4 +152,161 @@ fn init_config_run_and_inspect_a_node() {
         .output()
         .unwrap());
     assert!(inspected.contains("groups"), "{inspected}");
+}
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// `GET path` on 127.0.0.1:port: the status line and the body.
+fn get(port: u16, path: &str) -> Option<(String, String)> {
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+    s.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    write!(
+        s,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut out = String::new();
+    let _ = s.read_to_string(&mut out);
+    let (head, body) = out.split_once("\r\n\r\n")?;
+    Some((head.lines().next()?.to_owned(), body.to_owned()))
+}
+
+fn verify(
+    doc: &calimero_client::attest::release::ReleaseAttestation,
+    nonce: &[u8; 32],
+    allow_mock: bool,
+) -> eyre::Result<calimero_client::attest::release::VerifiedRelease> {
+    let policy = calimero_client::Policy {
+        allow_mock,
+        ..calimero_client::Policy::default()
+    };
+    tokio::runtime::Runtime::new().unwrap().block_on(
+        calimero_client::attest::release::verify_release(doc, nonce, &policy),
+    )
+}
+
+/// A release attestation needs no node, no store and no KMS: a boot script
+/// runs it before the KMS has released anything.
+#[test]
+fn attest_prints_a_release_attestation_bound_to_the_nonce() {
+    let home = tempfile::tempdir().unwrap();
+    let nonce = [9u8; 32];
+    let out = ok(merod(home.path())
+        .args([
+            "attest",
+            "--dev",
+            "--nonce",
+            &hex::encode(nonce),
+            "--tee-release",
+            "2.4.0",
+            "--tee-profile",
+            "locked-read-only",
+        ])
+        .output()
+        .unwrap());
+    let doc: calimero_client::attest::release::ReleaseAttestation =
+        serde_json::from_str(&out).unwrap();
+    assert!(doc.mock);
+    assert_eq!(doc.claim.merod_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(doc.claim.tee_release.as_deref(), Some("2.4.0"));
+    assert_eq!(doc.claim.tee_profile.as_deref(), Some("locked-read-only"));
+    assert_eq!(doc.claim.identity, None);
+    // The digest of the binary that made it.
+    let binary = std::fs::read(env!("CARGO_BIN_EXE_merod")).unwrap();
+    assert_eq!(
+        doc.claim.merod_sha256,
+        Some(hex::encode(calimero_identity::sha256(&binary)))
+    );
+
+    let verified = verify(&doc, &nonce, true).unwrap();
+    assert_eq!(verified.claim, doc.claim);
+    let err = verify(&doc, &[8; 32], true).unwrap_err();
+    assert!(err.to_string().contains("nonce mismatch"), "{err}");
+    let err = verify(&doc, &nonce, false).unwrap_err();
+    assert!(err.to_string().contains("mock quote refused"), "{err}");
+
+    // `--out`, and the configured node's `--dev` and release.
+    let _ = ok(merod(home.path())
+        .args([
+            "--node",
+            "n1",
+            "init",
+            "--node-id",
+            "1",
+            "--public-url",
+            "http://127.0.0.1:1",
+            "--dev",
+            "--tee-release",
+            "2.5.0",
+        ])
+        .output()
+        .unwrap());
+    let file = home.path().join("attestation.json");
+    let _ = ok(merod(home.path())
+        .args(["--node", "n1", "attest", "--out"])
+        .arg(&file)
+        .output()
+        .unwrap());
+    let doc: calimero_client::attest::release::ReleaseAttestation =
+        serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert!(doc.mock);
+    assert_eq!(doc.claim.tee_release.as_deref(), Some("2.5.0"));
+    let nonce: [u8; 32] = hex::decode(&doc.nonce).unwrap().try_into().unwrap();
+    let _verified = verify(&doc, &nonce, true).unwrap();
+
+    // An identity to bind must exist: it is never created here.
+    let missing = home.path().join("no-identity");
+    let out = merod(home.path())
+        .args(["attest", "--dev", "--identity"])
+        .arg(&missing)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(!missing.exists());
+    let out = merod(home.path())
+        .args(["attest", "--dev", "--nonce", "abcd"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+/// `--serve`: a fresh quote per caller nonce, until stopped.
+#[test]
+fn attest_serve_answers_each_nonce() {
+    let home = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let child = merod(home.path())
+        .args(["attest", "--dev", "--serve", &format!("127.0.0.1:{port}")])
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let nonce = [3u8; 32];
+    let path = format!("/attestation/release?nonce={}", hex::encode(nonce));
+    let (status, body) = loop {
+        if let Some(answer) = get(port, &path) {
+            break answer;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "merod attest --serve did not answer"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(status.contains("200"), "{status} {body}");
+    let doc: calimero_client::attest::release::ReleaseAttestation =
+        serde_json::from_str(&body).unwrap();
+    let _verified = verify(&doc, &nonce, true).unwrap();
+    assert!(verify(&doc, &[4; 32], true).is_err());
+
+    let (status, _) = get(port, "/attestation/release?nonce=00").unwrap();
+    assert!(status.contains("400"), "{status}");
+    let (status, _) = get(port, "/attestation").unwrap();
+    assert!(status.contains("404"), "{status}");
+    interrupt(child);
 }

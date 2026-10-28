@@ -11,7 +11,8 @@ The mero-kms client a TEE node fetches its keys with. It was merod's (`src/kms`,
   the identity's libp2p key; the KMS answers with the key for
   `{namespace}/{profile}/{peerId}`, sealed to the request (`kms/sealed.rs`).
 - **Disk key** (`disk_key.rs`): `fetch_disk_key(url, identity, create)` returns the key
-  for a dedicated disk identity (a protobuf libp2p keypair, created on request).
+  for a dedicated disk identity (a protobuf libp2p keypair, created on request);
+  `identity_peer_id(path)` reads one's peer id without creating it (`merod attest`).
   `KmsDiskKeyCommand` (`merod kms disk-key`) is the boot-script form: it writes
   the key only to tmpfs/ramfs, never to a device or stdout.
 - **Config** (`config.rs`): `TeeConfig` / `KmsConfig` / `KmsAttestationConfig`, as
@@ -22,6 +23,6 @@ The mero-kms client a TEE node fetches its keys with. It was merod's (`src/kms`,
 ## Commands
 
 ```bash
-cargo test -p calimero-kms-client --features mock-attestation
+cargo test -p calimero-kms-client --features mock-attestation,libp2p-identity/rand   # rand: alone, nothing else enables it
 cargo clippy -p calimero-kms-client --all-targets --features mock-attestation -- -D warnings
 ```

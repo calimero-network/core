@@ -18,9 +18,15 @@ turns a configuration into `calimero_node::Config` and calls `run`.
 - `merod local` (a development cluster in process), `merod inspect` (a stopped
   node's store, `calimero_node::inspect`), `merod kms disk-key` (for a
   TEE boot script, `calimero-kms-client`).
+- `merod attest` (a release attestation, `calimero_node::attest::release_attestation`):
+  a quote over a nonce and this merod's claim (version, executable SHA-256,
+  `MERO_TEE_VERSION`/`MERO_TEE_PROFILE`, `--identity`'s peer id), made with no KMS
+  key and no store, so a manager can check a fresh TD before mero-kms releases a
+  key. `--serve ADDR` answers `GET /attestation/release?nonce=` until SIGINT/SIGTERM
+  (`calimero_node::attest::serve_release`). Its logs go to stderr: stdout is the JSON.
 
 ```bash
-cargo test -p merod          # NodeArgs merging; init/config/run/inspect through the binary
+cargo test -p merod          # NodeArgs merging; init/config/run/inspect/attest through the binary
 cargo run -p merod -- --help
 cargo run -p merod -- local
 ```

@@ -76,6 +76,7 @@ Saved nodes, in `{home}/meroctl/nodes.json` (mode `0600`). No network.
 | `logout [--all]` | `/auth/logout-all` with `--all` | Forget the saved session; `--all` first ends every session of the account. |
 | `whoami` | `GET /auth/me` | Who the requests run as. |
 | `attest [-c CONTEXT]` | `GET /attestation`, `GET /apps/{app}/attestation` | The node's attestation document; with `--context`, every replica of that app verified, their receipt keys and the governance they attest. |
+| `attest-release [--file FILE --nonce HEX]` | `GET /attestation/release` | Verify a [release attestation](/operate/merod/#attest) (`merod attest`): fetched from the node's URL over a fresh nonce (a booting TD's `merod attest --serve`), or read from `FILE` with the nonce it was made over. Judged with `--allow-mock`, `--tee-profiles` and `--min-release` like any quote; needs no session. Prints the claim, the verified registers and the profile they matched. |
 
 ## app
 
