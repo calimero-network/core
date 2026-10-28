@@ -231,12 +231,14 @@ jobs:
 
       - name: Cargo test (standalone v2 apps)
         if: ${{ !cancelled() }}
-        # Rooms, the v2 fixtures and the ported apps are workspaces of their own, so the workspace run above
-        # never reaches their harness tests. One target dir serves them all.
+        # Apps on the component SDK are workspaces of their own, so the workspace run above
+        # never reaches their harness tests. Each is found by its calimero-app-sdk dependency;
+        # one target dir serves them all.
         env:
           CARGO_TARGET_DIR: target/standalone-apps
         run: |
           for manifest in $(grep -l '^calimero-app-sdk = ' apps/*/Cargo.toml apps/*/*/Cargo.toml); do
+            cargo test --manifest-path "$manifest"
           done
 
   rust-features:
