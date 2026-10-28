@@ -13,9 +13,14 @@ types and the methods that change them. An **execution** (a *run*) is one call
 of one method. On a cluster, only the app group's **leader** runs calls; the
 other replicas apply what the run produced ([Replication](/protocol/replication/)).
 
-The runtime is `calimero-runtime` on wasmer, the same one v1 used. The node
-calls it through `Module::run_cloud` (`crates/cloud-node/src/app.rs`,
-`Executor`), compiling each bundle once and caching the module by its hash.
+An app runs on one of two runtimes, decided once from the WASM its bundle names
+(`AppRecord::executor`): a core module built with `calimero-sdk` runs on
+`calimero-runtime` (wasmer), the runtime v1 apps were built against; a
+`calimero:app` component built with `calimero-app-sdk` runs on
+`calimero-app-engine-wasmtime` through the host core `calimero-app-host`. For a
+core module the node calls `Module::run_cloud` (`crates/node/src/app.rs`,
+`Executor`), compiling each bundle once and caching the module by its hash;
+components go through `crates/node/src/component.rs`.
 
 ## One run
 
@@ -47,8 +52,8 @@ When it ends, the overlay's writes, in the order they last happened, become the
 outcome's **diff**. If the run trapped or the app returned an error, the diff is
 empty.
 
-The guest still commits its storage changes through the SDK as it did in v1,
-and the runtime still returns the commit **artifact** (a borsh `StorageDelta`).
+The guest commits its storage changes through the SDK,
+and the runtime returns the commit **artifact** (a borsh `StorageDelta`).
 The node does not replicate the artifact: it reads it only to list the storage
 entities the run touched, which is what [search](/protocol/reads/#search)
 re-indexes.
@@ -72,7 +77,7 @@ Exported methods take no arguments and return nothing: input arrives through
 | `input`, `value_return`, `log_utf8`, `emit`, `emit_with_handler` | Arguments in; result, logs and events out. An event may name a handler to run after the entry commits ([Event handlers](/protocol/xcall/)) |
 | `storage_read` / `storage_write` / `storage_remove` | The app's replicated state, through the overlay |
 | `private_storage_*` | The caller's own space in the app's state (below) |
-| `storage_index_*` | The ordered index. The cloud node keeps none: index writes report "not persisted", and the SDK falls back to its unindexed path |
+| `storage_index_*` | The ordered index. The node keeps none: index writes report "not persisted", and the SDK falls back to its unindexed path |
 | `time_now`, `random_bytes` | The leader's wall clock and randomness, read once: followers apply the result |
 | `xcall`, `xcall_origin` | Queue a call into another app; read which app called this one |
 | `blob_*` | The cluster's [blob store](/protocol/blobs/), for the app's own blobs |
@@ -89,8 +94,8 @@ Exported methods take no arguments and return nothing: input arrives through
 | **Private** (`env::private_storage_*`) | The app's state, under `\0calimero.private\0 ‖ account ‖ 0` | Only runs whose caller is that account |
 | **Host** (`\0calimero.*`) | The app's state: private spaces, shared-cell writer sets, blob marks | Only the node |
 
-In v1, private storage stayed on the member's own node and never synced. A
-cloud app has no member nodes, so the caller's private space is part of the
+In v1, private storage stayed on the member's own node and never synced. An
+app on a cluster has no member nodes, so the caller's private space is part of the
 replicated state, sealed on disk like the rest, and the host hands a run only
 its caller's space: app code cannot address another account's.
 
@@ -102,15 +107,14 @@ writes there itself (`Overlay::set_host`) as part of the same entry.
 
 ## What the node checks after the run
 
-Before a run's outcome becomes an entry, the node applies the rules v1 enforced
-on the host side:
+Before a run's outcome becomes an entry, the node applies these host-side
+rules:
 
 - **Shared-cell writer rotations** (`SharedStorage`): each rotation must step
   from the set in effect (the state's, or at genesis the prior set the cell id
   commits to), and the run's account must hold `ADMIN` in it. A TEE run, an
   app's own run (handler or xcall) or a public call may not rotate. The new set
-  is written beside the cell, in the same entry. v1 published rotations as
-  governance operations.
+  is written beside the cell, in the same entry.
 - **Blobs the run wrote** are kept by the leader, marked as the app's in the
   diff, and spread to the other nodes after the entry commits.
 - **Read-only team members**: a call by a member whose row in the app's team is

@@ -5,8 +5,8 @@ Generates and verifies Intel TDX attestation quotes, binding them to a nonce and
 ## Package Identity
 
 - **Crate**: `calimero-tee-attestation`
-- **Entry**: `src/lib.rs`
-- **Key deps**: `tdx-quote` (parses raw TDX quote bytes), `dcap-qvl` (Intel DCAP collateral fetch + cryptographic quote verification), `calimero-server-primitives` (the serializable `Quote`/`QuoteHeader`/`QuoteBody`/`CertificationData` types), `base64`/`hex` (encoding), `eyre` (internal error plumbing), `tracing`. Linux-only: `configfs-tsm` (real quote generation via the kernel TSM configfs interface), `tdx_workload_attestation` (MRTD/launch-measurement retrieval), `reqwest` (cloud metadata detection)
+- **Entry**: `src/lib.rs`; the serializable `Quote`/`QuoteHeader`/`QuoteBody`/`CertificationData` types are this crate's own (`src/quote.rs`)
+- **Key deps**: `tdx-quote` (parses raw TDX quote bytes), `dcap-qvl` (Intel DCAP collateral fetch + cryptographic quote verification), `base64`/`hex` (encoding), `eyre` (internal error plumbing), `tracing`. Linux-only: `configfs-tsm` (real quote generation via the kernel TSM configfs interface), `tdx_workload_attestation` (MRTD/launch-measurement retrieval), `reqwest` (cloud metadata detection)
 
 ## Commands
 
@@ -104,7 +104,7 @@ Two properties carry over from the library and matter more here, because the con
 | `TeeInfo` | struct | `cloud_provider: String`, `os_image: String`, `mrtd: String` (hex) |
 | `AttestationError` | enum | `NotSupported`, `QuoteGenerationFailed`, `QuoteParsingFailed`, `QuoteConversionFailed`, `QuoteVerificationFailed`, `CollateralFetchFailed`, `InvalidNonce`, `InvalidApplicationHash`, `NonceMismatch { expected, actual }`, `ApplicationHashMismatch { expected, actual }`, `InfoRetrievalFailed`, `SystemTimeError` - all carry `String` context, no source-error chaining |
 
-`Quote`/`QuoteHeader`/`QuoteBody`/`CertificationData`/`QeReportCertificationDataInfo` are defined here (`quote.rs`, moved from v1's `calimero_server_primitives::admin`, same wire shape) with `Quote: TryFrom<tdx_quote::Quote>`; mero-kms and the gates in mero-tee import them from `calimero_tee_attestation` once they move past core rev 23cf02c.
+`Quote`/`QuoteHeader`/`QuoteBody`/`CertificationData`/`QeReportCertificationDataInfo` are defined here (`quote.rs`, the same wire shape as v1's `calimero_server_primitives::admin`) with `Quote: TryFrom<tdx_quote::Quote>`; mero-kms and the gates in mero-tee import them from `calimero_tee_attestation` once they move past core rev 23cf02c.
 
 ## Mental Model: Generate vs Verify
 

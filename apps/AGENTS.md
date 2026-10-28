@@ -27,7 +27,7 @@ cargo mero build --manifest-path apps/kv-store/Cargo.toml
 | ------------------------ | ---------------------- | ---------------------- |
 | `kv-store`               | Simple key-value store | Basic CRDT usage       |
 | `kv-store-init`          | KV with custom init    | `#[app::init]` pattern |
-| `org-gated`              | Org notes (release-v2) | `env::caller_org()`: gate methods on the caller's organization role and teams |
+| `org-gated`              | Org notes              | `env::caller_org()`: gate methods on the caller's organization role and teams |
 | `kv-store-with-handlers` | KV with event handlers | Event handling         |
 | `sorted-kv-store`        | Ordered KV store       | `SortedMap`: range / prefix / page |
 | `authored-sorted-kv-store` | Shared noticeboard   | `AuthoredSortedMap`: per-entry ownership + prefix slices, and why the two go together |
@@ -326,19 +326,19 @@ rg -n "app::bail!" */src/
 
 ## Workflows
 
-Each app's `workflows/` holds merobox workflows for release-v2
+Each app's `workflows/` holds merobox workflows
 (`backend: cloud-v2`): a cluster of `merod` processes, accounts signed in with
 passkeys, an organization, the app deployed and called as several accounts.
 Most were migrated from the app's v1 workflows by `merobox cloud port`; each
-one's header lists the v1 steps that have no release-v2 counterpart and any
+one's header lists the v1 steps that have no counterpart in this node and any
 fix made in the migration. Every deployable app has at least one; CI runs them
 all (`.github/workflows/e2e.yml`, gated by
-`scripts/cloud-v2-workflows-baseline.json`). See
-[Testing strategy](../docs/src/content/docs/contribute/testing.mdx#release-v2-workflows).
+`scripts/workflows-baseline.json`). See
+[Testing strategy](../docs/src/content/docs/contribute/testing.mdx#core-and-app-workflows).
 
 ```yaml
 # workflows/sorted-kv-store.yml (abridged)
-name: Sorted KV store on release-v2
+name: Sorted KV store
 backend: cloud-v2
 cluster: { nodes: 3, base_port: 6000 }
 accounts: [alice, bob]
@@ -355,8 +355,8 @@ steps:
 ```
 
 ```bash
-python3 scripts/build-cloud-v2-fixtures.py           # every app's WASM, into target/cloud-v2-wasm
-MEROD_BINARY=target/debug/merod python3 scripts/cloud-v2-workflows.py apps/<app>/workflows/<file>.yml
+python3 scripts/build-workflow-fixtures.py           # every app's WASM, into target/workflow-wasm
+MEROD_BINARY=target/debug/merod python3 scripts/run-workflows.py apps/<app>/workflows/<file>.yml
 ```
 
 A new workflow needs a `base_port` no other workflow uses (each runs its own

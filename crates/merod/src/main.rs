@@ -1,14 +1,14 @@
 //! `merod`: the Calimero node. v1's command line (`--home`, `--node`, `init`,
-//! `run`, `config`, `kms`) over the release-v2 node (`calimero-cloud-node`):
+//! `run`, `config`, `kms`) over the node (`calimero-node`):
 //! attested, one Raft log per app.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use calimero_cloud_client::Measurements;
-use calimero_cloud_node::attest::Mode;
-use calimero_cloud_node::system::{Authority, Governance};
-use calimero_cloud_node::{kms, run, Config};
+use calimero_client::Measurements;
+use calimero_node::attest::Mode;
+use calimero_node::system::{Authority, Governance};
+use calimero_node::{kms, run, Config};
 use clap::{Args, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
@@ -128,7 +128,7 @@ fn inspect(data_dir: &Path, args: &InspectArgs) -> eyre::Result<()> {
         ),
         None => None,
     };
-    let out = calimero_cloud_node::inspect::inspect(data_dir, key)?;
+    let out = calimero_node::inspect::inspect(data_dir, key)?;
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
@@ -140,7 +140,7 @@ async fn local(args: LocalArgs) -> eyre::Result<()> {
     let token = args
         .ops_token
         .unwrap_or_else(|| hex::encode(calimero_identity::random::<16>()));
-    let cluster = calimero_cloud_node::local::start(
+    let cluster = calimero_node::local::start(
         args.nodes,
         args.base_port,
         &args.dir,
@@ -151,7 +151,7 @@ async fn local(args: LocalArgs) -> eyre::Result<()> {
     .await?;
     println!(
         "Local cluster \"{}\" (development: mock attestation, dev storage key)",
-        calimero_cloud_node::local::CLUSTER
+        calimero_node::local::CLUSTER
     );
     for (i, url) in cluster.urls.iter().enumerate() {
         println!("  node {}  {url}", i + 1);

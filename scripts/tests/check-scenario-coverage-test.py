@@ -33,7 +33,7 @@ jobs:
         shard: [1, 2, 3]
     steps:
       - run: |
-          python3 scripts/cloud-v2-workflows.py --shard ${{ matrix.shard }}/3 \\
+          python3 scripts/run-workflows.py --shard ${{ matrix.shard }}/3 \\
             --json out-${{ matrix.shard }}.json
 """
 
@@ -43,7 +43,7 @@ WF = "backend: cloud-v2\ncluster: {nodes: 3}\nsteps: [{type: wait, seconds: 0}]\
 def tree(e2e: str, files: dict[str, str]) -> Path:
     root = Path(tempfile.mkdtemp(prefix="coverage-test-"))
     (root / "scripts").mkdir()
-    shutil.copy(ROOT / "scripts/cloud-v2-workflows.py", root / "scripts/cloud-v2-workflows.py")
+    shutil.copy(ROOT / "scripts/run-workflows.py", root / "scripts/run-workflows.py")
     (root / ".github/workflows").mkdir(parents=True)
     (root / ".github/workflows/e2e.yml").write_text(e2e)
     for path, text in files.items():
@@ -80,7 +80,7 @@ CASES = [
         "a v1 workflow left on disk runs nowhere",
         E2E_SHARDED,
         {"workflows/a.yml": wf(), "apps/x/workflows/v1.yml": "nodes: {count: 2}\nsteps: []\n"},
-        ["apps/x/workflows/v1.yml: not a release-v2 workflow"],
+        ["apps/x/workflows/v1.yml: not a merobox cloud-v2 workflow"],
     ),
     (
         "not_applicable with a reason is accepted",
@@ -101,8 +101,8 @@ jobs:
   scenarios:
     steps:
       - run: |
-          # python3 scripts/cloud-v2-workflows.py --shard 1/1
-          echo scripts/cloud-v2-workflows.py
+          # python3 scripts/run-workflows.py --shard 1/1
+          echo scripts/run-workflows.py
 """,
         {"workflows/a.yml": wf()},
         ["in no shard", "workflows/a.yml: run by no e2e.yml shard"],
@@ -113,7 +113,7 @@ jobs:
 jobs:
   scenarios:
     steps:
-      - run: python3 scripts/cloud-v2-workflows.py workflows/a.yml
+      - run: python3 scripts/run-workflows.py workflows/a.yml
 """,
         {"workflows/a.yml": wf()},
         ["runs named files only"],
@@ -124,7 +124,7 @@ jobs:
 jobs:
   scenarios:
     steps:
-      - run: python3 scripts/cloud-v2-workflows.py --smoke --json out.json
+      - run: python3 scripts/run-workflows.py --smoke --json out.json
 """,
         {"workflows/a.yml": wf()},
         ["in no shard", "workflows/a.yml: run by no e2e.yml shard"],
@@ -134,8 +134,8 @@ jobs:
         E2E_SHARDED,
         {
             "workflows/a.yml": wf(),
-            "scripts/cloud-v2-workflows-smoke.json": '{"workflows": ["workflows/a.yml"]}',
-            "scripts/cloud-v2-workflows-baseline.json": '["workflows/a.yml"]',
+            "scripts/workflows-smoke.json": '{"workflows": ["workflows/a.yml"]}',
+            "scripts/workflows-baseline.json": '["workflows/a.yml"]',
         },
         [],
     ),
@@ -144,8 +144,8 @@ jobs:
         E2E_SHARDED,
         {
             "workflows/a.yml": wf(),
-            "scripts/cloud-v2-workflows-smoke.json": '{"workflows": ["workflows/a.yml", "workflows/gone.yml"]}',
-            "scripts/cloud-v2-workflows-baseline.json": "[]",
+            "scripts/workflows-smoke.json": '{"workflows": ["workflows/a.yml", "workflows/gone.yml"]}',
+            "scripts/workflows-baseline.json": "[]",
         },
         ["workflows/a.yml is not on", "workflows/gone.yml does not exist"],
     ),
@@ -155,7 +155,7 @@ jobs:
 jobs:
   scenarios:
     steps:
-      - run: python3 scripts/cloud-v2-workflows.py --json out.json
+      - run: python3 scripts/run-workflows.py --json out.json
 """,
         {"workflows/a.yml": wf(), "apps/x/workflows/c.yml": wf()},
         [],

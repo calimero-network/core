@@ -17,7 +17,7 @@ a `Group<M>` is one log with its state machine `M`.
 The engine orders opaque command bytes. The node gives them meaning:
 
 - A **system** entry is one `SystemCmd` ([The system group](/protocol/system-group/)).
-- An **app** entry is one `AppCmd` (`crates/cloud-node/src/app.rs`):
+- An **app** entry is one `AppCmd` (`crates/node/src/app.rs`):
 
 | `AppCmd` | Written when | What applying it does |
 | --- | --- | --- |
@@ -75,7 +75,7 @@ entry the machine applied. Blank entries (a new leader's first) and membership
 changes do not count: they change no app state, and counting them on one side
 only made the first call after every election conflict once. Regression:
 `the_first_call_after_a_leader_change_commits_without_a_rerun` in
-`crates/cloud-node/tests/cluster.rs`; `calimero_build_conflicts_total` in
+`crates/node/tests/cluster.rs`; `calimero_build_conflicts_total` in
 `/ops/metrics` counts the conflicts a node's entries met. If they differ, other entries came in between (a new leader's,
 or a write that was not yet applied when the call ran) and the diff was computed
 against replaced state: the entry applies as a no-op with `conflict: true`,
@@ -100,7 +100,7 @@ therefore checks that the state still names the bundle its module came from
 and `Node::call` runs the call again with the new module. An upgrade checks the
 bundle it planned its migration from the same way. Regression:
 `a_call_built_with_a_module_an_upgrade_replaced_never_commits` in
-`crates/cloud-node/src/app.rs`.
+`crates/node/src/app.rs`.
 
 A proposal that answers without appending (`Proposal::Reply`: an idempotent
 replay, a follow-up already run, a read-only member's refused write) is a read,

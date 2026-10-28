@@ -14,11 +14,11 @@ operating the nodes can read the apps' data.
 |-------|-------------|
 | **merod** | The node: `init`, `run`, `config`, `local` (a development cluster), `inspect`, `kms disk-key` |
 | **meroctl** | The command line: apps, contexts, organizations, teams, blobs, accounts, and `ops` for the operator |
-| **calimero-cloud-node** | The node's inside: system group, app groups, the HTTP and Ops API |
+| **calimero-node** | The node's inside: system group, app groups, the HTTP and Ops API |
 | **calimero-log** | Multi-group Raft (openraft) over a sealed RocksDB store |
 | **calimero-sealed** | The sealed HTTP transport, server and client |
 | **calimero-identity** | Passkeys, sessions, API keys, confirmation challenges |
-| **calimero-cloud-client** | Rust client: attestation check, sealed requests, sign-in |
+| **calimero-client** | Rust client: attestation check, sealed requests, sign-in |
 | **calimero-runtime** | Wasmer WASM runtime with gas metering and host functions |
 | **calimero-sdk** | App development SDK with proc macros |
 | **calimero-storage** | CRDT collections and the storage interface apps write through |
@@ -42,7 +42,7 @@ See [Install & first run](https://calimero-network.github.io/core/operate/instal
 
 | I want to… | Start here |
 |-------|------|
-| Understand release-v2 and try it | [Cloud](https://calimero-network.github.io/core/cloud/overview/) — overview, quickstart, writing apps |
+| Understand Calimero and try it | [Cloud](https://calimero-network.github.io/core/cloud/overview/) — overview, quickstart, writing apps |
 | Write a Calimero app | [Build](https://calimero-network.github.io/core/build/) — SDK, collections, examples |
 | Run a cluster | [Operate](https://calimero-network.github.io/core/operate/) — install, deployment, `merod`/`meroctl`, configuration, the node API |
 | Understand the model | [Protocol Reference](https://calimero-network.github.io/core/protocol/overview/) |

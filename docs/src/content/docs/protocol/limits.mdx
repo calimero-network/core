@@ -63,7 +63,7 @@ events — must stay under **1 MiB**.
 A body past a limit is answered `413`, error code `TOO_LARGE`, with the limit
 in the message. Under 64 MiB the node's own check answers, sealed like any
 answer. Past 64 MiB the sealed envelope is refused before it can be opened, so
-its `413` (`{"error":{"code":"too_large",...}}`, which `calimero-cloud-client`
+its `413` (`{"error":{"code":"too_large",...}}`, which `calimero-client`
 reports as `TOO_LARGE`) comes back in the clear: sealing it would mean spending
 the request id on bytes nobody has authenticated, letting a relay make the node
 vouch for a refusal of a request the client never sent. The node reads and drops

@@ -38,7 +38,7 @@ An anchor is something outside the code that can pull it into execution:
 
 | Anchor | Where to check |
 | --- | --- |
-| an HTTP route | `router` in `crates/cloud-node/src/api.rs` (every `.route(`) |
+| an HTTP route | `router` in `crates/node/src/api.rs` (every `.route(`) |
 | a CLI subcommand a user can type | the clap enums in `crates/meroctl/src/*.rs`, `crates/merod/src/main.rs` and `crates/merod/src/node_config.rs` |
 | a merobox step or scenario | `apps/*/workflows/*.yml`, `workflows/**`, and the step's existence in the merobox package |
 | a CI job | `.github/workflows/*.yml` — a scenario file that exists but is registered nowhere never runs |
@@ -51,8 +51,9 @@ keep walking. Do not stop at the first reference you find.
 
 ## Worked example — the one that prompted this
 
-(From v1: the crates it names, `calimero-server`, `calimero-client` and v1's
-`meroctl`, were deleted with the v1 node. The method is what carries over.)
+(From v1: the crates it names, v1's `calimero-server`, `calimero-client` and
+`meroctl`, were deleted with the v1 node; today's `calimero-client` is a
+different crate. The method is what carries over.)
 
 `crates/primitives/src/identity.rs` held `Did`, `RootKey`, `ClientKey` and
 `ContextUser`. `RootKey` carried a `wallet_address`, dating it to wallet-login,
@@ -91,8 +92,8 @@ shared fate.
 
 Places where this class accumulates:
 
-1. **`calimero-cloud-client` methods** whose path does not appear in
-   `router` (`crates/cloud-node/src/api.rs`).
+1. **`calimero-client` methods** whose path does not appear in
+   `router` (`crates/node/src/api.rs`).
 2. **`meroctl` subcommands** whose client call is one of the above, or whose
    request body names fields the handler's `Deserialize` struct does not have.
 3. **Routes with no caller**: a route in `router` that no client, no
@@ -153,7 +154,7 @@ Rank by whether removal fixes something a user could hit, then by size.
 
 - **Read every hit.** Counts lie; `"Did not dial"` is why.
 - **Prove the anchor is absent**, do not infer it from silence. "I could not find
-  a route" is weaker than "`router` in `crates/cloud-node/src/api.rs` has no
+  a route" is weaker than "`router` in `crates/node/src/api.rs` has no
   `.route(` for that path".
 - **One island per report.** Do not bundle unrelated removals.
 - **Do not remove anything in this pass.** Report first; removal is a separate,

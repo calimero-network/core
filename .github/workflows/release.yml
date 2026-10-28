@@ -2,7 +2,7 @@ name: Release
 
 # Pushes to master release: binaries, crates, the App Bundle, the Homebrew tap
 # and SDK bump PRs for a new version, and the merod image's version tags. Pushes
-# to the release-v2 release branch (release-v2-parity) publish only the merod
+# to the release branch (release-v2-parity) publish only the merod
 # image, under tags of its own (release-v2-edge, release-v2-<short sha>), and
 # keep the binaries as workflow artifacts for 14 days; every release step below
 # is gated on master.
@@ -162,7 +162,7 @@ jobs:
       # Linux x86_64 always (a required check); arm64 on pushes (master and the
       # release branch), which the multi-arch edge images need; macOS only when this run publishes binaries,
       # the one job that reads them (platforms.yml builds it nightly). There is no
-      # Windows build: release-v2 nodes run on Linux TDX hosts only.
+      # Windows build: nodes run on Linux TDX hosts only.
       - name: Choose the build targets
         id: build_matrix
         env:
@@ -536,7 +536,7 @@ jobs:
           retention-days: 1
 
   # What `E2E on the merod image` installs: the fixtures its smoke list names
-  # (scripts/cloud-v2-workflows-smoke.json), built while the binaries build.
+  # (scripts/workflows-smoke.json), built while the binaries build.
   image-e2e-fixtures:
     name: Image E2E fixtures
     needs: prepare
@@ -563,20 +563,20 @@ jobs:
       - name: Build the smoke list's fixtures
         run: |
           set -euo pipefail
-          readarray -t filters < <(jq -r '.fixtures[]' scripts/cloud-v2-workflows-smoke.json)
-          python3 scripts/build-cloud-v2-fixtures.py "${filters[@]}"
+          readarray -t filters < <(jq -r '.fixtures[]' scripts/workflows-smoke.json)
+          python3 scripts/build-workflow-fixtures.py "${filters[@]}"
 
       - name: Upload them
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: image-e2e-fixtures
-          path: target/cloud-v2-wasm
+          path: target/workflow-wasm
           if-no-files-found: error
           retention-days: 1
 
   # The image this run built is tested, not only built: e2e.yml runs every
   # workflow against a debug `cargo build`, and this runs the smoke list (one
-  # workflow per area, scripts/cloud-v2-workflows-smoke.json, every one on the
+  # workflow per area, scripts/workflows-smoke.json, every one on the
   # baseline) and two of merobox's fault examples (a crashed node, a frozen
   # leader) against the release `merod` inside the image. Master and the
   # release branch push their image instead; e2e.yml's nightly tests the latest
@@ -618,7 +618,7 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: image-e2e-fixtures
-          path: target/cloud-v2-wasm
+          path: target/workflow-wasm
 
       # merobox runs `merod` processes, not containers: the binary is the
       # image's own /usr/local/bin/merod, and the image must start it.
@@ -641,12 +641,12 @@ jobs:
       - name: Smoke workflows
         env:
           MEROBOX_SOAK_REPORT: ${{ github.workspace }}/target/image/soak.json
-        run: python3 scripts/cloud-v2-workflows.py --smoke --json target/image/workflows.json
+        run: python3 scripts/run-workflows.py --smoke --json target/image/workflows.json
 
       - name: merobox's fault examples
         if: ${{ !cancelled() }}
         env:
-          KV_STORE_WASM: ${{ github.workspace }}/target/cloud-v2-wasm/kv_store.wasm
+          KV_STORE_WASM: ${{ github.workspace }}/target/workflow-wasm/kv_store.wasm
         run: |
           set -uo pipefail
           failed=0

@@ -2,7 +2,7 @@
 
 Engine measurements of per-app full-text search (`crates/search`):
 `ContextIndex` over tantivy's `RamDirectory`, which is what the node's
-`services::Search` (`crates/cloud-node`) opens every app's index over, beside
+`services::Search` (`crates/node`) opens every app's index over, beside
 tantivy's stock `MmapDirectory` as an on-disk baseline. No WASM, no cluster:
 index size, raw query latency, memory, many apps' indexes side by side, and the
 host-time fit behind search gas (`--only gas`). The full report of the run below
@@ -11,7 +11,7 @@ is `results/engine.md`.
 How the feature works (opt-in, query API, how the index follows state) is on the
 docs site's *Full-text search* page and in `crates/search/AGENTS.md`. End to end
 (the real `search-chat` wasm in a 3-node cluster) it is tested, not benched, by
-`views_search_the_apps_own_index_as_it_changes` in `crates/cloud-node/tests/cluster.rs`.
+`views_search_the_apps_own_index_as_it_changes` in `crates/node/tests/cluster.rs`.
 
 ## Reproduce
 
@@ -34,7 +34,7 @@ and `zebrafish` in five.
 ## What changed since v1
 
 v1 kept each context's index in its node's RocksDB (`RocksDirectory`, a chunk
-cache, a dirty log replayed by an indexer). Release-v2 keeps it in memory and
+cache, a dirty log replayed by an indexer). The node keeps it in memory and
 rebuilds it from state on first use after a restart, so the store-backed
 directory, the column compaction and the crash-replay section are gone with it.
 The v1 numbers, and the end-to-end ones measured through v1's

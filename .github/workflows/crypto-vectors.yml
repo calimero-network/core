@@ -17,7 +17,7 @@ on:
       - "crates/crypto/**"
       - "crates/primitives/**"
       - "crates/log/**"
-      - "crates/cloud-node/src/kms.rs"
+      - "crates/node/src/kms.rs"
       - ".github/workflows/crypto-vectors.yml"
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
@@ -54,4 +54,4 @@ jobs:
         run: |
           cargo test -p calimero-crypto -p calimero-primitives --all-features
           cargo test -p calimero-log --lib known_answers
-          cargo test -p calimero-cloud-node --lib kms::tests::the_storage_key_derivation_is_unchanged
+          cargo test -p calimero-node --lib kms::tests::the_storage_key_derivation_is_unchanged

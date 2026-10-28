@@ -1,7 +1,7 @@
 //! Engine benchmarks for `calimero-search`.
 //!
 //! Exercises the code the node runs — `ContextIndex` over a tantivy
-//! `RamDirectory`, which is what `calimero-cloud-node`'s `services::Search`
+//! `RamDirectory`, which is what `calimero-node`'s `services::Search`
 //! opens every app's index over — against deterministic chat corpora, and
 //! prints a markdown report. tantivy's stock `MmapDirectory` runs beside it as
 //! the on-disk baseline. The `gas` section fits the host time of a query to the

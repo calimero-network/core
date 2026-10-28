@@ -1,7 +1,7 @@
-# A release-v2 workflow for fugue-editor (it had no v1 workflow; its benchmark
-# is crates/runtime/tests/fugue_wall.rs): two members edit one FugueText
+# A workflow for fugue-editor (its benchmark is
+# crates/runtime/tests/fugue_wall.rs): two members edit one FugueText
 # document, by position and by delta, and read the merged text back.
-name: Fugue editor on release-v2
+name: Fugue editor
 description: FugueText inserts and deltas by two members, read back whole and by range
 backend: cloud-v2
 cluster:

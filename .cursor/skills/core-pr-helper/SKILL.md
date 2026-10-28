@@ -15,7 +15,7 @@ When the user asks for a branch name and PR description for core:
 - **One** name only. Use lowercase, hyphens; no slashes.
 - Pattern: `{type}-{scope}-{short-summary}` (e.g. `feat-meroctl-install-flow`, `fix-runtime-wasm-imports`).
 - Types (match repo commit types): `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `build`, `ci`, `style`, `revert`.
-- Scope: crate or area (e.g. `merod`, `meroctl`, `cloud-node`, `log`, `sealed`, `identity`, `runtime`, `sdk`, `storage`, `docs`). Omit scope if change is cross-cutting.
+- Scope: crate or area (e.g. `merod`, `meroctl`, `node`, `log`, `sealed`, `identity`, `runtime`, `sdk`, `storage`, `docs`). Omit scope if change is cross-cutting.
 
 ## PR description format
 

@@ -4,7 +4,7 @@ permissions:
   contents: read
 
 on:
-  # master and the release-v2 release branch (release-v2-parity) each keep a
+  # master and the release branch (release-v2-parity) each keep a
   # baseline per commit; a PR compares against its own base branch's.
   push:
     branches:
@@ -132,7 +132,7 @@ jobs:
           retention-days: 30
 
   # Not criterion: calls per second and p50/p99 through a 3-node cluster in
-  # one process (crates/cloud-node/benches/cluster_throughput.rs, the real
+  # one process (crates/node/benches/cluster_throughput.rs, the real
   # node and kv-store wasm), one row per load shape, written as JSON. The
   # compare job diffs it against the base commit's.
   cluster:
@@ -159,7 +159,7 @@ jobs:
         run: cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
 
       - name: Run the cluster bench
-        run: cargo bench -p calimero-cloud-node --bench cluster_throughput -- --secs 20 --out cluster-throughput.json
+        run: cargo bench -p calimero-node --bench cluster_throughput -- --secs 20 --out cluster-throughput.json
 
       - name: Upload the report
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

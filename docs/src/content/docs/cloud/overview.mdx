@@ -1,6 +1,6 @@
 ---
-title: Calimero Cloud (release-v2)
-description: The cloud-only release candidate — apps replicated by Raft across attested TDX nodes, reached through a sealed channel, signed in with passkeys.
+title: Calimero Cloud
+description: Apps replicated by Raft across attested TDX nodes, reached through a sealed channel, signed in with passkeys.
 sidebar:
   order: 1
 ---
@@ -8,13 +8,13 @@ sidebar:
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution">
-  release-v2 is a release candidate on the `release-v2` branches of core, mero-js,
-  calimero-client-py, mdma, apps and landing. Its node is `merod` and its
+  This is a release candidate, on the `release-v2` branches of core, mero-js,
+  calimero-client-py, mdma, apps and landing. The node is `merod` and the
   command line `meroctl`; v1's peer-to-peer node is gone.
 </Aside>
 
-release-v2 turns Calimero from a peer-to-peer, local-first platform into a
-**confidential cloud**: every app runs inside attested Intel TDX nodes that
+Calimero is a **confidential cloud** (v1 was a peer-to-peer, local-first
+platform): every app runs inside attested Intel TDX nodes that
 Calimero (or a customer, for a dedicated cluster) operates, and nobody operating
 them — Calimero included — can read the app's data.
 
@@ -29,7 +29,7 @@ them — Calimero included — can read the app's data.
   Commands carry their actor and are authorized when they apply, so every node
   reaches the same verdict.
 - **Each app instance is its own Raft group** on 3 or more nodes. The leader runs
-  a call against the app's WASM (the same runtime as v1) and appends the call with
+  a call against the app's WASM and appends the call with
   its resulting state diff; followers apply the diff. Calls are linearized, strong
   reads go through the leader, stale reads any replica, and the app keeps serving
   when a node is lost.
@@ -62,9 +62,9 @@ them — Calimero included — can read the app's data.
 | `calimero-sealed` | The sealed HTTP transport, server and client |
 | `calimero-identity` | Passkeys (WebAuthn), sessions, API keys, confirm challenges |
 | `merod` | The node binary: `init`, `run`, `config`, `local`, `inspect`, `kms` |
-| `calimero-cloud-node` | The node's inside: system group, app groups, API, Ops API |
+| `calimero-node` | The node's inside: system group, app groups, API, Ops API |
 | `meroctl` | The command line: apps, contexts, namespaces, groups, blobs, accounts, `ops` |
-| `calimero-cloud-client` | Rust client (attestation, sealed channel, passkeys) |
+| `calimero-client` | Rust client (attestation, sealed channel, passkeys) |
 | mero-js `CalimeroClient` | Browser / Node client |
 | calimero-client-py `CloudClient` | Python client (binds the Rust client) |
 | mdma `cloud_v2` | Placement and the Ops API client |

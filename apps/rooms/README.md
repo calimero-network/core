@@ -37,4 +37,4 @@ Events: `SlotsTaken { roomId, start, end }` to the org on every booking; `Booked
 
 `cargo test` in this directory builds the component for `wasm32-wasip2` and runs `scenarios/rooms.json` (the shared scenario, also run on the 3-node cluster and by the TypeScript build) on the real engine. The crate is standalone (its own `[workspace]`), like the SDK's sample guest.
 
-On the 3-node cluster: `cargo test --release -p calimero-cloud-node --test rooms` runs the same scenario (step `i` on node `i % 3`), the contention test and the follower reads; `crates/cloud-node/tests/fault/rooms_fault.py` is the fault test. `cargo test -- --nocapture` prints the fuel of one `book`.
+On the 3-node cluster: `cargo test --release -p calimero-node --test rooms` runs the same scenario (step `i` on node `i % 3`), the contention test and the follower reads; `crates/node/tests/fault/rooms_fault.py` is the fault test. `cargo test -- --nocapture` prints the fuel of one `book`.

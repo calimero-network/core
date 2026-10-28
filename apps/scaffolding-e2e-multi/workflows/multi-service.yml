@@ -1,10 +1,10 @@
-# A release-v2 workflow for scaffolding-e2e-multi (it had no workflow of its
+# A workflow for scaffolding-e2e-multi (it had no workflow of its
 # own; scaffolding-e2e's group-multi-service uploads the shared WASM): the
 # signed multi-service release is installed by name, and an app is deployed
 # from each of its two services. Both services run scaffolding-e2e's WASM, so
 # what is under test is the release's service selection and that the two apps
 # are separate states.
-name: Multi-service release on release-v2
+name: Multi-service release
 description: One signed release with two services, an app deployed from each, their states kept apart
 backend: cloud-v2
 cluster:

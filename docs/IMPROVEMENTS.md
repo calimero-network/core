@@ -69,7 +69,7 @@ polished product. Grouped by theme; check items off as they land.
 
 ## G · Operate track content
 - [ ] 53. Node API reference with full request/response schemas (OpenAPI); routes and credentials are listed (`operate/admin-api`).
-- [ ] 54. Generate the merod/meroctl CLI reference from `--help` (hand-written from the clap definitions for release-v2).
+- [ ] 54. Generate the merod/meroctl CLI reference from `--help` (hand-written from the clap definitions).
 - [x] 55. Production deployment guide (TDX, mero-kms, forming the cluster, TLS front).
 - [x] 56. Networking guide (listener, peer URLs, CORS, app domains, egress); v1's NAT/relay/bootstrap guide retired.
 - [ ] 57. Metrics collection and dashboard guide for `/ops/metrics` (a sealing collector, Grafana examples).
@@ -104,7 +104,7 @@ polished product. Grouped by theme; check items off as they land.
 - [ ] 80. Reconcile `minRuntimeVersion` docs vs the bundle-manifest reality.
 - [ ] 81. Sweep remaining `:::caution` markers and resolve where possible.
 - [ ] 82. Cross-check every config default against a freshly generated config.
-- [x] 83. Verify every node API route against `router` in `crates/cloud-node/src/api.rs`.
+- [x] 83. Verify every node API route against `router` in `crates/node/src/api.rs`.
 - [ ] 84. Add a status badge convention per chapter (stable/draft/planned).
 - [ ] 85. CI drift check: generated refs vs committed.
 - [ ] 86. Remove stale references to the legacy architecture site.
@@ -166,7 +166,7 @@ A fresh 100, reflecting the now-built-out site: depth, completeness, polish.
 - [ ] R26. Capacity planning & sizing (disk per app, replicas per node, system group size).
 - [ ] R27. Cross-version upgrade runbook (node binary + app together).
 - [ ] R28. Disaster recovery (losing a system-group majority; restoring an app from its snapshot).
-- [ ] R29. ~~Bootstrap-node / relay-node operator guide~~ (dropped — release-v2 has no p2p network).
+- [ ] R29. ~~Bootstrap-node / relay-node operator guide~~ (dropped — a cluster has no p2p network).
 - [ ] R30. Log reference (what each warn/error means, what to do).
 
 ## Reference completeness

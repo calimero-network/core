@@ -1,7 +1,7 @@
 # meroctl
 
 The command line for Calimero nodes (`merod`): v1's command tree over the
-release-v2 API, through `calimero-cloud-client` (every request attested and
+node's API, through `calimero-client` (every request attested and
 sealed; the node's quote is judged before anything is sent).
 
 | v1 | here | API |
@@ -19,7 +19,7 @@ sealed; the node's quote is judged before anything is sent).
 | (new) `login`, `logout [--all]`, `whoami`, `attest [--context]` | file passkeys on dev clusters; cluster verification | `/auth/*`, `/attestation` |
 | (new) `ops ...` | the operator, `--ops-token`: status, metrics, add-node, remove-node, move, backup, quotas, release, outbound, packages/install/uninstall, upgrade, upgrade-namespace | `/ops/*` |
 
-Dropped, with no v2 meaning: `context sync`, `group sync` (Raft replicates),
+Dropped, with no meaning here: `context sync`, `group sync` (Raft replicates),
 `context identity`, `account pair-*`/`seal-to`/`device-init` (a passkey is the
 device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
 

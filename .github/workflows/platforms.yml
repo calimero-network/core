@@ -12,7 +12,7 @@ name: Platforms
 #   - on a PR (into master or the release-v2-parity release branch) labelled
 #     `ci:platforms`, and on dispatch.
 #
-# There is no Windows lane: release-v2 nodes run on Linux TDX hosts only.
+# There is no Windows lane: nodes run on Linux TDX hosts only.
 # release.yml builds macOS from the release commit itself, so nothing reaches a
 # release without having been built for it.
 
@@ -149,7 +149,7 @@ jobs:
 
       # meroctl's attestation check, sealed channel and sessions, on the platform.
       - name: Test the client
-        run: cargo test -p calimero-cloud-client -p calimero-sealed -p calimero-identity
+        run: cargo test -p calimero-client -p calimero-sealed -p calimero-identity
 
   # A red scheduled run is otherwise read by nobody: keep one open issue for it.
   report:

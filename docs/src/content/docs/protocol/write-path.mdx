@@ -18,7 +18,7 @@ group, so it can authenticate the caller and find the app; if it is not the
 app's leader, it forwards the call to a node that is. Clients reach a node in
 one of three ways, and all three end up in the same handlers:
 
-- **A program** (`calimero-cloud-client`, mero-js, calimero-client-py,
+- **A program** (`calimero-client`, mero-js, calimero-client-py,
   `meroctl`) verifies the node's attestation and seals every request
   ([Networking & sealed channels](/protocol/networking/)).
 - **A browser page on a configured origin** (`--origins`) does the same through
@@ -77,7 +77,7 @@ there is one path.
    session opened on a package's frontend reaches only that package's apps.
 5. **Views called as calls.** If the bundle's ABI declares the method
    `#[app::view]`, the call runs as a strong view instead: it reads the latest
-   state, writes nothing, and may search (v1's rule).
+   state, writes nothing, and may search.
 6. **Confirm methods.** If the app lists the method in `confirmMethods`, the
    call needs the account holder's consent (below).
 7. **Route.** `Node::call` gives the call an idempotency key if it has none,

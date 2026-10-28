@@ -1,6 +1,6 @@
 # Migrated from this file's v1 workflow by `merobox cloud port`.
-# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
-# Dropped (no release-v2 counterpart):
+# Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no counterpart in this node):
 #   wait_for_sync x2: replication is synchronous: a read sees every committed write
 name: Fugue Collab Apply Delta
 description: 'One editor transaction (retain, delete, insert) applied in a single call must reach every

@@ -1,5 +1,5 @@
 //! Notes an organization keeps, gated by the caller's standing in it
-//! (`env::caller_org`, release-v2 cloud apps): members read, admins write,
+//! (`env::caller_org`): members read, admins write,
 //! and a team's members write that team's note.
 
 use calimero_sdk::abi::AbiType;

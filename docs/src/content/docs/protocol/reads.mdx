@@ -38,13 +38,13 @@ Any method may be called as a view, and its writes are dropped, with one
 exception: a method the app lists as a **confirm method** answers `412`, because
 it must be called through `/intents` with a passkey assertion. The reverse also
 holds: a method the ABI declares `#[app::view]` runs as a strong view even when
-called through `/intents` (v1's rule).
+called through `/intents`.
 
 ## Search
 
 Apps that derive `#[derive(app::Searchable)]` and declare
 `app::search_indexes!` get full-text search in views (`search_query`). The
-indexes are v1's per-context tantivy indexes (`calimero-search`), kept in each
+indexes are per-context tantivy indexes (`calimero-search`), kept in each
 node's memory per app and built from the app's own `__calimero_search_*`
 exports:
 

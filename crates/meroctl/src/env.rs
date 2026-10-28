@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use calimero_cloud_client::{Client, Measurements, Policy, Session};
+use calimero_client::{Client, Measurements, Policy, Session};
 use calimero_identity::testing::SoftAuthenticator;
 use eyre::WrapErr;
 use serde::{Deserialize, Serialize};

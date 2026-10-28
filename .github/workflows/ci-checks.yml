@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    # release-v2-parity is the release-v2 release branch: it never merges into
+    # release-v2-parity is the release branch: it never merges into
     # master, so its merges run CI as master's do.
     branches: ["master", "release-v2-parity"]
   merge_group:
@@ -169,11 +169,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
 
-      # mock-attestation and calimero-cloud-node's outbound-testing are default-off so they
+      # mock-attestation and calimero-node's outbound-testing are default-off so they
       # never reach a release binary; the workspace clippy never compiles them.
       - name: Cargo clippy (mock-attestation, outbound-testing)
         if: ${{ !cancelled() }}
-        run: cargo clippy -p calimero-tee-attestation -p calimero-cloud-node --all-targets --features calimero-tee-attestation/mock-attestation,calimero-cloud-node/outbound-testing -- -D warnings
+        run: cargo clippy -p calimero-tee-attestation -p calimero-node --all-targets --features calimero-tee-attestation/mock-attestation,calimero-node/outbound-testing -- -D warnings
 
       - name: Cargo check (calimero-context-config)
         if: ${{ !cancelled() }}
@@ -211,7 +211,7 @@ jobs:
       # The node's cluster tests and meroctl's run real app wasm: plain builds
       # (read from target/wasm32-unknown-unknown/app-release) and cargo-mero builds,
       # whose embedded ABI the node reads (read from apps/<app>/res).
-      # crates/cloud-node/AGENTS.md "Commands" lists the same set.
+      # crates/node/AGENTS.md "Commands" lists the same set.
       - name: Build the node test fixtures
         run: |
           cargo build -p kv-store -p org-gated -p outbound-probe --target wasm32-unknown-unknown --profile app-release

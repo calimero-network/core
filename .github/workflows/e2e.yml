@@ -1,27 +1,25 @@
 name: E2E
 
-# merobox's release-v2 backend (one `merod` process per node) against this
+# merobox's cloud-v2 backend (one `merod` process per node) against this
 # tree's node:
 #
-#   - every release-v2 workflow, core's (workflows/: app migrations, sync,
+#   - every workflow, core's (workflows/: app migrations, sync,
 #     fuzzy loads) and every app's (apps/*/workflows/), most migrated from v1's
 #     merobox workflows, in four shards (job `scenarios`), gated by
-#     scripts/cloud-v2-workflows-baseline.json: a workflow on that list that
+#     scripts/workflows-baseline.json: a workflow on that list that
 #     fails is a regression;
 #   - merobox's own cloud-v2 examples: a crash and a frozen node, a frozen
 #     leader under a latency budget, organizations and keys, signed packages
 #     from a registry, and a rolling upgrade of every node;
-#   - the clients (job `clients`, v1's sdk-e2e): mero-js's and
+#   - the clients (job `clients`): mero-js's and
 #     calimero-client-py's cluster tests against this tree's `merod`. Pair a
 #     breaking change with its client fix by a same-named branch, or by
 #     `sdk-ref: <ref>` / `py-ref: <ref>` in the PR body
 #     (scripts/resolve-paired-ref.sh).
 #
-# It replaces v1's e2e-rust-apps, e2e-rust-apps-release, sdk-e2e,
-# app-migration-e2e, sync-regression, fuzzy-load-test and wire-contract, which
-# drove v1 nodes in Docker. The nightly run is the soak: the fuzzy loads for
-# their full duration, each reporting calls/s and p50/p95/p99 latency per
-# operation (MEROBOX_SOAK_REPORT, in the job summary). Nightly also:
+# The nightly run is the soak: the fuzzy loads for their full duration, each
+# reporting calls/s and p50/p95/p99 latency per operation
+# (MEROBOX_SOAK_REPORT, in the job summary). Nightly also:
 #
 #   - the same shards against the `merod` inside the latest published release
 #     image (ghcr.io/<owner>/merod:<version>, release.yml), on the workflows
@@ -33,7 +31,7 @@ name: E2E
 # A PR's own image is tested in release.yml (`E2E on the merod image`), which
 # builds it.
 #
-# GitHub runs `schedule` only from the default branch (master). The release-v2
+# GitHub runs `schedule` only from the default branch (master). The
 # release branch (release-v2-parity) gets its nightly from a dispatcher on
 # master that runs this workflow there with `nightly: true` (docs:
 # contribute/testing, "Release branch"); a nightly dispatch runs every job a
@@ -48,8 +46,8 @@ on:
       - "apps/**"
       - "tools/cargo-mero/**"
       - "workflows/**"
-      - "scripts/cloud-v2-*"
-      - "scripts/build-cloud-v2-fixtures.py"
+      - "scripts/run-workflows.py"
+      - "scripts/build-workflow-fixtures.py"
       - "scripts/resolve-paired-ref.sh"
       - ".github/workflows/e2e.yml"
       # Documentation builds nothing (scripts/tests/ci-paths-test.py), but
@@ -110,7 +108,7 @@ jobs:
   # merod, the fixtures every workflow installs and merobox's example inputs,
   # built once and handed to each shard.
   fixtures:
-    name: merobox cloud-v2 fixtures
+    name: merobox fixtures
     runs-on: big-machine
     timeout-minutes: 60
     steps:
@@ -136,7 +134,7 @@ jobs:
       - name: Build the fixtures
         run: |
           set -euo pipefail
-          python3 scripts/build-cloud-v2-fixtures.py
+          python3 scripts/build-workflow-fixtures.py
           mkdir -p target/e2e
           cp "$CARGO_TARGET_DIR/debug/merod" target/e2e/merod
           # merobox's examples: kv-store's WASM, two signed releases of it,
@@ -157,7 +155,7 @@ jobs:
       - name: Build merod with outbound-testing
         run: |
           set -euo pipefail
-          cargo build -p merod --features calimero-cloud-node/outbound-testing
+          cargo build -p merod --features calimero-node/outbound-testing
           cp "$CARGO_TARGET_DIR/debug/merod" target/e2e/merod-outbound
 
       - name: Upload them
@@ -166,17 +164,17 @@ jobs:
           name: e2e-fixtures
           path: |
             target/e2e
-            target/cloud-v2-wasm
+            target/workflow-wasm
           if-no-files-found: error
           retention-days: 1
 
-  # Every release-v2 workflow: core's (workflows/**: app migrations, sync,
+  # Every workflow: core's (workflows/**: app migrations, sync,
   # fuzzy loads) and every app's (apps/*/workflows/**), packed into shards of
   # about equal length by their measured durations
-  # (scripts/cloud-v2-workflows-durations.json). A workflow listed in
-  # scripts/cloud-v2-workflows-baseline.json that fails is a regression.
+  # (scripts/workflows-durations.json). A workflow listed in
+  # scripts/workflows-baseline.json that fails is a regression.
   scenarios:
-    name: merobox cloud-v2 (${{ matrix.shard }}/4)
+    name: merobox workflows (${{ matrix.shard }}/4)
     needs: fixtures
     runs-on: big-machine
     timeout-minutes: 90
@@ -222,7 +220,7 @@ jobs:
           MEROBOX_SOAK_REPORT: ${{ github.workspace }}/target/e2e/soak-${{ matrix.shard }}.json
         run: |
           chmod +x "$MEROD_BINARY" "$MEROD_OUTBOUND_BINARY"
-          python3 scripts/cloud-v2-workflows.py --shard ${{ matrix.shard }}/4 \
+          python3 scripts/run-workflows.py --shard ${{ matrix.shard }}/4 \
             --json target/e2e/workflows-${{ matrix.shard }}.json
 
       - name: Soak latency and throughput
@@ -254,8 +252,8 @@ jobs:
   # runs the four shards of the commit the image was built from (its
   # org.opencontainers.image.revision label), with that commit's fixtures and
   # baseline, so a workflow added after the release cannot fail it. A release
-  # older than release-v2 (a v1 node) is reported and not run. On the release
-  # branch, until a release-v2 release ships, a nightly tests the branch's own
+  # whose merod is a v1 node is reported and not run. On the release
+  # branch, until a release with this node ships, a nightly tests the branch's own
   # image instead: release-v2-edge, which release.yml pushes on every merge.
   release-image:
     name: Latest release image
@@ -314,11 +312,14 @@ jobs:
           id=$(docker create --platform linux/amd64 "$image")
           docker cp "$id:/usr/local/bin/merod" release/merod
           docker rm "$id"
-          # release-v2's runner, at that commit: a v1 release has none.
+          # The workflow runner, at that commit: a v1 release has none. It
+          # was scripts/cloud-v2-workflows.py before the rename.
           testable=false
-          if gh api "repos/$REPO/contents/scripts/cloud-v2-workflows.py?ref=$revision" --silent 2>/dev/null; then
-            testable=true
-          fi
+          for runner in scripts/run-workflows.py scripts/cloud-v2-workflows.py; do
+            if gh api "repos/$REPO/contents/$runner?ref=$revision" --silent 2>/dev/null; then
+              testable=true
+            fi
+          done
           {
             echo "image=$image"
             echo "version=$version"
@@ -331,7 +332,7 @@ jobs:
             echo "\`$image\` (\`$("$PWD/release/merod" --version 2>/dev/null || echo "merod, no --version")\`), built from $revision."
             if [ "$testable" != true ]; then
               echo
-              echo "That commit predates release-v2 (no scripts/cloud-v2-workflows.py): its merod is a v1 node, which merobox's cloud-v2 backend does not run. Nothing is tested until a release-v2 release ships."
+              echo "That commit has no workflow runner: its merod is a v1 node, which merobox's cloud-v2 backend does not run. Nothing is tested until a release with this node ships."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -345,7 +346,7 @@ jobs:
           retention-days: 1
 
   release-fixtures:
-    name: merobox cloud-v2 fixtures (release ${{ needs.release-image.outputs.version }})
+    name: merobox fixtures (release ${{ needs.release-image.outputs.version }})
     needs: release-image
     if: needs.release-image.outputs.testable == 'true'
     runs-on: big-machine
@@ -368,18 +369,18 @@ jobs:
         uses: ./.github/actions/setup-cargo-mero
 
       - name: Build the fixtures
-        run: python3 scripts/build-cloud-v2-fixtures.py
+        run: python3 scripts/build-workflow-fixtures.py
 
       - name: Upload them
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-release-fixtures
-          path: target/cloud-v2-wasm
+          path: target/workflow-wasm
           if-no-files-found: error
           retention-days: 1
 
   release-scenarios:
-    name: merobox cloud-v2 on release ${{ needs.release-image.outputs.version }} (${{ matrix.shard }}/4)
+    name: merobox workflows on release ${{ needs.release-image.outputs.version }} (${{ matrix.shard }}/4)
     needs: [release-image, release-fixtures]
     runs-on: big-machine
     timeout-minutes: 90
@@ -413,7 +414,7 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: e2e-release-fixtures
-          path: target/cloud-v2-wasm
+          path: target/workflow-wasm
 
       - name: Download the release's merod
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -428,7 +429,7 @@ jobs:
           MEROBOX_SOAK_REPORT: ${{ github.workspace }}/target/release-image/soak-${{ matrix.shard }}.json
         run: |
           chmod +x "$MEROD_BINARY"
-          python3 scripts/cloud-v2-workflows.py --shard ${{ matrix.shard }}/4 \
+          python3 scripts/run-workflows.py --shard ${{ matrix.shard }}/4 \
             --json target/release-image/workflows-${{ matrix.shard }}.json
 
       # The script is this run's: the release's commit may predate it.
@@ -563,7 +564,7 @@ jobs:
   # under a latency budget, organizations and keys, signed packages from a
   # registry, and a rolling upgrade of every node.
   examples:
-    name: merobox cloud-v2 examples
+    name: merobox examples
     needs: fixtures
     runs-on: big-machine
     timeout-minutes: 30

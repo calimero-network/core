@@ -1,6 +1,6 @@
 [package]
 name = "merod"
-description = "The Calimero node: attested, one Raft log per app (internals: calimero-cloud-node)"
+description = "The Calimero node: attested, one Raft log per app (internals: calimero-node)"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -23,8 +23,8 @@ tokio = { workspace = true, features = ["full"] }
 toml.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
-calimero-cloud-client.workspace = true
-calimero-cloud-node.workspace = true
+calimero-client.workspace = true
+calimero-node.workspace = true
 calimero-identity.workspace = true
 calimero-kms-client.workspace = true
 calimero-log.workspace = true

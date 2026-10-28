@@ -3,7 +3,7 @@
 //!
 //! The engine is generic over what a group replicates ([`Machine`]): it orders
 //! opaque command bytes, persists them encrypted, and applies them in order on
-//! every replica. Writers that must execute against the latest state (the cloud
+//! every replica. Writers that must execute against the latest state (the
 //! node runs WASM on the leader) use [`Group::propose`], which serializes
 //! proposals per group; the machine refuses, at apply, a command built on
 //! stale state, so an append needs no leadership round first.
@@ -296,7 +296,7 @@ impl<M: Machine> Group<M> {
     ///
     /// An append is not preceded by a leadership round: the machine must
     /// refuse, at apply, a command built on any state other than the one it
-    /// applies to (the cloud node's `AppMachine` records the index of its own
+    /// applies to (the node's `AppMachine` records the index of its own
     /// last entry as the command's `base_index`, checks it against its last
     /// entry at apply, and answers `conflict`). The `u64` handed to the
     /// builder is the log's applied index, which counts blank and membership

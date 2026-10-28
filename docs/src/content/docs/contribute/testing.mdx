@@ -1,13 +1,13 @@
 ---
 title: Testing strategy
-description: How release-v2 is tested — crate unit tests, the in-process cluster tests, the merod and meroctl CLI tests, the SDK harnesses, merobox scenarios — and how to run each locally.
+description: How Calimero Core is tested — crate unit tests, the in-process cluster tests, the merod and meroctl CLI tests, the SDK harnesses, merobox scenarios — and how to run each locally.
 sidebar:
   label: Testing strategy
 ---
 
 import { Steps, Aside, LinkCard, CardGrid } from '@astrojs/starlight/components';
 
-release-v2 is tested in layers that trade scope for speed. Most of the node is
+Calimero Core is tested in layers that trade scope for speed. Most of the node is
 covered by real clusters in one process: three nodes, sealed channels, real
 WASM, driven only through the client. Multi-process behaviour (crashes,
 freezes, restarts, upgrades) is covered by merobox scenarios.
@@ -16,7 +16,7 @@ freezes, restarts, upgrades) is covered by merobox scenarios.
 | --- | --- | --- | --- |
 | Unit tests | `#[cfg(test)]` in each crate | One module's logic: config merging, key sources, quotas, presence rules, outbound gates | Milliseconds |
 | Raft engine | `crates/log` | Replication, failover, restart from disk, learner catch-up, snapshot streaming, no plaintext on disk, the `log.redb` migration | Seconds |
-| Cluster | `crates/cloud-node/tests/cluster.rs` | The node end to end in one process: sign-up, installs, calls, views, events, orgs and teams, upgrades and migrations, blobs, follow-ups, governance, replica moves | Seconds to minutes |
+| Cluster | `crates/node/tests/cluster.rs` | The node end to end in one process: sign-up, installs, calls, views, events, orgs and teams, upgrades and migrations, blobs, follow-ups, governance, replica moves | Seconds to minutes |
 | CLI | `crates/merod/tests/cli.rs`, `crates/meroctl/tests/cli.rs` | `merod init/config/run/inspect` through the binary; every `meroctl` command group against a local cluster | Seconds to minutes |
 | App logic | `TestHost` in `crates/sdk/src/testing.rs`, `converge` in `crates/storage/src/testing.rs` | An app's methods, events and migrations; that a state type converges | Milliseconds |
 | Scenarios | merobox `cloud-v2` backend | Separate `merod` processes: crash, freeze, restart and upgrade under load | Slow |
@@ -48,11 +48,11 @@ another `kv_store.wasm`.
 ## Running the tests
 
 ```bash
-cargo test -p calimero-cloud-node                 # the cluster tests
-cargo test -p calimero-cloud-node --test cluster teams_work_like_v1_subgroups -- --nocapture
+cargo test -p calimero-node                 # the cluster tests
+cargo test -p calimero-node --test cluster teams_work_like_v1_subgroups -- --nocapture
 cargo test -p merod -p meroctl                    # the CLI tests
 cargo test -p calimero-log
-cargo test -p calimero-cloud-client -p calimero-identity -p calimero-sealed
+cargo test -p calimero-client -p calimero-identity -p calimero-sealed
 cargo test -p calimero-outbound --features outbound-testing
 cargo test -p calimero-kms-client --features mock-attestation
 cargo test -p calimero-tee-attestation --features mock-attestation
@@ -71,9 +71,9 @@ doctests it skips).
 
 ### Writing a cluster test
 
-`crates/cloud-node/tests/cluster.rs` builds clusters with the real `run`,
+`crates/node/tests/cluster.rs` builds clusters with the real `run`,
 mock attestation and a soft authenticator, and drives them only through
-`calimero-cloud-client`, as an SDK user would. Write a new test there when the
+`calimero-client`, as an SDK user would. Write a new test there when the
 behaviour crosses the API: start the cluster, sign up, do the thing, assert on
 what the client sees. Name it for the behaviour
 (`teams_work_like_v1_subgroups`,
@@ -81,7 +81,7 @@ what the client sees. Name it for the behaviour
 
 ## App logic: `TestHost` and `converge`
 
-Unchanged from v1. [`TestHost`](https://github.com/calimero-network/core/blob/master/crates/sdk/src/testing.rs)
+[`TestHost`](https://github.com/calimero-network/core/blob/master/crates/sdk/src/testing.rs)
 runs an `#[app::state]` type as plain Rust: `call`, `view`, `events()`,
 `logs()`, `migrate`, `set_caller_org`. It does not run xcalls, networked blobs
 or event-handler dispatch. `converge` / `converge_app` in
@@ -90,7 +90,7 @@ asserts that a state type reaches the same root on N in-memory replicas under
 reordered operations. The app-author guide is [Testing your app](/build/testing/).
 
 <Aside type="note">
-  On release-v2 an app instance's calls are applied in one order by its Raft
+  An app instance's calls are applied in one order by its Raft
   log, so convergence under concurrent writes matters less for the node than it
   did for v1; it still matters for code that also targets v1.
 </Aside>
@@ -114,41 +114,41 @@ The scenarios and their step reference are in merobox's
 processes (the bounded forward to a frozen leader is the example) gets its
 regression scenario there.
 
-### Release-v2 workflows
+### Core and app workflows
 
 Core's workflows (`workflows/`: app migrations, sync, fuzzy loads) and every
 app's (`apps/*/workflows/`) are merobox workflows for the `cloud-v2` backend.
 Most were migrated from v1's workflows of the same names, in place, by
 `merobox cloud port`; each file's header lists the v1 steps that have no
-release-v2 counterpart (gossip waits, node logs and admin-API reads, scripts,
+counterpart on a cluster (gossip waits, node logs and admin-API reads, scripts,
 partitions of a user's node) and every fix made in the migration, with its
 reason. They are maintained by hand from here on. An app with no v1 workflow
-(or none that applied) has one written for release-v2, so every deployable app
+(or none that applied) has one written for the cluster, so every deployable app
 has at least one. Run them against a build:
 
 ```bash
-python3 scripts/build-cloud-v2-fixtures.py      # the releases and WASM they install
-MEROD_BINARY=target/debug/merod python3 scripts/cloud-v2-workflows.py [FILE...]
-python3 scripts/cloud-v2-workflows.py --shard 2/4 --list   # what CI's shard 2 runs
+python3 scripts/build-workflow-fixtures.py      # the releases and WASM they install
+MEROD_BINARY=target/debug/merod python3 scripts/run-workflows.py [FILE...]
+python3 scripts/run-workflows.py --shard 2/4 --list   # what CI's shard 2 runs
 ```
 
 Every workflow names its own `cluster.base_port` and no two overlap, so the four
 shards of one checkout can run side by side, each with its own `--json`. To run
 the same workflows from two checkouts at once, give each a band of its own with
-`--port-offset N` (or `CLOUD_V2_PORT_OFFSET`), e.g. 10000 and 20000.
+`--port-offset N` (or `WORKFLOW_PORT_OFFSET`), e.g. 10000 and 20000.
 
-`scripts/cloud-v2-workflows-baseline.json` lists the workflows that pass; one
+`scripts/workflows-baseline.json` lists the workflows that pass; one
 of them failing fails CI. Add a workflow to it once it passes, and its measured
-duration to `scripts/cloud-v2-workflows-durations.json` (the shards are packed
+duration to `scripts/workflows-durations.json` (the shards are packed
 by it). A workflow not on the baseline still runs and is reported, so a fix
 shows up as a pass.
 
 #### Workflows deleted in the migration
 
-A v1 workflow whose subject has no release-v2 counterpart was deleted rather
+A v1 workflow whose subject has no counterpart on a cluster was deleted rather
 than kept unrun. Each, and why nothing replaces it (or what does):
 
-| Workflow | Its subject, and why release-v2 has none |
+| Workflow | Its subject, and why a cluster has none |
 | --- | --- |
 | `apps/blobs/workflows/blob-presence-multi-holder.yml` | DHT provider discovery among user nodes holding a blob: a cluster's nodes all keep an app's blobs (blob-cross-node-transfer, blob-cross-node-sizes) |
 | `apps/blobs/workflows/blob-presence-tee-serves.yml` | a ReadOnlyTee availability node prefetching blobs: every cluster node is the TEE and keeps the app's blobs |
@@ -199,24 +199,24 @@ than kept unrun. Each, and why nothing replaces it (or what does):
 | `workflows/app-migration/37-stranded-resync.yml` | a member stranded by an unobtainable intermediate release, recovered by resync: no member replica falls behind |
 | `workflows/app-migration/42-activate-upgrade-on-an-idle-node.yml` | activating an upgrade on a member's idle node (POST .../upgrade/activate): the cluster installs and switches every node |
 | `workflows/app-migration/43-retarget-before-activate.yml` | a member's activation refused after the admin retargeted: there is no per-member activation |
-| `workflows/app-migration/45-frontend-two-releases.yml` | each release serving its own frontend, checked by a v1 script on the app host: release-v2 serves a package's frontend from its own origin (`{label}.{apps_domain}`, routed by Host), which no runner step addresses; the cluster test `app_frontends_are_served_and_their_sessions_are_bound` (`crates/cloud-node/tests/cluster.rs`) covers serving a release's frontend there, one release only |
+| `workflows/app-migration/45-frontend-two-releases.yml` | each release serving its own frontend, checked by a v1 script on the app host: the node serves a package's frontend from its own origin (`{label}.{apps_domain}`, routed by Host), which no runner step addresses; the cluster test `app_frontends_are_served_and_their_sessions_are_bound` (`crates/node/tests/cluster.rs`) covers serving a release's frontend there, one release only |
 | `workflows/app-migration/46-frontend-proxy-mode.yml` | an app host on a node in proxy auth mode passing no token: a cluster node always authenticates |
 | `workflows/app-migration/47-missing-releases-before-activate.yml` | a member installing the releases it missed before activating: the cluster installs releases on every node |
 | `workflows/app-migration/48-member-installs-only-the-newest-release.yml` | a member that installed only the newest release replaying the ladder: the cluster installs and migrates at once |
-| `workflows/auth-seam.yml` | v1's client tokens minted by the auth frontend (POST /admin/client-key): release-v2 signs in with passkeys and scopes API keys (merobox's orgs-and-keys example) |
+| `workflows/auth-seam.yml` | v1's client tokens minted by the auth frontend (POST /admin/client-key): a cluster signs in with passkeys and scopes API keys (merobox's orgs-and-keys example) |
 
 ### In CI
 
 `.github/workflows/e2e.yml` runs on every PR that touches code:
 
-- job `merobox cloud-v2 fixtures`: builds `merod`, the fixtures and merobox's
+- job `merobox fixtures`: builds `merod`, the fixtures and merobox's
   example inputs once, for the jobs below;
-- job `merobox cloud-v2 (K/4)`: every release-v2 workflow, core's and the
+- job `merobox workflows (K/4)`: every workflow, core's and the
   apps', in four shards of about equal length (merobox at `MEROBOX_REF`);
   nightly, the fuzzy loads run 15 minutes each. Each shard's fuzzy load
   reports its latency and throughput (below) in the job summary and as the
   artifact `soak-metrics-K`;
-- job `merobox cloud-v2 examples`: merobox's own examples;
+- job `merobox examples`: merobox's own examples;
 - job `clients against merod`: mero-js's `test:cloud-v2` and
   calimero-client-py's cluster tests against this tree's `merod`. A change that
   breaks a client goes green with the client's fix: a same-named branch there,
@@ -231,23 +231,23 @@ with `docker create` and `docker cp`):
   the image). `Release Merod container` builds the amd64 image as it does for
   master, loads it instead of pushing it, and hands it on as the artifact
   `merod-image`; the job runs the smoke list,
-  `scripts/cloud-v2-workflows.py --smoke` (one workflow per area, listed with
-  the fixtures they need in `scripts/cloud-v2-workflows-smoke.json`, every one
+  `scripts/run-workflows.py --smoke` (one workflow per area, listed with
+  the fixtures they need in `scripts/workflows-smoke.json`, every one
   on the baseline; `check-scenario-coverage.py` checks), and merobox's
   `kv-store-failover` and `frozen-leader` examples against it, about four
   minutes after the image. `Image E2E fixtures` builds only the smoke list's
   fixtures, alongside the binaries.
 - **The latest release's image, nightly** (`e2e.yml`, jobs
-  `Latest release image`, `merobox cloud-v2 fixtures (release V)` and
-  `merobox cloud-v2 on release V (K/4)`; on demand with the `release_image`
+  `Latest release image`, `merobox fixtures (release V)` and
+  `merobox workflows on release V (K/4)`; on demand with the `release_image`
   input: `latest`, a tag of `ghcr.io/<owner>/merod` such as `release-v2-edge`,
   or an image reference). It pulls
   `ghcr.io/calimero-network/merod:<version>` for the newest published release
   (a prerelease included) and runs the four shards, soak included, on the
   workflows, fixtures and baseline of the commit the image was built from
   (its `org.opencontainers.image.revision`), so a workflow added after the
-  release does not fail it. A release cut before release-v2 is a v1 node,
-  which merobox does not run: the job says so in its summary and the shards
+  release does not fail it. A release published before the v1 node was
+  deleted is a v1 node, which merobox does not run: the job says so in its summary and the shards
   are skipped. On the release branch the nightly tests `release-v2-edge`
   instead, the image of the branch's latest merge
   ([Release branch](#release-branch)).
@@ -256,8 +256,8 @@ To run the smoke list against a binary taken out of an image locally:
 
 ```bash
 docker create --name m ghcr.io/calimero-network/merod:release-v2-edge && docker cp m:/usr/local/bin/merod /tmp/merod && docker rm m
-python3 scripts/build-cloud-v2-fixtures.py $(jq -r '.fixtures[]' scripts/cloud-v2-workflows-smoke.json)
-MEROD_BINARY=/tmp/merod python3 scripts/cloud-v2-workflows.py --smoke
+python3 scripts/build-workflow-fixtures.py $(jq -r '.fixtures[]' scripts/workflows-smoke.json)
+MEROD_BINARY=/tmp/merod python3 scripts/run-workflows.py --smoke
 ```
 
 ### Soak latency and throughput
@@ -272,7 +272,7 @@ which CI runs) prints it as a table:
 
 ```bash
 MEROD_BINARY=target/debug/merod MEROBOX_FUZZY_SECONDS=30 MEROBOX_SOAK_REPORT=soak.json \
-  python3 scripts/cloud-v2-workflows.py workflows/fuzzy-tests/kv-store/fuzzy-test.yml
+  python3 scripts/run-workflows.py workflows/fuzzy-tests/kv-store/fuzzy-test.yml
 merobox cloud soak-report soak.json
 ```
 
@@ -321,7 +321,7 @@ fuzzy workflow (a third, another node).
 
 ## Release branch
 
-`release-v2-parity` is release-v2's long-lived release branch: PRs merge into
+`release-v2-parity` is the long-lived release branch: PRs merge into
 it, and it never merges into master. Its CI is master's, with its own image
 tags and nightly:
 
@@ -336,7 +336,7 @@ version tag, no GitHub Release, crates, App Bundle, Homebrew tap update or SDK
 bump PRs. `release.yml` gates each of those on master. The clients job tests
 the clients' own `release-v2-parity` branches when nothing is paired
 (`sdk-ref:`, `py-ref:` or a same-named branch), since their master has no
-cloud-v2 tests.
+cluster tests.
 
 GitHub runs `schedule` only from the default branch, so the nightly is started
 by `.github/workflows/nightly-release-v2.yml` on master, which runs
@@ -390,14 +390,14 @@ the cluster throughput bench, whose JSON the comparison also diffs.
 
 ### Cluster throughput
 
-`crates/cloud-node/benches/cluster_throughput.rs` drives a 3-node cluster in
+`crates/node/benches/cluster_throughput.rs` drives a 3-node cluster in
 one process (the harness of `tests/cluster.rs`, in `tests/harness/cluster.rs`,
 with merod's Raft timing) through the sealed client, calling the kv-store
 fixture's `set` on the app's leader:
 
 ```bash
 cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
-cargo bench -p calimero-cloud-node --bench cluster_throughput -- --secs 15 --out cluster.json
+cargo bench -p calimero-node --bench cluster_throughput -- --secs 15 --out cluster.json
 ```
 
 Two runs on a 4-vCPU Linux container (bench profile with LTO off; the machine

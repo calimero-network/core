@@ -1,16 +1,16 @@
 # Code → Docs gap audit
 
 The original audit covered six v1 subsystems (runtime/SDK/ABI, storage, sync,
-governance/context, networking, server/auth/config). release-v2 deleted the
-v1 node, so its sync, governance, networking, server and auth findings no
-longer describe any code and were removed; the operator docs were rewritten for
-release-v2 from `merod`, `meroctl` and `calimero-cloud-node`. What follows is
+governance/context, networking, server/auth/config). The v1 node is deleted,
+so its sync, governance, networking, server and auth findings no
+longer describe any code and were removed; the operator docs were rewritten
+from `merod`, `meroctl` and `calimero-node`. What follows is
 what still applies, to code that exists now.
 
 ## Still open
 
 - **`minRuntimeVersion` is enforced.** The manifest field is checked at install
-  (`crates/cloud-node/src/packages.rs`: the node's release must not be below
+  (`crates/node/src/packages.rs`: the node's release must not be below
   it). Any page that says the field does not exist is wrong.
 - **Authored-data migration is per-owner.** A whole-root `#[app::migrate]`
   does not convert `Authored*` entries; the generated `migrate_my_entries`
@@ -30,7 +30,7 @@ what still applies, to code that exists now.
   Merkle-invisible `schema_version` tag; `#[app::view]` post-execution
   enforcement; the reserved `__calimero` prefix.
 
-## Closed by the release-v2 operator rewrite
+## Closed by the operator rewrite
 
 - CLI references generated from the clap definitions (`operate/merod`,
   `operate/meroctl`).

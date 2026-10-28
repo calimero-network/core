@@ -3,7 +3,7 @@
 The index engine behind `env::search_query`: one tantivy index per `(app, index)`
 pair, derived from the app's state and never replicated. Apps opt in through
 the SDK (`#[derive(app::Searchable)]` + `app::search_indexes!`). The node side,
-which keeps the indexes and feeds them, is `calimero-cloud-node`'s
+which keeps the indexes and feeds them, is `calimero-node`'s
 `services::Search`. The user-facing guide is the docs site's
 [Full-text search](../../docs/src/content/docs/build/guides/search.mdx) page.
 
@@ -18,7 +18,7 @@ which keeps the indexes and feeds them, is `calimero-cloud-node`'s
 ```bash
 cargo test -p calimero-search
 # End to end (3-node cluster, the real search-chat wasm):
-cargo test -p calimero-cloud-node --test cluster views_search_the_apps_own_index_as_it_changes
+cargo test -p calimero-node --test cluster views_search_the_apps_own_index_as_it_changes
 # Engine numbers (size, latency, memory, the search-gas fit): tools/search-bench
 cargo run --release -p search-bench -- --sizes 10000,100000
 ```

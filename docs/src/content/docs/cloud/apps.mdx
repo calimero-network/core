@@ -1,5 +1,5 @@
 ---
-title: Writing apps for release-v2
+title: Writing apps for a cluster
 description: What carries over from v1 apps, and what changes — init arguments, identity, organizations and teams, blobs, search, handlers, xcalls, timers, migrations, confirmations, limits.
 sidebar:
   order: 3
@@ -11,7 +11,7 @@ repository builds against the `release-v2` SDK and deploys unchanged
 
 ## What changes
 
-- **Packages.** Install a signed `.mpk` the way v1 does: by `package@version`
+- **Packages.** Install a signed `.mpk` the way v1 did: by `package@version`
   from the operator's registry (`POST /packages/install`, `meroctl app install
   PACKAGE@VERSION`) or as a file (`POST /packages`). Every node that runs a
   release fetches it and checks the publisher's signature, the artifact digests
@@ -73,7 +73,7 @@ repository builds against the `release-v2` SDK and deploys unchanged
   `TeeOnly` / `TeeSecret` state works; a member's share opens only in their own
   calls.
 - **Upgrades.** `POST /apps/{app}/upgrade { bundle }` plans the migration from
-  the two bundles' embedded ABIs as v1 does (`#[app::state(version)]` and
+  the two bundles' embedded ABIs as v1 did (`#[app::state(version)]` and
   `#[app::migrate]`), runs your migration check, and refuses a downgrade or a
   missing edge. Build bundles with `cargo mero build` so they carry their ABI:
   handlers, xcall entry points, timers and migrations are read from it.

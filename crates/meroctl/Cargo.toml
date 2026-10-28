@@ -23,7 +23,7 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 url.workspace = true
 
-calimero-cloud-client = { workspace = true, features = ["testing"] }
+calimero-client = { workspace = true, features = ["testing"] }
 calimero-identity = { workspace = true, features = ["testing"] }
 
 [dev-dependencies]
@@ -34,4 +34,4 @@ tar.workspace = true
 tempfile.workspace = true
 
 calimero-bundle.workspace = true
-calimero-cloud-node.workspace = true
+calimero-node.workspace = true

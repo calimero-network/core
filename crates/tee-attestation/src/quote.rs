@@ -1,6 +1,6 @@
 //! Serializable TDX quote types (mirroring `tdx_quote::Quote`), as attestation
-//! documents carry them. Moved here from v1's `calimero-server-primitives`
-//! (`admin::Quote`), unchanged on the wire.
+//! documents carry them. Unchanged on the wire from v1's
+//! `calimero-server-primitives` (`admin::Quote`).
 
 use serde::{Deserialize, Serialize};
 

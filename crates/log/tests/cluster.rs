@@ -240,7 +240,7 @@ async fn proposals_see_previous_writes() {
 }
 
 /// A counter that refuses, at apply, a value built on other state than the
-/// one it applies to, as the cloud node's `AppMachine` does with its
+/// one it applies to, as the node's `AppMachine` does with its
 /// `base_index`: `set:{base}:{value}` sets only when the last entry it applied
 /// is `base`; `add:{n}` adds unconditionally (a write built on no state). Like
 /// `AppMachine`, a build names the machine's own last entry, not the log's

@@ -11,10 +11,10 @@ import SeqDiagram from '../../../components/SeqDiagram.astro';
 This reference explains how a Calimero cluster works and why it is built that
 way. It follows one **call** from the client that makes it to the log entry
 that records it, rather than touring the crates. The crates are
-[`merod`](/operate/merod/) (the node binary), `calimero-cloud-node` (everything
+[`merod`](/operate/merod/) (the node binary), `calimero-node` (everything
 the node does), `calimero-log` (the replicated log), `calimero-sealed` (the
 encrypted transport), `calimero-identity` (passkeys, sessions, API keys) and
-`calimero-cloud-client` (the Rust client, whose attestation check every client
+`calimero-client` (the Rust client, whose attestation check every client
 and peer shares).
 
 :::tip[New here? Read these first, in order]
@@ -133,7 +133,7 @@ and [Replication](/protocol/replication/).
 ## Status
 
 :::caution[Release candidate]
-This describes release-v2 as the code stands. It is not a frozen wire
+This describes the system as the code stands. It is not a frozen wire
 specification: request and entry formats are JSON and may change before they
 are versioned. Some parts are not done yet and are named where they matter: a
 rollback counter for restored nodes, keys per app from mero-kms, placement
@@ -141,6 +141,8 @@ across zones, restoring a snapshot into a running cluster, event audiences,
 and search indexes that survive a restart.
 :::
 
-The app SDK (`calimero-sdk`, `calimero-storage`) and the WASM runtime
-(`calimero-runtime`, on wasmer) are the same ones v1 used. What they do inside a
-run is described only as far as the node depends on it.
+Apps are built with one of two SDKs: `calimero-sdk` and `calimero-storage`,
+whose core modules run on `calimero-runtime` (wasmer, the runtime v1 apps were
+built against), or `calimero-app-sdk`, whose `calimero:app` components run on
+`calimero-app-engine-wasmtime`. What they do inside a run is described only as
+far as the node depends on it.

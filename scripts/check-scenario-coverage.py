@@ -4,21 +4,21 @@
 A workflow file that nothing runs looks maintained and gates nothing. Every
 YAML file under workflows/ and apps/*/workflows/ must be either
 
-- a release-v2 workflow (`backend: cloud-v2`) that some shard of
+- a workflow for this node (`backend: cloud-v2`) that some shard of
   .github/workflows/e2e.yml runs, or
 - marked `not_applicable: <reason>` (the runner reports it and does not run
   it; the reason is required, so an exclusion has to be argued for).
 
 A workflow counts as run only through an actual invocation in e2e.yml: a `run:`
-line calling `scripts/cloud-v2-workflows.py --shard <k>/<N>` with no file
+line calling `scripts/run-workflows.py --shard <k>/<N>` with no file
 arguments, in a job whose matrix gives `<k>` every value 1..N. The files those
 shards run are what the runner itself selects (`all_workflows()` and
-`shard()` in scripts/cloud-v2-workflows.py), so a file outside its globs, or a
+`shard()` in scripts/run-workflows.py), so a file outside its globs, or a
 shard missing from the matrix, is caught. A path merely named in a comment,
 an `echo` or a step name registers nothing, and neither does `--smoke` (a fixed
-list, scripts/cloud-v2-workflows-smoke.json, which release.yml runs against a
+list, scripts/workflows-smoke.json, which release.yml runs against a
 PR's Docker image): every workflow on that list must exist and be on
-scripts/cloud-v2-workflows-baseline.json, so the image is gated on passes.
+scripts/workflows-baseline.json, so the image is gated on passes.
 
 Usage: check-scenario-coverage.py [--root DIR]
 Exit 0 when every workflow is run or marked not_applicable, 1 otherwise.
@@ -39,16 +39,16 @@ import yaml
 sys.dont_write_bytecode = True  # imports a sibling script; leave no __pycache__ in the tree
 
 GLOBS = ("workflows/**/*.y*ml", "apps/*/workflows/**/*.y*ml")
-RUNNER = "scripts/cloud-v2-workflows.py"
-SMOKE = "scripts/cloud-v2-workflows-smoke.json"
-BASELINE = "scripts/cloud-v2-workflows-baseline.json"
+RUNNER = "scripts/run-workflows.py"
+SMOKE = "scripts/workflows-smoke.json"
+BASELINE = "scripts/workflows-baseline.json"
 SHARD_CALL = re.compile(
     r"^\s*python3?\s+" + re.escape(RUNNER) + r"\b(?P<args>[^\n]*(?:\\\n[^\n]*)*)", re.M
 )
 
 
 def load_runner(root: Path):
-    spec = importlib.util.spec_from_file_location("cloud_v2_workflows", root / RUNNER)
+    spec = importlib.util.spec_from_file_location("run_workflows", root / RUNNER)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -127,7 +127,7 @@ def check(root: Path) -> list[str]:
             problems.append(f"{f}: not YAML ({e.__class__.__name__})")
             continue
         if not isinstance(wf, dict) or wf.get("backend") != "cloud-v2":
-            problems.append(f"{f}: not a release-v2 workflow (backend: cloud-v2); nothing runs it")
+            problems.append(f"{f}: not a merobox cloud-v2 workflow (backend: cloud-v2); nothing runs it")
             continue
         na = wf.get("not_applicable")
         if na is not None:

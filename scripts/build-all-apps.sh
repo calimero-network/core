@@ -46,7 +46,7 @@ APPS=(
 )
 
 # migration-suite v1..v5 share one package id, so bundling them would collide on
-# dist/; they are built only (calimero-cloud-node's upgrade tests read res/).
+# dist/; they are built only (calimero-node's upgrade tests read res/).
 BUILD_ONLY=(
     "apps/migrations/migration-suite-v1/Cargo.toml"
     "apps/migrations/migration-suite-v2-add-field/Cargo.toml"

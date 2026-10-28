@@ -2,8 +2,7 @@
 //! node's in-memory X25519 transport key, so TLS that ends outside the
 //! enclave (a load balancer, a proxy) never sees them.
 //!
-//! Wire format v2, byte-compatible with `calimero-server`'s `sealed` module and
-//! mero-js `src/sealed/`:
+//! Wire format v2, byte-compatible with mero-js `src/sealed/`:
 //!
 //! ```text
 //! handshake   Noise_NK_25519_AESGCM_SHA256, prologue "calimero/sealed-http/v2"

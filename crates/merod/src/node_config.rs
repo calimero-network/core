@@ -8,7 +8,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use calimero_cloud_node::system::Authority;
+use calimero_node::system::Authority;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 

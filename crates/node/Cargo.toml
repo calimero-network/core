@@ -1,0 +1,88 @@
+[package]
+name = "calimero-node"
+description = "The Calimero node: attested, one Raft log per app, sealed client API"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+axum.workspace = true
+base64.workspace = true
+camino.workspace = true
+ed25519-dalek.workspace = true
+eyre.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+reqwest = { workspace = true, features = ["json", "stream"] }
+ring.workspace = true
+semver.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tokio-stream = { workspace = true, features = ["sync"] }
+tokio-util.workspace = true
+borsh.workspace = true
+calimero-storage.workspace = true
+tower-http = { workspace = true, features = ["cors"] }
+zeroize.workspace = true
+tower.workspace = true
+tantivy.workspace = true
+tracing.workspace = true
+url.workspace = true
+wasmparser.workspace = true
+
+calimero-account.workspace = true
+calimero-app-downloader.workspace = true
+calimero-app-engine-wasmtime.workspace = true
+calimero-app-host.workspace = true
+calimero-bundle.workspace = true
+calimero-client.workspace = true
+calimero-identity.workspace = true
+calimero-kms-client.workspace = true
+calimero-log.workspace = true
+calimero-outbound.workspace = true
+calimero-prelude.workspace = true
+calimero-primitives.workspace = true
+calimero-runtime.workspace = true
+calimero-search.workspace = true
+calimero-wasm-abi.workspace = true
+calimero-sealed.workspace = true
+calimero-tee-attestation.workspace = true
+
+[build-dependencies]
+toml.workspace = true
+
+[dev-dependencies]
+calimero-app-build.workspace = true
+# Itself with `testing`, so the cluster tests can move app time (`Node::advance_clock`)
+# and the log can lose its unsynced writes on a stop (the D52 restart test).
+calimero-node = { workspace = true, features = ["testing"] }
+calimero-client = { workspace = true, features = ["testing"] }
+flate2.workspace = true
+sha2.workspace = true
+tar.workspace = true
+calimero-identity = { workspace = true, features = ["testing"] }
+# `[outbound.testing] echo`, so a cluster test sees what a run sent out.
+calimero-outbound = { workspace = true, features = ["outbound-testing"] }
+# One synced write timed beside the cluster bench, on the disk it runs on.
+rocksdb.workspace = true
+tempfile.workspace = true
+
+[lib]
+bench = false
+
+# Not criterion: a few seconds of load per row, printed once and written as JSON.
+[[bench]]
+name = "cluster_throughput"
+harness = false
+
+[features]
+# DEV/TEST ONLY: accept `[outbound.testing]` in the settings file (answers
+# `.test` hosts in-process, literal secrets). A release build refuses it.
+outbound-testing = ["calimero-outbound/outbound-testing"]
+# `Node::advance_clock`, the applied-tick ring and the log's crash hook, for tests.
+testing = ["calimero-log/testing"]

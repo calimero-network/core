@@ -181,7 +181,7 @@ rg -n "enum .*Command" cargo-mero/src/lib.rs
 ```bash
 # Check that an app's ABI is embedded
 cargo run -p mero-abi -- extract ./target/wasm32-unknown-unknown/app-release/kv_store.wasm
-# A stopped node's store (apps, keys, log) - v1's merodb
+# A stopped node's store (apps, keys, log)
 cargo run -p merod -- --node n1 inspect --help
 ```
 

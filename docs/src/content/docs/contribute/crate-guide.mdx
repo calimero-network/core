@@ -1,6 +1,6 @@
 ---
 title: Crate guide
-description: Every crate and tool in the release-v2 workspace, grouped by role, with what it is and who uses it — including the v1 crates kept only because the WASM runtime links them.
+description: Every crate and tool in the workspace, grouped by role, with what it is and who uses it — including the v1 crates kept only because the WASM runtime links them.
 sidebar:
   label: Crate guide
 ---
@@ -23,11 +23,11 @@ beside it) has its commands and detail. The same index, for agents, is
 
 | Crate | Package | What it is |
 | --- | --- | --- |
-| `crates/cloud-node` | `calimero-cloud-node` | The node: system group, app groups, executor glue, routing, the HTTP API and Ops API, packages, follow-ups, blobs, presence, search, app frontends, backups, the storage key. |
+| `crates/node` | `calimero-node` | The node: system group, app groups, executor glue, routing, the HTTP API and Ops API, packages, follow-ups, blobs, presence, search, app frontends, backups, the storage key. |
 | `crates/log` | `calimero-log` | Multi-group Raft (openraft) over one sealed RocksDB per node; snapshots; the `log.redb` migration. |
 | `crates/sealed` | `calimero-sealed` | The sealed HTTP transport (wire format v2), server middleware and client; byte-compatible with mero-js. |
 | `crates/identity` | `calimero-identity` | WebAuthn passkeys, session tokens, API keys, confirm challenges; `testing`: a software authenticator. |
-| `crates/cloud-client` | `calimero-cloud-client` | The Rust client: attestation check (shared with peers), sealed requests, sign-in, calls and views. |
+| `crates/client` | `calimero-client` | The Rust client: attestation check (shared with peers), sealed requests, sign-in, calls and views. |
 | `crates/kms-client` | `calimero-kms-client` | The mero-kms client: release-policy check, key release, `kms disk-key`. |
 | `crates/outbound` | `calimero-outbound` | The gated outbound HTTPS client and secrets a run may use. |
 | `crates/search` | `calimero-search` | Per-app full-text search (tantivy), built in memory from apps' search exports. |
@@ -48,8 +48,9 @@ beside it) has its commands and detail. The same index, for agents, is
 
 ## SDK and runtime
 
-Unchanged from v1, so v1 apps deploy as they are. The runtime is being
-replaced; check with its owner before changing these.
+Two app runtimes, picked per app from the WASM its bundle names. Check with
+their owner before changing these. The first is the one v1 apps were built
+against, so they deploy as they are:
 
 | Crate | Package | What it is |
 | --- | --- | --- |
@@ -61,6 +62,16 @@ replaced; check with its owner before changing these.
 | `crates/prelude` | `calimero-prelude` | The root storage key derivation shared by SDK and storage. |
 | `crates/runtime` | `calimero-runtime` | The wasmer runtime with gas metering and the host functions; the node's executor runs it. |
 
+The second runs `calimero:app` components on wasmtime:
+
+| Crate | Package | What it is |
+| --- | --- | --- |
+| `crates/app-wit` | `calimero-app-wit` | The `calimero:app` WIT world and its import allow-list. |
+| `crates/app-host` | `calimero-app-host` | The engine-neutral host core of `calimero:app`: state, policy, time and randomness. |
+| `crates/app-engine-wasmtime` | `calimero-app-engine-wasmtime` | The wasmtime engine for components: fuel, epochs, limits and a checked cache. |
+| `crates/app-sdk` (+ `app-sdk-macros`) | `calimero-app-sdk`, `calimero-app-sdk-macros` | The Rust app SDK for `calimero:app`: app attributes, encoding, tables, collections, env and the embedded ABI. |
+| `crates/app-build` | `calimero-app-build` | Builds Rust guests into `calimero:app` components. |
+
 ## Shared types
 
 | Crate | Package | What it is |
@@ -71,7 +82,7 @@ replaced; check with its owner before changing these.
 ## Runtime-only v1 crates
 
 These are v1 node crates kept only because `calimero-runtime` still links them.
-Nothing in the release-v2 node uses them directly. Do not build on them.
+Nothing in the node uses them directly. Do not build on them.
 
 | Crate | Package | Kept for |
 | --- | --- | --- |
@@ -108,5 +119,6 @@ Nothing in the release-v2 node uses them directly. Do not build on them.
   `authz`, `client`, `config`, `context` (except `context/config`), `dag`,
   `governance-store`, `network` (except `primitives`), `node` (except
   `primitives`), `op`, `op-adapter`, `projection`, `server` (with its
-  primitives), `store/encryption` and `merodb`.
+  primitives), `store/encryption` and `merodb`. Today's `crates/client` and
+  `crates/node` are new crates under those names.
 </Aside>

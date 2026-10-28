@@ -5,7 +5,7 @@
 #   MEROD_BINARY=target/profiling/merod scripts/soak-flamegraph.sh OUT_DIR [WORKFLOW] [NODE]
 #
 # Runs WORKFLOW (default: the kv-store fuzzy load) through
-# scripts/cloud-v2-workflows.py, finds node NODE (default 1) of its cluster by
+# scripts/run-workflows.py, finds node NODE (default 1) of its cluster by
 # the port it listens on (the workflow's `cluster.base_port` + NODE), lets the
 # workflow's setup pass (PROFILE_DELAY seconds, default 15), then samples that
 # process and its threads at PROFILE_HZ (default 199) for PROFILE_SECONDS
@@ -44,7 +44,7 @@ base=$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["cl
 port=$((base + node))
 
 MEROBOX_SOAK_REPORT="$out/soak.json" \
-  python3 "$root/scripts/cloud-v2-workflows.py" --json "$out/workflow.json" "$workflow" \
+  python3 "$root/scripts/run-workflows.py" --json "$out/workflow.json" "$workflow" \
   >"$out/workflow.log" 2>&1 &
 runner=$!
 

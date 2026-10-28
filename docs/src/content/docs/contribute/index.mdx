@@ -1,6 +1,6 @@
 ---
 title: Contribute to Calimero Core
-description: Orientation for developers working on the Calimero Core workspace on release-v2 — the node, the CLI, the crate map and the development workflow.
+description: Orientation for developers working on the Calimero Core workspace — the node, the CLI, the crate map and the development workflow.
 sidebar:
   label: Overview
   order: 1
@@ -9,7 +9,7 @@ sidebar:
 import { CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
 
 Calimero Core is a Rust workspace: the node (`merod` over
-`calimero-cloud-node`), its command line (`meroctl`), the Raft log, the sealed
+`calimero-node`), its command line (`meroctl`), the Raft log, the sealed
 transport, identity and attestation crates, the app SDK and WASM runtime, the
 example apps under `apps/` and the tools under `tools/`.
 
@@ -29,7 +29,7 @@ example apps under `apps/` and the tools under `tools/`.
 <CardGrid>
   <LinkCard title="Architecture" href="/contribute/architecture/" description="The node's parts and the path of a call." />
   <LinkCard title="Crate guide" href="/contribute/crate-guide/" description="Every crate and tool, grouped by role." />
-  <LinkCard title="Cloud overview" href="/cloud/overview/" description="What release-v2 is, for users and operators." />
+  <LinkCard title="Cloud overview" href="/cloud/overview/" description="What Calimero is, for users and operators." />
 </CardGrid>
 
 ## Working on core

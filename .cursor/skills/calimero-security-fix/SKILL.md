@@ -10,7 +10,7 @@ This skill is the workflow; it does not repeat them.
 
 ## Steps
 
-1. **Reproduce through the real entry point**, the way an attacker would: an HTTP request through the sealed client (a cluster test in `crates/cloud-node/tests/cluster.rs`), a peer's `/internal/*` request, a registry download or a guest call, not a direct call to the inner function.
+1. **Reproduce through the real entry point**, the way an attacker would: an HTTP request through the sealed client (a cluster test in `crates/node/tests/cluster.rs`), a peer's `/internal/*` request, a registry download or a guest call, not a direct call to the inner function.
    If the finding cannot be reproduced that way, report it as unreachable instead of fixing it.
 2. **Commit the test first** and watch it fail on master for the stated reason, not for a setup error.
    Keep that commit separate so a reviewer can check it out and see the failure.

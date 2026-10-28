@@ -1,6 +1,6 @@
 # Migrated from this file's v1 workflow by `merobox cloud port`.
-# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
-# Dropped (no release-v2 counterpart):
+# Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no counterpart in this node):
 #   login (unknown) x2: checks what the dropped steps did
 name: E2E KV Store - Join Group Then List From Joiner
 description: "Regression guard reproducing the Slack report (2026-07-23): after a node joins a group via\

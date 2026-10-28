@@ -1,5 +1,5 @@
 //! `merod init`, `config`, `run` and `inspect`, through the binary: v1's
-//! command line over the release-v2 node.
+//! command line over the node.
 
 use std::io::{Read, Write};
 use std::path::Path;
