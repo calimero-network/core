@@ -34,7 +34,7 @@ use tokio::sync::watch;
 )]
 mod harness;
 
-use harness::{free_port, kv_wasm, node_config, ORIGIN};
+use harness::{cluster_name, free_port, kv_wasm, node_config, ORIGIN};
 
 /// Forward `listen` to `upstream`; while `held` is true, bytes towards
 /// `upstream` wait. Answers flow back freely.
@@ -85,39 +85,71 @@ struct ProxiedCluster {
 
 impl ProxiedCluster {
     async fn start() -> Self {
-        let mut peers = BTreeMap::new();
-        let mut direct = Vec::new();
-        let mut hold = Vec::new();
-        for id in 1..=3_u64 {
-            let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let proxy_port = proxy_listener.local_addr().unwrap().port();
-            let node_port = free_port();
-            let (tx, rx) = watch::channel(false);
-            drop(tokio::spawn(proxy(
-                proxy_listener,
-                format!("127.0.0.1:{node_port}"),
-                rx,
-            )));
-            let _prev = peers.insert(id, format!("http://127.0.0.1:{proxy_port}/"));
-            direct.push(format!("http://127.0.0.1:{node_port}/"));
-            hold.push(tx);
-        }
-        let mut nodes = Vec::new();
-        let mut dirs = Vec::new();
-        for id in 1..=3_u64 {
-            let dir = tempfile::tempdir().unwrap();
-            let mut config = node_config(id, &peers, dir.path());
-            // Peers name the proxy; the node listens on its own port.
-            config.listen = url::Url::parse(&direct[id as usize - 1])
-                .unwrap()
-                .socket_addrs(|| None)
-                .unwrap()[0];
-            // A held follower must not start an election while it waits.
-            config.raft.election_min_ms = 5_000;
-            config.raft.election_max_ms = 6_000;
-            nodes.push(run(config).await.unwrap());
-            dirs.push(dir);
-        }
+        // `free_port` hands the port back before the node binds it, so another
+        // test can take it meanwhile: a start that loses that race tries again
+        // on other ports, as `Cluster::start_with` does.
+        let mut attempt = 0;
+        let (nodes, direct, hold, dirs) = loop {
+            attempt += 1;
+            let mut peers = BTreeMap::new();
+            let mut direct = Vec::new();
+            let mut hold = Vec::new();
+            let mut proxies = Vec::new();
+            for id in 1..=3_u64 {
+                let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let proxy_port = proxy_listener.local_addr().unwrap().port();
+                let node_port = free_port();
+                let (tx, rx) = watch::channel(false);
+                proxies.push(tokio::spawn(proxy(
+                    proxy_listener,
+                    format!("127.0.0.1:{node_port}"),
+                    rx,
+                )));
+                let _prev = peers.insert(id, format!("http://127.0.0.1:{proxy_port}/"));
+                direct.push(format!("http://127.0.0.1:{node_port}/"));
+                hold.push(tx);
+            }
+            // Its own name, so its own peer secret: a node of another test that
+            // a reused port leads to refuses this cluster's Raft messages.
+            let name = cluster_name();
+            let mut nodes = Vec::new();
+            let mut dirs = Vec::new();
+            let mut failed = None;
+            for id in 1..=3_u64 {
+                let dir = tempfile::tempdir().unwrap();
+                let mut config = node_config(id, &peers, dir.path());
+                config.cluster.clone_from(&name);
+                // Peers name the proxy; the node listens on its own port.
+                config.listen = url::Url::parse(&direct[id as usize - 1])
+                    .unwrap()
+                    .socket_addrs(|| None)
+                    .unwrap()[0];
+                // A held follower must not start an election while it waits.
+                config.raft.election_min_ms = 5_000;
+                config.raft.election_max_ms = 6_000;
+                match run(config).await {
+                    Ok(r) => nodes.push(r),
+                    Err(e) => {
+                        failed = Some(e);
+                        break;
+                    }
+                }
+                dirs.push(dir);
+            }
+            match failed {
+                None => break (nodes, direct, hold, dirs),
+                Some(e) if attempt < 3 => {
+                    eprintln!("proxied cluster start failed ({e:#}); retrying on other ports");
+                    for r in nodes {
+                        r.stop().await;
+                    }
+                    for p in proxies {
+                        p.abort();
+                    }
+                }
+                Some(e) => panic!("proxied cluster did not start: {e:#}"),
+            }
+        };
         let c = Self {
             nodes,
             direct,
@@ -290,4 +322,67 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
     let read = call.await.unwrap();
     let err = read.expect_err("a revocation committed before the request must hold");
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+}
+
+/// An anonymous `GET /apps/{app}`: once the app stops being public through the
+/// leader, a follower that has not applied that must not show the app.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "fails until #4723: app_get does not read fresh state for anonymous callers"]
+async fn an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behind() {
+    let c = ProxiedCluster::start().await;
+    let leader = c.system_leader();
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let (alice, _a) = signed_up(&c, leader, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let created = alice
+        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+        .await
+        .unwrap();
+    let app = created["appId"].as_str().unwrap().to_owned();
+    let _ok = alice
+        .post(
+            &format!("apps/{app}/access"),
+            json!({ "access": { "kind": "public" } }),
+        )
+        .await
+        .unwrap();
+    let follower_node = &c.nodes[follower].node;
+    let public_here =
+        || follower_node.sys(|s| s.apps.get(&app).is_some_and(|a| s.may_reach(a, None)));
+    for _ in 0..100 {
+        if public_here() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let anonymous = c.client(follower);
+    let shown = anonymous.get(&format!("apps/{app}")).await;
+    assert!(shown.is_ok(), "public: {:?}", shown.err());
+
+    // Hold the follower, make the app private through the leader, then ask the
+    // follower anonymously.
+    c.hold[follower].send_replace(true);
+    let _ok = alice
+        .post(
+            &format!("apps/{app}/access"),
+            json!({ "access": { "kind": "owner" } }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        public_here(),
+        "the follower must still hold the app as public"
+    );
+    let call = tokio::spawn({
+        let app = app.clone();
+        async move { anonymous.get(&format!("apps/{app}")).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    c.hold[follower].send_replace(false);
+    let shown = call.await.unwrap();
+    let err = shown.expect_err("an app made private before the request must be hidden");
+    assert!(
+        matches!(err.code(), Some("NOT_FOUND" | "UNAUTHENTICATED")),
+        "{err}"
+    );
 }
