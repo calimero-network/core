@@ -183,6 +183,9 @@ is its command line.
   replicated and sealed, but a run is handed only its caller's space.
 - **Shared-storage writers**: a cell's rotated writer set is kept in the app's state
   (`app::writers_key`), written with the run that rotated it; v1 published governance ops.
+- **Ids people type** (accounts, apps, organizations, teams, upgrade runs, API
+  keys) are base64url that never starts with `-` (`api::typed_id`), which
+  meroctl would read as a flag. Regression: `a_typed_id_never_starts_with_a_dash`.
 - **Context ids**: an app answers to its context id (`hex(SHA-256(app_id))`, what the app
   sees as `env::context_id()`) wherever the API takes an app id (`Node::canonical_app_id`).
 - **Blobs** (`env::blob_*`, `POST/GET /apps/{app}/blobs[/{id}]`): bytes live in the

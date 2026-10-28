@@ -586,7 +586,7 @@ async fn register_finish(
         &body.registration,
     )
     .map_err(|e| ApiError::bad_request("BAD_REGISTRATION", &e.to_string()))?;
-    let account = b64url(&random::<32>());
+    let account = typed_id::<32>();
     let _ok = node
         .sys_write(&SystemCmd::CreateAccount {
             account: Account {
@@ -1122,7 +1122,7 @@ async fn apikey_create(
 ) -> ApiResult {
     let account = holder(&node, &headers).await?.account()?;
     let (key, hash) = calimero_identity::new_api_key();
-    let key_id = b64url(&random::<8>());
+    let key_id = typed_id::<8>();
     let _ok = node
         .sys_write(&SystemCmd::CreateApiKey {
             hash,
@@ -1470,7 +1470,7 @@ async fn app_create(
             "no node runs a release this app's owner approved",
         ));
     }
-    let app_id = b64url(&random::<16>());
+    let app_id = typed_id::<16>();
     let access = body.access.unwrap_or(if body.org.is_some() {
         Access::Org
     } else {
@@ -2456,7 +2456,7 @@ async fn start_run(
     apps: Vec<crate::types::AppRecord>,
     who: Upgrader,
 ) -> ApiResult {
-    let run_id = b64url(&random::<12>());
+    let run_id = typed_id::<12>();
     let run = crate::types::UpgradeRun {
         run_id: run_id.clone(),
         package: body.package.clone(),
@@ -2801,7 +2801,7 @@ async fn org_create(
     Json(body): Json<OrgBody>,
 ) -> ApiResult {
     let account = person(&node, &headers).await?.account()?;
-    let org_id = b64url(&random::<16>());
+    let org_id = typed_id::<16>();
     let v = node
         .sys_write(&SystemCmd::CreateOrg {
             org_id,
@@ -3061,7 +3061,7 @@ async fn team_create(
     let v = node
         .sys_write(&SystemCmd::CreateTeam {
             org,
-            team_id: b64url(&random::<16>()),
+            team_id: typed_id::<16>(),
             name: body.name,
             parent: body.parent,
             join: body.join,
@@ -4456,4 +4456,30 @@ pub fn router(node: Arc<Node>) -> Router {
             calimero_sealed::server::MAX_SEALED_BYTES,
         ))
         .with_state(node)
+}
+
+/// A new id people type as an argument (accounts, apps, organizations, teams,
+/// upgrade runs, API keys): `N` random bytes in base64url that never start
+/// with `-`, which a command line (meroctl) would read as a flag.
+fn typed_id<const N: usize>() -> String {
+    loop {
+        let id = b64url(&random::<N>());
+        if !id.starts_with('-') {
+            return id;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::typed_id;
+
+    #[test]
+    fn a_typed_id_never_starts_with_a_dash() {
+        for _ in 0..10_000 {
+            let id = typed_id::<16>();
+            assert!(!id.starts_with('-'), "{id}");
+            assert_eq!(id.len(), 22);
+        }
+    }
 }
