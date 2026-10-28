@@ -1,12 +1,12 @@
 # Migrated from this file's v1 workflow by `merobox cloud port`.
-# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
-# Dropped (no release-v2 counterpart):
+# Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no counterpart in this node):
 #   assert_log_absent x1: v1 node logs
 #   assert_log_present x3: v1 node logs
 #   download_blob (a node-local miss) x6: checks what the dropped steps did
 #   login (unknown) x2: checks what the dropped steps did
 #   wait_for_sync x6: replication is synchronous: a read sees every committed write
-# Migration note: release-v2's ceiling for one blob is 47 MiB, not v1's 500 MiB (a blob
+# Migration note: the node's ceiling for one blob is 47 MiB, not v1's 500 MiB (a blob
 #   reaches the other nodes base64-encoded in one sealed request:
 #   docs/src/content/docs/protocol/limits.mdx): the sweep's 50, 100 and 250 MiB uploads
 #   are refused (the 50 MiB one naming the blob limit, the 100 and 250 MiB ones the

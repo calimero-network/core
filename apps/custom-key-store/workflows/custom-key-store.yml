@@ -1,7 +1,7 @@
-# A release-v2 workflow for custom-key-store (it had no v1 workflow): pages
+# A workflow for custom-key-store: pages
 # keyed by a newtype slug (`AsRef<[u8]>`), so titles that differ only in case
 # or surrounding space name one page.
-name: Custom key store on release-v2
+name: Custom key store
 description: A newtype key normalises titles; two members write and read one page
 backend: cloud-v2
 cluster:

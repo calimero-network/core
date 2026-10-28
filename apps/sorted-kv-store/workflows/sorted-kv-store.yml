@@ -1,6 +1,6 @@
-# A release-v2 workflow for sorted-kv-store (it had no v1 workflow): an
+# A workflow for sorted-kv-store: an
 # organization's app, written by two members, read back in key order.
-name: Sorted KV store on release-v2
+name: Sorted KV store
 description: SortedMap reads (range, prefix, page, first, last) across two members' writes
 backend: cloud-v2
 cluster:

@@ -4,7 +4,7 @@
 A workflow file that nothing runs looks maintained and gates nothing. Every
 YAML file under workflows/ and apps/*/workflows/ must be either
 
-- a release-v2 workflow (`backend: cloud-v2`) that some shard of
+- a workflow for this node (`backend: cloud-v2`) that some shard of
   .github/workflows/e2e.yml runs, or
 - marked `not_applicable: <reason>` (the runner reports it and does not run
   it; the reason is required, so an exclusion has to be argued for).

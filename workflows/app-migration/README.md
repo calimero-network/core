@@ -1,13 +1,13 @@
 # `workflows/app-migration/` — application migration e2e
 
-merobox workflows (`backend: cloud-v2`) that upgrade an app on a release-v2
+merobox workflows (`backend: cloud-v2`) that upgrade an app on a
 cluster (three `merod` processes) and check what its state reads after: each
 upgrade migrates the app's one replicated state at once, planned from the two
 releases' embedded ABIs ([Upgrades](../../docs/src/content/docs/protocol/upgrades.mdx)).
 
 They were migrated from v1's workflows of the same names by `merobox cloud
-port`. Each file's header lists the v1 steps that have no release-v2
-counterpart (gossip waits, node logs, v1 admin-API reads) and any fix made in
+port`. Each file's header lists the v1 steps that have no counterpart in
+this node (gossip waits, node logs, v1 admin-API reads) and any fix made in
 the migration, with its reason. The v1 workflows whose subject has no
 counterpart (per-member lazy migration, activation, heartbeats, the
 upgrade ladder, frontend hosts) were deleted; the

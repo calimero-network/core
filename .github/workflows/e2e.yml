@@ -1,9 +1,9 @@
 name: E2E
 
-# merobox's release-v2 backend (one `merod` process per node) against this
+# merobox's cloud-v2 backend (one `merod` process per node) against this
 # tree's node:
 #
-#   - every release-v2 workflow, core's (workflows/: app migrations, sync,
+#   - every workflow, core's (workflows/: app migrations, sync,
 #     fuzzy loads) and every app's (apps/*/workflows/), most migrated from v1's
 #     merobox workflows, in four shards (job `scenarios`), gated by
 #     scripts/workflows-baseline.json: a workflow on that list that
@@ -11,17 +11,15 @@ name: E2E
 #   - merobox's own cloud-v2 examples: a crash and a frozen node, a frozen
 #     leader under a latency budget, organizations and keys, signed packages
 #     from a registry, and a rolling upgrade of every node;
-#   - the clients (job `clients`, v1's sdk-e2e): mero-js's and
+#   - the clients (job `clients`): mero-js's and
 #     calimero-client-py's cluster tests against this tree's `merod`. Pair a
 #     breaking change with its client fix by a same-named branch, or by
 #     `sdk-ref: <ref>` / `py-ref: <ref>` in the PR body
 #     (scripts/resolve-paired-ref.sh).
 #
-# It replaces v1's e2e-rust-apps, e2e-rust-apps-release, sdk-e2e,
-# app-migration-e2e, sync-regression, fuzzy-load-test and wire-contract, which
-# drove v1 nodes in Docker. The nightly run is the soak: the fuzzy loads for
-# their full duration, each reporting calls/s and p50/p95/p99 latency per
-# operation (MEROBOX_SOAK_REPORT, in the job summary). Nightly also:
+# The nightly run is the soak: the fuzzy loads for their full duration, each
+# reporting calls/s and p50/p95/p99 latency per operation
+# (MEROBOX_SOAK_REPORT, in the job summary). Nightly also:
 #
 #   - the same shards against the `merod` inside the latest published release
 #     image (ghcr.io/<owner>/merod:<version>, release.yml), on the workflows
@@ -33,7 +31,7 @@ name: E2E
 # A PR's own image is tested in release.yml (`E2E on the merod image`), which
 # builds it.
 #
-# GitHub runs `schedule` only from the default branch (master). The release-v2
+# GitHub runs `schedule` only from the default branch (master). The
 # release branch (release-v2-parity) gets its nightly from a dispatcher on
 # master that runs this workflow there with `nightly: true` (docs:
 # contribute/testing, "Release branch"); a nightly dispatch runs every job a
@@ -170,7 +168,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Every release-v2 workflow: core's (workflows/**: app migrations, sync,
+  # Every workflow: core's (workflows/**: app migrations, sync,
   # fuzzy loads) and every app's (apps/*/workflows/**), packed into shards of
   # about equal length by their measured durations
   # (scripts/workflows-durations.json). A workflow listed in
@@ -254,8 +252,8 @@ jobs:
   # runs the four shards of the commit the image was built from (its
   # org.opencontainers.image.revision label), with that commit's fixtures and
   # baseline, so a workflow added after the release cannot fail it. A release
-  # older than release-v2 (a v1 node) is reported and not run. On the release
-  # branch, until a release-v2 release ships, a nightly tests the branch's own
+  # whose merod is a v1 node is reported and not run. On the release
+  # branch, until a release with this node ships, a nightly tests the branch's own
   # image instead: release-v2-edge, which release.yml pushes on every merge.
   release-image:
     name: Latest release image

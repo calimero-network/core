@@ -2,7 +2,7 @@ name: Release
 
 # Pushes to master release: binaries, crates, the App Bundle, the Homebrew tap
 # and SDK bump PRs for a new version, and the merod image's version tags. Pushes
-# to the release-v2 release branch (release-v2-parity) publish only the merod
+# to the release branch (release-v2-parity) publish only the merod
 # image, under tags of its own (release-v2-edge, release-v2-<short sha>), and
 # keep the binaries as workflow artifacts for 14 days; every release step below
 # is gated on master.
@@ -162,7 +162,7 @@ jobs:
       # Linux x86_64 always (a required check); arm64 on pushes (master and the
       # release branch), which the multi-arch edge images need; macOS only when this run publishes binaries,
       # the one job that reads them (platforms.yml builds it nightly). There is no
-      # Windows build: release-v2 nodes run on Linux TDX hosts only.
+      # Windows build: nodes run on Linux TDX hosts only.
       - name: Choose the build targets
         id: build_matrix
         env:

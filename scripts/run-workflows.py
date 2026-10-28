@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the release-v2 workflows: core's (workflows/**/*.yml) and every app's
+"""Run the merobox workflows: core's (workflows/**/*.yml) and every app's
 (apps/*/workflows/**/*.yml).
 
 Each runs on its own 3-node merod cluster through merobox's cloud-v2 backend
@@ -33,8 +33,8 @@ shard is the same set on every run and about as long as the others.
 
 Exit status is non-zero when a workflow in workflows-baseline.json
 (the paths that pass) fails. Many workflows were migrated from v1 by `merobox
-cloud port`; their headers list the v1 steps that have no release-v2
-counterpart.
+cloud port`; their headers list the v1 steps that have no counterpart
+in this node.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ MEROBOX_NODES = 3
 
 
 def all_workflows() -> list[str]:
-    """Every release-v2 workflow, as a path relative to the repository root."""
+    """Every workflow, as a path relative to the repository root."""
     files = sorted(ROOT.glob("workflows/**/*.yml")) + sorted(
         ROOT.glob("apps/*/workflows/**/*.yml")
     )

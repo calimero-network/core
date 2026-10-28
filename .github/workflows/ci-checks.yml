@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    # release-v2-parity is the release-v2 release branch: it never merges into
+    # release-v2-parity is the release branch: it never merges into
     # master, so its merges run CI as master's do.
     branches: ["master", "release-v2-parity"]
   merge_group:

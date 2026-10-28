@@ -27,7 +27,7 @@ cargo mero build --manifest-path apps/kv-store/Cargo.toml
 | ------------------------ | ---------------------- | ---------------------- |
 | `kv-store`               | Simple key-value store | Basic CRDT usage       |
 | `kv-store-init`          | KV with custom init    | `#[app::init]` pattern |
-| `org-gated`              | Org notes (release-v2) | `env::caller_org()`: gate methods on the caller's organization role and teams |
+| `org-gated`              | Org notes              | `env::caller_org()`: gate methods on the caller's organization role and teams |
 | `kv-store-with-handlers` | KV with event handlers | Event handling         |
 | `sorted-kv-store`        | Ordered KV store       | `SortedMap`: range / prefix / page |
 | `authored-sorted-kv-store` | Shared noticeboard   | `AuthoredSortedMap`: per-entry ownership + prefix slices, and why the two go together |
@@ -326,11 +326,11 @@ rg -n "app::bail!" */src/
 
 ## Workflows
 
-Each app's `workflows/` holds merobox workflows for release-v2
+Each app's `workflows/` holds merobox workflows
 (`backend: cloud-v2`): a cluster of `merod` processes, accounts signed in with
 passkeys, an organization, the app deployed and called as several accounts.
 Most were migrated from the app's v1 workflows by `merobox cloud port`; each
-one's header lists the v1 steps that have no release-v2 counterpart and any
+one's header lists the v1 steps that have no counterpart in this node and any
 fix made in the migration. Every deployable app has at least one; CI runs them
 all (`.github/workflows/e2e.yml`, gated by
 `scripts/workflows-baseline.json`). See
@@ -338,7 +338,7 @@ all (`.github/workflows/e2e.yml`, gated by
 
 ```yaml
 # workflows/sorted-kv-store.yml (abridged)
-name: Sorted KV store on release-v2
+name: Sorted KV store
 backend: cloud-v2
 cluster: { nodes: 3, base_port: 6000 }
 accounts: [alice, bob]

@@ -1,8 +1,8 @@
-# A release-v2 workflow for org-gated (a release-v2 app, so no v1 workflow):
+# A workflow for org-gated:
 # the app reads the caller's standing in its organization (`env::caller_org`)
 # and gates each method on it: members read, admins write the pinned note, and
 # only a team's members write that team's note.
-name: Org-gated notes on release-v2
+name: Org-gated notes
 description: env::caller_org roles and teams gate an app's methods, as owner, admin, member and guest
 backend: cloud-v2
 cluster:

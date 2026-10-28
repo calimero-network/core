@@ -1,8 +1,8 @@
-# A release-v2 workflow for bulk-write-bench (it had no v1 workflow; its
-# benchmark is crates/runtime/tests/bulk_write_wall.rs): one call writes
+# A workflow for bulk-write-bench (its benchmark is
+# crates/runtime/tests/bulk_write_wall.rs): one call writes
 # hundreds of entries into each collection, committed by the app's Raft log, and
 # a second member's bulk write merges by each collection's rules.
-name: Bulk write bench on release-v2
+name: Bulk write bench
 description: Single-call bulk inserts into a map, a vector and a set, by two members
 backend: cloud-v2
 cluster:

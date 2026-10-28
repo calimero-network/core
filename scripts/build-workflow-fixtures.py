@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build what the release-v2 workflows (workflows/**, apps/*/workflows/**)
+"""Build what the merobox workflows (workflows/**, apps/*/workflows/**)
 install, into target/workflow-wasm/ (override with CORE_WASM_DIR), which the
 workflows name as `{{env.CORE_WASM_DIR}}`:
 

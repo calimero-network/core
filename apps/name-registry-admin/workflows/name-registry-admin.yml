@@ -1,6 +1,6 @@
 # Migrated from this file's v1 workflow by `merobox cloud port`.
-# v1 nodes are accounts here; see merobox/cloud_v2/port.py for the mapping.
-# Dropped (no release-v2 counterpart):
+# Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.
+# Dropped (no counterpart in this node):
 #   assert_log_absent x1: v1 node logs
 #   wait_for_sync x16: replication is synchronous: a read sees every committed write
 # NOTE: parallel groups run one after another: the app's log orders them

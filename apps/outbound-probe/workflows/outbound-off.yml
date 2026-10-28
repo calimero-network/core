@@ -1,4 +1,4 @@
-# A release-v2 workflow for outbound-probe on a node with outbound requests off
+# A workflow for outbound-probe on a node with outbound requests off
 # (merod's default: no `[outbound]` settings). outbound.yml drives every gate
 # with the test build's `.test` echo; this one needs no test build and checks
 # what holds on every node by default: nothing leaves, and a run that asked is

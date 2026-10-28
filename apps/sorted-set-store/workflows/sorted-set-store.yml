@@ -1,6 +1,6 @@
-# A release-v2 workflow for sorted-set-store (it had no v1 workflow): an
+# A workflow for sorted-set-store: an
 # organization's set, added to by two members, read back in order.
-name: Sorted set store on release-v2
+name: Sorted set store
 description: SortedSet membership and ordered reads across two members' writes
 backend: cloud-v2
 cluster:

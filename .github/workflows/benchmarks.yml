@@ -4,7 +4,7 @@ permissions:
   contents: read
 
 on:
-  # master and the release-v2 release branch (release-v2-parity) each keep a
+  # master and the release branch (release-v2-parity) each keep a
   # baseline per commit; a PR compares against its own base branch's.
   push:
     branches:

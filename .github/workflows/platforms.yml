@@ -12,7 +12,7 @@ name: Platforms
 #   - on a PR (into master or the release-v2-parity release branch) labelled
 #     `ci:platforms`, and on dispatch.
 #
-# There is no Windows lane: release-v2 nodes run on Linux TDX hosts only.
+# There is no Windows lane: nodes run on Linux TDX hosts only.
 # release.yml builds macOS from the release commit itself, so nothing reaches a
 # release without having been built for it.
 
