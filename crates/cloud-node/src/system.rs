@@ -16,11 +16,24 @@ use crate::types::{
     OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
 };
 
+/// A session key's encoding (base64url of its 32 bytes). Serialized as the
+/// string itself; `Debug` never prints it, so no `{:?}` of the system state or
+/// of a command logs a key that signs every session.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SecretKey(pub String);
+
+impl std::fmt::Debug for SecretKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionKey {
     pub version: u32,
-    pub key: String,
+    pub key: SecretKey,
     /// Unix seconds; the leader rotates the key once it is old enough.
     #[serde(default)]
     pub created_at: u64,
@@ -354,7 +367,7 @@ impl SystemState {
     #[must_use]
     pub fn current_session_key(&self) -> Option<(u32, [u8; 32])> {
         let k = self.session_keys.last()?;
-        Some((k.version, key32(&k.key)?))
+        Some((k.version, key32(&k.key.0)?))
     }
 
     #[must_use]
@@ -362,7 +375,7 @@ impl SystemState {
         self.session_keys
             .iter()
             .find(|k| k.version == version)
-            .and_then(|k| key32(&k.key))
+            .and_then(|k| key32(&k.key.0))
     }
 
     #[must_use]
@@ -573,7 +586,7 @@ pub enum SystemCmd {
     },
     AddSessionKey {
         version: u32,
-        key: String,
+        key: SecretKey,
         #[serde(default)]
         created_at: u64,
     },
@@ -1419,9 +1432,8 @@ impl SystemMachine {
                     created_at,
                 });
                 // Keep the current and previous key only.
-                while s.session_keys.len() > 2 {
-                    let _old = s.session_keys.remove(0);
-                }
+                let excess = s.session_keys.len().saturating_sub(2);
+                drop(s.session_keys.drain(..excess));
                 Ok(Value::Null)
             }
             SystemCmd::CreateOrg {
@@ -2089,6 +2101,31 @@ impl Machine for SystemMachine {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn debug_output_never_carries_a_session_key() {
+        use super::{SecretKey, SessionKey, SystemCmd};
+        let key = SecretKey("c2VjcmV0LXNlc3Npb24ta2V5".to_owned());
+        let stored = SessionKey {
+            version: 1,
+            key: key.clone(),
+            created_at: 0,
+        };
+        let cmd = SystemCmd::AddSessionKey {
+            version: 1,
+            key: key.clone(),
+            created_at: 0,
+        };
+        for printed in [format!("{stored:?}"), format!("{cmd:?}")] {
+            assert!(!printed.contains(&key.0), "{printed}");
+            assert!(printed.contains("<redacted>"), "{printed}");
+        }
+        // The wire and stored form is the string itself, as before.
+        assert_eq!(
+            serde_json::to_value(&stored).unwrap()["key"],
+            serde_json::json!(key.0)
+        );
+    }
     use serde_json::json;
 
     use super::{Authority, Governance, ReleaseScope, SystemCmd, SystemMachine, SystemState};
