@@ -1872,6 +1872,16 @@ impl Node {
             &keyed
         };
         let app = self.app(&req.app_id).await?;
+        // The entry carries the arguments, so arguments past the cap never
+        // fit: refuse here rather than forward a megabyte to the leader first.
+        let args_len = serde_json::to_vec(&req.args).map_or(0, |a| a.len())
+            + req.input.as_ref().map_or(0, |i| i.0.len());
+        if args_len > calimero_log::MAX_ENTRY_BYTES {
+            return Err(status_of(&WriteError::TooLarge {
+                size: args_len,
+                max: calimero_log::MAX_ENTRY_BYTES,
+            }));
+        }
         let body = serde_json::to_value(req).map_err(|e| ApiError::internal(&e.to_string()))?;
         for _attempt in 0..30 {
             // A conflict (the diff was built on state a leader change replaced)
