@@ -154,7 +154,7 @@ is its command line.
   leader would otherwise hold a write for the 30 s HTTP timeout. Calls without a
   client key get a node key (`node:…`, kept 10 min) first, so a retry replays a call
   that did commit. System-log forwards keep the long timeout: some system commands
-  are not idempotent yet. Regression: merobox `workflow-examples/cloud-v2/frozen-leader.yml`.
+  are not idempotent yet. Regression: `frozen-leader` in `tests/fault/suite.py` (merobox's `frozen-leader.yml`).
 - **Leader races**: `Group::propose` takes no leadership round before a call's
   append, so a deposed leader may run a call on stale state; its entry never
   commits, or commits as a no-op (`base_index` ≠ the app's last entry,
@@ -470,6 +470,12 @@ cargo test --release -p calimero-node --test rooms   # Rooms A1 (shared scenario
 # workflows', shifted by WORKFLOW_PORT_OFFSET when set; release merod and
 # meroctl in RV2_BIN_DIR, default target/release; the cached Rooms component)
 python3 -I crates/node/tests/fault/rooms_fault.py --iterations 200 --seed 1
+# the process suite (tests/fault/README.md): crash/freeze/restart, frozen leader, orgs and
+# keys, signed packages, rolling upgrade under load, the kv-store soak (merobox's cloud-v2
+# examples and fuzzy load); kv_store.wasm and dist/com.calimero.kv-store-{1.0.0,1.1.0}.mpk
+python3 -I crates/node/tests/fault/suite.py [--only NAME,..] [--iterations N] [--nightly]
+python3 -I crates/node/tests/fault/suite.py --smoke --merod PATH   # the release image's set
+python3 -I crates/node/tests/fault/suite.py --only kv-soak --soak-report soak.json   # soak.py report renders it
 # calls/s and p50/p99 through that cluster (harness: tests/harness/cluster.rs), as JSON:
 cargo bench -p calimero-node --bench cluster_throughput -- --secs 15 --out cluster.json
 cargo run -p merod -- --help

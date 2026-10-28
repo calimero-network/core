@@ -260,20 +260,42 @@ python3 scripts/build-workflow-fixtures.py $(jq -r '.fixtures[]' scripts/workflo
 MEROD_BINARY=/tmp/merod python3 scripts/run-workflows.py --smoke
 ```
 
-### Soak latency and throughput
+### Process suite
 
-A `fuzzy_test` step times every step it sends to the cluster (one round trip
-each). With `MEROBOX_SOAK_REPORT=file.json` it appends a report to that file:
-per operation, how many ran and failed, operations and calls per second over
-the run, and the p50/p95/p99 (and mean, max) latency of its calls in
-milliseconds, the same per step kind (`call set`, `call get`), and the whole
-run's. `merobox cloud soak-report file.json` (or `scripts/soak-summary.sh`,
-which CI runs) prints it as a table:
+`crates/node/tests/fault/suite.py` runs the tests that need one `merod` process
+per node: a crashed, a frozen and a restarted node; a frozen leader under a
+10 s write budget; organizations, scoped API keys and passkey confirmations;
+signed packages from a registry; a rolling upgrade of every node under a write
+load; the kv-store soak; and (nightly) `rooms_fault.py`'s randomized nemesis.
+They replace merobox's cloud-v2 examples and fuzzy load. Each test starts its
+own 3-node `merod run --dev` cluster on ports 7600-7699 (+
+`WORKFLOW_PORT_OFFSET`). `--smoke --merod PATH` runs the release-image set
+against another binary; `--nightly` runs longer. Its `README.md` (beside it) lists the tests, the
+merobox example each replaces, and their inputs:
 
 ```bash
-MEROD_BINARY=target/debug/merod MEROBOX_FUZZY_SECONDS=30 MEROBOX_SOAK_REPORT=soak.json \
-  python3 scripts/run-workflows.py workflows/fuzzy-tests/kv-store/fuzzy-test.yml
-merobox cloud soak-report soak.json
+cargo build --release -p merod -p meroctl
+cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
+python3 -I crates/node/tests/fault/suite.py --list
+python3 -I crates/node/tests/fault/suite.py --only kv-failover,frozen-leader
+```
+
+### Soak latency and throughput
+
+The suite's `kv-soak` (kv-store's fuzzy load: the operations and weights of
+`workflows/fuzzy-tests/kv-store/fuzzy-test.yml`, four members) times every call
+it sends to the cluster (one round trip each). With `--soak-report file.json`
+(or `SOAK_REPORT`) it appends a report to that file: per operation, how many ran
+and failed, operations and calls per second over the run, and the p50/p95/p99
+(and mean, max) latency of its calls in milliseconds, the same per call kind
+(`call set`, `call get`), and the whole run's. The format is the one merobox's
+`fuzzy_test` wrote to `MEROBOX_SOAK_REPORT`; `crates/node/tests/fault/soak.py
+report file.json` (or `scripts/soak-summary.sh`, which CI runs) prints it as a
+table:
+
+```bash
+python3 -I crates/node/tests/fault/suite.py --only kv-soak --soak-seconds 30 --soak-report soak.json
+python3 -I crates/node/tests/fault/soak.py report soak.json
 ```
 
 A 30-second kv-store run against a debug `merod` on a shared 4-vCPU Linux
@@ -292,14 +314,14 @@ The calls run one at a time, so a call's latency is what one caller sees and
 calls/s is one caller's rate, not the cluster's capacity; the cluster bench
 ([below](#cluster-throughput)) measures that. Numbers from a debug build
 (the PR shards) are for comparing runs of the same job, not the release's
-speed; the release image's shards measure that. The pass rate and
-`success_threshold` gate as before; latency gates nothing.
+speed; the release image's shards measure that. The pass rate
+(99 %) gates; latency gates nothing.
 
 ### Flamegraphs
 
 Nightly (or with the `flamegraph` input), job `merod flamegraph (kv-store
 soak)` builds `merod` with the `profiling` profile (optimized, with symbols)
-and `-C force-frame-pointers=yes`, runs the kv-store fuzzy load for five
+and `-C force-frame-pointers=yes`, runs the process suite's `kv-soak` for five
 minutes, and records node 1 with `perf record -g` for most of it
 (`scripts/soak-flamegraph.sh`; the runner sets `kernel.perf_event_paranoid=-1`).
 inferno renders the samples; the artifact `merod-flamegraph` holds
@@ -309,15 +331,16 @@ and the profiled run's soak report. Locally, on Linux:
 
 ```bash
 cargo install inferno --version 0.12.8 --locked
-RUSTFLAGS="-C force-frame-pointers=yes" cargo build -p merod --profile profiling
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build -p merod -p meroctl --profile profiling
 sudo sysctl -w kernel.perf_event_paranoid=-1
-MEROD_BINARY=target/profiling/merod MEROBOX_FUZZY_SECONDS=120 scripts/soak-flamegraph.sh /tmp/flame
+MEROD_BINARY=target/profiling/merod MEROCTL_BINARY=target/profiling/meroctl SOAK_SECONDS=120 \
+  scripts/soak-flamegraph.sh /tmp/flame
 ```
 
 `PERF=/usr/lib/linux-tools/<version>/perf` points it at a perf whose wrapper
 does not match the running kernel; `PROFILE_DELAY`, `PROFILE_SECONDS` and
 `PROFILE_HZ` set when and how it samples, and a second argument names another
-fuzzy workflow (a third, another node).
+node.
 
 ## Release branch
 
