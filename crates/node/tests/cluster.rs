@@ -33,6 +33,11 @@ impl Cluster {
     /// Start one more node, not a founder: it knows the cluster's addresses
     /// but joins only once the operator registers it (`/ops/nodes`).
     async fn join(&mut self) -> usize {
+        self.join_with(|_| {}).await
+    }
+
+    /// [`Self::join`], the node's configuration changed by `configure`.
+    async fn join_with(&mut self, configure: impl Fn(&mut calimero_node::Config)) -> usize {
         let id = self.urls.len() as u64 + 1;
         let url = format!("http://127.0.0.1:{}/", free_port());
         self.urls.push(url);
@@ -46,6 +51,7 @@ impl Cluster {
         let mut config = node_config(id, &peers, dir.path());
         config.cluster.clone_from(&self.name);
         config.bootstrap = false;
+        configure(&mut config);
         self.nodes.push(Some(run(config).await.unwrap()));
         self._dirs.push(dir);
         self.nodes.len() - 1
@@ -4073,6 +4079,153 @@ async fn replica_moves_are_idempotent_and_one_at_a_time() {
         voters,
         "the directory names the group's voters"
     );
+}
+
+/// An uploaded package release lives only in the cluster (no registry to
+/// fetch it again from), and when the cluster was one node, on that node only.
+/// A cluster grown from it keeps the release: once node 1 is gone, the app's
+/// frontend is still served and its calls still run, and so is the frontend
+/// of a package no app runs (every node holds every upload).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_uploaded_release_outlives_the_node_it_was_uploaded_to() {
+    let domain = |cfg: &mut calimero_node::Config| cfg.apps_domain = Some("localhost".into());
+    let mut c = Cluster::start_with(1, domain).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let html: &[u8] = b"<!doctype html><html><body>grown</body></html>";
+    let _ = alice
+        .upload_package(mpk_full(
+            "com.test.grown",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            &[("frontend/index.html", html)],
+        ))
+        .await
+        .unwrap();
+    let page: &[u8] = b"<!doctype html><html><body>only a page</body></html>";
+    let page_mpk = mpk_full(
+        "com.test.page",
+        "0.2.0",
+        &variant(&kv_wasm(), "page"),
+        &publisher,
+        &[],
+        &[("frontend/index.html", page)],
+    );
+    let page_hash = {
+        use sha2::Digest;
+        hex::encode(sha2::Sha256::digest(&page_mpk))
+    };
+    let _ = alice.upload_package(page_mpk).await.unwrap();
+    let app = alice
+        .post(
+            "apps",
+            json!({ "name": "grown", "package": "com.test.grown", "access": { "kind": "public" } }),
+        )
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = alice
+        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .await
+        .unwrap();
+
+    // Grow to three nodes and move the app onto all of them.
+    for (id, zone) in [(2_u64, "b"), (3, "c")] {
+        let i = c.join_with(domain).await;
+        let _ = ops_at(&c, 0)
+            .await
+            .post(
+                "ops/nodes",
+                json!({ "id": id, "addr": c.urls[i], "zone": zone }),
+            )
+            .await
+            .unwrap();
+    }
+    let first = std::sync::Arc::clone(&c.nodes[0].as_ref().unwrap().node);
+    for _ in 0..300 {
+        if first.system.status().voters == [1, 2, 3] {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(first.system.status().voters, vec![1, 2, 3]);
+    drop(first);
+    let leader = c.app_leader(&app).unwrap();
+    let _ = ops_at(&c, leader)
+        .await
+        .post(
+            &format!("ops/apps/{app}/replicas"),
+            json!({ "replicas": [1, 2, 3] }),
+        )
+        .await
+        .unwrap();
+
+    // The package no app runs reaches the new nodes too.
+    let mut held = false;
+    for _ in 0..200 {
+        held = [1, 2].iter().all(|i| {
+            c.nodes[*i]
+                .as_ref()
+                .unwrap()
+                .node
+                .engine
+                .get_blob(&page_hash)
+                .is_ok_and(|b| b.is_some())
+        });
+        if held {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(held, "every node holds every uploaded release");
+
+    // Node 1 goes.
+    let session = alice.session().await.unwrap();
+    c.stop(0).await;
+    let _ = system_leader(&c).await;
+
+    // The frontends are served by the nodes left.
+    for (package, version, body) in [
+        ("com.test.grown", "0.1.0", html),
+        ("com.test.page", "0.2.0", page),
+    ] {
+        let label = calimero_node::app_host::label(package);
+        for i in [1, 2] {
+            let port = url::Url::parse(&c.urls[i]).unwrap().port().unwrap();
+            let host = format!("{label}.localhost");
+            let web = reqwest::Client::builder()
+                .resolve(&host, ([127, 0, 0, 1], port).into())
+                .build()
+                .unwrap();
+            let got = web
+                .get(format!("http://{host}:{port}/{version}/"))
+                .header("accept", "text/html")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(got.status(), 200, "node {} serves {package}", i + 1);
+            assert_eq!(got.bytes().await.unwrap().as_ref(), body);
+        }
+    }
+    // And the app runs.
+    let alice2 = c.client(1);
+    alice2.use_session(session).await;
+    let mut wrote = Err(String::new());
+    for _ in 0..100 {
+        wrote = alice2
+            .call(&app, "set", json!({ "key": "b", "value": "2" }), None)
+            .await
+            .map_err(|e| e.to_string());
+        if wrote.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = wrote.expect("a call commits after node 1 stopped");
 }
 
 /// Ownership transfer: the owner hands an app to another account

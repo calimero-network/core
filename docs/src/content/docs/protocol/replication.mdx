@@ -224,8 +224,9 @@ before writing anything. The leader:
    approved;
 2. records the union of old and new replicas in the directory, so every node
    involved starts the group;
-3. hands each new node the app's bundle and every blob the app's state
-   marks (bytes that live outside the log, and that a cluster grown from one
+3. hands each new node the app's bundle, every blob the app's state marks and
+   the `.mpk` of every uploaded release of its package (bytes that live outside
+   the log, and that a cluster grown from one
    node holds only on that node), so the new replica can run and serve the app
    without the old ones;
 4. adds each new node as a learner and waits for it to catch up;

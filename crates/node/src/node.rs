@@ -308,6 +308,8 @@ pub struct Node {
     moving: Mutex<HashSet<String>>,
     /// A promotion of learners to system voters is under way.
     promoting: std::sync::atomic::AtomicBool,
+    /// An uploaded release is being fetched (`catch_up_uploads`).
+    catching_up: std::sync::atomic::AtomicBool,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
     /// Full-text search over the apps hosted here.
@@ -469,6 +471,7 @@ impl Node {
             joining: Mutex::default(),
             moving: Mutex::default(),
             promoting: std::sync::atomic::AtomicBool::new(false),
+            catching_up: std::sync::atomic::AtomicBool::new(false),
             peer_releases: Mutex::new(HashMap::new()),
             sys_reads: ReadRounds::default(),
             conflicts: std::sync::atomic::AtomicU64::new(0),
@@ -1073,6 +1076,7 @@ impl Node {
                 self.drive(&g, &app).await;
             }
         }
+        self.catch_up_uploads();
         // Stop groups this node no longer replicates.
         let hosted: Vec<GroupId> = self
             .apps
@@ -1363,10 +1367,12 @@ impl Node {
     }
 
     /// Hand `to` (nodes about to become replicas of `app`) the bytes the app
-    /// needs that live outside its log: its bundle and every blob its state
-    /// marks. They would otherwise be fetched from a peer on first use, and a
+    /// needs that live outside its log: its bundle, every blob its state
+    /// marks, and the uploaded `.mpk`s of its package (`uploaded_releases`).
+    /// They would otherwise be fetched from a peer on first use, and a
     /// cluster grown from one node holds them only on that node: once it is
-    /// gone, nobody could run the app. Returns how many it handed over.
+    /// gone, nobody could run the app or serve its frontend. Returns how many
+    /// it handed over.
     pub async fn hand_over_bytes(
         &self,
         app: &AppRecord,
@@ -1395,7 +1401,87 @@ impl Node {
             };
             self.hand_to(&id, bytes, to).await?;
         }
-        Ok(1 + blobs.len())
+        let releases = self
+            .release_of(&bundle)
+            .map(|r| self.uploaded_releases(&r.at.package))
+            .unwrap_or_default();
+        for mpk in &releases {
+            let bytes = self.held_or_fetched(mpk).await?;
+            self.hand_to(mpk, bytes, to).await?;
+        }
+        Ok(1 + blobs.len() + releases.len())
+    }
+
+    /// The `.mpk` hashes of `package`'s uploaded releases, every version: its
+    /// frontend serves any of them (`/` the newest). A registry release is
+    /// left out: the registry still has it.
+    #[must_use]
+    pub fn uploaded_releases(&self, package: &str) -> Vec<String> {
+        self.sys(|s| {
+            s.packages
+                .get(package)
+                .map(|p| {
+                    p.versions
+                        .values()
+                        .filter(|v| v.source == crate::system::BundleSource::Upload)
+                        .map(|v| v.mpk.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+    }
+
+    /// A blob from this node's store, or from a peer (kept here after).
+    async fn held_or_fetched(&self, id: &str) -> Result<Vec<u8>, ApiError> {
+        match self
+            .engine
+            .get_blob(id)
+            .map_err(|e| ApiError::internal(&e.to_string()))?
+        {
+            Some(b) => Ok(b),
+            None => self.fetch_blob(id).await,
+        }
+    }
+
+    /// Every node holds every uploaded `.mpk`, as it holds every bundle: an
+    /// upload is the cluster's only copy (no registry to fetch it from again),
+    /// and any node serves any package's frontend. An upload reaches the
+    /// nodes there are at the time; a node that joined later fetches what it
+    /// lacks here, one release per pass (from `reconcile`), in the background.
+    fn catch_up_uploads(&self) {
+        let Some(me) = self.this.lock().ok().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        let wanted: Vec<String> = self.sys(|s| {
+            s.packages
+                .values()
+                .flat_map(|p| p.versions.values())
+                .filter(|v| v.source == crate::system::BundleSource::Upload)
+                .map(|v| v.mpk.clone())
+                .collect()
+        });
+        let Some(missing) = wanted
+            .into_iter()
+            .find(|h| matches!(self.engine.get_blob(h), Ok(None)))
+        else {
+            return;
+        };
+        if self
+            .catching_up
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        drop(tokio::spawn(async move {
+            match me.fetch_blob(&missing).await {
+                Ok(_) => info!(mpk = %missing, "took an uploaded release this node lacked"),
+                Err(e) => {
+                    warn!(mpk = %missing, error = %e.message, "an uploaded release is not reachable yet")
+                }
+            }
+            me.catching_up
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }));
     }
 
     /// Store `bytes` (named by their hash) on each of `to`.

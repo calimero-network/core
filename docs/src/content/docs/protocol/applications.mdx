@@ -61,9 +61,16 @@ to: `(package, signer)`.
   bytes whose hash differs from the one the log recorded, and verifies the
   release again before using its WASM. That is the one-source rule: the
   registry is the only place a registry release comes from.
-- An **uploaded** release has no registry. The `.mpk` is stored on a majority
-  of nodes before the log records it; a node that lacks it fetches it from a
-  peer, checks the recorded hash and verifies it again.
+- An **uploaded** release has no registry: the cluster holds its only copy,
+  so every node holds every uploaded `.mpk`, as it holds every bundle (any node
+  serves any package's frontend). The `.mpk` is stored on a majority of nodes
+  before the log records it; a node that lacks it (one that joined later)
+  fetches it from a peer in the background, one release per reconcile pass
+  (`Node::catch_up_uploads`), checks the recorded hash and verifies it again
+  before use. A replica move also hands the new replicas the `.mpk` of every
+  uploaded release of the app's package before they vote
+  (`Node::hand_over_bytes`), so a cluster grown from one node keeps the app's
+  frontend and code once that node is gone.
 - Each service's WASM is also kept in the installing node's blob store under
   its bundle hash; other nodes extract it from the `.mpk` on first use.
 

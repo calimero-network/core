@@ -100,7 +100,8 @@ pub struct PackageRef {
 pub enum BundleSource {
     /// The operator's registry (`--registry-url`): every node fetches it from there.
     Registry,
-    /// Uploaded as a file: held by a majority of nodes, fetched from a peer.
+    /// Uploaded as a file: the cluster's only copy. Stored on a majority at
+    /// install, then on every node (`Node::catch_up_uploads`).
     Upload,
 }
 

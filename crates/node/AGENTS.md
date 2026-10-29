@@ -187,12 +187,17 @@ is its command line.
   of an app while one runs on this leader is refused `409 MOVE_IN_PROGRESS`
   (`Node::begin_move`, a guard the move's own task holds, so it runs to the end
   even if its caller disconnects). Before the new nodes become learners, the
-  leader hands them the app's bundle and the blobs its state marks
-  (`Node::hand_over_bytes`, over `internal/blob`): a bundle or blob stored while
-  the cluster was one node is held by that node alone ("a majority" of one).
-  Regressions: `replica_moves_are_idempotent_and_one_at_a_time`,
+  leader hands them the app's bundle, the blobs its state marks and the `.mpk`
+  of every uploaded release of its package (`Node::hand_over_bytes`,
+  `uploaded_releases`, over `internal/blob`): a bundle, blob or upload stored
+  while the cluster was one node is held by that node alone ("a majority" of
+  one). Every node also fetches the uploaded `.mpk`s it lacks, one per
+  `reconcile` pass in the background (`Node::catch_up_uploads`): an upload is the
+  cluster's only copy and any node serves any package's frontend. Regressions:
+  `replica_moves_are_idempotent_and_one_at_a_time`,
   `a_cluster_started_on_one_node_grows_and_survives_losing_it` (node 1 stops
-  after the move; the app still runs and its blob downloads).
+  after the move; the app still runs and its blob downloads),
+  `an_uploaded_release_outlives_the_node_it_was_uploaded_to`.
 - **Placement read** (`GET /ops/placement`, `meroctl ops placement`, for mdma's
   rebalancer): each app's id, group and replicas, each node's id, zone,
   attested release (`Node::release_of_node`, at most `PLACEMENT_RELEASE_WAIT`)

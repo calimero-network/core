@@ -114,7 +114,8 @@ and grow:
    meroctl sends it to the node you named; a follower answers
    `421 NOT_LEADER` and meroctl retries at the leader's URL.
 
-3. The leader hands the new nodes the app's bundle and blobs, adds them as
+3. The leader hands the new nodes the app's bundle, blobs and uploaded `.mpk`
+   releases, adds them as
    learners, waits, switches the voters to the new set, and records it. The
    answer is the group's new status.
 
