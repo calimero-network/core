@@ -19,11 +19,19 @@ package-bound session:
 1. **Resolve the bundle.** A package release (installed from the registry
    first if the cluster lacks it) or, on a development cluster, a raw bundle
    hash.
-2. **Place.** The node picks the least-loaded nodes, up to `--replicas` (3 by
-   default), among those whose attested mero-tee release is approved to hold
-   the owner's (or the organization's) apps ([Release
+2. **Place.** The node picks `--replicas` nodes (3 by default) among those
+   whose attested mero-tee release is approved to hold the owner's (or the
+   organization's) apps ([Release
    approvals](/protocol/governance/#release-approvals)). No such node: `503`.
-   Placement across zones is not done in the node.
+   The replicas span as many zones as those nodes are in (the `zone` that
+   `POST /ops/nodes` registered), so an app outlives the loss of a zone
+   whenever the cluster has three: the least-loaded node (fewest replicas,
+   then the lower id) of each zone first, least-loaded zones first, and once
+   every zone holds one, the remaining replicas by load alone. Nodes without a
+   zone (every node from `--peers` until it is registered with one) count as
+   one unknown zone together, since nothing says they are apart; a cluster
+   with no zones is placed by load alone. Moves (`/ops/apps/{app}/replicas`)
+   go where the operator says.
 3. **Record.** `CreateApp` applies in the system group: the bundle must be
    known, the owner within their app quota, a member (at least `member`) of the
    organization if one is named, and a writer of the team for `access: team`.

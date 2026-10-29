@@ -2278,8 +2278,10 @@ impl Node {
     }
 
     #[must_use]
-    /// Pick replicas for a new app: the least-loaded nodes whose release is in
-    /// `approved` (when the app's owner restricted releases).
+    /// Pick replicas for a new app among the nodes whose release is in
+    /// `approved` (when the app's owner restricted releases): spread over as
+    /// many zones as those nodes are in, least loaded first
+    /// ([`crate::placement::replicas`]).
     pub async fn place(
         &self,
         approved: Option<&std::collections::BTreeSet<String>>,
@@ -2297,25 +2299,7 @@ impl Node {
                 allowed.push(id);
             }
         }
-        self.sys(|s| {
-            let mut load: Vec<(usize, NodeId)> = allowed
-                .iter()
-                .map(|id| {
-                    (
-                        s.apps.values().filter(|a| a.replicas.contains(id)).count(),
-                        *id,
-                    )
-                })
-                .collect();
-            load.sort_unstable();
-            let mut picked: Vec<NodeId> = load
-                .into_iter()
-                .take(self.config.replicas)
-                .map(|(_, id)| id)
-                .collect();
-            picked.sort_unstable();
-            picked
-        })
+        self.sys(|s| crate::placement::replicas(s, &allowed, self.config.replicas))
     }
 
     /// Write encrypted snapshots of the app groups this node leads.

@@ -102,6 +102,12 @@ is its command line.
   are the app's owner's, or, for an org app, of whoever holds `MANAGE_APPLICATION`
   on its team or org-wide (`SystemState::manages_apps`), with their own passkey
   assertion over the exact upgrade (`consent` on `UpgradeApp`).
+- **Placement** (`Node::place`, `placement::choose`): among the approved nodes,
+  a new app's `--replicas` span as many zones (`NodeRecord::zone`, from
+  `POST /ops/nodes`) as they are in, least loaded (then lower id) first within
+  that; zoneless nodes share one unknown zone, so a cluster without zones is
+  placed by load as before. Regressions: `a_new_app_is_placed_across_zones`,
+  `placement_across_zones_keeps_to_approved_releases`, `placement::tests`.
 - **Outbound HTTPS** (`calimero-outbound`): `Config::outbound` from
   `--settings` (`[outbound]`). `Node::outbound_for` hands a client only to
   `call_local`'s runs (calls, follow-ups, timers; not a read-only member's), for
@@ -474,7 +480,7 @@ API and system group. What differs from the wasmer path:
 ## Not done yet
 
 rollback counter (proposed: a mero-kms epoch, restored nodes rejoin as learners),
-keys per app from mero-kms, placement across zones, snapshot restore into a
+keys per app from mero-kms, snapshot restore into a
 running cluster, event audiences, search indexes that survive a restart (rebuilt from state now).
 
 ## Commands

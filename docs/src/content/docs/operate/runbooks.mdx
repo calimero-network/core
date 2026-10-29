@@ -36,8 +36,9 @@ learner of the system group once it is registered.
    joined the system group`. `meroctl ops status` lists it under the system
    group's learners and in `nodes`.
 
-4. New apps may now be placed on it (least-loaded first), and you can move
-   existing ones onto it.
+4. New apps may now be placed on it (spread across zones, least-loaded first
+   within that; see [placement](/protocol/context-lifecycle/#create)), and you
+   can move existing ones onto it.
 
 </Steps>
 
