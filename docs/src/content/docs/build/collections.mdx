@@ -1,18 +1,19 @@
 ---
 title: Collections
-description: The CRDT collection types your app state is built from — their merge semantics and when to use each.
+description: The collection types your app state is built from — what each stores, who may write it, and when to use each.
 sidebar:
   order: 4
 ---
 
 import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
-import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 Your [`#[app::state]`](/build/sdk-macros/) is built from the collection types in
-`calimero_storage::collections`. Each is a **CRDT**: concurrent edits on
-different nodes merge deterministically, with no coordination, so replicas
-converge to the same state. Choosing the right collection is choosing the right
-merge behavior.
+`calimero_storage::collections`. Each stores its entries as separate entities,
+so a call writes only the entries it touches, and the access-controlled ones
+check who may write when the run writes. An app's calls run one at a time on its
+leader and the other replicas apply what each run wrote
+([CRDT collections](/protocol/crdt-internals/)), so choosing a collection is
+choosing a data structure, a cost and a write rule, not a merge.
 
 <Aside type="note" title="Get returns an owned, read-only copy">
   Storage values are not resident in memory like a `HashMap`'s — every `get`
@@ -24,33 +25,33 @@ merge behavior.
 
 ## Type reference
 
-| Type | Merge semantics | When to use |
+| Type | What it is | When to use |
 |------|-----------------|-------------|
-| `UnorderedMap<K, V>` | Add-wins union; shared keys merge their values recursively. No iteration order. | Default key→value store; O(1) point lookups. |
-| `UnorderedSet<V>` | Add-wins union of membership. | Default set; O(1) membership tests. |
-| `SortedMap<K, V>` | Same merge as `UnorderedMap`, plus a node-local ordered index. | When you need range / prefix / pagination / sorted iteration. |
-| `SortedSet<V>` | Same merge as `UnorderedSet`, plus a node-local ordered index. | Ordered membership with range / prefix / pagination. |
-| `IndexedMap<K, V>` | Same merge and stored bytes as `UnorderedMap`, plus node-local secondary indexes the value type declares. | List views that filter, count or page by a field: "open issues, newest first", "notes of deal 7". |
+| `UnorderedMap<K, V>` | Key→value map; each entry its own entity. No iteration order. | Default key→value store; O(1) point lookups. |
+| `UnorderedSet<V>` | Membership set; each member its own entity. | Default set; O(1) membership tests. |
+| `SortedMap<K, V>` | An `UnorderedMap` with reads in key order. | When you need range / prefix / pagination / sorted iteration. |
+| `SortedSet<V>` | An `UnorderedSet` with reads in member order. | Ordered membership with range / prefix / pagination. |
+| `IndexedMap<K, V>` | An `UnorderedMap`'s stored bytes, with queries on the fields the value type declares. | List views that filter, count or page by a field: "open issues, newest first", "notes of deal 7". |
 | `Vector<V>` | Append-only sequence; `push` mints a stable element id. | Ordered lists where you append and index. |
-| `FugueText` | Fugue sequence CRDT over run-length blocks; concurrent runs never interleave. | Collaborative plain text. |
+| `FugueText` | Fugue text over run-length blocks; two runs typed at one spot never interleave. | Collaborative plain text. |
 | `RichText<Sc>` | A `FugueText` plus write-once formatting marks. | One formatted body. |
-| `RichDocument<Sc>` | Ordered blocks, each with kind, depth, attributes and a `RichText` body, merged field by field. | Block documents: headings, paragraphs, lists. |
-| `ReplicatedGrowableArray` | Text-editing CRDT; characters ordered by neighbor + HLC. Concurrent runs can interleave. | Apps that already store RGA text. |
-| `LwwRegister<T>` | Last-writer-wins by HLC timestamp (ties broken by node id). | A single scalar/field where the latest write should win. |
-| `Counter` / `GCounter` / `PNCounter` | Per-executor slots summed at read. | Distributed counts; `PNCounter` allows decrements. |
+| `RichDocument<Sc>` | Ordered blocks, each with kind, depth, attributes and a `RichText` body, written field by field. | Block documents: headings, paragraphs, lists. |
+| `ReplicatedGrowableArray` | Text; characters ordered by neighbor + HLC. Two runs typed at one spot can interleave. | Apps that already store RGA text. |
+| `LwwRegister<T>` | One value; a write replaces it. | A single scalar/field. |
+| `Counter` / `GCounter` / `PNCounter` | Per-account slots summed at read. | Counts; `PNCounter` allows decrements. |
 | `Authored<C>` | Any keyed collection `C` (`UnorderedMap`, `SortedMap`, `IndexedMap`) where each entry is owned by its inserter. | Shared data where users own what they wrote, read however `C` reads. |
 | `AuthoredMap<K, V>` | `Authored<UnorderedMap<K, V>>`. | Shared map where users own their own entries. |
 | `AuthoredSortedMap<K, V>` | `Authored<SortedMap<K, V>>`. | Shared map with hierarchical keys where reads are range / prefix slices. |
 | `WriteOnce<C>` | `Authored<C>` whose entries can never be edited or deleted, even by their owner. | Signed messages, votes, an audit log. |
 | `Moderated<C>` / `ModeratedOnce<C>` | `Authored<C>` / `WriteOnce<C>` whose entries a rotatable set of moderators may also delete. | Posts or messages where moderators remove spam. |
 | `AuthoredVector<V>` | `Vector` where each slot is owned by its author. | Append-only log where authors control their entries. |
-| `UserStorage<T>` | Per-user slots; each executor writes only its own. | Per-user state; anyone reads, only the owner writes their slot. |
-| `SharedStorage<T>` | Value guarded by a writer set; writes verified at merge. | Group-writable shared state with rotatable writers. |
+| `UserStorage<T>` | Per-user slots; each account writes only its own. | Per-user state; anyone reads, only the owner writes their slot. |
+| `SharedStorage<T>` | Value guarded by a writer set, checked when the run writes. | Group-writable shared state with rotatable writers. |
 | `Ownable<T>` | Single-owner cell (a `SharedStorage` with one writer). | Single-owner resource with transfer. |
 | `PermissionedStorage<T, A>` | Writer-set cell with a custom authorization policy. | Fine-grained per-operation access (read/write/delete/admin). |
 | `FrozenStorage<T>` | Content-addressed, immutable; key is `SHA256(value)`. | Immutable, de-duplicated blobs/documents. |
 | `ContentAddressed<C>` | Any keyed collection `C` with `[u8; 32]` keys, content-addressed and immutable. | An immutable log you also filter or page, e.g. `ContentAddressed<IndexedMap<[u8; 32], Event>>`. |
-| `Frozen<T>` | One value, written once by whoever created it; no node accepts a change or a delete. | A charter, a founding date, configuration fixed at `init`. |
+| `Frozen<T>` | One value, written once by whoever created it; a change or a delete is refused. | A charter, a founding date, configuration fixed at `init`. |
 | `AccessControl` | Role registry (admins + named roles) backed by `SharedStorage`. | Multi-tier authorization (admins, editors, ...). |
 | `Registry<K, V, A>` | Claims owned by their claimants; verdicts written only by the authority `A`, each its own entry, the highest epoch then lowest order standing. | Usernames, seats, slugs: at most one owner per name. |
 
@@ -65,19 +66,17 @@ merge behavior.
 
 ## The everyday types
 
-- **`UnorderedMap` / `UnorderedSet`** — your defaults. Both are *add-wins*:
-  concurrent inserts all survive a merge. Values in a map merge recursively, so
-  a `UnorderedMap<String, LwwRegister<String>>` gives you per-key last-writer-wins
-  (the pattern `apps/kv-store` uses).
-- **`SortedMap` / `SortedSet`** — same CRDT as the unordered pair, but they also
-  maintain a node-local ordered index, unlocking `range(a..b)`, `prefix(p)`,
-  `page(offset, limit)`, `first()`, and `last()`. The index is **not**
-  synchronized — each node keeps its own and rebuilds it after sync if stale — so
-  you pay a little write overhead. They are the `BTreeMap`/`BTreeSet` to the
-  unordered types' `HashMap`/`HashSet`. See `apps/sorted-kv-store`.
+- **`UnorderedMap` / `UnorderedSet`** — your defaults. Each entry is its own
+  entity, so a call that sets one key writes only that entry; a
+  `UnorderedMap<String, LwwRegister<String>>` is the pattern `apps/kv-store` uses.
+- **`SortedMap` / `SortedSet`** — the unordered pair with reads in key order:
+  `range(a..b)`, `prefix(p)`, `page(offset, limit)`, `first()`, and `last()`.
+  A cluster node keeps no ordered index, so each of these reads loads and sorts
+  every entry ([cost](/build/storage-complexity/#ordered-reads-and-indexes-on-a-cluster)).
+  See `apps/sorted-kv-store`.
 - **`IndexedMap`** — an `UnorderedMap` whose value type declares what it is
-  looked up by, so a list view is a seek instead of a scan over every entry.
-  Derive the declaration and query by index name:
+  looked up by, so a list view is a query by field. Derive the declaration and
+  query by index name:
 
   ```rust
   #[derive(BorshSerialize, BorshDeserialize, AbiType, app::Mergeable, app::Indexed)]
@@ -91,78 +90,56 @@ merge behavior.
 
   let newest_open = self.issues
       .query("status_created").eq("open").desc().limit(20).entries()?;
-  let open = self.issues.query("status").eq("open").count()?;   // loads no entry
+  let open = self.issues.query("status").eq("open").count()?;
   ```
 
   `eq` pins the index key's next component and `range` bounds the one after;
   on a compound index the free components order the result. A `Vec` field puts
   the entry in once per element and an `Option::None` leaves it out. Change an
   indexed field with `update(key, |v| ...)`, which keeps the indexes in step.
-  The indexes are **not** synchronized and not in the root hash — the map reports
-  itself as an `UnorderedMap` and stores exactly its bytes, so switching a field
-  from `UnorderedMap` to `IndexedMap` needs no migration. A validity marker makes
-  each node rebuild its own indexes on the first query after anything changed the
-  entries behind them (a sync, a merge, a new index declaration); that first query
-  is `O(n)`, every one after it `O(log n + k)`. See `apps/indexed-issue-tracker`,
+  The map reports itself as an `UnorderedMap` and stores exactly its bytes, so
+  switching a field from `UnorderedMap` to `IndexedMap` needs no migration. A
+  cluster node keeps no secondary index, so each query scans every entry,
+  `O(n)` ([cost](/build/storage-complexity/#ordered-reads-and-indexes-on-a-cluster)).
+  See `apps/indexed-issue-tracker`,
   and `apps/indexed-forum` for a compound index over a list and `IndexedMap`
   beside authored and set collections.
 - **`Vector`** — append + index. `push` assigns each element a stable id, so
   iteration order is preserved across reloads.
-- **`LwwRegister<T>`** — wrap any scalar that should follow last-writer-wins.
-  This is how you store a `String`, number, or enum inside CRDT state (bare
-  scalars are rejected by the state lint). `set` stamps a fresh timestamp;
-  `get_mut` edits in place and re-stamps on drop.
-- **`Counter` family** — increments are tracked per executor and summed on read,
-  so concurrent increments on different nodes all count. `GCounter` is
-  increment-only; `PNCounter` also decrements.
+- **`LwwRegister<T>`** — wrap any scalar. This is how you store a `String`,
+  number, or enum inside app state (bare scalars are rejected by the state
+  lint). `set` replaces the value; `get_mut` edits in place and writes on drop.
+- **`Counter` family** — increments are tracked per account and summed on read.
+  `GCounter` is increment-only; `PNCounter` also decrements.
 
 <Aside type="tip" title="New collaborative text: use FugueText">
   `FugueText`, `RichText` and `RichDocument` keep two runs typed at the same spot whole instead of interleaving them, and cost less per keystroke.
   [Build a collaborative editor](/build/guides/collaborative-text/) shows how to wire an editor to them.
 </Aside>
 
-`ReplicatedGrowableArray` converges when two people type into the
-*same* position at once. Each character is an immutable node keyed by a `CharId`
-(HLC + sequence); merge is just the union of those nodes, and read order is a
-deterministic walk — so both editors land on the same text without coordination:
-
-<SeqDiagram
-  id="d-coll-rga"
-  title="Concurrent inserts converge to identical text"
-  lanes={[
-    { label: 'Editor A', color: '#3fb950' },
-    { label: 'Editor B', color: '#58a6ff' },
-  ]}
-  steps={[
-    { from: 0, to: 0, label: 'insert X at pos 5 — mint CharId (HLC + seq)' },
-    { from: 1, to: 1, label: 'insert Y at pos 5 — concurrent, different CharId', color: '#58a6ff' },
-    { from: 0, to: 1, label: 'broadcast char X (immutable)', color: '#a5ff11' },
-    { from: 1, to: 0, label: 'broadcast char Y (immutable)', color: '#a5ff11' },
-    { from: 1, to: 1, label: 'merge: union of chars, order by left + CharId', color: '#a371f7' },
-    { from: 0, to: 0, label: 'merge: same DFS order on every node', color: '#a371f7' },
-    { type: 'divider', label: 'same chars ⇒ identical text' },
-  ]}
-/>
+`ReplicatedGrowableArray` names each character by a `CharId` (HLC + sequence)
+and orders the text by a deterministic walk over them. Two runs typed at the
+same spot can interleave, which is why new text should use `FugueText`.
 
 ## Worked examples
 
-A different real scenario for each everyday type — pick the one whose merge
-behavior matches what you are modeling.
+A different real scenario for each everyday type — pick the one whose shape
+matches what you are modeling.
 
 **`SortedMap` — a live leaderboard.** Keys sort ascending by their *raw bytes*,
-so to show highest scores first, store `u64::MAX - score` big-endian; the index
-then puts top scores at the front and `page` seeks instead of scanning:
+so to show highest scores first, store `u64::MAX - score` big-endian; the
+top scores then come first:
 
 ```rust
 // Leaderboard, highest score first. Big-endian is mandatory: otherwise 255
 // sorts after 256, and `u64::MAX - score` inverts ascending order into a ranking.
 let mut board: SortedMap<[u8; 8], LwwRegister<String>> = SortedMap::new();
 board.insert((u64::MAX - score).to_be_bytes(), player.into())?;
-let top_10 = board.page(0, 10)?;                       // O(log n + 10) via the index
+let top_10 = board.page(0, 10)?;                       // sorts every entry, then takes 10
 ```
 
 The same shape backs a time-ordered activity feed — key on a big-endian
-timestamp and `range(since.to_be_bytes()..now.to_be_bytes())?` to scan a window.
+timestamp and `range(since.to_be_bytes()..now.to_be_bytes())?` to read a window.
 
 **`UnorderedMap` — an asset registry.** The default key→value store when every
 access is a point lookup by id and iteration order never matters:
@@ -174,9 +151,9 @@ assets.insert(asset_id.clone(), metadata_uri.into())?;
 let uri = assets.get(&asset_id)?;                      // O(1), independent of size
 ```
 
-**`UnorderedSet` — a moderation blocklist.** Add-wins membership is exactly what
-a blocklist (or a tag set) wants: if two moderators block the same account on
-different nodes at once, the merge keeps it blocked rather than dropping an add:
+**`UnorderedSet` — a moderation blocklist.** Membership is exactly what a
+blocklist (or a tag set) wants: blocking an account twice leaves it blocked
+once:
 
 ```rust
 let mut blocked: UnorderedSet<String> = UnorderedSet::new();
@@ -193,18 +170,16 @@ audit.push(format!("{caller} granted role: admin").into())?;
 for line in audit.iter()? { /* render oldest-first */ }  // one O(n) pass — never get(i) in a loop
 ```
 
-**`Counter` — like / view counts.** Increments are tracked per executor and
-summed on read, so two nodes liking the same post concurrently both count — no
-lost updates, unlike a `LwwRegister<u64>` where one write would clobber the
-other. Nest per id:
+**`Counter` — like / view counts.** Increments are tracked per account and
+summed on read, so each like adds to its liker's own slot. Nest per id:
 
 ```rust
 let mut likes: UnorderedMap<String, Counter> = UnorderedMap::new();
-likes.entry(post_id)?.or_default().increment()?;       // every concurrent like survives merge
+likes.entry(post_id)?.or_default().increment()?;       // one more in the caller's slot
 ```
 
-**`ReplicatedGrowableArray` — a collaborative document.** A shared notepad where
-two people type at once; build text with one bulk `insert_str`, never a
+**`ReplicatedGrowableArray` — a collaborative document.** A shared notepad
+several people edit; build text with one bulk `insert_str`, never a
 per-character loop (each call re-materializes the whole document):
 
 ```rust
@@ -247,7 +222,7 @@ let mut pages: UnorderedMap<Slug, LwwRegister<String>> = UnorderedMap::new();
 
 In an owned collection (`Authored`, `WriteOnce`, `Moderated`, `ModeratedOnce`) a
 key's `as_ref()` bytes must also be the **tail of its borsh encoding**, because
-every node recovers the key from the stored entry's bytes. `Slug(String)` is
+the storage layer recovers the key from the stored entry's bytes. `Slug(String)` is
 (borsh writes a `String` as its length, then its bytes), and so are `Vec<u8>`,
 `[u8; N]` and account ids; a key whose bytes are not is refused on insert.
 
@@ -258,11 +233,13 @@ little-endian keys sort incorrectly.
 
 ## Access-controlled collections
 
-These add an authorization model on top of a CRDT. The crucial property:
-**authorization is enforced at merge time**, not just locally. A node's
-fail-fast local check (e.g. `only_admin()`, `owner_of()`) is a UX convenience;
-the security boundary is the merge, where every replica re-verifies signed writes
-against the writer set / owner. A forged write does not survive convergence.
+These add a write rule to a collection. The rule is checked when the run
+writes, on the app's leader, against the caller's account; a write the caller
+may not make is refused and nothing is appended, and the other replicas apply
+the leader's diff without running it again
+([Where the rule is checked](/build/permissioned-storage/#where-the-rule-is-checked)).
+Because the rule lives in the type, it holds for every method that writes the
+field, not only the ones that remember to check.
 
 - **`Authored<C>`** — *per-entry ownership over any keyed collection*. The
   collection decides how entries are read, and `Authored` decides who may change
@@ -274,7 +251,7 @@ against the writer set / owner. A forged write does not survive convergence.
   ```
 
   `insert` stamps the caller as owner, and `update` / `modify` / `remove` are
-  refused for anyone else, by every node that applies the write. Reads are the
+  refused for anyone else. Reads are the
   inner collection's own (`query`, `range`, `prefix`, `entries`), with `get`,
   `owner_of` and `owned_by_me` added. `Authored<C>` is `Guarded<C, Owner>`: one
   entry carries one stamp, so the write policy is a type parameter rather than
@@ -286,43 +263,29 @@ against the writer set / owner. A forged write does not survive convergence.
   `AuthoredMap` is `Authored<UnorderedMap<K, V>>` under its original name. Anyone
   can insert a new key (or push a new slot); the inserter is recorded as owner.
   Only the owner may `update` or `remove` (vector entries are tombstoned, not
-  physically removed, so concurrent merges stay sound). Anyone can read. Use for
+  physically removed). Anyone can read. Use for
   shared maps/logs where users own what they contributed.
 
 - **`AuthoredSortedMap<K, V>`** — the same ownership model with an ordered view,
   so a reader can `prefix` / `range` / `page` instead of walking everything.
-  Identical on the wire (it reports `CrdtType::UserStorage` like `AuthoredMap`;
-  the ordering is a node-local derived index, not replicated state), and it
-  costs what `SortedMap` costs: an index write per `insert` / `remove`, extra
-  disk per key, and one `O(n)` rebuild on the first ordered read after a sync.
+  Identical in storage (it reports `CrdtType::UserStorage` like `AuthoredMap`),
+  and it costs what `SortedMap` costs: on a cluster, each ordered read loads and
+  sorts every entry.
 
-  <Aside type="caution" title="Why the ordered view is a safety question here">
+  <Aside type="caution" title="An authored collection can be grown by anyone">
   On an authored collection the two halves of the ownership model compound:
   **anyone may insert under any key**, and **only an entry's own owner may ever
   remove it**. So a member acting in bad faith can grow the collection without
-  bound and nobody else can shrink it. With only a full scan available, every
-  honest reader then pays for that forever — and the entries never have to be
-  *believed* to do the damage, because an app that correctly ignores all of them
-  still reads all of them. Correct answers, unusable app.
-
-  Measured in `crates/storage/tests/read_cost_profile.rs`, reading an 8-entry
-  slice out of a growing collection:
-
-  | entries | `AuthoredMap::entries()` | `AuthoredSortedMap::prefix()` |
-  |---|---|---|
-  | 250 | 500 reads | 17 reads |
-  | 1,000 | 2,000 reads | 17 reads |
-  | 4,000 | 8,000 reads | 17 reads |
-
-  Adding 2,000 entries under a prefix nobody reads leaves the slice at 17. A
-  writer who targets your specific prefix can still crowd it — no collection can
-  prevent that — but an untargeted flood stops mattering.
+  bound and nobody else can shrink it, and every read that loads the whole
+  collection pays for that. On a cluster that is every ordered read too, since
+  the node keeps no index: a `prefix` slice of an `AuthoredSortedMap` loads and
+  sorts every entry before it slices. Shard by the key readers ask for (one
+  collection per topic, per channel) so a flood in one shard costs only its
+  readers.
 
   Worked example in `apps/authored-sorted-kv-store`, with
-  `workflows/authored-sorted-kv-store.yml` driving the same three properties
-  across two real nodes: that authored state replicates at all, that the owner
-  gate is refused from the *other* node, and that a flood under an unread topic
-  leaves the slice unchanged.
+  `workflows/authored-sorted-kv-store.yml` checking that authored state is read
+  back by another account and that the owner gate refuses that account's edit.
   </Aside>
 
 - **`UserStorage<T>`** — *per-user slots keyed by identity*. Each executor can
@@ -336,12 +299,14 @@ against the writer set / owner. A forged write does not survive convergence.
   single-writer case with `owner` / `transfer_ownership`; `PermissionedStorage`
   takes a policy `A` (e.g. `OwnerAcl`, `WriterSetAcl`, `ProtocolAuthorizer`) for
   per-operation granularity (read / write / delete / admin). Writers are
-  rotatable (`rotate_writers`) and rotation is itself authenticated. See
+  rotatable (`rotate_writers`), and the node checks each rotation after the run
+  against the writer set it replaces. See
   `apps/kv-store-with-shared-storage`.
 
 - **`AccessControl`** — a role registry built on `SharedStorage` whose writer set
   is the admin tier. Admins grant/revoke named roles (`grant(role, who)`,
-  `has_role`, `grant_admin`, ...); roles are LWW booleans enforced at merge. Use
+  `has_role`, `grant_admin`, ...); a grant is checked against the admin writer
+  set when the run writes. Use
   for multi-tier authorization.
 
 - **`Registry<K, V, A>`** — *one owner per name*. Members `claim` a name into
@@ -357,22 +322,22 @@ against the writer set / owner. A forged write does not survive convergence.
 
 - **`FrozenStorage<T>`** — a map whose key is the `SHA256` of the value. Entries
   are immutable: no overwrite, no remove. `insert(value)` returns the hash;
-  concurrent inserts of identical content de-duplicate automatically. Use for
+  inserting identical content again stores nothing new. Use for
   archives, static assets, or any content-addressed immutable data. See
   `apps/kv-store-with-user-and-frozen-storage`.
 
 - **`ContentAddressed<C>`** — the same rule over any keyed collection with
   `[u8; 32]` keys: `ContentAddressed<IndexedMap<[u8; 32], Event>>` is an
   immutable, de-duplicated log you can still filter and page. `insert(value)`
-  returns the hash, every node refuses an entry whose key is not its hash, and
+  returns the hash, an entry whose key is not its hash is refused, and
   nothing can update or remove one. `ContentAddressed<UnorderedMap<[u8; 32], T>>`
   stores exactly a `FrozenStorage<T>`'s bytes. A content-addressed value should
   be plain data, since its hash is taken over the bytes it is written with.
 
 - **`WriteOnce<C>`** — owned *and* immutable: the inserter owns the entry, and
-  nobody, the owner included, can change or delete it. If the owner signs two
-  different values for one key (two devices, or a patched node), every node
-  seals the entry and `get` returns `StorageError::Conflicted`. Every listing
+  nobody, the owner included, can change or delete it. A second, different
+  value for one key seals the entry and `get` returns
+  `StorageError::Conflicted`. Every listing
   of a `WriteOnce` or `ModeratedOnce` collection (`entries_with_owners`,
   `entries_by`, `my_entries`, `entries_at`, `entries`, and a sorted map's
   `keys`, `values`, `range`, `prefix`, `page`, `first`, `last`) returns a
@@ -383,26 +348,25 @@ against the writer set / owner. A forged write does not survive convergence.
 
 - **`Frozen<T>`** — one value rather than a collection: written in `init`, read
   with `get`, and there is no `set`. Its only writer holds a write-once
-  capability, so every node refuses a removal, and a second value its writer
-  signs seals it (`get` returns `StorageError::Conflicted`).
+  capability, so a removal is refused, and a second value from its writer
+  seals it (`get` returns `StorageError::Conflicted`).
 
 See [Choosing state](/build/choosing-state/) for how these compare, and for
 what protects the collections nested inside a guarded entry.
 
 <Aside type="tip" title="Composing values">
-  Collection values can be other CRDTs. Nest them
-  (`UnorderedMap<String, Counter>`) and each nested collection merges on its
-  own. A map entry holding a plain struct is one entity, though: two nodes
-  editing different fields of the same entry keep only one edit, unless the
-  type is `#[app::mergeable]` with its own `Mergeable` impl. See
-  [Merging: the entry is the unit](/build/choosing-state/#merging-the-entry-is-the-unit).
+  Collection values can be other collections. Nest them
+  (`UnorderedMap<String, Counter>`) and each nested collection is written entry
+  by entry. A map entry holding a plain struct is one entity, though: a write
+  replaces the whole struct. See
+  [Writing: the entry is the unit](/build/choosing-state/#writing-the-entry-is-the-unit).
 </Aside>
 
 ## Next steps
 
 <CardGrid>
-  <LinkCard title="Choosing state" href="/build/choosing-state/" description="Which map, which write policy, what syncs, and how permissions reach nested data." />
-  <LinkCard title="Access-controlled storage" href="/build/permissioned-storage/" description="Restrict who may write a value, and how that rule is enforced at merge." />
+  <LinkCard title="Choosing state" href="/build/choosing-state/" description="Which map, which write policy, what is replicated, and how permissions reach nested data." />
+  <LinkCard title="Access-controlled storage" href="/build/permissioned-storage/" description="Restrict who may write a value, and where that rule is checked." />
   <LinkCard title="Storage performance & Big-O" href="/build/storage-complexity/" description="What each collection costs in time and disk reads as state grows." />
-  <LinkCard title="CRDT internals" href="/protocol/crdt-internals/" description="The merge model underneath these collection types." />
+  <LinkCard title="CRDT internals" href="/protocol/crdt-internals/" description="How the storage tree underneath these types is replicated." />
 </CardGrid>

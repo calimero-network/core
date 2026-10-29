@@ -20,12 +20,12 @@ brought into scope with `use calimero_sdk::app;`.
 | `#[app::init]` | attribute | method | Marks the constructor run when the app is first installed in a context. |
 | `#[app::view]` | attribute | `&self` method | Marks a read-only method (shared lock; no mutation). |
 | `#[app::xcall]` | attribute | method | Marks a method callable from other contexts via cross-context call. |
-| `#[app::handler]` | attribute | mutating method | Marks a method an event may name as its handler; peers run only these. |
+| `#[app::handler]` | attribute | mutating method | Marks a method an event may name as its handler; only these run as handlers. |
 | `#[app::destructive]` | attribute | mutating method | Records in the ABI that the call removes data (clear, remove, delete, unregister). |
 | `#[app::idempotent]` | attribute | mutating method | Records in the ABI that repeating the call with the same arguments has no further effect. |
 | `#[app::destroy]` | attribute | method | Opts a method into state destruction (consuming `self`). |
 | `#[app::event]` | attribute | struct / enum | Declares emittable events. |
-| `#[app::private]` | attribute | struct / enum | Declares node-local (un-synchronized) state. |
+| `#[app::private]` | attribute | struct / enum | Declares state kept in the caller's own private space. |
 | `#[app::migrate]` | attribute | function | Exports a state-migration function for upgrades. |
 | `#[app::migration_check]` | attribute | `fn(old, new) -> bool` | Exports a predicate the runtime runs to accept/abort a migration. |
 | `#[derive(app::Mergeable)]` | derive | struct | Derives `Mergeable` so a custom struct can be a CRDT value. |
@@ -95,8 +95,8 @@ impl KvStore {
 
 Declares the single persistent state struct. It must be a `struct` — applying it
 to an `enum` is a compile error (no `Mergeable` impl can be generated for an
-enum). State is built from [CRDT collections](/build/collections/) so concurrent
-edits merge deterministically. The macro accepts two optional parameters:
+enum). State is built from [collections](/build/collections/), which the
+storage layer persists entry by entry. The macro accepts two optional parameters:
 
 - `emits = <EventType>` — the event type this app may emit (use a `for<'a>`
   binder for events that borrow, as below).
@@ -115,14 +115,12 @@ pub struct KvStore {
 
 <Aside type="caution">
   `#[app::state]` (and `#[derive(app::Mergeable)]`) reject fields that have no
-  merge semantics — `std::collections::*`, bare `Vec`, bare `String`, and bare
-  primitives — because they would silently diverge across replicas. Wrap scalars
+  a `Mergeable` impl — `std::collections::*`, bare `Vec`, bare `String`, and bare
+  primitives. Wrap scalars
   in `LwwRegister<T>` and use the SDK CRDT collections instead. The same lint
   also rejects interior-mutability and shared-ownership wrappers
   (`Rc`, `Arc`, `Weak`, `Cell`, `RefCell`, `UnsafeCell`, `OnceCell`, `OnceLock`,
-  `Mutex`, `RwLock`) **at any depth** — they have no merge semantics, don't
-  round-trip through borsh, and are non-portable to the single-writer wasm
-  replica.
+  `Mutex`, `RwLock`) **at any depth** — they don't round-trip through borsh.
 </Aside>
 
 ### `#[app::logic]`
@@ -246,8 +244,9 @@ See `apps/xcall-example` for the full ping-pong with provenance checks.
 
 `#[app::event]` declares an enum (or struct) of events your app can emit;
 `app::emit!` emits one. The single-argument form emits the event; the
-two-element-tuple form names a handler method the other nodes run when they
-apply the delta. The method must be marked `#[app::handler]`, or no node runs it.
+two-element-tuple form names a handler method the app's leader runs once,
+after the entry commits, as a call of the app itself. The method must be marked
+`#[app::handler]`, or it does not run ([Event handlers](/protocol/xcall/)).
 
 ```rust
 #[app::event]
@@ -269,20 +268,21 @@ pub fn on_insert(&mut self, key: &str, value: &str) -> app::Result<()> {
 }
 ```
 
-<Aside type="caution" title="Handlers may run in parallel">
-  Event handlers are **not** guaranteed to run sequentially. Per the SDK docs,
-  handlers must be commutative, independent, idempotent, and pure — only mutate
-  CRDT state, with no external side effects.
+<Aside type="caution" title="A failed handler is not retried">
+  A handler is its own call: it commits on its own, after the call that emitted
+  the event. If it fails, the failure is recorded and the handler does not run
+  again, so keep it to state changes that can stand on their own.
 </Aside>
 
-## Private (node-local) state
+## Private state
 
 ### `#[app::private]`
 
-Declares a struct whose data is stored **node-local** and is **not**
-synchronized across the network — for secrets, node-specific config, or caches.
-Tree-backed collection fields are stored through the private storage backend
-rather than the synchronized CRDT store. See `apps/private_data`.
+Declares a struct whose data lives in the **caller's own private space**
+([Private storage](/build/host-functions/#private-storage)): replicated and
+sealed with the rest of the app's state, but a run reads and writes only its
+own caller's space, so no call can read another account's. A public call (no
+caller account) has no private space. See `apps/private_data`.
 
 ```rust
 #[app::private]

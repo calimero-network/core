@@ -1,6 +1,6 @@
 ---
 title: Model your data
-description: Choose a CRDT collection for a field of your app state and read and write it.
+description: Choose a collection for a field of your app state and read and write it.
 sidebar:
   order: 2
 ---
@@ -10,9 +10,9 @@ import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 **Task:** store a piece of your app's data in a field of `#[app::state]`, and
 read and write it from a method.
 
-Every field of your state is a CRDT from `calimero_storage::collections`. Pick
-the one whose merge behaviour matches the data — that single choice decides how
-concurrent edits on different nodes converge.
+Every field of your state is a collection from `calimero_storage::collections`.
+Pick the one whose shape matches how you read and write the data — that single
+choice decides what a call writes and what a read costs.
 
 ## Pick a collection
 
@@ -22,17 +22,17 @@ concurrent edits on different nodes converge.
 | A growable list | `Vector<V>` | `calimero_storage::collections::Vector` |
 | A map you iterate in key order / by range | `SortedMap<K, V>` | `calimero_storage::collections::SortedMap` |
 | A map you filter, count or page by a **field** of its values | `IndexedMap<K, V>` + `#[derive(app::Indexed)]` | `calimero_storage::collections::IndexedMap` |
-| A count many nodes bump | `Counter` (grow-only) / `PNCounter` (also decrements) | `calimero_storage::collections::Counter` |
-| A single value, last-writer-wins | `LwwRegister<T>` | `calimero_storage::collections::LwwRegister` |
+| A count many accounts bump | `Counter` (grow-only) / `PNCounter` (also decrements) | `calimero_storage::collections::Counter` |
+| A single value | `LwwRegister<T>` | `calimero_storage::collections::LwwRegister` |
 
 <Aside type="tip" title="Wrap plain values in LwwRegister">
-  A bare `String` or `u64` isn't itself a CRDT. To store a single overwritable
-  value — including as the *value type* of a map — wrap it in `LwwRegister<T>`
-  so concurrent overwrites resolve deterministically.
+  A bare `String` or `u64` is rejected as a state field. To store a single
+  overwritable value — including as the *value type* of a map — wrap it in
+  `LwwRegister<T>`.
 </Aside>
 
-See [Collections](/build/collections/) for the full list and the exact merge
-rule of each.
+See [Collections](/build/collections/) for the full list and what each one
+stores.
 
 ## Read and write it
 

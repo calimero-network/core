@@ -9,9 +9,9 @@ import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 **Task:** keep a piece of state but limit who is allowed to change it.
 
-By default any context member can write any field. Wrapping a field in one of
+By default any caller can write any field. Wrapping a field in one of
 three collections from `calimero_storage::collections` adds an authorization rule
-that is enforced when edits merge across nodes:
+that is checked when the run writes:
 
 | Wrapper | Who can write | Read |
 | --- | --- | --- |
@@ -19,11 +19,11 @@ that is enforced when edits merge across nodes:
 | `UserStorage<T>` | each user writes only their own slot | anyone |
 | `FrozenStorage<T>` | write-once, then immutable | anyone |
 
-<Aside type="caution" title="Merge is the real boundary">
-  Each wrapper checks permission locally so bad writes fail fast, but the
-  authoritative enforcement is at **merge time** on peer nodes: a forged delta
-  from an unauthorized writer is rejected when peers verify it. The local check is
-  a convenience, not the security boundary.
+<Aside type="note" title="The run is the boundary">
+  A call runs once, on the app's leader, and the wrapper refuses a write the
+  caller may not make; the other replicas apply the leader's diff and do not run
+  it again. The rule holds because the app's own code is what runs
+  ([Where the rule is checked](/build/permissioned-storage/#where-the-rule-is-checked)).
 </Aside>
 
 The mistakes that turn these rules into decoration, from checks guarding a
@@ -144,8 +144,7 @@ the second.
 
 `AuthoredVector<T>` is an append-only list that stamps each entry with the
 account of whoever pushed it. Anyone may `push`, but `update`/`tombstone` on
-an entry are gated to its original author, enforced the same way — locally for a
-fast failure, authoritatively at merge:
+an entry are gated to its original author, checked the same way, when the run writes:
 
 ```rust
 use calimero_sdk::{app, AccountId};
@@ -211,14 +210,13 @@ time via `rotate_writers`; comment authorship is fixed at push.
 
 ```sh
 # allowed only if the caller is in the writer set
-meroctl --node node1 call set_shared \
-  --context <context-id> --args '{"value": "agreed"}'
+meroctl call -c my-app set_shared --args '{"value": "agreed"}'
 ```
 
 ## Next steps
 
 <CardGrid>
-  <LinkCard title="Access-controlled storage (deep dive)" href="/build/permissioned-storage/" description="The two planes, op masks, and how writes are enforced at merge." />
-  <LinkCard title="Collections" href="/build/collections/" description="The full set of CRDT and access-controlled collection types." />
-  <LinkCard title="Governance" href="/protocol/governance/" description="How context membership and roles drive the write boundary." />
+  <LinkCard title="Access-controlled storage (deep dive)" href="/build/permissioned-storage/" description="The wrappers, op masks, and where each rule is checked." />
+  <LinkCard title="Collections" href="/build/collections/" description="The full set of collection types, access-controlled ones included." />
+  <LinkCard title="Organizations" href="/protocol/organizations/" description="Who may call an app: org members, teams and roles." />
 </CardGrid>

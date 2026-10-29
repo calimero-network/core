@@ -17,13 +17,13 @@ a `#[cfg(test)]` module. This page walks the ones worth reading first.
 
 Each app follows the same shape (see [SDK macros](/build/sdk-macros/)):
 
-- A single **`#[app::state]`** struct built from [CRDT collections](/build/collections/).
+- A single **`#[app::state]`** struct built from [collections](/build/collections/).
 - An **`#[app::logic]` impl** with an `#[app::init]` constructor, mutating
   methods, and read-only views.
 - Optionally an **`#[app::event]`** enum it emits.
 
 Start with the state struct — it tells you which collection types the app leans
-on, and therefore which merge behavior you are getting for free. Then read the
+on, and therefore which reads and writes are cheap. Then read the
 methods to see how those collections are driven. The walkthroughs below quote
 the real struct and list the real method names; open the linked `src/lib.rs` for
 the full bodies.
@@ -54,7 +54,7 @@ the source is short enough to read end to end.
 | [`name-registry`](https://github.com/calimero-network/core/tree/master/apps/name-registry) | A `Registry` the TEE decides: usernames at most one account owns, a claim resolved by an `#[app::tee]` trigger and a timer sweep, released and re-claimed at the next epoch | [Choosing state](/build/choosing-state/#unique-names-registry) · [TEE authorship](/protocol/tee-authorship/) |
 | [`name-registry-admin`](https://github.com/calimero-network/core/tree/master/apps/name-registry-admin) | The same usernames with `Registry<_, _, Admin>`: the context's creator is the first admin, resolves contested claims itself, and hands the role on with `set_admins`, after which the old admin can no longer decide | [Choosing state](/build/choosing-state/#unique-names-registry) |
 | [`tee-cards`](https://github.com/calimero-network/core/tree/master/apps/tee-cards) | Hidden cards: a hand sealed to each player, the deck a `TeeSecret` only the TEE reads, and an `#[app::tee(every = "..")]` timer that reshuffles | [TEE authorship](/protocol/tee-authorship/) |
-| [`private_data`](https://github.com/calimero-network/core/tree/master/apps/private_data) | `#[app::private]` node-local state that is never synced across the mesh | [Permissioned storage](/build/permissioned-storage/) · [State modeling](/build/state-modeling/) |
+| [`private_data`](https://github.com/calimero-network/core/tree/master/apps/private_data) | `#[app::private]` state kept in each caller's own private space | [Permissioned storage](/build/permissioned-storage/) · [State modeling](/build/state-modeling/) |
 
 ### Collections & keys
 
@@ -74,12 +74,12 @@ the source is short enough to read end to end.
 |---------|---------|---------------|
 | [`collaborative-editor`](https://github.com/calimero-network/core/tree/master/apps/collaborative-editor) | Concurrent collaborative text with the `Rga` CRDT **(walkthrough below)** | [Collections](/build/collections/) |
 | [`fugue-editor`](https://github.com/calimero-network/core/tree/master/apps/fugue-editor) | Collaborative plain text on `FugueText`: one-call editor changes and undo tokens | [Build a collaborative editor](/build/guides/collaborative-text/) |
-| [`fugue-collab`](https://github.com/calimero-network/core/tree/master/apps/fugue-collab) | A `FugueText` document edited from several real nodes, with anchors and id-carrying events | [Build a collaborative editor](/build/guides/collaborative-text/) |
+| [`fugue-collab`](https://github.com/calimero-network/core/tree/master/apps/fugue-collab) | A `FugueText` document edited by several members, with anchors and id-carrying events | [Build a collaborative editor](/build/guides/collaborative-text/) |
 | [`rich-collab`](https://github.com/calimero-network/core/tree/master/apps/rich-collab) | A `RichDocument`: blocks, formatting marks, split and merge, undo | [Build a collaborative editor](/build/guides/collaborative-text/) |
 | [`nested-crdt-test`](https://github.com/calimero-network/core/tree/master/apps/nested-crdt-test) | Nesting collections inside collection values (maps of maps, vectors of counters) | [Advanced SDK](/build/advanced-sdk/) |
 | [`team-metrics-macro`](https://github.com/calimero-network/core/tree/master/apps/team-metrics-macro) | Nested CRDT structs via `#[derive(Mergeable)]` **(walkthrough below)** | [SDK macros](/build/sdk-macros/) |
-| [`team-metrics-custom`](https://github.com/calimero-network/core/tree/master/apps/team-metrics-custom) | A hand-written `Mergeable` for merge logic the derive can't express **(walkthrough below)** | [Advanced SDK](/build/advanced-sdk/) |
-| [`blobs`](https://github.com/calimero-network/core/tree/master/apps/blobs) | Blob storage: hold file metadata + announce blobs to the context **(walkthrough below)** | [Blobs](/build/guides/blobs/) |
+| [`team-metrics-custom`](https://github.com/calimero-network/core/tree/master/apps/team-metrics-custom) | A hand-written `Mergeable` impl in place of the derive **(walkthrough below)** | [Advanced SDK](/build/advanced-sdk/) |
+| [`blobs`](https://github.com/calimero-network/core/tree/master/apps/blobs) | Blob storage: hold file metadata + announce blobs to the app **(walkthrough below)** | [Blobs](/build/guides/blobs/) |
 | [`xcall-example`](https://github.com/calimero-network/core/tree/master/apps/xcall-example) | Cross-context calls + the `#[app::xcall]` entry-point gate **(walkthrough below)** | [Cross-context calls](/build/guides/cross-context/) |
 
 ### Migrations
@@ -111,9 +111,8 @@ pub struct KvStore {
 ```
 
 The `UnorderedMap<String, LwwRegister<String>>` pattern is the bread and butter
-of Calimero state: an add-wins map whose values are each a last-writer-wins
-register, so concurrent writes to the *same* key resolve by timestamp while
-writes to *different* keys all survive a merge.
+of Calimero state: a map whose values are each a register, stored one entry
+per key, so a call that sets one key writes only that entry.
 
 **Key methods:**
 
@@ -132,17 +131,15 @@ signs a bundle into the repo root's `dist/`, named after the manifest's
 install and call it:
 
 ```sh
-meroctl --node node1 app install --path dist/com.calimero.kv-store-0.0.0.mpk
-meroctl --node node1 call set --context <context-id> \
-  --args '{"key": "hello", "value": "world"}'
+meroctl app install --path dist/com.calimero.kv-store-0.0.0.mpk
+meroctl call -c <app> set --args '{"key": "hello", "value": "world"}'
 ```
 
 ## kv-store-with-handlers
 
 Same key/value core as `kv-store`, but each `set`/`remove`/`clear` emits an
 event tagged with a **handler method name** — showing how an emitted event can
-be routed to a callback method. It also threads a CRDT `Counter` to count
-handler executions across all nodes.
+be routed to a callback method. It also keeps a `Counter` of handler runs.
 
 **State shape** ([`apps/kv-store-with-handlers/src/lib.rs`](https://github.com/calimero-network/core/tree/master/apps/kv-store-with-handlers/src/lib.rs)):
 
@@ -161,14 +158,15 @@ pub struct KvStore {
 |--------|--------------|
 | `set` / `remove` / `clear` | Same as `kv-store`, but `emit!` pairs the event with a handler name (e.g. `"insert_handler"`). |
 | `insert_handler` / `update_handler` / `remove_handler` / `clear_handler` | The handler callbacks; each logs and bumps `handler_counter`. |
-| `get_handler_execution_count()` | The global G-Counter sum of handler runs across nodes. |
+| `get_handler_execution_count()` | The number of handler runs. |
 | `get_handlers_called()` / `get_unique_handlers_called()` / `was_handler_called(name)` | Introspect which handlers ran. |
 | `get` / `entries` / `len` | The same reads as `kv-store`. |
 
 <Aside type="note" title="Handlers are not auto-dispatched in TestHost">
   The native harness captures emitted events but does not run their handlers —
   the app's own tests call `insert_handler(...)` directly to exercise the
-  bookkeeping. The event→handler routing happens on a real node.
+  bookkeeping. The event→handler routing happens on a node, where the app's
+  leader runs each handler once after the entry commits.
 </Aside>
 
 **Build & run.** `cargo mero bundle --dev --no-icon` produces
@@ -178,8 +176,8 @@ the [Quickstart](/build/quickstart/).
 ## collaborative-editor
 
 A real-time collaborative text editor built on the **`ReplicatedGrowableArray`**
-(RGA) text CRDT, so multiple users can edit the same document concurrently and
-converge without manual conflict resolution.
+(RGA) text collection, so each insert or delete names its place in the text
+by character id, not by an index another user's edit may have shifted.
 
 **State shape** ([`apps/collaborative-editor/src/lib.rs`](https://github.com/calimero-network/core/tree/master/apps/collaborative-editor/src/lib.rs)):
 
@@ -193,11 +191,10 @@ pub struct EditorState {
 }
 ```
 
-Every field is a CRDT on purpose — the source notes that mixing non-CRDT fields
-into root state causes data loss under concurrent merges. `metadata` holds
+Every field is a collection, as `#[app::state]` requires. `metadata` holds
 `"title"` as an LWW register any editor may change. The creating account is a
-`Frozen<String>`: written once in `init`, and no node accepts a change, so no
-member can rename the owner.
+`Frozen<String>`: written once in `init`, and the storage layer refuses any
+later write, so no member can rename the owner.
 
 **Key methods:**
 
@@ -214,16 +211,16 @@ member can rename the owner.
 
 **Build & run.** `cargo mero bundle --dev --no-icon` produces
 `dist/com.calimero.collaborative-editor-0.0.0.mpk`. The collaborative payoff
-appears with two nodes editing the same context: install on each, then
-interleave `insert_text` / `delete_text` calls and read
-`get_text()` on both; see [Quickstart](/build/quickstart/) for the install flow.
+appears with two members editing the same app: interleave their
+`insert_text` / `delete_text` calls and read `get_text()` as each; see
+[Quickstart](/build/quickstart/) for the install flow.
 
 ## team-metrics (macro & custom)
 
 Two sibling apps that store **nested CRDT structs** as map values — a
 `TeamStats` of three `Counter`s per team — and differ only in how that struct
-merges. They are the clearest illustration of `#[derive(Mergeable)]` versus a
-hand-written merge.
+gets its `Mergeable` impl, which a collection value needs. They are the clearest
+illustration of `#[derive(Mergeable)]` versus a hand-written impl.
 
 **State shape** ([`apps/team-metrics-macro/src/lib.rs`](https://github.com/calimero-network/core/tree/master/apps/team-metrics-macro/src/lib.rs)):
 
@@ -242,11 +239,12 @@ pub struct TeamMetricsApp {
 }
 ```
 
-In `team-metrics-macro`, `#[derive(Mergeable)]` writes the merge for you — it
-just merges each field, which works because every field is itself a CRDT. The
+In `team-metrics-macro`, `#[derive(Mergeable)]` writes the impl for you — it
+calls each field's own `merge`, which works because every field is itself a
+collection. The
 `team-metrics-custom` app has the identical state but writes
 `impl Mergeable for TeamStats { fn merge(...) }` (and a matching `RekeyTarget`)
-by hand, for when you need merge logic the derive can't express — see
+by hand, for a struct whose fields are not all collections — see
 [Advanced SDK](/build/advanced-sdk/). Reach for the derive unless you have a
 reason not to.
 
@@ -266,9 +264,10 @@ reason not to.
 
 A minimal file-sharing app: the binary lives in Calimero's **blob store**, while
 the app holds only metadata records, each the uploader's own entry, keyed by a
-generated file id that names the uploader. A client uploads the bytes with
-the context's id, and registering the file **announces the blob to the
-context** so other nodes can discover and download it.
+generated file id that names the uploader. A client uploads the bytes to the
+app, and registering the file **announces the blob to the app**, which marks
+it in the app's state as the app's blob; a node of the cluster that lacks the
+bytes fetches them from another node.
 
 **State shape** ([`apps/blobs/src/lib.rs`](https://github.com/calimero-network/core/tree/master/apps/blobs/src/lib.rs)):
 
@@ -281,9 +280,9 @@ pub struct FileShareState {
 ```
 
 `FileRecord` (id, name, `blob_id`, size, mime type, uploader, timestamp) is a
-plain struct with a **hand-rolled `Mergeable`** that treats each record as an
-atomic last-writer-wins value, using `uploaded_at` as the tiebreaker — a derive
-would have forced every field into its own CRDT wrapper. `blob_id` is the SDK's
+plain struct with a **hand-rolled `Mergeable`** that treats each record as one
+value, written whole — a derive would have forced every field into its own
+collection wrapper. `blob_id` is the SDK's
 `BlobId` newtype, which serializes to a hex string over the wire. `files` is an
 `AuthoredMap`, so only a record's uploader changes or deletes it, and the
 `uploaded_by` a reader sees is read from the entry's owner stamp.
@@ -354,7 +353,7 @@ move on the target. See [Quickstart](/build/quickstart/) for the install flow.
 
 A handful of crates under [`apps/`](https://github.com/calimero-network/core/tree/master/apps)
 are **harness and conformance fixtures**, not teaching examples — they exist to
-exercise the node, the sync layer, or the wire formats, and read awkwardly as
+exercise the node, the storage layer, or the wire formats, and read awkwardly as
 app tutorials. Reach for them only when you are working on the harness or the
 formats they pin down:
 

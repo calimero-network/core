@@ -59,7 +59,7 @@ compose into the per-collection table further down.
 | Derive an entry id | `O(1)` | one SHA-256 over `parent` + key |
 | Point read (`get` / `contains`) | `O(1)` in `n` | ~3 backend reads + a borsh decode; independent of collection size |
 | Load the child-id set | `O(n)` cold, `O(1)` warm | read the parent's child-id list once, then cache it in memory for the rest of the call |
-| `len` | `O(1)` | an open collection reads its child trie's count; a guarded one (`Authored*`, `WriteOnce`, `Moderated`, `UserStorage`, anything nested in an owned entry or a cell) reads a node-local count of the entries it admits, which the node's **first** count loads once in `O(n)` |
+| `len` | `O(1)` open, `O(n)` guarded | an open collection reads its child trie's count; a guarded one (`Authored*`, `WriteOnce`, `Moderated`, `UserStorage`, anything nested in an owned entry or a cell) loads the entries it admits and counts them |
 | Iterate all entries | `O(n)` reads | one point read per entry; there is no value index to shortcut it |
 | `insert` / `remove` (any write) | `O(K log K)` + ancestor walk | parent re-sorts and SHA-256s all `K` siblings, then re-hashes each ancestor up to the root |
 | Read root / scope hash | `O(1)` | kept current incrementally by every write |
@@ -69,12 +69,11 @@ compose into the per-collection table further down.
 the in-memory cache during the current execution. The **first** access that
 needs it pays one `O(n)`-sized read; subsequent accesses in the same call are
 free. Neither `len` nor `contains` needs it. A guarded collection cannot count
-from its child trie, which also holds entries a patched peer linked that the
-collection does not admit, so it keeps a count of the ones it does admit
-beside the ordered index: node-local, never synced or hashed, carried forward
-by every link and unlink, local or from a peer, and trusted only at the trie
-root it was taken at. A node counts a guarded collection by loading its
-children once, the first time it counts it, and in constant reads after that.
+from its child trie, whose count includes entries the collection does not
+admit, so it counts the ones it does admit. The storage crate can keep that
+count in an index plane beside the state, but a cluster node keeps no index
+plane (see [Ordered reads and indexes](#ordered-reads-and-indexes-on-a-cluster)),
+so on a cluster every `len` of a guarded collection loads its entries.
 :::
 
 ## Per-collection complexity
@@ -82,14 +81,14 @@ children once, the first time it counts it, and in constant reads after that.
 | Collection | `get` / `contains` | `insert` / `remove` | `len` | Iterate all | Ordered access (range / prefix / page) |
 |---|---|---|---|---|---|
 | `UnorderedMap` / `UnorderedSet` | `O(1)` | `O(K log K)` | `O(1)` warm | `O(n)` reads | **none** — hashed ids have no key order |
-| `SortedMap` / `SortedSet` | `O(1)` | `O(K log K)` + index write | `O(1)` warm | see gotcha below | `range`/`prefix` `O(log n + k)`; `first`/`last` `O(log n)` |
-| `IndexedMap` | `O(1)` | `O(K log K)` + one index write per changed index row | `O(1)` warm | `O(n)` reads | by **field value**: `query(..).eq/range` `O(log n + k)`; `desc().limit(k)` `O(k log n)`; `count` reads index rows only |
+| `SortedMap` / `SortedSet` | `O(1)` | `O(K log K)` | `O(1)` warm | `O(n log n)` | every ordered read loads and sorts all entries: `O(n log n)` |
+| `IndexedMap` | `O(1)` | `O(K log K)` | `O(1)` warm | `O(n)` reads | every query by **field value** scans all entries: `O(n)` reads |
 | `Vector` | `get(i)` is `O(i)` reads | `push` `O(K log K)`; `update(i)` `O(1)` | `O(1)` warm | `O(n)` reads | positional only — see gotcha |
 | `ReplicatedGrowableArray` (RGA) | `get_text` `O(n log n)` | single-char `insert` `O(n log n)`; `insert_str` is bulk | `O(n log n)` | `O(n log n)` | n/a |
 | `FugueText` | `get_text` / `char_at` `O(b)` in blocks | writes each touched block once; `insert_str` and `apply_delta` are bulk | `O(b)` | `O(b)` | n/a |
 | `Counter` / `PNCounter` | `value()` `O(actors)` reads | `increment` `O(K log K)` | n/a | n/a | n/a |
 | `LwwRegister` | `O(1)` | `O(K log K)` | n/a | n/a | n/a |
-| `Authored*` (map / vector) | same as the underlying collection, plus a per-entry owner-stamp read | | `O(1)`, from the node-local count (see the note above) | | |
+| `Authored*` (map / vector) | same as the underlying collection, plus a per-entry owner-stamp read | | `O(n)`: loads the admitted entries (see the note above) | | |
 
 A few rows deserve their own warnings.
 
@@ -113,46 +112,24 @@ order, **iterate it** (`vec.iter()`, a single `O(n)` pass) instead of indexing
 by position.
 :::
 
-### `SortedMap` / `SortedSet`
+### Ordered reads and indexes on a cluster
 
-`SortedMap` adds a node-local ordered index so range and prefix queries can seek
-instead of scan. But not every read uses it:
+`SortedMap`, `SortedSet` and `IndexedMap` are written to use an ordered index
+plane (the `storage_index_*` host functions) beside the app's state, so a range,
+a prefix or a query by field value could seek instead of scan. A cluster node
+does not keep that plane (its state store implements none of it), so the
+collections fall back to reading every entry, on every read:
 
-- `range`, `prefix`, `first`, `last`, and `page` go through the index:
-  `O(log n + k)` (seeks, then loads only the `k` matches).
-- `entries()`, `keys()`, and `values()` **ignore the index** and sort all
-  entries in memory: `O(n log n)`, after an `O(n)`-read full materialization.
-- `page(offset, limit)` walks and discards `offset` rows before returning
-  `limit` — so deep pagination (`page(100000, 20)`) is `O(offset + limit)`, not
-  `O(limit)`. Prefer a `range` keyed on the last item you saw ("seek
-  pagination") over large offsets.
+- `SortedMap` / `SortedSet`: `range`, `prefix`, `page`, `first`, `last`,
+  `entries()`, `keys()` and `values()` load all entries and sort them in
+  memory, `O(n log n)` after `O(n)` reads.
+- `IndexedMap`: `query(index).eq(v)`, `.range(a..b)`, `.desc().limit(k)` and
+  `.count()` load all entries and filter them, `O(n)` reads.
 
-Use `SortedMap` **only** when you genuinely need key order. It costs an extra
-index write on every insert/remove plus extra disk per key; if you only ever
-point-access by key, use `UnorderedMap`.
-
-### `IndexedMap`
-
-`IndexedMap` is an `UnorderedMap` whose **value type** declares secondary
-indexes (`#[derive(app::Indexed)]`), so a read by field value — "the open
-issues", "the notes of deal 7", "the newest twenty posts" — seeks instead of
-scanning the whole map.
-
-- `query(index).eq(v)` / `.range(a..b)` seek to the matching rows:
-  `O(log n + k)`. On a compound index, `eq` on the leading fields leaves the rest
-  to order the result, so "status = open, newest first" is one seek.
-- `.desc().limit(k)` walks back with one bounded reverse seek per row:
-  `O(k log n)`, however large the index.
-- `.count()` reads index rows only and loads no entry.
-- Each `insert` / `update` / `remove` writes only the index rows that changed.
-  Measured by the cost gate: per insert, **identical state writes** to an
-  `UnorderedMap`, plus 2 state reads, 1 index read and 3 index writes.
-- `entries()` ignores the indexes: `O(n)` like any map.
-
-Its stored bytes are exactly an `UnorderedMap`'s, so switching an existing field
-to `IndexedMap` needs no migration. Change an indexed field with
-`update(key, |v| ...)`, not by reinserting through a raw guard, or the next
-query pays a rebuild.
+The answers are correct; they are not cheap. Keep a collection you read in
+order or query by field small, or shard it (below) so each read covers one
+shard. `IndexedMap`'s stored bytes are exactly an `UnorderedMap`'s, so
+switching an existing field between the two needs no migration.
 
 ### `ReplicatedGrowableArray` (RGA)
 
@@ -180,41 +157,17 @@ The measured rows for every text workload, RGA included, are pinned in [`tools/s
 
 A counter stores one slot per executor that has touched it. `value()` reads
 **every** slot and sums them, so it is `O(actors)` reads — cheap while a handful
-of nodes write to it, linear in the number of distinct writers over the
+of accounts write to it, linear in the number of distinct writers over the
 counter's lifetime.
 
-## Merge cost
+## Replication cost
 
-Sync applies remote changes through the same write path, so the costs above also
-govern reconciliation:
-
-- Merging **one** entry costs the same as inserting it: `O(K log K)`.
-- A full root merge touches up to `N` entries (where `N` is total state size),
-  each paying its parent's sibling rehash — roughly `O(N * K)`. When everything
-  hangs off one parent (`K ≈ N`), that degrades toward `O(N^2)`. This is the
-  same "keep `K` bounded" lesson as for local writes, now applied to whole-state
-  convergence.
-
-### The ordered index and sync
-
-`SortedMap`'s ordered index is **node-local, derived, and not synced**. A remote
-sync writes entries directly, bypassing `insert`, so it never updates the index.
-The next ordered read notices the mismatch (a `full_hash` marker no longer
-matches the entry set) and rebuilds the index **once** — an `O(n)`-reads pass —
-then resumes seeking. Under `PrivateStorage` (which has no ordered backing
-store), ordered reads fall back to an in-memory sort, `O(n log n)` per read, with
-no seek advantage. See [CRDT internals](/protocol/crdt-internals/) for the merge
-model behind this.
-
-`IndexedMap`'s secondary indexes follow the same rules and live in the same
-node-local column: never synced, never in the root hash. Their marker also
-fingerprints the index declarations, so adding or renaming an index rebuilds on
-the next query too. **The first query after a remote change is therefore
-`O(n)` reads** (it re-derives every entry's keys, writing only the rows that
-changed); every query after it seeks again. A rebuild whose writes do not land
-(an execution with node-local writes suppressed, such as the migration check)
-answers that query by scanning rather than from the unbuilt index; `SortedMap`
-and `SortedSet` do the same.
+A call runs once, on the app's leader; the other replicas apply the keys and
+values the run wrote and run nothing ([The write path](/protocol/write-path/)).
+So what a call costs the cluster is its write set: the entries it touched plus
+the parent hashes it recomputed, all paid once, on the leader. Nothing is
+merged between replicas, and a replica that falls behind catches up by applying
+the same entries.
 
 ## Blobs
 
@@ -243,13 +196,12 @@ messages: UnorderedMap<u64, LwwRegister<String>>,
 By message 100,000, `K ≈ 100_000`. Each new message is an `insert`, and every
 insert re-sorts and SHA-256s **all** of the parent's children to recompute its
 Merkle hash — `O(K log K)`. So the 100,000th message hashes ~100k siblings, the
-room gets *slower the more it is used*, and a full sync that replays the room
-degrades toward `O(N^2)` because `K ≈ N`. This is a write/merge cliff, not a read
+room gets *slower the more it is used*. This is a write cliff, not a read
 problem — point reads stay `O(1)`.
 
 The fix is to bound `K`: shard the messages so no single parent holds the whole
 history. Bucketing by UTC day keeps each parent at one day's traffic, and the
-inner `SortedMap` still gives ordered reads within a day:
+inner `SortedMap` gives ordered reads within a day, sorting only that day:
 
 ```rust
 // "room:2026-06-25" -> that day's messages, time-ordered. Each parent's K is
@@ -261,7 +213,7 @@ messages: UnorderedMap<String, SortedMap<[u8; 8], LwwRegister<String>>>,
 |---|---|---|
 | Parent size `K` at 100k messages | ~100,000 | ~one day's count |
 | Cost of the next `insert` | `O(100k · log 100k)` | `O(day · log day)` |
-| Full-room merge | toward `O(N^2)` | `O(N · day)` |
+| Ordered read of one day | sorts the whole history | sorts one day |
 
 The shard key is whatever bounds growth for *your* access pattern — a time
 bucket, a room id, a key prefix, or an owner. The only requirement is that no
@@ -273,9 +225,8 @@ single parent grows unbounded.
   `UnorderedMap`. Ordered scans, ranges, or pagination → `SortedMap`. Append-log
   with in-order reads → `Vector` (iterate, don't index). Collaborative text →
   `FugueText` with one `apply_delta` per editor change. A running total across writers → `Counter`.
-- **Reach for `SortedMap` only when you need order.** It is the `BTreeMap` to
-  `UnorderedMap`'s `HashMap`: more write and disk cost, paid back only if you
-  actually range/prefix/paginate.
+- **Reach for `SortedMap` only when you need order.** On a cluster every
+  ordered read sorts the whole collection, so keep it small or sharded.
 - **Build RGA text with `insert_str`, never a per-character loop.** One bulk call
   materializes the document order once instead of once per character.
 - **Don't iterate to compute what you can track incrementally.** Iterating to
@@ -286,17 +237,17 @@ single parent grows unbounded.
   pass; `for i in 0..len { vec.get(i) }` is `O(n^2)` reads.
 - **Watch write cost on large parents.** Because every write rehashes its
   siblings, a single collection holding tens of thousands of entries makes every
-  write to it slow and every full merge expensive. Partition large datasets
+  write to it slow. Partition large datasets
   (shard by key prefix, time bucket, or owner) so no single parent grows
   unbounded.
 
-For the merge semantics that sit underneath these costs, see
+For the storage tree underneath these costs, see
 [Collections](/build/collections/) and [CRDT internals](/protocol/crdt-internals/).
 
 ## Next steps
 
 <CardGrid>
-  <LinkCard title="Collections" href="/build/collections/" description="The merge semantics of each collection these costs come from." />
-  <LinkCard title="CRDT internals" href="/protocol/crdt-internals/" description="The storage tree and merge model underneath the Big-O." />
+  <LinkCard title="Collections" href="/build/collections/" description="What each collection stores and when to use it." />
+  <LinkCard title="CRDT internals" href="/protocol/crdt-internals/" description="The storage tree underneath the Big-O." />
   <LinkCard title="Gotchas & sharp edges" href="/build/gotchas/" description="Sharp edges around writes, iteration, and large parents." />
 </CardGrid>

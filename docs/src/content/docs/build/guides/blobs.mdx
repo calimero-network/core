@@ -1,22 +1,35 @@
 ---
 title: Store and share a blob
-description: Write bytes to a blob, get its id, and announce it so peers in the context can fetch it.
+description: Upload bytes or write them from a run, keep the blob's id in your state, and read it back from any node of the cluster.
 sidebar:
   order: 5
 ---
 
-import { Steps, Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 import SeqDiagram from '../../../../components/SeqDiagram.astro';
 
-**Task:** store a large binary (a file, an image) and make it available to other
-nodes in the context.
+**Task:** store a large binary (a file, an image) for your app and read it back.
 
-Blobs live outside CRDT state: you store the bytes once, get back a content
-`BlobId`, keep that small id in your state, and announce the blob so peers can
-fetch it. The replication model is in the
-[blobs reference](/protocol/blobs/).
+Blobs live outside the app's state: the bytes go to the cluster's blob store,
+you get back a content `BlobId`, and you keep that small id in your state. The
+store and its replication are in the [blobs reference](/protocol/blobs/).
 
-## The blob flow
+## Which blobs are your app's
+
+Bytes in the store belong to no one. A blob is your app's once the app's state
+**marks** it, and a run can open only blobs its app marks. Two things write a
+mark, both as part of an entry in the app's log:
+
+- **An upload.** `POST /apps/{app}/blobs` (or `meroctl blob upload FILE -c
+  CONTEXT`) by a caller who may write the app stores the bytes on a majority of
+  the cluster's nodes and commits the mark. The answer names the blob.
+- **A run that writes one.** `blob_create` → `blob_write`… → `blob_close` in a
+  call produces the blob on the run's outcome; the entry's diff marks it.
+
+A node that misses the bytes of a blob its app marks fetches them from another
+node of the cluster, so every node can serve every blob of the app.
+
+## The blob API
 
 The SDK exposes a file-descriptor-style API in `calimero_sdk::env`:
 
@@ -25,22 +38,19 @@ The SDK exposes a file-descriptor-style API in `calimero_sdk::env`:
 | Open a new blob for writing | `blob_create()` | fd (`u64`) |
 | Append bytes | `blob_write(fd, &data)` | bytes written |
 | Finish writing | `blob_close(fd)` | `BlobId` (`[u8; 32]`) |
-| Open an existing blob | `blob_open(&blob_id)` | fd |
+| Open one of the app's blobs | `blob_open(&blob_id)` | fd |
 | Read bytes | `blob_read(fd, &mut buf)` | bytes read |
 
 Write path: `blob_create` → `blob_write`… → `blob_close` (the returned id is the
-content hash). Read path: `blob_open` → `blob_read`… → `blob_close`. `blob_open`
-opens only a blob held for the current context: the app wrote it, it was
-uploaded with that `context_id` on a member node, it was fetched from the
-context's peers, or it is the context's own application. Anything else traps.
-To read a blob another node produced, use `blob_open_in_context`, which fetches
-it from the context's peers when this node does not hold it for the context.
+content hash). Read path: `blob_open` → `blob_read`… → `blob_close`. Opening a
+blob the app does not mark traps.
 
-## Announce so peers can fetch
+## Record an uploaded blob
 
-Storing a blob keeps it local. `env::blob_announce_to_context(&blob_id,
-&context_id)` advertises it to the rest of the context so other nodes can
-discover and download it. This is `apps/blobs`:
+In `apps/blobs` a client uploads the bytes to the app, then calls a method with
+the resulting `BlobId`. `env::blob_announce_to_context` answers whether the blob
+is the app's — on a cluster there is nothing to announce — so the method can
+refuse an id the app does not hold:
 
 ```rust
 use calimero_sdk::{app, env, AccountId, BlobId};
@@ -49,15 +59,14 @@ pub fn upload_file(&mut self, name: String, blob_id: BlobId, size: u64) -> app::
     let current_context = env::context_id();
 
     if env::blob_announce_to_context(blob_id.as_ref(), &current_context) {
-        app::log!("Announced blob {} to network", blob_id);
+        app::log!("Blob {} is the app's", blob_id);
     } else {
-        app::log!("Warning: Failed to announce blob {}", blob_id);
+        app::log!("Warning: blob {} is not the app's", blob_id);
     }
 
-    // keep the small id + metadata in CRDT state; the bytes stay in the blob store.
-    // The id names the uploader and carries a nonce: a shared counter would let
-    // two nodes mint the same id at once. `files` is an `AuthoredMap`, so the
-    // record is the uploader's own entry.
+    // keep the small id + metadata in state; the bytes stay in the blob store.
+    // The id names the uploader and carries a nonce. `files` is an
+    // `AuthoredMap`, so the record is the uploader's own entry.
     let mut nonce = [0u8; 8];
     env::random_bytes(&mut nonce);
     let file_id = format!("{}_{}", AccountId::from(env::account_id()), hex(&nonce));
@@ -66,57 +75,42 @@ pub fn upload_file(&mut self, name: String, blob_id: BlobId, size: u64) -> app::
 }
 ```
 
-<Aside type="note" title="Who writes the bytes">
-  In `apps/blobs` the bytes are uploaded by a blob client with the context's
-  `context_id`, and the method receives the resulting `BlobId`; the contract's
-  job is to record the id and announce it. An upload naming no context is in no
-  context: announcing it returns `false` and shares nothing.
-  Use the `blob_create`/`blob_write`/`blob_close` calls above when you produce the
-  bytes inside the app itself.
-</Aside>
-
-<Aside type="caution" title="Announce only to your own context">
+<Aside type="caution" title="Name only your own app">
   `blob_announce_to_context` and `blob_open_in_context` take only the **current**
-  context (`env::context_id()`); the runtime refuses any other context.
+  app (`env::context_id()`); the runtime refuses any other.
 </Aside>
 
-The full arc: write the bytes to get a content id, announce that id so the rest
-of the context learns the blob exists, then a peer's app opens it by id with
-`blob_open_in_context`, which fetches and streams the bytes, recomputing the id
-to confirm it got what it asked for.
-
-<SeqDiagram id="d-build-blobs-share" title="Upload, announce, and fetch a blob"
+<SeqDiagram id="d-build-blobs-share" title="Upload a blob, record it, read it back"
   lanes={[
-    { label: 'Author', color: '#3fb950' },
+    { label: 'Client', color: '#3fb950' },
     { label: 'Node', color: '#58a6ff' },
-    { label: 'Peer', color: '#a371f7' },
+    { label: 'App', color: '#a371f7' },
   ]}
   steps={[
-    { from: 0, to: 1, label: 'blob_create()' },
-    { from: 1, to: 0, label: 'fd', dashed: true },
-    { from: 0, to: 1, label: 'blob_write(fd, data) …' },
-    { from: 0, to: 1, label: 'blob_close(fd)' },
-    { from: 1, to: 0, label: 'BlobId (content hash)', dashed: true },
-    { from: 0, to: 1, label: 'blob_announce_to_context(blob_id, ctx)' },
-    { type: 'divider', label: 'peers in the context learn the blob exists' },
-    { from: 2, to: 1, label: 'blob_open_in_context(blob_id, ctx)' },
-    { from: 1, to: 2, label: 'stream chunks', dashed: true },
-    { from: 2, to: 2, label: 'recompute id, store bytes locally' },
+    { from: 0, to: 1, label: 'POST /apps/{app}/blobs (bytes)' },
+    { from: 1, to: 1, label: 'store on a majority; commit the mark' },
+    { from: 1, to: 0, label: 'blob id', dashed: true },
+    { from: 0, to: 1, label: 'call upload_file(name, blob_id, size)' },
+    { from: 1, to: 2, label: 'run on the leader' },
+    { from: 2, to: 2, label: 'blob_announce_to_context → true; store the record' },
+    { type: 'divider', label: 'any node of the cluster can serve the blob' },
+    { from: 0, to: 1, label: 'GET /apps/{app}/blobs/{id}' },
+    { from: 1, to: 0, label: 'bytes (fetched from another node if missing)', dashed: true },
   ]} />
 
 ## Exercise it
 
 ```sh
-# the BlobId comes back hex-encoded; store the metadata via your method
-meroctl --node node1 call upload_file \
-  --context <context-id> \
-  --args '{"name": "notes.txt", "blob_id": "<hex-blob-id>", "size": 12}'
+meroctl blob upload notes.txt -c my-app          # prints the blob id
+meroctl call -c my-app upload_file \
+  --args '{"name": "notes.txt", "blob_id": "<blob-id>", "size": 12}'
+meroctl blob download <blob-id> -c my-app -o notes-copy.txt
 ```
 
 ## Next steps
 
 <CardGrid>
-  <LinkCard title="Blobs reference" href="/protocol/blobs/" description="Content addressing, chunking, and the replication model." />
+  <LinkCard title="Blobs reference" href="/protocol/blobs/" description="The store, marks, uploads, downloads and deletion." />
   <LinkCard title="Example apps" href="/build/examples/" description="The apps/blobs file-sharing app this guide is drawn from." />
   <LinkCard title="Storage performance & Big-O" href="/build/storage-complexity/" description="Why large payloads belong in the blob store, not collection state." />
 </CardGrid>

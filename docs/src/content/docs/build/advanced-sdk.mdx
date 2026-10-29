@@ -1,30 +1,34 @@
 ---
 title: Advanced SDK
-description: Power-user SDK concepts — custom Mergeable, re-keying, the merge registry, private storage, xcall, event handlers, and migrations.
+description: Power-user SDK concepts — custom Mergeable, re-keying, storage strategies, private storage, xcall, event handlers, migrations, and the embedded ABI.
 sidebar:
   order: 8
 ---
 
 import { CardGrid, LinkCard } from '@astrojs/starlight/components';
-import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 This page collects the load-bearing details behind the SDK's convenience
 macros: what `#[derive(Mergeable)]` actually generates, why a value stored in a
-map needs deterministic ids, how root-state merges round-trip through your WASM
-module, and the rules that keep migrations and event handlers convergent. If you
-have only written apps with the derive macros and the built-in collections, you
-do not need any of this — reach for it when you hand-roll a CRDT value, debug a
-sync divergence, or write a non-trivial migration.
+map needs deterministic ids, how private state is stored, and the rules for
+xcalls, handlers and migrations. If you have only written apps with the derive
+macros and the built-in collections, you do not need any of this — reach for it
+when you hand-roll a collection value, store private state, or write a
+non-trivial migration.
+
+On a cluster an app's calls run one at a time on its leader and the other
+replicas apply what each run wrote; nothing is merged between replicas
+([CRDT collections](/protocol/crdt-internals/)). The `Mergeable` machinery below
+is what the storage crate requires of a value's type, not what keeps replicas
+in agreement.
 
 Prerequisites: [`collections`](/build/collections/) and
 [`sdk-macros`](/build/sdk-macros/).
 
-## Custom `Mergeable` for a struct CRDT value
+## Custom `Mergeable` for a struct value
 
 A struct stored as a collection value (e.g. `UnorderedMap<String, TeamStats>`)
-must be `Mergeable` so replicas converge. The trait is small — note there is no
-context argument; timestamp/identity suppression is handled out-of-band by the
-runtime's merge mode, not threaded through `merge`:
+must implement `Mergeable`; the collections require it of their values. The
+trait is small:
 
 ```rust
 pub trait Mergeable {
@@ -49,7 +53,7 @@ pub struct TeamStats {
 impl Mergeable for TeamStats {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // Custom hooks go here (validation, logging, business rules);
-        // then delegate to each field's CRDT merge.
+        // then delegate to each field's own merge.
         self.wins.merge(&other.wins)?;
         self.losses.merge(&other.losses)?;
         self.draws.merge(&other.draws)?;
@@ -66,11 +70,11 @@ deriving.
 
 This is the part that bites. `merge` alone is not enough: a struct stored as a
 map **value** has nested collection fields (`Counter`, `LwwRegister`, …) that
-each carry their own entity id. For the runtime to merge those fields as child
-entities — rather than treating the whole struct as one opaque last-writer-wins
-blob — every replica must derive **identical** ids for them. That is what
-`RekeyTarget` does: it re-keys each field under a deterministic, field-namespaced
-child of the parent entry's id.
+each carry their own entity id. For those fields to be stored as child entities
+of the entry, under ids that follow from the entry's key rather than from a
+random draw, each must be re-keyed. That is what `RekeyTarget` does: it re-keys
+each field under a deterministic, field-namespaced child of the parent entry's
+id.
 
 `#[derive(Mergeable)]` generates **both** the `Mergeable` impl *and* the
 `RekeyTarget` impl. When you write `Mergeable` by hand you must also write
@@ -96,67 +100,15 @@ impl calimero_storage::collections::rekey::RekeyTarget for TeamStats {
 }
 ```
 
-:::caution[Naive delegation silently loses concurrent increments]
-If you implement `Mergeable` by hand but skip `RekeyTarget`, the struct is stored
-as a value with mismatched per-replica field ids. The runtime can no longer line
-up the nested counters, so it falls back to **last-writer-wins on the whole
-value**: one replica's concurrent increments are silently dropped — no error, no
-log. Always pair a hand-written `Mergeable` with a hand-written `RekeyTarget`
+Skip `RekeyTarget` and the nested fields keep the random ids they were born
+with. Always pair a hand-written `Mergeable` with a hand-written `RekeyTarget`
 (one `field_child_id(parent_id, "field")` per nested field), or just
 `#[derive(Mergeable)]` and get both for free.
-:::
-
-## Example: a high-water-mark gauge (`merge = max`)
-
-Delegation (one `field.merge()` per field) is the common case, but a hand-written
-`merge` can also *be* the CRDT — encoding the convergence rule directly. A
-high-water-mark gauge tracks the largest value ever observed; its merge is simply
-`max`:
-
-```rust
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use calimero_storage::collections::crdt_meta::MergeError;
-use calimero_storage::collections::Mergeable;
-
-/// A monotonic high-water mark: the merged value is the larger of the two.
-#[derive(Debug, Default, Clone, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
-pub struct HighWaterMark {
-    peak: u64,
-}
-
-impl HighWaterMark {
-    pub fn observe(&mut self, sample: u64) {
-        self.peak = self.peak.max(sample);
-    }
-    pub fn get(&self) -> u64 {
-        self.peak
-    }
-}
-
-impl Mergeable for HighWaterMark {
-    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-        self.peak = self.peak.max(other.peak);
-        Ok(())
-    }
-}
-```
-
-The determinism rule: a `merge` must be **commutative, associative, and
-idempotent** so every replica converges to the same value regardless of the order
-deltas arrive in. `max` satisfies all three —
-`max(a, max(b, c)) == max(max(a, b), c)`, `max(a, b) == max(b, a)`, and
-`max(a, a) == a` — so two nodes that each `observe()` different samples always
-agree on the peak. Contrast a non-convergent rule like *last writer wins on a raw
-`u64`* (which needs a timestamp to be deterministic, i.e. `LwwRegister`) or
-*sum* (which double-counts when the same delta is delivered twice). Because this
-struct has no nested collection fields, `RekeyTarget` is a no-op — the gauge is a
-leaf value, merged whole.
 
 ## Storage strategy: `Blob` vs `Structured`
 
-Every CRDT type declares a `StorageStrategy`, and this is the lever that decides
-whether nested CRDTs converge field-by-field:
+Every collection type declares a `StorageStrategy`, which decides whether a
+nested value is stored as one entity or as several:
 
 ```rust
 pub enum StorageStrategy {
@@ -167,67 +119,27 @@ pub enum StorageStrategy {
 }
 ```
 
-| Strategy | Types | Merge unit |
+| Strategy | Types | Stored as |
 |----------|-------|------------|
-| `Blob` | `Counter`, `LwwRegister` | the whole entry, merged as one value |
-| `Structured` | `UnorderedMap`, `Vector`, `UnorderedSet` | each child entity, merged independently |
+| `Blob` | `Counter`, `LwwRegister` | the whole entry, one value |
+| `Structured` | `UnorderedMap`, `Vector`, `UnorderedSet` | each child its own entity |
 
-A `Blob` type is a leaf: it is merged whole. A `Structured` type is a container:
-its children are stored under composite keys and merged per-child. That per-child
-boundary — combined with the deterministic ids from the section above — is what
-makes a nested CRDT (a counter inside a map value) converge field-by-field
-instead of getting clobbered wholesale.
+A `Blob` type is a leaf: a write rewrites it whole. A `Structured` type is a
+container: its children are stored under composite keys, so a write touches only
+the child it changes. That is what lets a counter inside a map value be written
+on its own instead of rewriting the entry.
 
-## The merge registry: root merges route through your WASM
-
-The host cannot deserialize your app's state type — only your compiled module
-knows its shape. So `#[app::state]` emits a `__calimero_register_merge` WASM
-export that the runtime calls at module-load time; it registers a typed merge
-closure for your root state. When a root-entity action applies, the merge is
-dispatched **through WASM** rather than guessed at by the host.
-
-The invariant that protects you: there is exactly **one** registrant per module
-(your root state type). If a root type were somehow never registered, a cold sync
-fails **loudly** with `MergeError::NoMergeFunctionRegistered` — there is no silent
-last-writer-wins drop of your entire state. (Routing host root-state merges
-through an *empty* host-side registry was the original cause of a real
-state-loss bug; the registry now lives WASM-side only.)
-
-You never call this directly — it is wired up by `#[app::state]`. It matters when
-you are reading a divergence trace and see `NoMergeFunctionRegistered`: that
-points at a module that did not register its root type, not at corrupt data. See
-[`crdt-internals`](/protocol/crdt-internals/) for the full dispatch path.
-
-Concretely, when a sync delta touches the root entity the host can't deserialize
-your state type — so it hands both byte blobs to the module's
-`__calimero_merge_root_state` export, which runs your typed `Mergeable::merge`
-and returns merged bytes:
-
-<SeqDiagram
-  id="d-adv-root-merge"
-  title="Root-state merge routes through WASM during sync"
-  lanes={[
-    { label: 'Peer', color: '#58a6ff' },
-    { label: 'Node (host)', color: '#3fb950' },
-    { label: 'WASM app', color: '#a371f7' },
-  ]}
-  steps={[
-    { from: 0, to: 1, label: 'sync: root-entity delta (peer bytes)' },
-    { from: 1, to: 1, label: 'host cannot deserialize the app state type', color: '#3fb950' },
-    { from: 1, to: 2, label: '__calimero_merge_root_state(local, incoming)', color: '#a371f7' },
-    { from: 2, to: 2, label: 'deserialize as T; run Mergeable::merge', color: '#a371f7' },
-    { from: 2, to: 1, label: 'merged root bytes', dashed: true, color: '#a371f7' },
-    { from: 1, to: 1, label: 'commit; re-check root hash', color: '#3fb950' },
-    { type: 'divider', label: 'typed merge ⇒ converged root' },
-  ]}
-/>
+`#[app::state]` also emits two exports for the storage crate's merge of root
+state, `__calimero_register_merge` and `__calimero_merge_root_state`. The
+runtime calls the first when it loads the module; a cluster never merges root
+state, so the second does not run there.
 
 ## Nested collection ids and the re-key pass
 
 A collection constructed fresh — `Counter::new()`, `UnorderedMap::new()` — first
 mints an `Id::random()`. That is fine for a *root*, but for a value placed inside
-a map the id must instead be **derived from the map key**, or two nodes that
-insert "the same" logical value would mint two different random ids and fork.
+a map the id must instead be **derived from the map key**, so the value's
+entities follow from where it is stored.
 
 Two mechanisms cooperate:
 
@@ -249,70 +161,71 @@ the re-key pass runs before the first commit:
 })
 ```
 
-The same wrapping runs for migrations (see below), which is how a migrated state
-ends up with the same ids on every node.
+The same wrapping runs for migrations (see below), so a migrated state's ids
+follow from its keys too.
 
-## Private storage: node-local, never synced
+## Private storage: the caller's own space
 
-`#[app::private]` marks a struct as **node-local** state that is *not*
-synchronized across the mesh — secrets, per-node config, local caches. You load
-it with `T::private_load_or_default()` and mutate through an `EntryMut` guard
+`#[app::private]` marks a struct as state kept in the **caller's own private
+space** ([Private storage](/build/host-functions/#private-storage)): replicated
+and sealed with the rest of the app's state, but a run reads and writes only its
+own caller's space, so no call can read another account's. You load it with
+`T::private_load_or_default()` and mutate through an `EntryMut` guard
 (`as_mut()`); the guard **auto-persists on `Drop`**, including on early
 `?`-returns, so there is no explicit save call for the borsh-blob fields.
 
-The `apps/private_data` app keeps plaintext secrets private and publishes only
-their hashes to synced state:
+The `apps/private_data` app keeps each caller's plaintext secrets in their
+private space and publishes only the hashes to shared state:
 
 ```rust
 #[app::state(emits = for<'a> Event<'a>)]
 pub struct SecretGame {
-    games: AuthoredMap<String, LwwRegister<String>>, // synced: only hashes, each its creator's own
+    games: AuthoredMap<String, LwwRegister<String>>, // shared: only hashes, each its creator's own
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 #[borsh(crate = "calimero_sdk::borsh")]
 #[app::private]
 pub struct Secrets {
-    secrets: UnorderedMap<String, String>, // node-local plaintext
+    secrets: UnorderedMap<String, String>, // the caller's plaintext
     secrets_added: u64,
     // ...primitives, std collections, and tree-backed collections only
 }
 ```
 
-The macro **rejects at compile time** any field whose semantics assume the synced
-tree: CRDT types (`LwwRegister`, `Counter`, `GCounter`, `PNCounter`,
+The macro **rejects at compile time** any field whose semantics assume the
+shared state tree: CRDT types (`LwwRegister`, `Counter`, `GCounter`, `PNCounter`,
 `ReplicatedGrowableArray`, `FugueText`, `RichText`, `RichDocument`), access-control collections (`SharedStorage`,
 `UserStorage`, `FrozenStorage`), and authored collections (`AuthoredMap`,
-`AuthoredVector`). Private storage has exactly one writer — this node — so CRDT
-machinery is overhead with no semantic gain. Use a plain `u64` / `String` / `Vec`
-instead.
+`AuthoredVector`). A private space has exactly one writer — its account — so
+none of them has anything to add. Use a plain `u64` / `String` / `Vec` instead.
 
-:::caution[Private state does not sync — and is not a privacy boundary across nodes]
-Anything in `#[app::private]` lives only on the node that wrote it. Other nodes
-never see it and never merge it. Do not put data there that other participants are
-expected to converge on; only the data you deliberately publish to `#[app::state]`
-(here, the secret *hashes*) leaves the node.
+:::caution[A public call and a handler have no private space]
+A run with no caller account — a public call, or a handler or xcall, which runs
+as an app — has no private space: reads find nothing and writes report failure. Keep in `#[app::private]` only what belongs
+to one account; publish to `#[app::state]` what others need (here, the secret
+*hashes*).
 :::
 
 :::caution[Type aliases defeat the private-storage rewrite]
-To make tree-backed collection fields node-local, `#[app::private]` injects
-`PrivateStorage` as the trailing generic on `UnorderedMap`, `UnorderedSet`,
-`Vector` (and the sorted variants). It matches on the **last path segment** of
-the type, so a fully-qualified path (`calimero_storage::collections::UnorderedMap`)
-is covered — but a type alias or `use … as` rename is **not**. An aliased
-collection silently keeps its default `MainStorage` and its entries leak into the
-synced tree, defeating the whole point of `#[app::private]`. Write the collection
-type out by name (or pass the explicit `PrivateStorage` parameter yourself);
-never reach a private field through an alias.
+To keep tree-backed collection fields in the private space, `#[app::private]`
+injects `PrivateStorage` as the trailing generic on `UnorderedMap`,
+`UnorderedSet`, `Vector` (and the sorted variants). It matches on the **last
+path segment** of the type, so a fully-qualified path
+(`calimero_storage::collections::UnorderedMap`) is covered — but a type alias or
+`use … as` rename is **not**. An aliased collection silently keeps its default
+`MainStorage`, and its entries land in the shared state every member can read,
+defeating the whole point of `#[app::private]`. Write the collection type out by
+name (or pass the explicit `PrivateStorage` parameter yourself); never reach a
+private field through an alias.
 :::
 
-## `xcall`: fire-and-forget, node-gated, same-node only
+## `xcall`: fire-and-forget, node-gated, same organization
 
-A cross-context call is **fire-and-forget**. `env::xcall(...)` does not invoke
-anything inline — the host fn only **queues** the call (pushed onto the logic's
-`xcalls` list). The queued calls are dispatched **after** the originating
-execution commits. The outcome never returns to the caller; it surfaces as a
-separate `XCall` event.
+A cross-app call is **fire-and-forget**. `env::xcall(...)` does not invoke
+anything inline — the host fn only **queues** the call, which is committed with
+the originating entry as a follow-up and run **after** that entry commits, by
+the target app's leader. The outcome never returns to the caller as a value.
 
 ```rust
 pub fn ping(&mut self, target_context: ContextId) -> app::Result<()> {
@@ -340,22 +253,23 @@ pub fn pong(&mut self, from_context: ContextId) -> app::Result<()> {
 
 Key properties:
 
-- **Same-node, namespace-bounded.** xcall reaches other contexts on the same
-  node within the namespace — it is not a network RPC.
+- **Same organization.** The two apps must belong to the same organization, or,
+  outside any organization, have the same owner.
 - **`#[app::xcall]` gating is enforced by the node.** An xcall targeting a method
-  without the attribute is denied with `XCallNotPermitted` before the method
-  runs; a *direct* call to that method still works.
+  without the attribute is refused before the method runs
+  (`xcall denied: … is not an #[app::xcall] entry point`); a *direct* call to
+  that method still works.
 - **`env::xcall_origin()` is unforgeable.** The node sets it; the guest cannot.
   Use it to reject direct calls (no origin) and to verify a self-reported
   `from_context` against the real origin.
 
-See [`xcall`](/protocol/xcall/) for the dispatch and namespace model.
+See [Handlers & cross-app calls](/protocol/xcall/) for how follow-ups are queued, run and bounded.
 
 ## Events with handlers
 
 `app::emit!((event, "handler"))` attaches a handler name to an event. The handler
-is a method on your state marked `#[app::handler]`, and it runs on the
-**receiving** nodes only, **after** the originating write commits:
+is a method on your state marked `#[app::handler]`, and the app's leader runs it
+**once**, **after** the originating entry commits, as a call of the app itself:
 
 ```rust
 pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
@@ -364,43 +278,34 @@ pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
     Ok(())
 }
 
-// Runs on receivers, after commit, possibly more than once.
+// Runs once, on the leader, after the entry that emitted the event commits.
 #[app::handler]
 pub fn insert_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
-    self.handler_counter.increment()?; // CRDT mutation: safe to replay
+    self.handler_counter.increment()?;
     Ok(())
 }
 ```
 
-A receiver runs only a method the app's embedded ABI declares a handler. An event
-naming anything else, the SDK's own `__calimero_*` exports included, runs
-nothing, and so does every event of an app whose ABI declares no handler or
-cannot be read. The events are part of the delta's content id, so the
-author's signature covers the handler names and their arguments. It does not
-make them trustworthy: any member can emit an event naming any declared handler
-with any arguments, so a handler must check its input like any other entry
-point.
+Only a method the app's embedded ABI declares a handler runs. An event naming
+anything else, the SDK's own `__calimero_*` exports included, runs nothing. Any
+caller can emit an event naming any declared handler with any arguments, so a
+handler must check its input like any other entry point.
 
-Delivery is **at-least-once with restart replay**: the handler is persisted until
-every receiver has run it successfully, and a node restart mid-delivery replays
-it. Therefore a handler **must be commutative, idempotent, and side-effect-free**
-— restrict it to CRDT mutations. Do not send a notification, charge a fee, or
-touch an external system from a handler; it may run twice.
-
-:::caution[Handlers can run more than once]
-At-least-once delivery plus restart replay means a handler body can execute
-repeatedly for the same event. Anything that is not idempotent (counters that are
-*set* rather than CRDT-incremented, external side effects) will corrupt or
-double-apply. Keep handlers to commutative CRDT mutations.
-:::
+The handler is committed as a follow-up in the same entry as the event, so a
+new leader picks up exactly the handlers still pending: none is skipped and none
+runs twice. A handler that fails is recorded with its error and **not retried**,
+so keep it to state changes that can stand on their own. Handlers and xcalls
+chain at most 3 deep ([Limits](/protocol/limits/)).
 
 ## Migrations
 
 A schema change is expressed with `#[app::migrate]` (a free function returning the
 new state) or `#[derive(Migrate)]` (per-field rules), optionally guarded by
-`#[app::migration_check]`. The cardinal rule: **a migrate must be a pure function
-of the old state**, because every node runs it independently and the results must
-match byte-for-byte.
+`#[app::migration_check]`. The leader runs it once, during the upgrade entry,
+and the other replicas apply the state it wrote
+([Upgrades & migrations](/protocol/upgrades/)). Still, **write a migrate as a
+pure function of the old state**: the SDK refuses non-deterministic calls inside
+it (below).
 
 ```rust
 #[app::migrate]
@@ -419,19 +324,18 @@ pub fn migrate_v1_to_v2() -> ScenarioCrdtNativeV2 {
 }
 ```
 
-Determinism is provided by two things the SDK runs around your migrate:
-`#[app::migrate]` executes under storage **merge mode** (which zeroes the per-node
-identity/timestamp stamps), and the generated wrapper calls
+Two things the SDK runs around your migrate: `#[app::migrate]` executes under
+storage **merge mode** (which zeroes identity and timestamp stamps), and the
+generated wrapper calls
 `__assign_deterministic_ids()` on the produced state — the same re-key pass as
 `#[app::init]` — so freshly-seeded collections get position/key-derived ids
 instead of `Id::random()`.
 
 :::caution[`Counter::increment()` panics inside a migrate]
-`increment()` stamps the running node's executor id, which differs per node and
-would diverge the network. It detects merge mode and **panics** loudly rather than
-silently forking. If you must touch a counter in a migrate, carry it across
-unchanged (`counter: old.counter`) or use `increment_for(device_id)` with a
-deterministic id.
+`increment()` stamps the executor's id into the counter's slots. Inside a
+migrate it detects merge mode and **panics** loudly. If you must touch a counter in a
+migrate, carry it across unchanged (`counter: old.counter`) or use
+`increment_for(id)` with an explicit id.
 :::
 
 `#[derive(Migrate)]` expresses the same thing declaratively, with a per-field
@@ -466,7 +370,7 @@ assert invariants like entity-count parity. The witness it relies on is transien
 
 The app's state schema (the wasm-ABI manifest) is embedded as a wasm **custom
 section** named `calimero_abi_v1`, so it ships *inside* the module bytes and is
-covered by the same `blob_id` hash as the code. The schema therefore cannot
+covered by the same hash as the code. The schema therefore cannot
 change independently of the code: any edit to the ABI is an edit to the wasm
 blob's identity.
 
@@ -482,13 +386,13 @@ The two sides of that boundary fail in opposite directions on purpose:
 
 ### The identity-downgrade rail
 
-Calimero's upgrade gate (and the `cargo mero abi diff` CI lint) compare the old and
+The node's upgrade planning (and the `cargo mero abi diff` CI lint) compare the old and
 new manifests to catch a class of silent ACL-stripping upgrades. The
 access-controlled wrappers — `PermissionedStorage` / `Ownable` / `AccessControl`
 (and `SharedStorage`) — all normalize in the ABI to a collection carrying
 `crdt_type = SharedStorage` plus the inner type, so their writer-set ACL is
 *visible* in the schema. Swapping such a field to a plain, ungated type (say
-`UnorderedMap`) is a network-wide ACL strip, and surfacing the wrapper as a
+`UnorderedMap`) strips its write rule from the app, and surfacing the wrapper as a
 distinct shape is what makes the downgrade diff able to see it.
 
 :::caution[The downgrade check fails closed on unresolvable types]
@@ -508,15 +412,14 @@ A bundle is usually one WASM module — the manifest's top-level `wasm` (+ optio
 `abi`). It can instead carry several named modules in a `services` array, each a
 `{name, wasm, abi?}` record. When `services` is present and non-empty it
 **overrides** the single-service fields: the node ignores top-level `wasm` / `abi`
-and installs one blob per service
-(`crates/node/primitives/src/bundle/mod.rs`).
+and installs one blob per service (`crates/bundle/src/lib.rs`).
 
 A multi-service application stores those blobs in a `services` map keyed by name, and
-a context runs exactly one of them. Select it with the `--service` flag on context
-create:
+an app instance runs exactly one of them. Select it with `--service` when you
+create or upgrade it:
 
 ```text
-meroctl context create <app_id> --service <name>
+meroctl context create --name <name> --package <package> --service <service>
 ```
 
 At resolve time a `None` selection is only unambiguous for a single-service app or a
@@ -530,18 +433,18 @@ A grab-bag of things that are easy to get wrong:
 
 | Concept | What to know |
 |---------|--------------|
-| `account_id` vs `device_id` vs `context_id` vs `xcall_origin` | `env::account_id()` is *who* is calling (a person; stable across their devices). `env::device_id()` is *which machine* (one installation; the replica writes are attributed to). `env::context_id()` is the current context. `env::xcall_origin()` is the node-set, unforgeable origin of an xcall (`None` for a direct call). |
+| `account_id` vs `device_id` vs `context_id` vs `xcall_origin` | `env::account_id()` is *who* is calling (a person; the same across their passkeys). `env::device_id()` and `env::executor_id()` return the same account: there are no per-device keys. `env::context_id()` is the current app. `env::xcall_origin()` is the node-set, unforgeable origin of an xcall (`None` for a direct call). |
 | `app::Result` / `app::Error` | `Error` wraps a `serde_json::Value`, has a blanket `From` for any `std::error::Error`, and the `app::bail!` / `app::err!` macros build/return it. `?` on any std error just works. |
 | view vs mutate | Only a `&mut self` method (or `#[app::init]`) commits state. A `&self` method **never** commits, even if it is not marked `#[app::view]` — so a missing `view` attribute is a missed optimization, not a correctness bug. |
-| `TestHost` limits | Networked operations panic: `xcall`, `ed25519_verify`, and networked blob ops are unsupported. Event handlers are captured but **not** auto-dispatched (call them directly in tests). The default identity passes owner/access checks. |
+| `TestHost` limits | Operations with no in-process implementation panic: `xcall`, `ed25519_verify`, and networked blob ops are unsupported. Event handlers are captured but **not** auto-dispatched (call them directly in tests). The default identity passes owner/access checks. |
 
-For the runtime mechanics behind these, see [`xcall`](/protocol/xcall/) and
-[`crdt-internals`](/protocol/crdt-internals/).
+For the runtime mechanics behind these, see [Handlers & cross-app calls](/protocol/xcall/) and
+[CRDT collections](/protocol/crdt-internals/).
 
 ## Next steps
 
 <CardGrid>
-  <LinkCard title="CRDT internals" href="/protocol/crdt-internals/" description="The full merge-dispatch path and id derivation behind the SDK." />
-  <LinkCard title="Cross-context calls" href="/protocol/xcall/" description="The dispatch and namespace model behind env::xcall." />
-  <LinkCard title="Gotchas & sharp edges" href="/build/gotchas/" description="The non-obvious facts that bite once a replica diverges." />
+  <LinkCard title="CRDT collections" href="/protocol/crdt-internals/" description="How the storage tree under the SDK is replicated." />
+  <LinkCard title="Handlers & cross-app calls" href="/protocol/xcall/" description="How follow-ups are queued, run once by the leader, and bounded." />
+  <LinkCard title="Gotchas & sharp edges" href="/build/gotchas/" description="The non-obvious facts that bite as an app grows." />
 </CardGrid>
