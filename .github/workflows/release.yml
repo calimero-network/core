@@ -564,7 +564,8 @@ jobs:
           cargo build --release -p meroctl
           cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
           mkdir -p target/image-e2e
-          cp "$CARGO_TARGET_DIR/release/meroctl" "$CARGO_TARGET_DIR/wasm32-unknown-unknown/app-release/kv_store.wasm" target/image-e2e/
+          target_dir="${CARGO_TARGET_DIR:-target}"
+          cp "$target_dir/release/meroctl" "$target_dir/wasm32-unknown-unknown/app-release/kv_store.wasm" target/image-e2e/
           for v in 1.0.0 1.1.0; do
             (cd apps/wasmer-fixtures/kv-store && cargo mero bundle --dev --no-icon --app-version "$v")
             cp "dist/com.calimero.kv-store-$v.mpk" target/image-e2e/

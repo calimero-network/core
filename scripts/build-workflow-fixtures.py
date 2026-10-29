@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Build what the merobox workflows (workflows/**, apps/*/workflows/**)
-install, into target/workflow-wasm/ (override with CORE_WASM_DIR), which the
-workflows name as `{{env.CORE_WASM_DIR}}`:
+"""Build what the cluster scenarios (workflows/**/scenarios/**,
+apps/*/scenarios/cluster/**; converted from the merobox workflows) install, into
+target/workflow-wasm/ (override with CORE_WASM_DIR), which the scenarios name as
+`{{env.CORE_WASM_DIR}}`:
 
 - `dist/<package>-<version>.mpk`: every migration fixture
   `workflows/app-migration/build-wasms.sh` bundles (`cargo mero bundle --dev`,
