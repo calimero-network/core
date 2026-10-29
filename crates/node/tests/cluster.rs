@@ -3953,6 +3953,341 @@ async fn a_node_is_removed_once_no_app_keeps_a_replica_on_it() {
     assert_eq!(v.result, json!("1"));
 }
 
+/// A client of node `i` holding the operator's token.
+async fn ops_at(c: &Cluster, i: usize) -> Client {
+    let cl = c.client(i);
+    cl.use_api_key("ops-secret").await;
+    cl
+}
+
+/// The node ids `cl` sees in `ops/placement` for `app`, and each node's app count.
+async fn placement(cl: &Client, app: &str) -> (Vec<u64>, BTreeMap<u64, u64>) {
+    let p = cl.get("ops/placement").await.unwrap();
+    let replicas = p["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["app"] == json!(app))
+        .map(|a| {
+            a["replicas"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap())
+                .collect()
+        })
+        .unwrap_or_default();
+    let counts = p["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| (n["id"].as_u64().unwrap(), n["apps"].as_u64().unwrap()))
+        .collect();
+    (replicas, counts)
+}
+
+/// The index of the running node that leads the system group, waiting for an election.
+async fn system_leader(c: &Cluster) -> usize {
+    for _ in 0..200 {
+        if let Some(i) = c
+            .nodes
+            .iter()
+            .position(|r| r.as_ref().is_some_and(|r| r.node.system.status().is_leader))
+        {
+            return i;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no system leader was elected");
+}
+
+/// A cluster started on ONE node grows: registered learners become system
+/// voters once there are enough to make 3 (never 2), the app moves to 3
+/// replicas, the cluster survives losing its first node, a fourth node stays a
+/// learner, shows in `/ops/placement` with no apps, and takes a replica.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
+    let mut c = Cluster::start(1).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _) = deploy(
+        &alice,
+        "doc",
+        kv_wasm(),
+        json!({ "access": { "kind": "public" } }),
+    )
+    .await;
+    let _ = alice
+        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .await
+        .unwrap();
+    // A blob, held by node 1 alone for now.
+    let blob = alice
+        .upload_blob(&app, b"held by one node".to_vec())
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (replicas, counts) = placement(&ops_at(&c, 0).await, &app).await;
+    assert_eq!(replicas, vec![1], "one node, one replica");
+    assert_eq!(counts, BTreeMap::from([(1, 1)]));
+
+    // Every voter set the first node's system group goes through.
+    let first = std::sync::Arc::clone(&c.nodes[0].as_ref().unwrap().node);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+    let watch = {
+        let seen = std::sync::Arc::clone(&seen);
+        let mut rx = first.system.raft().metrics();
+        let first = std::sync::Arc::clone(&first);
+        tokio::spawn(async move {
+            while rx.changed().await.is_ok() {
+                seen.lock()
+                    .unwrap()
+                    .push(first.system.status().voters.len());
+            }
+        })
+    };
+
+    // Node 2 joins as a learner; alone it is not promoted (2 voters tolerate no failure).
+    let two = c.join().await;
+    let _ = ops_at(&c, 0)
+        .await
+        .post(
+            "ops/nodes",
+            json!({ "id": 2, "addr": c.urls[two], "zone": "b" }),
+        )
+        .await
+        .unwrap();
+    for _ in 0..200 {
+        if first.system.status().learners.contains(&2) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    let st = first.system.status();
+    assert_eq!(st.voters, vec![1], "{st:?}");
+    assert_eq!(st.learners, vec![2], "{st:?}");
+
+    // Node 3 joins: both learners become voters in one change.
+    let three = c.join().await;
+    let _ = ops_at(&c, 0)
+        .await
+        .post(
+            "ops/nodes",
+            json!({ "id": 3, "addr": c.urls[three], "zone": "c" }),
+        )
+        .await
+        .unwrap();
+    let mut voters = Vec::new();
+    for _ in 0..300 {
+        let st = first.system.status();
+        voters = st.voters;
+        if voters == [1, 2, 3] && st.learners.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(voters, vec![1, 2, 3], "learners became system voters");
+    watch.abort();
+    let _ = watch.await;
+    let sizes = seen.lock().unwrap().clone();
+    assert!(!sizes.contains(&2), "never 2 voters: {sizes:?}");
+    drop(first);
+
+    // The app moves to 3 replicas; the same move again changes nothing.
+    let leader = c.app_leader(&app).unwrap();
+    let moved = ops_at(&c, leader)
+        .await
+        .post(
+            &format!("ops/apps/{app}/replicas"),
+            json!({ "replicas": [1, 2, 3] }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(moved["status"]["voters"], json!([1, 2, 3]), "{moved}");
+    let again = ops_at(&c, leader)
+        .await
+        .post(
+            &format!("ops/apps/{app}/replicas"),
+            json!({ "replicas": [3, 2, 1] }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(again["unchanged"], json!(true), "{again}");
+    let (replicas, _) = placement(&ops_at(&c, 1).await, &app).await;
+    assert_eq!(replicas, vec![1, 2, 3]);
+
+    // Node 1 stops: the others elect a system leader and serve the app.
+    let session = alice.session().await.unwrap();
+    c.stop(0).await;
+    let _ = system_leader(&c).await;
+    let alice2 = c.client(1);
+    alice2.use_session(session).await;
+    let mut wrote = Err(String::new());
+    for _ in 0..100 {
+        wrote = alice2
+            .call(&app, "set", json!({ "key": "b", "value": "2" }), None)
+            .await
+            .map_err(|e| e.to_string());
+        if wrote.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = wrote.expect("a call commits after node 1 stopped");
+    // The move handed the bundle and the blob over: node 1 held them alone.
+    assert_eq!(
+        alice2.download_blob(&app, &blob).await.unwrap(),
+        b"held by one node".to_vec()
+    );
+    let anyone = c.client(2);
+    let v = anyone
+        .view(&app, "get", json!({ "key": "b" }), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!("2"), "a read without signing in");
+
+    // Node 4 joins: voters stay 3, and it shows in the placement with no apps.
+    let four = c.join().await;
+    let _ = ops_at(&c, 1)
+        .await
+        .post(
+            "ops/nodes",
+            json!({ "id": 4, "addr": c.urls[four], "zone": "b" }),
+        )
+        .await
+        .unwrap();
+    let mut st = c.nodes[1].as_ref().unwrap().node.system.status();
+    for _ in 0..200 {
+        let l = system_leader(&c).await;
+        st = c.nodes[l].as_ref().unwrap().node.system.status();
+        if st.learners.contains(&4) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(st.learners.contains(&4), "{st:?}");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let l = system_leader(&c).await;
+    let st = c.nodes[l].as_ref().unwrap().node.system.status();
+    assert_eq!(st.voters, vec![1, 2, 3], "no growth past 3: {st:?}");
+    let (_, counts) = placement(&ops_at(&c, 1).await, &app).await;
+    assert_eq!(counts.get(&4), Some(&0), "{counts:?}");
+    let p = ops_at(&c, 2).await.get("ops/placement").await.unwrap();
+    let n4 = p["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == json!(4))
+        .unwrap()
+        .clone();
+    assert_eq!(n4["zone"], json!("b"), "{p}");
+    assert!(n4.get("addr").is_none(), "ids and counts only: {p}");
+    assert!(
+        p["apps"][0].get("name").is_none(),
+        "ids and counts only: {p}"
+    );
+
+    // The operator (or mdma) moves the app onto it, off the stopped node.
+    let mut moved = Err(String::new());
+    for _ in 0..50 {
+        let Some(leader) = c.app_leader(&app) else {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        };
+        moved = ops_at(&c, leader)
+            .await
+            .post(
+                &format!("ops/apps/{app}/replicas"),
+                json!({ "replicas": [2, 3, 4] }),
+            )
+            .await
+            .map_err(|e| e.to_string());
+        if moved.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = moved.unwrap();
+    let (replicas, counts) = placement(&ops_at(&c, 1).await, &app).await;
+    assert_eq!(replicas, vec![2, 3, 4]);
+    assert_eq!(counts.get(&4), Some(&1), "{counts:?}");
+    let on_four = c.client(four);
+    let mut served = Value::Null;
+    for _ in 0..100 {
+        if let Ok(v) = on_four
+            .view(
+                &app,
+                "get",
+                json!({ "key": "a" }),
+                Consistency::Stale { min_index: 0 },
+            )
+            .await
+        {
+            served = v.result;
+            if served == json!("1") {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(served, json!("1"), "the new replica serves the app");
+}
+
+/// A rebalancer may send the same move twice, or race another: a move to the
+/// replica set the app already has changes nothing, and a second move while
+/// one is under way is refused (`409 MOVE_IN_PROGRESS`) instead of mixing
+/// two replica sets into the directory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn replica_moves_are_idempotent_and_one_at_a_time() {
+    let mut c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let new = c.join().await;
+    let _ = ops_at(&c, 0)
+        .await
+        .post("ops/nodes", json!({ "id": 4, "addr": c.urls[new] }))
+        .await
+        .unwrap();
+    let leader = c.app_leader(&app).unwrap();
+    let lead = ops_at(&c, leader).await;
+    let path = format!("ops/apps/{app}/replicas");
+
+    let same = lead
+        .post(&path, json!({ "replicas": [1, 2, 3] }))
+        .await
+        .unwrap();
+    assert_eq!(same["unchanged"], json!(true), "{same}");
+
+    // Two moves at once, both keeping the leader: one runs, one is refused.
+    let me = leader as u64 + 1;
+    let others: Vec<u64> = (1..=3).filter(|id| *id != me).collect();
+    let a = json!({ "replicas": [me, others[0], 4] });
+    let b = json!({ "replicas": [me, others[1], 4] });
+    let second = ops_at(&c, leader).await;
+    let (ra, rb) = tokio::join!(lead.post(&path, a), second.post(&path, b));
+    let (won, lost) = match (ra, rb) {
+        (Ok(w), Err(l)) | (Err(l), Ok(w)) => (w, l),
+        other => panic!("exactly one move runs: {other:?}"),
+    };
+    assert_eq!(lost.code(), Some("MOVE_IN_PROGRESS"), "{lost}");
+    let voters = won["status"]["voters"].clone();
+    let recorded = alice.get(&format!("apps/{app}")).await.unwrap()["replicas"].clone();
+    let mut recorded: Vec<u64> = recorded
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    recorded.sort_unstable();
+    assert_eq!(
+        json!(recorded),
+        voters,
+        "the directory names the group's voters"
+    );
+}
+
 /// Ownership transfer: the owner hands an app to another account
 /// with a passkey assertion; the new owner then decides, the old one no longer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

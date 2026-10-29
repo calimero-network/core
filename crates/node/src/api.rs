@@ -4321,7 +4321,8 @@ async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRes
             s.accounts.len(),
         )
     });
-    // Counts only: the Ops API never returns app state, names or credentials.
+    // Counts and ids only: the Ops API never returns app state, names or
+    // credentials (`/ops/placement` is the same: ids, zones, releases, counts).
     Ok(Json(json!({
         "node": node.config.node_id,
         "system": node.system.status(),
@@ -4331,6 +4332,55 @@ async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRes
         "apps": apps,
         "accounts": accounts,
     })))
+}
+
+/// How long `/ops/placement` waits for a node it has not attested yet to name
+/// its release; one that does not answer by then is listed with none.
+const PLACEMENT_RELEASE_WAIT: Duration = Duration::from_secs(2);
+
+/// Where every app's replicas are, for a rebalancer (mdma): each app's id,
+/// group and replica node ids, and each node's id, zone, attested release and
+/// app count. Ids and counts only: no names, state or credentials. Read from
+/// the system state after a read index (`fresh` says whether this replica
+/// caught up with the system leader).
+async fn ops_placement(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    operator(&node, &headers)?;
+    let fresh = node.sys_fresh().await;
+    let (apps, nodes) = node.sys(|s| {
+        let apps: Vec<Value> = s
+            .apps
+            .values()
+            .map(|a| json!({ "app": a.app_id, "group": a.group, "replicas": a.replicas }))
+            .collect();
+        let nodes: Vec<(u64, String, usize)> = s
+            .nodes
+            .values()
+            .map(|n| {
+                let hosted = s
+                    .apps
+                    .values()
+                    .filter(|a| a.replicas.contains(&n.id))
+                    .count();
+                (n.id, n.zone.clone(), hosted)
+            })
+            .collect();
+        (apps, nodes)
+    });
+    let releases =
+        futures_util::future::join_all(nodes.iter().map(|(id, _, _)| {
+            tokio::time::timeout(PLACEMENT_RELEASE_WAIT, node.release_of_node(*id))
+        }))
+        .await;
+    let nodes: Vec<Value> = nodes
+        .into_iter()
+        .zip(releases)
+        .map(|((id, zone, hosted), release)| {
+            json!({ "id": id, "zone": zone, "release": release.ok().flatten(), "apps": hosted })
+        })
+        .collect();
+    Ok(Json(
+        json!({ "fresh": fresh, "apps": apps, "nodes": nodes }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -4425,6 +4475,9 @@ fn membership_err(e: &calimero_log::WriteError) -> ApiError {
 
 /// Move an app to a new replica set: add learners, wait, then switch voters.
 /// Runs on the app group's leader; any other replica answers `421 NOT_LEADER`.
+/// Safe for a rebalancer to repeat or race: a move to the set the app already
+/// has answers `unchanged: true` and writes nothing, and a second move of the
+/// same app while one runs here is refused `409 MOVE_IN_PROGRESS`.
 async fn ops_set_replicas(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -4433,16 +4486,29 @@ async fn ops_set_replicas(
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     operator(&node, &headers)?;
-    if b.replicas.len() < 3.min(node.sys(|s| s.nodes.len())) {
+    let target: std::collections::BTreeSet<u64> = b.replicas.iter().copied().collect();
+    if target.len() != b.replicas.len() {
+        return Err(ApiError::bad_request(
+            "DUPLICATE_REPLICA",
+            "a node is named twice",
+        ));
+    }
+    if target.len() < 3.min(node.sys(|s| s.nodes.len())) {
         return Err(ApiError::bad_request(
             "TOO_FEW",
             "an app keeps at least 3 replicas",
         ));
     }
+    if let Some(id) = node.sys(|s| target.iter().copied().find(|id| !s.nodes.contains_key(id))) {
+        return Err(ApiError::bad_request(
+            "UNKNOWN_NODE",
+            &format!("node {id} is not registered"),
+        ));
+    }
     let app = node.app(&app_id).await?;
     // The operator moves an app only onto nodes on a release its owner
     // approved: a move is how data would reach a new image.
-    for id in &b.replicas {
+    for id in &target {
         let release = node.release_of_node(*id).await;
         if !node.sys(|s| s.release_may_hold(&app, release.as_deref())) {
             return Err(ApiError::forbidden(&format!(
@@ -4465,14 +4531,42 @@ async fn ops_set_replicas(
             leader: addr,
         }));
     }
-    let union: Vec<u64> = app
-        .replicas
-        .iter()
-        .chain(b.replicas.iter())
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
+    // One move per app at a time: two would each record their own union and
+    // final set, and the directory could end naming neither group's voters.
+    let Some(moving) = node.begin_move(&app_id) else {
+        return Err(ApiError::new(
+            409,
+            "MOVE_IN_PROGRESS",
+            "this app's replicas are being moved; retry once that move answers",
+        ));
+    };
+    // The move runs to the end in a task of its own, which holds the guard:
+    // a caller that disconnects does not leave it half done and unguarded.
+    tokio::spawn(move_replicas(node, app_id, target, moving))
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+}
+
+/// The body of [`ops_set_replicas`], on the app group's leader, under `_moving`.
+async fn move_replicas(
+    node: Arc<Node>,
+    app_id: String,
+    target: std::collections::BTreeSet<u64>,
+    _moving: crate::node::MoveGuard,
+) -> ApiResult {
+    // The replica set as of now, not as of before the guard.
+    let _caught_up = node.sys_fresh().await;
+    let app = node.app(&app_id).await?;
+    let g = node
+        .hosted(&app_id)
+        .ok_or_else(|| ApiError::bad_request("NOT_HOSTED", "send this to a current replica"))?;
+    let current: std::collections::BTreeSet<u64> = app.replicas.iter().copied().collect();
+    let st = g.status();
+    let voters: std::collections::BTreeSet<u64> = st.voters.iter().copied().collect();
+    if current == target && voters == target {
+        return Ok(Json(json!({ "status": st, "unchanged": true })));
+    }
+    let union: Vec<u64> = current.union(&target).copied().collect();
     // Every node of the union starts the group before membership changes.
     let _ok = node
         .sys_write(&SystemCmd::SetReplicas {
@@ -4481,15 +4575,19 @@ async fn ops_set_replicas(
         })
         .await?;
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let g = node
-        .hosted(&app_id)
-        .ok_or_else(|| ApiError::bad_request("NOT_HOSTED", "send this to a current replica"))?;
     let addrs: Vec<(u64, String)> = node.sys(|s| {
-        b.replicas
+        target
             .iter()
             .filter_map(|r| s.nodes.get(r).map(|n| (*r, n.addr.clone())))
             .collect()
     });
+    // The new replicas get the bundle and blobs before they can vote.
+    let joining: Vec<(u64, String)> = addrs
+        .iter()
+        .filter(|(id, _)| !current.contains(id))
+        .cloned()
+        .collect();
+    let _handed = node.hand_over_bytes(&app, &g, &joining).await?;
     for (id, addr) in addrs {
         if !g.status().voters.contains(&id) {
             g.add_learner(id, addr)
@@ -4497,16 +4595,16 @@ async fn ops_set_replicas(
                 .map_err(|e| membership_err(&e))?;
         }
     }
-    g.change_voters(b.replicas.iter().copied().collect())
+    g.change_voters(target.clone())
         .await
         .map_err(|e| membership_err(&e))?;
     let _ok = node
         .sys_write(&SystemCmd::SetReplicas {
             app_id,
-            replicas: b.replicas,
+            replicas: target.into_iter().collect(),
         })
         .await?;
-    Ok(Json(json!({ "status": g.status() })))
+    Ok(Json(json!({ "status": g.status(), "unchanged": false })))
 }
 
 async fn ops_quotas_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
@@ -4811,6 +4909,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/events", get(internal_events))
         .route("/ops/status", get(ops_status))
         .route("/ops/metrics", get(ops_metrics))
+        .route("/ops/placement", get(ops_placement))
         .route("/ops/nodes", post(ops_register_node))
         .route("/ops/nodes/{id}", delete(ops_remove_node))
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))

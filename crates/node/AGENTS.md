@@ -40,7 +40,7 @@ is its command line.
   is attested like any client's, plus the cluster secret (HMAC of K_r).
 - **API** (`api.rs`), all inside the sealed channel except `/attestation` and `/health`:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
-  `/orgs/*`, `/invites/{token}/redeem`, `/internal/*` (peers), `/ops/*` (mdma: counts only, no read path).
+  `/orgs/*`, `/invites/{token}/redeem`, `/internal/*` (peers), `/ops/*` (mdma: counts and placement by id only, no read path into apps).
 - **Reserved methods** (`node::reserved_method`, `__*`): the node's own commands
   (`HOST_METHODS`: `__upgrade`, `__blob`, `__blob_forget`) run only for a
   `CallRequest::host` request, which only the API builds after judging who may;
@@ -147,7 +147,16 @@ is its command line.
   `/ops/nodes` registers it, the system leader adds it to the system group as a
   learner (`Node::admit_registered_nodes`, from `reconcile`), it catches up and
   learns the directory, and replica moves (`/ops/apps/{app}/replicas`) can put
-  apps on it.
+  apps on it. While the system group has fewer than `membership::SYSTEM_VOTERS`
+  (3) voters, the system leader promotes registered learners at most
+  `membership::PROMOTE_MAX_LAG` (16) entries behind its log so that it has
+  exactly 3, in one membership change (`Node::promote_learners`, from
+  `reconcile`; the choice is `membership::grow_voters`: zones no voter is in
+  first, then no zone, then the rest). Never 2 (no failure tolerated, every
+  write waits on both): a cluster started on one node waits for two learners,
+  then goes from 1 to 3; never past 3 on its own (5 would be a later flag).
+  Regressions: `a_cluster_started_on_one_node_grows_and_survives_losing_it`,
+  `membership::tests`.
 - **Removing nodes**: `DELETE /ops/nodes/{id}` (system leader; `421 NOT_LEADER` elsewhere) writes `RemoveNode` (refused while an app keeps a replica there) and changes the system group's voters, promoting a registered learner while fewer than 3 are left; `SystemState::removed_nodes` keeps `reconcile` from registering it again from `--peers`. Regression: `a_node_is_removed_once_no_app_keeps_a_replica_on_it`.
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Stopping** (`Running::stop`): cancel the tasks, drain the server (2 s),
@@ -187,7 +196,21 @@ is its command line.
   `app_usage_is_counted_on_the_node_that_ran_the_wasm`; docs: Observability,
   "Usage metering".
 - **Ops replica moves** run on the app group's leader; any other replica answers
-  `421 NOT_LEADER` with `details.leaderUrl` before writing anything.
+  `421 NOT_LEADER` with `details.leaderUrl` before writing anything. A move to
+  the set the app already has writes nothing (`unchanged: true`); a second move
+  of an app while one runs on this leader is refused `409 MOVE_IN_PROGRESS`
+  (`Node::begin_move`, a guard the move's own task holds, so it runs to the end
+  even if its caller disconnects). Before the new nodes become learners, the
+  leader hands them the app's bundle and the blobs its state marks
+  (`Node::hand_over_bytes`, over `internal/blob`): a bundle or blob stored while
+  the cluster was one node is held by that node alone ("a majority" of one).
+  Regressions: `replica_moves_are_idempotent_and_one_at_a_time`,
+  `a_cluster_started_on_one_node_grows_and_survives_losing_it` (node 1 stops
+  after the move; the app still runs and its blob downloads).
+- **Placement read** (`GET /ops/placement`, `meroctl ops placement`, for mdma's
+  rebalancer): each app's id, group and replicas, each node's id, zone,
+  attested release (`Node::release_of_node`, at most `PLACEMENT_RELEASE_WAIT`)
+  and app count, after `sys_fresh` (`fresh` in the answer). Ids and counts only.
 - **Forwards are bounded**: a call or read forwarded to an app's leader waits at most
   `FORWARD_TIMEOUT` (5 s, `peer_forward`), then retries at whoever leads now; a frozen
   leader would otherwise hold a write for the 30 s HTTP timeout. Calls without a
@@ -488,7 +511,7 @@ API and system group. What differs from the wasmer path:
 ## Not done yet
 
 rollback counter (proposed: a mero-kms epoch, restored nodes rejoin as learners),
-keys per app from mero-kms, placement across zones, snapshot restore into a
+keys per app from mero-kms, app placement across zones (system voters prefer new zones), snapshot restore into a
 running cluster, event audiences, search indexes that survive a restart (rebuilt from state now).
 
 ## Commands

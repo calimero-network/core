@@ -509,6 +509,16 @@ fn scenario(root: &Path, url: &str) {
         alice.run(&a)
     };
     assert_eq!(ops(&["status"])["apps"], 3);
+    let placement = ops(&["placement"]);
+    assert_eq!(
+        placement["apps"].as_array().map(Vec::len),
+        Some(3),
+        "{placement}"
+    );
+    assert!(
+        !placement.to_string().contains("notes"),
+        "ids and counts only: {placement}"
+    );
     let metrics = ops(&["metrics"]);
     assert!(
         metrics.as_str().is_some_and(|m| m.contains("calimero_")),

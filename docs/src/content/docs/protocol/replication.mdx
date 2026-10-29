@@ -224,10 +224,23 @@ before writing anything. The leader:
    approved;
 2. records the union of old and new replicas in the directory, so every node
    involved starts the group;
-3. adds each new node as a learner and waits for it to catch up;
-4. changes the voter set to the new replicas (joint consensus);
-5. records the new replica list, after which reconcile stops the group on
+3. hands each new node the app's bundle and every blob the app's state
+   marks (bytes that live outside the log, and that a cluster grown from one
+   node holds only on that node), so the new replica can run and serve the app
+   without the old ones;
+4. adds each new node as a learner and waits for it to catch up;
+5. changes the voter set to the new replicas (joint consensus);
+6. records the new replica list, after which reconcile stops the group on
    nodes that left.
+
+A rebalancer may repeat or race a move. A move to the replica set the app
+already has (as a set, in any order) writes nothing and answers
+`unchanged: true`. While a move of an app runs on its leader, a second move of
+that app is refused `409 MOVE_IN_PROGRESS` before it writes anything, so two
+moves never mix their replica sets in the directory; the move runs to the end
+even if its caller disconnects. The guard is the leader's: a move sent to a new
+leader while the old one is still moving is refused by the group's own
+membership change instead.
 
 ## Joining nodes
 
@@ -235,8 +248,26 @@ A node started without `--bootstrap` waits. Once the operator registers it
 (`POST /ops/nodes`), the system leader adds it to the system group as a
 **learner**; it catches up from the log or a snapshot, learns the directory,
 and from then on [placement](/protocol/context-lifecycle/#create) and replica
-moves can put apps on it. The system group's voters are the nodes it was
-bootstrapped with; the node does not promote learners to system voters.
+moves can put apps on it.
+
+**Learners become voters up to 3.** On every reconcile pass, a system leader
+with fewer than 3 voters promotes registered learners that are caught up (at
+most `PROMOTE_MAX_LAG`, 16 entries, behind its log) so that the system group has
+exactly 3 voters, in one membership change (joint consensus). It never stops
+at 2: two voters tolerate no failure and make every system write wait on both,
+so a cluster started on one node keeps that one voter until two learners are
+ready, then goes from 1 to 3. Learners in a zone no voter is in come first
+(`zone` from `POST /ops/nodes`), then learners with no zone, then the rest. The
+leader never grows the system group past 3 by itself; a fourth node stays a
+learner (5 voters would be an operator's choice, not implemented yet). Removing
+a voter still promotes a registered learner while fewer than 3 are left
+(`DELETE /ops/nodes/{id}`).
+
+So a cluster can start on one node and grow: until the second and third nodes
+are voters, the first is a single point of failure for every system write and
+every access check (`sys_fresh` asks the system leader); from then on any one
+node, the first included, can fail. Apps placed while the cluster was one node
+have one replica; a replica move (`ops placement`, then `ops move`) spreads them.
 
 ## Upgrading the on-disk format
 
