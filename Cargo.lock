@@ -1346,6 +1346,7 @@ dependencies = [
  "calimero-wasm-abi",
  "camino",
  "chrono",
+ "curve25519-dalek 5.0.0",
  "ed25519-dalek 3.0.0",
  "eyre",
  "flate2",

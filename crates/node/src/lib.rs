@@ -21,6 +21,7 @@ pub mod cluster_key;
 pub mod component;
 pub mod consent_page;
 pub mod error;
+pub mod files;
 pub mod idempotency;
 pub mod inspect;
 pub mod kms;

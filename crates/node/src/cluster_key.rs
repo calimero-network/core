@@ -38,7 +38,6 @@ use axum::{Json, Router};
 use base64::Engine as _;
 use eyre::{bail, WrapErr};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
-use ring::hmac;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -64,9 +63,9 @@ const WRAP_LABEL: &[u8] = b"calimero.cluster-key.wrap.v1";
 
 /// The AES-256-GCM key a secret is wrapped with on disk: HMAC-SHA256(K_r, `label`).
 fn wrap_key(storage_key: &[u8; 32], label: &[u8]) -> LessSafeKey {
-    let tag = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, storage_key), label);
+    let tag = crate::backup::tag(storage_key, label);
     // SAFETY: an HMAC-SHA256 tag is 32 bytes, an AES-256 key.
-    LessSafeKey::new(UnboundKey::new(&AES_256_GCM, tag.as_ref()).expect("a 32-byte key"))
+    LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &tag).expect("a 32-byte key"))
 }
 
 /// Why a wrapped secret did not open ([`open_secret`]).
@@ -470,6 +469,15 @@ pub async fn deliver(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wrapped_key_file_from_an_earlier_build_opens() {
+        const KNOWN: &str = "63616c696d65726f2e636c75737465722d6b65792e76310a030303030303030303030303085811764fae8dab8e7c66a44911cb96e58fa1f2f396c6bb0ae8eaa54e6e1ab71b17cb4cbda38af41bd0b2a12d58db26";
+        assert_eq!(
+            unwrap(&[1; 32], &hex::decode(KNOWN).unwrap()).unwrap(),
+            [7; 32]
+        );
+    }
 
     #[test]
     fn a_wrapped_key_opens_only_with_the_key_that_wrapped_it() {

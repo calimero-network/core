@@ -11,7 +11,6 @@ use calimero_log::{
     WriteError,
 };
 use futures_util::StreamExt;
-use ring::hmac;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{debug, info, warn};
@@ -565,12 +564,8 @@ impl Node {
             &component::component_cache_key(&cluster_key),
         )?);
         let clock = Clock::new(config.clock_offset_ms);
-        let secret = hmac::sign(
-            &hmac::Key::new(hmac::HMAC_SHA256, &cluster_key),
-            format!("calimero.cluster.v1|{}", config.cluster).as_bytes(),
-        );
         let node = Arc::new(Self {
-            cluster_secret: calimero_identity::b64url(secret.as_ref()),
+            cluster_secret: cluster_secret(&cluster_key, &config.cluster),
             cluster_key,
             key_releases: tokio::sync::Semaphore::new(crate::api::MAX_CONCURRENT_KEY_RELEASES),
             config,
@@ -2908,6 +2903,14 @@ const fn executor_name(e: Kind) -> &'static str {
     }
 }
 
+/// What peers present as `x-cluster-auth`: a MAC of the cluster name under K_c.
+fn cluster_secret(cluster_key: &[u8; 32], cluster: &str) -> String {
+    calimero_identity::b64url(&crate::backup::tag(
+        cluster_key,
+        format!("calimero.cluster.v1|{cluster}"),
+    ))
+}
+
 /// Runs `f`, a WASM run that may take up to its budget, without holding an
 /// async worker: on the multi-threaded runtime, `block_in_place` hands this
 /// worker's queued tasks to another worker for the run, so Raft heartbeats,
@@ -2921,6 +2924,19 @@ fn off_workers<R>(f: impl FnOnce() -> R) -> R {
             tokio::task::block_in_place(f)
         }
         _ => f(),
+    }
+}
+
+#[cfg(test)]
+mod cluster_secret_tests {
+    use super::cluster_secret;
+
+    #[test]
+    fn the_cluster_secret_matches_its_known_answer() {
+        assert_eq!(
+            cluster_secret(&[7; 32], "test"),
+            "DMlHI6sAvDPbCJbzsN0QduVwNi6MriMe5KHoRHrNkB4"
+        );
     }
 }
 

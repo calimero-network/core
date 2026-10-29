@@ -207,6 +207,14 @@ is its command line.
   `/auth/outbound`, passkey consent; `merge_approval` at apply). The request is
   made inside the propose lock, on its own thread (`run_blocking`); a leader-race
   re-run sends it again.
+- **Files** (`files.rs`, `files/seal.rs`, `files/wrap.rs`): a file is 64 KiB AES-256-GCM STREAM chunks
+  (`FileSealer`, `FileOpener`) under a random data key.
+  The nonce is 4 zero bytes then the big-endian chunk index; the AAD is `calimero.file.v1` then a last-chunk flag byte.
+  `FileOpener::finish_expecting` checks the plaintext size and SHA-256 against the mark, as GCM does not commit to its key.
+  `wrap_key` wraps the data key as salt || nonce || AES-256-GCM under a subkey of `backup::file_key` (per app, from K_c, not the TEE key), with the app id as AAD.
+  `wrap_for_job` re-wraps a secret to a job node: ephemeral X25519, then HKDF over both public keys, the kind (file key or noise seed), the length-prefixed app and run ids, attempt and index.
+  The job node opens it through `SealedTransport::derive`, which never returns the raw DH output and labels its HKDF (`calimero_sealed::derive_shared`, shared with the wrap side).
+  `noise_seed` and `run_token` derive a run's seed and capability from the file key.
 - **Receipts**: every `/intents` and `/views` answer carries a `Receipt` signed by the
   answering node's receipt key (Ed25519, made on the node's first start and kept
   in `<data_dir>/signing-key` wrapped under K_r, `signing_key.rs`: a restart

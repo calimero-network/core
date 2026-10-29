@@ -139,14 +139,7 @@ impl From<WriteError> for LocalError {
 /// K_r over a fixed label, so it changes with the storage key and nothing else.
 #[must_use]
 pub fn component_cache_key(storage_key: &[u8; 32]) -> [u8; 32] {
-    use ring::hmac;
-    let tag = hmac::sign(
-        &hmac::Key::new(hmac::HMAC_SHA256, storage_key),
-        b"calimero.components.v1",
-    );
-    let mut key = [0; 32];
-    key.copy_from_slice(tag.as_ref());
-    key
+    crate::backup::tag(storage_key, "calimero.components.v1")
 }
 
 /// The latest slot of a timer with interval `every`, installed at `install_ms`,
@@ -1035,6 +1028,14 @@ fn to_wasmer_applied(a: Applied) -> crate::app::Applied {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_component_cache_key_matches_its_known_answer() {
+        assert_eq!(
+            hex::encode(component_cache_key(&[7; 32])),
+            "76c96b3cbf04b23fd1e753c6b064af2c6825aca228d1be3897621b9d4714e8af"
+        );
+    }
 
     #[test]
     fn the_due_slot_is_the_latest_one_aligned_to_the_install_time() {
