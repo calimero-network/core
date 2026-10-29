@@ -172,7 +172,8 @@
     {
       "name": "Give the refused delta every chance to land",
       "type": "wait",
-      "seconds": 25.0
+      "seconds": 25.0,
+      "exact": true
     },
     {
       "name": "The tablet still reads the value from before the loss",

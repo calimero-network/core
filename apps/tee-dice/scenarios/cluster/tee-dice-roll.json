@@ -1,6 +1,6 @@
 {
   "name": "TEE Dice — A Roll Only The Enclave Can Write",
-  "description": "A member asks for a dice roll; the namespace's attested TEE authority resolves it inside the enclave and writes the face into `TeeOnly` state; the member's node accepts that write. This is TEE authorship end to end: a `ReadOnlyTee` replica, admitted by (mock) attestation, authors state only after an admin names its MRTD in the namespace's TEE authoring policy.\nWHY THIS GOES RED WITHOUT TEE AUTHORSHIP. Before it, a `ReadOnlyTee` member could not author at all: the local execute path discarded its writes and every receive path dropped its deltas. The roll would stay unresolved on every node, and the \"Firing TEE trigger\" line would not exist.\nTHE NEGATIVE CONTROL runs first: with no authoring policy the replica is a member but not an authority, so the first roll must stay unresolved. Only after the policy lands is a second roll resolved, which is what proves the policy — not mere membership — is what grants authorship.\nNODES MUST BE BUILT WITH `--features mock-attestation`, as for blob-presence-tee-serves. No `login` steps: the `tee_*` steps and the policy script talk to the admin API with no Authorization header.\nRun locally, with a mock-attestation merod:\n  cargo build -p merod --release --features mock-attestation\n  cd apps/tee-dice\n  merobox bootstrap run workflows/tee-dice-roll.yml \\\n    --image merod:local-mock-tee --e2e-mode\n",
+  "description": "A member asks for a dice roll; the namespace's attested TEE authority resolves it inside the enclave and writes the face into `TeeOnly` state; the member's node accepts that write. This is TEE authorship end to end: a `ReadOnlyTee` replica, admitted by (mock) attestation, authors state only after an admin names its MRTD in the namespace's TEE authoring policy.\nWHY THIS GOES RED WITHOUT TEE AUTHORSHIP. Before it, a `ReadOnlyTee` member could not author at all: the local execute path discarded its writes and every receive path dropped its deltas. The roll would stay unresolved on every node, and the \"Firing TEE trigger\" line would not exist.\nTHE NEGATIVE CONTROL runs first: with no authoring policy the replica is a member but not an authority, so the first roll must stay unresolved. Only after the policy lands is a second roll resolved, which is what proves the policy — not mere membership — is what grants authorship.\nNODES MUST BE BUILT WITH `--features mock-attestation`, as for blob-presence-tee-serves. No `login` steps: the `tee_*` steps and the policy script talk to the admin API with no Authorization header.\nRun locally, with a mock-attestation merod:\n  cargo build -p merod --release --features mock-attestation\n  cd apps/tee-dice\n  merobox bootstrap run apps/tee-dice/scenarios/cluster/tee-dice-roll.json \\\n    --image merod:local-mock-tee --e2e-mode\n",
   "comment": [
     "Migrated from this file's v1 workflow by `merobox cloud port`.",
     "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
@@ -190,7 +190,8 @@
     {
       "name": "Give any leaked write time to propagate",
       "type": "wait",
-      "seconds": 10.0
+      "seconds": 10.0,
+      "exact": true
     },
     {
       "name": "The rigged roll does not exist on the owner",

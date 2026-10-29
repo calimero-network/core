@@ -141,7 +141,8 @@
     {
       "name": "Window during which the bug would log spam",
       "type": "wait",
-      "seconds": 30.0
+      "seconds": 30.0,
+      "exact": true
     },
     {
       "name": "Node-1 still has its own context",
