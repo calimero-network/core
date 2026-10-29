@@ -37,6 +37,11 @@ pub mod usage;
 
 pub use node::{Config, Node};
 
+/// The core release this build is: `[workspace.metadata.workspaces].version`
+/// (`build.rs`). Not `CARGO_PKG_VERSION`, which is the workspace placeholder
+/// `0.0.0` for every crate.
+pub const RELEASE_VERSION: &str = env!("CALIMERO_RELEASE_VERSION");
+
 /// How long [`Running::stop`] waits for the node's store to close.
 pub const STOP_WAIT: Duration = Duration::from_secs(10);
 

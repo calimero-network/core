@@ -17,6 +17,22 @@ fn merod(home: &Path) -> Command {
     c
 }
 
+/// `[workspace.metadata.workspaces].version` of the root `Cargo.toml`, read
+/// here independently of the build script that feeds `RELEASE_VERSION`.
+fn workspace_release() -> String {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+    let text = std::fs::read_to_string(root).unwrap();
+    let section = text
+        .split("[workspace.metadata.workspaces]")
+        .nth(1)
+        .expect("the root Cargo.toml has [workspace.metadata.workspaces]");
+    let line = section
+        .lines()
+        .find(|l| l.trim_start().starts_with("version"))
+        .expect("[workspace.metadata.workspaces] names a version");
+    line.split('"').nth(1).unwrap().to_owned()
+}
+
 fn ok(out: Output) -> String {
     assert!(
         out.status.success(),
@@ -213,7 +229,12 @@ fn attest_prints_a_release_attestation_bound_to_the_nonce() {
     let doc: calimero_client::attest::release::ReleaseAttestation =
         serde_json::from_str(&out).unwrap();
     assert!(doc.mock);
-    assert_eq!(doc.claim.merod_version, env!("CARGO_PKG_VERSION"));
+    // The release this build is, never the workspace placeholder `0.0.0`
+    // every crate's `CARGO_PKG_VERSION` is: a verifier pins the claim's
+    // version to the release it trusts.
+    assert_eq!(doc.claim.merod_version, calimero_node::RELEASE_VERSION);
+    assert_ne!(doc.claim.merod_version, "0.0.0");
+    assert_eq!(doc.claim.merod_version, workspace_release());
     assert_eq!(doc.claim.tee_release.as_deref(), Some("2.4.0"));
     assert_eq!(doc.claim.tee_profile.as_deref(), Some("locked-read-only"));
     assert_eq!(doc.claim.identity, None);

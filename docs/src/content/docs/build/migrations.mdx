@@ -1,6 +1,6 @@
 ---
 title: Migrating app state (ship v2)
-description: The app-developer how-to for evolving your #[app::state] schema across a context with a deterministic migration.
+description: The app-developer how-to for evolving your #[app::state] schema with a migration the upgrade runs once on the app's leader.
 sidebar:
   label: Migrating app state
   order: 8.5
@@ -10,13 +10,14 @@ import { Steps, Aside, CardGrid, LinkCard } from '@astrojs/starlight/components'
 import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 When you ship a new version of your app whose **state shape changes**, the bytes
-already stored in every context can no longer be read as the new layout. The
-upgrade carries a **migration**: a deterministic transform that reshapes each
-context's existing state into the new schema, and runs identically on every node so
-all replicas converge.
+already stored in every app instance can no longer be read as the new layout. The
+upgrade carries a **migration**: a transform that reshapes the app's existing
+state into the new schema. The upgrade is an entry in the app's own log: the
+leader runs the migration once, and the other replicas apply the state it wrote
+([Upgrades & migrations](/protocol/upgrades/)).
 
-This is the build-side how-to. For how the protocol identifies versions, fences
-mid-upgrade writes, and cascades the upgrade across a group, see
+This is the build-side how-to. For who may upgrade, how the migration is planned
+from the two ABIs, and organization-wide upgrade runs, see
 [Application upgrades &amp; migration](/protocol/upgrades/).
 
 <Aside type="note" title="When you need a migration">
@@ -139,52 +140,51 @@ mid-upgrade writes, and cascades the upgrade across a group, see
 
 ## The determinism rules
 
-A migration must be a **pure function of the old state**. It is replayed
-independently on every node, and they must all produce byte-identical new state or
-the context will diverge.
+Write a migration as a **pure function of the old state**. It runs once, but
+the SDK runs it in storage **merge mode** and refuses what would make its
+result depend on the run rather than on the old state:
 
-- **No clock, no randomness, no external input.** `env::time_now()`, random sources,
-  or anything node-specific will diverge. Derive every new value from the old state
-  alone.
-- **Sort before you iterate into ordered structures.** Map iteration order is not
-  guaranteed; if you fold map entries into a `Vector` or any positional structure,
-  `sort()` the keys first (as the example above does) so every node builds the same
-  order.
-- **Use the deterministic CRDT mutators.** `Counter::increment` and `Rga::insert`
-  read the live executor id / HLC and **panic** when replayed in a migration. Use
-  their explicit siblings instead:
+- **No clock, no randomness, no caller.** Derive every new value from the old
+  state alone; `env::time_now()`, random sources and the executor's id have no
+  place in a schema change.
+- **Sort before you iterate into ordered structures.** Map iteration follows
+  entity ids, not keys; if you fold map entries into a `Vector` or any
+  positional structure, `sort()` the keys first (as the example above does) so
+  the order follows the data.
+- **Use the explicit mutators.** `Counter::increment` and `Rga::insert` read
+  the executor id / HLC and **panic** inside a migration. Use their explicit
+  siblings instead:
 
   ```rust
-  counter.increment_for(&device_id)?;            // not increment()
+  counter.increment_for(&id)?;                      // not increment()
   rga.insert_str_at_timestamp(pos, ts, text)?;      // not insert(); ts non-zero
   ```
 
 <Aside type="caution" title="Migrations run in merge mode">
   The runtime executes your migrate in merge mode and reassigns deterministic
-  collection ids afterward, so newly created collections get the same ids on every
-  node. That is also why the non-deterministic mutators panic here rather than
-  silently diverging — treat the panic as the SDK catching a non-convergent
-  migration for you.
+  collection ids afterward, so newly created collections get ids derived from
+  where they are stored. Treat a panic from a mutator as the SDK catching a
+  migration that depends on who or when it ran.
 </Aside>
 
 ## Authored / identity-gated data migrates per-owner
 
-A whole-root `#[app::migrate]` reshapes the convergent parts of your state, but it
-**does not** convert `AuthoredMap` / `AuthoredVector` entries. Those are signed
-**per-owner**: only the owner's identity can re-stamp and re-sign them, so the root
-migration — which runs unsigned in merge mode on every node — cannot touch them.
-They keep their old schema until each owner upgrades their own entries.
+A whole-root `#[app::migrate]` reshapes the shared parts of your state, but it
+**does not** convert `AuthoredMap` / `AuthoredVector` entries. Those are stamped
+**per owner**, and only a call by the owner may rewrite them, so the root
+migration — which runs as no owner — cannot touch them. They keep their old
+schema until each owner upgrades their own entries.
 
 To make that one tap, `#[app::state(version = N)]` auto-generates two extra exports
 whenever your state declares at least one identity-gated collection:
 
 | Export | Kind | What it does |
 |--------|------|--------------|
-| `migrate_my_entries` | signed RPC | Re-writes every entry the **caller owns** that is still below the target schema, routing through the owner-driven convert (re-stamps + re-signs). Returns a `MigrateMyEntriesSummary { converted, remaining }`. |
+| `migrate_my_entries` | call | Re-writes every entry the **caller owns** that is still below the target schema, routing through the owner-driven convert (re-stamps as the owner). Returns a `MigrateMyEntriesSummary { converted, remaining }`. |
 | `count_my_pending` | read-only | Tallies the caller's still-stale owned entries without writing — drives the prompt below. |
 
 `SharedStorage` is deliberately **excluded** from this sweep: it is an admin-rotated
-writer-set with a different conversion model, not per-owner signed data.
+writer-set with a different conversion model, not per-owner data.
 
 <Aside type="caution" title="The root migrate does not finish the job">
   After deploying v2, do not assume every entry is on the new schema. Each owner's
@@ -197,36 +197,33 @@ writer-set with a different conversion model, not per-owner signed data.
 <LinkCard title="Permissioned storage" href="/build/permissioned-storage/"
   description="AuthoredMap / AuthoredVector ownership, SharedStorage, and the identity-gated write model." />
 
-## Deploy across a group
+## Roll it out
 
-A migration is shipped as part of an application version, then rolled out to every
-context running it. The version is fenced so a mid-upgrade context will not accept
-stale-schema writes, and each node runs the same migrate locally as it adopts the new
-version — converging without re-syncing the whole state. The operator steps and the
-cascade mechanics live in:
+A migration ships inside a new release of your application. Moving an app to
+that release (`meroctl context update`, or an organization-wide upgrade run) is
+an entry in the app's own log, so every call before it ran on the old code and
+every call after it runs on the new. The leader runs the migration and its
+check; if either fails, the app stays on the old release and its state is
+untouched.
 
-- [Operate](/operate/) — installing and rolling out an application version.
-- [Application upgrades &amp; migration](/protocol/upgrades/) — version identity, the
-  wire fence, and how the upgrade cascades across a group.
+- [Operate](/operate/) — publishing and installing a release.
+- [Upgrades & migrations](/protocol/upgrades/) — who may upgrade, how the plan is
+  chosen from the ABIs, and organization-wide runs.
 
-Each member node adopts the new version on its own, fences stale-schema writes,
-and replays the same migrate locally — so the group converges without anyone
-re-syncing the whole state:
-
-<SeqDiagram id="d-build-migrations-rollout" title="Roll out v2 across a group"
+<SeqDiagram id="d-build-migrations-rollout" title="Upgrade an app to v2"
   lanes={[
-    { label: 'Admin', color: '#f0883e' },
-    { label: 'Governance scope', color: '#a371f7' },
-    { label: 'Member node', color: '#58a6ff' },
+    { label: 'Owner', color: '#f0883e' },
+    { label: 'Leader', color: '#58a6ff' },
+    { label: 'Replicas', color: '#a371f7' },
   ]}
   steps={[
-    { from: 0, to: 1, label: 'publish app v2 (carries migration)' },
-    { from: 1, to: 2, label: 'announce new version' },
-    { from: 2, to: 2, label: 'fence stale-schema writes' },
-    { from: 2, to: 2, label: 'replay migrate v1 → v2 locally' },
-    { from: 2, to: 2, label: 'migration_check passes' },
-    { from: 2, to: 1, label: 'adopted v2', dashed: true },
-    { type: 'divider', label: 'every replica converges on byte-identical v2 state' },
+    { from: 0, to: 1, label: 'upgrade the app to v2 (carries the migration)' },
+    { from: 1, to: 1, label: 'plan from the two ABIs' },
+    { from: 1, to: 1, label: 'run migrate v1 → v2 over the current state' },
+    { from: 1, to: 1, label: 'migration_check passes' },
+    { from: 1, to: 2, label: 'commit the upgrade entry: new bundle + new state' },
+    { from: 1, to: 0, label: 'upgraded', dashed: true },
+    { type: 'divider', label: 'every later call runs on v2' },
   ]} />
 
 The scenarios under `apps/migrations/` are runnable end-to-end fixtures (add field,
@@ -237,6 +234,6 @@ pass/fail, and more) — the closest thing to a test suite for your own migratio
 
 <CardGrid>
   <LinkCard title="SDK macros" href="/build/sdk-macros/" description="The #[app::*] attribute macros, including state, migrate, and migration_check." />
-  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="Custom Mergeable, deterministic ids, and the merge registry behind migrations." />
-  <LinkCard title="Application upgrades" href="/protocol/upgrades/" description="The protocol view: version identity, fencing, and group cascade." />
+  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="Custom Mergeable and the deterministic ids behind migrations." />
+  <LinkCard title="Application upgrades" href="/protocol/upgrades/" description="Who may upgrade, how the migration is planned, and organization-wide runs." />
 </CardGrid>

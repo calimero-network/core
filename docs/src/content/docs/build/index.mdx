@@ -10,8 +10,8 @@ import { CardGrid, LinkCard, Steps, Aside } from '@astrojs/starlight/components'
 
 A Calimero **application** is a sandboxed WASM module that defines a shared,
 replicated state machine — its data types and the methods that mutate them. You
-write it in Rust against the SDK; the node handles replication, conflict-free
-merging, and sync.
+write it in Rust against the SDK; the cluster runs each call once on the app's
+leader and replicates what it wrote.
 
 ## Start here
 
@@ -56,6 +56,6 @@ merging, and sync.
 </CardGrid>
 
 <Aside type="tip">
-Want the model underneath the SDK — scopes, operations, CRDT convergence? See
-the [Protocol Reference](/protocol/overview/).
+Want the model underneath the SDK — the write path, replication, the state
+format? See the [Protocol Reference](/protocol/overview/).
 </Aside>

@@ -78,10 +78,8 @@ Tools (`cargo-mero`, `mero-abi`, `mero-sign`, `storage-cost`, `storage-compare`,
 
 ## Removed crates
 
-The earlier node's crates (`auth`, `authz`, `dag`, `op`, `projection`,
-`server`, the old `network`, `context` and `node`, and others) are gone; the
-list is in [Coming from v1](../docs/src/content/docs/cloud/coming-from-v1.mdx#crates-removed).
-A document that describes them as current is stale.
+A crate not listed here does not exist; a document that names one as current
+is stale.
 
 ## Commands
 

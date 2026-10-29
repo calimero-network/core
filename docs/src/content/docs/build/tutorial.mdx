@@ -9,18 +9,20 @@ import { Steps, Aside, Tabs, TabItem, LinkCard } from '@astrojs/starlight/compon
 import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 This tutorial walks one path from nothing to a running key-value app. You will
-write a small Rust crate, build it to WebAssembly, install it on a node, attach
-it to a context, and call its methods — checking the output at each step.
+write a small Rust crate, build it to WebAssembly, install it on a cluster,
+create an instance of it (a context), and call its methods, checking the
+output at each step.
 
 The worked example mirrors the in-repo [`apps/kv-store`](/build/examples/) app,
 trimmed to the parts you need the first time through. When you finish you will
-have a context whose state you can read and write from the command line.
+have a context whose state you and the people you invite can read and write
+from the command line.
 
 <Aside type="note">
   The Rust code, the build command, and the `meroctl` flags here are taken from
   the in-repo example (`apps/kv-store/`) and the CLI definitions
-  (`crates/meroctl/src/cli/`). Calimero is pre-1.0, so flags can still change —
-  run `meroctl <command> --help` to confirm them for your build.
+  (`crates/meroctl/src`). Run `meroctl <command> --help` to confirm them for
+  your build; every command is in the [meroctl reference](/operate/meroctl/).
 </Aside>
 
 ## 1. Prerequisites
@@ -38,10 +40,19 @@ have a context whose state you can read and write from the command line.
    `cargo mero build` auto-installs the `wasm32-unknown-unknown` target and has
    `wasm-opt` built in, so there is nothing else to set up.
 
-2. **A running node.** You need a `merod` node up and a configured `meroctl`
-   alias pointing at it. If you have not done this yet, follow
-   [Install & run a node](/operate/install/) first. This tutorial assumes the
-   alias `node1`.
+2. **A development cluster.** `merod local` runs three nodes in one process,
+   with mock attestation; save its first node in `meroctl` and sign in with a
+   passkey kept in a file (development clusters only):
+
+   ```sh
+   merod local
+   # in another terminal
+   meroctl node add local http://127.0.0.1:2501/ --allow-mock
+   meroctl login --dev-passkey ./dev-passkey.json --name alice
+   ```
+
+   `login` signs up when the file does not exist yet, and saves the session.
+   See [Run local nodes](/contribute/development/#run-local-nodes).
 
 </Steps>
 
@@ -114,12 +125,11 @@ have a context whose state you can read and write from the command line.
 ## 3. Define the state
 
 Your app's persistent state is a single struct annotated with `#[app::state]`.
-Its fields are CRDT [collections](/build/collections/) — replicated types that
-merge cleanly when two nodes change them concurrently.
+Its fields are [collections](/build/collections/) — storage types that keep
+each entry as its own entity, so a call writes only what it changes.
 
 Here the state is a map from `String` keys to `LwwRegister<String>` values. An
-`LwwRegister` ("last-writer-wins") holds one value and keeps the most recent
-write when nodes diverge.
+`LwwRegister` ("last-writer-wins") holds one value; each write replaces it.
 
 ```rust
 #[app::state(emits = for<'a> Event<'a>)]
@@ -247,177 +257,139 @@ The name is the manifest's `package` and `version`, not the crate name.
 
 ## 6. Install and run
 
-`meroctl` talks to your running node. Select it with `--node node1`. Each
-command below prints a table by default; pass `--output-format json` to get the
-machine-readable form shown here.
+`meroctl` sends every request through the sealed channel to the node it saved,
+after checking the node's attestation. Its output is JSON.
 
 <Steps>
 
-1. **Install** the signed bundle. The node returns an application id:
+1. **Install** the signed bundle on the cluster. Uploading a bundle is for
+   development clusters; a production cluster installs a release from its
+   registry (`meroctl app install com.example.kv-store@0.1.0`):
 
    ```sh
-   meroctl --node node1 app install --path ./dist/com.example.kv-store-0.1.0.mpk
+   meroctl app install --path ./dist/com.example.kv-store-0.1.0.mpk
+   meroctl app ls
+   ```
+
+2. **Create a context**: an instance of your app with its own state, replicated
+   on three nodes. Its `init` runs once, now. `--alias` names it for your
+   account:
+
+   ```sh
+   meroctl context create --name my-kv --package com.example.kv-store --alias my-kv
    ```
 
    ```json
-   {"data":{"applicationId":"<app-id>"}}
+   { "appId": "…", "contextId": "…", "group": 7, "replicas": [1, 2, 3] }
    ```
 
-   Copy the `applicationId` — you need it next. You can list installed apps any
-   time with `meroctl --node node1 app ls`.
-
-2. **Create a namespace** bound to that application id. A namespace is a root
-   group; creating one bootstraps the group you will attach a context to:
-
-   ```sh
-   meroctl --node node1 namespace create --application-id <app-id>
-   ```
-
-   ```json
-   {"data":{"namespaceId":"<namespace-id>"}}
-   ```
-
-   The returned `namespaceId` is the id of that root group — you pass it as the
-   `--group-id` in the next step.
-
-3. **Create a context.** A context is a running instance of your app over a
-   shared state. `context create` needs both the application id and a group id
-   to attach to, so pass the namespace id from the previous step. Give the
-   context a memorable alias with `--name`:
-
-   ```sh
-   meroctl --node node1 context create \
-     --application-id <app-id> \
-     --group-id <namespace-id> \
-     --name my-kv
-   ```
-
-   ```json
-   {"data":{"contextId":"<context-id>","memberPublicKey":"<public-key>"}}
-   ```
-
-   You now have a live context. The `--name my-kv` alias lets you refer to it as
-   `my-kv` instead of the raw `contextId`.
-
-4. **Call the setter** to write a key. Mutations and views both go through the
-   top-level `call` command — whether a call mutates or only reads is decided by
-   the method itself, not a CLI flag. `--args` is JSON matching the method's
+3. **Call the setter** to write a key. `--args` is JSON matching the method's
    parameters:
 
    ```sh
-   meroctl --node node1 call set \
-     --context my-kv \
-     --args '{"key": "hello", "value": "world"}' \
-     --output-format json
+   meroctl call -c my-kv set --args '{"key": "hello", "value": "world"}'
    ```
-
-   `set` returns `()`, so the result output is `null`:
 
    ```json
-   {"jsonrpc":"2.0","id":null,"result":{"output":null}}
+   { "index": 2, "result": null, "events": [{ "kind": "Inserted", "data": { "key": "hello", "value": "world" } }], "receipt": { … } }
    ```
 
-5. **Call the getter** to read it back:
+   `set` returns `()`, so `result` is `null`. `index` is the entry's position in
+   the context's log, and `receipt` is the answering node's signature over the
+   result.
+
+4. **Call the getter** to read it back. `--view` reads without writing:
 
    ```sh
-   meroctl --node node1 call get \
-     --context my-kv \
-     --args '{"key": "hello"}' \
-     --output-format json
+   meroctl call -c my-kv get --args '{"key": "hello"}' --view
    ```
 
    ```json
-   {"jsonrpc":"2.0","id":null,"result":{"output":"world"}}
+   { "index": 2, "result": "world", "receipt": { … } }
    ```
 
-   The value you stored comes back under `result.output`. Your first app works.
+   The value you stored comes back as `result`. Your first app works.
 
 </Steps>
 
-:::caution
-The exact JSON envelope (`jsonrpc` / `id` / `result`) comes from the node's
-JSON-RPC response and may gain fields between pre-1.0 releases. The value your
-method returned is always under `result.output`. Without `--output-format json`,
-`meroctl` prints a human-readable table instead.
-:::
-
-Here is what that single `call set` does once it reaches the node — the method
-runs inside the WASM app, touches storage, emits its event, and the committed
-delta is what later flows to peers:
+Here is what that `call set` does once it reaches the cluster: the node checks
+your session and your access, the context's leader runs the method, and the
+other replicas apply what it wrote:
 
 <SeqDiagram id="d-build-tutorial-exec" title="One method, end to end"
   lanes={[
-    { label: 'Caller', color: '#3fb950' },
-    { label: 'Node', color: '#58a6ff' },
-    { label: 'WASM app', color: '#a371f7' },
-    { label: 'Storage', color: '#39d0d8' },
+    { label: 'meroctl', color: '#3fb950' },
+    { label: 'Any node', color: '#58a6ff' },
+    { label: 'Leader (WASM)', color: '#a371f7' },
+    { label: 'Replicas', color: '#39d0d8' },
   ]}
   steps={[
-    { from: 0, to: 1, label: 'call set --args {"key","value"}' },
-    { from: 1, to: 2, label: 'invoke set(key, value)' },
-    { from: 2, to: 3, label: 'insert into UnorderedMap' },
-    { from: 2, to: 2, label: 'emit Inserted event' },
-    { from: 3, to: 2, label: 'ok', dashed: true },
-    { from: 2, to: 1, label: 'commit state delta', dashed: true },
-    { from: 1, to: 0, label: 'result: null', dashed: true },
-    { type: 'divider', label: 'delta broadcast to peers, replicas converge' },
+    { from: 0, to: 1, label: 'sealed POST /apps/{app}/intents set {key, value}' },
+    { from: 1, to: 1, label: 'session + access, on fresh system state' },
+    { from: 1, to: 2, label: 'forward to the context\'s leader' },
+    { from: 2, to: 2, label: 'run set: insert into UnorderedMap, emit Inserted' },
+    { from: 2, to: 3, label: 'append { call, outcome } to the log' },
+    { from: 3, to: 2, label: 'majority holds it: committed', dashed: true },
+    { from: 2, to: 1, label: 'result + events', dashed: true },
+    { from: 1, to: 0, label: 'answer + signed receipt', dashed: true },
   ]} />
 
 ## 7. Make it multi-user
 
-So far one node owns the context. The payoff of a Calimero app is that a second
-node can hold the **same** context and the two converge automatically — that is
-the "replicas converge" divider in the diagram above. With a second node `node2`
-running, bring it into your context:
+A context belongs to an organization, and everyone in it reaches the context.
+Create one, create the context in it, and invite a second person:
 
 <Steps>
 
-1. On `node1` (the context owner), create a group invitation for the namespace.
-   A namespace is its own group, so pass the `namespaceId` from step 6 as the
-   group id. The command prints an invitation JSON blob:
+1. **Create an organization** and a context in it:
 
    ```sh
-   meroctl --node node1 group invite <namespace-id>
+   meroctl namespace create acme
+   meroctl context create --name team-kv --package com.example.kv-store \
+     --namespace <org-id> --alias team-kv
    ```
 
-2. On `node2`, redeem that blob to join the group, then join the context itself:
+   A context created in an organization is reached by every member (access
+   `org`, the default there).
+
+2. **Invite** a member. The command prints an invitation token:
 
    ```sh
-   meroctl --node node2 group join '<invitation-json>'
-   meroctl --node node2 group join-context <context-id>
+   meroctl namespace invite <org-id> --role member
    ```
 
-3. Now both nodes hold the context. Write from `node2` and read it back on
-   `node1` — once the delta has synced, the value is there:
+3. **Join** as the second person: a second account, with its own passkey file,
+   on the same cluster. Save the node under another `--home` so the two sessions
+   stay apart:
 
    ```sh
-   meroctl --node node2 call set \
-     --context <context-id> --args '{"key": "from", "value": "node2"}'
+   meroctl --home ./bob node add local http://127.0.0.1:2501/ --allow-mock
+   meroctl --home ./bob login --dev-passkey ./bob-passkey.json --name bob
+   meroctl --home ./bob namespace join <token>
+   ```
 
-   meroctl --node node1 call get \
-     --context <context-id> --args '{"key": "from"}' --output-format json
+4. **Write as one, read as the other**:
+
+   ```sh
+   meroctl --home ./bob call -c <context-id> set --args '{"key": "from", "value": "bob"}'
+   meroctl call -c team-kv get --args '{"key": "from"}' --view
    ```
 
    ```json
-   {"jsonrpc":"2.0","id":null,"result":{"output":"node2"}}
+   { "index": 2, "result": "bob", "receipt": { … } }
    ```
 
 </Steps>
 
-Both nodes wrote and read the same key with no central server. Because `items`
-is a CRDT map, concurrent writes from both nodes merge instead of clobbering —
-that is what makes the convergence safe, not just eventual.
-
-<Aside type="note">
-  The exact `group`/`namespace` membership flags are still settling pre-1.0; run
-  `meroctl group --help` and `meroctl namespace --help` to confirm them for your
-  build. The convergence behavior itself — two holders of one context reaching
-  the same state — is the stable part.
-</Aside>
+Both people wrote and read the same state, each with their own passkey, through
+any node of the cluster. The organization decides who reaches the context;
+what each member may change inside it is the app's own code and its
+[access-controlled storage](/build/permissioned-storage/). See
+[Organizations, teams & access](/protocol/organizations/).
 
 ## 8. Next steps
 
-You have the full loop: write, build, install, attach, call. From here:
+You have the full loop: write, build, install, create, call. From here:
 
 <LinkCard
   title="Collections"
@@ -442,5 +414,5 @@ You have the full loop: write, build, install, attach, call. From here:
 <LinkCard
   title="Quickstart"
   href="/build/quickstart/"
-  description="The condensed version of this path, plus running a node from scratch with merod."
+  description="The condensed version of this path."
 />

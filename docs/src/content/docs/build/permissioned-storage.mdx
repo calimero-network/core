@@ -1,89 +1,55 @@
 ---
 title: Access-Controlled Storage
-description: Permissioned storage in Calimero — which wrapper to reach for, and how write access is actually enforced across nodes.
+description: Which access-controlled wrapper to reach for, and where its write rule is checked.
 sidebar:
   order: 7
 ---
 
-import SeqDiagram from '../../../components/SeqDiagram.astro';
-
-Most app state in Calimero is **public**: any context member can write it. When
-you need narrower rules — *only the owner*, *only this group of writers*,
-*write-once*, *per-user slots* — you wrap the value in an access-controlled
+Most app state is **public**: any member who reaches the app can write it.
+When you need narrower rules (*only the owner*, *only this group of writers*,
+*write-once*, *per-user slots*) you wrap the value in an access-controlled
 collection from `calimero_storage::collections`. This page covers which wrapper
-to use, and the part that trips people up: **how that access rule is actually
-enforced** once data starts syncing between nodes.
+to use and how its rule holds.
 
-## The two planes (read this first)
+## Where the rule is checked
 
-Authorization in Calimero happens on **two independent planes**. Knowing which
-one is the real security boundary is the single most important thing on this
-page.
+A call runs once, on the app's leader: an attested node running the app's
+signed release, never code the caller supplies. The wrapper checks the
+caller's account (`env::account_id()`, set by the node from the caller's
+credential) when the run writes, and refuses a write the caller may not make:
+the method gets the refusal as an error, and nothing is appended. The other
+replicas apply the diff the leader's run wrote; they do not run it again
+([The write path](/protocol/write-path/)).
 
-| Plane | Where | What it does | Trust |
-|-------|-------|--------------|-------|
-| **API plane** | `only_owner()`, `guard()`, `Authorizer::authorize` — runs locally before a write | Fail-fast UX sugar: returns an error *before* you commit a doomed write | **Bypassable.** A modified node can skip it entirely |
-| **Merge plane** | `Interface::apply_action` — runs on **every** node as it ingests a remote action | Re-derives the authoritative writer set and `ed25519_verify`s the signature against it | **The real boundary.** Cannot be bypassed |
+So a wrapper's rule holds because the app's code is what runs, and nobody can
+skip it: not a member, not the operator. Two kinds of rule are kept by the node
+itself, outside the app's code:
 
-The API plane is a courtesy: it lets an honest client discover "you're not a
-writer" cheaply, without round-tripping a write that every other node will throw
-away. It is **not** security. A caller who patches their binary can call right
-past `only_owner()?`.
+- **Writer sets.** A `SharedStorage` writer rotation must step from the set in
+  effect, and the run's account must hold `ADMIN` in it. The node checks that
+  after the run and writes the new set beside the cell, in the same entry
+  ([Execution](/protocol/execution/#what-the-node-checks-after-the-run)).
+- **The host's key space.** Writer sets, private spaces and blob marks live
+  under `\0calimero.*`, which app code can neither read nor write by raw key.
 
-The **merge plane** is what makes the rule hold. When a remote action arrives,
-`apply_action` does not trust the writer set the action *claims*. It re-derives
-the **authoritative** writer set — accounts, not keys — from stored / causal
-state, verifies the action's Ed25519 signature against the device key that
-signed it, and checks that key's account — resolved to it at the write's causal
-cut — against that set. A forged write, or a genuine one from a device whose
-account was never granted, fails and is dropped — on every honest node,
-independently, with no coordination.
-
-```rust
-// crates/storage/src/interface.rs — apply_action, Shared arm (paraphrased)
-let authoritative_writers = match ctx.effective_writers.as_ref() {
-    Some(effective) => effective.clone(),       // causal writer set from the DAG
-    None => stored_writers.unwrap_or(claimed),  // else the entity's stored set
-};
-// `resolve_signer` answers two questions: does the signature verify against the
-// signing device's key, and is that device's account (`ctx.signer_account`,
-// resolved at this write's causal cut) in the writer set.
-let Some(signer_account) = Self::resolve_signer(
-    &authoritative_writers, sig_data, &payload, ctx.signer_account,
-) else {
-    return Err(StorageError::InvalidSignature); // forged / non-writer → dropped
-};
-// Then a per-operation capability gate (WRITE vs DELETE vs ADMIN):
-Self::enforce_op_mask(&signer_account, Self::required_op_mask(&action), &authoritative_writers)?;
-```
-
-:::tip[The mental model]
-Treat `only_owner()` / `guard()` like client-side form validation, and the merge
-plane like the server check. You write both, but only one is load-bearing. Never
-rely on the API plane for a property that matters.
-:::
+Your own method checks (`if caller != author { bail!() }`) hold for the same
+reason the wrappers do. What the wrappers add is that the rule travels with the
+data: a check you forget in one method is still made by the wrapper on every
+write to it.
 
 ## Storage types
 
-Every stored entity carries a `StorageType` stamp (`crates/storage/src/entities.rs`).
-The stamp is what the merge plane reads to decide who may write the entity. The
-wrappers below are ergonomic front-ends that set the right stamp for you.
+Every stored entity carries a `StorageType` stamp (`crates/storage/src/entities.rs`)
+that says who may write it. The wrappers below are front-ends that set the
+right stamp for you.
 
-| `StorageType` | Who may write | How it's enforced at merge |
-|---------------|---------------|----------------------------|
-| `Public` *(default)* | Any context member | Membership only — no signature. A member's `WRITE`+`DELETE` is implied by `DEFAULT_MEMBER_MASK` |
-| `User { owner: AccountId, rules }` | Only `owner`'s account, within `rules` | `ed25519_verify` vs the signing device's key, then that device's account checked against `owner` + a monotonic per-entity nonce (replay protection). `rules` (`EntryRules { immutable, moderators }`) are signed and fixed at creation: an `immutable` entry refuses changed bytes and every delete, and a `moderators` writer set may also delete it |
-| `Frozen` | The first writer, once | Write-once: a delete is unconditionally rejected, and the content cannot be modified |
-| `Shared { writers: BTreeMap<AccountId, OpMask> }` | Any account in `writers`, masked | `ed25519_verify` vs the signing device's key, then that device's account checked against `writers`; it must also hold the op's `OpMask` bit |
-| `SharedMember { anchor }` | Writer set resolved from `anchor` | Member carries no writer set of its own; writers are the anchor's, as the host resolves them from governance, so rotating the anchor revokes the whole subtree in O(1) |
-
-The per-entity nonce on the signed stamps (`User`, `Shared`, `SharedMember`)
-drops a write older than the stored one, which is last-write-wins. The one
-exception is an entry that merges whatever the order — an `#[app::mergeable]`
-value (`Custom`) or a `FugueText` block — when the write names that same type:
-its older write still reaches the merge, after every signature, writer-set,
-mask and owner check has passed, so two nodes that received the writes in
-opposite orders hold the same value.
+| `StorageType` | Who may write |
+|---------------|---------------|
+| `Public` *(default)* | Any member who reaches the app (`DEFAULT_MEMBER_MASK`: `WRITE`+`DELETE`) |
+| `User { owner: AccountId, rules }` | Only `owner`'s account, within `rules`. `rules` (`EntryRules { immutable, moderators }`) are fixed at creation: an `immutable` entry refuses changed bytes and every delete, and a `moderators` writer set may also delete it |
+| `Frozen` | The first writer, once: a delete is refused, and the content cannot be modified |
+| `Shared { writers: BTreeMap<AccountId, OpMask> }` | Any account in `writers`, holding the operation's `OpMask` bit |
+| `SharedMember { anchor }` | The writers of `anchor`: a member carries no writer set of its own, so rotating the anchor's set changes who may write the whole subtree at once |
 
 ### Operation masks
 
@@ -98,15 +64,15 @@ a bitset of three independent capabilities:
 | `OpMask::FULL` | `0b111` | All three; the default a writer gets when granted without a restriction |
 | `OpMask::WRITE_ONCE` | `0b1000` | The first `Put`; a second, different `Put` seals the value. What `Frozen<T>`'s one writer holds, alone; a rotation cannot grant it beside any other bit |
 
-The merge check tests individual bits via `OpMask::contains`. A `Put` requires
+The check tests individual bits via `OpMask::contains`. A `Put` requires
 `WRITE`; a `Delete` requires `DELETE`; rotating the writer set requires `ADMIN`.
 Because `ADMIN` is separate, a plain writer with `WRITE`+`DELETE` still cannot
 lock others out by rotating an object's writer set — that needs an explicit
 ownership (`ADMIN`) grant.
 
-:::caution[A check in your method is not a permission]
-Any member can run a patched node that skips your method bodies. Only the
-storage types above hold against that. [Securing app state, right and
+:::tip[Make the rule part of the data]
+A wrapper makes its check on every write to it, from every method. A check
+written in one method guards that method only. [Securing app state, right and
 wrong](/build/guides/securing-state/) lists the mistakes we found in our own
 apps, each next to the shape that holds.
 :::
@@ -115,7 +81,7 @@ apps, each next to the shape that holds.
 
 | Your data need | Use | Stamp it produces |
 |----------------|-----|-------------------|
-| Shared by the whole context, any member writes | a plain `#[app::state]` field (`UnorderedMap`, `LwwRegister`, …) | `Public` |
+| Shared by the whole app, any member writes | a plain `#[app::state]` field (`UnorderedMap`, `LwwRegister`, …) | `Public` |
 | One group of writers, set can evolve over time | `SharedStorage<T>` | `Shared` / `SharedMember` |
 | A single owner, transferable | `Ownable<T>` (`= PermissionedStorage<T, OwnerAcl>`) | `Shared` with a one-key writer set |
 | Per-key `WRITE` / `DELETE` / `ADMIN` capabilities | `PermissionedStorage<T, ProtocolAuthorizer>` | `Shared` with per-writer `OpMask`s |
@@ -131,19 +97,18 @@ For which to pick, and what protects a collection nested inside a guarded
 entry, see [Choosing state](/build/choosing-state/).
 
 `SharedStorage<T>` and `Ownable<T>` are both thin aliases over
-`PermissionedStorage<T, A>` — they differ only in the `Authorizer` policy `A`
-(`WriterSetAcl` for group-writable, `OwnerAcl` for single-owner). All three share
-the same merge-time enforcement; the `Authorizer` only changes the API-plane
-pre-check. Ownership transfer (`transfer_ownership`) is a **signed `ADMIN`
-rotation** of the one-key writer set — which is precisely the authenticated
-capability that `UserStorage` does not offer.
+`PermissionedStorage<T, A>`: they differ only in the `Authorizer` policy `A`
+(`WriterSetAcl` for group-writable, `OwnerAcl` for single-owner). Ownership
+transfer (`transfer_ownership`) is an **`ADMIN` rotation** of the one-key writer
+set, which the node checks like any other rotation: the capability that
+`UserStorage` does not offer.
 
 ## Group-writable storage in practice
 
 From `apps/kv-store-with-shared-storage`. A `SharedStorage<T>` field guards
-**everything inside it** — when the wrapper holds a collection, every entry
-inherits the `SharedMember` stamp, so a non-writer's delta to *any* entry is
-rejected at merge, not just the wrapper.
+**everything inside it**: when the wrapper holds a collection, every entry
+inherits the `SharedMember` stamp, so a non-writer's write to *any* entry is
+refused, not just one to the wrapper.
 
 ```rust
 #[app::state(emits = for<'a> Event<'a>)]
@@ -168,7 +133,7 @@ impl KvStore {
         }
     }
 
-    // Caller must be a current writer; a non-writer's write is dropped at merge.
+    // Caller must be a current writer; the SDK refuses a non-writer's write.
     pub fn set_shared(&mut self, value: String) -> app::Result<()> {
         self.shared_value.insert(LwwRegister::new(value))?;
         Ok(())
@@ -226,14 +191,6 @@ Both attach an identity to data, but they answer different questions.
 | Who updates / removes | Only the entry's recorded **author** | Only the slot owner |
 | Use it when | A collaborative collection where each row has an owner (posts, listings, claims) | Per-user private data (a profile, a personal sub-store) |
 
-:::note[Why `AuthoredMap::merge` is a deliberate no-op]
-`AuthoredMap` keeps per-entry ownership at merge time via the signed-action path
-in `apply_action`, not via a structural CRDT merge. Its `Mergeable::merge` is an
-intentional no-op: delegating to `UnorderedMap::insert` would re-stamp every
-entry as `Public` and strip the per-entry owner, silently dropping the
-authorization. The no-op is the safe choice, not an oversight.
-:::
-
 ## `AccessControl`: named roles
 
 From `apps/components-demo`. The wrappers above bind capabilities to **keys** (a
@@ -250,10 +207,10 @@ Under the hood `AccessControl` wraps **one** `SharedStorage<UnorderedMap<…>>`
 (itself a `PermissionedStorage<T, WriterSetAcl>`): the admins are exactly that
 storage's writer set, and each grant is an entry
 (`role\0member_hex → LwwRegister<bool>`, `true` = held, `false` = revoked) in its
-writer-set-guarded map. So a non-admin's hand-crafted grant delta is rejected by
-the **merge plane** for the same reason a non-writer's `SharedStorage` write is —
-the registry entries inherit the admin writer set. The fail-fast guards
-(`only_admin()`, `only_role()`) mirror what merge enforces.
+writer-set-guarded map. So a non-admin's grant is refused for the same reason a
+non-writer's `SharedStorage` write is: the registry entries inherit the admin
+writer set. `only_admin()` and `only_role()` check the same thing up front, with
+a clearer error.
 
 ### The API
 
@@ -269,12 +226,11 @@ the registry entries inherit the admin writer set. The fail-fast guards
 | `is_admin(who)` / `admins()` | `(&self, who: &AccountId) -> bool` / `(&self) -> BTreeSet<AccountId>` | anyone | Query the admin tier |
 | `grant_admin(who)` / `revoke_admin(who)` | `(&mut self, who: …) -> Result<()>` | an admin | Add / remove an admin — an **authenticated writer-set rotation** (cannot remove the last admin) |
 
-To gate a mutation on a role, call `only_role("editor")?` (fail-fast UX) before
-the write — but the real boundary is that the mutated data lives in its own
-writer-set-guarded wrapper, so the role check has teeth only when the role is
-also projected onto that data (next paragraph). Admin changes go through
-`grant_admin` / `revoke_admin`, which rotate the backing writer set the same
-signed way `Ownable::transfer_ownership` does.
+To gate a mutation on a role, call `only_role("editor")?` before the write. To
+make the data itself refuse anyone else, from every method, also project the
+role onto the data's writer set (below). Admin changes go through
+`grant_admin` / `revoke_admin`, which rotate the backing writer set the same way
+`Ownable::transfer_ownership` does.
 
 ```rust
 use calimero_sdk::{app, env, AccountId};
@@ -299,8 +255,8 @@ impl Docs {
         }
     }
 
-    // Admin-only: grant the "editor" role. Fail-fast here, enforced at merge
-    // (a forged grant delta is rejected — the registry inherits the admin set).
+    // Admin-only: grant the "editor" role (the registry inherits the admin set,
+    // so a non-admin's grant is refused).
     pub fn grant_editor(&mut self, who: AccountId) -> app::Result<()> {
         self.roles.grant("editor", who)?;
         Ok(())
@@ -308,20 +264,19 @@ impl Docs {
 
     // Role-gated mutation: caller must hold "editor".
     pub fn edit(&mut self, value: String) -> app::Result<()> {
-        self.roles.only_role("editor")?;       // fail-fast UX
-        self.body.insert(LwwRegister::new(value))?; // merge-enforced write
+        self.roles.only_role("editor")?;            // the role check
+        self.body.insert(LwwRegister::new(value))?; // the writer-set check
         Ok(())
     }
 }
 ```
 
-For the role gate to be load-bearing at merge (not just fail-fast), push the role
-memberships onto the guarded data's capability map with
+For the data to refuse a non-editor whatever method writes it, push the role
+memberships onto its capability map with
 `AccessControl::project_onto(&[("editor", OpMask::WRITE)], &mut self.body)` after
-any role change. That hands every `"editor"` the `WRITE` bit on `body`, signed and
-enforced by the merge plane — so a non-editor's forged write is dropped even on a
-patched node. Re-run `project_onto` after each grant/revoke; the registry write and
-the projection are separate signed actions that converge independently.
+any role change. That hands every `"editor"` the `WRITE` bit on `body`. Re-run
+`project_onto` after each grant or revoke: the registry write and the projection
+are separate writes.
 
 ### When to reach for it
 
@@ -350,90 +305,61 @@ This is the mistake that produces silently-unprotected data.
 
 An `Authorizer` (`only_owner()`, `guard()`, the whole `PermissionedStorage`
 machinery) protects **only the value stored inside the wrapper**. A value in a
-plain `#[app::state]` field — a bare `String`, a `u64`, an unguarded collection —
-is stamped `Public`. Public data carries `DEFAULT_MEMBER_MASK = WRITE | DELETE`
-(`crates/authz/src/lib.rs`), so **any context member can write or delete it.**
+plain `#[app::state]` field (a bare `String`, a `u64`, an unguarded collection)
+is stamped `Public`, so **any method that writes it writes it for any member.**
 
-This method gives **zero** protection:
+This method protects less than it seems:
 
 ```rust
 pub fn set_secret(&mut self, value: String) -> app::Result<()> {
-    self.owner_cell.only_owner()?; // API-plane check on the WRONG entity…
-    self.secret = value;           // …but `secret` is a plain Public field!
+    self.owner_cell.only_owner()?; // checks the owner of `owner_cell`…
+    self.secret = value;           // …but `secret` is a plain Public field
     Ok(())
 }
 ```
 
-`only_owner()` here guards `owner_cell`, while the write lands on `secret`, which
-no merge-plane check covers. Any member can author a `Put` to `secret` and it
-will be accepted on every node.
+It stops a non-owner calling *this* method. But every other method that
+writes `secret` (a `reset`, a migration you add later) writes it for anyone.
 
 **The rule:** everything an `Authorizer` is meant to protect must live *inside*
-the wrapper. Put the secret in an `Ownable<String>` (or another guarded type) and
-write it through that wrapper's API — then the merge plane enforces it.
+the wrapper. Put the secret in an `Ownable<String>` (or another guarded type)
+and write it through that wrapper's API.
 :::
 
-## Rotation and concurrency
+## Rotation
 
-A writer set is not stored in the cell. It changes by a signed governance op in the
-context's group, and every node reads the current set from the fold of those ops
-(see [Shared writer-set rotations](/protocol/governance/#shared-writer-set-rotations)).
-`rotate_writers` therefore only **asks**: it checks that you hold `ADMIN` in the
-set you read, records the request on the execution outcome, and the node publishes
-it as a governance op. Your own run reads the new set back at once; everyone else
-reads it once the op applies. Nothing is written to the cell, so a rotation touches
-no stored byte.
+A writer set is not stored in the cell. `rotate_writers` checks that you hold
+`ADMIN` in the set you read and records the new set on the run's outcome; the
+node checks it again after the run (it must step from the set in effect, and
+your account must hold `ADMIN` in it) and writes it beside the cell, in the same
+entry. A TEE run, an app's own run (a handler or an xcall) and a public call
+cannot rotate. Your run reads the new set back at once; every later run reads it
+from state. Nothing is written to the cell, so a rotation touches no stored
+byte.
 
-Members carry `SharedMember { anchor }`, so one rotation retroactively changes the
-writer set for the entire subtree in O(1), with no per-entity churn and no risk of
-split-brain from a partial re-stamp. Rotating the anchor is how you revoke a
-writer's access to everything under it at once.
+Members carry `SharedMember { anchor }`, so one rotation changes the writer set
+for the entire subtree at once, with no per-entity re-stamping. Rotating the
+anchor is how you revoke a writer's access to everything under it.
 
-An update that restates a different writer set is not a rotation: a node refuses
-any write to an existing cell whose claimed `writers` differ from the set stored
-with it, however well it is signed.
+An update that restates a different writer set is not a rotation: a write to an
+existing cell whose claimed `writers` differ from the set stored with it is
+refused.
 
-The revocation bites at the **merge plane**: a removed writer can still author a
-`Put`, but every honest node asks the host for the set at the write's causal cut
-and the removed key no longer verifies, so the write is dropped, not
-retroactively trusted:
+Runs of one app are ordered by its log, so a rotation and a write never race:
+a write after the rotation's entry is checked against the new set, and one
+before it against the old.
 
-<SeqDiagram
-  id="d-perm-rotate"
-  title="Writer-set rotation revokes a writer at merge"
-  lanes={[
-    { label: 'Admin', color: '#a371f7' },
-    { label: 'Scope', color: '#39d0d8' },
-    { label: 'Removed writer', color: '#f0883e' },
-  ]}
-  steps={[
-    { from: 0, to: 1, label: 'rotate_writers: signed ADMIN governance op, removes W' },
-    { from: 1, to: 1, label: 'fold updates the set; subtree writer set updated O(1)', color: '#39d0d8' },
-    { from: 2, to: 1, label: 'Put alice = v — signed by removed writer\'s device key', color: '#f0883e' },
-    { from: 1, to: 1, label: 'apply_action: ask the host for the writers at the write\'s cut', color: '#39d0d8' },
-    { from: 1, to: 1, label: 'signature verifies, but the signer\'s account is no longer in writers', color: '#f0883e' },
-    { from: 1, to: 2, label: 'InvalidSignature — write dropped', dashed: true, color: '#f0883e' },
-    { type: 'divider', label: 'rotation revokes the subtree at merge' },
-  ]}
-/>
+## The caller's private state
 
-Concurrent rotations, and a rotation racing a write, resolve in the fold, by the
-rules in the governance chapter. In short, a write is verified against the writer
-set **as of its own causal parents**, not the post-merge set, so a write authored
-while you were a valid writer is never retroactively rejected by a later rotation
-that removed you.
-
-## Node-local private state
-
-Every wrapper above narrows *who in the context* may write a value, but the value
-still **syncs** — it lives in the Merkle root and reaches every node. The tightest
-boundary of all is the one where data never leaves the node at all:
-`#[app::private]` declares a struct that stores into a separate `PrivateState`
-column, is **never synchronized**, sits **outside the Merkle root**, and has exactly
-one writer — this node. There is no merge plane here because there is no merge: each
-node keeps its own copy, and per-node divergence is intentional. See
-[Synced vs node-local state](/build/state-modeling/#synced-vs-node-local-state) for
-when to choose it (secrets, per-node caches, derived indexes).
+Every wrapper above narrows *who* may write a value that every caller of the
+app can read. A **private** value is narrower still: only its own account's
+runs read or write it. `#[app::private]` declares a struct stored in the
+caller's private space (`env::private_storage_*`, under
+`\0calimero.private\0 ‖ account`): part of the app's replicated state and
+sealed on disk like the rest, but handed only to runs whose caller is that
+account. App code cannot address another account's space, so no wrapper is
+needed: each account is the one writer of its own. See
+[Execution](/protocol/execution/#three-storage-spaces-in-one-state).
 
 Annotating a struct with `#[app::private]` generates typed accessors on it:
 
@@ -447,7 +373,7 @@ cycle is just "load, mutate through `as_mut()`, let it fall out of scope." This 
 `apps/private_data` pattern:
 
 ```rust
-// Node-local private state — never synced, single-writer, outside the Merkle root.
+// The caller's private state: only this account's runs read or write it.
 #[derive(BorshSerialize, BorshDeserialize, Default)]
 #[borsh(crate = "calimero_sdk::borsh")]
 #[app::private]
@@ -464,9 +390,9 @@ pub fn add_secret(&mut self, game_id: String, secret: String) -> app::Result<()>
     secrets_mut.secrets_added = secrets_mut.secrets_added.saturating_add(1);
     // `secrets_mut` writes the private blob back when it drops at end of scope.
 
-    // Only the hash crosses the wire, into synced state. (The app keeps it in
-    // an `AuthoredMap` under an id naming the creator, so nobody else can
-    // change the hash a guess is checked against.)
+    // Only the hash goes into the shared state. (The app keeps it in an
+    // `AuthoredMap` under an id naming the creator, so nobody else can change
+    // the hash a guess is checked against.)
     let hash_hex = hex::encode(Sha256::digest(secret.as_bytes()));
     self.games.insert(game_id, hash_hex.into())?;
     Ok(())
@@ -480,7 +406,7 @@ mutates, and saves in a single call.
 
 ## See also
 
-- [Collections](/build/collections/) — the CRDT types these wrappers guard, and their merge semantics
-- [Governance](/protocol/governance/) — how context membership and roles drive the `Public` write boundary
-- [Capability inheritance](/protocol/capability-inheritance/) — how writer / admin capabilities flow through subgroups
-- [Divergence recovery](/protocol/divergence-recovery/) — what happens when replicas disagree, and how they reconverge
+- [Collections](/build/collections/): the CRDT types these wrappers guard
+- [Choosing state](/build/choosing-state/): which collection for which field
+- [Execution](/protocol/execution/): what a run may do, and what the node checks after it
+- [Organizations, teams & access](/protocol/organizations/): who reaches an app at all
