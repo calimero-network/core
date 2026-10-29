@@ -250,18 +250,36 @@ A node started without `--bootstrap` waits. Once the operator registers it
 and from then on [placement](/protocol/context-lifecycle/#create) and replica
 moves can put apps on it.
 
-**Learners become voters up to 3.** On every reconcile pass, a system leader
-with fewer than 3 voters promotes registered learners that are caught up (at
-most `PROMOTE_MAX_LAG`, 16 entries, behind its log) so that the system group has
-exactly 3 voters, in one membership change (joint consensus). It never stops
-at 2: two voters tolerate no failure and make every system write wait on both,
-so a cluster started on one node keeps that one voter until two learners are
-ready, then goes from 1 to 3. Learners in a zone no voter is in come first
-(`zone` from `POST /ops/nodes`), then learners with no zone, then the rest. The
-leader never grows the system group past 3 by itself; a fourth node stays a
-learner (5 voters would be an operator's choice, not implemented yet). Removing
-a voter still promotes a registered learner while fewer than 3 are left
-(`DELETE /ops/nodes/{id}`).
+**Learners become voters up to the cluster's count.** The system group keeps
+3 voters (one failure tolerated) or 5 (two), never another count:
+`--system-voters` on the founding node writes it at genesis, and the operator
+changes it later (`POST /ops/system-voters { count }`, `meroctl ops
+system-voters`), both through the system log (`SystemState::system_voters`),
+so every system leader acts on the same number whatever its own flags. A
+cluster from before reads as 3. On every reconcile pass, a system leader with
+fewer voters promotes registered learners that are caught up (at most
+`PROMOTE_MAX_LAG`, 16 entries, behind its log) to the largest odd count they
+reach, in one membership change (joint consensus). It never stops at an even
+count: 2 voters tolerate no failure and 4 no more than 3, and both make every
+system write wait on one more vote. So a cluster started on one node keeps
+that one voter until two learners are ready, then goes from 1 to 3; with 5 set,
+it goes from 3 to 5 once two more learners are ready (from 1 to 5 at once if
+four are). Learners in a zone no voter is in come first (`zone` from `POST
+/ops/nodes`), then learners with no zone, then the rest. With more voters than
+the count (the operator lowered it), the leader keeps itself and one voter per
+zone first; the voters it drops stay registered and come back as learners.
+Removing a voter (`DELETE /ops/nodes/{id}`) refills toward the count from
+registered learners, and if none can make the count odd, keeps one voter fewer
+(5 minus one leaves 3, not 4). The founders a bootstrapping node starts the
+group with are likewise cut to an odd count (the bootstrapping node and the
+lowest other ids); the others join as learners.
+
+Why genesis and the log, not a per-node flag: the count must be the same on
+every node that may lead, or two leaders in a row would grow and shrink the
+group against each other. A count fixed at genesis only would leave clusters
+founded before it, or grown later, at 3 for good, so the operator may change
+it; a membership change is joint consensus either way, so changing it is safe
+at any time.
 
 So a cluster can start on one node and grow: until the second and third nodes
 are voters, the first is a single point of failure for every system write and

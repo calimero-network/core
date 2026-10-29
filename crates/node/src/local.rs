@@ -70,6 +70,7 @@ pub async fn start(
             ops_token_sha256: None,
             metrics_listen: None,
             replicas: usize::try_from(n.min(3))?,
+            system_voters: crate::membership::SystemVoters::default(),
             backup_dir: Some(dir.join("backups")),
             raft: calimero_log::Config::default(),
             session_key_rotation_secs: 6 * 3600,

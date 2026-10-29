@@ -21,13 +21,20 @@ pub enum OpsCmd {
     /// context count (ids and counts only), for rebalancing.
     Placement,
     /// Register a node so the system group admits it (it joins as a learner,
-    /// and becomes a voter while the system group has fewer than 3).
+    /// and becomes a voter while the system group has fewer voters than
+    /// `system-voters` sets, never to an even count).
     AddNode {
         id: u64,
         /// Its URL.
         addr: String,
         #[arg(long, default_value = "")]
         zone: String,
+    },
+    /// How many voters the system group keeps: 3 (one failure tolerated) or 5
+    /// (two). The system leader grows or shrinks it as learners allow.
+    SystemVoters {
+        #[arg(value_parser = clap::builder::PossibleValuesParser::new(["3", "5"]))]
+        count: String,
     },
     /// Remove a node from the cluster once no context keeps a replica on it
     /// (run against the system leader; another node names it).
@@ -133,6 +140,12 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
                 .await?
         }
         OpsCmd::RemoveNode { id } => client.delete(&format!("ops/nodes/{id}")).await?,
+        OpsCmd::SystemVoters { count } => {
+            let count: u64 = count.parse()?;
+            client
+                .post("ops/system-voters", json!({ "count": count }))
+                .await?
+        }
         OpsCmd::Move { context, replicas } => {
             let path = format!("ops/apps/{context}/replicas");
             let body = json!({ "replicas": replicas });

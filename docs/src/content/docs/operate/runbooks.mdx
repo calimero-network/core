@@ -42,10 +42,27 @@ learner of the system group once it is registered.
 </Steps>
 
 A learner holds the directory and can serve and host apps, but does not vote
-in the system group. While the system group has fewer than 3 voters, the
-system leader promotes caught-up learners to make exactly 3 (never 2), those in
-zones no voter is in first; a voter removed (below) is replaced the same way.
-It does not grow past 3 by itself.
+in the system group. While the system group has fewer voters than the
+cluster's count (3 by default), the system leader promotes caught-up learners
+to the largest odd count they reach (never 2 or 4), those in zones no voter is
+in first; a voter removed (below) is replaced the same way.
+
+### Five system voters
+
+Three voters tolerate one node failing; five tolerate two, at the cost of one
+more vote per system write. Choose it when founding (`merod run
+--system-voters 5` on the bootstrapping node, written at genesis) or later:
+
+```bash
+meroctl --ops-token T ops system-voters 5   # POST /ops/system-voters { count: 5 }
+meroctl --ops-token T ops placement         # system.target 5, system.voters
+```
+
+With 3 voters and only one caught-up learner, the group stays at 3 (4 would
+tolerate no more failures); once a second learner caught up, both become voters
+in one change, spread across zones first. `ops system-voters 3` shrinks it back,
+keeping the leader and one voter per zone; the others stay as learners. Only 3
+and 5 are accepted.
 
 ### Grow from one node
 
@@ -91,7 +108,8 @@ and grow:
 2. Remove it, against the system leader (another node answers `421 NOT_LEADER`
    with `details.leaderUrl`): `meroctl --ops-token T ops remove-node ID`
    (`DELETE /ops/nodes/{id}`). It leaves the directory and the system group; a
-   registered learner takes its vote while fewer than 3 voters are left.
+   registered learner takes its vote while fewer voters than the cluster's
+   count are left; with none to take it, a 5-voter group drops to 3, never 4.
 
 3. Stop the process and retire its data disk. The other nodes do not register it
    again from their `--peers`; only `ops add-node` brings it back.

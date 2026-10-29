@@ -4075,6 +4075,117 @@ async fn replica_moves_are_idempotent_and_one_at_a_time() {
     );
 }
 
+/// `--system-voters 5`: the system group grows from one node to 3, then to 5
+/// once two more learners caught up, spread across zones, and never through 2
+/// or 4. The operator lowers it to 3 and raises it to 5 again (`POST
+/// /ops/system-voters`, 3 or 5 only); a voter removed with no learner to
+/// replace it leaves 3, not 4.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn five_system_voters_grow_by_two_across_zones_and_never_to_an_even_count() {
+    let mut c = Cluster::start_with(1, |cfg| {
+        cfg.system_voters = calimero_node::membership::SystemVoters::new(5).unwrap();
+    })
+    .await;
+    let first = std::sync::Arc::clone(&c.nodes[0].as_ref().unwrap().node);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+    let watch = {
+        let seen = std::sync::Arc::clone(&seen);
+        let mut rx = first.system.raft().metrics();
+        let first = std::sync::Arc::clone(&first);
+        tokio::spawn(async move {
+            while rx.changed().await.is_ok() {
+                seen.lock()
+                    .unwrap()
+                    .push(first.system.status().voters.len());
+            }
+        })
+    };
+    let voters_become = |want: Vec<u64>| {
+        let first = std::sync::Arc::clone(&first);
+        async move {
+            let mut got = Vec::new();
+            for _ in 0..300 {
+                got = first.system.status().voters;
+                if got == want {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert_eq!(got, want);
+        }
+    };
+    for (id, zone) in [(2_u64, "b"), (3, "c"), (4, "c"), (5, "d")] {
+        let i = c.join().await;
+        let _ = ops_at(&c, 0)
+            .await
+            .post(
+                "ops/nodes",
+                json!({ "id": id, "addr": c.urls[i], "zone": zone }),
+            )
+            .await
+            .unwrap();
+        match id {
+            3 => voters_become(vec![1, 2, 3]).await,
+            4 => {
+                // One more learner would make 4: it waits.
+                tokio::time::sleep(Duration::from_millis(2000)).await;
+                assert_eq!(first.system.status().voters, vec![1, 2, 3]);
+            }
+            5 => voters_become(vec![1, 2, 3, 4, 5]).await,
+            _ => {}
+        }
+    }
+    let p = ops_at(&c, 0).await.get("ops/placement").await.unwrap();
+    assert_eq!(p["system"]["target"], json!(5), "{p}");
+
+    // The operator: 3 or 5, nothing else.
+    let e = ops_at(&c, 0)
+        .await
+        .post("ops/system-voters", json!({ "count": 4 }))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_SYSTEM_VOTERS"), "{e}");
+    let _ = ops_at(&c, 0)
+        .await
+        .post("ops/system-voters", json!({ "count": 3 }))
+        .await
+        .unwrap();
+    // The leader stays, then one voter per zone: b and c (2 and 3), not 4 (c again).
+    voters_become(vec![1, 2, 3]).await;
+    let _ = ops_at(&c, 0)
+        .await
+        .post("ops/system-voters", json!({ "count": 5 }))
+        .await
+        .unwrap();
+    voters_become(vec![1, 2, 3, 4, 5]).await;
+
+    // A voter leaves with no learner to take its place: 3, not 4.
+    let leader = system_leader(&c).await;
+    let _ = ops_at(&c, leader)
+        .await
+        .delete("ops/nodes/5")
+        .await
+        .unwrap();
+    c.stop(4).await;
+    let mut st = first.system.status();
+    for _ in 0..300 {
+        st = first.system.status();
+        if st.voters.len() == 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(st.voters.len(), 3, "{st:?}");
+    assert!(st.voters.contains(&1) && !st.voters.contains(&5), "{st:?}");
+    watch.abort();
+    let _ = watch.await;
+    let sizes = seen.lock().unwrap().clone();
+    assert!(
+        !sizes.contains(&2) && !sizes.contains(&4),
+        "never an even count: {sizes:?}"
+    );
+}
+
 /// Ownership transfer: the owner hands an app to another account
 /// with a passkey assertion; the new owner then decides, the old one no longer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

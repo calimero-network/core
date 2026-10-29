@@ -4298,9 +4298,44 @@ async fn ops_placement(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
             json!({ "id": id, "zone": zone, "release": release.ok().flatten(), "apps": hosted })
         })
         .collect();
-    Ok(Json(
-        json!({ "fresh": fresh, "apps": apps, "nodes": nodes }),
-    ))
+    let system = node.system.status();
+    let system_voters = node.sys(|s| s.system_voters().get());
+    Ok(Json(json!({
+        "fresh": fresh,
+        "apps": apps,
+        "nodes": nodes,
+        "system": { "voters": system.voters, "learners": system.learners, "target": system_voters },
+    })))
+}
+
+/// How many times (100 ms apart) a node removal waits for a membership change
+/// already under way (a promotion) before answering 503.
+const VOTER_CHANGE_TRIES: usize = 50;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SystemVotersBody {
+    count: usize,
+}
+
+/// `POST /ops/system-voters { count }`: how many voters the system group
+/// keeps, 3 or 5. Logged (`SetSystemVoters`), so whichever node leads acts on
+/// the same count; the leader then grows the group from caught-up learners
+/// (never to an even count) or shrinks it (`Node::promote_learners`).
+async fn ops_system_voters(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(body): Json<SystemVotersBody>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    if let Err(e) = crate::membership::SystemVoters::new(body.count) {
+        return Err(ApiError::bad_request("BAD_SYSTEM_VOTERS", &e));
+    }
+    let v = node
+        .sys_write(&SystemCmd::SetSystemVoters { count: body.count })
+        .await?;
+    node.kick.notify_one();
+    Ok(Json(v))
 }
 
 #[derive(Deserialize)]
@@ -4331,8 +4366,9 @@ async fn ops_register_node(
 
 /// Remove a node: out of the directory and the system group. Refused while an
 /// app keeps a replica on it (move them with `/ops/apps/{app}/replicas`). Runs
-/// on the system leader; any other node answers `421 NOT_LEADER`. A registered
-/// learner takes the removed voter's place while fewer than 3 voters are left.
+/// on the system leader; any other node answers `421 NOT_LEADER`. Registered
+/// learners refill the voters toward the cluster's count; when none can make
+/// the count odd, one voter fewer is kept instead (`membership::shrink_voters`).
 async fn ops_remove_node(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -4348,27 +4384,62 @@ async fn ops_remove_node(
             leader: addr,
         }));
     }
-    let mut voters: std::collections::BTreeSet<u64> =
-        st.voters.iter().copied().filter(|v| *v != id).collect();
-    if voters.is_empty() {
+    if st.voters.iter().all(|v| *v == id) {
         return Err(ApiError::bad_request(
             "LAST_NODE",
             "the cluster's last voter cannot be removed",
         ));
     }
+    // One membership change at a time: a promotion may be under way.
+    let mut claimed = None;
+    for _ in 0..VOTER_CHANGE_TRIES {
+        claimed = node.begin_voter_change();
+        if claimed.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let Some(_change) = claimed else {
+        return Err(ApiError::unavailable(
+            "the system group's voters are changing; retry",
+        ));
+    };
+    let st = node.system.status();
+    let mut voters: std::collections::BTreeSet<u64> =
+        st.voters.iter().copied().filter(|v| *v != id).collect();
     let _ok = node.sys_write(&SystemCmd::RemoveNode { id }).await?;
-    let learners: Vec<u64> = node.sys(|s| {
-        st.learners
+    // Refill toward the cluster's count from registered learners, never to an
+    // even count: if none can make it odd, keep one voter fewer instead.
+    let (target, zone_of, learners) = node.sys(|s| {
+        let zones: std::collections::BTreeMap<u64, String> =
+            s.nodes.iter().map(|(i, n)| (*i, n.zone.clone())).collect();
+        let learners: Vec<(u64, String)> = st
+            .learners
             .iter()
             .copied()
             .filter(|l| *l != id && s.nodes.contains_key(l))
-            .collect()
+            .map(|l| (l, zones.get(&l).cloned().unwrap_or_default()))
+            .collect();
+        (s.system_voters(), zones, learners)
     });
-    for l in learners {
-        if voters.len() >= 3 {
-            break;
-        }
-        let _new = voters.insert(l);
+    let left: Vec<u64> = voters.iter().copied().collect();
+    let left_zones: Vec<String> = left
+        .iter()
+        .map(|v| zone_of.get(v).cloned().unwrap_or_default())
+        .collect();
+    let zoned: Vec<(u64, String)> = left.iter().copied().zip(left_zones.clone()).collect();
+    if let Some(v) =
+        crate::membership::grow_voters(target, &left, &left_zones, &learners).or_else(|| {
+            // Keep this node (it leads) unless it is the one leaving.
+            let keep = if left.contains(&node.config.node_id) {
+                node.config.node_id
+            } else {
+                left[0]
+            };
+            crate::membership::shrink_voters(target, keep, &zoned)
+        })
+    {
+        voters = v;
     }
     node.system
         .change_voters(voters)
@@ -4826,6 +4897,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/status", get(ops_status))
         .route("/ops/metrics", get(ops_metrics))
         .route("/ops/placement", get(ops_placement))
+        .route("/ops/system-voters", post(ops_system_voters))
         .route("/ops/nodes", post(ops_register_node))
         .route("/ops/nodes/{id}", delete(ops_remove_node))
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))

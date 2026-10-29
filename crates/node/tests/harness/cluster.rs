@@ -58,6 +58,7 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
         ops_token_sha256: None,
         metrics_listen: None,
         replicas: 3,
+        system_voters: calimero_node::membership::SystemVoters::default(),
         backup_dir: Some(dir.join("backups")),
         raft: calimero_log::Config {
             heartbeat_ms: 100,

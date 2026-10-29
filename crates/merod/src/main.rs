@@ -405,6 +405,11 @@ async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
         ops_token_sha256: args.ops_token_sha256.clone(),
         metrics_listen: args.metrics_listen,
         replicas: args.replicas.unwrap_or(3),
+        system_voters: calimero_node::membership::SystemVoters::new(
+            args.system_voters
+                .unwrap_or(calimero_node::membership::DEFAULT_SYSTEM_VOTERS),
+        )
+        .map_err(|e| eyre::eyre!(e))?,
         backup_dir: args.backup_dir.clone(),
         raft: calimero_log::Config::default(),
         session_key_rotation_secs: args.session_key_rotation_secs.unwrap_or(6 * 3600).max(1800),

@@ -11,6 +11,7 @@ use calimero_log::Machine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::membership::SystemVoters;
 use crate::types::{
     Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Invite, NodeRecord, Org,
     OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
@@ -193,6 +194,11 @@ pub struct SystemState {
     /// state from before governance, which reads as [`Governance::default`].
     #[serde(default)]
     pub governance: Option<Governance>,
+    /// How many voters the system group keeps (3 or 5): from genesis
+    /// (`--system-voters`), changed by the operator (`SetSystemVoters`).
+    /// `None` is state from before, which reads as 3.
+    #[serde(default)]
+    pub system_voters: Option<usize>,
     /// When the operator holds release approvals ([`Governance::releases`]):
     /// the mero-tee releases it approved to hold every app's data.
     #[serde(default)]
@@ -299,6 +305,14 @@ impl SystemState {
     #[must_use]
     pub fn governance(&self) -> Governance {
         self.governance.clone().unwrap_or_default()
+    }
+
+    /// How many voters the system group keeps.
+    #[must_use]
+    pub fn system_voters(&self) -> SystemVoters {
+        self.system_voters
+            .and_then(|n| SystemVoters::new(n).ok())
+            .unwrap_or_default()
     }
 
     /// Whether `account` may upgrade `app`: its owner, or, for an org app,
@@ -611,6 +625,14 @@ pub enum SystemCmd {
         /// approvals, it holds the apps until the operator approves another.
         #[serde(default)]
         release: Option<String>,
+        /// How many voters the system group keeps (3 or 5); `None`: 3.
+        #[serde(default)]
+        system_voters: Option<usize>,
+    },
+    /// The operator sets how many voters the system group keeps (3 or 5).
+    /// The system leader then grows or shrinks it as learners allow.
+    SetSystemVoters {
+        count: usize,
     },
     /// Where the operator holds release approvals, it approves (or
     /// withdraws) a mero-tee release for every app's data.
@@ -1476,15 +1498,29 @@ impl SystemMachine {
             SystemCmd::Genesis {
                 governance,
                 release,
+                system_voters,
             } => {
                 if s.governance.is_some() || !s.accounts.is_empty() {
                     return Err("the cluster's governance is fixed at genesis");
+                }
+                if let Some(n) = system_voters {
+                    if SystemVoters::new(n).is_err() {
+                        return Err("the system group keeps 3 or 5 voters");
+                    }
+                    s.system_voters = Some(n);
                 }
                 if governance.releases == Authority::Operator {
                     s.operator_releases = release.into_iter().collect();
                 }
                 s.governance = Some(governance.clone());
                 Ok(json!({ "governance": governance }))
+            }
+            SystemCmd::SetSystemVoters { count } => {
+                if SystemVoters::new(count).is_err() {
+                    return Err("the system group keeps 3 or 5 voters");
+                }
+                s.system_voters = Some(count);
+                Ok(json!({ "systemVoters": count }))
             }
             SystemCmd::SetOperatorRelease { version, approved } => {
                 if s.governance().releases != Authority::Operator {
@@ -2140,6 +2176,7 @@ mod tests {
         SystemCmd::Genesis {
             governance,
             release: Some("2.0.0".into()),
+            system_voters: None,
         }
     }
 

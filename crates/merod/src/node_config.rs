@@ -112,6 +112,12 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_REPLICAS")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replicas: Option<usize>,
+    /// How many voters the system group keeps: 3 (one failure tolerated) or 5
+    /// (two). Written at genesis by the founding node; later the operator
+    /// changes it (`POST /ops/system-voters`) [default: 3].
+    #[arg(long, env = "MEROD_SYSTEM_VOTERS", value_parser = parse_system_voters)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_voters: Option<usize>,
     #[arg(long, env = "MEROD_BACKUP_DIR")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_dir: Option<PathBuf>,
@@ -215,6 +221,7 @@ impl NodeArgs {
             ops_token_sha256: self.ops_token_sha256.or(base.ops_token_sha256),
             metrics_listen: self.metrics_listen.or(base.metrics_listen),
             replicas: self.replicas.or(base.replicas),
+            system_voters: self.system_voters.or(base.system_voters),
             backup_dir: self.backup_dir.or(base.backup_dir),
             session_key_rotation_secs: self
                 .session_key_rotation_secs
@@ -236,6 +243,12 @@ impl NodeArgs {
             outbound: self.outbound.or(base.outbound),
         }
     }
+}
+
+/// `--system-voters`: 3 or 5, nothing else.
+fn parse_system_voters(v: &str) -> Result<usize, String> {
+    let n: usize = v.parse().map_err(|_| format!("{v} is not a number"))?;
+    calimero_node::membership::SystemVoters::new(n).map(|s| s.get())
 }
 
 #[cfg(test)]
@@ -265,6 +278,15 @@ mod tests {
             Some(false),
             "`--dev false` turns the file's off"
         );
+    }
+
+    #[test]
+    fn the_system_group_keeps_three_or_five_voters() {
+        assert_eq!(parse_system_voters("3"), Ok(3));
+        assert_eq!(parse_system_voters("5"), Ok(5));
+        for bad in ["1", "2", "4", "6", "five"] {
+            assert!(parse_system_voters(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

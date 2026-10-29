@@ -21,7 +21,7 @@ use crate::app::{
 };
 use crate::attest::{HttpAttestor, Mode, Policy};
 use crate::error::ApiError;
-use crate::membership::{grow_voters, PROMOTE_MAX_LAG, SYSTEM_VOTERS};
+use crate::membership::{grow_voters, shrink_voters, SystemVoters, PROMOTE_MAX_LAG};
 use crate::services::{AppBlobs, BundleFacts, Search};
 use crate::system::{output, SystemCmd, SystemMachine, SystemState};
 use crate::types::{now_ms, AppRecord, Caller, Executor as Kind, NodeRecord};
@@ -98,6 +98,9 @@ pub struct Config {
     pub metrics_listen: Option<std::net::SocketAddr>,
     /// Replicas per app.
     pub replicas: usize,
+    /// The system voters this node writes at genesis if it founds the
+    /// cluster (`--system-voters`); after that the system state's count holds.
+    pub system_voters: SystemVoters,
     /// Where encrypted snapshots go (object storage stand-in), if anywhere.
     pub backup_dir: Option<PathBuf>,
     pub raft: calimero_log::Config,
@@ -258,6 +261,42 @@ impl Drop for MoveGuard {
     }
 }
 
+/// The founders that form the system group's first voters: this node (the
+/// one bootstrapping) and the lowest other ids, as many as `target` allows
+/// and odd; the others join as learners once `reconcile` registers them from
+/// `--peers`.
+fn founding_voters(
+    me: NodeId,
+    peers: &BTreeMap<NodeId, String>,
+    target: SystemVoters,
+) -> BTreeMap<NodeId, String> {
+    let n = (1..=target.get().min(peers.len()))
+        .rev()
+        .find(|n| n % 2 == 1)
+        .unwrap_or(1);
+    peers
+        .iter()
+        .filter(|(id, _)| **id == me)
+        .chain(peers.iter().filter(|(id, _)| **id != me))
+        .take(n)
+        .map(|(id, url)| (*id, url.clone()))
+        .collect()
+}
+
+/// A change of the system group's voters in progress on this node
+/// ([`Node::begin_voter_change`]).
+pub struct VoterChange {
+    node: Arc<Node>,
+}
+
+impl Drop for VoterChange {
+    fn drop(&mut self) {
+        self.node
+            .promoting
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// Shared node state.
 pub struct Node {
     pub config: Config,
@@ -306,7 +345,7 @@ pub struct Node {
     joining: Mutex<std::collections::HashSet<NodeId>>,
     /// Apps whose replicas this node is moving now ([`Node::begin_move`]).
     moving: Mutex<HashSet<String>>,
-    /// A promotion of learners to system voters is under way.
+    /// A change of the system group's voters is under way ([`VoterChange`]).
     promoting: std::sync::atomic::AtomicBool,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
@@ -494,7 +533,13 @@ impl Node {
         });
 
         if node.config.bootstrap {
-            node.system.initialize(node.config.peers.clone()).await?;
+            node.system
+                .initialize(founding_voters(
+                    node.config.node_id,
+                    &node.config.peers,
+                    node.config.system_voters,
+                ))
+                .await?;
         }
         Ok(node)
     }
@@ -933,16 +978,35 @@ impl Node {
         }
     }
 
-    /// On the system leader: while the system group has fewer than
-    /// [`SYSTEM_VOTERS`] voters, promote caught-up registered learners so it
-    /// has exactly that many, in one membership change (joint consensus). A
-    /// cluster started on one node never passes through 2 voters, which
-    /// tolerate no failure and make every write wait on both: it waits until
-    /// enough learners exist to reach 3. Never grows past 3. Runs in the
-    /// background, one change at a time.
+    /// On the system leader: keep the system group at the voter count the
+    /// system state names (`SystemState::system_voters`, 3 or 5). While it has
+    /// fewer, promote caught-up registered learners, in one membership change
+    /// (joint consensus), to the largest odd count they reach: a cluster
+    /// started on one node never passes through 2 voters (no failure
+    /// tolerated, every write waits on both), nor a 3-voter one through 4
+    /// (the failures of 3, one more vote per write). With more (the operator
+    /// lowered it), or an even count no learner can make odd, it keeps the
+    /// leader and one voter per zone first (`membership::shrink_voters`); the
+    /// ones it drops are registered still and come back as learners. Runs in
+    /// the background, one change at a time.
     fn promote_learners(&self) {
         let status = self.system.status();
-        if !status.is_leader || status.voters.len() >= SYSTEM_VOTERS {
+        let target = self.sys(SystemState::system_voters);
+        if !status.is_leader || status.voters.len() == target.get() {
+            return;
+        }
+        // Mid-change (joint consensus), the voters listed are both sets: wait.
+        let joint = self
+            .system
+            .raft()
+            .metrics()
+            .borrow()
+            .membership_config
+            .membership()
+            .get_joint_config()
+            .len()
+            > 1;
+        if joint {
             return;
         }
         let Some(me) = self.this.lock().ok().and_then(|w| w.upgrade()) else {
@@ -972,23 +1036,45 @@ impl Node {
                 .collect();
             (voter_zones, candidates)
         });
-        let Some(voters) = grow_voters(&status.voters, &voter_zones, &candidates) else {
+        let leader = self.config.node_id;
+        let zoned: Vec<(NodeId, String)> = status
+            .voters
+            .iter()
+            .copied()
+            .zip(voter_zones.iter().cloned())
+            .collect();
+        let Some(voters) = grow_voters(target, &status.voters, &voter_zones, &candidates)
+            .or_else(|| shrink_voters(target, leader, &zoned))
+        else {
             return;
         };
+        let Some(guard) = me.begin_voter_change() else {
+            return;
+        };
+        drop(tokio::spawn(async move {
+            let _guard = guard;
+            match me.system.change_voters(voters.clone()).await {
+                Ok(()) => info!(?voters, "the system group's voters changed"),
+                Err(e) => warn!(error = %e, "could not change the system group's voters yet"),
+            }
+        }));
+    }
+
+    /// Claim the system group's membership for one change: `None` while
+    /// another runs here (a promotion, a node removal). Without it the two race,
+    /// and openraft refuses the second while the first is joint, or one of them
+    /// acts on the voters the other is replacing. Ends when the guard drops.
+    #[must_use]
+    pub fn begin_voter_change(self: &Arc<Self>) -> Option<VoterChange> {
         if self
             .promoting
             .swap(true, std::sync::atomic::Ordering::SeqCst)
         {
-            return;
+            return None;
         }
-        drop(tokio::spawn(async move {
-            match me.system.change_voters(voters.clone()).await {
-                Ok(()) => info!(?voters, "learners became system voters"),
-                Err(e) => warn!(error = %e, "could not promote learners to system voters yet"),
-            }
-            me.promoting
-                .store(false, std::sync::atomic::Ordering::SeqCst);
-        }));
+        Some(VoterChange {
+            node: Arc::clone(self),
+        })
     }
 
     /// Bring hosted groups in line with the system state.
@@ -1001,6 +1087,7 @@ impl Node {
                     .sys_write(&SystemCmd::Genesis {
                         governance: self.config.governance.clone(),
                         release: Some(self.own_release()),
+                        system_voters: Some(self.config.system_voters.get()),
                     })
                     .await;
             }

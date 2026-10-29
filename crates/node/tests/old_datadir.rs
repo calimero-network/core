@@ -37,6 +37,7 @@ fn config(dir: &std::path::Path, port: u16) -> Config {
         ops_token_sha256: None,
         metrics_listen: None,
         replicas: 1,
+        system_voters: calimero_node::membership::SystemVoters::default(),
         backup_dir: None,
         raft: calimero_log::Config {
             heartbeat_ms: 100,

@@ -519,6 +519,10 @@ fn scenario(root: &Path, url: &str) {
         !placement.to_string().contains("notes"),
         "ids and counts only: {placement}"
     );
+    assert_eq!(placement["system"]["target"], 3, "{placement}");
+    assert_eq!(ops(&["system-voters", "5"])["systemVoters"], 5);
+    assert_eq!(ops(&["placement"])["system"]["target"], 5);
+    assert_eq!(ops(&["system-voters", "3"])["systemVoters"], 3);
     let metrics = ops(&["metrics"]);
     assert!(
         metrics.as_str().is_some_and(|m| m.contains("calimero_")),

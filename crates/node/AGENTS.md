@@ -133,17 +133,21 @@ is its command line.
   `/ops/nodes` registers it, the system leader adds it to the system group as a
   learner (`Node::admit_registered_nodes`, from `reconcile`), it catches up and
   learns the directory, and replica moves (`/ops/apps/{app}/replicas`) can put
-  apps on it. While the system group has fewer than `membership::SYSTEM_VOTERS`
-  (3) voters, the system leader promotes registered learners at most
-  `membership::PROMOTE_MAX_LAG` (16) entries behind its log so that it has
-  exactly 3, in one membership change (`Node::promote_learners`, from
-  `reconcile`; the choice is `membership::grow_voters`: zones no voter is in
-  first, then no zone, then the rest). Never 2 (no failure tolerated, every
-  write waits on both): a cluster started on one node waits for two learners,
-  then goes from 1 to 3; never past 3 on its own (5 would be a later flag).
-  Regressions: `a_cluster_started_on_one_node_grows_and_survives_losing_it`,
+  apps on it. The system group keeps `SystemState::system_voters` voters, 3 or 5
+  (`membership::SystemVoters`; `--system-voters` written at `Genesis`, then
+  `SetSystemVoters` from `POST /ops/system-voters`; absent = 3). The system leader
+  (`Node::promote_learners`, from `reconcile`) promotes registered learners at most
+  `membership::PROMOTE_MAX_LAG` (16) entries behind its log to the largest odd
+  count they reach, in one membership change (`membership::grow_voters`: zones no
+  voter is in first, then no zone, then the rest), and shrinks a group above the
+  count, or an even one no learner can make odd (`membership::shrink_voters`: the
+  leader, then one voter per zone). Never an even count: 1 → 3 needs two
+  learners, 3 → 5 two more. A bootstrapping node starts the group with an odd
+  number of founders (`node::founding_voters`). Regressions:
+  `a_cluster_started_on_one_node_grows_and_survives_losing_it`,
+  `five_system_voters_grow_by_two_across_zones_and_never_to_an_even_count`,
   `membership::tests`.
-- **Removing nodes**: `DELETE /ops/nodes/{id}` (system leader; `421 NOT_LEADER` elsewhere) writes `RemoveNode` (refused while an app keeps a replica there) and changes the system group's voters, promoting a registered learner while fewer than 3 are left; `SystemState::removed_nodes` keeps `reconcile` from registering it again from `--peers`. Regression: `a_node_is_removed_once_no_app_keeps_a_replica_on_it`.
+- **Removing nodes**: `DELETE /ops/nodes/{id}` (system leader; `421 NOT_LEADER` elsewhere) writes `RemoveNode` (refused while an app keeps a replica there) and changes the system group's voters, refilling toward the count from registered learners, or keeping one fewer when none can make it odd; `SystemState::removed_nodes` keeps `reconcile` from registering it again from `--peers`. Regression: `a_node_is_removed_once_no_app_keeps_a_replica_on_it`.
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Stopping** (`Running::stop`): cancel the tasks, drain the server (2 s),
   stop the groups, then wait (up to `STOP_WAIT`, 10 s) until the store is
