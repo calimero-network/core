@@ -422,6 +422,12 @@ gates; latency gates nothing.
   breaks a client goes green with the client's fix: a same-named branch there,
   or `sdk-ref: <ref>` (mero-js) / `py-ref: <ref>` (Python) in the PR body.
 
+`ci-checks.yml`'s `Rust tests` job runs each component app's own `cargo test`
+(its `tests/harness.rs` and its app-level scenarios on `TestApp`), then clippy
+with `-D warnings` on the host and on `wasm32-wasip2` and the app's release
+`wasm32-wasip2` build. The apps are found by their `calimero-app-sdk`
+dependency.
+
 Nothing has to list a scenario for it to run: the runner discovers every file
 on disk, and one it must not run yet is listed, with its reason, in
 `crates/node/tests/scenarios-skip.txt` and reported as ignored.
@@ -452,6 +458,13 @@ inside the Docker image (the suite starts processes, so it is copied out with
   `crates/node/tests/fault/suite.py` is reported in the summary and not run.
   On the release branch the nightly tests `release-v2-edge` instead, the image
   of the branch's latest merge ([Release branch](#release-branch)).
+  The same nightly runs every scenario at that commit, in four shards (jobs
+  `scenario fixtures (release V)` (`release-fixtures`) and
+  `scenarios on release V (K/4)` (`release-scenarios`)), with that commit's
+  runner and fixtures. The runner is in process, so what it tests is the
+  release's node source, the source its `merod` was built from; the binary
+  itself is the process suite's. A release whose commit has no
+  `crates/node/tests/scenarios.rs` is reported in the summary and not run.
 
 To run the smoke set against a binary taken out of an image locally (with the
 fixtures built as in [Process suite](#process-suite)):

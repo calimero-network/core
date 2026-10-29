@@ -241,6 +241,20 @@ jobs:
             cargo test --manifest-path "$manifest"
           done
 
+      # The same crates as the guests they ship: clippy on the host (tests included) and on
+      # wasm32-wasip2, and the release component build the node loads.
+      - name: Clippy and wasm32-wasip2 build (standalone v2 apps)
+        if: ${{ !cancelled() }}
+        env:
+          CARGO_TARGET_DIR: target/standalone-apps
+        run: |
+          set -euo pipefail
+          for manifest in $(grep -l '^calimero-app-sdk = ' apps/*/Cargo.toml apps/*/*/Cargo.toml); do
+            cargo clippy --manifest-path "$manifest" --all-targets -- -D warnings
+            cargo clippy --manifest-path "$manifest" --target wasm32-wasip2 -- -D warnings
+            cargo build --manifest-path "$manifest" --release --target wasm32-wasip2
+          done
+
   rust-features:
     name: Rust feature-gated tests
     needs: scope

@@ -27,7 +27,10 @@ name: E2E
 #   - the process suite against the `merod` inside the latest published
 #     release image (ghcr.io/<owner>/merod:<version>, release.yml), with the
 #     suite and fixtures of the commit that image was built from: the shipped
-#     artifact, not a fresh cargo build (jobs `release-*`);
+#     artifact, not a fresh cargo build (job `release-process-suite`);
+#   - every scenario, in four shards, at that commit (jobs `release-fixtures`
+#     and `release-scenarios`): the runner is in process, so the release's
+#     node is its source, the one its merod was built from;
 #   - a flamegraph of one node through the kv-store soak, by `perf record -g`
 #     and inferno (job `flamegraph`, scripts/soak-flamegraph.sh).
 #
@@ -357,6 +360,7 @@ jobs:
       version: ${{ steps.image.outputs.version }}
       revision: ${{ steps.image.outputs.revision }}
       testable: ${{ steps.image.outputs.testable }}
+      scenarios: ${{ steps.image.outputs.scenarios }}
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -404,11 +408,17 @@ jobs:
           if gh api "repos/$REPO/contents/crates/node/tests/fault/suite.py?ref=$revision" --silent 2>/dev/null; then
             testable=true
           fi
+          # The scenario runner, at that commit: a release older than it has none.
+          scenarios=false
+          if gh api "repos/$REPO/contents/crates/node/tests/scenarios.rs?ref=$revision" --silent 2>/dev/null; then
+            scenarios=true
+          fi
           {
             echo "image=$image"
             echo "version=$version"
             echo "revision=$revision"
             echo "testable=$testable"
+            echo "scenarios=$scenarios"
           } >> "$GITHUB_OUTPUT"
           {
             echo "### Latest release image"
@@ -417,6 +427,10 @@ jobs:
             if [ "$testable" != true ]; then
               echo
               echo "That commit has no process suite (crates/node/tests/fault/suite.py). Nothing is tested until a release with one ships."
+            fi
+            if [ "$scenarios" != true ]; then
+              echo
+              echo "That commit has no scenario runner (crates/node/tests/scenarios.rs), so its scenarios are not run."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -428,6 +442,84 @@ jobs:
           path: release/merod
           if-no-files-found: error
           retention-days: 1
+
+  # Nightly: the release's scenarios. The runner is in process (it links
+  # calimero-node, not a merod binary), so the release's node is its commit's
+  # source, the source the image's merod was built from; the binary itself is
+  # the process suite's (release-process-suite). Fixtures, scenarios and runner
+  # are all that commit's, so a scenario added after the release cannot fail it.
+  release-fixtures:
+    name: scenario fixtures (release ${{ needs.release-image.outputs.version }})
+    needs: release-image
+    if: needs.release-image.outputs.scenarios == 'true'
+    runs-on: big-machine
+    timeout-minutes: 60
+    steps:
+      - name: Checkout the release's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-image.outputs.revision }}
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          targets: wasm32-unknown-unknown
+          shared-key: release
+          save-if: false
+
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
+      - name: Build the fixtures (the release's commit)
+        run: python3 scripts/build-workflow-fixtures.py
+
+      - name: Upload them
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-e2e-fixtures
+          path: target/workflow-wasm
+          if-no-files-found: error
+          retention-days: 1
+
+  release-scenarios:
+    name: scenarios on release ${{ needs.release-image.outputs.version }} (${{ matrix.shard }}/4)
+    needs: [release-image, release-fixtures]
+    runs-on: big-machine
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout the release's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-image.outputs.revision }}
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          targets: wasm32-unknown-unknown,wasm32-wasip2
+          shared-key: release
+          save-if: false
+
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
+      - name: Download the fixtures
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-e2e-fixtures
+          path: target/workflow-wasm
+
+      - name: Scenarios of shard ${{ matrix.shard }} (the release's commit)
+        env:
+          CORE_WASM_DIR: ${{ github.workspace }}/target/workflow-wasm
+          SCENARIO_SHARD: ${{ matrix.shard }}/4
+          SCENARIO_FUZZY_SECONDS: ${{ (github.event_name == 'schedule' || inputs.nightly) && '900' || inputs.soak_seconds || '10' }}
+        run: cargo test -p calimero-node --test scenarios -- --test-threads 2
 
   release-process-suite:
     name: process suite on release ${{ needs.release-image.outputs.version }}
