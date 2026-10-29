@@ -42,6 +42,10 @@ pub fn operator_public() -> String {
 /// POST an operator decision as mdma does: sent as is, and once the node
 /// names what to sign (`428 OPERATOR_SIGNATURE_REQUIRED`), again with the
 /// operator key's signature over it.
+#[allow(
+    clippy::result_large_err,
+    reason = "the client's own error type, as its `post` returns it"
+)]
 pub async fn ops_signed(
     client: &Client,
     path: &str,

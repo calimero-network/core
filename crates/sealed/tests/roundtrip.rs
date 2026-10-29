@@ -140,7 +140,6 @@ async fn required_mode_refuses_plain_requests() {
     let options = SealedOptions {
         required: true,
         unsealed_paths: vec!["/attestation".into()],
-        ..SealedOptions::default()
     };
     let (url, _transport, _h) = serve(options).await;
     let plain = reqwest::get(url.join("apps/x/intents").unwrap())
