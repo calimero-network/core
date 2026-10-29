@@ -167,7 +167,7 @@ fn abi_lists_every_method_with_its_attributes() {
     );
 
     assert_eq!(abi_json["abiVersion"], 1);
-    assert_eq!(abi_json["world"], "calimero:app@0.5.0");
+    assert_eq!(abi_json["world"], "calimero:app@0.5.1");
     assert_eq!(
         abi_json["state"],
         json!({

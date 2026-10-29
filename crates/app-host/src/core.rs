@@ -14,6 +14,7 @@ use crate::action::{
     NoHttp, MAX_ACTION_SUBCALLS, MAX_HTTP_BODY_BYTES, MAX_HTTP_REQUESTS, MAX_STARTED_ACTIONS,
 };
 use crate::blobs::{blob_refs, parse_blob_id, BlobHost, NoBlobs, MAX_GRANT_TTL_SECS};
+use crate::files::{Files, NoFiles};
 use crate::overlay::{Cursor, Overlay};
 use crate::search::{
     NoSearch, SearchHost, SearchPage, SearchQuery, MAX_SEARCH_LIMIT, MAX_SEARCH_QUERY_BYTES,
@@ -24,6 +25,12 @@ use crate::types::{
     Audience, BlobInfo, Caller, Directory, Event, HostDenied, InvalidInvocation, Invocation,
     InvocationKind, OrgRole, Outcome, Status, Usage, Xcall,
 };
+
+mod file_ops;
+
+pub use file_ops::{ReaderId, WriterId};
+
+use file_ops::FileTable;
 
 /// Bytes of an app key (before the generation prefix). Values have no separate cap:
 /// [`MAX_RUN_BYTES`] bounds them as they are written.
@@ -121,6 +128,8 @@ pub struct HostCore {
     cursors: BTreeMap<u32, Cursor>,
     next_cursor: u32,
     peak_buffered: usize,
+    provider: Arc<dyn Files>,
+    files: FileTable,
 }
 
 impl HostCore {
@@ -170,6 +179,8 @@ impl HostCore {
             cursors: BTreeMap::new(),
             next_cursor: 0,
             peak_buffered: 0,
+            provider: Arc::new(NoFiles),
+            files: FileTable::default(),
         })
     }
 
@@ -207,6 +218,13 @@ impl HostCore {
     #[must_use]
     pub fn with_http(mut self, http: Arc<dyn HttpHost>) -> Self {
         self.http = http;
+        self
+    }
+
+    /// Serves `files` from the node's file store; the default is [`NoFiles`].
+    #[must_use]
+    pub fn with_files(mut self, files: Arc<dyn Files>) -> Self {
+        self.provider = files;
         self
     }
 
@@ -793,6 +811,11 @@ impl HostCore {
     #[must_use]
     pub fn finish(self, status: Status, result: Vec<u8>, usage: Usage) -> Outcome {
         let ok = status == Status::Ok;
+        let (new_files, deleted_files) = if ok {
+            self.files.into_changes()
+        } else {
+            (Vec::new(), Vec::new())
+        };
         Outcome {
             status,
             result,
@@ -806,6 +829,8 @@ impl HostCore {
             actions: if ok { self.started } else { Vec::new() },
             logs: self.logs,
             http: self.http_log,
+            new_files,
+            deleted_files,
             usage: Usage {
                 writes: self.writes,
                 ..usage

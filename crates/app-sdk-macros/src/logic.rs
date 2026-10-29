@@ -18,7 +18,7 @@ use crate::types::{
 };
 
 /// The world this SDK builds for.
-const WORLD: &str = "calimero:app@0.5.0";
+const WORLD: &str = "calimero:app@0.5.1";
 /// The ABI version this SDK writes (D51).
 const ABI_VERSION: u64 = 1;
 

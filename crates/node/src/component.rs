@@ -1220,6 +1220,8 @@ mod tests {
             actions: Vec::new(),
             logs: Vec::new(),
             http: vec![host::HttpExchange::record(&request, &response)],
+            new_files: Vec::new(),
+            deleted_files: Vec::new(),
             usage: host::Usage::default(),
         });
         let entry: Outcome = serde_json::from_slice(&serde_json::to_vec(&out).unwrap()).unwrap();

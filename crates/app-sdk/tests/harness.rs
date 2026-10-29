@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use calimero_app_build::build_component;
+use calimero_app_sdk::files::FileId;
 use calimero_app_sdk::testing::{run_scenario, Failure, Org, TestApp};
 use serde_json::{json, Value};
 
@@ -61,6 +62,34 @@ fn harness_runs_the_real_component() {
     assert_eq!(
         t.as_("bob").view("roomCount", json!({ "roomId": "r1" })),
         Ok(json!("1"))
+    );
+}
+
+#[test]
+fn files_made_in_calls_are_readable_after_they_commit() {
+    let mut t = app();
+    let id = t
+        .as_("bob")
+        .call("saveFile", json!({ "data": "aGVsbG8" }))
+        .unwrap();
+    let id: FileId = serde_json::from_value(id).unwrap();
+    assert_eq!(t.file(&id), Some(b"hello".to_vec()));
+    assert_eq!(
+        t.as_("bob").view("fileLen", json!({ "id": id })),
+        Ok(json!("5"))
+    );
+
+    let seeded = t.add_file(b"seeded bytes");
+    assert_eq!(
+        t.as_("bob").view("fileLen", json!({ "id": seeded })),
+        Ok(json!("12"))
+    );
+
+    t.as_("bob").call("dropFile", json!({ "id": id })).unwrap();
+    assert_eq!(t.file(&id), None);
+    assert_eq!(
+        app_code(t.as_("bob").call("dropFile", json!({ "id": id }))),
+        "Files"
     );
 }
 

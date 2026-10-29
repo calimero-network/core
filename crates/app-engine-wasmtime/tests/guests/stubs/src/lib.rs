@@ -8,7 +8,7 @@ wit_bindgen::generate!({
         package test:stubs;
 
         world stubs {
-            include calimero:app/app@0.5.0;
+            include calimero:app/app@0.5.1;
             import wasi:cli/stdin@0.2.12;
             import wasi:cli/exit@0.2.12;
             import wasi:cli/terminal-stdin@0.2.12;
@@ -22,7 +22,7 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.0","methods":{"preopens":{"kind":"call"},"open":{"kind":"call"},"stdin":{"kind":"call"},"terminals":{"kind":"call"},"env":{"kind":"call"},"exit":{"kind":"call"}}}"#;
+const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.1","methods":{"preopens":{"kind":"call"},"open":{"kind":"call"},"stdin":{"kind":"call"},"terminals":{"kind":"call"},"env":{"kind":"call"},"exit":{"kind":"call"}}}"#;
 
 #[link_section = "calimero:abi"]
 #[used]

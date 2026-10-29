@@ -8,9 +8,10 @@ use std::time::Instant;
 use calimero_app_build::build_component;
 use calimero_app_engine_wasmtime::WasmtimeEngine;
 use calimero_app_host::{
-    Budget, Caller, Directory, Engine, HostCore, Invocation, InvocationKind, OrgRole, Outcome,
-    PrepareError, Prepared, Status, TrapKind,
+    Budget, Caller, Directory, Engine, HostCore, Invocation, InvocationKind, MemoryFiles, OrgRole,
+    Outcome, PrepareError, Prepared, Status, TrapKind, FILES_DISABLED,
 };
+use sha2::{Digest, Sha256};
 
 const ENTRY_TS_MS: u64 = 1_700_000_000_123;
 /// The key the tests' engines authenticate their cache with.
@@ -95,6 +96,15 @@ fn prepare(fx: &Fixture, name: &str) -> Prepared {
     fx.engine
         .prepare(&format!("{name}-hash"), &guest(name))
         .unwrap_or_else(|e| panic!("prepare {name}: {e}"))
+}
+
+/// The guest hashes and builds megabytes in unoptimized wasm, far over a call's default fuel.
+fn heavy() -> Budget {
+    Budget {
+        fuel: 20_000_000_000,
+        wall_clock: Duration::from_secs(60),
+        ..Budget::call()
+    }
 }
 
 fn trap_kind(outcome: &Outcome) -> Option<TrapKind> {
@@ -248,6 +258,89 @@ fn an_older_wasi_patch_of_a_stubbed_interface_is_accepted() {
         Budget::call(),
     );
     assert_eq!(out.status, Status::Ok);
+}
+
+#[test]
+fn a_component_built_against_0_5_0_still_links_and_runs() {
+    let fx = fixture();
+    let component = guest("legacy_050");
+    let imports = calimero_app_build::imports_of(&component).unwrap();
+    assert!(
+        imports.iter().any(|i| i == "calimero:app/storage@0.5.0"),
+        "{imports:?}"
+    );
+    assert!(
+        !imports.iter().any(|i| i.ends_with("@0.5.1")),
+        "{imports:?}"
+    );
+    let app = fx.engine.prepare("legacy", &component).expect("accepted");
+    let out = fx.engine.invoke(
+        &app,
+        host(InvocationKind::Call, "bump", b""),
+        Budget::call(),
+    );
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    assert_eq!(out.result, 1u32.to_le_bytes());
+    assert_eq!(out.diff.len(), 1);
+}
+
+#[test]
+fn a_guest_writes_a_file_in_a_call_and_reads_it_back_in_a_view() {
+    let fx = fixture();
+    let app = prepare(&fx, "files");
+    let files = MemoryFiles::default();
+
+    let call = host(InvocationKind::Call, "write", b"").with_files(Arc::new(files.clone()));
+    let out = fx.engine.invoke(&app, call, heavy());
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    let expected: Vec<u8> = (0..1024 * 1024 + 256 * 1024)
+        .map(|i| (i % 251) as u8)
+        .collect();
+    let sha = Sha256::digest(&expected).to_vec();
+    assert_eq!(out.new_files.len(), 1);
+    let file = &out.new_files[0];
+    assert_eq!(file.size, expected.len() as u64);
+    assert_eq!(file.sha256, sha);
+    assert_eq!(out.result, file.id.as_bytes());
+    files.apply(&out.new_files, &out.deleted_files);
+
+    let view = host(InvocationKind::View, "read", &out.result).with_files(Arc::new(files));
+    let read = fx.engine.invoke(&app, view, heavy());
+    assert_eq!(read.status, Status::Ok, "{:?}", read.status);
+    assert_eq!(read.result, sha);
+    assert!(read.new_files.is_empty());
+}
+
+#[test]
+fn creating_a_file_in_a_view_traps_host_denied() {
+    let fx = fixture();
+    let app = prepare(&fx, "files");
+    let files = MemoryFiles::default();
+    let view = host(InvocationKind::View, "make", b"").with_files(Arc::new(files));
+    let out = fx.engine.invoke(&app, view, Budget::view());
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::HostDenied),
+        "{:?}",
+        out.status
+    );
+}
+
+#[test]
+fn a_node_without_files_gives_the_guest_a_soft_error() {
+    let fx = fixture();
+    let app = prepare(&fx, "files");
+    let out = fx.engine.invoke(
+        &app,
+        host(InvocationKind::Call, "write", b""),
+        Budget::call(),
+    );
+    match out.status {
+        Status::AppError { code, message } => {
+            assert_eq!((code.as_str(), message.as_str()), ("Files", FILES_DISABLED));
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]
