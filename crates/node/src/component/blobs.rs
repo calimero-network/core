@@ -209,8 +209,8 @@ impl BlobTable {
     }
 
     /// Forget the blobs idle for [`BLOB_IDLE_MS`] at `now_ms`, at most [`BLOB_EXPIRY_STEP`];
-    /// returns them.
-    pub fn expire(&mut self, tx: &mut StateTx<'_>, now_ms: u64) -> Vec<[u8; 32]> {
+    /// returns them, with the plaintext size of each that was a sealed file.
+    pub fn expire(&mut self, tx: &mut StateTx<'_>, now_ms: u64) -> Vec<([u8; 32], Option<u64>)> {
         let due: Vec<(u64, [u8; 32])> = self
             .idle
             .iter()
@@ -219,7 +219,13 @@ impl BlobTable {
             .copied()
             .collect();
         due.into_iter()
-            .filter_map(|(_, id)| self.forget(tx, &id).then_some(id))
+            .filter_map(|(_, id)| {
+                let file = self
+                    .records
+                    .get(&id)
+                    .and_then(|r| r.file.as_ref().map(|_| r.size));
+                self.forget(tx, &id).then_some((id, file))
+            })
             .collect()
     }
 

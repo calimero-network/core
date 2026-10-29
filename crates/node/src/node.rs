@@ -45,6 +45,8 @@ struct StatsWire {
     bytes: u64,
     blob_bytes: u64,
     blobs: Vec<(String, u64)>,
+    #[serde(default)]
+    files: Vec<(String, u64, String)>,
 }
 
 impl From<StatsWire> for crate::app::StorageStats {
@@ -59,6 +61,14 @@ impl From<StatsWire> for crate::app::StorageStats {
                 .filter_map(|(id, size)| {
                     let raw: [u8; 32] = hex::decode(id).ok()?.try_into().ok()?;
                     Some((raw, size))
+                })
+                .collect(),
+            files: w
+                .files
+                .into_iter()
+                .filter_map(|(id, size, sha256)| {
+                    let id = hex::decode(id).ok()?.try_into().ok()?;
+                    Some((id, size, hex::decode(sha256).ok()?.try_into().ok()?))
                 })
                 .collect(),
         }
@@ -616,6 +626,17 @@ pub const DEPLOY_NOT_GRANTED: &str = "DEPLOY_NOT_GRANTED";
 /// An install refused for want of a deployer grant: `403 DEPLOY_NOT_GRANTED`.
 pub fn not_a_deployer() -> ApiError {
     ApiError::new(403, DEPLOY_NOT_GRANTED, crate::system::NOT_A_DEPLOYER)
+}
+
+pub(crate) fn blob_too_large() -> ApiError {
+    ApiError::new(
+        413,
+        "TOO_LARGE",
+        &format!(
+            "a blob is limited to {} MiB (what reaches the other nodes)",
+            MAX_BLOB_BYTES >> 20
+        ),
+    )
 }
 
 pub fn rejected(reason: &str) -> ApiError {
@@ -1911,14 +1932,7 @@ impl Node {
     /// an app's blob goes only to nodes whose release may hold its data.
     pub async fn store_blob(&self, bytes: &[u8], app: Option<&str>) -> Result<String, ApiError> {
         if bytes.len() > MAX_BLOB_BYTES {
-            return Err(ApiError::new(
-                413,
-                "TOO_LARGE",
-                &format!(
-                    "a blob is limited to {} MiB (what reaches the other nodes)",
-                    MAX_BLOB_BYTES >> 20
-                ),
-            ));
+            return Err(blob_too_large());
         }
         let id = hex::encode(calimero_identity::sha256(bytes));
         self.engine

@@ -7,6 +7,7 @@ mod common;
 use std::time::Duration;
 
 use calimero_client::{Client, Consistency};
+use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::blobs::BlobRecord;
 use calimero_node::files::{unwrap_key, FileOpener};
 use calimero_node::node::{CallRequest, PeerBlobs};
@@ -42,6 +43,8 @@ struct Fixture {
     /// One signed-in client per node, alice's.
     clients: Vec<Client>,
     app: String,
+    /// Alice's passkey, which approves her API keys.
+    passkey: tokio::sync::Mutex<SoftAuthenticator>,
 }
 
 /// Hashing megabytes in the guest costs more fuel than the default call budget.
@@ -77,7 +80,13 @@ async fn start_with(c: Cluster) -> Fixture {
         let _s = client.sign_in(&mut pk).await.unwrap();
         clients.push(client);
     }
-    Fixture { c, clients, app }
+    let passkey = tokio::sync::Mutex::new(pk);
+    Fixture {
+        c,
+        clients,
+        app,
+        passkey,
+    }
 }
 
 impl Fixture {
@@ -128,7 +137,7 @@ impl Fixture {
     }
 
     fn holders(&self, id: &str) -> Vec<usize> {
-        (0..3)
+        (0..self.c.nodes.len())
             .filter(|i| self.c.nodes[*i].is_some())
             .filter(|i| self.node(*i).engine.get_blob(id).unwrap().is_some())
             .collect()
@@ -842,7 +851,10 @@ async fn the_blob_routes_refuse_a_file_id() {
         "upload",
     );
     refused(alice.delete_blob(&f.app, &id).await.unwrap_err(), "delete");
-    assert_eq!(alice.list_blobs(&f.app).await.unwrap()["blobs"], json!([]));
+    // The owner sees the file in the listing, as a sealed file and not as a blob.
+    let listed = alice.list_blobs(&f.app).await.unwrap();
+    assert_eq!(listed["blobs"].as_array().unwrap().len(), 1, "{listed}");
+    assert_eq!(listed["blobs"][0]["sealed"], json!(true));
     for i in 0..3 {
         assert!(f.mark(i, &id).is_some_and(|r| r.file.is_some()), "node {i}");
     }
@@ -887,4 +899,449 @@ async fn the_ciphertext_runs_hold_before_their_entries_is_bounded_and_returned()
     // What was left still takes a smaller file, and gives the bytes back.
     let (_id, _sha, _index) = f.put(100_000, 52).await;
     assert_eq!(node.pending_file_bytes_left(), 150_000);
+}
+
+/// The file bytes `usage` shows for `payer`.
+fn used(usage: &Value, payer: &str) -> u64 {
+    usage["fileBytes"][payer].as_u64().unwrap_or(0)
+}
+
+fn status(e: calimero_client::Error) -> (u16, String) {
+    match e {
+        calimero_client::Error::Api { status, code, .. } => (status, code),
+        other => panic!("{other:?}"),
+    }
+}
+
+impl Fixture {
+    async fn account(&self) -> String {
+        self.clients[0].me().await.unwrap()["accountId"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    async fn upload(
+        &self,
+        via: usize,
+        len: usize,
+        seed: u64,
+    ) -> Result<Value, Box<calimero_client::Error>> {
+        let sent = self.clients[via]
+            .upload_file(&self.app, stream(len, seed))
+            .await;
+        sent.map_err(Box::new)
+    }
+
+    /// Alice's file bytes, as `/auth/usage` shows them.
+    async fn charged(&self) -> u64 {
+        let payer = format!("account:{}", self.account().await);
+        used(&self.clients[0].usage().await.unwrap(), &payer)
+    }
+
+    async fn set_file_quota(&self, bytes: u64) {
+        let ops = self.c.client(1);
+        ops.use_api_key("ops-secret").await;
+        let _ok = ops
+            .post_operator_signed(
+                "ops/quotas",
+                json!({ "maxFileBytesPerOrg": bytes }),
+                &common::operator_sign,
+            )
+            .await
+            .unwrap();
+    }
+
+    /// The file records the replicas hold, summed.
+    fn marks(&self) -> usize {
+        (0..3)
+            .map(|i| {
+                let g = self.node(i).hosted(&self.app).unwrap();
+                g.read_local(|m, _| {
+                    (m.state.component.blobs.records.values())
+                        .filter(|r| r.file.is_some())
+                        .count()
+                })
+            })
+            .sum()
+    }
+
+    /// Waits for the quota's count of alice's file bytes to reach `bytes`.
+    async fn until_charged(&self, bytes: u64) {
+        for _ in 0..200 {
+            if self.charged().await == bytes {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("charged {} instead of {bytes}", self.charged().await);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_uploaded_file_is_read_by_the_app_and_stored_sealed() {
+    let f = start().await;
+    let plain = stream(LEN, 21);
+    let up = f.upload(1, LEN, 21).await.unwrap();
+    let id = up["id"].as_str().unwrap().to_owned();
+    assert_eq!(up["size"], json!(LEN));
+    assert_eq!(up["sha256"], json!(sha256_hex(&plain)));
+    let index = up["index"].as_u64().unwrap();
+
+    for i in 0..3 {
+        let seen = f.read_on(i, &id, index).await.unwrap();
+        assert_eq!(
+            seen,
+            json!({ "size": LEN.to_string(), "sha256": sha256_hex(&plain) })
+        );
+    }
+    assert!(f.holders(&id).len() >= 2, "held by {:?}", f.holders(&id));
+    let window = &plain[LEN / 2..LEN / 2 + 32];
+    for i in f.holders(&id) {
+        let stored = f.node(i).engine.get_blob(&id).unwrap().unwrap();
+        assert_eq!(sha256_hex(&stored), id);
+        assert!(
+            !stored.windows(window.len()).any(|w| w == window),
+            "node {i}"
+        );
+        assert!(f.mark(i, &id).is_some_and(|r| r.file.is_some()));
+    }
+
+    let listed = f.clients[0].list_blobs(&f.app).await.unwrap();
+    assert_eq!(listed["blobs"].as_array().unwrap().len(), 1, "{listed}");
+    assert_eq!(listed["blobs"][0]["id"], json!(id));
+    assert_eq!(listed["blobs"][0]["sha256"], json!(sha256_hex(&plain)));
+    assert_eq!(f.charged().await, LEN as u64);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_is_not_downloadable() {
+    let f = start().await;
+    let up = f.upload(0, 1000, 1).await.unwrap();
+    let e = f.clients[0]
+        .download_blob(&f.app, up["id"].as_str().unwrap())
+        .await
+        .unwrap_err();
+    assert_eq!(status(e), (409, "NOT_SUPPORTED".to_owned()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_upload_through_a_node_that_hosts_no_replica_is_stored_on_the_replicas() {
+    let c = Cluster::start_with(4, more_fuel).await;
+    let f = start_with(c).await;
+    let app = f.node(0).sys(|s| s.apps[&f.app].clone());
+    let outsider = (1..=4).find(|n| !app.replicas.contains(n)).unwrap() as usize - 1;
+    assert!(f.node(outsider).hosted(&f.app).is_none());
+    // The outsider asks the first replica: make that one a follower, which names the leader.
+    let first = app.replicas[0] as usize - 1;
+    let second = app.replicas[1] as usize - 1;
+    for _ in 0..30 {
+        if f.c.app_leader(&f.app).is_some_and(|l| l != first) {
+            break;
+        }
+        let g = f.node(second).hosted(&f.app).unwrap();
+        let _r = g.raft().trigger().elect().await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    assert_ne!(f.leader(), first, "the first replica still leads");
+    let outsider_blobs = f.node(outsider).engine.blob_count().unwrap();
+    let up = f.upload(outsider, 100_000, 2).await.unwrap();
+    let id = up["id"].as_str().unwrap();
+    assert!(f.holders(id).len() >= 2, "held by {:?}", f.holders(id));
+    assert!(
+        !f.holders(id).contains(&outsider),
+        "the outsider stores nothing"
+    );
+    assert_eq!(
+        f.node(outsider).engine.blob_count().unwrap(),
+        outsider_blobs
+    );
+    let seen = f
+        .read_on(
+            app.replicas[0] as usize - 1,
+            id,
+            up["index"].as_u64().unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(seen["size"], "100000");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_only_key_cannot_upload() {
+    let f = start().await;
+    let (_id, key) = f.clients[0]
+        .create_api_key(
+            json!({ "readOnly": true, "apps": [f.app] }),
+            &mut *f.passkey.lock().await,
+        )
+        .await
+        .unwrap();
+    let agent = f.c.client(2);
+    agent.use_api_key(&key).await;
+    let before = (f.blob_counts(), f.marks(), f.charged().await);
+    let e = agent
+        .upload_file(&f.app, stream(5000, 1))
+        .await
+        .unwrap_err();
+    assert_eq!(status(e), (403, "FORBIDDEN".to_owned()));
+    assert_eq!((f.blob_counts(), f.marks(), f.charged().await), before);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_upload_past_the_quota_is_refused_and_leaves_nothing() {
+    let f = start().await;
+    f.set_file_quota(10_000).await;
+    let before = f.blob_counts();
+    let e = f.upload(1, 20_000, 1).await.unwrap_err();
+    assert_eq!(status(*e), (429, "QUOTA_EXCEEDED".to_owned()));
+    assert_eq!(f.blob_counts(), before);
+    f.until("no replica keeps a mark", || f.marks() == 0).await;
+    assert_eq!(f.charged().await, 0);
+
+    let _ok = f.upload(0, 6_000, 2).await.unwrap();
+    let e = f.upload(2, 6_000, 3).await.unwrap_err();
+    assert_eq!(status(*e), (429, "QUOTA_EXCEEDED".to_owned()));
+    assert_eq!(f.charged().await, 6_000);
+    f.until("one file, marked on three replicas", || f.marks() == 3)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_creating_a_file_past_the_quota_fails_and_logs_nothing() {
+    let f = start().await;
+    f.set_file_quota(10_000).await;
+    let (_id, _sha, _index) = f.put(6_000, 1).await;
+    assert_eq!(f.charged().await, 6_000);
+    let (before, applied) = (f.blob_counts(), f.applied());
+    let pushes = f.node(f.leader()).file_pushes();
+    let e = f.clients[0]
+        .call(
+            &f.app,
+            "putFile",
+            json!({ "len": "6000", "seed": "2" }),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("QUOTA_EXCEEDED"), "{e}");
+    assert_eq!(
+        f.node(f.leader()).file_pushes(),
+        pushes,
+        "a refused charge pushed bytes"
+    );
+    assert_eq!(f.blob_counts(), before, "nothing was stored");
+    assert_eq!(f.applied(), applied, "nothing was logged");
+    f.until("the mark reaches every replica", || f.marks() == 3)
+        .await;
+    assert_eq!(f.charged().await, 6_000);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unreferenced_file_is_forgotten_after_the_idle_time_and_releases_its_quota() {
+    let f = start().await;
+    let up = f.upload(0, 30_000, 8).await.unwrap();
+    let id = up["id"].as_str().unwrap().to_owned();
+    let (kept, _sha, _index) = f.put(2_000, 9).await;
+    assert_eq!(f.charged().await, 32_000);
+    let _index = f.pass_the_idle_time().await;
+    // The unreferenced upload is collected and released; the file a value refers to stays
+    // charged, and the run's own unreferenced file (1 byte) is not due yet.
+    f.until("a replica keeps the upload's record", || {
+        !f.recorded_anywhere(&id)
+    })
+    .await;
+    f.wait_gone(&id).await;
+    f.until_charged(2_000 + 1).await;
+    assert!(f.mark(0, &kept).is_some());
+    assert!(f.holders(&kept).len() >= 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_collection_releases_only_what_it_collected() {
+    let f = start().await;
+    let first = f.upload(0, 30_000, 1).await.unwrap();
+    let _index = f.pass_the_idle_time().await;
+    f.until_charged(1).await;
+    assert!(!f.recorded_anywhere(first["id"].as_str().unwrap()));
+    // A later upload and collection leave the one-byte file of the run that is not due.
+    let second = f.upload(0, 20_000, 2).await.unwrap();
+    f.until_charged(20_001).await;
+    let _index = f.pass_the_idle_time().await;
+    f.until_charged(1).await;
+    assert!(!f.recorded_anywhere(second["id"].as_str().unwrap()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_file_commands_are_not_methods_anyone_can_call() {
+    let f = start().await;
+    let _up = f.upload(0, 1_000, 9).await.unwrap();
+    let before = (f.applied(), f.charged().await);
+    let mark = json!({ "id": "ab".repeat(32), "size": 5, "sha256": "", "wrappedKey": "" });
+    let args = json!({ "mark": mark });
+    let e = f.clients[0]
+        .call(&f.app, "__file", args.clone(), None)
+        .await
+        .unwrap_err();
+    assert_ne!(e.code(), None, "{e}");
+    let e = f.clients[0]
+        .view(&f.app, "__file", args, Consistency::Strong)
+        .await
+        .unwrap_err();
+    assert_ne!(e.code(), None, "as a view: {e}");
+    assert_eq!((f.applied(), f.charged().await), before);
+    f.until("the mark reaches every replica", || f.marks() == 3)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_upload_whose_commit_failed_before_it_applied_is_retried_without_leaking() {
+    let f = start().await;
+    f.node(f.leader()).fail_next_mark_commit(1);
+    let before: u64 = f.blob_counts().iter().sum();
+    let up = f.upload(f.leader(), 20_000, 1).await.unwrap();
+    let id = up["id"].as_str().unwrap();
+    // The first attempt's bytes and charge were undone; only the answered file remains.
+    assert_eq!(f.charged().await, 20_000);
+    f.until("the mark reaches every replica", || f.marks() == 3)
+        .await;
+    let held = f.holders(id).len() as u64;
+    f.until("the first attempt's bytes are removed", || {
+        f.blob_counts().iter().sum::<u64>() == before + held
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_upload_whose_commit_failed_after_it_applied_succeeds() {
+    let f = start().await;
+    f.node(f.leader()).fail_next_mark_commit(2);
+    let up = f.upload(f.leader(), 20_000, 1).await.unwrap();
+    let id = up["id"].as_str().unwrap();
+    f.until("the mark reaches every replica", || f.marks() == 3)
+        .await;
+    assert_eq!(f.charged().await, 20_000);
+    assert!(f.mark(f.leader(), id).is_some());
+    assert!(up["index"].as_u64().unwrap() > 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_upload_that_meets_a_recorded_answer_for_its_key_returns_it_and_undoes_its_own() {
+    let f = start().await;
+    f.node(f.leader()).fail_next_mark_commit(3);
+    let before: u64 = f.blob_counts().iter().sum();
+    let up = f.upload(f.leader(), 20_000, 1).await.unwrap();
+    assert_eq!(up["id"], json!("ab".repeat(32)), "the recorded answer");
+    f.until_charged(0).await;
+    f.until("the new file's bytes are removed", || {
+        f.blob_counts().iter().sum::<u64>() == before
+    })
+    .await;
+}
+
+/// An organization with a public app of its own, and a signed-up client of each role.
+struct Org {
+    app: String,
+    guest: Client,
+    member: Client,
+    stranger: Client,
+}
+
+async fn org_with_a_public_app(f: &Fixture) -> Org {
+    let alice = &f.clients[0];
+    let org = alice.post("orgs", json!({ "name": "Docs" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bundle = alice
+        .upload_bundle(common::component("files"))
+        .await
+        .unwrap();
+    let app = alice
+        .create_app(
+            "open",
+            &bundle,
+            json!({ "org": org, "access": { "kind": "public" } }),
+        )
+        .await
+        .unwrap();
+    let join = |role: &'static str, node: usize, name: &'static str| {
+        let org = org.clone();
+        async move {
+            let (c, _k) = signed_up(&f.c, node, name).await;
+            if role != "stranger" {
+                let token = alice
+                    .post_confirmed(
+                        &format!("orgs/{org}/invites"),
+                        json!({ "role": role }),
+                        &mut *f.passkey.lock().await,
+                    )
+                    .await
+                    .unwrap()["token"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned();
+                let _r = c
+                    .post(&format!("invites/{token}/redeem"), json!({}))
+                    .await
+                    .unwrap();
+            }
+            c
+        }
+    };
+    Org {
+        app,
+        guest: join("guest", 1, "gus").await,
+        member: join("member", 2, "mia").await,
+        stranger: join("stranger", 1, "sam").await,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn only_members_and_above_upload_to_a_public_app_of_an_organization() {
+    let f = start().await;
+    let o = org_with_a_public_app(&f).await;
+    for (who, c) in [("guest", &o.guest), ("stranger", &o.stranger)] {
+        let e = c.upload_file(&o.app, stream(5_000, 1)).await.unwrap_err();
+        assert_eq!(status(e), (403, "FORBIDDEN".to_owned()), "{who}");
+    }
+    let _ok = o
+        .member
+        .upload_file(&o.app, stream(5_000, 2))
+        .await
+        .unwrap();
+    let _ok = f.clients[0]
+        .upload_file(&o.app, stream(5_000, 3))
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn only_members_and_above_list_the_files_of_a_public_app_of_an_organization() {
+    let f = start().await;
+    let o = org_with_a_public_app(&f).await;
+    let plain = stream(5_000, 3);
+    let up = f.clients[0]
+        .upload_file(&o.app, plain.clone())
+        .await
+        .unwrap();
+    let id = up["id"].as_str().unwrap();
+
+    // Others may list the app's blobs, but a file's hash is the plaintext's: they see none.
+    for (who, c) in [("guest", &o.guest), ("stranger", &o.stranger)] {
+        assert_eq!(
+            c.list_blobs(&o.app).await.unwrap()["blobs"],
+            json!([]),
+            "{who}"
+        );
+    }
+    for (who, c) in [("member", &o.member), ("owner", &f.clients[0])] {
+        let listed = c.list_blobs(&o.app).await.unwrap();
+        assert_eq!(listed["blobs"][0]["id"], json!(id), "{who}");
+        assert_eq!(
+            listed["blobs"][0]["sha256"],
+            json!(sha256_hex(&plain)),
+            "{who}"
+        );
+    }
 }

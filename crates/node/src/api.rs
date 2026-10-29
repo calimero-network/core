@@ -4807,6 +4807,31 @@ fn blob_json(id: &[u8; 32], size: u64) -> Value {
     })
 }
 
+/// Whether `account` may upload and list the files of `app`: its owner and the members of its
+/// organization (not guests), even where the app is public.
+fn may_handle_files(
+    s: &crate::system::SystemState,
+    app: &crate::types::AppRecord,
+    account: Option<&str>,
+) -> bool {
+    account.is_some_and(|a| {
+        app.owner == a
+            || app
+                .org
+                .as_ref()
+                .and_then(|o| s.orgs.get(o))
+                .is_some_and(|o| o.role(a).is_some_and(|r| r >= OrgRole::Member))
+    })
+}
+
+/// A sealed file as the routes show it: its plaintext size and SHA-256, never its key.
+fn file_json(id: &[u8; 32], size: u64, sha256: &[u8; 32]) -> Value {
+    let mut out = blob_json(id, size);
+    out["sha256"] = json!(hex::encode(sha256));
+    out["sealed"] = json!(true);
+    out
+}
+
 /// Refuses `raw` when it is one of the component `app`'s sealed files: only its code reads
 /// those, so no route serves, replaces or deletes one.
 async fn refuse_sealed_file(
@@ -4828,12 +4853,22 @@ async fn refuse_sealed_file(
     }
 }
 
+/// `?sealed=true` on an upload: a file only the app's code reads, not a blob.
+#[derive(Deserialize)]
+struct BlobUpload {
+    #[serde(default)]
+    sealed: bool,
+}
+
 /// Upload a blob for an app: the body is its bytes. Anyone who may call the
-/// app may add one; its runs then open it by id.
+/// app may add one; its runs then open it by id. With `?sealed=true`, a component's file
+/// instead: sealed under a key of its own, which only the app's owner and its organization's
+/// members may add.
 async fn blob_upload(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(app_id): Path<String>,
+    Query(q): Query<BlobUpload>,
     body: axum::body::Bytes,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
@@ -4842,18 +4877,40 @@ async fn blob_upload(
     if p.caller.account().is_none() {
         return Err(ApiError::unauthenticated("sign in to upload"));
     }
-    // A component records the upload's content type, and holds a bounded number (R8).
-    let mime = blob_mime(&headers)?;
-    if app.executor == crate::types::Executor::Component
-        && node.storage_stats(&app).await?.blobs.len()
-            >= crate::component::blobs::MAX_COMPONENT_BLOBS
-    {
+    let component = app.executor == crate::types::Executor::Component;
+    if q.sealed && !component {
         return Err(ApiError::new(
-            429,
-            "QUOTA_EXCEEDED",
-            "the app holds as many blobs as it may",
+            409,
+            "NOT_SUPPORTED",
+            "only a component app holds sealed files",
         ));
     }
+    if q.sealed && !node.sys(|s| may_handle_files(s, &app, p.caller.account())) {
+        return Err(ApiError::forbidden(
+            "only the app's owner and its organization's members upload files",
+        ));
+    }
+    // A component holds a bounded number of blobs and files (R8).
+    if component {
+        let stats = node.storage_stats(&app).await?;
+        if stats.blobs.len() + stats.files.len() >= crate::component::blobs::MAX_COMPONENT_BLOBS {
+            return Err(ApiError::new(
+                429,
+                "QUOTA_EXCEEDED",
+                "the app holds as many blobs as it may",
+            ));
+        }
+    }
+    if q.sealed {
+        let up = node.upload_file(&app, &body).await?;
+        let sha256 = <[u8; 32]>::try_from(up.mark.sha256.0.as_slice())
+            .map_err(|_| ApiError::internal("bad file mark"))?;
+        let mut out = file_json(&parse_blob_id(&up.mark.id)?, up.mark.size, &sha256);
+        out["index"] = json!(up.index);
+        return Ok(Json(out));
+    }
+    // A component records the upload's content type.
+    let mime = blob_mime(&headers)?;
     // The bytes of a sealed file would claim its id.
     refuse_sealed_file(&node, &app, &sha256(&body)).await?;
     let id = node.store_blob(&body, Some(&app_id)).await?;
@@ -4975,11 +5032,21 @@ async fn blob_list(
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    let _p = gate(&node, &headers, &app, "__blob", false).await?;
+    let p = gate(&node, &headers, &app, "__blob", false).await?;
     let stats = node.storage_stats(&app).await?;
-    Ok(Json(json!({
-        "blobs": stats.blobs.iter().map(|(id, size)| blob_json(id, *size)).collect::<Vec<_>>(),
-    })))
+    let mut blobs: Vec<Value> = (stats.blobs.iter())
+        .map(|(id, size)| blob_json(id, *size))
+        .collect();
+    // A file's SHA-256 is the plaintext's: only those who may upload files see them.
+    if node.sys(|s| may_handle_files(s, &app, p.caller.account())) {
+        blobs.extend(
+            stats
+                .files
+                .iter()
+                .map(|(id, size, h)| file_json(id, *size, h)),
+        );
+    }
+    Ok(Json(json!({ "blobs": blobs })))
 }
 
 /// One blob's size; 404 if the app has no such blob.
@@ -5123,6 +5190,17 @@ async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
                 .values()
                 .filter(|o| o.role(&account) == Some(OrgRole::Owner))
                 .count(),
+            "fileBytes": s
+                .orgs
+                .values()
+                .filter(|o| o.role(&account).is_some())
+                .map(|o| o.org_id.clone())
+                .chain([format!("account:{account}")])
+                .map(|payer| {
+                    let bytes = s.file_bytes(&payer);
+                    (payer, bytes)
+                })
+                .collect::<std::collections::BTreeMap<_, _>>(),
             "quotas": s.quotas,
         })
     })))
@@ -5146,7 +5224,30 @@ async fn internal_storage(
         "bytes": stats.bytes,
         "blobBytes": stats.blob_bytes,
         "blobs": stats.blobs.iter().map(|(id, s)| (hex::encode(id), *s)).collect::<Vec<_>>(),
+        "files": stats.files.iter().map(|(id, s, h)| (hex::encode(id), *s, hex::encode(h))).collect::<Vec<_>>(),
     })))
+}
+
+#[derive(Deserialize)]
+struct FileUploadBody {
+    app: String,
+    key: String,
+    bytes: calimero_log::Bytes,
+}
+
+/// An upload another node received, for the app's leader (or a replica that passes it on).
+async fn internal_file_upload(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Json(body): Json<FileUploadBody>,
+) -> ApiResult {
+    let caller = peer(&node, &headers, key).await?;
+    caller_may_hold_app(&node, &caller, &body.app).await?;
+    let up = node
+        .upload_here(&body.app, &body.key, &body.bytes.0)
+        .await?;
+    Ok(Json(serde_json::to_value(up).unwrap_or_default()))
 }
 
 /// Delete a blob's bytes here, at the request of the node that collected it.
@@ -7304,6 +7405,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/system", post(internal_system))
         .route("/internal/system/index", post(internal_system_index))
         .route("/internal/call", post(internal_call))
+        .route("/internal/file-upload", post(internal_file_upload))
         .route("/internal/blob", post(internal_blob_put))
         .route("/internal/challenge/take", post(internal_challenge_take))
         .route(

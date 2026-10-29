@@ -630,6 +630,13 @@ impl AppMachine {
                     .filter(|(_, r)| r.file.is_none())
                     .map(|(id, r)| (*id, r.size))
                     .collect(),
+                files: blobs
+                    .iter()
+                    .filter_map(|(id, r)| {
+                        let sha256 = <[u8; 32]>::try_from(r.file.as_ref()?.sha256.0.as_slice());
+                        Some((*id, r.size, sha256.ok()?))
+                    })
+                    .collect(),
                 blob_bytes: blobs
                     .values()
                     .map(|r| {
@@ -1061,6 +1068,9 @@ pub struct StorageStats {
     pub bytes: u64,
     #[serde(skip)]
     pub blobs: Vec<([u8; 32], u64)>,
+    /// A component's sealed files: id, plaintext size and plaintext SHA-256.
+    #[serde(skip)]
+    pub files: Vec<([u8; 32], u64, [u8; 32])>,
     pub blob_bytes: u64,
 }
 

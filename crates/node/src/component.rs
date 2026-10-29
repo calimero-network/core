@@ -381,6 +381,20 @@ pub enum ComponentCmd {
     /// The app's owner deleted a blob: the app no longer holds it, whatever refers to it.
     #[serde(rename = "componentBlobForget")]
     BlobForget { id: String },
+    /// An uploaded file (its ciphertext is on the replicas already): the app holds it, idle
+    /// until a value refers to it ([`blobs`]). The node's own command, built by the upload route.
+    #[serde(rename = "componentFile")]
+    File {
+        mark: FileMark,
+        /// The entry timestamp (D16): its idle time starts here.
+        ts_ms: u64,
+        /// The request's idempotency key: a retry of a committed command replays its answer.
+        #[serde(default)]
+        key: Option<String>,
+    },
+    /// Applies as nothing: committed through the leader to settle which earlier entries stand.
+    #[serde(rename = "componentBarrier")]
+    Barrier,
     /// An action's attempt timed out (`retry`, D22), or the action ended: done, or failed
     /// with `failed`'s reason.
     #[serde(rename = "componentActionEnd")]
@@ -531,6 +545,10 @@ pub struct ComponentHead {
     /// collect, hex; at most [`MAX_COLLECT_QUEUE`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub collect: Vec<String>,
+    /// The plaintext bytes of the files among `collect`, which the quota releases once the
+    /// leader's `BlobsCollected` entry applies.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub collect_files: BTreeMap<String, u64>,
     /// The xcall outbox, dead letters and the watermarks of the apps that send here.
     #[serde(default)]
     pub xcall: XcallHead,
@@ -566,12 +584,16 @@ impl ComponentState {
     /// Forget the blobs idle past their time at `now_ms` and queue their bytes for the
     /// leader to collect.
     fn expire_blobs(&mut self, tx: &mut StateTx<'_>, now_ms: u64) {
-        for id in self.blobs.expire(tx, now_ms) {
-            self.head.collect.push(hex::encode(id));
+        for (id, file_size) in self.blobs.expire(tx, now_ms) {
+            let id = hex::encode(id);
+            if let Some(size) = file_size {
+                let _prev = self.head.collect_files.insert(id.clone(), size);
+            }
+            self.head.collect.push(id);
         }
         let over = self.head.collect.len().saturating_sub(MAX_COLLECT_QUEUE);
-        if over > 0 {
-            let _dropped = self.head.collect.drain(..over);
+        for dropped in self.head.collect.drain(..over) {
+            let _gone = self.head.collect_files.remove(&dropped);
         }
     }
 }
@@ -908,6 +930,21 @@ impl AppMachine {
         a
     }
 
+    /// Records a node command's answer under its request's key, as a call's is; the first
+    /// answer under a key stays.
+    fn remember_command(
+        &mut self,
+        tx: &mut StateTx<'_>,
+        ts_ms: u64,
+        key: Option<&str>,
+        applied: &Applied,
+    ) {
+        let known = key.is_some_and(|k| self.component_replay(&Caller::System, k).is_some());
+        if let (Some(key), false) = (key, known) {
+            self.remember_component(tx, ts_ms, &Caller::System, key, applied);
+        }
+    }
+
     /// Apply one entry of a component app. An entry that is not a component's
     /// (a wasmer app's format) changes nothing.
     pub(crate) fn apply_component(
@@ -923,13 +960,15 @@ impl AppMachine {
             Ok(ComponentCmd::Tick(tick)) => Some(tick.ts_ms),
             Ok(
                 ComponentCmd::Blob { ts_ms, .. }
+                | ComponentCmd::File { ts_ms, .. }
                 | ComponentCmd::XcallDone { ts_ms, .. }
                 | ComponentCmd::ActionEnd { ts_ms, .. },
             ) => Some(*ts_ms),
             Ok(
                 ComponentCmd::Upgrade { .. }
                 | ComponentCmd::BlobForget { .. }
-                | ComponentCmd::BlobsCollected { .. },
+                | ComponentCmd::BlobsCollected { .. }
+                | ComponentCmd::Barrier,
             )
             | Err(_) => None,
         };
@@ -1025,6 +1064,23 @@ impl AppMachine {
                     parse_hex32(&id).is_some_and(|raw| c.blobs.upload(tx, raw, size, &mime, ts_ms));
                 host_answer(index, held, "the app holds too many blobs")
             }
+            Ok(ComponentCmd::File { mark, ts_ms, key }) => {
+                let c = &mut self.state.component;
+                c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
+                let raw = parse_hex32(&mark.id).filter(|id| !c.blobs.records.contains_key(id));
+                let a = if raw.is_some() {
+                    c.blobs.add_file(tx, &mark, ts_ms);
+                    Applied {
+                        result: json!({ "mark": mark }),
+                        ..host_answer(index, true, "")
+                    }
+                } else {
+                    host_answer(index, false, "file exists")
+                };
+                self.remember_command(tx, ts_ms, key.as_deref(), &a);
+                a
+            }
+            Ok(ComponentCmd::Barrier) => host_answer(index, true, ""),
             Ok(ComponentCmd::BlobForget { id }) => {
                 let c = &mut self.state.component;
                 let held = parse_hex32(&id).is_some_and(|raw| c.blobs.forget_blob(tx, &raw));
@@ -1061,12 +1117,16 @@ impl AppMachine {
                 host_answer(index, done, "not the outbox's head")
             }
             Ok(ComponentCmd::BlobsCollected { ids }) => {
-                self.state
-                    .component
-                    .head
-                    .collect
-                    .retain(|id| !ids.contains(id));
-                host_answer(index, true, "")
+                let head = &mut self.state.component.head;
+                head.collect.retain(|id| !ids.contains(id));
+                let freed: u64 = ids
+                    .iter()
+                    .filter_map(|id| head.collect_files.remove(id))
+                    .sum();
+                Applied {
+                    result: json!({ "freed": freed }),
+                    ..host_answer(index, true, "")
+                }
             }
             Err(e) => Applied {
                 index,
@@ -1531,6 +1591,79 @@ mod tests {
         );
         assert_eq!(held(&r), [fid(1)]);
         assert_eq!(queued(&r), [fid(2)]);
+    }
+
+    fn file_cmd(n: u8, ts_ms: u64, key: Option<&str>) -> Vec<u8> {
+        serde_json::to_vec(&ComponentCmd::File {
+            mark: mark(n),
+            ts_ms,
+            key: key.map(str::to_owned),
+        })
+        .unwrap()
+    }
+
+    fn collected(ids: &[String]) -> Vec<u8> {
+        serde_json::to_vec(&ComponentCmd::BlobsCollected { ids: ids.to_vec() }).unwrap()
+    }
+
+    #[test]
+    fn an_uploaded_file_is_held_idle_and_a_second_under_its_id_is_refused() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let up = r.apply(2, &file_cmd(1, 5, Some("node:k")));
+        assert_eq!(up.status, Status::Ok);
+        assert_eq!(up.result["mark"]["id"], json!(fid(1)));
+        assert_eq!(held(&r), [fid(1)]);
+        let record = &r.machine.state.component.blobs.records[&[1; 32]];
+        assert!((record.file.is_some(), record.refs, record.idle_since_ms) == (true, 0, 5));
+        // Its answer is what a retry under the key gets back.
+        let kept = r
+            .machine
+            .component_replay(&Caller::System, "node:k")
+            .unwrap();
+        assert_eq!(kept.result["mark"]["id"], json!(fid(1)));
+        assert_eq!(
+            r.apply(3, &file_cmd(1, 6, Some("node:k2"))).status,
+            Status::AppError
+        );
+    }
+
+    #[test]
+    fn collecting_files_answers_the_bytes_they_held_once() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let _a = r.apply(2, &file_cmd(1, 1, None));
+        let _a = r.apply(3, &file_cmd(2, 1, None));
+        let _a = r.apply(
+            4,
+            &file_call(3, BLOB_IDLE_MS + 2, Status::Ok, vec![], vec![]),
+        );
+        let ids = queued(&r);
+        assert_eq!(ids, [fid(1), fid(2)]);
+        let freed = |a: Applied| a.result["freed"].as_u64().unwrap();
+        assert_eq!(freed(r.apply(5, &collected(&ids))), 10);
+        assert!(queued(&r).is_empty());
+        assert_eq!(
+            freed(r.apply(6, &collected(&ids))),
+            0,
+            "a repeat frees nothing"
+        );
+    }
+
+    #[test]
+    fn a_collected_blob_that_is_not_a_file_frees_no_quota() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let _a = r.apply(2, &file_cmd(1, 1, None));
+        let _a = r.apply(
+            3,
+            &file_call(2, BLOB_IDLE_MS + 2, Status::Ok, vec![], vec![]),
+        );
+        // A plain blob queued for collection is no file's quota.
+        r.machine.state.component.head.collect.push(fid(9));
+        let a = r.apply(4, &collected(&[fid(9)]));
+        assert_eq!(a.result["freed"], json!(0));
+        assert_eq!(r.machine.state.component.head.collect_files.len(), 1);
     }
 
     #[test]

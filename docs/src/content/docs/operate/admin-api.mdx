@@ -221,8 +221,8 @@ there.
 | `POST /ops/apps/{app}/upgrade` | `{ bundle? \| package?, version?, service?, migrate? }`, where the operator holds app upgrades | `ops upgrade` |
 | `POST /ops/orgs/{org}/upgrade` | `{ package, version, team?, cascade?, migrate? }`, an operator's upgrade run | `ops upgrade-namespace` |
 
-Quotas (`POST /ops/quotas` replaces all of them; a field left out takes its
-default):
+Quotas (`POST /ops/quotas` changes the fields it names; a field left out keeps
+its value):
 
 | Field | Default |
 | --- | --- |
@@ -231,6 +231,7 @@ default):
 | `maxApiKeysPerAccount` | `50` |
 | `maxOrgsPerAccount` | `20` |
 | `maxAccounts` | `100000` |
+| `maxFileBytesPerOrg` | `50000000000` (50 GB) |
 
 ## Internal
 
