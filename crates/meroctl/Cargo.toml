@@ -26,6 +26,9 @@ url.workspace = true
 calimero-client = { workspace = true, features = ["testing"] }
 calimero-identity = { workspace = true, features = ["testing"] }
 
+[build-dependencies]
+calimero-build-utils.workspace = true
+
 [dev-dependencies]
 ed25519-dalek.workspace = true
 flate2.workspace = true
