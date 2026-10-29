@@ -19,7 +19,8 @@ use node_config::NodeArgs;
 #[derive(Debug, Parser)]
 #[command(
     name = "merod",
-    version,
+    // The release, not `CARGO_PKG_VERSION`: that is the workspace placeholder `0.0.0`.
+    version = calimero_node::RELEASE_VERSION,
     about = "Calimero node: attested, one Raft log per app"
 )]
 struct Cli {
