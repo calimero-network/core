@@ -42,7 +42,7 @@ import Figure from '../Figure.astro';
     <text x="342" y="74" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">n3</text>
     <text x="342" y="92" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">learner</text>
     <text x="342" y="106" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="8">→ voter</text>
-    <text x="285" y="210" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">POST /ops/nodes {id, addr, zone}</text>
+    <text x="285" y="210" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">POST /ops/nodes &#123;id, addr, zone&#125;</text>
     <text x="285" y="222" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">→ the system leader adds each</text>
     <text x="285" y="234" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">as a learner; once two have</text>
     <text x="285" y="246" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">caught up, both become voters</text>
@@ -74,7 +74,7 @@ import Figure from '../Figure.astro';
     <text x="550" y="146" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="8">C</text>
     <text x="493" y="210" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">mdma's rebalancer reads</text>
     <text x="493" y="222" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">GET /ops/placement, then one</text>
-    <text x="493" y="234" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">POST /ops/apps/{app}/replicas</text>
+    <text x="493" y="234" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">POST /ops/apps/&#123;app&#125;/replicas</text>
     <text x="493" y="246" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">at a time (bundle + blobs first)</text>
     <text x="493" y="270" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="8">apps survive a node loss</text>
   </g>
@@ -88,7 +88,7 @@ import Figure from '../Figure.astro';
     <text x="675" y="74" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">nX draining</text>
     <text x="675" y="96" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">replicas moved off</text>
     <text x="675" y="110" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">first, then</text>
-    <text x="675" y="132" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8">DELETE /ops/nodes/{id}</text>
+    <text x="675" y="132" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8">DELETE /ops/nodes/&#123;id&#125;</text>
     <text x="675" y="152" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">(system leader)</text>
     <text x="675" y="210" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">refused while an app</text>
     <text x="675" y="222" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">keeps a replica there;</text>
