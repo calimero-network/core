@@ -5258,11 +5258,12 @@ async fn approving_an_organizations_releases_needs_approve_releases() {
     assert!(e.to_string().starts_with("403"), "the operator: {e}");
 }
 
-async fn set_deadline(c: &Cluster, after: &str) -> Result<Value, Error> {
+async fn set_deadline(c: &Cluster, after: &str) -> Result<Value, Box<Error>> {
     ops(c)
         .await
         .post("ops/releases/2.0.0/deadline", json!({ "after": after }))
         .await
+        .map_err(Box::new)
 }
 
 /// A release deadline stops new work for whoever has not approved the
