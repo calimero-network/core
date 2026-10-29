@@ -18,7 +18,7 @@
 
 ### Removed
 
-- **merobox.** Core's end-to-end tests no longer use it. Its 142 workflows
+- **merobox.** Core's end-to-end tests no longer use it. Its 143 workflows
   became JSON scenarios (`scripts/workflow-to-scenario.py`): app-level ones
   (`apps/<app>/scenarios/*.json` with `<name>.org.json`) run in each component
   app's harness, and every scenario, app-level and cluster
