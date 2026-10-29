@@ -122,7 +122,7 @@ Every node, of every release, derives the same keys, and nothing outside the
 cluster can. These derivations are the ones K_r fed before K_c existed, so a
 cluster founded earlier keeps every value, and a next-release node opens them
 (regression: `nodes_on_the_next_release_keep_the_data_of_the_ones_before`).
-Per-app keys from mero-kms, which would let an app's data be opened only where
+Keys per app from mero-kms, which would let an app's data be opened only where
 that app is placed, are not done yet: today one K_c covers every app on the
 cluster.
 
