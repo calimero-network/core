@@ -148,9 +148,10 @@ is its command line.
   sets, blob marks. App code's overlay answers nothing there and a run that tries is
   refused; the host writes with `Overlay::set_host` and reads with
   `Storage::host_get`. Rotations are judged by `rotation_refusal`.
-- **Access is judged fresh**: every request carrying a credential, every gated request and every client call's leader
-  read the system state through `sys_fresh` (a read index), so a removal committed
-  elsewhere holds before the next request.
+- **Access is judged fresh**: every request carrying a credential, every gated request, an anonymous
+  `GET /apps/{app}` (#4723) and every client call's leader read the system state through `sys_fresh`
+  (a read index), so a removal committed elsewhere holds before the next request. Regression:
+  `an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behind`.
 - **Joining nodes**: a node started without `--bootstrap` waits; once
   `/ops/nodes` registers it, the system leader adds it to the system group as a
   learner (`Node::admit_registered_nodes`, from `reconcile`), it catches up and
