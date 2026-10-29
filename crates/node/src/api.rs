@@ -29,7 +29,7 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use crate::app::{Applied, Status};
-use crate::attest::{quote, report_data, AttestationDoc};
+use crate::attest::{kms_report_data, quote, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::{CallRequest, Node, ViewRequest};
 use crate::system::{SystemCmd, SystemState};
@@ -421,6 +421,8 @@ struct AttestQuery {
     #[serde(default)]
     app_hash: Option<String>,
     /// `receipts`: attest this node's receipt key instead of its transport key.
+    /// `kms`: the transport key and what this node verified of its KMS, when
+    /// it has a record (otherwise the transport key alone, as with none).
     #[serde(default)]
     purpose: Option<String>,
 }
@@ -446,6 +448,10 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
     };
     let transport_key = node.transport.public_key();
     let receipts = q.purpose.as_deref() == Some("receipts");
+    // Only when asked: a client that does not know the KMS binding keeps the
+    // report data it has always checked.
+    let kms = (q.purpose.as_deref() == Some("kms") && !node.config.kms_keys.is_empty())
+        .then(|| node.config.kms_keys.clone());
     // The rules the cluster was deployed with, as this replica's state holds
     // them: bound with the receipt key, so a user proves both at once.
     let governance = node.sys(crate::system::SystemState::governance);
@@ -457,6 +463,8 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
             &governance,
         ));
         r
+    } else if let Some(kms) = &kms {
+        kms_report_data(&nonce, &app_hash, &transport_key, kms)
     } else {
         report_data(&nonce, &app_hash, &transport_key)
     };
@@ -473,6 +481,7 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         mock: node.config.attestation == crate::attest::Mode::Mock,
         receipt_key: receipts.then(|| hex::encode(node.receipt_public())),
         governance: receipts.then_some(governance),
+        kms,
     };
     Ok(Json(serde_json::to_value(doc).unwrap_or_default()))
 }

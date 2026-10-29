@@ -22,8 +22,7 @@ description: "The other half of the #3317 regression: a blob's BYTES must reach 
   \ pinned in .github/actions/setup-merobox/action.yml) and a node build carrying #3326, without which\
   \ the kad preconditions below fail.\nRun locally — --e2e-mode is REQUIRED, it clears the public devnet\
   \ bootstrap list `merod init` writes; without it the provider lookup times out on unreachable public\
-  \ peers:\n  cd apps/blobs\n  MERO_AUTH_ADMIN_USER=dev MERO_AUTH_ADMIN_PASSWORD=dev-password \\\n   \
-  \ merobox bootstrap run workflows/blob-cross-node-transfer.yml --e2e-mode\n\nON THE NEGATIVE CONTROLS:\
+  \ peers:\n  cd apps/blobs\n  merobox bootstrap run workflows/blob-cross-node-transfer.yml --e2e-mode\n\nON THE NEGATIVE CONTROLS:\
   \ blobs are content-addressed, so a node already holding identical bytes serves them from local storage\
   \ and never touches the network. Every cross-node fetch below is therefore preceded by a local-only\
   \ read that MUST fail. Without that, a passing fetch proves nothing — this is the trap that makes blob\

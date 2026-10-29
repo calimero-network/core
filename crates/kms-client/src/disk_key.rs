@@ -17,11 +17,17 @@
 //! it in the LUKS2 header): it obtains nothing without a genuine TD to answer the
 //! KMS's attestation challenge. The KEY must not, so it is written only to a
 //! RAM-backed filesystem, never to stdout — merod's logs go to stdout.
+//!
+//! With `--evidence-out` it also writes what it verified of the KMS (a
+//! [`KmsEvidence`], JSON) to a RAM-backed file, for `merod run
+//! --kms-disk-evidence` to report in the node's attestation. Not a secret, but
+//! the node vouches for it, so it lives where only this TD can write it.
 
 use std::io::Write;
 use std::path::Path;
 
 use crate::config::TeeConfig;
+use calimero_tee_attestation::KmsEvidence;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
 use eyre::{bail, Result as EyreResult, WrapErr};
@@ -32,6 +38,10 @@ use url::Url;
 /// Filesystems whose contents live only in memory. On a TD that memory is
 /// TDX-encrypted, so a key written here never reaches a host-readable device.
 const RAM_FILESYSTEMS: &[&str] = &["tmpfs", "ramfs"];
+
+/// The largest evidence file [`read_evidence`] reads: a record is a few
+/// hundred bytes, so anything near this is not one.
+pub const MAX_EVIDENCE_BYTES: u64 = 16 * 1024;
 
 /// Fetch the data-disk unlock key for this TD from the KMS.
 #[derive(Debug, Parser)]
@@ -52,6 +62,11 @@ pub struct KmsDiskKeyCommand {
     /// Where to write the key. Must not exist yet, and must be on tmpfs/ramfs.
     #[arg(long, value_name = "PATH")]
     key_out: Utf8PathBuf,
+
+    /// Also write what was verified of the KMS (JSON) here, for `merod run
+    /// --kms-disk-evidence`. Must not exist yet, and must be on tmpfs/ramfs.
+    #[arg(long, value_name = "PATH")]
+    evidence_out: Option<Utf8PathBuf>,
 }
 
 impl KmsDiskKeyCommand {
@@ -59,22 +74,32 @@ impl KmsDiskKeyCommand {
         // Checked before anything touches the network, so a misconfigured call
         // cannot fetch a key it would then have nowhere safe to put.
         ensure_on_ram_filesystem(&self.key_out)?;
+        if let Some(path) = &self.evidence_out {
+            ensure_on_ram_filesystem(path)?;
+        }
 
-        let key = fetch_disk_key(self.kms_url, &self.identity, self.create_identity).await?;
+        let (key, evidence) =
+            fetch_disk_key(self.kms_url, &self.identity, self.create_identity).await?;
         write_private_new(&self.key_out, &key)?;
         info!(key_out = %self.key_out, "Wrote the data-disk key");
+        if let Some(path) = &self.evidence_out {
+            let json = serde_json::to_vec(&evidence).wrap_err("could not encode the evidence")?;
+            write_private_new(path, &json)?;
+            info!(evidence_out = %path, "Wrote what was verified of the KMS");
+        }
         Ok(())
     }
 }
 
 /// Fetch the data-disk key for `identity` (created first if `create` and
 /// missing) from the KMS at `kms_url`, verified against the signed release
-/// policy the environment names (`MERO_TEE_VERSION` and friends).
+/// policy the environment names (`MERO_TEE_VERSION` and friends). Answers the
+/// key and the record of the KMS quote that policy accepted.
 pub async fn fetch_disk_key(
     kms_url: Url,
     identity: &Utf8Path,
     create: bool,
-) -> EyreResult<zeroize::Zeroizing<Vec<u8>>> {
+) -> EyreResult<(zeroize::Zeroizing<Vec<u8>>, KmsEvidence)> {
     let identity = load_or_create_identity(identity, create)?;
 
     // The same rule as merod's `init --kms-url`: without the signed release
@@ -91,11 +116,36 @@ pub async fn fetch_disk_key(
     let tee = TeeConfig::kms(kms_url);
     let peer_id = identity.public().to_peer_id().to_base58();
     info!(%peer_id, "Fetching the data-disk key from the KMS");
-    Ok(zeroize::Zeroizing::new(
+    let released =
         crate::kms::fetch_storage_key(tee.kms.as_ref(), &peer_id, &identity, Some(&policy))
             .await
-            .wrap_err("could not fetch the data-disk key from the KMS")?,
-    ))
+            .wrap_err("could not fetch the data-disk key from the KMS")?;
+    let key = zeroize::Zeroizing::new(released.key);
+    let evidence = released
+        .evidence
+        .ok_or_else(|| eyre::eyre!("the release policy verified the KMS but left no record"))?;
+    Ok((key, evidence))
+}
+
+/// Read what `kms disk-key --evidence-out` recorded of the KMS. Refused unless
+/// the file is on a RAM-backed filesystem (inside a TD, nothing outside it can
+/// have written it), at most [`MAX_EVIDENCE_BYTES`], and exactly one record.
+pub fn read_evidence(path: &Path) -> EyreResult<KmsEvidence> {
+    let path =
+        Utf8Path::from_path(path).ok_or_else(|| eyre::eyre!("{} is not UTF-8", path.display()))?;
+    ensure_on_ram_filesystem(path)?;
+    parse_evidence_file(path)
+}
+
+fn parse_evidence_file(path: &Utf8Path) -> EyreResult<KmsEvidence> {
+    let size = std::fs::metadata(path)
+        .wrap_err_with(|| format!("cannot read {path}"))?
+        .len();
+    if size > MAX_EVIDENCE_BYTES {
+        bail!("{path} holds {size} bytes; a KMS evidence record is at most {MAX_EVIDENCE_BYTES}");
+    }
+    let bytes = std::fs::read(path).wrap_err_with(|| format!("cannot read {path}"))?;
+    serde_json::from_slice(&bytes).wrap_err_with(|| format!("{path} is not a KMS evidence record"))
 }
 
 /// The libp2p peer id of the identity at `path`, which must exist: the id
@@ -189,7 +239,7 @@ fn filesystem_of<'a>(mountinfo: &'a str, dir: &Utf8Path) -> Option<&'a str> {
 mod tests {
     use camino::Utf8Path;
 
-    use super::{filesystem_of, identity_peer_id};
+    use super::{filesystem_of, identity_peer_id, parse_evidence_file, MAX_EVIDENCE_BYTES};
 
     const MOUNTINFO: &str = "\
 22 1 8:1 / / rw,relatime - ext4 /dev/sda1 rw
@@ -228,6 +278,40 @@ mod tests {
             filesystem_of(MOUNTINFO, Utf8Path::new("/runx")),
             Some("ext4")
         );
+    }
+
+    /// The evidence a node reads back is exactly the record disk-key wrote,
+    /// and nothing that only looks like one.
+    #[test]
+    fn an_evidence_file_holds_one_record_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = camino::Utf8PathBuf::from_path_buf(dir.path().join("evidence.json")).unwrap();
+        let record = serde_json::json!({
+            "kmsHost": "kms.internal:8080",
+            "release": "2.4.1",
+            "profile": "locked-read-only",
+            "mrtd": "aa".repeat(48),
+            "rtmr0": "00".repeat(48),
+            "rtmr1": "11".repeat(48),
+            "rtmr2": "22".repeat(48),
+            "rtmr3": "33".repeat(48),
+            "tcbStatus": "UpToDate",
+            "quoteSha256": "44".repeat(32),
+            "verifiedAt": 1_790_000_000_u64,
+        });
+        std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let evidence = parse_evidence_file(&path).unwrap();
+        assert_eq!(evidence.release, "2.4.1");
+        assert_eq!(serde_json::to_value(&evidence).unwrap(), record);
+
+        let mut extra = record.clone();
+        extra["note"] = serde_json::json!("from the host");
+        std::fs::write(&path, serde_json::to_vec(&extra).unwrap()).unwrap();
+        assert!(parse_evidence_file(&path).is_err(), "an unknown field");
+
+        let padding = usize::try_from(MAX_EVIDENCE_BYTES).unwrap() + 1;
+        std::fs::write(&path, vec![b' '; padding]).unwrap();
+        assert!(parse_evidence_file(&path).is_err(), "an oversized file");
     }
 
     /// `merod attest --identity` names an identity's peer id without ever

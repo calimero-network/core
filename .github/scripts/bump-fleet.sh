@@ -969,9 +969,9 @@ bump_tee() {
   # honours it rather than rediscovering it in CI.
   [ -n "${next:-}" ] && bump_tee_companions "$next"
 
-  # The image build checks every archive it downloads (merod, meroctl and
-  # mero-auth among them) against `mero-tee/build-inputs.lock.json`, so a new
-  # merodVersion with the old lock builds nothing. The consumer ships the
+  # The image build checks every archive it downloads (merod among them)
+  # against `mero-tee/build-inputs.lock.json`, so a new merodVersion with the
+  # old lock builds nothing. The consumer ships the
   # script that rewrites the lock from each publisher's checksum file, core's
   # SHA256SUMS for this release included; run it rather than know its format.
   bump_tee_build_inputs
