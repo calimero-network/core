@@ -514,12 +514,14 @@ fn scenario(root: &Path, url: &str) {
         metrics.as_str().is_some_and(|m| m.contains("calimero_")),
         "{metrics}"
     );
-    assert!(ops(&["packages"]).to_string().contains("com.test.kv"));
+    // The operator lists only what it installed, never an account's.
+    assert!(!ops(&["packages"]).to_string().contains("com.test.kv"));
     let ops_pkg = write("ops.mpk", &mpk("com.test.ops", "1.0.0", &kv, &publisher));
     assert_eq!(
         ops(&["install", "--path", path(&ops_pkg)])["package"],
         "com.test.ops"
     );
+    assert!(ops(&["packages"]).to_string().contains("com.test.ops"));
     let _ = ops(&["uninstall", "com.test.ops"]);
     assert!(!ops(&["packages"]).to_string().contains("com.test.ops"));
     // This deployment left app upgrades to owners: the operator's is refused.
