@@ -1,6 +1,6 @@
 # meroctl
 
-The command line for Calimero nodes (`merod`): v1's command tree over the
+The command line for Calimero nodes (`merod`): one command tree over the
 node's API, through `calimero-client` (every request attested and
 sealed; the node's quote is judged before anything is sent).
 

@@ -8,41 +8,29 @@ sidebar:
 import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 These are the sharp edges that bite — each one a concrete, non-obvious fact grounded
-in the code, not folklore. They are the things you only learn after a replica
-diverges, a write silently vanishes, or a test passes locally and fails in
-production. Skim the whole page once before you build; the values here (limits,
-defaults, merge rules) are the kind you reach for at 2am. Deeper treatments live
-in [Advanced SDK](/build/advanced-sdk/), [Storage Complexity](/build/storage-complexity/),
-[Permissioned Storage](/build/permissioned-storage/), and the
-[encryption protocol](/protocol/encryption/).
+in the code, not folklore. They are the things you only learn after a write
+silently vanishes, a read gets slow as state grows, or a test passes locally and
+fails on a cluster. Skim the whole page once before you build; the values here
+(limits, defaults, write rules) are the kind you reach for at 2am. Deeper
+treatments live in [Advanced SDK](/build/advanced-sdk/),
+[Storage Complexity](/build/storage-complexity/),
+[Permissioned Storage](/build/permissioned-storage/), and
+[Application execution](/protocol/execution/).
 
-## Determinism & execution
+## Execution
 
-:::danger[time_now and random_bytes diverge replicas]
-`time_now` returns real wall-clock time (`SystemTime::now()`) and `random_bytes`
-draws from `rand::rng()` — both are genuinely non-deterministic in
-production. Use either in state-mutating logic and your replicas will compute
-different states and diverge. Treat them as untrusted, display-only inputs.
-:::
-
-- `fetch` is hard-disabled at the host boundary (a compile-time `const BLOCKED: bool = true` gate) — it always fails, so there is no outbound HTTP from app code.
-- There is no gas or fuel metering. Execution is bounded only by `VMLimits` plus the wasm stack; exceeding any limit TRAPS the whole call — there is no partial commit and no refund.
-- A guest panic (or trap) is caught and surfaced as an error; the state delta from that call is never applied — the context `root_hash` is left unchanged, so a panicked write is as if it never ran.
-- `env::commit` may be called at most once per execution; a second call is rejected (the host tracks a `commit_called` flag).
-
-## VMLimits & wire limits
-
-- Default `VMLimits`: 64 MiB linear memory (1024 pages of 64 KiB), 200 KiB stack, storage key 1 MiB, storage value 10 MiB, logs `1024 × 16 KiB`, events `100 × 16 KiB` (event-kind string 100 bytes), xcalls `100 × 16 KiB` (function name 100 bytes), wasm module 20 MiB, method name 256 bytes.
-- Only `max_logs` and `max_log_size` are operator-overridable via config; every other limit is compiled in, so changing it means recompiling the runtime.
-- RPC execution arguments are capped at 10 MB JSON (`MAX_ARGS_JSON_SIZE`); a signed governance-op payload is capped at 64 KiB (`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`).
-- A sync snapshot page is capped at 4 MiB or 1000 entities, whichever comes first; a single entity's data is capped at 1 MiB.
-- Two distinct DAG-head caps exist: governance DAG heads `MAX_GOVERNANCE_DAG_HEADS = 32`, snapshot DAG heads `MAX_DAG_HEADS = 100`.
+- A call runs **once**, on the app's leader; the other replicas apply the keys it wrote and run nothing. So `time_now`, `random_bytes`, outbound responses and search answers are read once and cannot make replicas disagree ([Determinism is not what converges](/protocol/execution/#determinism-is-not-what-converges)).
+- A run that traps or returns an error leaves an **empty diff**: nothing it wrote is kept. An app error comes back as `422 APP_ERROR` with the app's error in `details.error`; a trap as `422 TRAP`.
+- Every run is bounded by `VMLimits`, gas included (one point per executed WASM operator). Exceeding any limit traps the whole call — there is no partial commit ([Execution limits](/protocol/limits/#execution-limits)).
+- `http_request` makes one outbound request per run, and only when the operator, the release's manifest and the approved prefixes all allow it, and only from a run that writes — never a view, `init` or a migration ([Outbound HTTPS](/protocol/execution/#outbound-https)).
+- A run that is repeated after a leader change runs its outbound request again. Make the remote side idempotent.
+- A run's whole log entry — arguments, diff, events — must stay under **1 MiB**, whatever `VMLimits` allows for a single value.
 
 ## Identity
 
-- There are two distinct `PublicKey` types: `calimero_primitives::identity::PublicKey` (wraps a `Hash`) and the SDK prelude's `PublicKey(pub [u8; 32])`. They are not the same type — mind which one a signature expects.
-- Executor identity is per-context and resolved server-side; it is never read from guest memory or supplied by the caller, so app code cannot spoof who it is running as.
-- `context_id`, the executor public key, and `xcall_origin` are three separate 32-byte identifiers on the VM context — do not conflate them (and the author attributed to a stored entity is a fourth, separate concept).
+- `env::account_id()`, `env::executor_id()` and `env::device_id()` all return the **caller's account**. There are no per-device keys: two passkeys of one person are the same executor.
+- The caller is set by the node from the caller's credential; it is never read from guest memory or supplied by the caller, so app code cannot spoof who it is running as.
+- A handler or an xcall target runs as the app itself (or, for an xcall, with `env::xcall_origin()` naming the calling app); a public call has no caller account, and so no private space.
 - `PrivateKey` zeroizes its bytes on drop via a custom `Drop` impl — do not copy the raw bytes out into a `Vec` that outlives it.
 
 ## Storage
@@ -55,47 +43,41 @@ the guard drops). Mutating a plain `get` result does not compile for the safe
 collections — but the mental model is what bites.
 :::
 
-- The `SortedMap` / `SortedSet` ordered index is node-local, derived, and NOT synced. After a remote sync it is stale; the next ordered read notices a validity-marker mismatch and rebuilds the index once.
-- `IndexedMap`'s secondary indexes are node-local too: nothing about them is replicated, and the first query after a remote change rebuilds them (`O(n)` reads). Change an indexed field with `update(key, |v| ...)` so a local write keeps them current; there is deliberately no `get_mut`.
-- An `IndexedMap` index cannot enforce uniqueness: two nodes can insert the same value concurrently and both writes are valid at merge. Put anything that must be unique in the map **key**.
+- A cluster node keeps no ordered or secondary index. Every ordered read of a `SortedMap` / `SortedSet` loads and sorts all entries, and every `IndexedMap` query scans them ([cost](/build/storage-complexity/#ordered-reads-and-indexes-on-a-cluster)). Keep such collections small or sharded.
+- `len` on a guarded collection (`Authored*`, `WriteOnce`, `Moderated`, `UserStorage`) loads every entry it admits, on every call.
+- An `IndexedMap` index cannot enforce uniqueness. Put anything that must be unique in the map **key**, or use a [`Registry`](/build/choosing-state/#unique-names-registry).
 - `SortedMap` keys must be encoded big-endian (and offset-binary for signed values) so that their byte order matches their `Ord` order — little-endian keys will iterate in the wrong order.
 - Map keys are bounded `K: AsRef<[u8]>` on every write path — your key type must produce stable bytes.
 - Entity ids are domain-separated SHA-256 hashes, so entity-id (storage) order is unrelated to logical key order — never assume iteration follows key order in an unordered map.
-- Private storage is node-local and NOT synced; anything you write there stays on the node that wrote it and never reaches peers.
+- `#[app::private]` state is the **caller's own space**: replicated and sealed with the app, read only by that account's runs. A run sees only its own caller's space, and a public call has none.
 
-## CRDT
+## Collections
 
-- `LWW` tiebreak on an equal timestamp goes to the higher `node_id` — concurrent same-millisecond writes are resolved by node identity, not by who you think wrote last.
-- `Counter::increment` PANICS if called inside a state migration (merge mode), because the per-node delta would be non-deterministic; use `increment_for` with an explicit node id instead.
+- A map entry holding a plain struct is one entity: a write replaces the whole struct, as the run built it from what it read. Keep data that grows in a collection field ([Writing: the entry is the unit](/build/choosing-state/#writing-the-entry-is-the-unit)).
+- `Counter::increment` PANICS inside a state migration; leave the counter unchanged there or use `increment_for` with an explicit id.
 - `GCounter` (`Counter<false>`) and `PNCounter` (`Counter<true>`) are distinct types with different serialization — they are not interchangeable across a schema change.
-- `AuthoredMap::merge` is a deliberate no-op: delegating would strip per-entry ownership, so authored entries only converge through their own authored merge path.
-- A missing merge function fails loud with `NoMergeFunctionRegistered` rather than silently falling back to LWW (which would discard one side's CRDT state) — register the merge function.
-- `Vector` is not a positional CRDT; concurrent inserts do not preserve intent. For collaborative text use the RGA (Replicated Growable Array) instead.
+- `Vector::get(i)` reads `i + 1` entries; iterate instead of indexing in a loop.
 - The wasm ABI forces all map keys to be `String` (validation rejects any other map-key type as `InvalidMapKeyType`) — non-string keys won't cross the ABI boundary.
 
-## Governance you can hit
+## Who may call
 
-- The default write policy is membership-based: any member can write or delete any non-restricted key. `DEFAULT_MEMBER_MASK = WRITE | DELETE` — note it is NOT `ADMIN`, so members can mutate data but not change governance.
-- Writes from a `ReadOnly` role are silently dropped, not errored — `ReadOnlyContextStorage` suppresses every write method and returns as if it succeeded.
-- Subgroup visibility defaults to `Restricted` at birth — membership in a new subgroup requires an explicit `add_group_members` call, it is not inherited automatically.
-- The only capability granted by default is `CAN_JOIN_OPEN_SUBGROUPS` (`1 << 2`); every other capability (delete-subgroup, admin, etc.) must be granted explicitly.
+- Who reaches an app is its access rule and the caller's organization and team rows ([Organizations](/protocol/organizations/)). A caller who does not reach it gets `404`, so its existence is not disclosed.
+- A **read-only** member's calls run, but a call that would write anything is refused with `403`.
+- A storage wrapper's rule is checked against the caller's account when the run writes; a check written only in one method guards that method only ([Securing state](/build/guides/securing-state/)).
 
-## Sync, events, xcall
+## Events, handlers, xcall
 
-- Gossip delivery is best-effort, and governance publish is best-effort too — but the local governance DAG advance is durable, so even a dropped broadcast reconciles later when peers sync the DAG. Never treat "I published it" as "everyone received it."
-- An xcall only QUEUES the call. It runs same-node, post-commit, is namespace-bounded (a permission check gates the target namespace), and the target method must be annotated `#[app::xcall]` — there is no synchronous cross-context return value.
-- Event handlers run on receivers after commit, at-least-once, with restart replay (a node that crashes mid-handler re-delivers on restart). Handlers MUST be idempotent — assume every event can fire more than once.
+- Events are kept in the app's ring (the last 10 000) and streamed from `GET /apps/{app}/events?from=N`. A client that falls further behind than the ring misses events; re-read state instead.
+- Everyone who reaches the app receives all of its events. Do not put in an event what some members must not see.
+- A handler runs **once**, on the leader, after the entry commits, as a call of the app itself. A failed handler is recorded and **not retried**.
+- An xcall only QUEUES the call: it runs after the entry commits, on the target app's leader, within the same organization (or the same owner), and only a method marked `#[app::xcall]`. There is no synchronous return value.
+- Handlers and xcalls chain at most 3 deep (`MAX_FOLLOWUP_DEPTH`).
 
 ## Blobs
 
-- Blobs are split into 1 MiB chunks (`CHUNK_SIZE = 1 << 20`). For a multi-chunk blob the root `BlobId` is `SHA-256` of the concatenated child chunk ids — it is NOT a hash of the file content, so you cannot derive it by hashing the bytes yourself.
-- Blob availability is announced per-context to the DHT (`announce_blob` takes a `context_id`) — a blob announced in one context is not automatically discoverable in another.
-- Blobs are NOT folded into `scope_root` (the merkle/state root tracks only the data, ACL, membership, admin, and capability planes) and are NOT encrypted at rest.
-
-## Confidentiality
-
-- State-delta `events` ship as plaintext (context id, kind, data, handler are plain serialized JSON). Even where the storage delta itself is encrypted, the broadcast event is separate and observable.
-- Envelope metadata — topic, author, DAG shape, signer — is visible to any subscriber of the topic, regardless of payload encryption. Do not put secrets in event payloads or rely on metadata being private; see the [encryption protocol](/protocol/encryption/) for what is and isn't protected.
+- A blob's id is `hex(SHA-256(bytes))` of the whole content.
+- A blob is an app's only once the app's state marks it (`env::blob_announce_to_context`); the bytes in the store belong to no one ([Blobs](/protocol/blobs/)).
+- One blob is at most 47 MiB: it reaches the other nodes in one sealed request.
 
 ## Testing (TestHost)
 
@@ -107,7 +89,7 @@ collections — but the mental model is what bites.
 ## Next steps
 
 <CardGrid>
-  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="The deeper mechanics behind the determinism, merge, and xcall edges above." />
+  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="The deeper mechanics behind the storage, handler and xcall edges above." />
   <LinkCard title="Storage performance & Big-O" href="/build/storage-complexity/" description="Why writes rehash siblings and how to keep collections fast." />
-  <LinkCard title="Access-controlled storage" href="/build/permissioned-storage/" description="How the Public write boundary and merge-plane enforcement work." />
+  <LinkCard title="Access-controlled storage" href="/build/permissioned-storage/" description="Who may write a value, and where that rule is checked." />
 </CardGrid>

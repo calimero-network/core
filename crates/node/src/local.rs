@@ -65,7 +65,7 @@ pub async fn start(
             sealed_required: false,
             rp_id: "localhost".into(),
             origins: origins.clone(),
-            release: env!("CARGO_PKG_VERSION").into(),
+            release: crate::RELEASE_VERSION.into(),
             ops_token: Some(ops_token.to_owned()),
             ops_token_sha256: None,
             metrics_listen: None,

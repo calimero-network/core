@@ -1,6 +1,6 @@
 ---
 title: Modeling your state
-description: How to design #[app::state] for a CRDT, convergent world — the mental shift from a traditional DB, plus concrete patterns and anti-patterns.
+description: How to design #[app::state] — what a collection decides, how calls see each other's writes, plus concrete patterns and anti-patterns.
 sidebar:
   label: Modeling your state
   order: 4.5
@@ -9,107 +9,90 @@ sidebar:
 import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 Your [`#[app::state]`](/build/sdk-macros/) struct is the whole data model of your
-app. Unlike a traditional database schema, every field is a **CRDT**: concurrent
-writes on different nodes merge deterministically with no coordination, and all
-replicas converge. This page is about the *design* shift that follows from that —
-how to pick collection types for the behavior you want, and the patterns that keep
-a convergent app correct as it grows.
+app. Every field is a collection from `calimero_storage::collections`: the
+storage format your state is written in, and the API you program against. This
+page is about choosing those collections, and the patterns that keep an app
+correct and fast as it grows.
 
-## The mental shift
+## How calls see state
 
-A traditional DB gives you a single authoritative copy, transactions, and
-read-your-write consistency. Calimero gives you none of those by default. Design
-around four facts:
+An app's calls run one at a time, on its leader, each against the state the
+previous one left, and the other replicas apply what it wrote
+([CRDT collections](/protocol/crdt-internals/)). Design around four facts:
 
-- **There is no global lock.** Two members can write the same logical thing at the
-  same time on different nodes. The collection's merge rule — not your code — decides
-  the outcome. So *choosing the collection is choosing the conflict policy.*
-- **Writes are eventually consistent.** A write on node A is not visible on node B
-  until they sync. Do not design flows that depend on reading back what another node
-  just wrote.
+- **Calls are serialized.** Two members writing the same thing at once do not
+  race: the second call runs after the first and sees its write. There is no
+  merge between replicas to reason about.
+- **You read your own write.** A call's answer carries its log index; a view
+  reads the leader's latest state, or a replica's once it has applied that index
+  ([Reads](/protocol/reads/)).
 - **Anything any member can write, every member can write.** Plain state is
-  group-public. If a field must be owner-only or per-user, you model that with an
-  access-controlled wrapper — see [Access-controlled storage](/build/permissioned-storage/).
-- **Merge replays your writes deterministically.** The same logical operation must
-  produce the same result on every node. That rules out clocks and randomness inside
-  state mutations (more below).
+  public to everyone who reaches the app. If a field must be owner-only or
+  per-user, you model that with an access-controlled wrapper — see
+  [Access-controlled storage](/build/permissioned-storage/).
+- **A run is a transaction.** It writes everything or, on an error or a trap,
+  nothing.
 
-<Aside type="note" title="Pick the merge rule, not just the shape">
-  In a SQL schema you pick a *shape* (columns, types). In Calimero you also pick a
-  *merge rule*. A `String` field is ambiguous until you say whether concurrent edits
-  should last-writer-win (`LwwRegister`), accumulate (`Counter`), or all survive
-  (a `Set`). Start every field by asking: "when two nodes edit this at once, what
-  should happen?"
-</Aside>
+## Choose the collection for your data
 
-## Choose the CRDT type for your intent
+The [Collections](/build/collections/) page is the full reference. The design
+question is the shape of the data and how you read it:
 
-The [Collections](/build/collections/) page is the full reference. The
-design question is *what should concurrent writes do*:
-
-| Intent | Reach for | Concurrent-write behavior |
+| Data | Reach for | What a write does |
 |--------|-----------|---------------------------|
-| Latest write should win | `LwwRegister<T>` | Newest HLC timestamp wins (ties broken by node id) |
-| Accumulate a count | `Counter` / `GCounter` / `PNCounter` | Per-executor increments are summed — none are lost |
-| Membership where adds must survive | `UnorderedSet<V>` / `SortedSet<V>` | Add-wins union: every concurrent add survives |
-| Key→value store | `UnorderedMap<K, V>` / `SortedMap<K, V>` | Add-wins keys; shared keys merge their values recursively |
-| Ordered, append + index | `Vector<V>` | Append-only; each push mints a stable element id |
-| Collaborative text | `FugueText`, or `RichText` / `RichDocument` for formatting and blocks | Concurrent runs typed at one spot stay whole |
-| Collaborative text an app already stores as RGA | `ReplicatedGrowableArray` | Per-character RGA ordering; concurrent edits interleave |
+| One value | `LwwRegister<T>` | Replaces the value |
+| A count | `Counter` / `GCounter` / `PNCounter` | Adds to the executor's slot; the value is the sum |
+| A set | `UnorderedSet<V>` / `SortedSet<V>` | Adds or removes one member |
+| Key→value | `UnorderedMap<K, V>` / `SortedMap<K, V>` | Writes one entry; a nested collection is its own entity |
+| An ordered list | `Vector<V>` | Appends; each push mints a stable element id |
+| Collaborative text | `FugueText`, or `RichText` / `RichDocument` for formatting and blocks | Inserts at a character id, so a position stays put while others type |
+| Collaborative text an app already stores as RGA | `ReplicatedGrowableArray` | Per-character RGA ordering |
 
-The recursive-merge property is the lever you compose with: a
+Nesting is the lever you compose with: a
 `UnorderedMap<String, LwwRegister<String>>` is "a map where each key is its own
-last-writer-wins cell" — the pattern `apps/wasmer-fixtures/kv-store` uses. A
-`UnorderedMap<String, Counter>` is "a count per key." Build the behavior you want by
-nesting.
+cell" — the pattern `apps/wasmer-fixtures/kv-store` uses. A `UnorderedMap<String, Counter>` is
+"a count per key." Each entry is its own entity, so writing one does not rewrite
+the others.
 
 <Aside type="caution" title="Bare scalars are rejected">
   You cannot put a bare `String`, `u64`, or `bool` directly in state — the state
-  lint rejects it, because a bare scalar has no merge rule. Wrap it: `LwwRegister<u64>`
-  for "latest wins," `Counter` for "sum of increments."
+  lint rejects it. Wrap it: `LwwRegister<u64>` for a value, `Counter` for a sum
+  of increments.
 </Aside>
 
-## Synced vs node-local state
+## Shared vs private state
 
-Everything above is **synced** state: it lives in your `#[app::state]` struct, is
-replicated to every member, counts toward the Merkle root, and is multi-writer — so
-it must be a CRDT. That is the default, and almost all of your data belongs here.
+Everything above is **shared** state: it lives in your `#[app::state]` struct,
+and every run reads it. `#[app::private]` declares a second kind: the
+**caller's private state**, kept in the caller's own space of the app's state
+(`env::private_storage_*`). It is replicated and sealed like the rest, but only
+runs whose caller is that account read or write it, and app code cannot address
+another account's space.
 
-Calimero also has a second, deliberately separate plane: **node-local private state**,
-declared with `#[app::private]`. It lives in its own storage column (`PrivateState`),
-is **never synchronized**, sits **outside the Merkle root**, and has exactly **one
-writer — this node**. Because nothing about it crosses the wire, two nodes running the
-same app will hold *different* private state, and that per-node divergence is the whole
-point, not a bug.
-
-| | Synced state (`#[app::state]`) | Node-local state (`#[app::private]`) |
+| | Shared state (`#[app::state]`) | Private state (`#[app::private]`) |
 |---|---|---|
-| Replicated to other nodes | Yes — in the Merkle root | No — outside it, never on the wire |
-| Writers | Every member (multi-writer) | This node only (single-writer) |
-| Field types | CRDTs (merge rule required) | Plain values: `u64`, `String`, `Vec`, `BTreeMap`, and the structural `UnorderedMap` / `UnorderedSet` / `Vector` (auto-pointed at private storage) |
-| Convergence | All replicas converge | Intentionally per-node — no convergence |
+| Who reads it | Every run | Only runs of the account it belongs to |
+| Who writes it | Every member who reaches the app, unless a wrapper restricts it | Only that account's runs |
+| Field types | Collections | Plain values: `u64`, `String`, `Vec`, `BTreeMap`, and the structural `UnorderedMap` / `UnorderedSet` / `Vector` (auto-pointed at private storage) |
 
-Because a private namespace has a single writer, CRDT and access-control machinery is
-meaningless there — so `#[app::private]` **rejects those types at compile time** rather
-than silently mis-storing them. A `LwwRegister`, `Counter`, `SharedStorage`,
-`UserStorage`, `FrozenStorage`, `AuthoredMap`, and friends inside a private struct each
-produce a targeted compile error pointing at the plain type to use instead (a
-`LwwRegister<u64>` becomes a bare `u64`; a `Counter` becomes a plain integer).
+Because a private space has a single writer, access-control wrappers are
+meaningless there, so `#[app::private]` **rejects those types at compile time**:
+a `LwwRegister`, `Counter`, `SharedStorage`, `UserStorage`, `FrozenStorage`,
+`AuthoredMap`, and friends inside a private struct each produce a targeted
+compile error pointing at the plain type to use instead (a `LwwRegister<u64>`
+becomes a bare `u64`; a `Counter` becomes a plain integer).
 
-Reach for `#[app::private]` when data is *meant* to stay on one node:
+Reach for `#[app::private]` for what is one account's own:
 
-- **Secrets** — a plaintext value where only its hash should ever sync. The
-  `apps/private_data` game keeps each guess's secret in private state and publishes only
-  `sha256(secret)` to the shared map.
-- **A per-node cache** — a derived lookup you can rebuild locally and don't want to pay
-  to replicate or merge.
-- **A derived index or local bookkeeping** — per-node counters, "have I attempted this?"
-  sets, an append-only local log — state that describes *this* node's view, not the
-  group's.
+- **Secrets** — a plaintext value where only its hash belongs in shared state.
+  The `apps/private_data` game keeps each guess's secret in private state and
+  publishes only `sha256(secret)` to the shared map.
+- **Per-account bookkeeping** — drafts, preferences, "have I attempted this?"
+  sets that no one else needs to read.
 
 The *how* — the typed `private_load` / `private_load_or_default` accessors and the
 save-on-drop write pattern — lives on
-[Access-controlled storage](/build/permissioned-storage/#node-local-private-state),
+[Access-controlled storage](/build/permissioned-storage/#the-callers-private-state),
 next to the other write-boundary tools.
 
 ## A worked domain model: a marketplace
@@ -130,12 +113,12 @@ struct Marketplace {
     // order without scanning the whole marketplace. `IndexedMap` can keep this
     // for you instead: declare `#[index(seller_created(seller, created_at))]`
     // on `Listing` and query
-    // `listings.query("seller_created").eq(&seller).desc()`. That index is
-    // node-local and maintained on write, so it cannot drift from `listings`.
+    // `listings.query("seller_created").eq(&seller).desc()`, which reads it
+    // from `listings` itself, so it cannot drift.
     by_seller: SortedMap<Vec<u8>, LwwRegister<String>>,
 
-    // Per-buyer slot: each buyer writes only their own shipping profile, and
-    // that owner-only rule is enforced at merge, not just locally.
+    // Per-buyer slot: each buyer writes only their own shipping profile; the
+    // wrapper refuses anyone else's write.
     buyers: UserStorage<LwwRegister<String>>,
 }
 
@@ -147,8 +130,8 @@ struct Listing {
 }
 ```
 
-Publishing a listing writes the primary entry **and** its index entry together;
-both maps are convergent, so the index converges too:
+Publishing a listing writes the primary entry **and** its index entry in the
+same call, so both land in one entry or neither does:
 
 ```rust
 listings.insert(id.clone(), listing)?;
@@ -165,16 +148,16 @@ buyers.insert(address.into())?;
 
 The decisions worth calling out:
 
-- **`sold` is a flag, not a `remove`.** `listings` is add-wins, so a hard `remove`
-  loses to a concurrent edit and the listing resurrects. Modeling "sold" as an
-  `LwwRegister<bool>` resolves edit-vs-sold by HLC instead — the
+- **`sold` is a flag, not a `remove`.** A sold listing stays readable, with its
+  history, for buyers and for disputes — the
   [tombstone pattern](#soft-delete-via-tombstones) below.
-- **The index is a hint.** After concurrent edits, an index entry can outlive its
-  target. Treat a `by_seller` hit as a pointer and confirm against `listings` on
-  read — the [secondary-index caveat](#a-secondary-index-you-maintain-in-a-second-map).
+- **The index is kept by your code.** A method that edits a listing's seller and
+  forgets `by_seller` leaves a stale entry. Write both in every method that
+  changes either, or let `IndexedMap` keep the index — the
+  [secondary-index caveat](#a-secondary-index-you-maintain-in-a-second-map).
 - **Composite key over nesting.** A single `SortedMap` with `seller ++ seq` keys,
   sliced by `prefix`, is simpler than a `UnorderedMap<seller, SortedMap<...>>` and
-  needs only one index collection to keep in sync.
+  needs only one index collection to keep up to date.
 
 The rest of this section unpacks each of these patterns in isolation.
 
@@ -183,11 +166,11 @@ The rest of this section unpacks each of these patterns in isolation.
 ### Ordered / paginated data with `SortedMap`
 
 `SortedMap` / `SortedSet` are the `BTreeMap`/`BTreeSet` to the unordered types'
-`HashMap`/`HashSet`: same add-wins CRDT, plus a node-local ordered index that unlocks
-`range(a..b)`, `prefix(p)`, `page(offset, limit)`, `first()`, and `last()`.
+`HashMap`/`HashSet`: the same entries, plus key-ordered reads: `range(a..b)`,
+`prefix(p)`, `page(offset, limit)`, `first()`, and `last()`.
 
-The catch: **ordering is byte order over the key.** The index seeks keys by their
-raw bytes, so your `Ord` must match `as_ref()` byte order. `String` / `&str` /
+The catch: **ordering is byte order over the key**, so your `Ord` must match
+`as_ref()` byte order. `String` / `&str` /
 `Vec<u8>` sort lexicographically and just work. **Multi-byte integers must be stored
 big-endian**, or `255` sorts before `256`:
 
@@ -199,15 +182,16 @@ let first_page = log.page(0, 20)?;                    // ascending by key
 let window = log.range(start.to_be_bytes()..end.to_be_bytes())?;
 ```
 
-The index is **not** synchronized — each node rebuilds its own after sync — so you
-pay a little write overhead but ordering is always correct post-merge.
-`apps/sorted-kv-store` makes the same ordered reads on the component SDK, where
-a `Table` keeps its records in key order.
+On a cluster the node keeps no ordered index, so each ordered read sorts the
+entries in memory, `O(n log n)`
+([Storage performance](/build/storage-complexity/)). `apps/sorted-kv-store`
+makes the same ordered reads on the component SDK, where a `Table` keeps its
+records in key order.
 
 ### Per-user data with `UserStorage`
 
 When each member owns exactly one slot — a profile, a preference, a per-user
-cursor — `UserStorage<T>` keys by identity automatically. Each executor writes only
+cursor — `UserStorage<T>` keys by account automatically. Each account writes only
 its own slot; reads are open:
 
 ```rust
@@ -217,9 +201,9 @@ let mine = profiles.get()?;                            // my slot
 let theirs = profiles.get_for_user(&bob_key)?;         // anyone's slot, read-only
 ```
 
-A member cannot overwrite another member's slot — that rule is enforced at merge, not
-just locally. On the component SDK the same rule is a table keyed by the caller's
-account, as in `apps/kv-store-with-user-and-frozen-storage`.
+A member cannot overwrite another member's slot: the wrapper refuses the write. On
+the component SDK the same rule is a table keyed by the caller's account, as in
+`apps/kv-store-with-user-and-frozen-storage`.
 
 ### An open keyspace with per-entry owners via `AuthoredMap`
 
@@ -239,40 +223,37 @@ the author updates or tombstones their slot.
 
 ### Soft-delete via tombstones
 
-Add-wins collections make "remove" subtle: if node A removes a key while node B
-concurrently re-adds (or edits) it, **add wins** and the entry comes back. For data
-that must stay deletable, model deletion as state rather than absence:
+When a deleted thing must stay explainable (a listing someone bought, a message
+someone replied to), model deletion as state rather than absence:
 
 ```rust
 struct Note {
     body: LwwRegister<String>,
-    deleted: LwwRegister<bool>,   // tombstone flag, last-writer-wins
+    deleted: LwwRegister<bool>,   // tombstone flag
 }
 ```
 
-A concurrent edit-vs-delete now resolves by HLC instead of silently resurrecting.
-`AuthoredVector::tombstone` follows this model (it replaces the slot with
-`V::default()` rather than physically removing it, so merges stay sound). Reserve
-hard `remove` for cases where a concurrent re-add genuinely is fine.
+Views filter on the flag, and the entry keeps its id, so references to it stay
+valid. `AuthoredVector::tombstone` follows this model (it replaces the slot with
+`V::default()` rather than physically removing it, so element ids stay stable).
+Use a hard `remove` when nothing refers to the entry.
 
 ### Per-user counters
 
-Compose a map of counters when you need "a count per member" that still merges
-correctly under concurrent increments:
+Compose a map of counters when you need "a count per member":
 
 ```rust
 let mut points: UnorderedMap<String, Counter> = UnorderedMap::new();
 points.entry("Alice".into())?.or_default().increment()?;
 ```
 
-Each `Counter` already sums per-executor increments, so two nodes bumping the same
-user's count both land.
+Each `Counter` sums per-executor increments, so `value()` is the total and each
+executor's share stays visible.
 
 ### A secondary index you maintain in a second map
 
-There are no DB indexes here — if you need lookups by a non-primary attribute, keep
-a second map and write both. The shapes are convergent, so the index converges too;
-just update both on every write:
+If you need lookups by a non-primary attribute, keep a second map and write both
+in the same call (or let `IndexedMap` do it):
 
 ```rust
 // Primary: id -> user.  Secondary: email -> id.
@@ -280,52 +261,48 @@ users.insert(id.clone(), user)?;
 by_email.insert(email, id.into())?;
 ```
 
-Because both maps are add-wins, a stale index entry can outlive its target after
-concurrent edits — treat index hits as hints and confirm against the primary map on
-read.
+A method that changes the attribute without updating the second map leaves a
+stale entry, so confirm index hits against the primary map on read.
 
 ## Anti-patterns
 
 ### Huge collections under one parent
 
-A single collection with very many direct children gets expensive: operations and
-merges touch the parent's child set, and that cost grows with the number of children.
+A single collection with very many direct children gets expensive: every write
+touches the parent's child set, and that cost grows with the number of children.
 Prefer sharding (e.g. a map keyed by a prefix bucket, or a `SortedMap` you page
 through) over one flat collection of hundreds of thousands of entries. See
 [Storage performance &amp; Big-O](/build/storage-complexity/) for the exact costs and
 how each collection scales.
 
-### `time_now` / randomness in state mutations
+### `time_now` / randomness in migrations
 
-Migrations and merges **replay** your writes on every node. Anything that reads a
-clock, a random source, or any non-deterministic input will diverge between
-replicas. Keep state mutations a pure function of their inputs. If you need a
-timestamp, take it from the deterministic execution context and store it as data —
-never branch state on `now()` inside a merge-replayed path.
+A call reads `time_now` and `random_bytes` once, on the leader, and the other
+replicas apply the result, so a call may use them. A **migration** runs in merge
+mode, where the SDK replays writes, so anything there must be a pure function of
+the state it reads.
 
-<Aside type="caution" title="Counters and clocks in replayed code">
+<Aside type="caution" title="Counters and clocks in migrations">
   `Counter::increment` and `Rga::insert` read the executor id / HLC of the *live*
-  call and intentionally **panic** when replayed in merge mode. Their deterministic
-  siblings — `increment_for(device_id)` and `insert_str_at_timestamp(...)` — take
-  the value explicitly so replay is reproducible. `FugueText`, `RichText` and
-  `RichDocument` writes panic the same way; seed them with
-  `insert_str_with_replica` and `mark_with_replica`. This matters most in
+  call and intentionally **panic** in merge mode. Their deterministic siblings —
+  `increment_for(device_id)` and `insert_str_at_timestamp(...)` — take the value
+  explicitly. `FugueText`, `RichText` and `RichDocument` writes panic the same
+  way; seed them with `insert_str_with_replica` and `mark_with_replica`. See
   [migrations](/build/migrations/).
 </Aside>
 
-### Expecting cross-node read-after-write
+### Reading a replica that is behind
 
-There is no read-your-write across nodes. After a member writes on node A, a read on
-node B returns the old value until they sync. Do not gate one node's logic on another
-node's just-written state, and do not treat "I don't see it yet" as "it didn't
-happen." Design for **convergence**, not immediacy — see
-[CRDT internals](/protocol/crdt-internals/) for the merge model underneath.
+A strong view reads the leader's latest state. A view allowed to read a replica
+that is behind (`minIndex`, or `--min-index` in `meroctl`) sees that replica's
+applied state: pass the index of your own last write to read it back
+([Reads](/protocol/reads/)).
 
 ## Next steps
 
 <CardGrid>
-  <LinkCard title="Collections reference" href="/build/collections/" description="Every CRDT collection type and its precise merge semantics." />
+  <LinkCard title="Collections reference" href="/build/collections/" description="Every collection type and its API." />
   <LinkCard title="Access-controlled storage" href="/build/permissioned-storage/" description="Model owner-only, per-user, and write-once data." />
   <LinkCard title="Storage performance & Big-O" href="/build/storage-complexity/" description="What each collection costs as state grows — and how to shard." />
-  <LinkCard title="CRDT internals" href="/protocol/crdt-internals/" description="The merge model that makes all of this converge." />
+  <LinkCard title="CRDT collections" href="/protocol/crdt-internals/" description="The storage format underneath, and what the cluster relies on." />
 </CardGrid>

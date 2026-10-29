@@ -33,7 +33,7 @@ pub enum Event<'a> {
 
 ## Emit it
 
-Call `app::emit!` with a variant. Clients subscribed to the context receive it:
+Call `app::emit!` with a variant. The event is part of the call's outcome: the call's answer carries it, and clients following the app's event stream receive it once the entry commits:
 
 ```rust
 app::emit!(Event::Updated { key: &key, value: &value });
@@ -43,8 +43,11 @@ app::emit!(Event::Updated { key: &key, value: &value });
 
 To also invoke one of your own methods when the event is emitted, use the tuple
 form `(event, "handler_name")`. The handler is a method named by that string and
-marked `#[app::handler]`; its parameters match the event variant's fields. This
-pattern is `apps/kv-store-with-handlers`:
+marked `#[app::handler]`; its parameters match the event variant's fields. After
+the entry commits, the app's leader runs it **once**, as a call of the app
+itself (caller `App`, not the member who emitted), with the event's data as its
+arguments ([Event handlers](/protocol/xcall/)). This pattern is
+`apps/kv-store-with-handlers`:
 
 ```rust
 #[app::logic]
@@ -83,48 +86,46 @@ impl KvStore {
 ```
 
 <Aside type="caution" title="Only declared handlers run">
-  The other nodes run a handler only if the app's ABI declares that method
+  The node runs a handler only if the app's ABI declares that method
   `#[app::handler]`. An event naming any other method, or an app built without
   an embedded ABI, runs nothing. So mark every method an `emit!` names (an
-  unmarked method of the same impl, or a private one, is a compile error), and
-  write a handler knowing that any member's delta can name it with any
-  arguments.
+  unmarked method of the same impl, or a private one, is a compile error).
 </Aside>
 
-<Aside type="note" title="Handlers change only this context's state">
-  A handler is just another method, so it can write state: here it bumps a `Counter`.
-  It runs on every receiving node, possibly more than once, with arguments the emitter chose, so it must be idempotent and commutative, with no external side effects.
-  Use the plain one-argument `emit!` when you only want to notify clients, and the tuple form when you also want in-app logic to run.
+<Aside type="note" title="Handlers change only this app's state">
+  A handler is just another method, so it can write state: here it bumps a
+  `Counter`. It runs as the app, so `env::account_id()` there is the app's own
+  id, not the emitter's: pass what it needs in the event's fields. A handler
+  that fails is recorded with its error and not retried. Use the plain
+  one-argument `emit!` when you only want to notify clients, and the tuple form
+  when you also want in-app logic to run.
 </Aside>
 
-<Aside type="caution" title="An event says only what its emitter wrote">
-  A receiving node applies a delta's storage actions and replays its events without running the method again, so nothing checks a field inside an event against what the method would have written.
-  A member who builds deltas by hand can put any value in a field such as `sender` or `author`.
-  The event a client receives from the node names no author.
-  Never use an identity field in an event to decide who may do something or to show who did it; read that from authored state instead, such as the owner an [`Authored`](/build/choosing-state/) collection records for each entry.
+<Aside type="caution" title="An event says what the method put in it">
+  An event's fields are whatever the emitting method wrote into them. If the
+  method copies a field such as `sender` or `author` from its arguments, the
+  caller chose it. Fill identity fields from `env::account_id()` in the method,
+  or read who did something from authored state, such as the owner an
+  [`Authored`](/build/choosing-state/) collection records for each entry.
 </Aside>
 
 ## Exercise it
 
 ```sh
-meroctl --node node1 call set \
-  --context <context-id> --args '{"key": "hello", "value": "world"}'
+meroctl call -c my-kv set --args '{"key": "hello", "value": "world"}'
+meroctl context watch my-kv
 ```
 
-The emitted event is published on the node's event stream for subscribed
-clients. The matching handler does not run on the calling node: every other node
-runs it when it applies the delta.
-
-:::caution
-Events are consumed by clients over the node's API rather than by `meroctl`
-itself; check your node's API docs for the exact subscription endpoint.
-:::
+The call's answer lists the events it emitted, and `context watch` prints the
+app's committed events from the start of its event ring, then live ones, as
+JSON lines. A handler the event names runs after the entry commits, as its own
+entry.
 
 ## Worked example: a chat notification flow
 
 A messaging app emits `MessageSent` whenever a member posts, and a web client
-subscribes over WebSocket to render new messages the moment they land. The event
-and the method that emits it:
+follows the app's event stream to render new messages the moment they land. The
+event and the method that emits it:
 
 ```rust
 #[app::event]
@@ -134,7 +135,8 @@ pub enum Event<'a> {
 
 #[app::logic]
 impl Chat {
-    pub fn send_message(&mut self, from: String, text: String) -> app::Result<()> {
+    pub fn send_message(&mut self, text: String) -> app::Result<()> {
+        let from = hex::encode(env::account_id());    // the caller, never an argument
         self.messages.push(text.clone())?;
         app::emit!(Event::MessageSent { from: &from, text: &text });
         Ok(())
@@ -142,57 +144,35 @@ impl Chat {
 }
 ```
 
-A client subscribes by sending a single frame on the node's WebSocket endpoint,
-naming the contexts it wants events for. The `method` is `subscribe` and the
-context ids go under `params.contextIds`:
+A client follows the stream with mero-js. `events(app, from)` is the node's
+`GET /apps/{app}/events?from=N`, a server-sent event stream sealed like every
+other answer: first the events the app's ring still holds from entry `from` on,
+then live ones as entries commit ([Reads](/protocol/reads/#events)):
 
-```json
-{ "id": 1, "method": "subscribe", "params": { "contextIds": ["<context-id>"] } }
-```
-
-After a `send_message` call commits, every subscriber to that context receives a
-state-mutation frame. The application event rides inside it under `data.events`:
-
-```json
-{
-  "contextId": "<context-id>",
-  "type": "StateMutation",
-  "data": {
-    "newRoot": "<root-hash>",
-    "events": [
-      { "kind": "MessageSent", "data": [123, 34, 102, 114, 111, 109, 34], "handler": null }
-    ]
+```js
+for await (const ev of client.events(appId, 0)) {   // { id: "index:seq", kind, data }
+  if (ev.kind === 'MessageSent') {
+    const { from, text } = ev.data;                  // the variant's fields, as JSON
+    renderMessage(from, text);
   }
 }
 ```
 
-Each entry in `events` has three fields:
+Each event has:
 
-- `kind` is the variant name — here `"MessageSent"`.
-- `data` is the variant's fields serialized to JSON, delivered as a **byte
-  array**. Decode the bytes back to UTF-8 and parse them to read the fields.
-- `handler` is the in-app handler name when you emitted with the tuple form
-  above, or `null` for a plain `emit!`.
+- `id`, `index:seq`: the entry that emitted it and its position in that entry.
+  A client that reconnects passes the last index it saw as `from` and misses
+  nothing the ring still holds.
+- `kind`, the variant name: here `"MessageSent"`.
+- `data`, the variant's fields.
 
-```js
-const ev = frame.data.events[0];                      // { kind, data, handler }
-const { from, text } = JSON.parse(
-  new TextDecoder().decode(new Uint8Array(ev.data)),  // -> {"from":"alice","text":"hi"}
-);
-renderMessage(from, text);                            // update the UI
-```
-
-<Aside type="note" title="Bytes, not an inline object">
-  The event payload arrives as a JSON array of bytes rather than a nested object
-  because the node treats each app's event `data` as opaque — it never parses
-  your event schema. The variant name in `kind` tells the client which shape to
-  decode the bytes into.
-</Aside>
+Everyone who reaches the app receives all of its events, so do not put in an
+event what some members may not see.
 
 ## Next steps
 
 <CardGrid>
   <LinkCard title="SDK macros" href="/build/sdk-macros/" description="The #[app::event] and emit! surface in full." />
-  <LinkCard title="Advanced SDK" href="/build/advanced-sdk/" description="Handler replay semantics — why handlers must be idempotent." />
-  <LinkCard title="Admin & JSON-RPC API" href="/operate/admin-api/" description="The WebSocket and SSE streams clients subscribe to for events." />
+  <LinkCard title="Event handlers" href="/protocol/xcall/" description="How the cluster queues and runs handlers, once, on the leader." />
+  <LinkCard title="Node API" href="/operate/admin-api/" description="The event stream route, and every other route." />
 </CardGrid>

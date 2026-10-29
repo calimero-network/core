@@ -56,8 +56,8 @@ pub struct Profile {
 }
 ```
 
-`#[app::private]` is deliberately absent from that table: node-local state is
-never synchronized and never described.
+`#[app::private]` is deliberately absent from that table: it lives in each
+caller's private space, not in the app's described state.
 
 ## From the derive to the wasm
 

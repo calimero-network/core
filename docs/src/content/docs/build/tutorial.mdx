@@ -19,8 +19,8 @@ app, trimmed to the parts you need the first time through.
 <Aside type="note">
   The Rust code, the build command and the `meroctl` flags here are taken from
   `apps/kv-store/`, `crates/app-build` and the CLI definitions
-  (`crates/meroctl/src/cli/`). Calimero is pre-1.0, so flags can still change:
-  run `meroctl <command> --help` to confirm them for your build.
+  (`crates/meroctl/src`). Run `meroctl <command> --help` to confirm them for
+  your build; every command is in the [meroctl reference](/operate/meroctl/).
 </Aside>
 
 ## 1. Prerequisites
@@ -33,11 +33,19 @@ app, trimmed to the parts you need the first time through.
    rustup target add wasm32-wasip2
    ```
 
-2. **A running cluster.** You need `merod` up and `meroctl` signed in to it. For a
-   local development node: `merod local` in one terminal, then
-   `meroctl node add local http://127.0.0.1:2501/ --allow-mock` and
-   `meroctl login --dev-passkey ./dev-passkey.json --name ada`. See
-   [Run local nodes](/contribute/development/#run-local-nodes).
+2. **A development cluster.** `merod local` runs three nodes in one process,
+   with mock attestation; save its first node in `meroctl` and sign in with a
+   passkey kept in a file (development clusters only):
+
+   ```sh
+   merod local
+   # in another terminal
+   meroctl node add local http://127.0.0.1:2501/ --allow-mock
+   meroctl login --dev-passkey ./dev-passkey.json --name alice
+   ```
+
+   `login` signs up when the file does not exist yet, and saves the session.
+   See [Run local nodes](/contribute/development/#run-local-nodes).
 
 </Steps>
 
@@ -262,39 +270,60 @@ component's `calimero:abi` section, which the node reads.
 
 ## 7. Make it multi-user
 
-Create the context in an organization and invite someone to it:
+A context belongs to an organization, and everyone in it reaches the context.
+Create one, create the context in it, and invite a second person:
 
 <Steps>
 
-1. Create the organization and the context in it:
+1. **Create an organization** and a context in it:
 
    ```sh
-   meroctl namespace create team
-   meroctl context create --name team-kv --path kv_store.wasm --namespace <org-id> --alias team-kv
+   meroctl namespace create acme
+   meroctl context create --name team-kv --path kv_store.wasm \
+     --namespace <org-id> --alias team-kv
    ```
 
-2. Invite a second account and have it join:
+   A context created in an organization is reached by every member (access
+   `org`, the default there).
+
+2. **Invite** a member. The command prints an invitation token:
 
    ```sh
-   meroctl namespace invite <org-id> --role member      # prints a token
-   meroctl namespace join <token>                       # signed in as the other account
+   meroctl namespace invite <org-id> --role member
    ```
 
-3. Write as one account and read as the other:
+3. **Join** as the second person: a second account, with its own passkey file,
+   on the same cluster. Save the node under another `--home` so the two sessions
+   stay apart:
 
    ```sh
-   meroctl call -c team-kv set --args '{"key": "from", "value": "bob"}'
+   meroctl --home ./bob node add local http://127.0.0.1:2501/ --allow-mock
+   meroctl --home ./bob login --dev-passkey ./bob-passkey.json --name bob
+   meroctl --home ./bob namespace join <token>
+   ```
+
+4. **Write as one, read as the other**:
+
+   ```sh
+   meroctl --home ./bob call -c <context-id> set --args '{"key": "from", "value": "bob"}'
    meroctl call -c team-kv get --args '{"key": "from"}' --view
+   ```
+
+   ```json
+   { "index": 2, "result": "bob", "receipt": { … } }
    ```
 
 </Steps>
 
-Every replica applies the same log, so a read on any node that has applied the
-write sees it.
+Both people wrote and read the same state, each with their own passkey, through
+any node of the cluster. The organization decides who reaches the context;
+what each member may change inside it is the app's own code and its
+[access-controlled storage](/build/permissioned-storage/). See
+[Organizations, teams & access](/protocol/organizations/).
 
 ## 8. Next steps
 
-You have the full loop: write, build, install, attach, call. From here:
+You have the full loop: write, build, install, create, call. From here:
 
 <LinkCard
   title="Collections"
@@ -319,5 +348,5 @@ You have the full loop: write, build, install, attach, call. From here:
 <LinkCard
   title="Quickstart"
   href="/build/quickstart/"
-  description="The condensed version of this path, plus running a node from scratch with merod."
+  description="The condensed version of this path."
 />

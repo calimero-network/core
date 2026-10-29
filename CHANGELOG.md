@@ -31,6 +31,20 @@
   `scripts/run-workflows.py`, `scripts/workflows-{baseline,durations,smoke}.json`,
   `scripts/check-scenario-coverage.py` and `MEROBOX_REF` are gone.
 
+## [1.0.0-rc.3] - 2026-10-29
+
+### Fixed
+
+- **merod names its release, not `0.0.0`.** The release attestation's
+  `merodVersion` (`merod attest`, `GET /attestation/release`) and the node's
+  own `release` came from `CARGO_PKG_VERSION`, which is the workspace
+  placeholder `0.0.0` for every crate; the release is
+  `[workspace.metadata.workspaces].version`. Every 1.0 merod up to rc.2
+  claimed `0.0.0`, so a verifier that pins the version (mdma's
+  `attest_before_key`, mero-tee's release provenance) refused every node.
+  They now read `calimero_node::RELEASE_VERSION`, the release `build.rs`
+  already resolves for package compatibility.
+
 ## [1.0.0-rc.2] - 2026-10-29
 
 Shared clusters: a cluster starts on one node and grows, its data survives a
