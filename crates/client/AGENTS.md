@@ -15,6 +15,12 @@ matching allowed profile; then `policy_valid` (TCB status, debug TD, app-hash bi
 mero-js `src/cloud-v2/attestation.ts` implements the same check; change both or neither.
 The quote step itself (`verify_quote`, then `judge` for a real quote's registers) is
 shared by `verify`, `verify_receipt_key` and `attest::release::verify_release`.
+A document that carries `kms` (`KmsKeys`: what the node verified of the KMS its storage
+and disk keys came from, asked with `purpose=kms`) passes `verify` only if its report
+data is `kms_report_data`: `nonce || SHA-256("calimero.tee-attest.kms-evidence.v1" |
+transport_binding | SHA-256(JCS(kms)))`. Opt in: a document without `kms` is checked
+exactly as before. mero-js does not ask for it yet; the attestation verifier
+(mero-tee) recomputes it, pinned by `the_kms_binding_matches_the_published_vector`.
 
 Release attestations (`attest/release.rs`, made by `merod attest`): a quote a node makes
 before it holds any key, report data

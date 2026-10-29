@@ -37,6 +37,11 @@ pub struct KmsAttestationPolicy {
     pub allowed_rtmr3: Vec<String>,
     /// Default binding for KMS /attest (base64).
     pub default_binding_b64: String,
+    /// The release the signed file names (`tag`, without `mero-kms-v`); empty
+    /// only for a test policy that names none.
+    pub release: String,
+    /// The image profile the signed file is for, when it names one.
+    pub profile: Option<String>,
 }
 
 /// Root structure of the release policy JSON.
@@ -289,6 +294,17 @@ fn policy_from_root(root: PolicyJson) -> EyreResult<KmsAttestationPolicy> {
             bail!("Policy JSON has role {role:?}; a KMS release policy has role \"kms\"");
         }
     }
+    let release = root
+        .tag
+        .as_deref()
+        .map(|tag| {
+            tag.trim()
+                .strip_prefix("mero-kms-v")
+                .unwrap_or(tag.trim())
+                .to_owned()
+        })
+        .unwrap_or_default();
+    let profile = root.profile.clone();
     let PolicySection {
         kms_allowed_tcb_statuses,
         kms_allowed_mrtd,
@@ -374,6 +390,8 @@ fn policy_from_root(root: PolicyJson) -> EyreResult<KmsAttestationPolicy> {
         allowed_rtmr2,
         allowed_rtmr3,
         default_binding_b64,
+        release,
+        profile,
     })
 }
 
@@ -657,6 +675,9 @@ mod tests {
         assert_eq!(policy.allowed_tcb_statuses, vec!["uptodate", "outofdate"]);
         let kms_rtmr3 = raw["policy"]["kms_allowed_rtmr3"][0].as_str().unwrap();
         assert_eq!(policy.allowed_rtmr3, vec![kms_rtmr3.to_owned()]);
+        // What a node reports of the KMS it accepted names the signed file.
+        assert_eq!(policy.release, "2.3.69");
+        assert_eq!(policy.profile, raw["profile"].as_str().map(str::to_owned));
     }
 
     #[test]
