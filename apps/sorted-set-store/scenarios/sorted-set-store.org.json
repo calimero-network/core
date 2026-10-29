@@ -1,1 +1,1 @@
-{ "members": ["bob"] }
+{ "members": ["bob"], "outsiders": ["carol"] }

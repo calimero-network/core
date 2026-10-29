@@ -114,6 +114,93 @@ fn skip_list() -> BTreeMap<String, String> {
         .collect()
 }
 
+/// `tests/scenarios-exclude.txt`: scenario files on disk the runner must not discover, as
+/// `<path> <reason>` per line (`#` comments). Every entry needs a reason and an existing file.
+fn exclusions() -> Result<BTreeMap<String, String>, String> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios-exclude.txt");
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut out = BTreeMap::new();
+    for l in text.lines().map(str::trim) {
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        match l.split_once(char::is_whitespace) {
+            Some((p, why)) if !why.trim().is_empty() => {
+                let _prev = out.insert(p.to_owned(), why.trim().to_owned());
+            }
+            _ => return Err(format!("{}: `{l}` gives no reason", path.display())),
+        }
+    }
+    Ok(out)
+}
+
+/// Every `*.json` (not `.org.json`) under any directory named `scenarios` in the repository,
+/// relative to `root`. Build outputs, dependencies and hidden directories are skipped.
+fn scenario_files_on_disk(root: &Path) -> Vec<String> {
+    fn walk(root: &Path, dir: &Path, inside: bool, out: &mut Vec<String>) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
+            if p.is_dir() {
+                if name.starts_with('.')
+                    || ["target", "node_modules", "dist"].contains(&name.as_str())
+                {
+                    continue;
+                }
+                walk(root, &p, inside || name == "scenarios", out);
+            } else if inside && name.ends_with(".json") && !name.ends_with(".org.json") {
+                out.push(
+                    p.strip_prefix(root)
+                        .unwrap_or(&p)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, false, &mut out);
+    out.sort();
+    out
+}
+
+/// Fails unless every scenario file on disk is discovered or excluded with a reason, and
+/// every exclusion names a file that exists and is not discovered anyway: no scenario can sit
+/// in the repository unrun without saying why.
+fn check_coverage(root: &Path, discovered: &[(String, Kind)]) -> Result<(), String> {
+    let excluded = exclusions()?;
+    let found: std::collections::BTreeSet<&str> =
+        discovered.iter().map(|(p, _)| p.as_str()).collect();
+    let on_disk = scenario_files_on_disk(root);
+    let mut problems = Vec::new();
+    for f in &on_disk {
+        if !found.contains(f.as_str()) && !excluded.contains_key(f) {
+            problems.push(format!(
+                "{f}: neither discovered nor in tests/scenarios-exclude.txt"
+            ));
+        }
+    }
+    for p in excluded.keys() {
+        if !on_disk.contains(p) {
+            problems.push(format!(
+                "{p}: excluded in tests/scenarios-exclude.txt but not on disk"
+            ));
+        } else if found.contains(p.as_str()) {
+            problems.push(format!(
+                "{p}: excluded in tests/scenarios-exclude.txt but discovered"
+            ));
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("\n"))
+    }
+}
+
 struct Args {
     threads: usize,
     filters: Vec<String>,
@@ -188,10 +275,14 @@ fn run_one(root: &Path, path: &str, kind: Kind) -> Result<(), String> {
         .build()
         .map_err(|e| e.to_string())?;
     let full = root.join(path);
-    let limit = std::env::var("SCENARIO_TIMEOUT_SECS")
+    let base = std::env::var("SCENARIO_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(600);
+    // A scenario's own fuzzing comes on top: its length is SCENARIO_FUZZY_SECONDS, which the
+    // nightly raises to 900 s, so a fixed limit would cut every fuzzy scenario short.
+    let fuzz = scenario::fuzzy_seconds(&full).ceil() as u64;
+    let limit = base + fuzz;
     rt.block_on(async move {
         let run = async {
             match kind {
@@ -203,7 +294,7 @@ fn run_one(root: &Path, path: &str, kind: Kind) -> Result<(), String> {
             .await
             .unwrap_or_else(|_| {
                 Err(format!(
-                    "did not finish within {limit}s (SCENARIO_TIMEOUT_SECS)"
+                    "did not finish within {limit}s (SCENARIO_TIMEOUT_SECS {base}s + {fuzz}s of fuzzing)"
                 ))
             })
     })
@@ -214,7 +305,16 @@ fn main() {
     let a = args();
     let root = scenario::root();
     let skips = skip_list();
-    let mut selected: Vec<(String, Kind)> = discover(&root)
+    let discovered = discover(&root);
+    if discovered.is_empty() {
+        eprintln!("no scenario files found under {}", root.display());
+        std::process::exit(101);
+    }
+    if let Err(e) = check_coverage(&root, &discovered) {
+        eprintln!("scenario discovery:\n{e}");
+        std::process::exit(101);
+    }
+    let mut selected: Vec<(String, Kind)> = discovered
         .into_iter()
         .filter(|(p, _)| {
             a.filters.is_empty()
@@ -227,6 +327,10 @@ fn main() {
                 })
         })
         .collect();
+    if selected.is_empty() {
+        eprintln!("no scenario matches {:?}", a.filters);
+        std::process::exit(101);
+    }
     if let Some((k, n)) = shard() {
         selected = selected
             .into_iter()

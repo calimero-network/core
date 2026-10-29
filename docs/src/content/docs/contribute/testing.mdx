@@ -121,15 +121,27 @@ evenly and deterministically. A file listed in
 `crates/node/tests/scenarios-skip.txt` (`<path> <reason>`) is reported ignored
 until `--include-ignored` (or `SCENARIO_INCLUDE_SKIPPED=1`).
 
+A run fails when it discovers no scenario, or when a filter matches none. Every
+run also checks that each `*.json` (other than `.org.json`) under any directory
+named `scenarios` is discovered or listed, with its reason, in
+`crates/node/tests/scenarios-exclude.txt`, so no scenario sits on disk unrun
+without saying why; a stale or reasonless entry fails too.
+
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `SCENARIO_FILTER` | all | Comma-separated substrings; a path containing any of them runs |
 | `SCENARIO_SHARD` | none | `k/n`: the k-th of n shards (1-based) |
 | `SCENARIO_WAIT_CAP_SECS` | `2` | Longest a `wait` step sleeps, unless it says `"exact": true`: the cluster replicates synchronously, and the ported waits were for v1's gossip |
 | `SCENARIO_FUZZY_SECONDS` | `10` | How long a `fuzzy_test` runs (soak lengths are the Python suite's) |
-| `SCENARIO_TIMEOUT_SECS` | `600` | A scenario still running after this fails |
+| `SCENARIO_TIMEOUT_SECS` | `600` | A scenario still running after this, plus its own fuzzing (each `fuzzy_test` step's `SCENARIO_FUZZY_SECONDS`), fails |
 | `SCENARIO_REPEAT_CAP` | none | Most iterations of a `repeat` step |
 | `CORE_WASM_DIR` | `$CARGO_TARGET_DIR/workflow-wasm` | Where `{{env.CORE_WASM_DIR}}` fixtures live |
+
+After each `call` the runner waits, up to 10 s, until every replica has applied
+it and run its follow-ups (event handlers, xcalls). A call that does not settle
+fails its step, naming each replica behind, the index it waited for and the
+index that replica had reached. The runner never makes up a refusal: every
+refusal a step expects is the node's or the app's.
 
 Fixtures are built on first use when missing: `<crate>.wasm` by
 `cargo mero build` of that app (the repository's own cargo-mero first:
@@ -147,11 +159,16 @@ file the app's own `tests/scenarios.rs` runs in the harness. Beside it,
 `<name>.org.json` is the organization it needs:
 
 ```json
-{ "admins": ["ada"], "members": ["bob", "cy"], "guests": ["gus"], "teams": { "sales": ["bob"] } }
+{ "admins": ["ada"], "members": ["bob", "cy"], "guests": ["gus"], "teams": { "sales": ["bob"] }, "outsiders": ["mallory"] }
 ```
 
 The owner is always `owner`; an omitted key is empty, and no file means the
-owner alone. On the cluster the runner builds the app (a component with
+owner alone. `outsiders` are accounts a step acts as that hold no place in the
+org: they sign up and join nothing, so the node refuses them. On the cluster an
+`as` that is neither in the org nor a declared outsider fails the scenario
+before it runs, so a mistyped name cannot become an outsider whose refusal
+passes. (The SDK's `TestApp` harness still treats an unknown name as an
+outsider.) On the cluster the runner builds the app (a component with
 `calimero_app_build::build_component_cached`, a wasmer app with
 `cargo mero build`), signs every account up, creates the organization, invites
 each account with its role, creates the teams and adds their members, deploys
@@ -366,7 +383,7 @@ to a frozen leader is the example) gets its regression test here.
 ### Soak latency and throughput
 
 The suite's `kv-soak` (kv-store's fuzzy load: the operations and weights of
-`workflows/fuzzy-tests/kv-store/fuzzy-test.yml`, four members) times every call
+`workflows/fuzzy-tests/kv-store/scenarios/fuzzy-test.json`, four members) times every call
 it sends to the cluster (one round trip each). With `--soak-report file.json`
 (or `SOAK_REPORT`) it appends a report to that file: per operation, how many ran
 and failed, operations and calls per second over the run, and the p50/p95/p99

@@ -1352,6 +1352,33 @@ fn outbound_of(settings: &str) -> Result<Option<Arc<calimero_outbound::OutboundS
         .map_err(|e| format!("settings: {e:#}"))
 }
 
+/// How long `path`'s fuzzing runs, in seconds: `SCENARIO_FUZZY_SECONDS` (default 10) for each
+/// `fuzzy_test` step, times the literal `count` of every `repeat` around it. The test main adds
+/// this to the scenario's time limit, so a longer fuzz (the nightly's 900 s) never outruns it.
+pub fn fuzzy_seconds(path: &Path) -> f64 {
+    fn runs(steps: &Value) -> f64 {
+        steps.as_array().map_or(0.0, |steps| {
+            steps
+                .iter()
+                .map(|s| match s.get("type").and_then(Value::as_str) {
+                    Some("fuzzy_test") => 1.0,
+                    Some("repeat") => {
+                        s.get("count").and_then(Value::as_f64).unwrap_or(1.0) * runs(&s["steps"])
+                    }
+                    _ => 0.0,
+                })
+                .sum()
+        })
+    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return 0.0;
+    };
+    let Ok(scenario) = serde_json::from_str::<Value>(&text) else {
+        return 0.0;
+    };
+    runs(&scenario["steps"]) * env_f64("SCENARIO_FUZZY_SECONDS", 10.0)
+}
+
 /// Starts a cluster for `sc` (with its own package registry and settings) and runs it.
 pub async fn run_cluster_scenario(path: &Path) -> Result<(), String> {
     let sc = ClusterScenario::load(path)?;
@@ -2742,6 +2769,9 @@ pub struct OrgSpec {
     pub members: Vec<String>,
     pub guests: Vec<String>,
     pub teams: BTreeMap<String, Vec<String>>,
+    /// Accounts a step acts as that hold no place in the org: they sign up and join nothing,
+    /// so the node refuses them. Declared, so a mistyped `as` fails instead of becoming one.
+    pub outsiders: Vec<String>,
 }
 
 impl OrgSpec {
@@ -2941,25 +2971,33 @@ fn str_field(v: &Value, k: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{k} in {v}"))
 }
 
-/// The accounts `path`'s steps act as (`as`) that neither its org file nor the runner names:
-/// outsiders, who sign up but hold no place in the app's org.
+/// The outsiders `path`'s org file declares, after checking every step's `as`: each must be
+/// an org account, a declared outsider, or `@anonymous`/`@system`. Anything else (a typo) fails
+/// the scenario before it runs, as does a declared outsider that is also in the org.
 fn outsiders(path: &Path, spec: &OrgSpec) -> Result<Vec<String>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let steps: Vec<Value> =
         serde_json::from_str(&text).map_err(|e| format!("not a JSON array: {e}"))?;
     let known: Vec<String> = spec.roles().into_iter().map(|(name, _)| name).collect();
-    let mut out: Vec<String> = Vec::new();
-    for step in &steps {
+    if let Some(both) = spec.outsiders.iter().find(|o| known.contains(o)) {
+        return Err(format!(
+            "{both} is both in the org file and among its outsiders"
+        ));
+    }
+    for (n, step) in steps.iter().enumerate() {
         let Some(name) = step.get("as").and_then(Value::as_str) else {
             continue;
         };
-        if name.starts_with('@') || known.iter().any(|k| k == name) || out.iter().any(|o| o == name)
+        if !name.starts_with('@')
+            && !known.iter().any(|k| k == name)
+            && !spec.outsiders.iter().any(|o| o == name)
         {
-            continue;
+            return Err(format!(
+                "step {n}: `as` {name:?} is neither in the org file nor among its outsiders"
+            ));
         }
-        out.push(name.to_owned());
     }
-    Ok(out)
+    Ok(spec.outsiders.clone())
 }
 
 /// Runs the app-level scenario `path` (`apps/<app>/scenarios/<name>.json`) on a three-node
@@ -3043,8 +3081,8 @@ impl<'a> AppRunner<'a> {
             }
             let _prev = teams.insert(team.clone(), id);
         }
-        // An account a step acts as that the org file does not name signs up and joins no
-        // org, so the node refuses it (`NOT_FOUND`) as the harness does.
+        // The org file's declared outsiders sign up and join no org, so the node refuses
+        // them (`NOT_FOUND`) as the harness does.
         for name in outsiders {
             let p = person(c, name).await?;
             let _prev = people.insert(name.clone(), p);
