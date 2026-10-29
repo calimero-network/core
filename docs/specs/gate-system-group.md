@@ -682,6 +682,40 @@ Migration (scenarios run one build on fresh state, so these are their own tests)
 12. **Deadlines.** Should the in-flight release deadlines also apply to metadata, stopping
     new work in a realm that has not approved by the deadline?
 
+## 8. Decisions (product owner, 2026-10-29)
+
+The questions in section 7 are answered as follows. Phase 0 (closing F1–F5) is
+scheduled first and does not depend on them.
+
+1. **One approval.** A release approval covers both the scope's app data and its
+   metadata. Approvers: node images per cluster, fixed at genesis, by the operator or
+   the app's publisher (the developer org that publishes the package); app upgrades per
+   app, by the publisher or the instance's owner. Same model for shared and dedicated
+   clusters.
+2. **No organization veto** for now: a customer org does not restrict where its
+   membership goes.
+3. **Joining an org** sends the member's auth rows to that org's approved releases:
+   accepted.
+4. **Dormant realms**: old-release nodes are kept while any realm depends on them, and
+   the release deadline restricts new work in that realm (no app creation, installs or
+   upgrades). Data is never moved or deleted without approval.
+5. **Public directory**: as proposed in section 7.5.
+6. **Public apps**: no; a node outside an app's approved releases does not forward
+   anonymous calls for it.
+7. **Voters**: nodes on unapproved releases may be system voters and leader (an
+   availability, not a confidentiality, concern; the rollout needs it).
+8. **Invites across disjoint releases**: redemption extends the account's hold set to
+   the inviting org's approved releases at once (consistent with 3).
+9. **Before the switch**: accept prior exposure; retire K_s at the switch so every
+   token refreshes; refuse to restore pre-switch backups.
+10. **Order**: Phase 0 first, then realms together with per-app keys.
+11. **mdma's view**: publishers (cloud users) by name; their customers' orgs and
+    accounts as counts only.
+12. **Deadlines** apply to metadata too, since it is the same approval (1).
+
+Rollouts on clusters of fewer than three nodes end at three nodes (core keeps at
+least min(3, registered) replicas and never removes the last voter).
+
 ## Appendix A. `SystemCmd` by scope
 
 | Command | Scope after the split | User proof at apply |
