@@ -474,7 +474,7 @@ API and system group. What differs from the wasmer path:
 ## Not done yet
 
 rollback counter (proposed: a mero-kms epoch, restored nodes rejoin as learners),
-keys per app from mero-kms, placement across zones, snapshot restore into a
+keys per app from mero-kms (proposal: `docs/specs/per-app-keys.md`), placement across zones, snapshot restore into a
 running cluster, event audiences, search indexes that survive a restart (rebuilt from state now).
 
 ## Commands
