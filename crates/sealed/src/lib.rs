@@ -24,5 +24,6 @@ mod session;
 
 pub use identity::{PeerKey, StaticKey, IDENTIFIED_VERSION};
 pub use server::{
-    expire_sessions, intercept, SealedOptions, SealedTransport, HANDSHAKE_PATH, SEALED_PATH,
+    derive_shared, expire_sessions, intercept, LowOrder, SealedOptions, SealedTransport,
+    HANDSHAKE_PATH, SEALED_PATH,
 };
