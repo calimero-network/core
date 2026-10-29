@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.2] - 2026-10-29
+
+Shared clusters: a cluster starts on one node and grows, its data survives a
+mero-tee release upgrade, and every production release comes from the registry.
+
+### Added
+
+- **A cluster grows from one node.** A node started without `--bootstrap`
+  waits until the operator registers it (`/ops/nodes`), then joins as a
+  learner. The system leader promotes learners to voters, going from 1 to 3
+  voters in one change and never to 2. `GET /ops/placement` lists each app's
+  replicas and each node's zone, release and app count, for mdma's rebalancer.
+  A replica move first hands the new nodes the app's bundle and blobs.
+- **Replicas are spread across zones.** A new app's replicas go to zones none
+  of its replicas is in yet, and new system voters prefer new zones.
+- **Per-app usage on `/metrics`, for billing.** Calls, WASM CPU seconds, memory
+  byte-seconds, outbound requests, and state and blob bytes, labelled by app
+  and payer.
+- **`merod attest`.** A TDX quote over a nonce and the release, made before
+  mero-kms releases any key, for the manager to check a node first.
+
+### Changed
+
+- **The cluster's data outlives a release.** A cluster key (K_c) now seals the
+  store, snapshots and backups, wrapped under each release's storage key. A
+  node on an empty data directory waits, serving `/health`, until a peer
+  delivers K_c to its registered address. Nodes on the next mero-tee release
+  join with their own KMS key and keep every app's data.
+- **Production installs packages from the registry only.** Uploading a `.mpk`
+  (`POST /packages`, `/ops/packages`) answers `403 UPLOADS_DISABLED` without
+  `--dev`, so no release lives only on the nodes it was uploaded to.
+
+### Fixed
+
+- **A private package is listed only to accounts that may use it.**
+- **The documentation describes only the current system**, with diagrams of
+  the cluster, its groups and how it grows.
+
 ## [1.0.0-rc.1] - 2026-10-28
 
 The first release candidate of Calimero 1.0: a confidential cloud for
