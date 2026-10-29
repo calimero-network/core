@@ -9,7 +9,7 @@ target/workflow-wasm/ (override with CORE_WASM_DIR), which the scenarios name as
   same `--package` / `--app-version`, the no-ABI bundle and the
   frontend-release pair), plus its `app.wasm` as `<crate>.wasm`: a workflow
   installs the signed release by name and upgrades by version; and
-  outbound-probe's release (outbound.yml installs it: outbound requests are
+  outbound-probe's release (outbound.json installs it: outbound requests are
   served only to a signed release declaring its URL prefixes);
 - `<crate>.wasm` for every app under apps/ (`cargo mero build`, so each carries
   its ABI, which the node reads): a workflow uploads it as a bundle;

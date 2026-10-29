@@ -364,13 +364,13 @@ def rolling_upgrade(ctx, cl):
     check(not lost, f"acknowledged writes lost: {list(lost)[:10]}")
 
 
-# The kv-store fuzzy load: workflows/fuzzy-tests/kv-store/fuzzy-test.yml, the same
+# The kv-store fuzzy load: workflows/fuzzy-tests/kv-store/scenarios/fuzzy-test.json, the same
 # operations and weights, timed per call as merobox's fuzzy_test did.
 SOAK_NAME = "KV Store Fuzzy Load Test"
 SOAK_ACCOUNTS = ["fuzzy-kv-node-1", "fuzzy-kv-node-2", "fuzzy-kv-node-3", "fuzzy-kv-node-4"]
 
 
-@test("kv-soak", 7650, "workflows/fuzzy-tests/kv-store/fuzzy-test.yml (fuzzy_test, MEROBOX_SOAK_REPORT)", smoke=True)
+@test("kv-soak", 7650, "workflows/fuzzy-tests/kv-store/scenarios/fuzzy-test.json (fuzzy_test)", smoke=True)
 def kv_soak(ctx, cl):
     """kv-store's fuzzy load across 4 members for --soak-seconds; per-call latency and throughput report."""
     accts = ctx.accounts(cl, *SOAK_ACCOUNTS)
