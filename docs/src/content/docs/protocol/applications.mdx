@@ -5,6 +5,8 @@ sidebar:
   order: 17
 ---
 
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
 An app instance runs one **bundle**: a WASM module named by
 `hex(SHA-256(wasm))`. In production a bundle always comes out of a **package
 release**: a signed `.mpk` (`calimero-bundle`) built with `cargo mero build`
@@ -20,6 +22,38 @@ declares. The manifest is signed by the publisher's key, and every artifact in
 the archive is listed with its digest.
 
 ## Installing a release
+
+<SeqDiagram
+  id="d-package-flow"
+  title="From publisher to running replicas"
+  lanes={[
+    { label: 'Publisher', color: '#f0883e' },
+    { label: 'Registry', color: '#e3b341' },
+    { label: 'Installer', color: '#c9d1d9' },
+    { label: 'Any node', color: '#3fb950' },
+    { label: 'System log', color: '#a5ff11' },
+    { label: 'Replica', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'cargo mero build; mero-sign the manifest' },
+    { from: 0, to: 1, label: 'publish package@version (.mpk)' },
+    { from: 2, to: 3, label: 'POST /packages/install { package, version }' },
+    { from: 3, to: 1, label: 'fetch the .mpk (--registry-url)' },
+    { from: 3, to: 3, label: 'verify: signature, digests, min runtime, signer pin, WASM' },
+    { from: 3, to: 4, label: 'InstallPackage { .mpk hash, services, outbound }' },
+    { from: 4, to: 4, label: 'apply: signer pin again, quota' },
+    { from: 5, to: 1, label: 'first use: fetch the release itself' },
+    { from: 5, to: 5, label: 'hash = the logged one? verify again → run' },
+  ]}
+/>
+
+A release travels from its publisher to a registry, and from there to every
+node that runs it, never from node to node: the node that installs it verifies
+it before the system log records its hash, and each replica fetches and
+verifies the same bytes again before running them. The installer is an
+account (or an app's creator, since `POST /apps` installs a missing release
+first) or the operator. An uploaded `.mpk` (`POST /packages`) skips the
+registry and is spread to a majority of nodes instead.
 
 There are two ways in:
 
@@ -41,7 +75,8 @@ the request verifies the release (`Node::verify_release`):
 5. A registry install got the package and version it asked for.
 
 `apply` checks the signer pin again, refuses a version already installed with
-other contents (the same release again is a no-op), and charges the `.mpk`'s
+other contents (the same release again changes nothing but who installed it:
+the new installer is added to the release's `installers`), and charges the `.mpk`'s
 size to the installer's bundle quota (the operator's installs count against no
 account). The log keeps, per release, the `.mpk`'s hash and size, where it came
 from (`registry` or `upload`), each service's bundle hash, the metadata, and the
@@ -80,6 +115,55 @@ to: `(package, signer)`.
   release also ships stays, recorded under that release. Only whoever installed
   the package's first release (an account, or the operator) may uninstall.
 
+## Who sees a release
+
+Many organizations may share one cluster, and what one of them installed is
+not another's to list or run. A release is visible (`SystemState::sees_release`) to:
+
+- whoever installed it: the account recorded as `installedBy`, or one that
+  installed the same release again later (`installers`);
+- every account, for a release the operator installed (`/ops/packages`): the
+  cluster's own catalog, which the operator upgrades apps to;
+- an account that shares an organization with an account that installed it;
+- an account that reaches an app running one of its services (so a member of
+  an app always sees the release it runs);
+- a session opened on the package's own frontend, for every release of that
+  package (the frontend is public by name, and it creates instances of it);
+- the operator, for the releases it installed; it sees no account's releases.
+
+For anyone else the release is not installed. `GET /packages` and
+`GET /packages/{p}` list only the releases the caller sees (a package with
+none answers `404`), and `GET /ops/packages` only the operator's. Creating or
+upgrading an app from it resolves as for a missing release: without a version,
+the newest release the caller sees; with one, the release is installed from
+the registry first, which makes a registry release the caller's too, and
+answers what a missing release answers when the registry lacks it (an upload).
+Naming its WASM by hash answers as an unknown bundle, and approving outbound
+hosts for a package with no release the caller sees answers `404`. An
+organization's upgrade run moves an app only to a release its upgrader sees;
+the operator's, to one it installed or the app's owner sees.
+
+Records from before `installers` existed read with none; every release has
+always recorded `installedBy`, so each is visible by the rules above from the
+first start of this version.
+
+:::caution[What stays shared]
+Package names are one namespace per cluster: installing a release of a name
+another publisher's key pinned is refused with that key named, so the name's
+existence shows. A frontend is served to anyone who asks for its origin (a
+page loads before anyone signs in), so a package's frontend, its releases'
+versions and `/.well-known/calimero.json` are public to whoever knows the
+package's name. `owner` (whoever installed the first release) is shown with
+any release one sees.
+:::
+
+**Rolling upgrade (no version gate).** A node on the previous release applies
+an install of an already installed release as a no-op. While both releases
+run, a repeated install is recorded only on the upgraded nodes (and a node
+upgraded later keeps the record its old snapshot had). Repeat the install once
+every node runs this version, and it is recorded everywhere. Nodes on the
+previous release still list every package to everyone.
+
 ## Development bundles
 
 `POST /bundles` takes raw WASM (at most 16 MiB) with no publisher signature. It
@@ -111,7 +195,7 @@ uses `localhost`.
   file, falling back to the entry for client-side routes. `/.well-known/calimero.json`
   names the package, its releases and the cluster's API URLs.
 - Only `GET` and `HEAD` of files. An unknown label under D is a `404`, never a
-  node route. Responses carry v1's content security policy with the cluster's
+  node route. Responses carry a fixed content security policy with the cluster's
   API origins added to `connect-src`.
 
 **Why its own origin.** An app's page is third-party code. Served from the

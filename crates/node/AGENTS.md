@@ -37,10 +37,10 @@ is its command line.
   Commands carry their `actor`; `apply` checks authority, so the log decides.
 - **Routing** (`node.rs`): system writes go to the system leader, calls and strong
   views to the app's leader, over **peer sealed channels** (`internal/*`) whose key
-  is attested like any client's, plus the cluster secret (HMAC of K_r).
+  is attested like any client's, plus the cluster secret (HMAC of K_c).
 - **API** (`api.rs`), all inside the sealed channel except `/attestation` and `/health`:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
-  `/orgs/*`, `/invites/{token}/redeem`, `/internal/*` (peers), `/ops/*` (mdma: counts only, no read path).
+  `/orgs/*`, `/invites/{token}/redeem`, `/internal/*` (peers), `/ops/*` (mdma: counts and placement by id only, no read path into apps).
 - **Reserved methods** (`node::reserved_method`, `__*`): the node's own commands
   (`HOST_METHODS`: `__upgrade`, `__blob`, `__blob_forget`) run only for a
   `CallRequest::host` request, which only the API builds after judging who may;
@@ -73,7 +73,21 @@ is its command line.
   it from the registry first); upgrade takes `{ version }`; `DELETE /apps/{app}`;
   `DELETE /packages/{p}[/{v}]` is refused while an app runs the release (a WASM
   another release ships stays). Raw `POST /bundles` is development only
-  (`allow_unsigned_bundles`, on with `--dev`).
+  (`allow_unsigned_bundles`, on with `--dev`). **Who sees a release**
+  (`SystemState::sees_release`): its installers (`installed_by`, and
+  `PackageVersion::installers`, added when someone installs the same release
+  again), everyone for a release the operator installed (the catalog), accounts
+  sharing an organization with an installing account, accounts that reach an
+  app running it, a session bound to the package's frontend (all its releases),
+  and the operator for its own installs only. For
+  anyone else it is not installed: `GET /packages[/{p}]` and `GET /ops/packages`
+  leave it out (`404` by name), `resolve_release` treats it as missing (a
+  registry install makes it theirs; an upload answers as a missing release), a
+  bundle hash it ships is an unknown bundle (`sees_bundle`), outbound approval
+  answers `404`, and upgrade runs skip it (`api::upgrade_sees`; the operator's:
+  its own or the app owner's). Frontends stay public by name. Regressions:
+  `a_private_package_is_listed_only_to_accounts_that_may_use_it`,
+  `a_release_from_before_installers_reads_and_records_who_installs_it_again`.
 - **Governance** (`system::Governance`, `Authority`, shared with clients in
   `calimero_client::attest`): three decisions, each held by exactly one
   party chosen at deployment, `owner` (default) or `operator`:
@@ -102,6 +116,12 @@ is its command line.
   are the app's owner's, or, for an org app, of whoever holds `MANAGE_APPLICATION`
   on its team or org-wide (`SystemState::manages_apps`), with their own passkey
   assertion over the exact upgrade (`consent` on `UpgradeApp`).
+- **Placement** (`Node::place`, `placement::choose`): among the approved nodes,
+  a new app's `--replicas` span as many zones (`NodeRecord::zone`, from
+  `POST /ops/nodes`) as they are in, least loaded (then lower id) first within
+  that; zoneless nodes share one unknown zone, so a cluster without zones is
+  placed by load as before. Regressions: `a_new_app_is_placed_across_zones`,
+  `placement_across_zones_keeps_to_approved_releases`, `placement::tests`.
 - **Outbound HTTPS** (`calimero-outbound`): `Config::outbound` from
   `--settings` (`[outbound]`). `Node::outbound_for` hands a client only to
   `call_local`'s runs (calls, follow-ups, timers; not a read-only member's), for
@@ -118,6 +138,10 @@ is its command line.
   (`GET /attestation?purpose=receipts`, report data `nonce || receipt_key_binding`),
   and `GET /apps/{app}/attestation` gathers every replica's
   (`Client::verify_app_cluster`).
+- **Release attestations** (`attest.rs`, `release_attestation`, `serve_release`): a
+  quote over a manager's nonce and `ReleaseClaim`, for `merod attest` before the node
+  has any key. Not a route of a running node: `serve_release` is its own tiny server
+  (that one route, `MAX_CONCURRENT_RELEASE_QUOTES`), run only by `merod attest --serve`.
 - **The host's key space** (`app::RESERVED`, `\0calimero.*`): private spaces, writer
   sets, blob marks. App code's overlay answers nothing there and a run that tries is
   refused; the host writes with `Overlay::set_host` and reads with
@@ -129,7 +153,16 @@ is its command line.
   `/ops/nodes` registers it, the system leader adds it to the system group as a
   learner (`Node::admit_registered_nodes`, from `reconcile`), it catches up and
   learns the directory, and replica moves (`/ops/apps/{app}/replicas`) can put
-  apps on it.
+  apps on it. While the system group has fewer than `membership::SYSTEM_VOTERS`
+  (3) voters, the system leader promotes registered learners at most
+  `membership::PROMOTE_MAX_LAG` (16) entries behind its log so that it has
+  exactly 3, in one membership change (`Node::promote_learners`, from
+  `reconcile`; the choice is `membership::grow_voters`: zones no voter is in
+  first, then no zone, then the rest). Never 2 (no failure tolerated, every
+  write waits on both): a cluster started on one node waits for two learners,
+  then goes from 1 to 3; never past 3 on its own (5 would be a later flag).
+  Regressions: `a_cluster_started_on_one_node_grows_and_survives_losing_it`,
+  `membership::tests`.
 - **Removing nodes**: `DELETE /ops/nodes/{id}` (system leader; `421 NOT_LEADER` elsewhere) writes `RemoveNode` (refused while an app keeps a replica there) and changes the system group's voters, promoting a registered learner while fewer than 3 are left; `SystemState::removed_nodes` keeps `reconcile` from registering it again from `--peers`. Regression: `a_node_is_removed_once_no_app_keeps_a_replica_on_it`.
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Stopping** (`Running::stop`): cancel the tasks, drain the server (2 s),
@@ -144,11 +177,46 @@ is its command line.
   membership, build release; per-group Raft term, lags and quorum age; store
   sizes; and, from `metrics::track` on the router, requests by route template
   and status, error codes, latency per route group and body bytes), never
-  names, ids or state: labels are templates, groups, codes and numbers
+  names or state: labels are templates, groups, codes and numbers, and ids only
+  on the usage series below
   (regression: `metrics_count_requests_errors_and_raft_without_naming_anyone`). `--metrics-listen` (`Config::metrics_listen`) serves the same text
   at plain-HTTP `GET /metrics` for a scraper, nothing else (`api::plain_metrics`).
+- **Usage metering** (`usage.rs`, `Node::usage`; billed from `/metrics`):
+  `calimero_app_{calls_total{kind},wasm_cpu_seconds_total,wasm_memory_byte_seconds_total,outbound_requests_total,state_bytes,blob_bytes}`,
+  labelled `app` and `org` (the payer: org id, or `account:{owner}` for a
+  personal app; `usage::payer`). Every WASM run goes through `Node::metered`
+  (`off_workers` plus `usage::measure`: thread CPU time, `CLOCK_THREAD_CPUTIME_ID`,
+  around the run on its one thread; wall time off Unix), so CPU is counted on
+  the node that ran the WASM: the leader for calls, `init`, migrations,
+  follow-ups and timers (followers apply diffs and count nothing), the
+  answering replica for a view. A call is counted once, after its proposal, by
+  the run whose answer stood (not a conflict, not a component timeout); a
+  discarded run adds only CPU and memory. Memory = the module's declared
+  linear memory (`usage::declared_memory`, learned in `module_for` and
+  `prepare_now`) × wall time: a floor, as the runtimes do not report an
+  instance's peak. Outbound counts requests handed to the transport
+  (`OutboundService::for_run_counted`). `sample_usage` fills the state and blob
+  gauges every `usage::SAMPLE_EVERY` (5 min, `lib.rs`); `metrics_response`
+  drops the series of apps no longer hosted here. In memory: counters restart
+  at zero with the process. Regression:
+  `app_usage_is_counted_on_the_node_that_ran_the_wasm`; docs: Observability,
+  "Usage metering".
 - **Ops replica moves** run on the app group's leader; any other replica answers
-  `421 NOT_LEADER` with `details.leaderUrl` before writing anything.
+  `421 NOT_LEADER` with `details.leaderUrl` before writing anything. A move to
+  the set the app already has writes nothing (`unchanged: true`); a second move
+  of an app while one runs on this leader is refused `409 MOVE_IN_PROGRESS`
+  (`Node::begin_move`, a guard the move's own task holds, so it runs to the end
+  even if its caller disconnects). Before the new nodes become learners, the
+  leader hands them the app's bundle and the blobs its state marks
+  (`Node::hand_over_bytes`, over `internal/blob`): a bundle or blob stored while
+  the cluster was one node is held by that node alone ("a majority" of one).
+  Regressions: `replica_moves_are_idempotent_and_one_at_a_time`,
+  `a_cluster_started_on_one_node_grows_and_survives_losing_it` (node 1 stops
+  after the move; the app still runs and its blob downloads).
+- **Placement read** (`GET /ops/placement`, `meroctl ops placement`, for mdma's
+  rebalancer): each app's id, group and replicas, each node's id, zone,
+  attested release (`Node::release_of_node`, at most `PLACEMENT_RELEASE_WAIT`)
+  and app count, after `sys_fresh` (`fresh` in the answer). Ids and counts only.
 - **Forwards are bounded**: a call or read forwarded to an app's leader waits at most
   `FORWARD_TIMEOUT` (5 s, `peer_forward`), then retries at whoever leads now; a frozen
   leader would otherwise hold a write for the 30 s HTTP timeout. Calls without a
@@ -291,7 +359,7 @@ is its command line.
   `#[app::tee(every = "..")]` method once per period (`Trigger::Timer`, the
   last tick per method in `AppState::timer_ticks`). Such a run and a `tee:`
   handler author as `AccountId::TEE_AUTHORITY` with `tee_trigger`, open and
-  seal with the app's TEE key (`backup::tee_key`, from K_r), and seal a
+  seal with the app's TEE key (`backup::tee_key`, from K_c), and seal a
   member's share to the key the node keeps for them (`backup::member_key`):
   their account is their one device (`SealingContext::stand_ins`), and only
   their own runs open with it. ABI facts (timers, handlers, xcall entry
@@ -317,7 +385,7 @@ is its command line.
   oldest first from a ring per TTL class), events a ring of `EVENT_RING` (`rows::EVENT`).
   Runs read through `StateRead` (`KvView` for the app, a `BTreeMap` in tests); the
   system group stays in memory (`Machine::IN_MEMORY`). Backups (`Node::backup`) copy the
-  group's sealed snapshot file; `backup::latest` opens one with K_r.
+  group's sealed snapshot file; `backup::latest` opens one with K_c.
 - **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
   its applied index, `internal/system/index`; this replica waits for it). Org
   and team reads use it, and so does an access check before it refuses.
@@ -331,7 +399,23 @@ is its command line.
   fetched by merod itself (`--kms-url --kms-identity`; `calimero-kms-client`:
   release-policy-verified KMS, key sealed to the TD). The boot script uses the same
   client for the data disk's key (`merod kms disk-key`). The cluster's nodes share
-  the disk identity, so they share K_r.
+  the disk identity, so the nodes of one release share K_r; every release has its
+  own mero-kms root, so K_r changes at each release upgrade.
+- **Cluster key** (`cluster_key.rs`): K_c seals the store, snapshots, backups and
+  feeds the cluster secret, TEE, member and component-cache keys, so data
+  outlives a release. Kept in `<data_dir>/cluster-key`, wrapped under K_r. The
+  founder (`--bootstrap`) and a store from before K_c take K_c = K_r (nothing on
+  disk changes). A node on an empty data directory (`run`, before `Node::start`)
+  serves only `/health` (`waiting`), `/attestation` and
+  `/internal/cluster-key/deliver` while it asks its `--peers`
+  (`POST /internal/cluster-key { cluster, node, token }`, no cluster secret); a
+  peer never answers with K_c but delivers it (`cluster_key::deliver`) to the
+  address registered for that node id (or in its own `--peers`; not removed),
+  over a fresh sealed channel attested under the peer policy, with the token
+  (`MAX_CONCURRENT_KEY_RELEASES`). A K_r that does not unwrap the file stops the
+  node: no in-place move to a new release. Regressions:
+  `nodes_on_the_next_release_keep_the_data_of_the_ones_before`,
+  `the_cluster_key_goes_only_to_the_address_of_a_node_the_cluster_knows`.
 - **Peers' quotes** are judged like a client's (`calimero_client::Measurements`):
   in TDX mode the signed mero-tee release the peer names, profiles from
   `--peer-profiles` (default: this node's `MERO_TEE_PROFILE`), floor `--peer-min-release`.
@@ -356,7 +440,7 @@ API and system group. What differs from the wasmer path:
 
 - **Engine and host** (`node/component.rs`): one `WasmtimeEngine` per node
   (`Node::app_engine`), compiled artifacts cached under `<data_dir>/components`, each
-  with a MAC under a key derived from K_r (S8). `Node::prepared_for` prepares a bundle
+  with a MAC under a key derived from K_c (S8). `Node::prepared_for` prepares a bundle
   once (single-flight, Ruling 44; `concurrent_first_uses_of_a_bundle_prepare_it_once`).
   `POST /bundles` and package installs run the engine's `prepare` on a component
   where they compile a core module on wasmer.
@@ -449,7 +533,7 @@ API and system group. What differs from the wasmer path:
 ## Not done yet
 
 rollback counter (proposed: a mero-kms epoch, restored nodes rejoin as learners),
-keys per app from mero-kms, placement across zones, snapshot restore into a
+keys per app from mero-kms, snapshot restore into a
 running cluster, event audiences, search indexes that survive a restart (rebuilt from state now).
 
 ## Commands

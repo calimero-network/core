@@ -8,18 +8,21 @@ sidebar:
 
 import { Aside } from '@astrojs/starlight/components';
 
-`meroctl` is the command line for Calimero nodes. It keeps v1's command tree
-over the node API, through `calimero-client`: before anything is
-sent it fetches the node's attestation and judges the quote, then every request
-travels in the sealed channel. The source is `crates/meroctl/src`.
+`meroctl` is the command line for Calimero nodes, over the node API through
+`calimero-client`: before anything is sent it fetches the node's attestation
+and judges the quote, then every request travels in the sealed channel. The
+source is `crates/meroctl/src`.
 
-| v1 name | What it is now |
+Its command names differ from the rest of these docs for a few objects
+([glossary](/protocol/glossary/)):
+
+| Command | What it manages |
 | --- | --- |
-| application (`app`) | a signed package, installed once per cluster |
-| context (`context`) | an app instance |
-| namespace (`namespace`) | an organization |
-| group (`group`) | a team of an organization |
-| identity (`account`) | an account; each passkey is one of its devices |
+| `app` | signed packages (applications), installed once per cluster |
+| `context` | app instances |
+| `namespace` | organizations |
+| `group` | an organization's teams |
+| `account` | the signed-in account; each passkey is one of its devices |
 
 Output is JSON, pretty-printed. Commands that stream (`context watch`,
 `context presence stream`, `ops metrics`, `blob download` to stdout, `app
@@ -76,10 +79,11 @@ Saved nodes, in `{home}/meroctl/nodes.json` (mode `0600`). No network.
 | `logout [--all]` | `/auth/logout-all` with `--all` | Forget the saved session; `--all` first ends every session of the account. |
 | `whoami` | `GET /auth/me` | Who the requests run as. |
 | `attest [-c CONTEXT]` | `GET /attestation`, `GET /apps/{app}/attestation` | The node's attestation document; with `--context`, every replica of that app verified, their receipt keys and the governance they attest. |
+| `attest-release [--file FILE --nonce HEX]` | `GET /attestation/release` | Verify a [release attestation](/operate/merod/#attest) (`merod attest`): fetched from the node's URL over a fresh nonce (a booting TD's `merod attest --serve`), or read from `FILE` with the nonce it was made over. Judged with `--allow-mock`, `--tee-profiles` and `--min-release` like any quote; needs no session. Prints the claim, the verified registers and the profile they matched. |
 
 ## app
 
-Signed packages (v1's applications). An application is installed once on the
+Signed packages. An application is installed once on the
 cluster and verified on every node that runs it.
 
 | Command | Route | Meaning |
@@ -95,7 +99,7 @@ cluster and verified on every node that runs it.
 
 ## context
 
-App instances (v1's contexts).
+App instances.
 
 | Command | Route | Meaning |
 | --- | --- | --- |
@@ -169,7 +173,7 @@ A context's blobs.
 
 ## namespace
 
-Organizations (v1's namespaces). Alias: `ns`. `ROLE` is `guest`, `member`,
+Organizations. Alias: `ns`. `ROLE` is `guest`, `member`,
 `admin` or `owner`; `JOIN` is `open` (whoever reaches the parent is a member)
 or `restricted` (only the members added).
 
@@ -196,7 +200,7 @@ or `restricted` (only the members added).
 
 ## group
 
-An organization's teams (v1's groups). `ROLE` is `lead`, `member` or
+An organization's teams. `ROLE` is `lead`, `member` or
 `read-only`.
 
 | Command | Route | Meaning |
@@ -258,15 +262,16 @@ others.
 | --- | --- | --- |
 | `ops status` | `GET /ops/status` | This node, the system group's and hosted groups' Raft status, governance, fleet and counts. |
 | `ops metrics` | `GET /ops/metrics` | Prometheus text. |
-| `ops add-node ID ADDR [--zone Z]` | `POST /ops/nodes` | Register a node so the system group admits it as a learner. `ADDR` is its URL. |
+| `ops placement` | `GET /ops/placement` | Each context's group and replica node ids, each node's zone, release and context count. Ids and counts only. |
+| `ops add-node ID ADDR [--zone Z]` | `POST /ops/nodes` | Register a node so the system group admits it as a learner (and a voter while fewer than 3 voters are left). `ADDR` is its URL. |
 | `ops remove-node ID` | `DELETE /ops/nodes/{id}` | Remove a node no app keeps a replica on; run against the system leader. |
-| `ops move CONTEXT --replicas ID,...` | `POST /ops/apps/{app}/replicas` | Move a context to these replica node ids. A follower answers `421 NOT_LEADER`; meroctl retries at the leader it names. |
+| `ops move CONTEXT --replicas ID,...` | `POST /ops/apps/{app}/replicas` | Move a context to these replica node ids. A follower answers `421 NOT_LEADER`; meroctl retries at the leader it names. The set it already has answers `unchanged: true`; another move of it running, `409 MOVE_IN_PROGRESS`. |
 | `ops backup` | `POST /ops/backup` | Write encrypted snapshots of the contexts this node leads now. |
 | `ops quotas` | `GET /ops/quotas` | The per-account quotas. |
 | `ops set-quotas JSON` | `POST /ops/quotas` | Replace them. |
 | `ops release VERSION [--withdraw]` | `POST /ops/releases` | Approve (or withdraw) a mero-tee release for every app, where the operator holds release approvals. |
 | `ops outbound --package P [--prefix URL]... [--replace]` | `POST /ops/outbound` | Approve outbound prefixes cluster-wide, where the operator holds outbound approvals. |
-| `ops packages` | `GET /ops/packages` | Installed applications. |
+| `ops packages` | `GET /ops/packages` | The applications the operator installed (not the accounts'). |
 | `ops install PACKAGE[@VERSION] [--version V]` / `ops install --path FILE` | `POST /ops/packages/install`, `POST /ops/packages` | Install a release for the operator's upgrades, from the registry or a signed `.mpk`. |
 | `ops uninstall PACKAGE [--version V]` | `DELETE /ops/packages/{package}[/{version}]` | Uninstall what the operator installed. |
 | `ops upgrade CONTEXT [--version V] [--package P] [--service S] [--bundle HASH] [--migrate EXPORT]` | `POST /ops/apps/{app}/upgrade` | Update a context to an installed release, where the operator holds app upgrades. |
@@ -290,13 +295,6 @@ Use it for what no command covers, such as `POST /auth/apikeys` with
 that needs a passkey assertion needs a command with `--dev-passkey`, or a
 browser. See the
 [node API reference](/operate/admin-api/).
-
-## Not carried over from v1
-
-`context sync` and `group sync` (Raft replicates), `context identity`,
-`account pair-*`, `seal-to` and `device-init` (a passkey is the device),
-`peers` (there is no gossip network) and `tee fleet-join` (`ops add-node`)
-have no meaning on a cluster.
 
 ## Example session
 

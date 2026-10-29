@@ -13,7 +13,7 @@
 //! rule. An uploaded release has no registry to come from, so a majority of
 //! nodes hold it and the rest fetch it from them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use calimero_app_downloader::source::http::HttpRegistry;
@@ -24,7 +24,9 @@ use tracing::{info, warn};
 
 use crate::error::ApiError;
 use crate::node::Node;
-use crate::system::{BundleSource, PackageRef, PackageVersion, SystemCmd};
+use crate::system::{
+    compare_versions, BundleSource, PackageRef, PackageVersion, SystemCmd, SystemState,
+};
 use crate::types::now_secs;
 
 /// The largest `.mpk` a node takes, uploaded or fetched: it is kept as a blob,
@@ -213,6 +215,7 @@ impl Node {
                 outbound: manifest.outbound.clone(),
                 installed_by: actor.to_owned(),
                 installed_at: now_secs(),
+                installers: BTreeSet::new(),
             },
             wasm: wasm_by_service,
         })
@@ -327,23 +330,31 @@ impl Node {
     }
 
     /// The bundle hash `package@version` (service `service`) runs, installing
-    /// the release from the registry first if the fleet lacks it.
+    /// the release from the registry first if the fleet lacks it. A release
+    /// `actor` may not see (`SystemState::sees_release`) counts as lacking:
+    /// installing it from the registry makes it theirs too, and one the
+    /// registry does not have answers as a missing release does. `frontend`:
+    /// the caller came through `package`'s own frontend (a session bound to
+    /// it), which is public by name, so every release of it is theirs to run.
     pub async fn resolve_release(
         &self,
         package: &str,
         version: Option<&str>,
         service: Option<&str>,
         actor: &str,
+        frontend: bool,
     ) -> Result<String, ApiError> {
-        // No version: the latest the fleet has installed. A registry install
-        // always names its version.
+        // No version: the latest installed release `actor` sees. A registry
+        // install always names its version.
         let version = match version {
             Some(v) => v.to_owned(),
             None => self
                 .sys(|s| {
-                    s.packages
-                        .get(package)
-                        .and_then(|p| p.latest())
+                    let p = s.packages.get(package)?;
+                    p.versions
+                        .values()
+                        .filter(|v| frontend || s.sees_release(v, actor))
+                        .max_by(|a, b| compare_versions(&a.version, &b.version))
                         .map(|v| v.version.clone())
                 })
                 .ok_or_else(|| {
@@ -353,23 +364,18 @@ impl Node {
                     )
                 })?,
         };
-        let installed = self.sys(|s| {
+        let seen = |s: &SystemState| {
             s.packages
                 .get(package)
                 .and_then(|p| p.versions.get(&version))
+                .filter(|v| frontend || s.sees_release(v, actor))
                 .map(|v| v.services.clone())
-        });
-        let services = match installed {
+        };
+        let services = match self.sys(seen) {
             Some(s) => s,
             None => {
                 let _ = self.install_from_registry(package, &version, actor).await?;
-                self.sys(|s| {
-                    s.packages
-                        .get(package)
-                        .and_then(|p| p.versions.get(&version))
-                        .map(|v| v.services.clone())
-                })
-                .ok_or_else(|| {
+                self.sys(seen).ok_or_else(|| {
                     ApiError::unavailable("the release was installed but is not visible yet")
                 })?
             }

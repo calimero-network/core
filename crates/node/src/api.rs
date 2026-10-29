@@ -24,12 +24,13 @@ use calimero_identity::{
 use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::{info, warn};
 
 use crate::app::{Applied, Status};
-use crate::attest::{quote, report_data, AttestationDoc, Release};
+use crate::attest::{quote, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::{CallRequest, Node, ViewRequest};
-use crate::system::SystemCmd;
+use crate::system::{SystemCmd, SystemState};
 use crate::types::{
     now_secs, Access, Account, ApiKeyRecord, Caller, Invite, OrgRole, RefreshRecord, TeamJoin,
 };
@@ -453,18 +454,7 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         transport_key: hex::encode(transport_key),
         app_hash: hex::encode(app_hash),
         nonce: hex::encode(nonce),
-        release: Release {
-            version: node
-                .config
-                .tee_release
-                .clone()
-                .unwrap_or_else(|| node.config.release.clone()),
-            profile: match (&node.config.tee_profile, node.config.attestation) {
-                (_, crate::attest::Mode::Mock) => "mock".into(),
-                (Some(p), _) => p.clone(),
-                (None, _) => "tdx".into(),
-            },
-        },
+        release: node.config.attested_release(),
         cluster: node.config.cluster.clone(),
         node: node.config.node_id,
         mock: node.config.attestation == crate::attest::Mode::Mock,
@@ -996,6 +986,16 @@ async fn set_outbound_approval(
 ) -> ApiResult {
     let p = holder(node, headers).await?;
     let account = p.account()?;
+    // A package none of whose releases the caller may see is not installed
+    // for them: answered before the passkey ceremony, as a missing one.
+    node.sys_fresh().await;
+    if !node.sys(|s| {
+        s.packages
+            .get(&body.package)
+            .is_some_and(|pkg| s.visible_versions(pkg, &account).next().is_some())
+    }) {
+        return Err(ApiError::not_found("no such package"));
+    }
     let subject = match &scope {
         crate::system::ReleaseScope::Org { org } => format!("org:{org}"),
         crate::system::ReleaseScope::Account => format!("account:{account}"),
@@ -1257,14 +1257,31 @@ async fn package_install(
     ))
 }
 
-fn package_json(p: &crate::system::PackageRecord) -> Value {
-    let mut versions: Vec<&crate::system::PackageVersion> = p.versions.values().collect();
+/// `p` as `who` (an account, or `system::OPERATOR`) may see it: only the
+/// releases [`SystemState::sees_release`] lets them see, `None` when that is
+/// none, so a package they may not use is not listed and answers `404`.
+/// `frontend`: `who` came through `p`'s own frontend, public by name, and
+/// sees every release of it.
+fn package_json(
+    s: &SystemState,
+    p: &crate::system::PackageRecord,
+    who: &str,
+    frontend: bool,
+) -> Option<Value> {
+    let mut versions: Vec<&crate::system::PackageVersion> = p
+        .versions
+        .values()
+        .filter(|v| frontend || s.sees_release(v, who))
+        .collect();
+    if versions.is_empty() {
+        return None;
+    }
     versions.sort_by(|a, b| crate::system::compare_versions(&a.version, &b.version));
-    json!({
+    Some(json!({
         "package": p.name,
         "signerId": p.signer_id,
         "owner": p.owner,
-        "latest": p.latest().map(|v| v.version.clone()),
+        "latest": versions.last().map(|v| v.version.clone()),
         "versions": versions.iter().map(|v| json!({
             "version": v.version,
             "mpk": v.mpk,
@@ -1276,13 +1293,28 @@ fn package_json(p: &crate::system::PackageRecord) -> Value {
             "installedBy": v.installed_by,
             "installedAt": v.installed_at,
         })).collect::<Vec<_>>(),
-    })
+    }))
 }
 
+/// The packages the caller may see (`package_json`): on a cluster several
+/// organizations share, one organization's releases are not another's to list.
 async fn package_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
-    let _p = signed_in(&node, &headers).await?;
+    let principal = signed_in(&node, &headers).await?;
+    let account = principal.account()?;
     node.sys_fresh().await;
-    let packages: Vec<Value> = node.sys(|s| s.packages.values().map(package_json).collect());
+    let packages: Vec<Value> = node.sys(|s| {
+        s.packages
+            .values()
+            .filter_map(|p| {
+                package_json(
+                    s,
+                    p,
+                    &account,
+                    principal.bound_app() == Some(p.name.as_str()),
+                )
+            })
+            .collect()
+    });
     Ok(Json(json!({ "packages": packages })))
 }
 
@@ -1291,9 +1323,11 @@ async fn package_get(
     headers: HeaderMap,
     Path(package): Path<String>,
 ) -> ApiResult {
-    let _p = signed_in(&node, &headers).await?;
+    let principal = signed_in(&node, &headers).await?;
+    let account = principal.account()?;
+    let frontend = principal.bound_app() == Some(package.as_str());
     node.sys_fresh().await;
-    node.sys(|s| s.packages.get(&package).map(package_json))
+    node.sys(|s| package_json(s, s.packages.get(&package)?, &account, frontend))
         .map(Json)
         .ok_or_else(|| ApiError::not_found("no such package"))
 }
@@ -1357,12 +1391,18 @@ async fn ops_package_install(
     ))
 }
 
-/// Installed packages, for the operator: publisher metadata, no app data.
+/// The releases the operator installed: publisher metadata, no app data, and
+/// nothing an account installed.
 async fn ops_package_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
     // An install committed through another node is listed (read index).
     node.sys_fresh().await;
-    let packages: Vec<Value> = node.sys(|s| s.packages.values().map(package_json).collect());
+    let packages: Vec<Value> = node.sys(|s| {
+        s.packages
+            .values()
+            .filter_map(|p| package_json(s, p, crate::system::OPERATOR, false))
+            .collect()
+    });
     Ok(Json(json!({ "packages": packages })))
 }
 
@@ -1408,10 +1448,16 @@ async fn bundle_named(
     version: Option<&str>,
     service: Option<&str>,
     actor: &str,
+    frontend: bool,
 ) -> Result<String, ApiError> {
     match (bundle, package) {
-        (Some(b), None) => Ok(b),
-        (None, Some(p)) => node.resolve_release(p, version, service, actor).await,
+        // A hash names a release's WASM only for who may see that release.
+        (Some(b), None) if node.sys(|s| s.sees_bundle(&b, actor)) => Ok(b),
+        (Some(_), None) => Err(crate::node::rejected("unknown bundle")),
+        (None, Some(p)) => {
+            node.resolve_release(p, version, service, actor, frontend)
+                .await
+        }
         _ => Err(ApiError::bad_request(
             "BAD_REQUEST",
             "name either a bundle or a package",
@@ -1478,6 +1524,8 @@ async fn app_create(
         body.version.as_deref(),
         body.service.as_deref(),
         &owner,
+        // Checked above: a bound session names its own package only.
+        p.bound_app().is_some(),
     )
     .await?;
     // The executor is decided once, here, from the WASM the bundle names (a
@@ -2480,6 +2528,7 @@ async fn app_upgrade(
         body.version.as_deref(),
         service.as_deref(),
         &account,
+        false,
     )
     .await?;
     if !node.sys(|s| s.bundles.contains_key(&bundle)) {
@@ -2664,19 +2713,40 @@ fn run_targets(
         .collect()
 }
 
-/// The bundle `version` of the package gives an app (same service), if installed.
-fn target_bundle(node: &Node, app: &crate::types::AppRecord, version: &str) -> Option<String> {
+/// The bundle `version` of the package gives an app (same service), if
+/// installed and the upgrader may see it ([`upgrade_sees`]).
+fn target_bundle(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    version: &str,
+    who: &Upgrader,
+) -> Option<String> {
     let r = node.release_of(&app.bundle)?;
     let service = r.at.service.clone().unwrap_or_default();
     node.sys(|s| {
-        s.packages
-            .get(&r.at.package)?
-            .versions
-            .get(version)?
-            .services
-            .get(&service)
-            .cloned()
+        let v = s.packages.get(&r.at.package)?.versions.get(version)?;
+        if !upgrade_sees(s, v, app, &who.actor, who.by_operator) {
+            return None;
+        }
+        v.services.get(&service).cloned()
     })
+}
+
+/// Whether an upgrade may move `app` to release `v`: one the upgrading
+/// account may see, or, for the operator, one it installed or one the app's
+/// owner may see. A release of another organization never reaches an app.
+fn upgrade_sees(
+    s: &SystemState,
+    v: &crate::system::PackageVersion,
+    app: &crate::types::AppRecord,
+    actor: &str,
+    by_operator: bool,
+) -> bool {
+    if by_operator {
+        s.sees_release(v, crate::system::OPERATOR) || s.sees_release(v, &app.owner)
+    } else {
+        s.sees_release(v, actor)
+    }
 }
 
 /// Start an organization-wide upgrade: recorded, then run app by app in the
@@ -2716,7 +2786,7 @@ async fn start_run(
     let migrate = body.migrate.clone();
     let _task = tokio::spawn(async move {
         for app in apps {
-            match target_bundle(&node, &app, &version) {
+            match target_bundle(&node, &app, &version, &who) {
                 Some(bundle) if bundle == app.bundle => {
                     // Already there: done, nothing to run.
                     let _r = node
@@ -2781,7 +2851,7 @@ async fn org_upgrade(
     }
     // Installed from the registry first if the cluster lacks the release.
     let _bundle = node
-        .resolve_release(&body.package, Some(&body.version), None, &account)
+        .resolve_release(&body.package, Some(&body.version), None, &account, false)
         .await;
     let consent = consent(
         &node,
@@ -3577,6 +3647,61 @@ fn peer_only(node: &Node, headers: &HeaderMap) -> Result<(), ApiError> {
     }
 }
 
+/// How many cluster-key requests one node judges at once (each verifies a
+/// quote, which in TDX mode fetches a release); past it, `429`.
+pub const MAX_CONCURRENT_KEY_RELEASES: usize = 4;
+
+/// `POST /internal/cluster-key`: a new node (often of another mero-tee
+/// release, so without the cluster secret) asks for K_c. It is delivered, not
+/// answered: to the address the cluster has for that node id (registered, or
+/// in this node's `--peers`), inside a sealed channel to the key the TD there
+/// attests (`cluster_key::deliver`). Refused for another cluster, an unknown
+/// or removed node id; at most `MAX_CONCURRENT_KEY_RELEASES` at once.
+async fn internal_cluster_key(
+    State(node): State<Arc<Node>>,
+    Json(body): Json<crate::cluster_key::Request>,
+) -> ApiResult {
+    let Ok(_permit) = node.key_releases.try_acquire() else {
+        return Err(ApiError::new(
+            429,
+            "BUSY",
+            "too many cluster-key requests; retry",
+        ));
+    };
+    if body.cluster != node.config.cluster {
+        return Err(ApiError::forbidden("another cluster"));
+    }
+    let id = body.node;
+    let addr = node.sys(|s| {
+        if s.removed_nodes.contains(&id) {
+            return None;
+        }
+        s.nodes
+            .get(&id)
+            .map(|n| n.addr.clone())
+            .or_else(|| node.config.peers.get(&id).cloned())
+    });
+    let Some(addr) = addr else {
+        return Err(ApiError::forbidden(
+            "not a node of this cluster: register it (/ops/nodes) first",
+        ));
+    };
+    crate::cluster_key::deliver(
+        &node.config,
+        &node.http,
+        &addr,
+        &body.token,
+        node.cluster_key(),
+    )
+    .await
+    .map_err(|e| {
+        warn!(node = id, error = %format!("{e:#}"), "could not deliver the cluster key");
+        ApiError::forbidden("the cluster key could not be delivered to that node's address")
+    })?;
+    info!(node = id, "delivered the cluster key");
+    Ok(Json(json!({ "delivered": true })))
+}
+
 #[derive(Deserialize)]
 struct RaftBody {
     group: u64,
@@ -4197,6 +4322,10 @@ fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
         }
     }
     crate::metrics::render_raft(&mut out, &samples);
+    // Per-app usage: only the apps this node hosts keep their series.
+    let here: std::collections::HashSet<&str> = hosted.iter().map(|(a, _)| a.as_str()).collect();
+    node.usage.retain(|app| here.contains(app));
+    node.usage.render(&mut out);
     crate::metrics::render_node(&mut out, node.config.node_id, disk);
     crate::metrics::render_process(&mut out);
     crate::metrics::render(&mut out);
@@ -4237,7 +4366,8 @@ async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRes
             s.accounts.len(),
         )
     });
-    // Counts only: the Ops API never returns app state, names or credentials.
+    // Counts and ids only: the Ops API never returns app state, names or
+    // credentials (`/ops/placement` is the same: ids, zones, releases, counts).
     Ok(Json(json!({
         "node": node.config.node_id,
         "system": node.system.status(),
@@ -4247,6 +4377,55 @@ async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRes
         "apps": apps,
         "accounts": accounts,
     })))
+}
+
+/// How long `/ops/placement` waits for a node it has not attested yet to name
+/// its release; one that does not answer by then is listed with none.
+const PLACEMENT_RELEASE_WAIT: Duration = Duration::from_secs(2);
+
+/// Where every app's replicas are, for a rebalancer (mdma): each app's id,
+/// group and replica node ids, and each node's id, zone, attested release and
+/// app count. Ids and counts only: no names, state or credentials. Read from
+/// the system state after a read index (`fresh` says whether this replica
+/// caught up with the system leader).
+async fn ops_placement(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    operator(&node, &headers)?;
+    let fresh = node.sys_fresh().await;
+    let (apps, nodes) = node.sys(|s| {
+        let apps: Vec<Value> = s
+            .apps
+            .values()
+            .map(|a| json!({ "app": a.app_id, "group": a.group, "replicas": a.replicas }))
+            .collect();
+        let nodes: Vec<(u64, String, usize)> = s
+            .nodes
+            .values()
+            .map(|n| {
+                let hosted = s
+                    .apps
+                    .values()
+                    .filter(|a| a.replicas.contains(&n.id))
+                    .count();
+                (n.id, n.zone.clone(), hosted)
+            })
+            .collect();
+        (apps, nodes)
+    });
+    let releases =
+        futures_util::future::join_all(nodes.iter().map(|(id, _, _)| {
+            tokio::time::timeout(PLACEMENT_RELEASE_WAIT, node.release_of_node(*id))
+        }))
+        .await;
+    let nodes: Vec<Value> = nodes
+        .into_iter()
+        .zip(releases)
+        .map(|((id, zone, hosted), release)| {
+            json!({ "id": id, "zone": zone, "release": release.ok().flatten(), "apps": hosted })
+        })
+        .collect();
+    Ok(Json(
+        json!({ "fresh": fresh, "apps": apps, "nodes": nodes }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -4341,6 +4520,9 @@ fn membership_err(e: &calimero_log::WriteError) -> ApiError {
 
 /// Move an app to a new replica set: add learners, wait, then switch voters.
 /// Runs on the app group's leader; any other replica answers `421 NOT_LEADER`.
+/// Safe for a rebalancer to repeat or race: a move to the set the app already
+/// has answers `unchanged: true` and writes nothing, and a second move of the
+/// same app while one runs here is refused `409 MOVE_IN_PROGRESS`.
 async fn ops_set_replicas(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -4349,16 +4531,29 @@ async fn ops_set_replicas(
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     operator(&node, &headers)?;
-    if b.replicas.len() < 3.min(node.sys(|s| s.nodes.len())) {
+    let target: std::collections::BTreeSet<u64> = b.replicas.iter().copied().collect();
+    if target.len() != b.replicas.len() {
+        return Err(ApiError::bad_request(
+            "DUPLICATE_REPLICA",
+            "a node is named twice",
+        ));
+    }
+    if target.len() < 3.min(node.sys(|s| s.nodes.len())) {
         return Err(ApiError::bad_request(
             "TOO_FEW",
             "an app keeps at least 3 replicas",
         ));
     }
+    if let Some(id) = node.sys(|s| target.iter().copied().find(|id| !s.nodes.contains_key(id))) {
+        return Err(ApiError::bad_request(
+            "UNKNOWN_NODE",
+            &format!("node {id} is not registered"),
+        ));
+    }
     let app = node.app(&app_id).await?;
     // The operator moves an app only onto nodes on a release its owner
     // approved: a move is how data would reach a new image.
-    for id in &b.replicas {
+    for id in &target {
         let release = node.release_of_node(*id).await;
         if !node.sys(|s| s.release_may_hold(&app, release.as_deref())) {
             return Err(ApiError::forbidden(&format!(
@@ -4381,14 +4576,42 @@ async fn ops_set_replicas(
             leader: addr,
         }));
     }
-    let union: Vec<u64> = app
-        .replicas
-        .iter()
-        .chain(b.replicas.iter())
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
+    // One move per app at a time: two would each record their own union and
+    // final set, and the directory could end naming neither group's voters.
+    let Some(moving) = node.begin_move(&app_id) else {
+        return Err(ApiError::new(
+            409,
+            "MOVE_IN_PROGRESS",
+            "this app's replicas are being moved; retry once that move answers",
+        ));
+    };
+    // The move runs to the end in a task of its own, which holds the guard:
+    // a caller that disconnects does not leave it half done and unguarded.
+    tokio::spawn(move_replicas(node, app_id, target, moving))
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+}
+
+/// The body of [`ops_set_replicas`], on the app group's leader, under `_moving`.
+async fn move_replicas(
+    node: Arc<Node>,
+    app_id: String,
+    target: std::collections::BTreeSet<u64>,
+    _moving: crate::node::MoveGuard,
+) -> ApiResult {
+    // The replica set as of now, not as of before the guard.
+    let _caught_up = node.sys_fresh().await;
+    let app = node.app(&app_id).await?;
+    let g = node
+        .hosted(&app_id)
+        .ok_or_else(|| ApiError::bad_request("NOT_HOSTED", "send this to a current replica"))?;
+    let current: std::collections::BTreeSet<u64> = app.replicas.iter().copied().collect();
+    let st = g.status();
+    let voters: std::collections::BTreeSet<u64> = st.voters.iter().copied().collect();
+    if current == target && voters == target {
+        return Ok(Json(json!({ "status": st, "unchanged": true })));
+    }
+    let union: Vec<u64> = current.union(&target).copied().collect();
     // Every node of the union starts the group before membership changes.
     let _ok = node
         .sys_write(&SystemCmd::SetReplicas {
@@ -4397,15 +4620,19 @@ async fn ops_set_replicas(
         })
         .await?;
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let g = node
-        .hosted(&app_id)
-        .ok_or_else(|| ApiError::bad_request("NOT_HOSTED", "send this to a current replica"))?;
     let addrs: Vec<(u64, String)> = node.sys(|s| {
-        b.replicas
+        target
             .iter()
             .filter_map(|r| s.nodes.get(r).map(|n| (*r, n.addr.clone())))
             .collect()
     });
+    // The new replicas get the bundle and blobs before they can vote.
+    let joining: Vec<(u64, String)> = addrs
+        .iter()
+        .filter(|(id, _)| !current.contains(id))
+        .cloned()
+        .collect();
+    let _handed = node.hand_over_bytes(&app, &g, &joining).await?;
     for (id, addr) in addrs {
         if !g.status().voters.contains(&id) {
             g.add_learner(id, addr)
@@ -4413,16 +4640,16 @@ async fn ops_set_replicas(
                 .map_err(|e| membership_err(&e))?;
         }
     }
-    g.change_voters(b.replicas.iter().copied().collect())
+    g.change_voters(target.clone())
         .await
         .map_err(|e| membership_err(&e))?;
     let _ok = node
         .sys_write(&SystemCmd::SetReplicas {
             app_id,
-            replicas: b.replicas,
+            replicas: target.into_iter().collect(),
         })
         .await?;
-    Ok(Json(json!({ "status": g.status() })))
+    Ok(Json(json!({ "status": g.status(), "unchanged": false })))
 }
 
 async fn ops_quotas_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
@@ -4596,6 +4823,7 @@ async fn ops_upgrade(
                 s.packages
                     .get(&package)
                     .and_then(|p| p.versions.get(&version))
+                    .filter(|v| upgrade_sees(s, v, &app, crate::system::OPERATOR, true))
                     .and_then(|v| v.services.get(&service).cloned())
             })
             .ok_or_else(|| {
@@ -4613,7 +4841,10 @@ async fn ops_upgrade(
             ))
         }
     };
-    if !node.sys(|s| s.bundles.contains_key(&bundle)) {
+    // A raw hash is the operator's own, or one the app's owner may name.
+    if !node.sys(|s| {
+        s.sees_bundle(&bundle, crate::system::OPERATOR) || s.sees_bundle(&bundle, &app.owner)
+    }) {
         return Err(crate::node::rejected("unknown bundle"));
     }
     run_upgrade(
@@ -4707,6 +4938,7 @@ pub fn router(node: Arc<Node>) -> Router {
         )
         .route("/orgs/{org}/invites", post(invite_create))
         .route("/invites/{token}/redeem", post(invite_redeem))
+        .route("/internal/cluster-key", post(internal_cluster_key))
         .route("/internal/raft", post(internal_raft))
         .route("/internal/system", post(internal_system))
         .route("/internal/system/index", post(internal_system_index))
@@ -4723,6 +4955,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/internal/events", get(internal_events))
         .route("/ops/status", get(ops_status))
         .route("/ops/metrics", get(ops_metrics))
+        .route("/ops/placement", get(ops_placement))
         .route("/ops/nodes", post(ops_register_node))
         .route("/ops/nodes/{id}", delete(ops_remove_node))
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))

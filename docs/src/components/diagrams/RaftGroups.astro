@@ -1,0 +1,83 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-raft-groups">
+<svg viewBox="0 0 760 360" role="img" aria-label="One cluster of five nodes runs one system group on every node (three voters, two learners) and one small Raft group per app on three replicas each, with leaders spread across nodes" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="760" height="360" rx="10" fill="#0f0f16"/>
+  <text x="380" y="26" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">one cluster, many small groups</text>
+
+  <!-- node columns -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="170" y="42" width="100" height="300" rx="8" fill="#10210f" stroke="#3fb950" stroke-opacity=".35"/>
+    <rect x="286" y="42" width="100" height="300" rx="8" fill="#10210f" stroke="#3fb950" stroke-opacity=".35"/>
+    <rect x="402" y="42" width="100" height="300" rx="8" fill="#10210f" stroke="#3fb950" stroke-opacity=".35"/>
+    <rect x="518" y="42" width="100" height="300" rx="8" fill="#10210f" stroke="#3fb950" stroke-opacity=".35"/>
+    <rect x="634" y="42" width="100" height="300" rx="8" fill="#10210f" stroke="#3fb950" stroke-opacity=".35"/>
+    <text x="220" y="62" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">node 1</text>
+    <text x="336" y="62" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">node 2</text>
+    <text x="452" y="62" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">node 3</text>
+    <text x="568" y="62" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">node 4</text>
+    <text x="684" y="62" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">node 5</text>
+  </g>
+
+  <!-- system group row -->
+  <g class="seq-step" style="--step-i:1">
+    <text x="20" y="98" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">system group</text>
+    <text x="20" y="111" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">group 1, every node</text>
+    <rect x="180" y="84" width="80" height="30" rx="6" fill="#13160f" stroke="#a5ff11" stroke-width="1.6"/>
+    <text x="220" y="103" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">voter ★</text>
+    <rect x="296" y="84" width="80" height="30" rx="6" fill="#13160f" stroke="#a5ff11" stroke-width="1.3"/>
+    <text x="336" y="103" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="9.5">voter</text>
+    <rect x="412" y="84" width="80" height="30" rx="6" fill="#13160f" stroke="#a5ff11" stroke-width="1.3"/>
+    <text x="452" y="103" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="9.5">voter</text>
+    <rect x="528" y="84" width="80" height="30" rx="6" fill="#161b22" stroke="#a5ff11" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="568" y="103" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5">learner</text>
+    <rect x="644" y="84" width="80" height="30" rx="6" fill="#161b22" stroke="#a5ff11" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="684" y="103" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5">learner</text>
+    <line x1="170" y1="128" x2="734" y2="128" stroke="#252538" stroke-width="1"/>
+  </g>
+
+  <!-- app A -->
+  <g class="seq-step" style="--step-i:2">
+    <text x="20" y="158" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">app A</text>
+    <text x="20" y="171" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">group 12</text>
+    <rect x="180" y="146" width="80" height="28" rx="6" fill="#10151c" stroke="#58a6ff" stroke-width="1.6"/>
+    <text x="220" y="164" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">leader ★</text>
+    <rect x="296" y="146" width="80" height="28" rx="6" fill="#10151c" stroke="#58a6ff" stroke-width="1"/>
+    <text x="336" y="164" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">replica</text>
+    <rect x="412" y="146" width="80" height="28" rx="6" fill="#10151c" stroke="#58a6ff" stroke-width="1"/>
+    <text x="452" y="164" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">replica</text>
+  </g>
+
+  <!-- app B -->
+  <g class="seq-step" style="--step-i:3">
+    <text x="20" y="208" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">app B</text>
+    <text x="20" y="221" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">group 13</text>
+    <rect x="296" y="196" width="80" height="28" rx="6" fill="#1a1430" stroke="#a371f7" stroke-width="1"/>
+    <text x="336" y="214" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">replica</text>
+    <rect x="528" y="196" width="80" height="28" rx="6" fill="#1a1430" stroke="#a371f7" stroke-width="1.6"/>
+    <text x="568" y="214" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">leader ★</text>
+    <rect x="644" y="196" width="80" height="28" rx="6" fill="#1a1430" stroke="#a371f7" stroke-width="1"/>
+    <text x="684" y="214" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">replica</text>
+  </g>
+
+  <!-- app C -->
+  <g class="seq-step" style="--step-i:4">
+    <text x="20" y="258" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">app C</text>
+    <text x="20" y="271" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">group 14</text>
+    <rect x="180" y="246" width="80" height="28" rx="6" fill="#10201f" stroke="#39d0d8" stroke-width="1"/>
+    <text x="220" y="264" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">replica</text>
+    <rect x="412" y="246" width="80" height="28" rx="6" fill="#10201f" stroke="#39d0d8" stroke-width="1.6"/>
+    <text x="452" y="264" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">leader ★</text>
+    <rect x="644" y="246" width="80" height="28" rx="6" fill="#10201f" stroke="#39d0d8" stroke-width="1"/>
+    <text x="684" y="264" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5">replica</text>
+  </g>
+
+  <!-- legend -->
+  <g class="seq-step" style="--step-i:5">
+    <text x="20" y="306" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">… one group per app</text>
+    <text x="452" y="306" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">★ leader · voters decide commits · a learner receives entries, does not vote</text>
+    <text x="452" y="322" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">an app's data lives only on its replicas; leaders spread across nodes</text>
+  </g>
+</svg>
+</Figure>

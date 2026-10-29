@@ -1,73 +1,119 @@
 ---
 title: Calimero Cloud
-description: Apps replicated by Raft across attested TDX nodes, reached through a sealed channel, signed in with passkeys.
+description: What Calimero is — WASM apps replicated by Raft across attested TDX nodes, reached through a sealed channel, signed in with passkeys — and how a cluster, its groups and its clusters fit together.
 sidebar:
   order: 1
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import ClusterArchitecture from '../../../components/diagrams/ClusterArchitecture.astro';
+import RaftGroups from '../../../components/diagrams/RaftGroups.astro';
+import ClusterKinds from '../../../components/diagrams/ClusterKinds.astro';
 
-<Aside type="caution">
-  This is a release candidate, on the `release-v2` branches of core, mero-js,
-  calimero-client-py, mdma, apps and landing. The node is `merod` and the
-  command line `meroctl`; v1's peer-to-peer node is gone.
-</Aside>
+Calimero is a **confidential cloud** for collaborative apps. An app is Rust or
+JavaScript compiled to WASM; every instance of it runs inside attested Intel TDX
+nodes that Calimero (or a customer, for a dedicated cluster) operates, and
+nobody operating them — Calimero included — can read the app's data.
 
-Calimero is a **confidential cloud** (v1 was a peer-to-peer, local-first
-platform): every app runs inside attested Intel TDX nodes that
-Calimero (or a customer, for a dedicated cluster) operates, and nobody operating
-them — Calimero included — can read the app's data.
+:::note[Release]
+This describes Calimero 1.0 (`1.0.0-rc.1`): the node is `merod`, the command
+line `meroctl`, and the clients are mero-js, calimero-client-py and the Rust
+`calimero-client`. Coming from an earlier release? See
+[Coming from v1](/cloud/coming-from-v1/).
+:::
+
+## The architecture
+
+<ClusterArchitecture />
+
+A client never trusts the network. It fetches the node's attestation, checks
+that the TDX quote binds the node's transport key and that its measurements
+match a signed mero-tee release it trusts, and only then opens the sealed
+channel every request travels in. Any node takes any request: it checks the
+caller's credential and access against fresh system state, forwards the call
+over an attested peer channel to the app's leader, and returns the result with
+a receipt signed by an attested key. The nodes got their storage key from
+mero-kms only after proving their image, and the operator's API reports counts,
+never data.
+
+## One cluster, many small groups
+
+<RaftGroups />
+
+A cluster runs one **system group**, a Raft log on every node: nodes, accounts,
+passkeys, sessions and API keys, organizations and teams, installed packages
+and the directory of app instances. Its voters are the nodes the cluster was
+bootstrapped with — a cluster started smaller is grown to three by promoting
+caught-up nodes — and every further node is a learner that receives the log
+but does not vote. Each **app
+instance** gets a Raft group of its own on a few replicas (three by default),
+so apps progress in parallel and an app's data lives only on the nodes placed
+to hold it. See [Concepts](/protocol/concepts/) and
+[Replication](/protocol/replication/).
 
 ## What runs where
 
-- **A cluster** is a set of `merod` nodes. Each one runs in a TDX VM, takes its
-  storage key from mero-kms only after proving its image, and keeps everything on
-  disk sealed under that key.
-- **The system group** is one Raft log the whole cluster shares. It holds the
-  fleet, the app directory, bundles' hashes, accounts, passkeys, API keys,
-  organizations, teams, invites, quotas and the session-signing keys.
-  Commands carry their actor and are authorized when they apply, so every node
-  reaches the same verdict.
-- **Each app instance is its own Raft group** on 3 or more nodes. The leader runs
-  a call against the app's WASM and appends the call with
-  its resulting state diff; followers apply the diff. Calls are linearized, strong
-  reads go through the leader, stale reads any replica, and the app keeps serving
-  when a node is lost.
-- **Bundles** (the WASM) are stored in each node's sealed blob store, not in the
-  log; the log records their hash. Log entries are capped at 1 MiB.
+- **A node** is one `merod` process in a TDX VM. It takes its storage key from
+  mero-kms only after proving its image, and keeps everything on disk sealed
+  under that key.
+- **The system group** decides who may do what. Commands carry their actor and
+  are authorized when they apply, so every node reaches the same verdict.
+- **An app group's leader** runs a call against the app's WASM and appends the
+  call with its resulting state diff; followers apply the diff. Calls are
+  linearized, strong reads go through the leader, stale reads any replica, and
+  the app keeps serving while a majority of its replicas run.
+- **Two runtimes.** A core module built with the Rust SDK (`calimero-sdk`)
+  runs on wasmer; a `calimero:app` component runs on wasmtime. Which one is
+  decided from the WASM when the instance is created.
+- **Packages** are signed `.mpk` releases, installed from a registry or
+  uploaded, and verified on every node that runs them. A package's frontend is
+  served from its own origin.
 
 ## Trust
 
-- **Clients verify before they send.** A client (mero-js, Python, Rust, the CLI)
-  fetches the node's attestation, checks the TDX quote binds the node's transport
-  key, and checks the quote's measurements against the signed mero-tee release
-  the node names (`published-mrtds.json`, Sigstore-verified) and the profiles the
-  client allows. Only then does it open the sealed channel (Noise NK,
-  `calimero/sealed-http/v2`) that every request travels in.
-- **Nodes verify each other the same way** before any Raft traffic, and add a
+- **Clients verify before they send** (mero-js, Python, Rust, `meroctl`), and
+  **nodes verify each other the same way** before any Raft traffic, adding a
   cluster secret on internal routes.
-- **People sign in with WebAuthn passkeys**; services use scoped API keys
-  (`cal_…`). Sessions are short tokens any node verifies; the signing key
-  rotates. A method marked `#[app::confirm]` needs a fresh passkey assertion over
-  the exact call, which is logged as consent.
-- **Operators see counts.** The Ops API (mdma's) reports Raft status and counts,
-  sets quotas, moves replicas and triggers encrypted backups. It has no read path
-  into app state.
+- **People sign in with passkeys**; services use scoped API keys (`cal_…`).
+  Sessions are short tokens any node verifies. A method marked
+  `#[app::confirm]` needs a fresh passkey assertion over the exact call, which
+  is logged as consent.
+- **Governance.** Who approves new node images, who upgrades apps and who
+  approves outbound hosts is fixed when the cluster is created — each app's
+  owner, or the operator — and attested with every receipt key, so a user can
+  check it ([Deployment governance](/protocol/governance/)).
+- **Operators see counts.** The Ops API reports Raft status and counts, sets
+  quotas, registers nodes, moves replicas and triggers sealed backups. It has
+  no read path into app state.
+
+## Shared and dedicated clusters
+
+<ClusterKinds />
+
+Calimero runs **shared clusters**, onto which many developers' apps are
+deployed side by side under one plan's per-account quotas, and **dedicated
+clusters**, which belong to one customer. Every cluster is self-contained: its
+own system group, its own storage key, its own accounts and organizations. An
+organization lives on one cluster, and an xcall, an alias or an API key reaches
+only apps on that cluster. A shared cluster may start with a single node and
+grow ([Growing a cluster](/operate/deployment/#growing-a-cluster)). Which
+cluster a customer lands on, and the plans, are mdma's (Calimero's cluster
+manager), not the node's.
 
 ## The pieces
 
 | Crate / package | What it is |
 | --- | --- |
-| `calimero-log` | Multi-group Raft engine (openraft) over a sealed RocksDB store; app state on disk |
+| `merod` | The node binary: `init`, `run`, `config`, `local`, `inspect`, `kms`, `attest` |
+| `calimero-node` | The node's inside: system group, app groups, API, Ops API |
+| `calimero-log` | Multi-group Raft engine (openraft) over a sealed RocksDB store |
 | `calimero-sealed` | The sealed HTTP transport, server and client |
 | `calimero-identity` | Passkeys (WebAuthn), sessions, API keys, confirm challenges |
-| `merod` | The node binary: `init`, `run`, `config`, `local`, `inspect`, `kms` |
-| `calimero-node` | The node's inside: system group, app groups, API, Ops API |
-| `meroctl` | The command line: apps, contexts, namespaces, groups, blobs, accounts, `ops` |
+| `meroctl` | The command line: packages, app instances, organizations, teams, blobs, accounts, `ops` |
 | `calimero-client` | Rust client (attestation, sealed channel, passkeys) |
 | mero-js `CalimeroClient` | Browser / Node client |
 | calimero-client-py `CloudClient` | Python client (binds the Rust client) |
-| mdma `cloud_v2` | Placement and the Ops API client |
+| mero-kms (mero-tee) | Releases storage keys to attested nodes |
+| mdma | Calimero's cluster manager: VMs, placement of nodes, the Ops API client, the rebalancer |
 
 Next: [Quickstart](/cloud/quickstart/), [Writing apps](/cloud/apps/), and the
 [Operate](/operate/) section for running a cluster.

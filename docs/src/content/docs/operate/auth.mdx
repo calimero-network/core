@@ -12,8 +12,7 @@ There is no separate auth service: the node itself registers passkeys,
 mints sessions and checks API keys (`crates/node/src/api.rs`, with the
 primitives in `calimero-identity`). Accounts, passkeys, API-key hashes, refresh
 tokens, revocations and the session-signing key live in the cluster's system
-group, so any node verifies any credential. v1's `mero-auth`, its JWT
-providers and the embedded/proxy modes are gone.
+group, so any node verifies any credential.
 
 | Who | Credential | Lifetime |
 | --- | --- | --- |

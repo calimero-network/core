@@ -18,7 +18,9 @@ A request is made only when every gate holds:
 Secrets (`{{secret:NAME}}`) come from `EnvSecrets` or a loopback `SidecarSecrets`,
 scoped by package, signer and host, and are redacted from the response.
 
-- `OutboundService::from_settings` → `for_run(app, declared, approval, context)`.
+- `OutboundService::from_settings` → `for_run(app, declared, approval, context)`;
+  `for_run_counted(.., sent)` also counts each request handed to the transport
+  (the node's `calimero_app_outbound_requests_total`).
 - `merge_approval` computes the approval an owner's selection leaves.
 - Feature `outbound-testing`: `[outbound.testing] echo` answers `.test` hosts
   in-process (cluster tests and scenarios) and takes literal secrets.

@@ -73,14 +73,6 @@ debug image itself. What the peer's verified attestation named as its release
 is remembered and decides whether the peer may receive an app's data
 ([release approvals](/protocol/governance/#release-approvals)).
 
-:::note[v1 comparison]
-v1 used attestation to admit "fleet" nodes into a namespace as read-only TEE
-replicas or relays, with an admission handshake, a measurement allowlist set by
-the namespace's admins, and self-purge on eviction. Here every node is a TEE,
-and attestation is the precondition for any conversation, with a client or a
-peer. There is no admission role: a node that passes the check is a peer; one
-that fails is never sent a byte.
-:::
 
 ## Receipts
 
@@ -121,6 +113,42 @@ What a user learns from it:
 
 The entry node gathers the documents but cannot forge them: each quote binds
 the caller's fresh nonce and is verified against Intel's collateral.
+
+## Release attestations
+
+A node fetches its key from mero-kms when it starts, before it serves
+anything, and mero-kms releases a key to any TD whose quote matches the
+signed release policy. So by the time a node answers `/attestation`, the
+key is already out. A manager that wants to decide first (is this the image
+and merod it meant to start?) asks for a **release attestation**, which
+`merod attest` makes with no key, no store and no running node:
+
+```text
+report_data = nonce(32) || SHA-256("calimero.tee-attest.release.v1"
+                || for each of merodVersion, merodSha256, teeRelease, teeProfile, identity:
+                   u32 BE length || UTF-8 bytes (length 0 when null))
+```
+
+The claim is what the node says it is: its merod release and executable
+digest, the mero-tee release and profile the image names, and, when it has one
+before the KMS, the peer id of the identity it will ask the KMS a key for. The
+claim proves nothing by itself; the quote's registers do, and the claim is
+bound so it cannot be swapped under them. The domain tag keeps it from ever
+equalling a transport, receipt-key or admission quote's second half.
+
+`calimero_client::attest::release::verify_release` runs the same quote check
+as every client (mock only with `allowMock`, DCAP, the measurement policy, a
+`Release` policy reading the release the claim names, the TCB status), checks
+the nonce and the report data, and refuses an envelope whose copy of the
+registers, or whose claimed profile, is not what the verified quote shows.
+`meroctl attest-release` prints its verdict. A verifier that is not Rust
+gives `calimero-tee-verify` the quote, its nonce and the second half above as
+`app_hash_hex`, and checks the reported registers against the release's
+signed `published-mrtds.json` itself.
+
+A booting TD that has no key yet serves it with `merod attest --serve ADDR`
+(`GET /attestation/release?nonce=`), so the manager attests it over its own
+fresh nonce; the boot script stops it before `merod run` takes the address.
 
 ## Generating quotes
 

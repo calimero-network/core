@@ -2,14 +2,13 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
-// Phase 0 spike: prove Starlight + our dark theme + a mounted animated-SVG
-// diagram (the bespoke engine as an Astro island). Content authored in MDX.
+// The docs site: Starlight, our theme, and hand-authored SVG diagrams
+// (src/components/diagrams) plus the SeqDiagram engine. Content is MDX.
 export default defineConfig({
   site: 'https://calimero-network.github.io',
   // GitHub project Pages serve under /<repo>/. Change if a custom domain is used.
   base: '/core',
-  // Pages for v1's sync, governance ops and delegation, now deleted: old links
-  // land on the page that now covers the subject.
+  // Deleted pages: old links land on the page that now covers the subject.
   redirects: {
     '/protocol/operations/': '/core/protocol/replication/',
     '/protocol/projection/': '/core/protocol/replication/',
@@ -83,7 +82,7 @@ export default defineConfig({
         {
           // Overview, quickstart and writing apps.
           label: 'Get started',
-          items: ['cloud/overview', 'cloud/quickstart', 'cloud/apps'],
+          items: ['cloud/overview', 'cloud/quickstart', 'cloud/apps', 'cloud/coming-from-v1'],
         },
         {
           label: 'Build',

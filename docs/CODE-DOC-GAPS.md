@@ -1,11 +1,7 @@
 # Code → Docs gap audit
 
-The original audit covered six v1 subsystems (runtime/SDK/ABI, storage, sync,
-governance/context, networking, server/auth/config). The v1 node is deleted,
-so its sync, governance, networking, server and auth findings no
-longer describe any code and were removed; the operator docs were rewritten
-from `merod`, `meroctl` and `calimero-node`. What follows is
-what still applies, to code that exists now.
+Gaps between the code and the docs that are still open. The operator and
+protocol docs were rewritten from `merod`, `meroctl` and `calimero-node`.
 
 ## Still open
 

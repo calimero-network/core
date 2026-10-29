@@ -19,6 +19,7 @@
 //! RAM-backed filesystem, never to stdout — merod's logs go to stdout.
 
 use std::io::Write;
+use std::path::Path;
 
 use crate::config::TeeConfig;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -95,6 +96,17 @@ pub async fn fetch_disk_key(
             .await
             .wrap_err("could not fetch the data-disk key from the KMS")?,
     ))
+}
+
+/// The libp2p peer id of the identity at `path`, which must exist: the id
+/// mero-kms releases that identity's key under. Reads the file, never creates it.
+pub fn identity_peer_id(path: &Path) -> EyreResult<String> {
+    let path =
+        Utf8Path::from_path(path).ok_or_else(|| eyre::eyre!("{} is not UTF-8", path.display()))?;
+    Ok(load_or_create_identity(path, false)?
+        .public()
+        .to_peer_id()
+        .to_base58())
 }
 
 fn load_or_create_identity(path: &Utf8Path, create: bool) -> EyreResult<Keypair> {
@@ -177,7 +189,7 @@ fn filesystem_of<'a>(mountinfo: &'a str, dir: &Utf8Path) -> Option<&'a str> {
 mod tests {
     use camino::Utf8Path;
 
-    use super::filesystem_of;
+    use super::{filesystem_of, identity_peer_id};
 
     const MOUNTINFO: &str = "\
 22 1 8:1 / / rw,relatime - ext4 /dev/sda1 rw
@@ -215,6 +227,22 @@ mod tests {
         assert_eq!(
             filesystem_of(MOUNTINFO, Utf8Path::new("/runx")),
             Some("ext4")
+        );
+    }
+
+    /// `merod attest --identity` names an identity's peer id without ever
+    /// creating one.
+    #[test]
+    fn the_peer_id_of_an_identity_file_is_read_never_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity");
+        assert!(identity_peer_id(&path).is_err());
+        assert!(!path.exists());
+        let keypair = libp2p_identity::Keypair::generate_ed25519();
+        std::fs::write(&path, keypair.to_protobuf_encoding().unwrap()).unwrap();
+        assert_eq!(
+            identity_peer_id(&path).unwrap(),
+            keypair.public().to_peer_id().to_base58()
         );
     }
 }

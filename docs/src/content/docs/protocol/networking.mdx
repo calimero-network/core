@@ -98,8 +98,9 @@ peer's attestation named is remembered, which is what the
 [release gate](/protocol/governance/#release-approvals) reads.
 
 Inside that session every internal request also carries `x-cluster-auth`, the
-**cluster secret** `HMAC-SHA256(K_r, "calimero.cluster.v1|" ‖ cluster)`, which
-only nodes holding the cluster's storage key can compute. `/internal/*` routes
+**cluster secret** `HMAC-SHA256(K_c, "calimero.cluster.v1|" ‖ cluster)`, which
+only nodes holding the cluster key K_c can compute
+([Encryption](/protocol/encryption/#the-cluster-key-k_c)). `/internal/*` routes
 refuse a request without it, compared in constant time.
 
 Raft itself is an RPC: `POST /internal/raft { group, rpc }` carries an
@@ -108,10 +109,3 @@ response. Forwarded calls go to `internal/call`, views to `internal/view`,
 system writes to `internal/system`. A forward to an app's leader is bounded at
 5 seconds; a system write keeps the 30-second HTTP timeout.
 
-:::note[v1 comparison]
-v1 ran libp2p: gossipsub topics per scope, point-to-point streams for sync,
-blobs and key delivery, a DHT for discovery, and three layers of encryption.
-A cluster of known, attested nodes needs none of that: the peers are listed in
-the system group, and every byte between them travels in a sealed session
-bound to an attested key.
-:::

@@ -1,0 +1,93 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-cluster-architecture">
+<svg viewBox="0 0 760 420" role="img" aria-label="Architecture: a client verifies a node's TDX quote, opens a sealed channel to any node, which checks access and forwards to the app's leader; the leader replicates to followers; mero-kms releases the storage key to attested nodes; the operator sees counts only" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="ca-arrow" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="420" rx="10" fill="#0f0f16"/>
+
+  <!-- client -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="18" y="150" width="160" height="104" rx="10" fill="#231708" stroke="#f0883e" stroke-width="1.4"/>
+    <text x="98" y="174" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">Client</text>
+    <text x="98" y="196" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">meroctl · mero-js</text>
+    <text x="98" y="211" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">Python · Rust client</text>
+    <text x="98" y="234" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">passkey session</text>
+    <text x="98" y="246" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">or API key</text>
+  </g>
+
+  <!-- cluster frame -->
+  <g class="seq-step" style="--step-i:1">
+    <rect x="232" y="22" width="510" height="290" rx="12" fill="none" stroke="#3fb950" stroke-width="1.2" stroke-dasharray="6 4"/>
+    <text x="487" y="42" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">cluster: attested Intel TDX nodes (merod)</text>
+    <text x="487" y="56" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">every node holds the system group; an app's group lives on its replicas</text>
+  </g>
+
+  <!-- step 1: attest + seal -->
+  <g class="seq-step" style="--step-i:2">
+    <line x1="178" y1="176" x2="256" y2="176" stroke="#a5ff11" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#ca-arrow)"/>
+    <text x="205" y="139" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="8.5">1 verify quote</text>
+    <text x="205" y="151" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">(release, profile)</text>
+    <text x="205" y="166" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">GET /attestation</text>
+    <line x1="178" y1="204" x2="256" y2="204" stroke="#f0883e" stroke-width="1.6" marker-end="url(#ca-arrow)"/>
+    <text x="217" y="222" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8.5">2 sealed</text>
+    <text x="217" y="234" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8.5">request</text>
+  </g>
+
+  <!-- entry node -->
+  <g class="seq-step" style="--step-i:3">
+    <rect x="258" y="150" width="170" height="104" rx="10" fill="#10210f" stroke="#3fb950" stroke-width="1.4"/>
+    <text x="343" y="172" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">any node</text>
+    <text x="343" y="193" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">opens the envelope</text>
+    <text x="343" y="208" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">credential + access on</text>
+    <text x="343" y="221" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">fresh system state</text>
+    <text x="343" y="242" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">signs the receipt</text>
+  </g>
+
+  <!-- forward to leader -->
+  <g class="seq-step" style="--step-i:4">
+    <line x1="428" y1="176" x2="500" y2="122" stroke="#8b949e" stroke-width="1.4" marker-end="url(#ca-arrow)"/>
+    <text x="446" y="126" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">3 forward</text>
+    <text x="446" y="138" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">peer sealed</text>
+    <text x="446" y="149" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">channel</text>
+    <rect x="502" y="72" width="216" height="74" rx="10" fill="#10151c" stroke="#58a6ff" stroke-width="1.4"/>
+    <text x="610" y="94" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">the app's leader</text>
+    <text x="610" y="114" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">4 runs the WASM call, appends</text>
+    <text x="610" y="129" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">&#123; call, outcome &#123; result, diff &#125; &#125;</text>
+  </g>
+
+  <!-- followers -->
+  <g class="seq-step" style="--step-i:5">
+    <line x1="610" y1="146" x2="610" y2="198" stroke="#a371f7" stroke-width="1.4" marker-end="url(#ca-arrow)"/>
+    <text x="616" y="176" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="8.5">5 Raft</text>
+    <rect x="502" y="200" width="100" height="56" rx="9" fill="#1a1430" stroke="#a371f7" stroke-width="1.3"/>
+    <text x="552" y="222" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">follower</text>
+    <text x="552" y="240" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">applies the diff</text>
+    <rect x="618" y="200" width="100" height="56" rx="9" fill="#1a1430" stroke="#a371f7" stroke-width="1.3"/>
+    <text x="668" y="222" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">follower</text>
+    <text x="668" y="240" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">applies the diff</text>
+    <text x="610" y="282" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">usually 3 replicas per app; nobody re-executes</text>
+  </g>
+
+  <!-- answer -->
+  <g class="seq-step" style="--step-i:6">
+    <line x1="256" y1="232" x2="180" y2="232" stroke="#f0883e" stroke-width="1.3" stroke-dasharray="5 3" marker-end="url(#ca-arrow)"/>
+    <text x="98" y="280" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8.5">6 result + receipt</text>
+    <text x="98" y="292" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">(sealed)</text>
+  </g>
+
+  <!-- kms + operator -->
+  <g class="seq-step" style="--step-i:7">
+    <rect x="258" y="344" width="210" height="58" rx="10" fill="#13160f" stroke="#a5ff11" stroke-width="1.3"/>
+    <text x="363" y="366" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">mero-kms</text>
+    <text x="363" y="384" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">key for the cluster, only to an</text>
+    <text x="363" y="396" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">attested TD → storage key K_r</text>
+    <line x1="363" y1="344" x2="363" y2="314" stroke="#a5ff11" stroke-width="1.3" marker-end="url(#ca-arrow)"/>
+    <rect x="502" y="344" width="216" height="58" rx="10" fill="#161b22" stroke="#444c56" stroke-width="1.3"/>
+    <text x="610" y="366" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">operator (mdma)</text>
+    <text x="610" y="384" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">Ops API: counts, ids, Raft status;</text>
+    <text x="610" y="396" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">no read path into app data</text>
+    <line x1="610" y1="344" x2="610" y2="314" stroke="#8b949e" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#ca-arrow)"/>
+  </g>
+</svg>
+</Figure>

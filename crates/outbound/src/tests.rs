@@ -605,6 +605,45 @@ fn a_run_with_no_approval_still_gets_a_client_that_refuses() {
     assert!(fake.0.lock().unwrap().is_empty(), "nothing was sent");
 }
 
+/// The node meters what a run sent (`calimero_app_outbound_requests_total`):
+/// a request handed to the transport counts, a refused or malformed one never
+/// left the node and does not.
+#[test]
+fn a_counted_run_counts_only_the_requests_it_sent() {
+    let fake = Arc::new(Fake::default());
+    let sent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let approved = service(&fake)
+        .for_run_counted(
+            forms(),
+            vec![VERIFY.to_owned()],
+            Some(approving(&declared())),
+            "ctx".to_owned(),
+            Arc::clone(&sent),
+        )
+        .unwrap();
+    let _answer = approved
+        .send(&borsh::to_vec(&post(VERIFY, "response=tok")).unwrap())
+        .expect("sent");
+    let _refused = approved
+        .send(&borsh::to_vec(&post("https://elsewhere.example/", "")).unwrap())
+        .unwrap_err();
+    let _malformed = approved.send(b"not borsh").unwrap_err();
+    let unapproved = service(&fake)
+        .for_run_counted(
+            forms(),
+            vec![VERIFY.to_owned()],
+            None,
+            "ctx".to_owned(),
+            Arc::clone(&sent),
+        )
+        .unwrap();
+    let _refused = unapproved
+        .send(&borsh::to_vec(&post(VERIFY, "")).unwrap())
+        .unwrap_err();
+    assert_eq!(fake.0.lock().unwrap().len(), 1);
+    assert_eq!(sent.load(std::sync::atomic::Ordering::Relaxed), 1);
+}
+
 mod merge {
     use calimero_primitives::outbound::OutboundSelection;
 

@@ -33,9 +33,17 @@ impl Cluster {
     /// Start one more node, not a founder: it knows the cluster's addresses
     /// but joins only once the operator registers it (`/ops/nodes`).
     async fn join(&mut self) -> usize {
+        self.join_with(|_| {}).await
+    }
+
+    /// [`Self::join`], the node's configuration changed by `configure`. As in a
+    /// deployment, the node starts first: on an empty data directory it waits
+    /// for the cluster key, serving `/health`, until the operator registers it
+    /// (`/ops/nodes`, no zone yet) and a peer delivers the key to its address.
+    async fn join_with(&mut self, configure: impl Fn(&mut calimero_node::Config)) -> usize {
         let id = self.urls.len() as u64 + 1;
         let url = format!("http://127.0.0.1:{}/", free_port());
-        self.urls.push(url);
+        self.urls.push(url.clone());
         let peers: BTreeMap<u64, String> = self
             .urls
             .iter()
@@ -46,7 +54,24 @@ impl Cluster {
         let mut config = node_config(id, &peers, dir.path());
         config.cluster.clone_from(&self.name);
         config.bootstrap = false;
-        self.nodes.push(Some(run(config).await.unwrap()));
+        configure(&mut config);
+        let starting = tokio::spawn(run(config));
+        let mut waiting = Value::Null;
+        for _ in 0..100 {
+            if let Ok(r) = reqwest::get(format!("{url}health")).await {
+                waiting = r.json().await.unwrap_or_default();
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(waiting["waiting"].is_string(), "{waiting}");
+        let at = self.nodes.iter().position(Option::is_some).unwrap();
+        let _ = ops_at(self, at)
+            .await
+            .post("ops/nodes", json!({ "id": id, "addr": url, "zone": "" }))
+            .await
+            .unwrap();
+        self.nodes.push(Some(starting.await.unwrap().unwrap()));
         self._dirs.push(dir);
         self.nodes.len() - 1
     }
@@ -454,7 +479,7 @@ async fn backups_are_encrypted_and_restorable() {
         .path();
     let raw = std::fs::read(&file).unwrap();
     assert!(!String::from_utf8_lossy(&raw).contains("plaintext-value"));
-    let (_index, data) = calimero_node::backup::latest(&dir, &node.config.storage_key, &app)
+    let (_index, data) = calimero_node::backup::latest(&dir, node.cluster_key(), &app)
         .unwrap()
         .unwrap();
     // The app's rows are in it, opened with the storage key.
@@ -2134,6 +2159,202 @@ async fn an_uploaded_package_is_verified_and_reaches_the_other_nodes() {
     assert_eq!(p["versions"][0]["source"], json!("upload"));
 }
 
+/// The names of the packages `cl` lists, with the versions it sees of each.
+async fn listed(cl: &Client) -> BTreeMap<String, Vec<String>> {
+    cl.packages()
+        .await
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            let versions = p["versions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v["version"].as_str().unwrap().to_owned())
+                .collect();
+            (p["package"].as_str().unwrap().to_owned(), versions)
+        })
+        .collect()
+}
+
+/// On a cluster many organizations share, a release is listed only to who may
+/// use it: the account that installed it, members of an organization it is
+/// in, accounts that reach an app running it; the operator lists only its own
+/// installs, which every account sees. For anyone else it is as if it were not installed: not listed,
+/// `404` by name, and creating an app from it (by release or by its WASM's
+/// hash) answers what a release the cluster lacks answers. Before, every
+/// signed-in account listed every package the cluster held.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
+    let registry = FakeRegistry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.registry = Some(url.clone());
+        cfg.allow_unsigned_bundles = false;
+    })
+    .await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let kv = kv_wasm();
+    // Alice's organization (Acme, with Amy) and Bob, outside it, in his own.
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (amy, _m) = signed_up(&c, 1, "amy").await;
+    let (bob, _b) = signed_up(&c, 2, "bob").await;
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let acme = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let invite = alice
+        .post(&format!("orgs/{acme}/invites"), json!({ "role": "member" }))
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = amy
+        .post(&format!("invites/{invite}/redeem"), json!({}))
+        .await
+        .unwrap();
+    let _o = bob.post("orgs", json!({ "name": "Bobco" })).await.unwrap();
+
+    // Alice uploads a private package (no registry has it).
+    let secret = variant(&kv, "secret");
+    let _ = alice
+        .upload_package(mpk("com.acme.secret", "1.0.0", &secret, &publisher))
+        .await
+        .unwrap();
+    let only_secret = BTreeMap::from([("com.acme.secret".to_owned(), vec!["1.0.0".to_owned()])]);
+    assert_eq!(listed(&alice).await, only_secret);
+    assert_eq!(listed(&amy).await, only_secret, "a member of Alice's org");
+
+    // Bob, in another organization, sees nothing of it.
+    assert_eq!(listed(&bob).await, BTreeMap::new());
+    let e = bob.package("com.acme.secret").await.unwrap_err();
+    assert!(e.to_string().starts_with("404"), "{e}");
+    // Approving its outbound hosts answers as for a missing package, before
+    // any passkey ceremony.
+    for package in ["com.acme.secret", "com.never.installed"] {
+        let e = bob
+            .post("auth/outbound", json!({ "package": package }))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().starts_with("404"), "{package}: {e}");
+    }
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let ops_listed = ops.get("ops/packages").await.unwrap()["packages"].clone();
+    assert_eq!(ops_listed, json!([]), "the operator installed none");
+
+    // Creating from it answers as for a release the cluster lacks.
+    let named = |package: &str, version: Option<&str>| json!({ "name": "x", "package": package, "version": version });
+    let hidden = bob
+        .post("apps", named("com.acme.secret", Some("1.0.0")))
+        .await
+        .unwrap_err();
+    let missing = bob
+        .post("apps", named("com.never.installed", Some("1.0.0")))
+        .await
+        .unwrap_err();
+    assert!(hidden.to_string().starts_with("404"), "{hidden}");
+    assert_eq!(hidden.code(), missing.code(), "{hidden} / {missing}");
+    let hidden = bob
+        .post("apps", named("com.acme.secret", None))
+        .await
+        .unwrap_err();
+    let missing = bob
+        .post("apps", named("com.never.installed", None))
+        .await
+        .unwrap_err();
+    assert_eq!(hidden.code(), Some("VERSION_REQUIRED"), "{hidden}");
+    assert_eq!(hidden.code(), missing.code(), "{hidden} / {missing}");
+    // Its WASM's hash is no way in either.
+    let hash = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&secret));
+    let by_hash = bob
+        .post("apps", json!({ "name": "x", "bundle": hash }))
+        .await
+        .unwrap_err();
+    let unknown = bob
+        .post("apps", json!({ "name": "x", "bundle": "00".repeat(32) }))
+        .await
+        .unwrap_err();
+    assert_eq!(by_hash.to_string(), unknown.to_string());
+    // A failed attempt installed nothing that Bob now lists.
+    assert_eq!(listed(&bob).await, BTreeMap::new());
+
+    // Alice and Amy create apps from it.
+    let _ = alice
+        .post("apps", named("com.acme.secret", Some("1.0.0")))
+        .await
+        .unwrap();
+    let shared = amy
+        .post(
+            "apps",
+            json!({
+                "name": "shared", "package": "com.acme.secret",
+                "access": { "kind": "accounts", "accounts": [bob_id] },
+            }),
+        )
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Once Bob reaches an app running it, he sees that release.
+    assert_eq!(listed(&bob).await, only_secret, "Bob reaches {shared}");
+    let _ = amy.delete_app(&shared).await.unwrap();
+    assert_eq!(listed(&bob).await, BTreeMap::new());
+
+    // A registry release is private to its installers too; Bob installing the
+    // same release himself makes it his as well.
+    registry.publish(
+        "com.test.kv",
+        "1.0.0",
+        mpk("com.test.kv", "1.0.0", &kv, &publisher),
+    );
+    let _ = alice.install_package("com.test.kv", "1.0.0").await.unwrap();
+    assert!(!listed(&bob).await.contains_key("com.test.kv"));
+    let _ = bob.install_package("com.test.kv", "1.0.0").await.unwrap();
+    assert_eq!(
+        listed(&bob).await,
+        BTreeMap::from([("com.test.kv".to_owned(), vec!["1.0.0".to_owned()])])
+    );
+    let _ = bob
+        .post("apps", named("com.test.kv", Some("1.0.0")))
+        .await
+        .unwrap();
+
+    // The operator lists only the releases it installed; those are the
+    // cluster's own catalog, which every account sees and may run.
+    let ops_kv = variant(&kv, "ops");
+    registry.publish(
+        "com.test.ops",
+        "1.0.0",
+        mpk("com.test.ops", "1.0.0", &ops_kv, &publisher),
+    );
+    let _ = ops
+        .post(
+            "ops/packages/install",
+            json!({ "package": "com.test.ops", "version": "1.0.0" }),
+        )
+        .await
+        .unwrap();
+    let ops_listed = ops.get("ops/packages").await.unwrap()["packages"].clone();
+    let names: Vec<&str> = ops_listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["package"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["com.test.ops"], "{ops_listed}");
+    assert!(listed(&alice).await.contains_key("com.test.ops"));
+    assert!(listed(&bob).await.contains_key("com.test.ops"));
+}
+
 /// A refresh token presented again is a stolen copy, and the session ends,
 /// whichever node it is presented to: a replica that has not applied the
 /// exchange yet must not answer "unknown" and let the thief keep trying.
@@ -2352,6 +2573,86 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     assert_eq!(v.result, json!("v1"), "the new write never reached node 3");
 }
 
+// ---------------------------------------------------------------- placement
+
+/// Registers each of `c`'s nodes again with the zone `zones` names for it
+/// (`POST /ops/nodes`), and waits until node 0, where the tests create apps,
+/// has applied every one.
+async fn put_in_zones(c: &Cluster, zones: &[&str]) {
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    for (i, zone) in zones.iter().enumerate() {
+        let _ = ops
+            .post(
+                "ops/nodes",
+                json!({ "id": i as u64 + 1, "addr": c.urls[i], "zone": zone }),
+            )
+            .await
+            .unwrap();
+    }
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    for _ in 0..100 {
+        let applied = node.sys(|s| {
+            zones
+                .iter()
+                .enumerate()
+                .all(|(i, z)| s.nodes.get(&(i as u64 + 1)).is_some_and(|n| n.zone == *z))
+        });
+        if applied {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("node 1 never applied the zones");
+}
+
+/// The replicas `POST /apps` placed a new kv app on, sorted.
+async fn placed(cl: &Client, bundle: &str, name: &str) -> Vec<u64> {
+    let created = cl
+        .post("apps", json!({ "name": name, "bundle": bundle }))
+        .await
+        .unwrap();
+    let mut replicas: Vec<u64> = serde_json::from_value(created["replicas"].clone()).unwrap();
+    replicas.sort_unstable();
+    replicas
+}
+
+/// A new app's replicas span as many zones as the cluster has, the least
+/// loaded node first within a zone: with nodes in zones a, a, b and c, an app
+/// lands on one node of a, the node of b and the node of c, never on both of
+/// a; the next app takes the a node the first one left empty. Before, placement
+/// took the three least-loaded nodes whatever their zone ([1, 2, 3]: both of a).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_new_app_is_placed_across_zones() {
+    let c = Cluster::start(4).await;
+    put_in_zones(&c, &["a", "a", "b", "c"]).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+
+    // Nothing is placed yet: node 1 (lower id) for zone a, then b and c.
+    assert_eq!(placed(&alice, &bundle, "first").await, vec![1, 3, 4]);
+    // Node 2 holds nothing, node 1 one app: zone a's replica goes to node 2.
+    assert_eq!(placed(&alice, &bundle, "second").await, vec![2, 3, 4]);
+    // Zones before load: b and c hold two apps each, a's nodes one each, and
+    // the third app still takes b and c rather than both of a.
+    assert_eq!(placed(&alice, &bundle, "third").await, vec![1, 3, 4]);
+}
+
+/// Spreading across zones never places a replica on a node whose release the
+/// owner has not approved: with zone c's only node on an unapproved release,
+/// the app spans a and b and fills its third replica from a again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn placement_across_zones_keeps_to_approved_releases() {
+    let c = Cluster::start_with(4, |cfg| {
+        cfg.tee_release = Some(if cfg.node_id == 4 { "2.0.0" } else { "1.0.0" }.into());
+    })
+    .await;
+    put_in_zones(&c, &["a", "a", "b", "c"]).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    assert_eq!(placed(&alice, &bundle, "kv").await, vec![1, 2, 3]);
+}
+
 /// A user can check that an answer came from a genuine TEE cluster: every
 /// replica of the app attests its receipt key, and each answer carries a
 /// receipt signed by one of those keys over that exact result.
@@ -2452,7 +2753,24 @@ async fn outbound_requests_need_the_owners_approval() {
         "{before}"
     );
 
-    // Bob approving for his own apps reaches nothing of Alice's.
+    // Bob sees no release of Alice's private upload: approving it answers as
+    // for a missing package. Once he installs the same release himself, his
+    // approval for his own apps reaches nothing of Alice's.
+    let e = bob
+        .approve_outbound(None, PACKAGE, None, false, &mut bob_pk)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("404"), "{e}");
+    let _ = bob
+        .upload_package(mpk_declaring(
+            PACKAGE,
+            "0.1.0",
+            &wasm("outbound_probe"),
+            &publisher,
+            &[PREFIX],
+        ))
+        .await
+        .unwrap();
     let _ = bob
         .approve_outbound(None, PACKAGE, None, false, &mut bob_pk)
         .await
@@ -2494,6 +2812,26 @@ async fn outbound_requests_need_the_owners_approval() {
         revoked.as_str().unwrap().contains("[NotApproved]"),
         "{revoked}"
     );
+
+    // Usage: of the four probes only the approved one left the node, counted
+    // on the node that ran it (`calimero_app_outbound_requests_total`).
+    let alice_id = alice.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut sent = 0.0;
+    for i in 0..3 {
+        let ops = c.client(i);
+        ops.use_api_key("ops-secret").await;
+        let text = ops.get_text("ops/metrics").await.unwrap();
+        sent += sample(
+            &text,
+            "calimero_app_outbound_requests_total",
+            &format!("app=\"{app}\",org=\"account:{alice_id}\""),
+        )
+        .unwrap_or(0.0);
+    }
+    assert_eq!(sent, 1.0);
 }
 
 // ---------------------------------------------------------------- governance
@@ -3721,6 +4059,557 @@ async fn a_node_is_removed_once_no_app_keeps_a_replica_on_it() {
     assert_eq!(v.result, json!("1"));
 }
 
+/// A client of node `i` holding the operator's token.
+async fn ops_at(c: &Cluster, i: usize) -> Client {
+    let cl = c.client(i);
+    cl.use_api_key("ops-secret").await;
+    cl
+}
+
+/// The node ids `cl` sees in `ops/placement` for `app`, and each node's app count.
+async fn placement(cl: &Client, app: &str) -> (Vec<u64>, BTreeMap<u64, u64>) {
+    let p = cl.get("ops/placement").await.unwrap();
+    let replicas = p["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["app"] == json!(app))
+        .map(|a| {
+            a["replicas"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap())
+                .collect()
+        })
+        .unwrap_or_default();
+    let counts = p["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| (n["id"].as_u64().unwrap(), n["apps"].as_u64().unwrap()))
+        .collect();
+    (replicas, counts)
+}
+
+/// The index of the running node that leads the system group, waiting for an election.
+async fn system_leader(c: &Cluster) -> usize {
+    for _ in 0..200 {
+        if let Some(i) = c
+            .nodes
+            .iter()
+            .position(|r| r.as_ref().is_some_and(|r| r.node.system.status().is_leader))
+        {
+            return i;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no system leader was elected");
+}
+
+/// A cluster started on ONE node grows: registered learners become system
+/// voters once there are enough to make 3 (never 2), the app moves to 3
+/// replicas, the cluster survives losing its first node, a fourth node stays a
+/// learner, shows in `/ops/placement` with no apps, and takes a replica.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
+    let mut c = Cluster::start(1).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _) = deploy(
+        &alice,
+        "doc",
+        kv_wasm(),
+        json!({ "access": { "kind": "public" } }),
+    )
+    .await;
+    let _ = alice
+        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .await
+        .unwrap();
+    // A blob, held by node 1 alone for now.
+    let blob = alice
+        .upload_blob(&app, b"held by one node".to_vec())
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (replicas, counts) = placement(&ops_at(&c, 0).await, &app).await;
+    assert_eq!(replicas, vec![1], "one node, one replica");
+    assert_eq!(counts, BTreeMap::from([(1, 1)]));
+
+    // Every voter set the first node's system group goes through.
+    let first = std::sync::Arc::clone(&c.nodes[0].as_ref().unwrap().node);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+    let watch = {
+        let seen = std::sync::Arc::clone(&seen);
+        let mut rx = first.system.raft().metrics();
+        let first = std::sync::Arc::clone(&first);
+        tokio::spawn(async move {
+            while rx.changed().await.is_ok() {
+                seen.lock()
+                    .unwrap()
+                    .push(first.system.status().voters.len());
+            }
+        })
+    };
+
+    // Node 2 joins as a learner; alone it is not promoted (2 voters tolerate no failure).
+    let two = c.join().await;
+    let _ = ops_at(&c, 0)
+        .await
+        .post(
+            "ops/nodes",
+            json!({ "id": 2, "addr": c.urls[two], "zone": "b" }),
+        )
+        .await
+        .unwrap();
+    for _ in 0..200 {
+        if first.system.status().learners.contains(&2) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    let st = first.system.status();
+    assert_eq!(st.voters, vec![1], "{st:?}");
+    assert_eq!(st.learners, vec![2], "{st:?}");
+
+    // Node 3 joins: both learners become voters in one change.
+    let three = c.join().await;
+    let _ = ops_at(&c, 0)
+        .await
+        .post(
+            "ops/nodes",
+            json!({ "id": 3, "addr": c.urls[three], "zone": "c" }),
+        )
+        .await
+        .unwrap();
+    let mut voters = Vec::new();
+    for _ in 0..300 {
+        let st = first.system.status();
+        voters = st.voters;
+        if voters == [1, 2, 3] && st.learners.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(voters, vec![1, 2, 3], "learners became system voters");
+    watch.abort();
+    let _ = watch.await;
+    let sizes = seen.lock().unwrap().clone();
+    assert!(!sizes.contains(&2), "never 2 voters: {sizes:?}");
+    drop(first);
+
+    // The app moves to 3 replicas; the same move again changes nothing.
+    let leader = c.app_leader(&app).unwrap();
+    let moved = ops_at(&c, leader)
+        .await
+        .post(
+            &format!("ops/apps/{app}/replicas"),
+            json!({ "replicas": [1, 2, 3] }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(moved["status"]["voters"], json!([1, 2, 3]), "{moved}");
+    let again = ops_at(&c, leader)
+        .await
+        .post(
+            &format!("ops/apps/{app}/replicas"),
+            json!({ "replicas": [3, 2, 1] }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(again["unchanged"], json!(true), "{again}");
+    let (replicas, _) = placement(&ops_at(&c, 1).await, &app).await;
+    assert_eq!(replicas, vec![1, 2, 3]);
+
+    // Node 1 stops: the others elect a system leader and serve the app.
+    let session = alice.session().await.unwrap();
+    c.stop(0).await;
+    let _ = system_leader(&c).await;
+    let alice2 = c.client(1);
+    alice2.use_session(session).await;
+    let mut wrote = Err(String::new());
+    for _ in 0..100 {
+        wrote = alice2
+            .call(&app, "set", json!({ "key": "b", "value": "2" }), None)
+            .await
+            .map_err(|e| e.to_string());
+        if wrote.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = wrote.expect("a call commits after node 1 stopped");
+    // The move handed the bundle and the blob over: node 1 held them alone.
+    assert_eq!(
+        alice2.download_blob(&app, &blob).await.unwrap(),
+        b"held by one node".to_vec()
+    );
+    let anyone = c.client(2);
+    let v = anyone
+        .view(&app, "get", json!({ "key": "b" }), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!("2"), "a read without signing in");
+
+    // Node 4 joins: voters stay 3, and it shows in the placement with no apps.
+    let four = c.join().await;
+    let _ = ops_at(&c, 1)
+        .await
+        .post(
+            "ops/nodes",
+            json!({ "id": 4, "addr": c.urls[four], "zone": "b" }),
+        )
+        .await
+        .unwrap();
+    let mut st = c.nodes[1].as_ref().unwrap().node.system.status();
+    for _ in 0..200 {
+        let l = system_leader(&c).await;
+        st = c.nodes[l].as_ref().unwrap().node.system.status();
+        if st.learners.contains(&4) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(st.learners.contains(&4), "{st:?}");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let l = system_leader(&c).await;
+    let st = c.nodes[l].as_ref().unwrap().node.system.status();
+    assert_eq!(st.voters, vec![1, 2, 3], "no growth past 3: {st:?}");
+    let (_, counts) = placement(&ops_at(&c, 1).await, &app).await;
+    assert_eq!(counts.get(&4), Some(&0), "{counts:?}");
+    let p = ops_at(&c, 2).await.get("ops/placement").await.unwrap();
+    let n4 = p["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == json!(4))
+        .unwrap()
+        .clone();
+    assert_eq!(n4["zone"], json!("b"), "{p}");
+    assert!(n4.get("addr").is_none(), "ids and counts only: {p}");
+    assert!(
+        p["apps"][0].get("name").is_none(),
+        "ids and counts only: {p}"
+    );
+
+    // The operator (or mdma) moves the app onto it, off the stopped node.
+    let mut moved = Err(String::new());
+    for _ in 0..50 {
+        let Some(leader) = c.app_leader(&app) else {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        };
+        moved = ops_at(&c, leader)
+            .await
+            .post(
+                &format!("ops/apps/{app}/replicas"),
+                json!({ "replicas": [2, 3, 4] }),
+            )
+            .await
+            .map_err(|e| e.to_string());
+        if moved.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = moved.unwrap();
+    let (replicas, counts) = placement(&ops_at(&c, 1).await, &app).await;
+    assert_eq!(replicas, vec![2, 3, 4]);
+    assert_eq!(counts.get(&4), Some(&1), "{counts:?}");
+    let on_four = c.client(four);
+    let mut served = Value::Null;
+    for _ in 0..100 {
+        if let Ok(v) = on_four
+            .view(
+                &app,
+                "get",
+                json!({ "key": "a" }),
+                Consistency::Stale { min_index: 0 },
+            )
+            .await
+        {
+            served = v.result;
+            if served == json!("1") {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(served, json!("1"), "the new replica serves the app");
+}
+
+/// A rebalancer may send the same move twice, or race another: a move to the
+/// replica set the app already has changes nothing, and a second move while
+/// one is under way is refused (`409 MOVE_IN_PROGRESS`) instead of mixing
+/// two replica sets into the directory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn replica_moves_are_idempotent_and_one_at_a_time() {
+    let mut c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let new = c.join().await;
+    let _ = ops_at(&c, 0)
+        .await
+        .post("ops/nodes", json!({ "id": 4, "addr": c.urls[new] }))
+        .await
+        .unwrap();
+    let leader = c.app_leader(&app).unwrap();
+    let lead = ops_at(&c, leader).await;
+    let path = format!("ops/apps/{app}/replicas");
+
+    let same = lead
+        .post(&path, json!({ "replicas": [1, 2, 3] }))
+        .await
+        .unwrap();
+    assert_eq!(same["unchanged"], json!(true), "{same}");
+
+    // Two moves at once, both keeping the leader: one runs, one is refused.
+    let me = leader as u64 + 1;
+    let others: Vec<u64> = (1..=3).filter(|id| *id != me).collect();
+    let a = json!({ "replicas": [me, others[0], 4] });
+    let b = json!({ "replicas": [me, others[1], 4] });
+    let second = ops_at(&c, leader).await;
+    let (ra, rb) = tokio::join!(lead.post(&path, a), second.post(&path, b));
+    let (won, lost) = match (ra, rb) {
+        (Ok(w), Err(l)) | (Err(l), Ok(w)) => (w, l),
+        other => panic!("exactly one move runs: {other:?}"),
+    };
+    assert_eq!(lost.code(), Some("MOVE_IN_PROGRESS"), "{lost}");
+    let voters = won["status"]["voters"].clone();
+    let recorded = alice.get(&format!("apps/{app}")).await.unwrap()["replicas"].clone();
+    let mut recorded: Vec<u64> = recorded
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    recorded.sort_unstable();
+    assert_eq!(
+        json!(recorded),
+        voters,
+        "the directory names the group's voters"
+    );
+}
+
+/// A release upgrade, as the runbook does it: nodes on the next mero-tee
+/// release join, every app moves onto them, and the founders leave. The next
+/// release's nodes take their storage key from that release's mero-kms, whose
+/// root is its own, so their K_r is not the founders'. The apps' state, a value
+/// sealed to the app's TEE (`TeeSecret`), a member's sealed share and a backup
+/// taken before the upgrade must all still open on the new nodes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn nodes_on_the_next_release_keep_the_data_of_the_ones_before() {
+    let mut c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (kv, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let _ = alice
+        .call(&kv, "set", json!({ "key": "a", "value": "1" }), None)
+        .await
+        .unwrap();
+    let (cards, _) = deploy(
+        &alice,
+        "cards",
+        mero_wasm("tee-cards", "tee_cards"),
+        json!({}),
+    )
+    .await;
+    let _ = eventually(&alice, &cards, "cards_left", json!({}), |v| !v.is_null()).await;
+    let _ = alice.call(&cards, "sit", json!({}), None).await.unwrap();
+    let _ = alice.call(&cards, "draw", json!({}), None).await.unwrap();
+    let hand = eventually(&alice, &cards, "my_hand", json!({}), |v| {
+        v.as_array().is_some_and(|h| h.len() == 1)
+    })
+    .await;
+    let old_leader = c.app_leader(&kv).unwrap();
+    let old = &c.nodes[old_leader].as_ref().unwrap().node;
+    assert!(old.backup().await.unwrap() >= 1);
+    let backups = old.config.backup_dir.clone().unwrap();
+
+    // The next release: its own KMS, so another K_r.
+    let mut next = Vec::new();
+    for _ in 0..3 {
+        next.push(c.join_with(|config| config.storage_key = [43; 32]).await);
+    }
+    let next_ids: Vec<u64> = next.iter().map(|i| *i as u64 + 1).collect();
+    let sys_leader = |c: &Cluster| {
+        c.nodes.iter().enumerate().find_map(|(i, r)| {
+            r.as_ref()
+                .filter(|r| r.node.system.status().is_leader)
+                .map(|_| i)
+        })
+    };
+    let mut caught_up = false;
+    for _ in 0..200 {
+        caught_up = next.iter().all(|i| {
+            c.nodes[*i]
+                .as_ref()
+                .unwrap()
+                .node
+                .sys(|s| s.apps.contains_key(&kv) && s.apps.contains_key(&cards))
+        });
+        if caught_up {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        caught_up,
+        "the next release's nodes never caught up with the system group"
+    );
+
+    // Every app moves onto the next release's nodes.
+    for app in [&kv, &cards] {
+        let mut moved = None;
+        for _ in 0..100 {
+            if let Some(leader) = c.app_leader(app) {
+                match ops_at(&c, leader)
+                    .await
+                    .post(
+                        &format!("ops/apps/{app}/replicas"),
+                        json!({ "replicas": next_ids }),
+                    )
+                    .await
+                {
+                    Ok(v) => {
+                        moved = Some(v);
+                        break;
+                    }
+                    Err(e) => eprintln!("move {app}: {e}"),
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(moved.is_some(), "{app} never moved to the next release");
+    }
+
+    // The founders leave.
+    for gone in 0..3_usize {
+        let mut removed = false;
+        for _ in 0..100 {
+            if let Some(leader) = sys_leader(&c) {
+                match ops_at(&c, leader)
+                    .await
+                    .delete(&format!("ops/nodes/{}", gone + 1))
+                    .await
+                {
+                    Ok(_) => {
+                        removed = true;
+                        break;
+                    }
+                    Err(e) => eprintln!("remove node {}: {e}", gone + 1),
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(removed, "node {} was never removed", gone + 1);
+        c.stop(gone).await;
+    }
+
+    // Only the next release's nodes are left, and they hold everything.
+    let cl = c.client(next[0]);
+    cl.use_session(alice.session().await.unwrap()).await;
+    let v = eventually(&cl, &kv, "get", json!({ "key": "a" }), |v| v == &json!("1")).await;
+    assert_eq!(v, json!("1"), "the app's state");
+    let mine = eventually(&cl, &cards, "my_hand", json!({}), |v| v == &hand).await;
+    assert_eq!(mine, hand, "a member's sealed share");
+    // Dealing opens the deck, which is sealed to the app's TEE.
+    let _ = cl.call(&cards, "draw", json!({}), None).await.unwrap();
+    let hand = eventually(&cl, &cards, "my_hand", json!({}), |v| {
+        v.as_array().is_some_and(|h| h.len() == 2)
+    })
+    .await;
+    assert_eq!(hand.as_array().map(Vec::len), Some(2), "the TEE's deck");
+    let new = &c.nodes[next[0]].as_ref().unwrap().node;
+    let (_index, rows) = calimero_node::backup::latest(&backups, new.cluster_key(), &kv)
+        .expect("a backup from before the upgrade opens on the next release")
+        .unwrap();
+    assert!(!rows.is_empty());
+}
+
+/// `internal/cluster-key` is reached without the cluster secret (a node of the
+/// next release has none yet), so it judges the request alone, and never
+/// answers with the key: it delivers it to the address the cluster has for the
+/// node id asked about. Asking under another node's id, another cluster's, an
+/// unknown or a removed one gets the asker nothing. A data directory whose
+/// wrapped key another K_r cannot open stops the node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_cluster_key_goes_only_to_the_address_of_a_node_the_cluster_knows() {
+    use calimero_node::cluster_key::Request;
+
+    let mut c = Cluster::start(3).await;
+    let ask = |cluster: &str, node: u64| {
+        serde_json::to_value(Request {
+            cluster: cluster.to_owned(),
+            node,
+            token: hex::encode([1_u8; 32]),
+        })
+        .unwrap()
+    };
+    let cl = c.client(0);
+    let name = c.name.clone();
+    // Node 2's id: the key goes to node 2's address, which (running already)
+    // takes no delivery, and the asker gets no key.
+    let e = cl
+        .post("internal/cluster-key", ask(&name, 2))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("could not be delivered"), "{e}");
+    assert!(!e.to_string().contains(&hex::encode(
+        c.nodes[0].as_ref().unwrap().node.cluster_key()
+    )));
+    let e = cl
+        .post("internal/cluster-key", ask(&name, 9))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("not a node of this cluster"), "{e}");
+    let e = cl
+        .post("internal/cluster-key", ask("elsewhere", 2))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("another cluster"), "{e}");
+    // A node that joined, then was removed.
+    let new = c.join().await;
+    let new_id = new as u64 + 1;
+    let leader = (0..3)
+        .find(|i| c.nodes[*i].as_ref().unwrap().node.system.status().is_leader)
+        .unwrap();
+    let _ = ops_at(&c, leader)
+        .await
+        .delete(&format!("ops/nodes/{new_id}"))
+        .await
+        .unwrap();
+    let e = c
+        .client(leader)
+        .post("internal/cluster-key", ask(&name, new_id))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("not a node of this cluster"), "{e}");
+
+    // The same data directory booted with another release's K_r stops.
+    c.stop(1).await;
+    let peers: BTreeMap<u64, String> = c
+        .urls
+        .iter()
+        .enumerate()
+        .map(|(i, u)| (i as u64 + 1, u.clone()))
+        .collect();
+    let mut config = node_config(2, &peers, c._dirs[1].path());
+    config.cluster.clone_from(&c.name);
+    config.bootstrap = false;
+    config.storage_key = [43; 32];
+    let e = run(config)
+        .await
+        .err()
+        .expect("another K_r must not open it");
+    assert!(
+        format!("{e:#}").contains("another mero-tee release"),
+        "{e:#}"
+    );
+}
+
 /// Ownership transfer: the owner hands an app to another account
 /// with a passkey assertion; the new owner then decides, the old one no longer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -3821,6 +4710,179 @@ async fn metrics_can_be_scraped_on_their_own_listener() {
     assert_eq!(other.status(), 404, "only /metrics");
     let default = Cluster::start(3).await;
     assert!(default.nodes[0].as_ref().unwrap().metrics_addr.is_none());
+}
+
+/// The value of the `metric{labels}` series in a Prometheus text, if present.
+/// `labels` is the inside of the braces, in the order the node writes them.
+fn sample(text: &str, metric: &str, labels: &str) -> Option<f64> {
+    let head = format!("{metric}{{{labels}}} ");
+    text.lines()
+        .find_map(|l| l.strip_prefix(&head))
+        .map(|v| v.parse().unwrap())
+}
+
+/// Per-app usage for billing on `/metrics`: each run is counted on the node
+/// that ran its WASM (calls and strong views on the app's leader, a stale view
+/// on the replica that answered it), never on the replicas that applied the
+/// entry, so the cluster's sum is the number of runs. Series are labelled
+/// with the app's id and its payer: the organization, or `account:{owner}`
+/// for a personal app. State bytes are a gauge every replica reports alike.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.metrics_listen = Some("127.0.0.1:0".parse().unwrap());
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice-the-billed").await;
+    let alice_id = alice.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({ "org": org })).await;
+    let (personal, _) = deploy(&alice, "mine", kv_wasm(), json!({})).await;
+    for i in 0..3 {
+        let _ = alice
+            .call(
+                &app,
+                "set",
+                json!({ "key": format!("k{i}"), "value": "v" }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    for _ in 0..2 {
+        let v = alice
+            .view(&app, "get", json!({ "key": "k0" }), Consistency::Strong)
+            .await
+            .unwrap();
+        assert_eq!(v.result, json!("v"));
+    }
+    let _ = alice
+        .call(&personal, "set", json!({ "key": "a", "value": "b" }), None)
+        .await
+        .unwrap();
+
+    // A stale view runs on the replica that answers it, here a follower.
+    let leader = c.app_leader(&app).unwrap();
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let applied_on = |i: usize| {
+        c.nodes[i]
+            .as_ref()
+            .unwrap()
+            .node
+            .hosted(&app)
+            .unwrap()
+            .applied()
+    };
+    let at = applied_on(leader);
+    let stale = c.nodes[follower]
+        .as_ref()
+        .unwrap()
+        .node
+        .view(&calimero_node::node::ViewRequest {
+            app_id: app.clone(),
+            method: "get".to_owned(),
+            args: json!({ "key": "k0" }),
+            caller: calimero_node::types::Caller::Account {
+                account: alice_id.clone(),
+            },
+            strong: false,
+            min_index: at,
+        })
+        .await
+        .unwrap();
+    assert_eq!(stale.result, json!("v"));
+
+    // Every replica applied every entry; then each samples its state.
+    for i in 0..3 {
+        for _ in 0..100 {
+            if applied_on(i) >= at {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    for r in c.nodes.iter().flatten() {
+        r.node.sample_usage();
+    }
+    let http = reqwest::Client::new();
+    let mut texts = Vec::new();
+    for r in c.nodes.iter().flatten() {
+        let addr = r.metrics_addr.unwrap();
+        let text = http
+            .get(format!("http://{addr}/metrics"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        texts.push(text);
+    }
+    let in_org = format!("app=\"{app}\",org=\"{org}\"");
+    let mine = format!("app=\"{personal}\",org=\"account:{alice_id}\"");
+    let calls = |labels: &str, kind: &str| -> Vec<f64> {
+        texts
+            .iter()
+            .map(|t| {
+                sample(
+                    t,
+                    "calimero_app_calls_total",
+                    &format!("{labels},kind=\"{kind}\""),
+                )
+                .unwrap_or(0.0)
+            })
+            .collect()
+    };
+    // `init` and the three `set`s: four mutations in all, not one per replica.
+    let mutations = calls(&in_org, "mutation");
+    assert_eq!(mutations.iter().sum::<f64>(), 4.0, "{mutations:?}");
+    let views = calls(&in_org, "view");
+    assert_eq!(views.iter().sum::<f64>(), 3.0, "{views:?}");
+    assert!(
+        views[follower] >= 1.0,
+        "the stale view ran on {follower}: {views:?}"
+    );
+    assert_eq!(calls(&in_org, "followup").iter().sum::<f64>(), 0.0);
+    assert_eq!(calls(&mine, "mutation").iter().sum::<f64>(), 2.0);
+    for (i, t) in texts.iter().enumerate() {
+        let ran = mutations[i] + views[i];
+        let cpu = sample(t, "calimero_app_wasm_cpu_seconds_total", &in_org);
+        let memory = sample(t, "calimero_app_wasm_memory_byte_seconds_total", &in_org);
+        if ran > 0.0 {
+            assert!(cpu.unwrap() > 0.0, "node {i}:\n{t}");
+            assert!(memory.unwrap() > 0.0, "node {i}:\n{t}");
+        } else {
+            assert_eq!(cpu, None, "node {i} ran nothing:\n{t}");
+        }
+        assert_eq!(
+            sample(t, "calimero_app_outbound_requests_total", &in_org),
+            None,
+            "a series appears once it counts something"
+        );
+        assert!(t.contains("# TYPE calimero_app_calls_total counter"), "{t}");
+        assert!(t.contains("# TYPE calimero_app_state_bytes gauge"), "{t}");
+        assert!(!t.contains("alice-the-billed"), "a name leaked:\n{t}");
+    }
+    let state: Vec<f64> = texts
+        .iter()
+        .map(|t| sample(t, "calimero_app_state_bytes", &in_org).unwrap())
+        .collect();
+    assert!(state[0] > 0.0, "{state:?}");
+    assert!(
+        state.iter().all(|s| *s == state[0]),
+        "replicas agree: {state:?}"
+    );
+    assert_eq!(
+        sample(&texts[0], "calimero_app_blob_bytes", &in_org),
+        None,
+        "no blobs, no series"
+    );
 }
 
 // ---------------------------------------------------------------- inspection
@@ -4041,12 +5103,21 @@ async fn metrics_count_requests_errors_and_raft_without_naming_anyone() {
         let _ = line("process_cpu_seconds_total ");
     }
     assert!(metrics.contains("# TYPE http_request_duration_seconds histogram"));
-    for secret in [
-        app.as_str(),
-        alice_id.as_str(),
-        "alice-the-metrics-user",
-        "no-such-app",
-    ] {
+    // Ids are labels of the per-app usage series (`calimero_app_*`) only, which
+    // bill an app to its payer; a name or a request's path never is.
+    assert!(metrics.contains(&format!("app=\"{app}\",org=\"account:{alice_id}\"")));
+    let elsewhere: String = metrics
+        .lines()
+        .filter(|l| !l.starts_with("calimero_app_"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for secret in [app.as_str(), alice_id.as_str()] {
+        assert!(
+            !elsewhere.contains(secret),
+            "{secret} leaked outside the usage series"
+        );
+    }
+    for secret in ["alice-the-metrics-user", "no-such-app"] {
         assert!(
             !metrics.contains(secret),
             "{secret} leaked into the metrics"

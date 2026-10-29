@@ -17,19 +17,23 @@ pub mod app;
 pub mod app_host;
 pub mod attest;
 pub mod backup;
+pub mod cluster_key;
 pub mod component;
 pub mod error;
 pub mod idempotency;
 pub mod inspect;
 pub mod kms;
 pub mod local;
+pub mod membership;
 pub mod metrics;
 pub mod node;
 pub mod packages;
+pub mod placement;
 pub mod presence;
 pub mod services;
 pub mod system;
 pub mod types;
+pub mod usage;
 
 pub use node::{Config, Node};
 
@@ -98,8 +102,10 @@ fn cors(node: &Arc<Node>) -> tower_http::cors::CorsLayer {
 /// Start a node and serve its API until stopped.
 pub async fn run(config: Config) -> eyre::Result<Running> {
     let listener = TcpListener::bind(config.listen).await?;
+    // A new node waits here, serving only what lets a peer deliver K_c.
+    let (cluster_key, listener) = cluster_key::resolve(&config, listener).await?;
     let addr = listener.local_addr()?;
-    let node = Node::start(config).await?;
+    let node = Node::start(config, cluster_key).await?;
     let shutdown = CancellationToken::new();
 
     // The sealed envelope wraps the router from outside, so an opened request
@@ -201,6 +207,23 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
             }
             let Some(node) = weak.upgrade() else { return };
             node.presence.sweep(crate::types::now_ms());
+        }
+    }));
+
+    // State and blob bytes of the hosted apps, for `calimero_app_*_bytes`.
+    let weak = Arc::downgrade(&node);
+    let stop = shutdown.clone();
+    drop(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = tokio::time::sleep(usage::SAMPLE_EVERY) => {}
+            }
+            let Some(node) = weak.upgrade() else { return };
+            // Each scan reads an app's whole state: off the async workers.
+            if let Err(e) = tokio::task::spawn_blocking(move || node.sample_usage()).await {
+                warn!(error = %e, "usage sample failed");
+            }
         }
     }));
 

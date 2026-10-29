@@ -1,14 +1,18 @@
 ---
 title: Production Deployment
-description: Deploying a merod cluster on TDX — the storage key from mero-kms, forming the cluster, choosing governance, TLS and load balancers in front, and a checklist.
+description: Deploying a merod cluster on TDX — the storage key from mero-kms, forming the cluster, growing it from one node, choosing governance, TLS and load balancers in front, and a checklist.
 sidebar:
   order: 10
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
+import GrowCluster from '../../../components/diagrams/GrowCluster.astro';
 
-A production cluster is three or more `merod` nodes, each in an Intel TDX VM
-booted from a signed mero-tee image. Nodes run on Linux only. This page is what
+A production cluster is `merod` nodes, each in an Intel TDX VM booted from a
+signed mero-tee image: three or more for redundancy, or one that grows
+([below](#growing-a-cluster)). Calimero runs shared clusters and dedicated ones
+([Calimero Cloud](/cloud/overview/#shared-and-dedicated-clusters)); the steps
+here are the same for either. Nodes run on Linux only. This page is what
 you decide and configure; the flags are in the [merod reference](/operate/merod/)
 and the file in [Configuration](/operate/config/).
 
@@ -36,8 +40,10 @@ because its attestation names them and it judges its peers by them.
 
 ## Storage key
 
-Each node seals everything on disk under a storage key K_r =
-HKDF-SHA256(KMS key, salt `calimero.cloud.storage.v1`, info = `--cluster`).
+Each node takes a storage key K_r =
+HKDF-SHA256(KMS key, salt `calimero.cloud.storage.v1`, info = `--cluster`), and
+seals everything on disk under the cluster key K_c, which it keeps wrapped
+under K_r ([The cluster key](/protocol/encryption/#the-cluster-key-k_c)).
 In TDX mode the KMS key comes from mero-kms only:
 
 ```bash
@@ -50,8 +56,8 @@ merod --node n1 init ... --kms-url https://kms.internal.example.com/ \
   `MERO_TEE_VERSION`); the key is sealed to this TD.
 - The KMS derives one key per identity. All nodes of a cluster must present the
   **same disk identity file** and the same `--cluster`, so they derive the same
-  K_r: a follower opens the leader's snapshots with it, and the cluster secret
-  peers present is derived from it. `merod` creates the identity file if it is
+  K_r. The founding node takes its K_r as K_c; the others, and later every node
+  of a new release (whose mero-kms gives another K_r), take K_c from a peer. `merod` creates the identity file if it is
   missing; create it once and give every node a copy.
 - `--storage-key` and `--storage-key-file` are refused without `--dev`: a key
   the host could hand the node would let whoever runs the host read the disks.
@@ -102,6 +108,25 @@ ramfs only.
 
 Nodes added later are not in `--peers`: see
 [Add a node](/operate/runbooks/#add-a-node).
+
+## Growing a cluster
+
+<GrowCluster />
+
+A cluster may be bootstrapped on one node (`--peers` naming only itself) and
+grown. While it is one node, every app gets one replica and that node is a
+single point of failure. Each node registered later (`POST /ops/nodes`, with
+its `zone`) joins the system group as a learner; once two learners have caught
+up, the system leader makes them voters in one change, so the system group
+goes from one voter to three, never two, and never past three by itself. Apps
+placed while the cluster was small are spread by replica moves: mdma's
+rebalancer reads `GET /ops/placement` and sends one
+`POST /ops/apps/{app}/replicas` at a time, and the app's leader hands the new
+replicas the app's bundle and blobs before they join. To retire a node, move
+its replicas away first; `DELETE /ops/nodes/{id}` is refused while an app
+keeps a replica there. The steps are in the runbooks:
+[Grow from one node](/operate/runbooks/#grow-from-one-node),
+[Remove a node](/operate/runbooks/#remove-a-node).
 
 ## Governance
 
@@ -155,9 +180,9 @@ attested node, so a TLS terminator in front of it sees only sealed bytes, plus
 - `--public-url` must be the URL clients and peers actually use, and it must
   reach that node, not any node: peers send Raft traffic to it, and the system
   directory records it.
-- If one name balances across nodes, give `/auth/passkey/*`,
-  `/auth/passkeys/add/*` and calls that answer `412 CONFIRM_REQUIRED` session
-  affinity: a ceremony's challenge lives on the node that issued it.
+- One name may balance across nodes: a passkey ceremony or a confirmation
+  begun on one node can finish on another, which takes the challenge from the
+  node that issued it (`internal/challenge/take`).
 - `/apps/{app}/events` and `/apps/{app}/presence/stream` are server-sent event
   streams; turn off response buffering for them. Each node serves at most 4096
   open streams.

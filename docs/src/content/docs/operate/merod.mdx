@@ -1,6 +1,6 @@
 ---
 title: merod CLI Reference
-description: Every merod command and flag — init, run, config, local, inspect, kms disk-key — with its environment variable and default, taken from the clap definitions.
+description: Every merod command and flag — init, run, config, local, inspect, kms disk-key, attest — with its environment variable and default, taken from the clap definitions.
 sidebar:
   label: merod reference
   order: 3
@@ -23,6 +23,7 @@ Commands:
   local    A development cluster in this process
   inspect  What a stopped node's data directory holds
   kms      The data-disk key from mero-kms (for a TEE boot script)
+  attest   A release attestation, made without any KMS key
 ```
 
 ## Global arguments
@@ -100,8 +101,8 @@ environment variable. See [Configuration](/operate/config/) for the file.
 | `--listen ADDR` | `MEROD_LISTEN` | `0.0.0.0:2528` | Socket address the API listens on. |
 | `--public-url URL` | `MEROD_PUBLIC_URL` | required | Base URL peers and clients use for this node. |
 | `--data-dir DIR` | `MEROD_DATA_DIR` | `{home}/{node}/data` | Where the node keeps its state. |
-| `--peers ID=URL,...` | `MEROD_PEERS` | none | Cluster members, this node included. Used by `--bootstrap` and by whichever node leads the system group, which registers them in the fleet directory. |
-| `--bootstrap [BOOL]` | `MEROD_BOOTSTRAP` | `false` | Form the system group with `--peers` as voters. Given alone it means `true`. Harmless on a restart: a group that exists is not formed again. |
+| `--peers ID=URL,...` | `MEROD_PEERS` | none | Cluster members, this node included. Used by `--bootstrap` and by whichever node leads the system group, which registers them in the fleet directory. A node starting on an empty data directory without `--bootstrap` waits (serving only `/health`, `/attestation` and the key delivery) until one of them delivers the cluster key to its registered address, for up to 10 minutes. |
+| `--bootstrap [BOOL]` | `MEROD_BOOTSTRAP` | `false` | Form the system group with `--peers` as voters. Given alone it means `true`. Harmless on a restart: a group that exists is not formed again. On an empty data directory it also mints the cluster key (from this node's storage key). |
 | `--cluster NAME` | `MEROD_CLUSTER` | `dev` | The cluster's name. It is mixed into the storage key and the cluster secret, so every node of a cluster needs the same one. |
 | `--dev [BOOL]` | `MEROD_DEV` | `false` | Development mode: mock attestation quotes, mock peers accepted, a development storage key, plain (unsealed) requests allowed, raw WASM uploads allowed. |
 | `--storage-key HEX` | `MEROD_STORAGE_KEY` | none | A 32-byte storage key in hex. `--dev` only. |
@@ -175,10 +176,12 @@ merod --node NAME inspect [--storage-key-file FILE]
 merod inspect --data-dir DIR [--storage-key-file FILE]
 ```
 
-Prints, as JSON, what a stopped node's data directory holds (v1's `merodb`).
+Prints, as JSON, what a stopped node's data directory holds.
 Without a key it reads the raw layout only, and sizes are sealed sizes. With
 `--storage-key-file` (a file holding the storage key K_r as 64 hex characters)
-it also reads each group's metadata: vote, applied index, membership.
+it also reads each group's metadata: vote, applied index, membership. K_r
+unwraps the cluster key from `<data-dir>/cluster-key`, which the store is
+sealed under ([The cluster key](/protocol/encryption/#the-cluster-key-k_c)).
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -214,6 +217,65 @@ release named, no key is fetched.
 A TDX node does not take its storage key from this file: `run
 --storage-key-file` is refused without `--dev`. In TDX mode `merod` fetches its
 own storage key with `--kms-url` and `--kms-identity`.
+
+## attest
+
+```bash
+merod [--node NAME] attest [--nonce HEX] [--out FILE] [--format json] [--identity PATH] [--dev]
+merod [--node NAME] attest --serve ADDR [--identity PATH] [--dev]
+```
+
+A **release attestation**: a quote over a verifier's nonce and what this merod
+says it is, made without any KMS key, store or running node. It is how a
+manager checks a fresh TD's image and merod **before** mero-kms releases a
+cluster key to it: `run` fetches its key before it serves anything, so the
+node's own `/attestation` comes too late for that. `--dev` (or the node's
+configured `dev`) makes a mock quote; otherwise the TDX module makes a real
+one, and the command fails where there is none.
+
+The claim it binds: `merodVersion`, `merodSha256` (of the running executable),
+`teeRelease` (`MERO_TEE_VERSION`), `teeProfile` (`MERO_TEE_PROFILE`) and
+`identity`, the libp2p peer id of `--identity` (default: the configured
+`--kms-identity`, when that file exists; never created here). The report data:
+
+```text
+report_data = nonce(32) || SHA-256("calimero.tee-attest.release.v1"
+                || for each of merodVersion, merodSha256, teeRelease, teeProfile, identity:
+                   u32 BE length || UTF-8 bytes (length 0 when null))
+```
+
+| Flag | Environment | Meaning |
+| --- | --- | --- |
+| `--nonce HEX` | | The verifier's nonce, 32 bytes hex (default: a random one, which proves no freshness). |
+| `--out FILE` | | Write the attestation here instead of stdout. |
+| `--format json` | | The only format: one JSON object (below). |
+| `--identity PATH` | | Bind this protobuf libp2p keypair's peer id. |
+| `--serve ADDR` | | Serve `GET /attestation/release?nonce=<64 hex>` on `ADDR`, a fresh quote per request, until SIGINT or SIGTERM. Nothing else is served, nothing is authenticated, one quote is made at a time. |
+| `--dev` | `MEROD_DEV` | A mock quote. |
+| `--tee-release` | `MERO_TEE_VERSION` | The mero-tee release this image is. |
+| `--tee-profile` | `MERO_TEE_PROFILE` | The image profile. |
+
+```json
+{
+  "format": 1,
+  "quote": "<base64>",
+  "nonce": "<64 hex>",
+  "claim": { "merodVersion": "1.0.0", "merodSha256": "<hex>", "teeRelease": "2.4.0",
+             "teeProfile": "locked-read-only", "identity": null },
+  "reportData": "<128 hex>",
+  "reportDataLayout": "nonce(32) || SHA-256(...)",
+  "measurements": { "mrtd": "<hex>", "rtmr0": "<hex>", "rtmr1": "<hex>", "rtmr2": "<hex>", "rtmr3": "<hex>" },
+  "mock": false
+}
+```
+
+`measurements` is `null` for a mock quote, and only informational otherwise: a
+verifier reads the registers from the verified quote. Verify with `meroctl
+attest-release` or `calimero_client::attest::release::verify_release` (the
+same quote check as every client's, with its measurement policy), or with
+`calimero-tee-verify` given the quote, the nonce and the report data's second
+half as `app_hash_hex`, then the registers against the signed release. See
+[Attestation & receipts](/protocol/tee-attestation/#release-attestations).
 
 ## Next steps
 

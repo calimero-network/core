@@ -93,9 +93,9 @@ asserts that a state type reaches the same root on N in-memory replicas under
 reordered operations. The app-author guide is [Testing your app](/build/testing/).
 
 <Aside type="note">
-  An app instance's calls are applied in one order by its Raft
-  log, so convergence under concurrent writes matters less for the node than it
-  did for v1; it still matters for code that also targets v1.
+  An app instance's calls are applied in one order by its Raft log, so the
+  node never merges concurrent writes; `converge` checks the storage format's
+  own merge rules.
 </Aside>
 
 ## Scenarios
@@ -487,9 +487,9 @@ node.
 
 ## Release branch
 
-`release-v2-parity` is the long-lived release branch: PRs merge into
-it, and it never merges into master. Its CI is master's, with its own image
-tags and nightly:
+Calimero 1.0 was developed on `release-v2-parity`, which has since been merged
+into master (`1.0.0-rc.1`). CI still treats that branch as a release branch,
+with its own image tags:
 
 | When | What runs | What publishes |
 | --- | --- | --- |
@@ -504,10 +504,8 @@ the clients' own `release-v2-parity` branches when nothing is paired
 (`sdk-ref:`, `py-ref:` or a same-named branch), since their master has no
 cluster tests.
 
-GitHub runs `schedule` only from the default branch, so the nightly is started
-by `.github/workflows/nightly-release-v2.yml` on master, which runs
-`gh workflow run <workflow> --ref release-v2-parity` for the three workflows
-above (with `GITHUB_TOKEN` and `actions: write`). To run one by hand:
+GitHub runs `schedule` only from the default branch, so the branch's nightly
+runs only when dispatched. To run one by hand:
 
 ```bash
 gh workflow run e2e.yml --ref release-v2-parity -f nightly=true

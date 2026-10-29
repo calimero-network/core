@@ -111,6 +111,17 @@ enum Cmd {
         #[arg(long, short)]
         context: Option<String>,
     },
+    /// Verify a release attestation (`merod attest`), made before the node
+    /// holds any key: from `--file` with the `--nonce` it was made over, or
+    /// fetched from the node (`GET /attestation/release`) over a fresh nonce.
+    /// Judged like any quote (`--allow-mock`, `--tee-profiles`, `--min-release`).
+    AttestRelease {
+        #[arg(long, requires = "nonce")]
+        file: Option<PathBuf>,
+        /// The nonce the file's attestation was made over, hex.
+        #[arg(long, requires = "file")]
+        nonce: Option<String>,
+    },
     /// Signed packages (v1's applications): install, list, versions, uninstall, watch.
     #[command(subcommand)]
     App(app::AppCmd),
@@ -184,6 +195,38 @@ fn print(v: &Value) -> eyre::Result<()> {
     Ok(())
 }
 
+fn trust(cli: &Cli, saved_mock: bool) -> Trust {
+    Trust {
+        allow_mock: cli.allow_mock || saved_mock,
+        allow_debug_profiles: cli.allow_debug_profiles,
+        tee_profiles: cli.tee_profiles.clone(),
+        min_release: cli.min_release.clone(),
+    }
+}
+
+fn hex32(s: &str) -> eyre::Result<[u8; 32]> {
+    hex::decode(s)
+        .ok()
+        .and_then(|v| v.try_into().ok())
+        .ok_or_else(|| eyre::eyre!("--nonce must be 32 bytes hex"))
+}
+
+/// Verify a release attestation and answer what it proved.
+async fn verified_release(
+    doc: &calimero_client::attest::release::ReleaseAttestation,
+    nonce: &[u8; 32],
+    trust: &Trust,
+) -> eyre::Result<Value> {
+    let v = calimero_client::attest::release::verify_release(doc, nonce, &trust.policy()).await?;
+    Ok(json!({
+        "verified": true,
+        "mock": v.measurements.is_none(),
+        "claim": v.claim,
+        "measurements": v.measurements,
+        "profile": v.profile,
+    }))
+}
+
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     let cli = Cli::parse();
@@ -192,6 +235,16 @@ async fn main() -> eyre::Result<()> {
     };
     if let Cmd::Node(cmd) = &cli.cmd {
         return print(&node::run(cmd, &home)?);
+    }
+
+    if let Cmd::AttestRelease {
+        file: Some(file),
+        nonce,
+    } = &cli.cmd
+    {
+        let doc = serde_json::from_slice(&std::fs::read(file)?)?;
+        let nonce = hex32(nonce.as_deref().unwrap_or_default())?;
+        return print(&verified_release(&doc, &nonce, &trust(&cli, false)).await?);
     }
 
     let (url, saved_mock) = match (&cli.api, &cli.node) {
@@ -210,12 +263,14 @@ async fn main() -> eyre::Result<()> {
             (n.url.clone(), n.allow_mock)
         }
     };
-    let trust = Trust {
-        allow_mock: cli.allow_mock || saved_mock,
-        allow_debug_profiles: cli.allow_debug_profiles,
-        tee_profiles: cli.tee_profiles.clone(),
-        min_release: cli.min_release.clone(),
-    };
+    let trust = trust(&cli, saved_mock);
+    if let Cmd::AttestRelease { file: None, .. } = &cli.cmd {
+        let nonce = calimero_identity::random::<32>();
+        let base = url::Url::parse(&url)?;
+        let doc =
+            calimero_client::attest::release::fetch_release_attestation(&base, &nonce).await?;
+        return print(&verified_release(&doc, &nonce, &trust).await?);
+    }
     let env = Env::connect(home, url, trust, cli.api_key.clone(), cli.ops_token.clone())?;
 
     if let Cmd::Ops(cmd) = cli.cmd {
@@ -332,7 +387,11 @@ async fn main() -> eyre::Result<()> {
                 other => bail!("unknown method {other}: use get, post, put or delete"),
             }
         }
-        Cmd::Node(_) | Cmd::Ops(_) | Cmd::Login { .. } | Cmd::Logout { .. } => {
+        Cmd::Node(_)
+        | Cmd::Ops(_)
+        | Cmd::Login { .. }
+        | Cmd::Logout { .. }
+        | Cmd::AttestRelease { .. } => {
             unreachable!("handled above")
         }
     };

@@ -38,9 +38,10 @@ meroctl context watch kv
 meroctl account api-key create --context kv --read-only
 ```
 
-`meroctl` keeps v1's commands: `app` is an application (a signed package),
-`context` an instance of one, `namespace` an organization, `group` one of its
-teams, `account` you (passkeys are your devices) and `ops` the operator.
+In `meroctl`, an `app` is a signed package, a `context` an app instance, a
+`namespace` an organization, a `group` one of its teams, `account` you (each
+passkey is one of your devices) and `ops` the operator
+([glossary](/protocol/glossary/)).
 `--dev-passkey` keeps a passkey in a file, which only a development cluster
 accepts. Against a real cluster, use an API key made in the console
 (`CALIMERO_API_KEY`) and name the images you trust:
@@ -93,3 +94,12 @@ python3 -I crates/node/tests/fault/suite.py --only frozen-leader
 
 See [Testing strategy](/contribute/testing/#scenarios) for the file format and
 every step.
+
+## 5. Next
+
+- [Writing apps](/cloud/apps/) for what an app sees on a cluster, and
+  [Build](/build/) for the SDK.
+- [Install & first run](/operate/install/) and [Deployment](/operate/deployment/)
+  to run real nodes.
+- [Testing strategy](/contribute/testing/) for the in-process cluster tests, the
+  scenarios and the process suite.

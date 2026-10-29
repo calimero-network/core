@@ -17,7 +17,8 @@ sealed; the node's quote is judged before anything is sent).
 | `dev start/watch` | install, create, keep pushing a build | |
 | `network status` | `/health` | |
 | (new) `login`, `logout [--all]`, `whoami`, `attest [--context]` | file passkeys on dev clusters; cluster verification | `/auth/*`, `/attestation` |
-| (new) `ops ...` | the operator, `--ops-token`: status, metrics, add-node, remove-node, move, backup, quotas, release, outbound, packages/install/uninstall, upgrade, upgrade-namespace | `/ops/*` |
+| (new) `attest-release [--file F --nonce N]` | verify a `merod attest` release attestation (no session, no sealed channel) | `/attestation/release` |
+| (new) `ops ...` | the operator, `--ops-token`: status, metrics, placement, add-node, remove-node, move, backup, quotas, release, outbound, packages/install/uninstall, upgrade, upgrade-namespace | `/ops/*` |
 
 Dropped, with no meaning here: `context sync`, `group sync` (Raft replicates),
 `context identity`, `account pair-*`/`seal-to`/`device-init` (a passkey is the

@@ -100,9 +100,3 @@ file is kept, renamed `log.redb.migrated`.
 sizes; with the key, it also opens each group's metadata (vote, applied index,
 membership). It opens the store for writing, so stop the node first.
 
-:::note[v1 comparison]
-v1's store had a column family per kind of record — context metadata, state
-entities, the op DAG, governance, keys, blobs, search — and a node's own
-encryption key. Here a node's store holds Raft groups and nothing else: what a
-group means is its state machine's business, and one key seals it all.
-:::

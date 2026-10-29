@@ -21,9 +21,11 @@ use crate::app::{
 };
 use crate::attest::{HttpAttestor, Mode, Policy};
 use crate::error::ApiError;
+use crate::membership::{grow_voters, PROMOTE_MAX_LAG, SYSTEM_VOTERS};
 use crate::services::{AppBlobs, BundleFacts, Search};
 use crate::system::{output, SystemCmd, SystemMachine, SystemState};
 use crate::types::{now_ms, AppRecord, Caller, Executor as Kind, NodeRecord};
+use crate::usage::{Kind as RunKind, Meter, Usage};
 
 mod component;
 
@@ -76,7 +78,8 @@ pub struct Config {
     /// Form the system group with `peers` as voters (first start only).
     pub bootstrap: bool,
     pub cluster: String,
-    /// Storage key K_r from the KMS (or a dev key).
+    /// Storage key K_r from this release's KMS (or a dev key). It only wraps
+    /// the cluster key K_c on disk (`cluster_key`), which seals the data.
     pub storage_key: [u8; 32],
     pub attestation: Mode,
     /// Accept mock quotes from peers (development only).
@@ -133,6 +136,41 @@ pub struct Config {
     /// The limits of every component call and view; `None` is `Budget::call()`.
     /// Tests only.
     pub budget: Option<calimero_app_host::Budget>,
+}
+
+impl Config {
+    /// How this node judges a peer's quote: its transport key on every peer
+    /// channel, and a new node's request for the cluster key.
+    #[must_use]
+    pub fn peer_policy(&self) -> Policy {
+        Policy {
+            allow_mock: self.allow_mock_peers,
+            app_hash: None,
+            measurements: self.peer_measurements.clone(),
+            allowed_tcb_statuses: Vec::new(),
+            // A node trusts debug peers only when it runs a debug image itself.
+            allow_debug_profiles: self
+                .tee_profile
+                .as_deref()
+                .is_some_and(calimero_client::attest::is_debug_profile),
+        }
+    }
+
+    /// The release this node's attestations name.
+    #[must_use]
+    pub fn attested_release(&self) -> crate::attest::Release {
+        crate::attest::Release {
+            version: self
+                .tee_release
+                .clone()
+                .unwrap_or_else(|| self.release.clone()),
+            profile: match (&self.tee_profile, self.attestation) {
+                (_, Mode::Mock) => "mock".into(),
+                (Some(p), _) => p.clone(),
+                (None, _) => "tdx".into(),
+            },
+        }
+    }
 }
 
 /// Request to run a method.
@@ -239,6 +277,23 @@ pub struct ViewAnswer {
     pub timeout: bool,
 }
 
+/// A replica move of one app in progress on this node ([`Node::begin_move`]).
+pub struct MoveGuard {
+    node: Arc<Node>,
+    app: String,
+}
+
+impl Drop for MoveGuard {
+    fn drop(&mut self) {
+        let _was = self
+            .node
+            .moving
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.app);
+    }
+}
+
 /// Shared node state.
 pub struct Node {
     pub config: Config,
@@ -249,7 +304,7 @@ pub struct Node {
     pub executor: Executor,
     /// Runs the apps whose bundle is a `calimero:app` component (one wasmtime
     /// engine for all of them, spec section 5); compiled artifacts cached under
-    /// `<data_dir>/components`, each with a MAC under a key derived from K_r (S8).
+    /// `<data_dir>/components`, each with a MAC under a key derived from K_c (S8).
     wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
     /// Prepared components per bundle hash.
     prepared: Mutex<HashMap<String, calimero_app_host::Prepared>>,
@@ -274,6 +329,10 @@ pub struct Node {
     peers: Mutex<HashMap<String, Arc<calimero_sealed::client::SealedTransport>>>,
     pub(crate) http: reqwest::Client,
     cluster_secret: String,
+    /// K_c (`cluster_key`): what the cluster's data is sealed under.
+    cluster_key: [u8; 32],
+    /// Bounds the cluster-key releases this node answers at once.
+    pub(crate) key_releases: tokio::sync::Semaphore,
     pub challenges: Mutex<HashMap<String, crate::api::Pending>>,
     /// The release each peer's verified attestation named, by address.
     peer_releases: Mutex<HashMap<String, Arc<Mutex<Option<String>>>>>,
@@ -285,6 +344,10 @@ pub struct Node {
     pub frontends: crate::app_host::FrontendCache,
     /// Nodes being added to the system group now.
     joining: Mutex<std::collections::HashSet<NodeId>>,
+    /// Apps whose replicas this node is moving now ([`Node::begin_move`]).
+    moving: Mutex<HashSet<String>>,
+    /// A promotion of learners to system voters is under way.
+    promoting: std::sync::atomic::AtomicBool,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
     /// Full-text search over the apps hosted here.
@@ -300,6 +363,8 @@ pub struct Node {
     /// Entries this node appended that applied as conflicts (built on state
     /// that changed before they applied) and were run again.
     pub conflicts: std::sync::atomic::AtomicU64,
+    /// Per-app usage of the runs this node made, for `/metrics` ([`crate::usage`]).
+    pub usage: Usage,
 }
 
 /// One read-index round on the system group at a time. A caller may take the
@@ -383,7 +448,10 @@ fn status_of(e: &WriteError) -> ApiError {
 
 impl Node {
     /// Open storage, start the system group and every app group this node hosts.
-    pub async fn start(config: Config) -> eyre::Result<Arc<Self>> {
+    ///
+    /// Everything the cluster shares or keeps across releases is keyed by
+    /// `cluster_key` (K_c, `cluster_key::resolve`), not by this release's K_r.
+    pub async fn start(config: Config, cluster_key: [u8; 32]) -> eyre::Result<Arc<Self>> {
         std::fs::create_dir_all(&config.data_dir)?;
         let peer_transport = Arc::new(PeerTransport {
             node: Mutex::new(Weak::new()),
@@ -391,7 +459,7 @@ impl Node {
         let engine = Engine::open(
             config.node_id,
             &config.data_dir,
-            &config.storage_key,
+            &cluster_key,
             Arc::clone(&peer_transport) as Arc<dyn Transport>,
             config.raft.clone(),
         )?;
@@ -405,19 +473,21 @@ impl Node {
             },
         ));
         // Compiled components live in the node's data directory, which the host can
-        // write: each artifact carries a MAC under a key derived from K_r, so only this
+        // write: each artifact carries a MAC under a key derived from K_c, so only this
         // cluster's own compilations are ever loaded (S8, Ruling 38).
         let wasm = Arc::new(calimero_app_engine_wasmtime::WasmtimeEngine::new(
             config.data_dir.join("components"),
-            &component::component_cache_key(&config.storage_key),
+            &component::component_cache_key(&cluster_key),
         )?);
         let clock = Clock::new(config.clock_offset_ms);
         let secret = hmac::sign(
-            &hmac::Key::new(hmac::HMAC_SHA256, &config.storage_key),
+            &hmac::Key::new(hmac::HMAC_SHA256, &cluster_key),
             format!("calimero.cluster.v1|{}", config.cluster).as_bytes(),
         );
         let node = Arc::new(Self {
             cluster_secret: calimero_identity::b64url(secret.as_ref()),
+            cluster_key,
+            key_releases: tokio::sync::Semaphore::new(crate::api::MAX_CONCURRENT_KEY_RELEASES),
             config,
             engine: Arc::clone(&engine),
             system,
@@ -442,9 +512,12 @@ impl Node {
             presence: crate::presence::Presence::default(),
             frontends: crate::app_host::FrontendCache::default(),
             joining: Mutex::default(),
+            moving: Mutex::default(),
+            promoting: std::sync::atomic::AtomicBool::new(false),
             peer_releases: Mutex::new(HashMap::new()),
             sys_reads: ReadRounds::default(),
             conflicts: std::sync::atomic::AtomicU64::new(0),
+            usage: Usage::default(),
             starting: tokio::sync::Mutex::new(()),
             search: Search::default(),
             facts: Mutex::new(HashMap::new()),
@@ -471,6 +544,12 @@ impl Node {
         Ok(node)
     }
 
+    /// K_c: the key the cluster's data, backups included, is sealed under.
+    #[must_use]
+    pub const fn cluster_key(&self) -> &[u8; 32] {
+        &self.cluster_key
+    }
+
     /// The secret peers present on internal routes (inside sealed channels).
     #[must_use]
     pub fn cluster_secret(&self) -> &str {
@@ -489,18 +568,7 @@ impl Node {
         }
         let attestor = HttpAttestor {
             seen_release,
-            policy: Policy {
-                allow_mock: self.config.allow_mock_peers,
-                app_hash: None,
-                measurements: self.config.peer_measurements.clone(),
-                allowed_tcb_statuses: Vec::new(),
-                // A node trusts debug peers only when it runs a debug image itself.
-                allow_debug_profiles: self
-                    .config
-                    .tee_profile
-                    .as_deref()
-                    .is_some_and(calimero_client::attest::is_debug_profile),
-            },
+            policy: self.config.peer_policy(),
         };
         let t = Arc::new(calimero_sealed::client::SealedTransport::attested(
             url,
@@ -843,6 +911,23 @@ impl Node {
         Ok(g)
     }
 
+    /// Claim `app` for a replica move: `None` while another move of it runs
+    /// here. The claim ends when the guard drops.
+    #[must_use]
+    pub fn begin_move(self: &Arc<Self>, app: &str) -> Option<MoveGuard> {
+        let mut moving = self
+            .moving
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !moving.insert(app.to_owned()) {
+            return None;
+        }
+        Some(MoveGuard {
+            node: Arc::clone(self),
+            app: app.to_owned(),
+        })
+    }
+
     /// On the system leader: every registered node that is not yet in the
     /// system group joins it as a learner (a node `/ops/nodes` added to a
     /// running cluster), and catches up from the log or a snapshot; then it
@@ -888,6 +973,64 @@ impl Node {
         }
     }
 
+    /// On the system leader: while the system group has fewer than
+    /// [`SYSTEM_VOTERS`] voters, promote caught-up registered learners so it
+    /// has exactly that many, in one membership change (joint consensus). A
+    /// cluster started on one node never passes through 2 voters, which
+    /// tolerate no failure and make every write wait on both: it waits until
+    /// enough learners exist to reach 3. Never grows past 3. Runs in the
+    /// background, one change at a time.
+    fn promote_learners(&self) {
+        let status = self.system.status();
+        if !status.is_leader || status.voters.len() >= SYSTEM_VOTERS {
+            return;
+        }
+        let Some(me) = self.this.lock().ok().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        let metrics = self.system.raft().metrics().borrow().clone();
+        let last = metrics.last_log_index.unwrap_or(0);
+        let matched: BTreeMap<NodeId, u64> = metrics
+            .replication
+            .iter()
+            .flatten()
+            .map(|(peer, log)| (*peer, log.map_or(0, |l| l.index)))
+            .collect();
+        let (voter_zones, candidates) = self.sys(|s| {
+            let zone = |id: &NodeId| s.nodes.get(id).map(|n| n.zone.clone()).unwrap_or_default();
+            let voter_zones: Vec<String> = status.voters.iter().map(zone).collect();
+            let candidates: Vec<(NodeId, String)> = status
+                .learners
+                .iter()
+                .filter(|l| s.nodes.contains_key(l) && !s.removed_nodes.contains(l))
+                .filter(|l| {
+                    matched
+                        .get(l)
+                        .is_some_and(|m| last.saturating_sub(*m) <= PROMOTE_MAX_LAG)
+                })
+                .map(|l| (*l, zone(l)))
+                .collect();
+            (voter_zones, candidates)
+        });
+        let Some(voters) = grow_voters(&status.voters, &voter_zones, &candidates) else {
+            return;
+        };
+        if self
+            .promoting
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        drop(tokio::spawn(async move {
+            match me.system.change_voters(voters.clone()).await {
+                Ok(()) => info!(?voters, "learners became system voters"),
+                Err(e) => warn!(error = %e, "could not promote learners to system voters yet"),
+            }
+            me.promoting
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }));
+    }
+
     /// Bring hosted groups in line with the system state.
     pub async fn reconcile(&self) {
         // The cluster's first leader fixes its governance, registers the
@@ -917,6 +1060,7 @@ impl Node {
                 let _r = self.sys_write(&SystemCmd::RegisterNode { node }).await;
             }
             self.admit_registered_nodes();
+            self.promote_learners();
             // The first session key, then a new one whenever the current one is old enough.
             let current = self.sys(|s| s.session_keys.last().map(|k| (k.version, k.created_at)));
             let now = crate::types::now_secs();
@@ -1084,6 +1228,7 @@ impl Node {
         &self,
         app_id: &str,
         bundle: &str,
+        sent: Arc<std::sync::atomic::AtomicU64>,
     ) -> Option<Arc<dyn calimero_runtime::logic::OutboundHost>> {
         let service = self.config.outbound.as_ref()?;
         let release = self.release_of(bundle)?;
@@ -1104,11 +1249,12 @@ impl Node {
                 approval,
             ))
         })?;
-        service.for_run(
+        service.for_run_counted(
             identity,
             release.version.outbound.clone(),
             approval,
             app_id.to_owned(),
+            sent,
         )
     }
 
@@ -1116,7 +1262,7 @@ impl Node {
     fn env(&self, app_id: &str, caller: &Caller) -> RunEnv {
         let opener = caller.account().map(|a| {
             Arc::new(calimero_primitives::identity::PrivateKey::from(
-                crate::backup::member_key(&self.config.storage_key, app_id, a),
+                crate::backup::member_key(&self.cluster_key, app_id, a),
             ))
         });
         RunEnv {
@@ -1138,7 +1284,7 @@ impl Node {
     /// key standing for that member (every account that may reach the app).
     fn tee_sealing(&self, app_id: &str) -> calimero_runtime::logic::SealingContext {
         use calimero_primitives::identity::PrivateKey;
-        let tee = PrivateKey::from(crate::backup::tee_key(&self.config.storage_key, app_id));
+        let tee = PrivateKey::from(crate::backup::tee_key(&self.cluster_key, app_id));
         let accounts: Vec<String> = self.sys(|s| {
             let Some(app) = s.apps.get(app_id) else {
                 return Vec::new();
@@ -1162,11 +1308,7 @@ impl Node {
         let mut account_devices = BTreeMap::new();
         let mut stand_ins = BTreeMap::new();
         for a in &accounts {
-            let key = PrivateKey::from(crate::backup::member_key(
-                &self.config.storage_key,
-                app_id,
-                a,
-            ));
+            let key = PrivateKey::from(crate::backup::member_key(&self.cluster_key, app_id, a));
             let id = Caller::Account { account: a.clone() }.account_bytes();
             let _prev = account_devices.insert(id, vec![id]);
             let _prev = stand_ins.insert(id, *AsRef::<[u8; 32]>::as_ref(&key.public_key()));
@@ -1186,7 +1328,7 @@ impl Node {
     /// cluster is every app's TEE).
     fn tee_sealing_key(&self, app_id: &str) -> calimero_runtime::logic::SealingKeyResolver {
         let tee = calimero_primitives::identity::PrivateKey::from(crate::backup::tee_key(
-            &self.config.storage_key,
+            &self.cluster_key,
             app_id,
         ));
         let public = *AsRef::<[u8; 32]>::as_ref(&tee.public_key());
@@ -1252,6 +1394,60 @@ impl Node {
             return Err(ApiError::unavailable(
                 "the blob could not reach a majority of nodes",
             ));
+        }
+        Ok(())
+    }
+
+    /// Hand `to` (nodes about to become replicas of `app`) the bytes the app
+    /// needs that live outside its log: its bundle and every blob its state
+    /// marks. They would otherwise be fetched from a peer on first use, and a
+    /// cluster grown from one node holds them only on that node: once it is
+    /// gone, nobody could run the app. Returns how many it handed over.
+    pub async fn hand_over_bytes(
+        &self,
+        app: &AppRecord,
+        g: &Group<AppMachine>,
+        to: &[(NodeId, String)],
+    ) -> Result<usize, ApiError> {
+        if to.is_empty() {
+            return Ok(0);
+        }
+        let bundle = g
+            .read_local(|m, _| m.state.bundle.clone())
+            .unwrap_or_else(|| app.bundle.clone());
+        let wasm = self.bundle_wasm(&bundle).await?;
+        self.hand_to(&bundle, wasm, to).await?;
+        // One blob in memory at a time: an app may hold many large ones.
+        let blobs = g.read_local(|m, _| m.storage_stats().blobs);
+        for (id, _size) in &blobs {
+            let id = hex::encode(id);
+            let bytes = match self
+                .engine
+                .get_blob(&id)
+                .map_err(|e| ApiError::internal(&e.to_string()))?
+            {
+                Some(b) => b,
+                None => self.fetch_blob(&id).await?,
+            };
+            self.hand_to(&id, bytes, to).await?;
+        }
+        Ok(1 + blobs.len())
+    }
+
+    /// Store `bytes` (named by their hash) on each of `to`.
+    async fn hand_to(
+        &self,
+        hash: &str,
+        bytes: Vec<u8>,
+        to: &[(NodeId, String)],
+    ) -> Result<(), ApiError> {
+        let body = json!({ "hash": hash, "wasm": calimero_log::Bytes(bytes) });
+        for (id, addr) in to {
+            if let Err(e) = self.peer_post(addr, "internal/blob", &body).await {
+                return Err(ApiError::unavailable(&format!(
+                    "node {id} could not take the app's bytes: {e}"
+                )));
+            }
         }
         Ok(())
     }
@@ -1403,6 +1599,7 @@ impl Node {
 
     async fn module_for(&self, bundle: &str) -> Result<Arc<calimero_runtime::Module>, ApiError> {
         let wasm = self.bundle_wasm(bundle).await?;
+        self.usage.learn(bundle, &wasm);
         self.executor
             .module(bundle, &wasm)
             .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))
@@ -1420,12 +1617,13 @@ impl Node {
         let app_id = app.app_id.clone();
         let init_args = app.init_args.clone();
         let env = self.env(&app.app_id, &owner);
+        let meter = self.meter(&app.app_id, &app.bundle);
         let p = g
             .propose(|m, _| {
                 if m.state.initialized || m.state.bundle.is_some() {
                     return Proposal::Reply(Vec::new());
                 }
-                let outcome = off_workers(|| {
+                let outcome = self.metered(&meter, || {
                     Executor::run(
                         &module,
                         &app_id,
@@ -1453,7 +1651,51 @@ impl Node {
         let applied: Applied =
             serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))?;
         self.count_conflict(&applied);
+        if !applied.conflict {
+            self.usage.called(&meter, RunKind::Mutation);
+        }
         Ok(applied)
+    }
+
+    /// Where a run of `app_id` on `bundle` is billed ([`crate::usage`]). Read
+    /// before the run's proposal, outside the app group's locks.
+    pub(crate) fn meter(&self, app_id: &str, bundle: &str) -> Meter {
+        Meter {
+            app: app_id.to_owned(),
+            payer: self
+                .sys(|s| s.apps.get(app_id).map(crate::usage::payer))
+                .unwrap_or_default(),
+            bundle: bundle.to_owned(),
+        }
+    }
+
+    /// Run `f`, one WASM run, off the async workers ([`off_workers`]), and add
+    /// the CPU and memory it took to `meter`'s app: on the thread that runs
+    /// it, on this node, whatever becomes of its result.
+    pub(crate) fn metered<R>(&self, meter: &Meter, f: impl FnOnce() -> R) -> R {
+        let (out, run) = off_workers(|| crate::usage::measure(f));
+        self.usage.ran(meter, run);
+        out
+    }
+
+    /// Sample the state and blob bytes of every app hosted here
+    /// (`calimero_app_state_bytes`, `calimero_app_blob_bytes`). Each app's scan
+    /// holds its group's read lock, as `GET /apps/{app}/storage` does.
+    pub fn sample_usage(&self) {
+        let hosted: Vec<(String, String)> = self.sys(|s| {
+            s.apps
+                .values()
+                .map(|a| (a.app_id.clone(), crate::usage::payer(a)))
+                .collect()
+        });
+        for (app, payer) in hosted {
+            let Some(g) = self.hosted(&app) else {
+                continue;
+            };
+            let stats = g.read_local(|m, _| m.storage_stats());
+            self.usage
+                .stored(&app, &payer, stats.bytes, stats.blob_bytes);
+        }
     }
 
     /// Count an appended entry that applied as a conflict.
@@ -1605,12 +1847,18 @@ impl Node {
         // A call writes: it may call out, under what its app declares and its
         // owner approved. Views, inits, migrations and a read-only member's
         // calls get no client.
+        let meter = self.meter(&req.app_id, bundle.as_deref().unwrap_or_default());
         if !read_only {
-            env.outbound = bundle
-                .as_deref()
-                .and_then(|b| self.outbound_for(&req.app_id, b));
+            env.outbound = bundle.as_deref().and_then(|b| {
+                self.outbound_for(
+                    &req.app_id,
+                    b,
+                    self.usage.outbound(&meter.app, &meter.payer),
+                )
+            });
         }
         let mut fresh_blobs = Vec::new();
+        let mut ran = false;
         let p = g
             .propose(|m, applied| {
                 if let Some(key) = &req.idempotency_key {
@@ -1636,7 +1884,8 @@ impl Node {
                         ..Outcome::default()
                     },
                     (Some(module), None) => {
-                        let (outcome, _ret) = off_workers(|| {
+                        ran = true;
+                        let (outcome, _ret) = self.metered(&meter, || {
                             Executor::run_bytes(
                                 module,
                                 &req.app_id,
@@ -1699,6 +1948,14 @@ impl Node {
             .map_err(|e| WriteError::Unavailable(e.to_string()))?;
         if p.appended {
             self.count_conflict(&applied);
+        }
+        // Counted once, by the run whose answer stood: a conflict runs again.
+        if ran && !applied.conflict {
+            let kind = match req.trigger {
+                None => RunKind::Mutation,
+                Some(_) => RunKind::FollowUp,
+            };
+            self.usage.called(&meter, kind);
         }
         if p.appended && !applied.conflict {
             self.kick.notify_one();
@@ -1787,6 +2044,8 @@ impl Node {
             }
         }
         let env = self.env(&req.app_id, &req.caller);
+        let meter = self.meter(&req.app_id, &bundle);
+        let mut ran = false;
         let p = g
             .propose(|m, _| {
                 if let Some(stale) = m.stale_module(current.as_deref()) {
@@ -1794,7 +2053,8 @@ impl Node {
                 }
                 let outcome = match &migrate {
                     Some(method) => {
-                        let outcome = off_workers(|| {
+                        ran = true;
+                        let outcome = self.metered(&meter, || {
                             Executor::migrate(
                                 &module,
                                 &req.app_id,
@@ -1821,6 +2081,9 @@ impl Node {
             .map_err(|e| WriteError::Unavailable(e.to_string()))?;
         if p.appended {
             self.count_conflict(&applied);
+        }
+        if ran && !applied.conflict {
+            self.usage.called(&meter, RunKind::Mutation);
         }
         Ok(applied)
     }
@@ -2105,10 +2368,11 @@ impl Node {
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
         let module = self.module_for(&bundle).await?;
         let mut env = self.env(&req.app_id, &req.caller);
-        Ok(g.read_local(|m, applied| {
+        let meter = self.meter(&req.app_id, &bundle);
+        let answer = g.read_local(|m, applied| {
             // Search answers from indexes brought up to this very state.
             env.search = self.search.for_view(&module, &bundle, m, applied);
-            let out = off_workers(|| {
+            let out = self.metered(&meter, || {
                 Executor::run(
                     &module,
                     &req.app_id,
@@ -2126,7 +2390,9 @@ impl Node {
                 error: out.error,
                 timeout: false,
             }
-        }))
+        });
+        self.usage.called(&meter, RunKind::View);
+        Ok(answer)
     }
 
     /// Run a read-only method. Its writes, if any, are discarded.
@@ -2202,8 +2468,10 @@ impl Node {
     }
 
     #[must_use]
-    /// Pick replicas for a new app: the least-loaded nodes whose release is in
-    /// `approved` (when the app's owner restricted releases).
+    /// Pick replicas for a new app among the nodes whose release is in
+    /// `approved` (when the app's owner restricted releases): spread over as
+    /// many zones as those nodes are in, least loaded first
+    /// ([`crate::placement::replicas`]).
     pub async fn place(
         &self,
         approved: Option<&std::collections::BTreeSet<String>>,
@@ -2221,25 +2489,7 @@ impl Node {
                 allowed.push(id);
             }
         }
-        self.sys(|s| {
-            let mut load: Vec<(usize, NodeId)> = allowed
-                .iter()
-                .map(|id| {
-                    (
-                        s.apps.values().filter(|a| a.replicas.contains(id)).count(),
-                        *id,
-                    )
-                })
-                .collect();
-            load.sort_unstable();
-            let mut picked: Vec<NodeId> = load
-                .into_iter()
-                .take(self.config.replicas)
-                .map(|(_, id)| id)
-                .collect();
-            picked.sort_unstable();
-            picked
-        })
+        self.sys(|s| crate::placement::replicas(s, &allowed, self.config.replicas))
     }
 
     /// Write encrypted snapshots of the app groups this node leads.

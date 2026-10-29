@@ -16,7 +16,7 @@ operator controls, and which settings break it.
 | The operator can | The operator cannot |
 | --- | --- |
 | Start, stop and place nodes; move app replicas between nodes | Read app state, blobs, account names or credentials: the Ops API has no read path into them |
-| See counts, Raft status and placement (`/ops/status`, `/ops/metrics`) | Open the disks: they are sealed under a key only an attested TD receives |
+| See counts, Raft status, placement and per-app usage by app and payer id (`/ops/status`, `/ops/metrics`) | Open the disks: they are sealed under a key only an attested TD receives |
 | Set quotas and trigger backups | Open a backup: snapshots are sealed under the same key |
 | Make the governance decisions the deployment gave the operator | Make the ones it gave the owners |
 
@@ -50,8 +50,13 @@ cluster)`: anyone can compute it. Never put real data on a `--dev` node.
 
 ## The storage key
 
-- K_r is derived from the KMS key and `--cluster`; every value on disk and every
-  snapshot is AES-256-GCM sealed under it, bound to its column, group and key.
+- K_r is derived from the KMS key and `--cluster`, and changes with each
+  mero-tee release (each has its own mero-kms). It wraps the cluster key K_c,
+  under which every value on disk and every snapshot is AES-256-GCM sealed,
+  bound to its column, group and key. A new node gets K_c from a peer, which
+  delivers it only to the attested TD at the address the operator registered
+  for that node
+  ([The cluster key](/protocol/encryption/#the-cluster-key-k_c)).
 - A TDX node takes the KMS key from mero-kms only, after mero-kms checks the
   node's quote, and only after the node checks mero-kms's quote against the
   signed release policy. `--storage-key` and `--storage-key-file` are refused
@@ -59,8 +64,14 @@ cluster)`: anyone can compute it. Never put real data on a `--dev` node.
 - The disk identity (`--kms-identity`) is shared by the cluster's nodes. It is
   the handle mero-kms derives the key for; it is not the key, and a host holding
   it still needs an attested TD to get the key.
+- mero-kms releases the key to any TD that matches the release policy, and a
+  node fetches it before it serves anything. A deployment that wants to check
+  a fresh TD first (its image, its merod) asks it for a release attestation
+  (`merod attest`, or `merod attest --serve` while it boots) and hands over the
+  cluster's identity only once that verifies
+  ([release attestations](/protocol/tee-attestation/#release-attestations)).
 
-From K_r the cluster also derives the cluster secret peers present, each
+From K_c the cluster also derives the cluster secret peers present, each
 app's TEE key (what `TeeSecret` state opens with), and a stand-in key per
 member and app.
 
@@ -144,13 +155,13 @@ declares.
 | `--kms-identity` | the disk identity | readable by the node only |
 | `{home}/meroctl/sessions.json` | saved sessions per node | mode `0600` (written so) |
 | `--dev-passkey` files | a software passkey's private key | development only |
-| `--backup-dir` | sealed snapshots | sealed under K_r; keep them anyway |
+| `--backup-dir` | sealed snapshots | sealed under K_c; keep them anyway |
 
 ## Known gaps
 
 The node's own notes (`crates/node/AGENTS.md`) list what is not done:
 no rollback counter (a host could restart a node on old state), no keys per app
-from mero-kms, no placement across zones, no restore of a snapshot into a
+from mero-kms, no restore of a snapshot into a
 running cluster, no event audiences, no pruning of revoked session ids, and
 search indexes rebuilt from state at each start, and no recovery when every
 mero-kms replica is lost: backups are sealed only under the cluster's key

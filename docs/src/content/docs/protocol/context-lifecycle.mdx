@@ -6,11 +6,42 @@ sidebar:
   order: 18
 ---
 
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
 An **app instance** (what `meroctl` still calls a *context*) is one running copy
 of a bundle with its own state and its own Raft group. Its directory record
 lives in the system group; its state lives only on its replicas.
 
 ## Create
+
+<SeqDiagram
+  id="d-app-create"
+  title="Creating an app instance"
+  lanes={[
+    { label: 'Client', color: '#f0883e' },
+    { label: 'Any node', color: '#3fb950' },
+    { label: 'System leader', color: '#a5ff11' },
+    { label: 'Replicas', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'sealed POST /apps { package, version, initArgs, org?, access? }' },
+    { from: 1, to: 1, label: 'passkey session or API key; resolve the release' },
+    { from: 1, to: 1, label: 'place: least-loaded nodes on an approved release' },
+    { from: 1, to: 2, label: 'CreateApp { replicas } (internal/system)' },
+    { from: 2, to: 2, label: 'apply: quota, membership, team writer → group number' },
+    { from: 2, to: 3, label: 'directory entry reaches every node', dashed: true },
+    { from: 3, to: 3, label: 'reconcile: start the group; first replica forms it' },
+    { from: 3, to: 3, label: 'leader runs init(initArgs), appends Init' },
+    { from: 1, to: 3, label: 'poll: init applied? (internal/app-ready)', dashed: true },
+    { from: 1, to: 0, label: '{ appId, contextId, group, replicas } or 422 INIT_FAILED', dashed: true },
+  ]}
+/>
+
+The node that takes the request does the checks it can, picks the replicas
+and proposes one system command; the system log is where the decision is
+made, so two racing creates cannot both exceed a quota. Nothing about the
+app's state exists until its own group forms on the replicas and its first
+leader runs `init`, which is why the answer waits for that entry.
 
 `POST /apps { name, package+version | bundle, service?, initArgs?, org?, access?, confirmMethods?, metadata? }`
 by a passkey session, an unscoped API key, or (for its own package) a
@@ -19,11 +50,19 @@ package-bound session:
 1. **Resolve the bundle.** A package release (installed from the registry
    first if the cluster lacks it) or, on a development cluster, a raw bundle
    hash.
-2. **Place.** The node picks the least-loaded nodes, up to `--replicas` (3 by
-   default), among those whose attested mero-tee release is approved to hold
-   the owner's (or the organization's) apps ([Release
+2. **Place.** The node picks `--replicas` nodes (3 by default) among those
+   whose attested mero-tee release is approved to hold the owner's (or the
+   organization's) apps ([Release
    approvals](/protocol/governance/#release-approvals)). No such node: `503`.
-   Placement across zones is not done in the node.
+   The replicas span as many zones as those nodes are in (the `zone` that
+   `POST /ops/nodes` registered), so an app outlives the loss of a zone
+   whenever the cluster has three: the least-loaded node (fewest replicas,
+   then the lower id) of each zone first, least-loaded zones first, and once
+   every zone holds one, the remaining replicas by load alone. Nodes without a
+   zone (every node from `--peers` until it is registered with one) count as
+   one unknown zone together, since nothing says they are apart; a cluster
+   with no zones is placed by load alone. Moves (`/ops/apps/{app}/replicas`)
+   go where the operator says.
 3. **Record.** `CreateApp` applies in the system group: the bundle must be
    known, the owner within their app quota, a member (at least `member`) of the
    organization if one is named, and a writer of the team for `access: team`.
@@ -75,10 +114,3 @@ An app is also deleted with its organization (`DELETE /orgs/{org}`, the owner
 with a passkey step-up) and with the team it is deployed to (`DeleteTeam` takes
 the team, the teams below it, and their apps).
 
-:::note[v1 comparison]
-v1 distinguished three kinds of leave (a local opt-out, a published group
-leave, a namespace leave), a delete that kept history, and tombstone garbage
-collection, because every member held a replica. Here members hold none: losing
-access is a system command, and deleting an instance removes it from every node
-that held it.
-:::

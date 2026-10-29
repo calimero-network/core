@@ -32,6 +32,8 @@ calimero-tee-release.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 calimero-node.workspace = true
+# A verified-quote result without TDX, for the measurement checks' tests.
+calimero-tee-attestation = { workspace = true, features = ["mock-attestation"] }
 tempfile.workspace = true
 
 [features]

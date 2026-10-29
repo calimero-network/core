@@ -1,5 +1,5 @@
 //! `merod`: the Calimero node. v1's command line (`--home`, `--node`, `init`,
-//! `run`, `config`, `kms`) over the node (`calimero-node`):
+//! `run`, `config`, `kms`, and `attest`) over the node (`calimero-node`):
 //! attested, one Raft log per app.
 
 use std::collections::BTreeMap;
@@ -62,6 +62,120 @@ enum Cmd {
     /// The data-disk key from mero-kms (for a TEE boot script).
     #[command(subcommand)]
     Kms(KmsCmd),
+    /// A release attestation: a quote over a nonce and this merod's release,
+    /// made without any KMS key, so a manager can check the image before
+    /// mero-kms releases a key to it.
+    Attest(AttestArgs),
+}
+
+/// `merod attest`: one quote, or (`--serve`) one per request. Reads the
+/// node's configuration if there is one, and nothing else of its state.
+#[derive(Debug, Args)]
+struct AttestArgs {
+    /// The verifier's nonce, 32 bytes hex [default: a random one].
+    #[arg(long, conflicts_with = "serve")]
+    nonce: Option<String>,
+    /// Write the attestation to this file instead of stdout.
+    #[arg(long, conflicts_with = "serve")]
+    out: Option<PathBuf>,
+    /// The output format.
+    #[arg(long, value_enum, default_value_t = AttestFormat::Json)]
+    format: AttestFormat,
+    /// Bind this libp2p identity's peer id (a protobuf keypair file; read,
+    /// never created) [default: the configured `--kms-identity`, if it exists].
+    #[arg(long)]
+    identity: Option<PathBuf>,
+    /// Serve `GET /attestation/release?nonce=` on this address until stopped
+    /// (SIGINT or SIGTERM), each answer a fresh quote over the caller's nonce.
+    #[arg(long)]
+    serve: Option<std::net::SocketAddr>,
+    /// A mock quote (development; what `run --dev` attests with).
+    #[arg(long, env = "MEROD_DEV", num_args = 0..=1, default_missing_value = "true")]
+    dev: Option<bool>,
+    /// The mero-tee release this image is.
+    #[arg(long, env = "MERO_TEE_VERSION")]
+    tee_release: Option<String>,
+    /// The mero-tee image profile.
+    #[arg(long, env = "MERO_TEE_PROFILE")]
+    tee_profile: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum AttestFormat {
+    Json,
+}
+
+/// What this merod claims in a release attestation.
+fn release_claim(
+    args: &AttestArgs,
+    config: &NodeArgs,
+) -> eyre::Result<calimero_node::attest::release::ReleaseClaim> {
+    let exe = std::env::current_exe()?;
+    let binary = std::fs::read(&exe).map_err(|e| eyre::eyre!("reading {}: {e}", exe.display()))?;
+    let identity = match (&args.identity, &config.kms_identity) {
+        (Some(path), _) => Some(calimero_kms_client::disk_key::identity_peer_id(path)?),
+        (None, Some(path)) if path.exists() => {
+            Some(calimero_kms_client::disk_key::identity_peer_id(path)?)
+        }
+        (None, _) => None,
+    };
+    Ok(calimero_node::attest::release::ReleaseClaim {
+        merod_version: env!("CARGO_PKG_VERSION").to_owned(),
+        merod_sha256: Some(hex::encode(calimero_identity::sha256(&binary))),
+        tee_release: args
+            .tee_release
+            .clone()
+            .or_else(|| config.tee_release.clone()),
+        tee_profile: args
+            .tee_profile
+            .clone()
+            .or_else(|| config.tee_profile.clone()),
+        identity,
+    })
+}
+
+async fn attest(home: Option<&PathBuf>, args: AttestArgs) -> eyre::Result<()> {
+    let config = effective(home, NodeArgs::default())?;
+    let mode = if args.dev.or(config.dev).unwrap_or(false) {
+        Mode::Mock
+    } else {
+        Mode::Tdx
+    };
+    let claim = release_claim(&args, &config)?;
+    if let Some(listen) = args.serve {
+        let stop = async {
+            let mut term =
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    Ok(term) => term,
+                    Err(_) => {
+                        let _ = tokio::signal::ctrl_c().await;
+                        return;
+                    }
+                };
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            }
+        };
+        eprintln!("serving GET /attestation/release on {listen}");
+        return calimero_node::attest::serve_release(listen, mode, claim, stop).await;
+    }
+    let nonce: [u8; 32] = match &args.nonce {
+        Some(h) => hex::decode(h)
+            .ok()
+            .and_then(|v| v.try_into().ok())
+            .ok_or_else(|| eyre::eyre!("--nonce must be 32 bytes hex"))?,
+        None => calimero_identity::random::<32>(),
+    };
+    let doc = calimero_node::attest::release_attestation(mode, &nonce, claim)?;
+    let text = match args.format {
+        AttestFormat::Json => serde_json::to_string_pretty(&doc)?,
+    };
+    match &args.out {
+        Some(path) => std::fs::write(path, text + "\n")?,
+        None => println!("{text}"),
+    }
+    Ok(())
 }
 
 #[derive(Debug, Subcommand)]
@@ -114,7 +228,7 @@ struct InspectArgs {
     /// The data directory (default: the `--node`'s).
     #[arg(long)]
     data_dir: Option<PathBuf>,
-    /// The storage key K_r, hex, in a file.
+    /// The storage key K_r, hex, in a file (it unwraps the cluster key).
     #[arg(long)]
     storage_key_file: Option<PathBuf>,
 }
@@ -332,12 +446,17 @@ async fn main() -> eyre::Result<()> {
     } else {
         "info,openraft=warn"
     };
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| default_filter.into()),
-        )
-        .init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| default_filter.into());
+    // `attest` prints its answer on stdout, so its logs go to stderr.
+    if matches!(cli.cmd, Cmd::Attest(_)) {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
     let home = cli.node.as_ref().map(|n| cli.home.join(n));
     let name = cli.node.clone().unwrap_or_default();
     match cli.cmd {
@@ -387,5 +506,6 @@ async fn main() -> eyre::Result<()> {
             inspect(&data_dir, &args)
         }
         Cmd::Kms(KmsCmd::DiskKey(cmd)) => cmd.run().await,
+        Cmd::Attest(args) => attest(home.as_ref(), args).await,
     }
 }

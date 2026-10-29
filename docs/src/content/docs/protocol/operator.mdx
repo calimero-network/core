@@ -36,8 +36,8 @@ the operator that decision:
 | Route | Decision |
 | --- | --- |
 | `POST /ops/releases { version, approved }` | Release approvals, for every app |
-| `POST /ops/apps/{app}/upgrade`, `POST /ops/orgs/{org}/upgrade` | App upgrades, to a release it installed |
-| `POST /ops/packages`, `/ops/packages/install`, `GET /ops/packages`, `DELETE /ops/packages/{p}[/{v}]` | Installing the releases it upgrades to (it removes only what it installed) |
+| `POST /ops/apps/{app}/upgrade`, `POST /ops/orgs/{org}/upgrade` | App upgrades, to a release it installed or one the app's owner may see |
+| `POST /ops/packages`, `/ops/packages/install`, `GET /ops/packages`, `DELETE /ops/packages/{p}[/{v}]` | Installing the releases it upgrades to (it lists and removes only what it installed) |
 | `POST /ops/outbound { package, prefixes, replace }` | Outbound approvals, for every app |
 
 Elsewhere, the operator configures the node: the outbound policy (which hosts
@@ -75,11 +75,5 @@ Restoring a snapshot into a running cluster is not done yet.
 
 `merod inspect` reads a stopped node's store: without the storage key, the
 layout and sealed sizes only; with it, each group's metadata (vote, applied
-index, membership). It is the counterpart of v1's `merodb`.
+index, membership).
 
-:::note[v1 comparison]
-v1's operator ran their own node and its admin API could read everything that
-node held. Here the operator runs other people's nodes, so the line moved: the
-operator sees enough to keep the cluster running, and the people whose data it
-holds see — through attestation — what the operator is allowed to change.
-:::

@@ -15,6 +15,8 @@ use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+pub mod release;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Release {
@@ -257,11 +259,11 @@ async fn fetch_release(
 }
 
 /// The release a node names, checked against the floor, before anything is fetched.
-fn claimed_release(doc: &AttestationDoc, min_version: Option<&str>) -> eyre::Result<String> {
+fn claimed_release(named: &str, min_version: Option<&str>) -> eyre::Result<String> {
     use calimero_tee_release::{
         compare_release_versions, normalize_release_version, NODE_RELEASE_TAG_PREFIX,
     };
-    let version = normalize_release_version(&doc.release.version, NODE_RELEASE_TAG_PREFIX)
+    let version = normalize_release_version(named, NODE_RELEASE_TAG_PREFIX)
         .map_err(|e| eyre::eyre!("the node names no valid mero-tee release: {e}"))?;
     if let Some(floor) = min_version {
         match compare_release_versions(&version, floor) {
@@ -327,7 +329,56 @@ async fn verify_report(
     policy: &Policy,
     expected: &[u8; 64],
 ) -> eyre::Result<()> {
-    let quote = STANDARD.decode(&doc.quote)?;
+    let _verified = verify_quote(&doc.quote, &doc.release.version, nonce, policy, expected).await?;
+    Ok(())
+}
+
+/// The measurement registers of a quote, hex, as the quote carries them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QuoteMeasurements {
+    pub mrtd: String,
+    pub rtmr0: String,
+    pub rtmr1: String,
+    pub rtmr2: String,
+    pub rtmr3: String,
+}
+
+impl QuoteMeasurements {
+    /// The registers of a parsed quote.
+    #[must_use]
+    pub fn of(body: &calimero_tee_attestation::QuoteBody) -> Self {
+        Self {
+            mrtd: body.mrtd.clone(),
+            rtmr0: body.rtmr0.clone(),
+            rtmr1: body.rtmr1.clone(),
+            rtmr2: body.rtmr2.clone(),
+            rtmr3: body.rtmr3.clone(),
+        }
+    }
+}
+
+/// What a verified real quote showed: its registers, and the release profile
+/// they matched (with [`Measurements::Release`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedQuote {
+    pub measurements: QuoteMeasurements,
+    pub profile: Option<String>,
+}
+
+/// The one quote check behind every verifier here: `quote_b64` is genuine (or
+/// a mock `policy` allows), comes from an image `policy` trusts (judged
+/// against the release the node names, `release`), and its report data is
+/// exactly `expected`. Answers the verified registers of a real quote, `None`
+/// for a mock.
+pub(crate) async fn verify_quote(
+    quote_b64: &str,
+    release: &str,
+    nonce: &[u8; 32],
+    policy: &Policy,
+    expected: &[u8; 64],
+) -> eyre::Result<Option<VerifiedQuote>> {
+    let quote = STANDARD.decode(quote_b64)?;
     if quote.starts_with(MOCK_QUOTE_HEADER) {
         if !policy.allow_mock {
             eyre::bail!("mock quote refused: this client only trusts real TEEs");
@@ -339,7 +390,7 @@ async fn verify_report(
         if report != expected {
             eyre::bail!("the quote does not bind this key, app and nonce");
         }
-        return Ok(());
+        return Ok(None);
     }
     // Refuse what no policy could admit before reaching for the network.
     let release = match &policy.measurements {
@@ -350,7 +401,7 @@ async fn verify_report(
         }
         Measurements::Pinned(_) => None,
         Measurements::Release { min_version, .. } => Some(claimed_release(
-            doc,
+            release,
             Some(min_version.as_deref().unwrap_or(DEFAULT_MIN_RELEASE)),
         )?),
     };
@@ -359,9 +410,20 @@ async fn verify_report(
     let result = calimero_tee_attestation::verify_attestation(&quote, nonce, &second)
         .await
         .map_err(|e| eyre::eyre!("quote verification: {e:?}"))?;
+    judge(&result, policy, release).await.map(Some)
+}
+
+/// A cryptographically checked quote against `policy`'s measurements:
+/// `release` is the (floor-checked) release a [`Measurements::Release`]
+/// policy reads the allowed registers from.
+async fn judge(
+    result: &calimero_tee_attestation::VerificationResult,
+    policy: &Policy,
+    release: Option<String>,
+) -> eyre::Result<VerifiedQuote> {
     let b = &result.quote.body;
-    let profile = match (&policy.measurements, release) {
-        (Measurements::Pinned(m), _) => m.clone(),
+    let (profile, matched) = match (&policy.measurements, release) {
+        (Measurements::Pinned(m), _) => (m.clone(), None),
         (
             Measurements::Release {
                 allowed_profiles, ..
@@ -398,14 +460,17 @@ async fn verify_report(
                         allowed_profiles.join(", ")
                     )
                 })?;
-            release.profiles[name].clone()
+            (release.profiles[name].clone(), Some(name.to_owned()))
         }
         _ => eyre::bail!("real quote refused: no measurement policy"),
     };
     result
         .policy_valid(&verifier_policy(&profile, &policy.allowed_tcb_statuses))
         .map_err(|r| eyre::eyre!("quote refused: {r:?}"))?;
-    Ok(())
+    Ok(VerifiedQuote {
+        measurements: QuoteMeasurements::of(b),
+        profile: matched,
+    })
 }
 
 /// Attests a node's transport key over HTTP, for the sealed client.
@@ -551,6 +616,50 @@ mod tests {
             err.to_string().contains("no valid mero-tee release"),
             "{err}"
         );
+    }
+
+    /// A quote that passed the cryptographic check, from a TD whose registers
+    /// are all zero (a mock quote's, re-labelled as a real platform's verdict).
+    fn checked_quote() -> calimero_tee_attestation::VerificationResult {
+        let mut report = [0; 64];
+        report[..32].copy_from_slice(&[2; 32]);
+        let quote = calimero_tee_attestation::generate_mock_attestation(report).quote_bytes;
+        let mut result =
+            calimero_tee_attestation::verify_mock_attestation(&quote, &[2; 32], &[0; 32]).unwrap();
+        result.tcb_status = Some("UpToDate".into());
+        result
+    }
+
+    fn pinned(mrtd: &str) -> Policy {
+        let zero = "00".repeat(48);
+        Policy {
+            measurements: Measurements::Pinned(calimero_tee_release::ProfileMeasurements {
+                allowed_mrtd: vec![mrtd.to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec![zero.clone()],
+                allowed_rtmr2: vec![zero.clone()],
+                allowed_rtmr3: vec![zero],
+            }),
+            ..Policy::default()
+        }
+    }
+
+    /// The step every real quote passes after DCAP: registers outside the
+    /// allowlist are refused, and the verified registers are answered.
+    #[tokio::test]
+    async fn a_checked_quote_from_another_image_is_refused() {
+        let result = checked_quote();
+        let ok = judge(&result, &pinned(&"00".repeat(48)), None)
+            .await
+            .unwrap();
+        assert_eq!(ok.measurements.mrtd, "00".repeat(48));
+        assert_eq!(ok.profile, None);
+        let err = judge(&result, &pinned(&"ab".repeat(48)), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("MeasurementMismatch"), "{err}");
+        let err = judge(&result, &Policy::default(), None).await.unwrap_err();
+        assert!(err.to_string().contains("no measurement policy"), "{err}");
     }
 
     #[test]
