@@ -96,7 +96,8 @@ each app group it leads that has moved since its last one:
 on a node with `meroctl ops backup` (it answers `{ written }`).
 
 - Snapshots are the Raft snapshot files as written, sealed frame by frame under
-  K_r; only a node of the same cluster (or a tool holding K_r) opens them.
+  the cluster key K_c; only a node of the same cluster, on any release (or a
+  tool holding K_c), opens them.
 - Only leaders write, so collect `--backup-dir` from every node; the newest
   file per app is the newest backup.
 - Copy them off the machine; the directory stands in for object storage.
@@ -104,7 +105,7 @@ on a node with `meroctl ops backup` (it answers `{ written }`).
 <Aside type="caution" title="Restore is not implemented">
   There is no route or command that restores a snapshot into a running
   cluster (the node's notes list it as not done). `calimero_node::backup::latest`
-  opens the newest snapshot of an app with K_r, which is what a restore tool
+  opens the newest snapshot of an app with K_c (`Node::cluster_key`), which is what a restore tool
   would build on. The system group (accounts, organizations, the directory) is
   not in these backups; it lives in memory on every node and in their Raft
   snapshots.
@@ -143,7 +144,13 @@ app's data moves only to nodes on a release approved for it.
 2. **Raise the peers' floor** only after every node runs the new release:
    `--peer-min-release` on nodes, `--min-release` on clients.
 
-3. **Start nodes on the new image** and [add them](#add-a-node).
+3. **Start nodes on the new image** and [add them](#add-a-node). Their K_r
+   comes from the new release's mero-kms and differs from the old nodes';
+   each new node waits, answering `/health` with a `waiting` field, until it
+   is registered (`/ops/nodes`) and a peer delivers the cluster key K_c to
+   its address, by attestation (up to 10 minutes; then it exits and is
+   restarted)
+   ([The cluster key](/protocol/encryption/#the-cluster-key-k_c)).
 
 4. **Move each app** onto nodes on the new release with
    [`ops move`](#move-an-apps-replicas). A move onto a node whose release the
@@ -154,11 +161,13 @@ app's data moves only to nodes on a release approved for it.
 
 </Steps>
 
-<Aside type="caution" title="Not confirmed here">
-  Restarting an existing node on a new image with its old data directory
-  depends on mero-kms releasing the same key to the new image, which is
-  mero-kms's policy, not core's. A data directory from an earlier `merod`
-  storage format (`log.redb`) is migrated at start.
+<Aside type="caution" title="New nodes, not new images under old nodes">
+  A node does not move to a new release in place: the new release's mero-kms
+  gives it another K_r, which does not unwrap its `cluster-key` file, and it
+  stops with "this node's storage key does not open its cluster key". Retire
+  the old release's mero-kms only once no node of that release remains: a node
+  of it that restarts afterwards cannot open its disk. A data directory from an
+  earlier `merod` storage format (`log.redb`) is migrated at start.
 </Aside>
 
 ## Upgrade apps
@@ -224,7 +233,8 @@ merod --node n1 inspect --storage-key-file k_r.hex   # plus each group's vote, a
 ```
 
 Stop the node first: `inspect` opens the store for writing. The key file holds
-K_r as 64 hex characters, which only a development node gives you directly.
+K_r as 64 hex characters, which only a development node gives you directly;
+`inspect` unwraps the cluster key from `<data-dir>/cluster-key` with it.
 
 ## Clean up a development cluster
 

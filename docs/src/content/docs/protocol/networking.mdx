@@ -98,8 +98,9 @@ peer's attestation named is remembered, which is what the
 [release gate](/protocol/governance/#release-approvals) reads.
 
 Inside that session every internal request also carries `x-cluster-auth`, the
-**cluster secret** `HMAC-SHA256(K_r, "calimero.cluster.v1|" ‖ cluster)`, which
-only nodes holding the cluster's storage key can compute. `/internal/*` routes
+**cluster secret** `HMAC-SHA256(K_c, "calimero.cluster.v1|" ‖ cluster)`, which
+only nodes holding the cluster key K_c can compute
+([Encryption](/protocol/encryption/#the-cluster-key-k_c)). `/internal/*` routes
 refuse a request without it, compared in constant time.
 
 Raft itself is an RPC: `POST /internal/raft { group, rpc }` carries an

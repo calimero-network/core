@@ -24,9 +24,10 @@ use calimero_identity::{
 use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::{info, warn};
 
 use crate::app::{Applied, Status};
-use crate::attest::{quote, report_data, AttestationDoc, Release};
+use crate::attest::{quote, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::{CallRequest, Node, ViewRequest};
 use crate::system::SystemCmd;
@@ -453,18 +454,7 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         transport_key: hex::encode(transport_key),
         app_hash: hex::encode(app_hash),
         nonce: hex::encode(nonce),
-        release: Release {
-            version: node
-                .config
-                .tee_release
-                .clone()
-                .unwrap_or_else(|| node.config.release.clone()),
-            profile: match (&node.config.tee_profile, node.config.attestation) {
-                (_, crate::attest::Mode::Mock) => "mock".into(),
-                (Some(p), _) => p.clone(),
-                (None, _) => "tdx".into(),
-            },
-        },
+        release: node.config.attested_release(),
         cluster: node.config.cluster.clone(),
         node: node.config.node_id,
         mock: node.config.attestation == crate::attest::Mode::Mock,
@@ -3577,6 +3567,61 @@ fn peer_only(node: &Node, headers: &HeaderMap) -> Result<(), ApiError> {
     }
 }
 
+/// How many cluster-key requests one node judges at once (each verifies a
+/// quote, which in TDX mode fetches a release); past it, `429`.
+pub const MAX_CONCURRENT_KEY_RELEASES: usize = 4;
+
+/// `POST /internal/cluster-key`: a new node (often of another mero-tee
+/// release, so without the cluster secret) asks for K_c. It is delivered, not
+/// answered: to the address the cluster has for that node id (registered, or
+/// in this node's `--peers`), inside a sealed channel to the key the TD there
+/// attests (`cluster_key::deliver`). Refused for another cluster, an unknown
+/// or removed node id; at most `MAX_CONCURRENT_KEY_RELEASES` at once.
+async fn internal_cluster_key(
+    State(node): State<Arc<Node>>,
+    Json(body): Json<crate::cluster_key::Request>,
+) -> ApiResult {
+    let Ok(_permit) = node.key_releases.try_acquire() else {
+        return Err(ApiError::new(
+            429,
+            "BUSY",
+            "too many cluster-key requests; retry",
+        ));
+    };
+    if body.cluster != node.config.cluster {
+        return Err(ApiError::forbidden("another cluster"));
+    }
+    let id = body.node;
+    let addr = node.sys(|s| {
+        if s.removed_nodes.contains(&id) {
+            return None;
+        }
+        s.nodes
+            .get(&id)
+            .map(|n| n.addr.clone())
+            .or_else(|| node.config.peers.get(&id).cloned())
+    });
+    let Some(addr) = addr else {
+        return Err(ApiError::forbidden(
+            "not a node of this cluster: register it (/ops/nodes) first",
+        ));
+    };
+    crate::cluster_key::deliver(
+        &node.config,
+        &node.http,
+        &addr,
+        &body.token,
+        node.cluster_key(),
+    )
+    .await
+    .map_err(|e| {
+        warn!(node = id, error = %format!("{e:#}"), "could not deliver the cluster key");
+        ApiError::forbidden("the cluster key could not be delivered to that node's address")
+    })?;
+    info!(node = id, "delivered the cluster key");
+    Ok(Json(json!({ "delivered": true })))
+}
+
 #[derive(Deserialize)]
 struct RaftBody {
     group: u64,
@@ -4711,6 +4756,7 @@ pub fn router(node: Arc<Node>) -> Router {
         )
         .route("/orgs/{org}/invites", post(invite_create))
         .route("/invites/{token}/redeem", post(invite_redeem))
+        .route("/internal/cluster-key", post(internal_cluster_key))
         .route("/internal/raft", post(internal_raft))
         .route("/internal/system", post(internal_system))
         .route("/internal/system/index", post(internal_system_index))

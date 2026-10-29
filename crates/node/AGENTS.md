@@ -37,7 +37,7 @@ is its command line.
   Commands carry their `actor`; `apply` checks authority, so the log decides.
 - **Routing** (`node.rs`): system writes go to the system leader, calls and strong
   views to the app's leader, over **peer sealed channels** (`internal/*`) whose key
-  is attested like any client's, plus the cluster secret (HMAC of K_r).
+  is attested like any client's, plus the cluster secret (HMAC of K_c).
 - **API** (`api.rs`), all inside the sealed channel except `/attestation` and `/health`:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/internal/*` (peers), `/ops/*` (mdma: counts only, no read path).
@@ -316,7 +316,7 @@ is its command line.
   `#[app::tee(every = "..")]` method once per period (`Trigger::Timer`, the
   last tick per method in `AppState::timer_ticks`). Such a run and a `tee:`
   handler author as `AccountId::TEE_AUTHORITY` with `tee_trigger`, open and
-  seal with the app's TEE key (`backup::tee_key`, from K_r), and seal a
+  seal with the app's TEE key (`backup::tee_key`, from K_c), and seal a
   member's share to the key the node keeps for them (`backup::member_key`):
   their account is their one device (`SealingContext::stand_ins`), and only
   their own runs open with it. ABI facts (timers, handlers, xcall entry
@@ -342,7 +342,7 @@ is its command line.
   oldest first from a ring per TTL class), events a ring of `EVENT_RING` (`rows::EVENT`).
   Runs read through `StateRead` (`KvView` for the app, a `BTreeMap` in tests); the
   system group stays in memory (`Machine::IN_MEMORY`). Backups (`Node::backup`) copy the
-  group's sealed snapshot file; `backup::latest` opens one with K_r.
+  group's sealed snapshot file; `backup::latest` opens one with K_c.
 - **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
   its applied index, `internal/system/index`; this replica waits for it). Org
   and team reads use it, and so does an access check before it refuses.
@@ -356,7 +356,23 @@ is its command line.
   fetched by merod itself (`--kms-url --kms-identity`; `calimero-kms-client`:
   release-policy-verified KMS, key sealed to the TD). The boot script uses the same
   client for the data disk's key (`merod kms disk-key`). The cluster's nodes share
-  the disk identity, so they share K_r.
+  the disk identity, so the nodes of one release share K_r; every release has its
+  own mero-kms root, so K_r changes at each release upgrade.
+- **Cluster key** (`cluster_key.rs`): K_c seals the store, snapshots, backups and
+  feeds the cluster secret, TEE, member and component-cache keys, so data
+  outlives a release. Kept in `<data_dir>/cluster-key`, wrapped under K_r. The
+  founder (`--bootstrap`) and a store from before K_c take K_c = K_r (nothing on
+  disk changes). A node on an empty data directory (`run`, before `Node::start`)
+  serves only `/health` (`waiting`), `/attestation` and
+  `/internal/cluster-key/deliver` while it asks its `--peers`
+  (`POST /internal/cluster-key { cluster, node, token }`, no cluster secret); a
+  peer never answers with K_c but delivers it (`cluster_key::deliver`) to the
+  address registered for that node id (or in its own `--peers`; not removed),
+  over a fresh sealed channel attested under the peer policy, with the token
+  (`MAX_CONCURRENT_KEY_RELEASES`). A K_r that does not unwrap the file stops the
+  node: no in-place move to a new release. Regressions:
+  `nodes_on_the_next_release_keep_the_data_of_the_ones_before`,
+  `the_cluster_key_goes_only_to_the_address_of_a_node_the_cluster_knows`.
 - **Peers' quotes** are judged like a client's (`calimero_client::Measurements`):
   in TDX mode the signed mero-tee release the peer names, profiles from
   `--peer-profiles` (default: this node's `MERO_TEE_PROFILE`), floor `--peer-min-release`.
@@ -381,7 +397,7 @@ API and system group. What differs from the wasmer path:
 
 - **Engine and host** (`node/component.rs`): one `WasmtimeEngine` per node
   (`Node::app_engine`), compiled artifacts cached under `<data_dir>/components`, each
-  with a MAC under a key derived from K_r (S8). `Node::prepared_for` prepares a bundle
+  with a MAC under a key derived from K_c (S8). `Node::prepared_for` prepares a bundle
   once (single-flight, Ruling 44; `concurrent_first_uses_of_a_bundle_prepare_it_once`).
   `POST /bundles` and package installs run the engine's `prepare` on a component
   where they compile a core module on wasmer.

@@ -23,10 +23,11 @@ The session keys come from ephemeral keys on both sides, so a session that has
 ended (after an hour at most) cannot be opened later, not even with the node's
 transport key. See [Networking & sealed channels](/protocol/networking/).
 
-## At rest: the storage key K_r
+## At rest: the storage key K_r and the cluster key K_c
 
 Each node's data — every Raft entry, vote, state row, snapshot frame and blob —
-is sealed under one 32-byte **storage key**, K_r.
+is sealed under one 32-byte **cluster key**, K_c, which the node keeps on disk
+wrapped under its **storage key**, K_r, from mero-kms.
 
 ```text
 K_r = HKDF-SHA256(ikm = KMS key, salt = "calimero.cloud.storage.v1", info = cluster name)
@@ -44,16 +45,57 @@ K_r = HKDF-SHA256(ikm = KMS key, salt = "calimero.cloud.storage.v1", info = clus
   `merod kms disk-key` fetches the same key for a boot script and writes it only to tmpfs
   or ramfs; `merod run` accepts such a file only with `--dev` today. A `--dev`
   node without a key derives a development key from the cluster name.
-- **Shared by the cluster.** mero-kms derives a key per identity, and the
-  nodes of one cluster share one disk identity, so they derive the same K_r.
-  That is what lets a follower open a leader's snapshot frames as they are, and
-  what makes the cluster secret computable by members only.
+- **Shared by the cluster's nodes of one release.** mero-kms derives a key
+  per identity, and the nodes of one cluster share one disk identity, so they
+  derive the same K_r.
 - **Bound to the cluster.** The cluster name is the HKDF info, so the same KMS
   key gives another cluster a different K_r.
+- **Bound to the release.** Each mero-tee release has a mero-kms cluster of
+  its own whose random root lives only in its replicas' memory (mero-tee
+  `docs/design/gcp-tdx-kms.md`, "Lifecycle"), so a node of the next release
+  gets another K_r, and once a release's KMS is retired its K_r is gone for
+  good.
+
+### The cluster key K_c
+
+K_r changes with every release, but a cluster's data outlives releases: a
+release upgrade starts nodes on the new image, moves every app onto them and
+retires the old ones ([Upgrade the cluster's release](/operate/runbooks/#upgrade-the-clusters-release)).
+So nothing the nodes share is keyed by K_r itself (`calimero_node::cluster_key`):
+
+- **Minted once.** The founding node (`--bootstrap`) takes its own K_r as
+  K_c. A node whose store was written before K_c existed does the same: its
+  data is sealed under K_r, which was then the cluster's only key, so nothing
+  on disk changes.
+- **Wrapped per release.** Every node keeps K_c in `<data-dir>/cluster-key`,
+  AES-256-GCM under `HMAC-SHA256(K_r, "calimero.cluster-key.wrap.v1")`, and
+  unwraps it at each start. A K_r that does not open it (the same disk booted
+  on another release's KMS) stops the node: a node does not move to a new
+  release in place.
+- **Delivered to new nodes by attestation.** A node starting on an empty data
+  directory without `--bootstrap` serves only `/health` (with a `waiting`
+  field), `/attestation` and a delivery route, and asks its `--peers` for K_c
+  (`POST /internal/cluster-key { cluster, node, token }`, inside the sealed
+  channel to a peer whose quote it verified), every second for up to 10
+  minutes (`cluster_key::WAIT`). The peer never answers with the key. It
+  delivers it to the address the cluster has for that node id (registered
+  with `/ops/nodes`, or in the peer's own `--peers`; not a removed node),
+  inside a sealed channel to the key the TD at that address attests, judged
+  like any peer (`--peer-profiles`, `--peer-min-release`)
+  (`POST /internal/cluster-key/deliver { token, key }`). The waiting node takes
+  it only with its own random token, which travelled only to an attested peer.
+  So K_c reaches only a genuine TD at an address the operator chose, the same
+  bar the shared disk identity sets for K_r (mdma stamps it only after
+  attesting the instance). At most `MAX_CONCURRENT_KEY_RELEASES` (4) requests
+  are handled at once.
+
+The route takes no cluster secret, since the new node has none yet. Release
+approvals still decide which apps' data reaches the new node
+(`Node::may_send`): K_c opens what a node holds, not what it may receive.
 
 ### How a value is sealed
 
-`calimero-log`'s store seals every value with AES-256-GCM under K_r, with a
+`calimero-log`'s store seals every value with AES-256-GCM under K_c, with a
 fresh random nonce, and binds it (as associated data) to its column, its group
 and its key. A value moved to another row, group or column fails to open. A
 state machine can also **hide** a key: the row is then keyed by an HMAC of the
@@ -65,19 +107,24 @@ Snapshots are files of sealed frames, each frame's associated data naming its
 group, snapshot, position and whether it is the last, so frames cannot be
 reordered or truncated unnoticed. Backups are copies of those files.
 
-## Keys derived from K_r
+## Keys derived from K_c
 
 | Key | Derivation | Used for |
 | --- | --- | --- |
-| Cluster secret | `HMAC-SHA256(K_r, "calimero.cluster.v1\|" ‖ cluster)` | `x-cluster-auth` on internal routes |
-| App TEE key | `HMAC-SHA256(K_r, "calimero.tee.v1\|" ‖ app)` | Values sealed to the app's TEE (`TeeSecret`, a timer's own state) |
-| Member key | `HMAC-SHA256(K_r, "calimero.member.v1\|" ‖ app ‖ "\|" ‖ account)` | A member's sealed share, opened only in that member's own runs |
-| Hidden-key HMAC key | `HMAC-SHA256(K_r, "calimero.log.hidden-keys.v1")` | Hiding row keys in the store |
-| Snapshot key | `HMAC-SHA256(K_r, "calimero.log.snapshot.v1")` | Sealing snapshot frames |
+| Cluster secret | `HMAC-SHA256(K_c, "calimero.cluster.v1\|" ‖ cluster)` | `x-cluster-auth` on internal routes |
+| App TEE key | `HMAC-SHA256(K_c, "calimero.tee.v1\|" ‖ app)` | Values sealed to the app's TEE (`TeeSecret`, a timer's own state) |
+| Member key | `HMAC-SHA256(K_c, "calimero.member.v1\|" ‖ app ‖ "\|" ‖ account)` | A member's sealed share, opened only in that member's own runs |
+| Hidden-key HMAC key | `HMAC-SHA256(K_c, "calimero.log.hidden-keys.v1")` | Hiding row keys in the store |
+| Snapshot key | `HMAC-SHA256(K_c, "calimero.log.snapshot.v1")` | Sealing snapshot frames (streamed to followers as they are) |
+| Component cache key | from K_c (`component_cache_key`) | The MAC on compiled components in `<data-dir>/components` |
 
-Every node derives the same keys, and nothing outside the cluster can. Per-app
-keys from mero-kms, which would let an app's data be opened only where that
-app is placed, are not done yet: today one K_r covers every app on the cluster.
+Every node, of every release, derives the same keys, and nothing outside the
+cluster can. These derivations are the ones K_r fed before K_c existed, so a
+cluster founded earlier keeps every value, and a next-release node opens them
+(regression: `nodes_on_the_next_release_keep_the_data_of_the_ones_before`).
+Per-app keys from mero-kms, which would let an app's data be opened only where
+that app is placed, are not done yet: today one K_c covers every app on the
+cluster.
 
 ## What an observer can still see
 

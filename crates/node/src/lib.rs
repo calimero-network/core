@@ -17,6 +17,7 @@ pub mod app;
 pub mod app_host;
 pub mod attest;
 pub mod backup;
+pub mod cluster_key;
 pub mod component;
 pub mod error;
 pub mod idempotency;
@@ -99,8 +100,10 @@ fn cors(node: &Arc<Node>) -> tower_http::cors::CorsLayer {
 /// Start a node and serve its API until stopped.
 pub async fn run(config: Config) -> eyre::Result<Running> {
     let listener = TcpListener::bind(config.listen).await?;
+    // A new node waits here, serving only what lets a peer deliver K_c.
+    let (cluster_key, listener) = cluster_key::resolve(&config, listener).await?;
     let addr = listener.local_addr()?;
-    let node = Node::start(config).await?;
+    let node = Node::start(config, cluster_key).await?;
     let shutdown = CancellationToken::new();
 
     // The sealed envelope wraps the router from outside, so an opened request

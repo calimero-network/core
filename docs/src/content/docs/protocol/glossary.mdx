@@ -67,7 +67,11 @@ what sealed sessions are opened to.
 **Sealed channel** — Noise NK sessions to the transport key carrying whole HTTP
 requests and framed responses. See [Networking](/protocol/networking/).
 
-**Cluster secret** — `HMAC-SHA256(K_r, "calimero.cluster.v1|" ‖ cluster)`, presented by peers on internal
+**Cluster key (K_c)** — What every node of a cluster, on any release, seals its
+data with: the founding node's K_r, kept wrapped under each node's own K_r and
+handed to new nodes by attestation. See [Encryption](/protocol/encryption/#the-cluster-key-k_c).
+
+**Cluster secret** — `HMAC-SHA256(K_c, "calimero.cluster.v1|" ‖ cluster)`, presented by peers on internal
 routes.
 
 **Receipt** — A node's Ed25519 signature over `(app, index, SHA-256(JCS(result)), node)`,
@@ -79,8 +83,9 @@ attested together with the cluster's governance.
 **`verify_app_cluster`** — The client check that every replica of an app is
 attested, and returns their receipt keys and the governance they all attest.
 
-**Storage key (K_r)** — The key every node of a cluster seals its disk with,
-derived from a key mero-kms releases to an attested TD.
+**Storage key (K_r)** — The key a node derives from what its release's
+mero-kms releases to an attested TD; it wraps the cluster key K_c on disk, and
+changes with each mero-tee release.
 
 ## People & authority
 
