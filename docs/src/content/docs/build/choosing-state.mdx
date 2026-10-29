@@ -1,6 +1,6 @@
 ---
 title: Choosing a collection, and who may write it
-description: Which collection to use for a field, what of it syncs and what stays on the node, and exactly how write permissions apply to plain fields, structs and nested collections.
+description: Which collection to use for a field, what of it is replicated, and exactly how write permissions apply to plain fields, structs and nested collections.
 sidebar:
   order: 4.6
 ---
@@ -21,23 +21,28 @@ The wrappers are type parameters over the collections, so the two choices
 combine freely: `Moderated<IndexedMap<String, Post>>` is posts their authors own,
 moderators can remove, and feeds can filter by board.
 
-This page covers both choices, then what of each syncs, then how permissions
+This page covers both choices, then what of each is replicated, then how permissions
 reach structs and nested collections. For the full API of each type see
 [Collections](/build/collections/); for costs, [Storage performance](/build/storage-complexity/).
 
 ## Reading: `UnorderedMap`, `SortedMap` or `IndexedMap`
 
-All three store their entries identically, byte for byte, and report the same
-kind of entry to sync. What differs is a **node-local index** each node builds
-for itself from the entries, which never crosses the wire. Because the stored
-bytes are the same, a field can switch between the three with no migration.
+All three store their entries identically, byte for byte, so a field can
+switch between the three with no migration. What differs is the API: key order
+and range reads for `SortedMap`, queries on fields of the value for
+`IndexedMap`.
+
+On a cluster the node keeps no ordered or secondary index (`storage_index_*`
+writes are not persisted, [Execution](/protocol/execution/#what-the-host-offers-a-cloud-run)),
+so `SortedMap`'s ordered reads sort the entries in memory and `IndexedMap`'s
+queries scan them, on every read. They answer correctly; they are not yet
+faster than reading every entry.
 
 | | `UnorderedMap<K, V>` | `SortedMap<K, V>` | `IndexedMap<K, V>` |
 |---|---|---|---|
-| Fast reads | `get(key)`, `contains` | also `range`, `prefix`, `page`, `first`, `last`, all in key order | also `query(index).eq(..).range(..).desc().limit(..)` and `count()` on fields of the value |
-| Local index | none | one: keys in order | one per index the value type declares with `#[derive(app::Indexed)]` |
-| Extra cost per write | none | one index row | about one read and three writes per declared index |
-| First read after a peer's change | normal | rebuilds the key order, `O(n)` | rebuilds the indexes, `O(n)` |
+| Reads | `get(key)`, `contains` | also `range`, `prefix`, `page`, `first`, `last`, all in key order | also `query(index).eq(..).range(..).desc().limit(..)` and `count()` on fields of the value |
+| Declares | nothing | nothing: the key is the order | indexes on the value type, with `#[derive(app::Indexed)]` |
+| Cost of an ordered read or query on a cluster | n/a | `O(n log n)`: every entry, sorted | `O(n)`: every entry, filtered |
 | Reach for it when | you look entries up by key | your keys are hierarchical (`<post>/<time>/<id>`) and you read slices | you filter, sort or count by what is *in* the values: status, board, owner, tags |
 
 A rule of thumb that holds up:
@@ -47,8 +52,8 @@ A rule of thumb that holds up:
 - **Use `SortedMap` when the key already encodes the order you read in.** A
   thread of comments keyed `<post>/<created_at>/<id>` is one `prefix` call.
 - **Use `IndexedMap` when a list view filters by a field.** "The newest 20
-  open issues", "posts in `dev` tagged `rust`", "how many are pinned" are all
-  seeks, without reading the other entries:
+  open issues", "posts in `dev` tagged `rust`", "how many are pinned" are one
+  query each:
 
 ```rust
 #[derive(BorshSerialize, BorshDeserialize, AbiType, app::Mergeable, app::Indexed)]
@@ -62,14 +67,6 @@ pub struct Post {
 posts.query("board_feed").eq("dev").desc().limit(20).entries()?;
 posts.query("tags").eq("rust").count()?;
 ```
-
-<Aside type="caution" title="The first read after a sync is linear">
-  Sync applies a peer's entries without telling the guest, so the local index
-  is stale afterwards, and the next ordered read or query rebuilds it from
-  every entry. Every read after that is a seek again. The rebuild writes only
-  the rows that changed, and correctness never depends on it: a stale index is
-  detected by a hash marker, never trusted.
-</Aside>
 
 A score or vote count cannot be an index key, because an index key has to come
 from the value and a converging count lives in its own collection. See
@@ -86,20 +83,20 @@ check inside one of your methods (`only_owner()`, `is_moderator()`, …) guards
 that method only; see
 [where the rule is checked](/build/permissioned-storage/#where-the-rule-is-checked).
 
-| You want | Use | Enforced by every node |
+| You want | Use | Checked on every write |
 |---|---|---|
-| Anyone in the context may write | a plain field: `UnorderedMap`, `SortedMap`, `IndexedMap`, `LwwRegister`, `Counter`, … | nothing to enforce |
-| Anyone adds entries; only an entry's author edits or removes it | `Authored<C>` (`AuthoredMap`, `AuthoredSortedMap` are aliases) | the author's signature on every update and delete |
+| Anyone who reaches the app may write | a plain field: `UnorderedMap`, `SortedMap`, `IndexedMap`, `LwwRegister`, `Counter`, … | nothing to enforce |
+| Anyone adds entries; only an entry's author edits or removes it | `Authored<C>` (`AuthoredMap`, `AuthoredSortedMap` are aliases) | only the author updates or deletes |
 | Anyone adds entries; nobody, the author included, ever changes or removes one | `WriteOnce<C>` | the entry's bytes are fixed at creation; deletes refused |
-| Authors own and edit their entries; moderators remove any | `Moderated<C>` | owner signature for edits; owner or moderator for deletes |
+| Authors own and edit their entries; moderators remove any | `Moderated<C>` | the owner edits; the owner or a moderator deletes |
 | Nobody edits an entry; moderators remove spam | `ModeratedOnce<C>` | bytes fixed; only moderators delete |
-| One value, set once when the context is created, then fixed | `Frozen<T>` | the value's only writer may create it and never change it |
+| One value, set once when the app is created, then fixed | `Frozen<T>` | the value's only writer may create it and never change it |
 | An immutable, de-duplicated set keyed by content hash | `ContentAddressed<C>`, or `FrozenStorage<T>` | the key must be the hash of the value; no updates or deletes |
 | One slot per account | `UserStorage<T>` | only the slot's account writes it |
-| A group of writers you can change over time | `SharedStorage<T>` / `Ownable<T>` / `PermissionedStorage<T, A>` | the writer set as of each write, with per-writer capabilities |
+| A group of writers you can change over time | `SharedStorage<T>` / `Ownable<T>` / `PermissionedStorage<T, A>` | the writer set in effect, with per-writer capabilities |
 | Named roles (`"editor"`, …) | `AccessControl` | the admin writer set |
 | A name, seat or slug that at most one account may own | `Registry<K, V, A>` | claims are their claimants' own; only the authority `A` writes verdicts |
-| Data that never leaves this node | `#[app::private]` | nothing: it never syncs |
+| Data only its own account reads | `#[app::private]` | only the caller's runs reach the caller's private space |
 
 `C` is any of the three maps. `Authored<IndexedMap<String, Post>>` stores
 exactly an `AuthoredMap`'s bytes, so an authored map can gain indexes without a
@@ -116,14 +113,11 @@ pub struct EntryRules {
 }
 ```
 
-The rules ride in the entry's stamp, are covered by its signature, and are
-fixed when the entry is created. Every node refuses an update or delete that
-names different rules, so an author cannot relax them later, and rules altered
-in transit fail the signature. A collection reads only entries carrying exactly
-its rules: an entry a patched author wrote with no moderators, to escape
-moderation, is stored by every node and returned by none.
+The rules ride in the entry's stamp and are fixed when the entry is created. An
+update or delete that names different rules is refused, so an author cannot
+relax them later. A collection reads only entries carrying exactly its rules.
 
-A moderated collection's moderators are a writer set, verified and rotated
+A moderated collection's moderators are a writer set, checked and rotated
 exactly as a `SharedStorage`'s. The founder is the first moderator:
 
 ```rust
@@ -138,7 +132,7 @@ self.posts.set_moderators(accounts)?;            // a moderator only
 self.posts.is_moderator(&account);
 ```
 
-Every node checks a moderator's delete against the moderators **as of that
+A moderator's delete is checked against the moderators **as of that
 delete**, so revoking someone stops their later removals and leaves their
 earlier ones standing.
 
@@ -152,28 +146,20 @@ self.charter.get()?;   // there is no set
 ```
 
 The value's only writer is whoever created it, holding a single capability:
-write once. If that writer signs a second, different value, every node seals
-the cell: `get` returns `StorageError::Conflicted` instead of either value.
-Removing it is refused, and nobody can be given the right to change it. A
-byte-identical redelivery is accepted, which is what sync sends. Like
-`SharedStorage`'s writer set, the writer comes from genesis, the
-state the creator writes, so a new node trusts the peer it first takes genesis
-from.
+write once. A second, different value seals the cell: `get` returns
+`StorageError::Conflicted` instead of either value. Removing it is refused, and
+nobody can be given the right to change it. Writing the same bytes again is
+accepted. Like `SharedStorage`'s writer set, the writer comes from the state
+`init` writes.
 
 Use it for plain data fixed at creation. For many immutable entries use
 `WriteOnce` (keyed by the app) or `ContentAddressed` (keyed by content hash).
 
 ### Unique names: `Registry`
 
-No write rule gives a name one owner. Two members on either side of a
-partition who both claim `alice` each see a state in which only they asked, so
-anything that lets one node call the name theirs lets the other do the same.
-"Earliest claim wins" is worse: a node checks that a write's timestamp is not
-in the future, never that it is not in the past, so a patched node claims with
-a timestamp of 1 and takes any name, including one held for years.
-
-A `Registry` separates the **claims** members make from the **verdicts** an
-authority writes, and calls nothing owned until there is a verdict:
+A `Registry` gives each name at most one owner. It separates the **claims**
+members make from the **verdicts** an authority writes, and calls nothing owned
+until there is a verdict:
 
 ```rust
 names: Registry<String, Profile>,          // the TEE decides (the default)
@@ -204,53 +190,47 @@ the next epoch, and everyone claims afresh.
 | `Admin` | the admins, a writer set an admin rotates; an admin calls `resolve` | the context has trusted operators and no TEE | claims stay pending |
 | `NoAuthority` | nobody: `status` reports `Contested`, `owner_of` is always `None` | you only need to show who wants what | nothing to wait for |
 
-With one TEE, or one admin device, a verdict is final. With several deciding at
-once (TEE failover fires at least once), two can grant different claimants the
-same epoch: every node converges on the same one, and until they meet each side
-believes its own. `Owned { stable: false }` says a node has seen such a rival.
+A trigger may fire more than once, so `resolve` is idempotent.
+`Owned { stable: false }` says the state holds a rival verdict for the same
+epoch.
 
 `apps/name-registry` is the `Tee` example; `apps/name-registry-admin` is the
 `Admin` one. With `Admin`, the account that ran `init` is the only admin until
-an admin calls `set_admins`, and every node checks a verdict against the admins
-as of that verdict, so an admin who handed the role on can no longer resolve.
+an admin calls `set_admins`, and a verdict is checked against the admins in
+effect when it is written, so an admin who handed the role on can no longer
+resolve.
 
-## What syncs, and what stays on the node
+## What is replicated
 
-| Piece | Syncs? | How |
-|---|---|---|
-| The root state blob (plain fields, `LwwRegister`s) | yes | one entity, merged field by field by the code `#[app::state]` generates |
-| Each collection's container | yes | its own entity, holding the collection's id |
-| Each entry of a map, set or vector | yes | its own entity, merged per entry |
-| A collection nested in an entry's value | yes | its own entity, at an id derived from the entry's, so every node computes the same one |
-| A stamp: owner, writer set, anchor, rules | yes | carried and signed with each write, checked on apply |
-| `SortedMap` / `SortedSet` key order | **no** | node-local index, rebuilt after a sync |
-| `IndexedMap` indexes, and their validity markers | **no** | node-local index, rebuilt after a sync |
-| `#[app::private]` state | **no** | a separate column, outside the Merkle root, one writer: this node |
-| An entry's `schema_version` | yes | in its metadata, but outside the Merkle hash, so a migration does not look like divergence |
+Everything an app's run writes is part of its state, replicated by the app's
+log to every replica ([Replication](/protocol/replication/)).
 
-Nothing node-local reaches the Merkle root, so nodes that index differently,
-or not at all, still agree on every hash.
+| Piece | Where |
+|---|---|
+| The root state (plain fields, `LwwRegister`s) | one entity |
+| Each collection's container | its own entity, holding the collection's id |
+| Each entry of a map, set or vector | its own entity |
+| A collection nested in an entry's value | its own entity, at an id derived from the entry's |
+| A stamp: owner, writer set, anchor, rules | with each entity; a shared cell's writer set beside the cell, in the host's key space |
+| `SortedMap` / `IndexedMap` order and indexes | nowhere: the node keeps no index, and reads sort or scan |
+| `#[app::private]` state | the caller's private space, read only by that account's runs |
 
-## Merging: the entry is the unit
+## Writing: the entry is the unit
 
-Knowing what an entity is tells you what survives two nodes writing at once:
+An app's calls run one at a time, each against the state the previous one left
+([CRDT collections](/protocol/crdt-internals/)), so two calls never race: the
+second sees the first's write. What the entity tells you is what one write
+replaces:
 
-- **Root state** merges field by field. Two nodes setting different
-  `LwwRegister` fields of the root both keep their write.
-- **A map entry holding a struct** is one entity. By default, concurrent writes
-  to it resolve **last-write-wins on the whole entry**, so two nodes editing
-  different fields of the same entry keep one of the two edits. Declare the
-  type `#[app::mergeable]`, with a `Mergeable` impl, to have the storage layer
-  call your merge instead; see `apps/team-metrics-custom`. That holds in a
-  signed entry too (an `Authored` map, a `SharedStorage` or `TeeOnly` cell): a
-  write that arrives after a newer one still reaches your merge, so the result
-  does not depend on delivery order.
-- **A collection field inside that struct** is its own entity and merges on
-  its own: a `Counter` field sums every node's increments, however the rest of
-  the entry resolved.
+- **Root state** is one entity: a run writes the fields it changes.
+- **A map entry holding a struct** is one entity: writing it writes the whole
+  struct, as the run built it from what it read.
+- **A collection field inside that struct** is its own entity, so a run that
+  adds to it writes only the new entries.
 
-So keep a value that several people edit at once either split into entries,
-or in a collection field, or behind `#[app::mergeable]`.
+So keep data that grows (comments, votes, tags) in a collection field or its
+own entries, rather than in a field of one large value that every write
+rewrites.
 
 ## Permissions on plain fields, structs and nested collections
 
@@ -259,7 +239,7 @@ collection inside it, at any depth.** Everything else follows.
 
 ### Plain fields and the root
 
-The root state is `Public`: any context member may write any plain field, and
+The root state is `Public`: any member who reaches the app may write any plain field, and
 any unguarded collection. Guarding one field (say, checking `only_owner()` on
 an `Ownable`) does nothing for the field next to it:
 
@@ -304,41 +284,31 @@ A wrapper nested inside keeps **its own** policy. An `Authored` map of comments
 stored in Alice's post lets anyone comment, and each comment is owned by whoever
 wrote it; Alice cannot rewrite Bob's comment in her own post.
 
-How this holds against a patched peer: a receiving node cannot always tell
-which entry a new write belongs to, because a write names its parent itself.
-So a peer can make every node *store* a `Public` entry that claims to sit in
-Alice's nested map. It cannot make any node *read* it. A collection in a
-guarded domain returns only entries stamped for that domain: owned by Alice,
-or a member of that cell. Those stamps are signature-checked on apply, so they
-cannot be forged, and every node applies the same filter, so they all agree.
+A collection in a guarded domain returns only entries stamped for that domain:
+owned by Alice, or a member of that cell.
 
 ### Known limits
 
 - **Keys are first come, first served.** In an authored collection, whoever
   first writes a key owns it. If squatting a predictable key matters, include
   something the squatter cannot choose: the author's account, or a random id.
-- **Genesis is trusted.** Writer sets (`SharedStorage`, a `Frozen` value's
-  writer, a moderated collection's moderators) come from the state the creator
-  writes. A node that took genesis from a malicious peer holds that peer's
-  version, as it would for any writer set.
-- **A writer can race themself.** A `Frozen` value's writer, or a write-once
-  entry's author, running patched code on two devices can create two versions
-  concurrently. Only they can, and it is their own value.
-- **Reads are never restricted.** Every member can read everything that syncs.
-  For confidentiality, seal the value (`TeeSecret`, `Sealed`) or keep it in
-  `#[app::private]`.
+- **`init` sets the first writers.** Writer sets (`SharedStorage`, a `Frozen`
+  value's writer, a moderated collection's moderators) start as the state
+  `init` writes.
+- **Reads are restricted only by your views.** Every caller who reaches the app
+  can call every view. Keep a value one account alone may read in
+  `#[app::private]`, or seal it (`TeeSecret`, `Sealed`).
 
-<Aside type="caution" title="A check in your method is not a permission">
-  Any member can run a patched node that skips your method bodies. Only the
-  storage types above hold against that. [Securing app state, right and
+<Aside type="tip" title="Make the rule part of the data">
+  A check in one method guards that method only; a storage type checks every
+  write to its data, from every method. [Securing app state, right and
   wrong](/build/guides/securing-state/) lists the mistakes we found in our own
   apps, each next to the shape that holds.
 </Aside>
 
 ## A worked example
 
-`apps/indexed-forum` uses most of this in one app, with a two-node scenario that
-exercises it on real nodes:
+`apps/indexed-forum` uses most of this in one app:
 
 | Field | Type | Why |
 |---|---|---|
@@ -347,13 +317,12 @@ exercises it on real nodes:
 | `comments` | `AuthoredSortedMap<String, …>` | a thread is one key prefix, and only a comment's author edits it |
 | `votes` | `AuthoredMap<String, LwwRegister<bool>>` | one entry per voter per post, the voter's own: none is lost, and nobody votes in someone else's name |
 
-`apps/permissions-showcase` covers the rest, one field per policy, with a
-two-node scenario that checks each rule on the node that did not write:
+`apps/permissions-showcase` covers the rest, one field per policy:
 
 | Field | Type | Why |
 |---|---|---|
 | `founding`, `quorum` | `Frozen<Founding>`, `Frozen<u64>` | fixed at `init` |
-| `messages` | `WriteOnce<SortedMap<String, Message>>` | signed messages nobody edits, a channel is one prefix slice |
+| `messages` | `WriteOnce<SortedMap<String, Message>>` | messages nobody edits, a channel is one prefix slice |
 | `announcements` | `ModeratedOnce<UnorderedMap<String, Message>>` | never edited, removed only by a moderator |
 | `pages` | `Authored<UnorderedMap<String, Page>>` | the author owns the page and the revisions nested in it |
 | `evidence` | `ContentAddressed<IndexedMap<[u8; 32], Evidence>>` | de-duplicated by content, found by kind |

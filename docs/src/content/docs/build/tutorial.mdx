@@ -125,12 +125,11 @@ from the command line.
 ## 3. Define the state
 
 Your app's persistent state is a single struct annotated with `#[app::state]`.
-Its fields are CRDT [collections](/build/collections/) — replicated types that
-merge cleanly when two nodes change them concurrently.
+Its fields are [collections](/build/collections/) — storage types that keep
+each entry as its own entity, so a call writes only what it changes.
 
 Here the state is a map from `String` keys to `LwwRegister<String>` values. An
-`LwwRegister` ("last-writer-wins") holds one value and keeps the most recent
-write when nodes diverge.
+`LwwRegister` ("last-writer-wins") holds one value; each write replaces it.
 
 ```rust
 #[app::state(emits = for<'a> Event<'a>)]

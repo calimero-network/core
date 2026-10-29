@@ -8,18 +8,20 @@ sidebar:
 import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 Three collections hold text that several people edit at once.
-All three are built on Fugue, a sequence CRDT that never interleaves two runs typed concurrently at the same spot: if Alice types `aaaa` and Bob types `bbbb` there, every node ends with `aaaabbbb` or `bbbbaaaa`, never `abab...`.
+All three are built on Fugue, a sequence type that names every character by an id and never interleaves two runs typed at the same spot: if Alice types `aaaa` and Bob types `bbbb` there, the text reads `aaaabbbb` or `bbbbaaaa`, never `abab...`.
+
+On a cluster, the app's calls run one at a time on its leader, so two people's edits never meet inside the node: the later call runs on the text the earlier one left. What the ids buy is on the client side: an editor computes its change against the text it last read, and ids let it place that change correctly when someone else's edit landed in between.
 
 ## Pick a type
 
-| You are storing | Use | What merges how |
+| You are storing | Use | How it stores the text |
 | --- | --- | --- |
-| Plain text: a title, a note, a code cell | `FugueText` | Characters as run-length blocks; concurrent inserts never interleave. |
+| Plain text: a title, a note, a code cell | `FugueText` | Characters as run-length blocks; two runs typed at one spot never interleave. |
 | One formatted body: a comment, a message | `RichText<Sc>` | A `FugueText` plus formatting marks written once and never rewritten. |
 | A document of blocks: headings, paragraphs, list items | `RichDocument<Sc>` | An ordered list of blocks, each with its own kind, depth, attributes and `RichText` body. |
 
 `ReplicatedGrowableArray` (RGA) is the older text collection.
-Its concurrent runs interleave, and it costs more per keystroke; keep it only for apps that already store it.
+Two runs typed at one spot interleave, and it costs more per keystroke; keep it only for apps that already store it.
 `FugueText` is not a drop-in replacement: it stores a different format, so moving existing RGA data to it takes a [migration](/build/migrations/).
 
 ## Declare the state
@@ -63,7 +65,7 @@ Mirror them in a type of your own, as `apps/fugue-editor` does with its `Change`
 ### Apply a change only onto the text it was computed from
 
 A client computes its steps against the text it last read.
-If a peer's edit landed on the node in between, the same positions now point somewhere else.
+If another writer's call committed in between, the same positions now point somewhere else.
 Have the client send the text it computed against, apply only when it still matches, and return the current text either way so the client can rebase its edit and resend it:
 
 ```rust
@@ -78,16 +80,16 @@ pub fn edit_title(&mut self, base: String, changes: Vec<Change>) -> app::Result<
 }
 ```
 
-When the client rebases, it has to work out what the peers changed between `base` and the current text.
-Do not diff the two texts: identical characters typed by different writers cannot be told apart, so a text diff misplaces a peer's insert and your next keystroke lands in the wrong place.
+When the client rebases, it has to work out what the other writers changed between `base` and the current text.
+Do not diff the two texts: identical characters typed by different writers cannot be told apart, so a text diff misplaces another writer's insert and your next keystroke lands in the wrong place.
 Diff by identity instead: return `visible_ids()` with the text, keep the ids read alongside `base`, and compare the two id sequences.
 `visible_ids` lists every visible character's id in document order, coalesced into `IdRange` runs, and the i-th id names the i-th character of `get_text()`.
-An id only in the current sequence is a peer's insert, and an id only in yours is a peer's delete.
+An id only in the current sequence is another writer's insert, and an id only in yours is another writer's delete.
 `IdRange` has no `AbiType`, so return the runs through a mirror type, as in the event below; a `RichDocument` block reads them with `block_body(block)?.visible_ids()`.
 
 ## Emit ids, not positions
 
-An event is recorded with the change and replayed on every receiving node, where concurrent edits have already moved every position the author counted.
+An event is recorded with the change and reaches clients that may hold the text from before or after later edits, which move every position the author counted.
 Put the character ids the change returned into the event, never a position:
 
 ```rust
@@ -100,9 +102,9 @@ if let Some(ids) = minted {
 A delete returns `Removed`, which carries the ids it took; one delete can span several writers.
 A client that only needs to know *that* something changed can re-read the text on the event instead.
 
-## Cursors that survive concurrent edits
+## Cursors that survive other writers' edits
 
-A position goes stale the moment a peer types before it.
+A position goes stale the moment another writer types before it.
 An `Anchor` names the gap beside a character instead, so it follows that character wherever edits move it:
 
 ```rust
@@ -114,8 +116,8 @@ let caret_now = self.title.resolve(&anchor)?;            // where that gap is to
 
 `Bias::Before` holds the character on the right of the gap and `Bias::After` the one on the left.
 An anchor on a deleted character resolves to the gap it left.
-`resolve_many` resolves a whole slice of anchors against one tree build, which is what makes drawing every peer's cursor affordable.
-Minting and resolving an anchor stores nothing, so anchors suit presence you send to peers rather than state you persist.
+`resolve_many` resolves a whole slice of anchors against one tree build, which is what makes drawing every writer's cursor affordable.
+Minting and resolving an anchor stores nothing, so anchors suit [presence](/protocol/presence/) you send to other clients rather than state you persist.
 
 ## Undo your own edits
 
@@ -128,7 +130,7 @@ let redo = self.title.undo(&steps)?;        // takes the edit back
 let again = self.title.undo(&redo)?;        // puts it back
 ```
 
-Because an undo names the characters the edit wrote, it takes back only this writer's edit and leaves every peer's concurrent text alone.
+Because an undo names the characters the edit wrote, it takes back only this writer's edit and leaves text other writers typed alone.
 Undoing a delete writes new characters at the gap; deleted characters are never revived.
 `RichText::apply_delta` returns a `DeltaUndo` for `apply_undo`, which also restores formatting.
 
@@ -162,7 +164,7 @@ impl MarkSchema for DriveMarks {
 }
 ```
 
-The schema only decides how a mark is written, never how it is read, so a node running an older schema renders the same spans.
+The schema only decides how a mark is written, never how it is read, so state written under an older schema renders the same spans.
 `to_delta` returns the rendered spans; re-asserting formatting that is already in effect writes nothing.
 
 ## Block documents
@@ -179,21 +181,21 @@ doc.merge_blocks(para, tail)?;                               // Backspace at the
 let blocks = doc.blocks()?;                                  // Vec<BlockView> in order
 ```
 
-A block's id never changes, so a moved block keeps its identity and two concurrent moves settle on one place instead of duplicating it.
-Kind, depth, each attribute and the placement are separate fields that merge separately: one person turning a paragraph into a heading while another indents it keeps both changes.
+A block's id never changes, so a moved block keeps its identity and a second move of it places it again rather than duplicating it.
+Kind, depth, each attribute and the placement are separate fields written separately: one person turning a paragraph into a heading while another indents it keeps both changes.
 Nesting is the `depth` number on a flat list; a renderer builds lists and nested blocks from `(depth, kind)`.
 Deleting a block leaves a tombstone and keeps its body, so ids and anchors into it still resolve.
 
 <Aside type="caution" title="Splitting while someone types">
   `split_block` moves the characters that existed when it ran.
-  Text a peer types into the tail at the same moment stays in the first block.
+  Text another writer typed into the tail against the text from before the split lands in the first block.
   This is specified behaviour: the content is never lost, only placed before the split.
 </Aside>
 
 ## Migrations
 
-`insert`, `insert_str`, `apply_delta`, `mark`, `insert_block`, `move_block` and `split_block` mint character ids from the device that calls them, so they panic inside an [`#[app::migrate]`](/build/migrations/) function, where every node must produce the same bytes.
-Seed text there with `insert_str_with_replica` and formatting with `mark_with_replica`, passing the same replica id on every node.
+`insert`, `insert_str`, `apply_delta`, `mark`, `insert_block`, `move_block` and `split_block` mint character ids from the caller's id, so they panic inside an [`#[app::migrate]`](/build/migrations/) function.
+Seed text there with `insert_str_with_replica` and formatting with `mark_with_replica`, passing a fixed replica id of your own.
 
 ## What it costs
 
@@ -204,9 +206,9 @@ See [Storage complexity](/build/storage-complexity/#collaborative-text) for how 
 ## Next steps
 
 <CardGrid>
-  <LinkCard title="Collection reference" href="/build/collections/" description="Every CRDT collection and how it merges." />
+  <LinkCard title="Collection reference" href="/build/collections/" description="Every collection and what it costs." />
   <LinkCard title="Emit and handle events" href="/build/guides/events/" description="Tell clients a document changed." />
   <LinkCard title="Migrations" href="/build/migrations/" description="Move existing state, including RGA text, to a new shape." />
 </CardGrid>
 
-The reference apps in the core repo show each type end to end: `apps/fugue-editor` (FugueText with undo tokens), `apps/fugue-collab` (FugueText over several nodes) and `apps/rich-collab` (RichDocument with formatting, anchors and events).
+The reference apps in the core repo show each type end to end: `apps/fugue-editor` (FugueText with undo tokens), `apps/fugue-collab` (FugueText edited by several members) and `apps/rich-collab` (RichDocument with formatting, anchors and events).
