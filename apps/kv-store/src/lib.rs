@@ -162,9 +162,8 @@ impl KvStore {
         Ok(Some(old.value))
     }
 
-    /// Removes every key. Needs a fresh passkey confirmation. Emits `Cleared` only when
-    /// the store was not already empty.
-    #[app::confirm]
+    /// Removes every key, as any member may (v1's `clear`, no confirmation). Emits
+    /// `Cleared` only when the store was not already empty.
     pub fn clear(&mut self) -> app::Result<()> {
         let mut removed = false;
         loop {

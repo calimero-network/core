@@ -43,7 +43,7 @@ the source is short enough to read end to end.
 
 | Example | Teaches | Documented in |
 |---------|---------|---------------|
-| [`kv-store`](https://github.com/calimero-network/core/tree/master/apps/kv-store) | The component SDK's basic app: a `Table` of entries, a `Counter`, events, a typed error and a `confirm` method; tests on `TestApp` and scenario files **(walkthrough below)** | [Build your first app](/build/tutorial/) |
+| [`kv-store`](https://github.com/calimero-network/core/tree/master/apps/kv-store) | The component SDK's basic app: a `Table` of entries, a `Counter`, events and a typed error; tests on `TestApp` and scenario files **(walkthrough below)** | [Build your first app](/build/tutorial/) |
 | [`kv-store-init`](https://github.com/calimero-network/core/tree/master/apps/kv-store-init) | On the component SDK: seeding the first state from an `#[app::init]` constructor, which runs once as the app's owner | [SDK macros](/build/sdk-macros/) |
 | [`kv-store-with-handlers`](https://github.com/calimero-network/core/tree/master/apps/kv-store-with-handlers) | Routing emitted events to handler methods; a CRDT `Counter` **(walkthrough below)** | [SDK macros](/build/sdk-macros/) |
 
@@ -139,7 +139,7 @@ so two increments never race.
 | `getOrInsert { key, value }` | Read-or-create; returns the value the key holds after the call. |
 | `get` / `getUnchecked` / `getResult` `{ key }` | Three read views: optional, trapping, and erroring (`NotFound { key }`). |
 | `entries` | Every pair as a JSON object ordered by key. |
-| `len` / `remove { key }` / `clear` | Count, delete one (`Removed`), delete all (`Cleared`; a `confirm` method, so it needs a passkey confirmation). |
+| `len` / `remove { key }` / `clear` | Count, delete one (`Removed`), delete all (`Cleared`). |
 
 **Build & run.** `cargo test` in `apps/kv-store` builds the component and runs
 `tests/harness.rs` and every `scenarios/*.json` on the real engine. From the repo

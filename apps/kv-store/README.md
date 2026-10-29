@@ -25,7 +25,7 @@ Names are camelCase; `u64` values travel as decimal strings. Errors are
 | `entries` | view | | `{key: value}` | ordered by key, up to 1000 |
 | `len` | view | | `u64` | |
 | `remove` | call | `key` | `string \| null` | the old value; `Removed` only when there was one |
-| `clear` | call, confirm | | | needs a passkey confirmation; `Cleared` only when the store was not empty |
+| `clear` | call | | | any member, no confirmation (as in v1); `Cleared` only when the store was not empty |
 
 Events: `Inserted { key, value }`, `Updated { key, value }`, `Removed { key }`, `Cleared`,
 to `Audience::All`.

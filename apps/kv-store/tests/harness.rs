@@ -47,14 +47,8 @@ fn entries_and_clear() {
         view(&mut t, "entries", json!({})),
         json!({ "a": "1", "b": "2" })
     );
-    assert_eq!(
-        t.as_("owner").call("clear", json!({})),
-        Err(Failure::ConfirmRequired)
-    );
-    t.as_("owner")
-        .confirmed()
-        .call("clear", json!({}))
-        .expect("clear");
+    // v1's clear: any member, no passkey confirmation.
+    t.as_("owner").call("clear", json!({})).expect("clear");
     assert_eq!(view(&mut t, "len", json!({})), json!("0"));
     assert_eq!(view(&mut t, "entries", json!({})), json!({}));
 }
@@ -109,19 +103,13 @@ fn remove_absent_and_clear_empty_emit_nothing() {
         call(&mut t, "remove", json!({ "key": "missing" })),
         json!(null)
     );
-    t.as_("owner")
-        .confirmed()
-        .call("clear", json!({}))
-        .expect("clear");
+    t.as_("owner").call("clear", json!({})).expect("clear");
     assert!(names(&t).is_empty());
 
     call(&mut t, "set", json!({ "key": "k", "value": "v" }));
     assert_eq!(call(&mut t, "remove", json!({ "key": "k" })), json!("v"));
     call(&mut t, "set", json!({ "key": "k", "value": "v" }));
-    t.as_("owner")
-        .confirmed()
-        .call("clear", json!({}))
-        .expect("clear");
+    t.as_("owner").call("clear", json!({})).expect("clear");
     assert_eq!(names(&t), ["Inserted", "Removed", "Inserted", "Cleared"]);
 }
 

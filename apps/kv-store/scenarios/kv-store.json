@@ -144,25 +144,6 @@
   "op": "call",
   "method": "clear",
   "args": {},
-  "expect": {
-   "confirmRequired": true
-  }
- },
- {
-  "as": "bob",
-  "op": "view",
-  "method": "clear",
-  "args": {},
-  "expect": {
-   "error": "ConfirmNotAView"
-  }
- },
- {
-  "as": "bob",
-  "op": "call",
-  "method": "clear",
-  "args": {},
-  "confirmed": true,
   "events": {
    "bob": [
     "Inserted",

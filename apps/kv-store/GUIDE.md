@@ -26,7 +26,7 @@ Example: {}
 `getOrInsert` writes only when the key is missing and returns the value the key now holds.
 Example: {"key": "greeting", "value": "hi"}
 ### Delete
-Call `remove` for one key (it returns the old value, or `null`) or `clear` for all of them; `clear` needs a passkey confirmation.
+Call `remove` for one key (it returns the old value, or `null`) or `clear` for all of them.
 Example: {"key": "greeting"}
 
 ## Rules and limits
