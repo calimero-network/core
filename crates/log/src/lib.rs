@@ -640,6 +640,12 @@ impl Engine {
         self.db.delete_blob(name)
     }
 
+    /// How many blobs this node stores (feature `testing`).
+    #[cfg(feature = "testing")]
+    pub fn blob_count(&self) -> eyre::Result<u64> {
+        Ok(self.db.summary()?.blobs)
+    }
+
     /// Read a blob stored on this node.
     pub fn get_blob(&self, name: &str) -> eyre::Result<Option<Vec<u8>>> {
         self.db.get_blob(name)

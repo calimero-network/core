@@ -888,6 +888,46 @@ API and system group. What differs from the wasmer path:
   (3 s) while the runtime runs it; two apps calling each other at once both time out.
   Test: `a_call_verifies_a_captcha_with_another_app_in_the_same_request`
   (`apps/v2-fixtures/captcha`).
+- **Files** (`node/component/files.rs`; tests `component_files.rs`): a run's `files`
+  provider (`NodeFiles`) is built per run from the app id, the file key
+  (`backup::file_key`, not the TEE key) and the app's blob records (`BlobRecord::file`, a
+  `FileSeal` of the plaintext hash and the wrapped key, in the hidden `rows::CBLOB` rows the
+  guest cannot reach, so a snapshot and `restore` carry them). A writer seals into memory (`FileSealer`) and wraps the data key;
+  the blob id is the hex SHA-256 of the ciphertext. The outcome and the entry carry marks
+  only (`Outcome::files`, a serde default: old entries decode unchanged); `apply` records
+  them as unreferenced blobs, before the diff so the `BlobRef`s it stores are counted, only
+  for status `Ok`. There is no delete: retention is R8 (see Blobs), so a file is held while
+  a stored `BlobRef` names it, `BLOB_IDLE_MS` after the entry that made it if none does, and
+  its bytes then go through the same `collect_blob` as any blob. Before a call, tick or `init` proposes,
+  `Node::persist_files` stores the ciphertext here and pushes all new files at once to the
+  app group's voters and learners (its own Raft membership, not the directory's replicas),
+  under one deadline below `FORWARD_TIMEOUT` and a node-wide byte budget (`MAX_PUSH_BYTES`).
+  It needs a majority of the voters, this node counted; a voter with no address still counts.
+  It runs only after the entry bytes are built, so an entry the log replaces as too large
+  stores nothing. When the majority is missing the call is `503 FILES_UNAVAILABLE` (the
+  forward loops pass it on unchanged and do not retry it; the client does, with its key),
+  nothing is logged and the pushed bytes are removed; so are the bytes of an entry that
+  conflicts or whose proposal fails. `open` uses the local blob only if its SHA-256 is its id,
+  else drops it and fetches it from the other replicas (5 s), and decrypts as the guest reads;
+  any opener failure, including at the end of the stream, is `ReadError::Corrupt`, which the
+  host core makes a `HostDenied` trap. Open readers hold their ciphertext bytes against a
+  per-run budget (`MAX_RUN_OPEN_BYTES`) and a node-wide one (`MAX_OPEN_FILE_BYTES`; logged
+  runs wait 1 s for it). A file that cannot be had (no replica holds it, or a budget is
+  spent) aborts a logged run as `503 TIMEOUT`, not logged, key not spent
+  (`FileError::Unavailable`, also for `create`); a view gets the soft error
+  `"file bytes are not available"`. The provider is built for every run but touches keys,
+  budgets and bytes only when a run touches a file. Blocking on the runtime from a run needs a
+  multi-thread runtime, else the run is refused. Pushes skip members `may_send` refuses, and
+  `fetch_blob_from` asks only the app's other replicas, which serve a file as a blob their app
+  marks (`holds_blob`); bundles and wasmer blobs still use every node. A component's files count
+  in `storage_stats().blob_bytes` as stored (a tag per chunk).
+  Replica moves hand over the marked files with the bundle (`hand_over_bytes`), and again
+  after the voters change, only what the joining nodes do not hold, for files made while the
+  move ran; the second hand-over is retried for 10 s and never abandons the move.
+  **Upgrade note (rolling upgrade):** a node on a release without files refuses to prepare a
+  bundle that imports `calimero:app/files` (`ForbiddenImport`), so it never runs, leads or
+  answers for an app that uses files. Replicas of different releases coexist only while a
+  release upgrade moves apps, and the old ones are retired.
 - **Not here**: the spec's `__upgrade` through `/intents` (Ruling 36; the node refuses
   every `__` method there) and the leader's own re-check of upgrade authority
   (Ruling 45; the node judges it in the API and the system log); their tests are

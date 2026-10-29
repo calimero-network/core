@@ -14,7 +14,7 @@ use crate::action::{
     NoHttp, MAX_ACTION_SUBCALLS, MAX_HTTP_BODY_BYTES, MAX_HTTP_REQUESTS, MAX_STARTED_ACTIONS,
 };
 use crate::blobs::{blob_id_hex, blob_refs, parse_blob_id, BlobHost, NoBlobs, MAX_GRANT_TTL_SECS};
-use crate::files::{Files, NoFiles};
+use crate::files::{Files, NoFiles, FILE_UNAVAILABLE};
 use crate::overlay::{Cursor, Overlay};
 use crate::search::{
     NoSearch, SearchHost, SearchPage, SearchQuery, MAX_SEARCH_LIMIT, MAX_SEARCH_QUERY_BYTES,
@@ -23,7 +23,7 @@ use crate::state::{stored_key, KeyValue, StateView, GENERATION};
 use crate::time;
 use crate::types::{
     Audience, BlobInfo, Caller, Directory, Event, HostDenied, InvalidInvocation, Invocation,
-    InvocationKind, OrgRole, Outcome, Status, Usage, Xcall,
+    InvocationKind, OrgRole, Outcome, Status, TrapKind, Usage, Xcall,
 };
 
 mod file_ops;
@@ -821,6 +821,14 @@ impl HostCore {
     /// result and the app log are kept. `usage.writes` is the core's own count.
     #[must_use]
     pub fn finish(self, status: Status, result: Vec<u8>, usage: Usage) -> Outcome {
+        let status = if self.files.unavailable() {
+            Status::Trap {
+                kind: TrapKind::Timeout,
+                detail: FILE_UNAVAILABLE.to_owned(),
+            }
+        } else {
+            status
+        };
         let ok = status == Status::Ok;
         let new_files = if ok {
             self.files.into_created()

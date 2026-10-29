@@ -19,11 +19,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use calimero_app_host::{BlobHost, BlobInfo};
-use calimero_log::{GroupState, StateTx};
+use calimero_log::{Bytes, GroupState, StateTx};
 use ring::hmac;
 use serde::{Deserialize, Serialize};
 
 use crate::app::rows;
+use crate::component::FileMark;
 
 /// How long a blob nothing refers to is held: after its upload, or after the last value
 /// referring to it was overwritten or deleted.
@@ -54,6 +55,19 @@ pub struct BlobRecord {
     /// When it became unreferenced (its upload, or its last reference going); meaningless
     /// while `refs > 0`.
     pub idle_since_ms: u64,
+    /// Set for a sealed file: what opening it needs beyond the ciphertext.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<FileSeal>,
+}
+
+/// What the record of a sealed file adds to a blob's: the plaintext hash and the data key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSeal {
+    /// SHA-256 of the plaintext.
+    pub sha256: Bytes,
+    /// The data key, wrapped under the app's file key.
+    pub wrapped_key: Bytes,
 }
 
 /// A component app's blobs, by SHA-256.
@@ -91,7 +105,7 @@ impl BlobTable {
 
     /// Record an upload at `ts_ms`. A blob the app already holds keeps its references; an
     /// idle one is held [`BLOB_IDLE_MS`] from now. Refused (`false`) past
-    /// [`MAX_COMPONENT_BLOBS`].
+    /// [`MAX_COMPONENT_BLOBS`] or when `id` is a sealed file.
     pub fn upload(
         &mut self,
         tx: &mut StateTx<'_>,
@@ -101,6 +115,9 @@ impl BlobTable {
         ts_ms: u64,
     ) -> bool {
         let prev = self.records.get(&id).cloned();
+        if prev.as_ref().is_some_and(|p| p.file.is_some()) {
+            return false;
+        }
         if prev.is_none() && self.records.len() >= MAX_COMPONENT_BLOBS {
             return false;
         }
@@ -115,6 +132,7 @@ impl BlobTable {
             mime: mime.to_owned(),
             refs,
             idle_since_ms: ts_ms,
+            file: None,
         };
         if refs == 0 {
             let _new = self.idle.insert((ts_ms, id));
@@ -123,7 +141,37 @@ impl BlobTable {
         true
     }
 
-    /// Forget a blob (its owner deleted it); whether the app held it.
+    /// Record a file an entry finished, unreferenced: held [`BLOB_IDLE_MS`] from `ts_ms` unless
+    /// a value stored by the same entry or a later one refers to it. Not bounded by
+    /// [`MAX_COMPONENT_BLOBS`]: the guest was already told it exists.
+    pub fn add_file(&mut self, tx: &mut StateTx<'_>, mark: &FileMark, ts_ms: u64) {
+        let Some(id) = hex::decode(&mark.id)
+            .ok()
+            .and_then(|raw| <[u8; 32]>::try_from(raw).ok())
+        else {
+            return;
+        };
+        let record = BlobRecord {
+            size: mark.size,
+            mime: String::new(),
+            refs: 0,
+            idle_since_ms: ts_ms,
+            file: Some(FileSeal {
+                sha256: mark.sha256.clone(),
+                wrapped_key: mark.wrapped_key.clone(),
+            }),
+        };
+        let _new = self.idle.insert((ts_ms, id));
+        self.put(tx, id, record);
+    }
+
+    /// The owner deletes a blob: [`Self::forget`], except a sealed file, which only the
+    /// retention rules forget.
+    pub fn forget_blob(&mut self, tx: &mut StateTx<'_>, id: &[u8; 32]) -> bool {
+        self.records.get(id).is_some_and(|r| r.file.is_none()) && self.forget(tx, id)
+    }
+
+    /// Forget a blob; whether the app held it.
     pub fn forget(&mut self, tx: &mut StateTx<'_>, id: &[u8; 32]) -> bool {
         let Some(prev) = Arc::make_mut(&mut self.records).remove(id) else {
             return false;
@@ -257,7 +305,10 @@ impl BlobHost for RunBlobs {
     fn info(&self, id: &[u8; 32]) -> Option<BlobInfo> {
         self.records.get(id).map(|r| BlobInfo {
             size: r.size,
-            sha256: id.to_vec(),
+            sha256: r
+                .file
+                .as_ref()
+                .map_or_else(|| id.to_vec(), |f| f.sha256.0.clone()),
             mime: r.mime.clone(),
         })
     }

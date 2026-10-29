@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 
 use super::HostCore;
 use crate::files::{
-    FileInfo, FileRead, FileWrite, NewFile, FILE_FAILED, FILE_FINISHED, FILE_TOO_LARGE,
-    FILE_TOO_MANY_OPEN, MAX_FILE_BYTES, MAX_OPEN_FILES, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES,
+    FileError, FileInfo, FileRead, FileWrite, NewFile, ReadError, FILE_CORRUPT, FILE_FAILED,
+    FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_NEW, FILE_TOO_MANY_OPEN, FILE_UNAVAILABLE,
+    MAX_FILE_BYTES, MAX_NEW_FILES, MAX_OPEN_FILES, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES,
     RUN_WROTE_TOO_MUCH,
 };
 use crate::types::{HostDenied, InvocationKind};
@@ -44,9 +45,15 @@ pub(crate) struct FileTable {
     next: u32,
     written: u64,
     created: Vec<NewFile>,
+    /// A logged run lost a file to node load: it ends as a timeout, not logged.
+    unavailable: bool,
 }
 
 impl FileTable {
+    pub(crate) fn unavailable(&self) -> bool {
+        self.unavailable
+    }
+
     pub(crate) fn into_created(self) -> Vec<NewFile> {
         self.created
     }
@@ -73,7 +80,11 @@ impl HostCore {
         }
         let sink = match self.provider.create() {
             Ok(sink) => sink,
-            Err(reason) => return Ok(Err(reason)),
+            Err(FileError::Failed(reason)) => return Ok(Err(reason)),
+            Err(FileError::Unavailable) => {
+                self.files.unavailable = true;
+                return Err(HostDenied::new(FILE_UNAVAILABLE));
+            }
         };
         let id = self.files.next_id()?;
         let _ = self.files.writers.insert(
@@ -126,6 +137,9 @@ impl HostCore {
     /// Seals the file and returns its id; the file reaches the outcome only if the run ends `Ok`.
     pub fn writer_finish(&mut self, id: WriterId) -> Result<Result<String, String>, HostDenied> {
         self.may_write_files("files.finish")?;
+        if self.files.created.len() >= MAX_NEW_FILES {
+            return Ok(Err(FILE_TOO_MANY_NEW.to_owned()));
+        }
         let Some(writer) = self.files.writers.get_mut(&id.0) else {
             return Err(HostDenied::new("unknown writer"));
         };
@@ -163,7 +177,12 @@ impl HostCore {
         }
         let source = match self.provider.open(id) {
             Ok(source) => source,
-            Err(reason) => return Ok(Err(reason)),
+            Err(FileError::Failed(reason)) => return Ok(Err(reason)),
+            Err(FileError::Unavailable) if self.is_logged_write() => {
+                self.files.unavailable = true;
+                return Err(HostDenied::new(FILE_UNAVAILABLE));
+            }
+            Err(FileError::Unavailable) => return Ok(Err(FILE_UNAVAILABLE.to_owned())),
         };
         let id = self.files.next_id()?;
         let _ = self.files.readers.insert(
@@ -194,7 +213,8 @@ impl HostCore {
         }
         let mut chunk = match reader.source.read(max) {
             Ok(chunk) => chunk,
-            Err(reason) => return Ok(Err(reason)),
+            Err(ReadError::Failed(reason)) => return Ok(Err(reason)),
+            Err(ReadError::Corrupt) => return Err(HostDenied::new(FILE_CORRUPT)),
         };
         if chunk.len() > max {
             reader.pending = chunk.split_off(max);

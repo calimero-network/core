@@ -34,8 +34,9 @@ pub use engine::{Engine, PrepareError, Prepared};
 #[cfg(feature = "testing")]
 pub use files::MemoryFiles;
 pub use files::{
-    FileInfo, FileRead, FileWrite, Files, NewFile, NoFiles, FILES_DISABLED, FILE_FAILED,
-    FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_OPEN, MAX_FILE_BYTES, MAX_OPEN_FILES,
+    FileError, FileInfo, FileRead, FileWrite, Files, NewFile, NoFiles, ReadError, FILES_DISABLED,
+    FILE_CORRUPT, FILE_FAILED, FILE_FINISHED, FILE_TOO_LARGE, FILE_TOO_MANY_NEW,
+    FILE_TOO_MANY_OPEN, FILE_UNAVAILABLE, MAX_FILE_BYTES, MAX_NEW_FILES, MAX_OPEN_FILES,
     MAX_READ_CHUNK, MAX_RUN_FILE_BYTES, NO_SUCH_FILE, RUN_WROTE_TOO_MUCH,
 };
 pub use search::{

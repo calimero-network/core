@@ -10,6 +10,12 @@ mod wrap;
 pub use seal::{FileOpener, FileSealer, Sealed, CHUNK_BYTES, TAG_BYTES};
 pub use wrap::{unwrap_for_job, unwrap_key, wrap_for_job, wrap_key, JobWrap, WrapKind};
 
+/// The stored size of a file of `size` plaintext bytes: a tag per chunk, one for an empty file.
+#[must_use]
+pub fn sealed_len(size: u64) -> u64 {
+    size + size.div_ceil(CHUNK_BYTES as u64).max(1) * TAG_BYTES as u64
+}
+
 /// The noise seed of a run: the same for every attempt, so a retry draws the same noise.
 #[must_use]
 pub fn noise_seed(file_key: &[u8; 32], run_id: &str) -> [u8; 32] {
@@ -28,6 +34,15 @@ pub fn run_token(file_key: &[u8; 32], run_id: &str, attempt: u32) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_stored_size_adds_one_tag_per_chunk_and_one_for_an_empty_file() {
+        let (chunk, tag) = (CHUNK_BYTES as u64, TAG_BYTES as u64);
+        assert_eq!(sealed_len(0), tag);
+        assert_eq!(sealed_len(1), 1 + tag);
+        assert_eq!(sealed_len(chunk), chunk + tag);
+        assert_eq!(sealed_len(chunk + 1), chunk + 1 + 2 * tag);
+    }
 
     #[test]
     fn the_noise_seed_is_fixed_per_run() {

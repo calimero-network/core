@@ -74,6 +74,9 @@ pub struct Outcome {
     /// the entry is their record, so followers and replays never fetch again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub http: Vec<HttpRecord>,
+    /// The files the run finished: their marks only, the ciphertext never enters the log.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<FileMark>,
 }
 
 /// One outbound request of a logged run and its response (D76), as the entry records it:
@@ -124,6 +127,21 @@ impl From<host::HttpExchange> for HttpRecord {
     }
 }
 
+/// What a run finished of a file, as the log carries it (ciphertext lives outside the log, by
+/// `id`); applying it records the file as a blob of the app.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileMark {
+    /// Hex SHA-256 of the ciphertext: the blob's name.
+    pub id: String,
+    /// Plaintext bytes.
+    pub size: u64,
+    /// SHA-256 of the plaintext.
+    pub sha256: Bytes,
+    /// The data key, wrapped under the app's file key.
+    pub wrapped_key: Bytes,
+}
+
 /// The name a trap kind has on the wire (the spec's names).
 #[must_use]
 pub fn trap_name(kind: host::TrapKind) -> &'static str {
@@ -155,6 +173,7 @@ impl Outcome {
     pub fn from_host(out: host::Outcome) -> Self {
         let logs = out.logs;
         let http = out.http.into_iter().map(HttpRecord::from).collect();
+        let files = out.new_files;
         let mut outcome = match out.status {
             host::Status::Ok => Self::ok(out.result, out.diff, out.events, out.xcalls, out.actions),
             host::Status::AppError { code, message } => Self {
@@ -169,6 +188,9 @@ impl Outcome {
         };
         outcome.logs = logs;
         outcome.http = http;
+        if outcome.status == Status::Ok {
+            outcome.files = files.into_iter().map(FileMark::from).collect();
+        }
         outcome
     }
 
@@ -246,6 +268,7 @@ impl Outcome {
             xcalls: sent,
             actions: started,
             http: Vec::new(),
+            files: Vec::new(),
         }
     }
 
@@ -254,6 +277,17 @@ impl Outcome {
     #[must_use]
     pub fn is_timeout(&self) -> bool {
         self.status == Status::Trap && self.error["kind"] == trap_name(host::TrapKind::Timeout)
+    }
+}
+
+impl From<host::NewFile> for FileMark {
+    fn from(file: host::NewFile) -> Self {
+        Self {
+            id: file.id,
+            size: file.size,
+            sha256: Bytes(file.sha256),
+            wrapped_key: Bytes(file.wrapped_key),
+        }
     }
 }
 
@@ -518,7 +552,7 @@ pub struct ComponentState {
 }
 
 impl ComponentState {
-    /// Read the app's storage rows into memory (after a restart or a snapshot install).
+    /// Read the app's storage and blob rows into memory (after a restart or a snapshot install).
     pub fn load(&mut self, state: &GroupState) -> eyre::Result<()> {
         let mut kv = BTreeMap::new();
         state.scan_hidden(rows::CKV, |k, v| {
@@ -704,6 +738,10 @@ impl AppMachine {
         let c = &mut self.state.component;
         c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
         if outcome.status == Status::Ok {
+            // Files first, so the references this entry's diff stores to them are counted.
+            for mark in &outcome.files {
+                c.blobs.add_file(tx, mark, ts_ms);
+            }
             if !outcome.diff.is_empty() {
                 // References to blobs move with the values that hold them (R8).
                 let mut deltas = BTreeMap::new();
@@ -989,7 +1027,7 @@ impl AppMachine {
             }
             Ok(ComponentCmd::BlobForget { id }) => {
                 let c = &mut self.state.component;
-                let held = parse_hex32(&id).is_some_and(|raw| c.blobs.forget(tx, &raw));
+                let held = parse_hex32(&id).is_some_and(|raw| c.blobs.forget_blob(tx, &raw));
                 host_answer(index, held, "no such blob in this app")
             }
             Ok(ComponentCmd::ActionEnd {
@@ -1192,6 +1230,7 @@ pub fn embedded_abi(component: &[u8]) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::component::blobs::BLOB_IDLE_MS;
 
     #[test]
     fn a_file_never_outgrows_the_blob_cap() {
@@ -1346,6 +1385,232 @@ mod tests {
             key: Bytes(k.as_bytes().to_vec()),
             value: Some(Bytes(v.as_bytes().to_vec())),
         }
+    }
+
+    /// The id of a file in these tests: hex of 32 bytes, all `n`.
+    fn fid(n: u8) -> String {
+        hex::encode([n; 32])
+    }
+
+    fn mark(n: u8) -> FileMark {
+        FileMark {
+            id: fid(n),
+            size: 5,
+            sha256: Bytes(vec![1; 32]),
+            wrapped_key: Bytes(vec![2; 60]),
+        }
+    }
+
+    /// A stored value that is a `BlobRef` to file `n`.
+    fn blob_ref(n: u8) -> Vec<u8> {
+        let mut out = Vec::new();
+        ciborium::into_writer(
+            &ciborium::Value::Tag(
+                calimero_app_host::BLOB_REF_TAG,
+                Box::new(ciborium::Value::Bytes(vec![n; 32])),
+            ),
+            &mut out,
+        )
+        .unwrap();
+        out
+    }
+
+    fn store_ref(key: &str, n: u8) -> Write {
+        Write {
+            key: Bytes(key.as_bytes().to_vec()),
+            value: Some(Bytes(blob_ref(n))),
+        }
+    }
+
+    fn remove(key: &str) -> Write {
+        Write {
+            key: Bytes(key.as_bytes().to_vec()),
+            value: None,
+        }
+    }
+
+    fn file_call(
+        base: u64,
+        ts_ms: u64,
+        status: Status,
+        files: Vec<FileMark>,
+        diff: Vec<Write>,
+    ) -> Vec<u8> {
+        let mut cmd: ComponentCmd = serde_json::from_slice(&call(base, None, diff)).unwrap();
+        if let ComponentCmd::Call(c) = &mut cmd {
+            c.ts_ms = ts_ms;
+            c.outcome.status = status;
+            c.outcome.files = files;
+        }
+        serde_json::to_vec(&cmd).unwrap()
+    }
+
+    fn held(r: &Rig) -> Vec<String> {
+        let records = &r.machine.state.component.blobs.records;
+        records.keys().map(hex::encode).collect()
+    }
+
+    fn queued(r: &Rig) -> Vec<String> {
+        r.machine.state.component.head.collect.clone()
+    }
+
+    #[test]
+    fn an_ok_entry_records_its_files_and_a_failed_one_does_not() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let _a = r.apply(
+            2,
+            &file_call(1, 1, Status::Ok, vec![mark(1), mark(2)], vec![]),
+        );
+        assert_eq!(held(&r), [fid(1), fid(2)]);
+        let _a = r.apply(3, &file_call(2, 1, Status::AppError, vec![mark(3)], vec![]));
+        assert_eq!(held(&r), [fid(1), fid(2)], "a failed run recorded a file");
+        // Built on a state that is no longer current: nothing applied.
+        let stale = file_call(1, 1, Status::Ok, vec![mark(4)], vec![]);
+        assert!(r.apply(4, &stale).conflict);
+        assert_eq!(held(&r), [fid(1), fid(2)]);
+    }
+
+    #[test]
+    fn a_file_stored_as_a_blob_ref_survives_and_one_not_stored_is_forgotten() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        // One entry makes both files and stores a reference to the first.
+        let made = file_call(
+            1,
+            1,
+            Status::Ok,
+            vec![mark(1), mark(2)],
+            vec![store_ref("k", 1)],
+        );
+        let _a = r.apply(2, &made);
+        let records = &r.machine.state.component.blobs.records;
+        assert_eq!(
+            records[&[1; 32]].refs, 1,
+            "counted in the entry that made it"
+        );
+        // Just inside the idle time nothing is forgotten.
+        let _a = r.apply(3, &file_call(2, BLOB_IDLE_MS, Status::Ok, vec![], vec![]));
+        assert_eq!(held(&r), [fid(1), fid(2)]);
+        assert!(queued(&r).is_empty());
+        // Past it the unreferenced file goes and is queued for collection; the stored one stays.
+        let _a = r.apply(
+            4,
+            &file_call(3, BLOB_IDLE_MS + 2, Status::Ok, vec![], vec![]),
+        );
+        assert_eq!(held(&r), [fid(1)]);
+        assert_eq!(queued(&r), [fid(2)]);
+    }
+
+    #[test]
+    fn a_file_whose_last_reference_goes_is_forgotten_after_the_idle_time() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let _a = r.apply(
+            2,
+            &file_call(
+                1,
+                1,
+                Status::Ok,
+                vec![mark(1)],
+                vec![store_ref("a", 1), store_ref("b", 1)],
+            ),
+        );
+        let t = 10 * BLOB_IDLE_MS;
+        let _a = r.apply(3, &file_call(2, t, Status::Ok, vec![], vec![remove("a")]));
+        let _a = r.apply(
+            4,
+            &file_call(3, t + BLOB_IDLE_MS + 1, Status::Ok, vec![], vec![]),
+        );
+        assert_eq!(held(&r), [fid(1)], "one reference is left");
+        let _a = r.apply(
+            5,
+            &file_call(4, t + 1, Status::Ok, vec![], vec![remove("b")]),
+        );
+        let _a = r.apply(
+            6,
+            &file_call(5, t + BLOB_IDLE_MS, Status::Ok, vec![], vec![]),
+        );
+        assert_eq!(
+            held(&r),
+            [fid(1)],
+            "idle only since the last reference went"
+        );
+        let later = t + 1 + BLOB_IDLE_MS + 1;
+        let _a = r.apply(7, &file_call(6, later, Status::Ok, vec![], vec![]));
+        assert!(held(&r).is_empty());
+        assert_eq!(queued(&r), [fid(1)]);
+    }
+
+    #[test]
+    fn the_stored_files_count_as_blob_bytes_with_their_tags_and_stay_out_of_the_blob_list() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let _a = r.apply(
+            2,
+            &file_call(1, 1, Status::Ok, vec![mark(1), mark(2)], vec![]),
+        );
+        let stats = r.machine.storage_stats();
+        assert_eq!(stats.blob_bytes, 2 * (5 + 16));
+        assert!(stats.blobs.is_empty());
+    }
+
+    #[test]
+    fn a_file_comes_back_with_its_seal_after_a_restore() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let _a = r.apply(
+            2,
+            &file_call(1, 1, Status::Ok, vec![mark(1)], vec![store_ref("k", 1)]),
+        );
+        calimero_log::Machine::restore(&mut r.machine, &[]).unwrap();
+        let record = &r.machine.state.component.blobs.records[&[1; 32]];
+        let seal = record.file.as_ref().expect("the seal is kept");
+        assert_eq!(seal.sha256, mark(1).sha256);
+        assert_eq!(seal.wrapped_key, mark(1).wrapped_key);
+        assert_eq!((record.size, record.refs), (5, 1));
+    }
+
+    #[test]
+    fn an_upload_or_an_owner_delete_cannot_touch_a_sealed_file() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let _a = r.apply(2, &file_call(1, 1, Status::Ok, vec![mark(1)], vec![]));
+        let upload = serde_json::to_vec(&ComponentCmd::Blob {
+            id: fid(1),
+            size: 9,
+            mime: "text/plain".into(),
+            ts_ms: 2,
+        })
+        .unwrap();
+        assert_eq!(
+            r.apply(3, &upload).status,
+            Status::AppError,
+            "an upload claimed a file id"
+        );
+        let forget = serde_json::to_vec(&ComponentCmd::BlobForget { id: fid(1) }).unwrap();
+        assert_eq!(
+            r.apply(4, &forget).status,
+            Status::AppError,
+            "an owner delete took a file"
+        );
+        let record = &r.machine.state.component.blobs.records[&[1; 32]];
+        assert_eq!((record.size, record.mime.as_str()), (5, ""));
+        assert!(record.file.is_some());
+    }
+
+    #[test]
+    fn an_entry_logged_before_files_existed_still_decodes_and_applies() {
+        let old = br#"{"op":"componentCall","method":"m","args":null,
+            "caller":{"kind":"account","account":"a"},"tsMs":1,"baseIndex":1,"idTerm":1,"idSeq":1,
+            "outcome":{"status":"ok","result":null,"error":null,"diff":[],"events":[],"logs":[]}}"#;
+        let ComponentCmd::Call(entry) = serde_json::from_slice(old).unwrap() else {
+            panic!("not a call");
+        };
+        assert!(entry.outcome.files.is_empty());
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        assert!(!r.apply(2, old).conflict);
     }
 
     #[test]
