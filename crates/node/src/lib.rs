@@ -28,6 +28,7 @@ pub mod membership;
 pub mod metrics;
 pub mod node;
 pub mod packages;
+pub mod placement;
 pub mod presence;
 pub mod services;
 pub mod system;

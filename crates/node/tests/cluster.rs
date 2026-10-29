@@ -2376,6 +2376,86 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     assert_eq!(v.result, json!("v1"), "the new write never reached node 3");
 }
 
+// ---------------------------------------------------------------- placement
+
+/// Registers each of `c`'s nodes again with the zone `zones` names for it
+/// (`POST /ops/nodes`), and waits until node 0, where the tests create apps,
+/// has applied every one.
+async fn put_in_zones(c: &Cluster, zones: &[&str]) {
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    for (i, zone) in zones.iter().enumerate() {
+        let _ = ops
+            .post(
+                "ops/nodes",
+                json!({ "id": i as u64 + 1, "addr": c.urls[i], "zone": zone }),
+            )
+            .await
+            .unwrap();
+    }
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    for _ in 0..100 {
+        let applied = node.sys(|s| {
+            zones
+                .iter()
+                .enumerate()
+                .all(|(i, z)| s.nodes.get(&(i as u64 + 1)).is_some_and(|n| n.zone == *z))
+        });
+        if applied {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("node 1 never applied the zones");
+}
+
+/// The replicas `POST /apps` placed a new kv app on, sorted.
+async fn placed(cl: &Client, bundle: &str, name: &str) -> Vec<u64> {
+    let created = cl
+        .post("apps", json!({ "name": name, "bundle": bundle }))
+        .await
+        .unwrap();
+    let mut replicas: Vec<u64> = serde_json::from_value(created["replicas"].clone()).unwrap();
+    replicas.sort_unstable();
+    replicas
+}
+
+/// A new app's replicas span as many zones as the cluster has, the least
+/// loaded node first within a zone: with nodes in zones a, a, b and c, an app
+/// lands on one node of a, the node of b and the node of c, never on both of
+/// a; the next app takes the a node the first one left empty. Before, placement
+/// took the three least-loaded nodes whatever their zone ([1, 2, 3]: both of a).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_new_app_is_placed_across_zones() {
+    let c = Cluster::start(4).await;
+    put_in_zones(&c, &["a", "a", "b", "c"]).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+
+    // Nothing is placed yet: node 1 (lower id) for zone a, then b and c.
+    assert_eq!(placed(&alice, &bundle, "first").await, vec![1, 3, 4]);
+    // Node 2 holds nothing, node 1 one app: zone a's replica goes to node 2.
+    assert_eq!(placed(&alice, &bundle, "second").await, vec![2, 3, 4]);
+    // Zones before load: b and c hold two apps each, a's nodes one each, and
+    // the third app still takes b and c rather than both of a.
+    assert_eq!(placed(&alice, &bundle, "third").await, vec![1, 3, 4]);
+}
+
+/// Spreading across zones never places a replica on a node whose release the
+/// owner has not approved: with zone c's only node on an unapproved release,
+/// the app spans a and b and fills its third replica from a again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn placement_across_zones_keeps_to_approved_releases() {
+    let c = Cluster::start_with(4, |cfg| {
+        cfg.tee_release = Some(if cfg.node_id == 4 { "2.0.0" } else { "1.0.0" }.into());
+    })
+    .await;
+    put_in_zones(&c, &["a", "a", "b", "c"]).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    assert_eq!(placed(&alice, &bundle, "kv").await, vec![1, 2, 3]);
+}
+
 /// A user can check that an answer came from a genuine TEE cluster: every
 /// replica of the app attests its receipt key, and each answer carries a
 /// receipt signed by one of those keys over that exact result.
