@@ -388,7 +388,7 @@ async fn backups_are_encrypted_and_restorable() {
         .path();
     let raw = std::fs::read(&file).unwrap();
     assert!(!String::from_utf8_lossy(&raw).contains("plaintext-value"));
-    let (_index, data) = calimero_node::backup::latest(&dir, &node.config.storage_key, &app)
+    let (_index, data) = calimero_node::backup::latest(&dir, node.cluster_key(), &app)
         .unwrap()
         .unwrap();
     // The app's rows are in it, opened with the storage key (the log's sealed

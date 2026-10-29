@@ -1,5 +1,6 @@
 //! Encrypted app snapshots in object storage (a directory stands in for a
-//! bucket), and the keys the cluster derives per app from K_r.
+//! bucket), and the keys the cluster derives per app from its cluster key K_c
+//! (`crate::cluster_key`).
 
 use std::path::Path;
 
@@ -7,26 +8,26 @@ use ring::hmac;
 
 /// The app's TEE key: what values sealed to the app's TEE (`TeeSecret`, an
 /// `#[app::tee]` run's own state) open with. The cluster is the app's TEE, so
-/// every node derives the same key from K_r, and nothing outside it can.
+/// every node derives the same key from K_c, and nothing outside it can.
 #[must_use]
-pub fn tee_key(storage_key: &[u8; 32], app_id: &str) -> [u8; 32] {
-    tag(storage_key, &format!("calimero.tee.v1|{app_id}"))
+pub fn tee_key(cluster_key: &[u8; 32], app_id: &str) -> [u8; 32] {
+    tag(cluster_key, &format!("calimero.tee.v1|{app_id}"))
 }
 
 /// The key that stands for `account`'s devices in `app`: a member's share is
 /// sealed to it, not to each device; the member reads through the node,
 /// which opens it only in that member's own runs.
 #[must_use]
-pub fn member_key(storage_key: &[u8; 32], app_id: &str, account: &str) -> [u8; 32] {
+pub fn member_key(cluster_key: &[u8; 32], app_id: &str, account: &str) -> [u8; 32] {
     tag(
-        storage_key,
+        cluster_key,
         &format!("calimero.member.v1|{app_id}|{account}"),
     )
 }
 
-fn tag(storage_key: &[u8; 32], label: &str) -> [u8; 32] {
+fn tag(cluster_key: &[u8; 32], label: &str) -> [u8; 32] {
     let tag = hmac::sign(
-        &hmac::Key::new(hmac::HMAC_SHA256, storage_key),
+        &hmac::Key::new(hmac::HMAC_SHA256, cluster_key),
         label.as_bytes(),
     );
     let mut out = [0; 32];
@@ -47,7 +48,7 @@ pub type Row = (Vec<u8>, Vec<u8>);
 /// rows of the app's state (`(key, value)`, the log's own layout).
 pub fn latest(
     dir: &Path,
-    storage_key: &[u8; 32],
+    cluster_key: &[u8; 32],
     app_id: &str,
 ) -> eyre::Result<Option<(u64, Vec<Row>)>> {
     let path = dir.join(app_id);
@@ -72,7 +73,7 @@ pub fn latest(
         eyre::bail!("bad backup name {name}");
     };
     let mut rows = Vec::new();
-    calimero_log::read_snapshot_file(storage_key, group.parse()?, id, &file, |k, v| {
+    calimero_log::read_snapshot_file(cluster_key, group.parse()?, id, &file, |k, v| {
         rows.push((k.to_vec(), v.to_vec()));
         Ok(())
     })?;
