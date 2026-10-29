@@ -42,8 +42,8 @@ so the log alone decides every outcome.
 Nothing a node holds leaves it in the clear. Clients and peers verify a node's
 TDX quote before they send it anything, then speak to it only through a
 **sealed channel** bound to the key that quote attests. Everything a node
-writes to disk is sealed under a storage key it receives from mero-kms only
-after proving its own image.
+writes to disk is sealed under the cluster's key, which it keeps wrapped under
+a storage key it receives from mero-kms only after proving its own image.
 
 > Hold onto that: _one log per app, one log for the cluster, the leader runs
 > and everyone applies, and nothing crosses a trust boundary unsealed_. Every

@@ -231,9 +231,17 @@ default):
 `/internal/call`, `/internal/view`, `/internal/blob`, `/internal/blob/get`,
 `/internal/blob/held`, `/internal/blob/delete`, `/internal/storage`,
 `/internal/presence`, `/internal/app-ready` and `/internal/events` are for the
-cluster's own nodes: they need the cluster secret (an HMAC of the storage key
+cluster's own nodes: they need the cluster secret (an HMAC of the cluster key
 and the cluster name) inside a sealed channel whose key was attested like any
 client's. Nothing outside the cluster calls them.
+
+`/internal/cluster-key` is the one internal route without the cluster secret:
+a new node, often of the next mero-tee release, asks it for the cluster key
+K_c (`{ cluster, node, token }`). It is never answered with the key: the peer
+delivers K_c to the address the cluster has for that node id, inside a sealed
+channel to the key the TD there attests (`403` for another cluster, an
+unknown or removed node, or a delivery that fails; `429 BUSY` past four at
+once). See [The cluster key](/protocol/encryption/#the-cluster-key-k_c).
 
 <Aside type="note" title="App frontends">
   With `--apps-domain`, requests whose `Host` is `{label}.{domain}` are served

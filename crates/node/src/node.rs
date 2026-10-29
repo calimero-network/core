@@ -78,7 +78,8 @@ pub struct Config {
     /// Form the system group with `peers` as voters (first start only).
     pub bootstrap: bool,
     pub cluster: String,
-    /// Storage key K_r from the KMS (or a dev key).
+    /// Storage key K_r from this release's KMS (or a dev key). It only wraps
+    /// the cluster key K_c on disk (`cluster_key`), which seals the data.
     pub storage_key: [u8; 32],
     pub attestation: Mode,
     /// Accept mock quotes from peers (development only).
@@ -138,6 +139,41 @@ pub struct Config {
     /// The limits of every component call and view; `None` is `Budget::call()`.
     /// Tests only.
     pub budget: Option<calimero_app_host::Budget>,
+}
+
+impl Config {
+    /// How this node judges a peer's quote: its transport key on every peer
+    /// channel, and a new node's request for the cluster key.
+    #[must_use]
+    pub fn peer_policy(&self) -> Policy {
+        Policy {
+            allow_mock: self.allow_mock_peers,
+            app_hash: None,
+            measurements: self.peer_measurements.clone(),
+            allowed_tcb_statuses: Vec::new(),
+            // A node trusts debug peers only when it runs a debug image itself.
+            allow_debug_profiles: self
+                .tee_profile
+                .as_deref()
+                .is_some_and(calimero_client::attest::is_debug_profile),
+        }
+    }
+
+    /// The release this node's attestations name.
+    #[must_use]
+    pub fn attested_release(&self) -> crate::attest::Release {
+        crate::attest::Release {
+            version: self
+                .tee_release
+                .clone()
+                .unwrap_or_else(|| self.release.clone()),
+            profile: match (&self.tee_profile, self.attestation) {
+                (_, Mode::Mock) => "mock".into(),
+                (Some(p), _) => p.clone(),
+                (None, _) => "tdx".into(),
+            },
+        }
+    }
 }
 
 /// Request to run a method.
@@ -307,7 +343,7 @@ pub struct Node {
     pub executor: Executor,
     /// Runs the apps whose bundle is a `calimero:app` component (one wasmtime
     /// engine for all of them, spec section 5); compiled artifacts cached under
-    /// `<data_dir>/components`, each with a MAC under a key derived from K_r (S8).
+    /// `<data_dir>/components`, each with a MAC under a key derived from K_c (S8).
     wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
     /// Prepared components per bundle hash.
     prepared: Mutex<HashMap<String, calimero_app_host::Prepared>>,
@@ -332,6 +368,10 @@ pub struct Node {
     peers: Mutex<HashMap<String, Arc<calimero_sealed::client::SealedTransport>>>,
     pub(crate) http: reqwest::Client,
     cluster_secret: String,
+    /// K_c (`cluster_key`): what the cluster's data is sealed under.
+    cluster_key: [u8; 32],
+    /// Bounds the cluster-key releases this node answers at once.
+    pub(crate) key_releases: tokio::sync::Semaphore,
     pub challenges: Mutex<HashMap<String, crate::api::Pending>>,
     /// The release each peer's verified attestation named, by address.
     peer_releases: Mutex<HashMap<String, Arc<Mutex<Option<String>>>>>,
@@ -447,7 +487,10 @@ fn status_of(e: &WriteError) -> ApiError {
 
 impl Node {
     /// Open storage, start the system group and every app group this node hosts.
-    pub async fn start(config: Config) -> eyre::Result<Arc<Self>> {
+    ///
+    /// Everything the cluster shares or keeps across releases is keyed by
+    /// `cluster_key` (K_c, `cluster_key::resolve`), not by this release's K_r.
+    pub async fn start(config: Config, cluster_key: [u8; 32]) -> eyre::Result<Arc<Self>> {
         std::fs::create_dir_all(&config.data_dir)?;
         let peer_transport = Arc::new(PeerTransport {
             node: Mutex::new(Weak::new()),
@@ -455,7 +498,7 @@ impl Node {
         let engine = Engine::open(
             config.node_id,
             &config.data_dir,
-            &config.storage_key,
+            &cluster_key,
             Arc::clone(&peer_transport) as Arc<dyn Transport>,
             config.raft.clone(),
         )?;
@@ -469,19 +512,21 @@ impl Node {
             },
         ));
         // Compiled components live in the node's data directory, which the host can
-        // write: each artifact carries a MAC under a key derived from K_r, so only this
+        // write: each artifact carries a MAC under a key derived from K_c, so only this
         // cluster's own compilations are ever loaded (S8, Ruling 38).
         let wasm = Arc::new(calimero_app_engine_wasmtime::WasmtimeEngine::new(
             config.data_dir.join("components"),
-            &component::component_cache_key(&config.storage_key),
+            &component::component_cache_key(&cluster_key),
         )?);
         let clock = Clock::new(config.clock_offset_ms);
         let secret = hmac::sign(
-            &hmac::Key::new(hmac::HMAC_SHA256, &config.storage_key),
+            &hmac::Key::new(hmac::HMAC_SHA256, &cluster_key),
             format!("calimero.cluster.v1|{}", config.cluster).as_bytes(),
         );
         let node = Arc::new(Self {
             cluster_secret: calimero_identity::b64url(secret.as_ref()),
+            cluster_key,
+            key_releases: tokio::sync::Semaphore::new(crate::api::MAX_CONCURRENT_KEY_RELEASES),
             config,
             engine: Arc::clone(&engine),
             system,
@@ -544,6 +589,12 @@ impl Node {
         Ok(node)
     }
 
+    /// K_c: the key the cluster's data, backups included, is sealed under.
+    #[must_use]
+    pub const fn cluster_key(&self) -> &[u8; 32] {
+        &self.cluster_key
+    }
+
     /// The secret peers present on internal routes (inside sealed channels).
     #[must_use]
     pub fn cluster_secret(&self) -> &str {
@@ -562,18 +613,7 @@ impl Node {
         }
         let attestor = HttpAttestor {
             seen_release,
-            policy: Policy {
-                allow_mock: self.config.allow_mock_peers,
-                app_hash: None,
-                measurements: self.config.peer_measurements.clone(),
-                allowed_tcb_statuses: Vec::new(),
-                // A node trusts debug peers only when it runs a debug image itself.
-                allow_debug_profiles: self
-                    .config
-                    .tee_profile
-                    .as_deref()
-                    .is_some_and(calimero_client::attest::is_debug_profile),
-            },
+            policy: self.config.peer_policy(),
         };
         let t = Arc::new(calimero_sealed::client::SealedTransport::attested(
             url,
@@ -1309,7 +1349,7 @@ impl Node {
     fn env(&self, app_id: &str, caller: &Caller) -> RunEnv {
         let opener = caller.account().map(|a| {
             Arc::new(calimero_primitives::identity::PrivateKey::from(
-                crate::backup::member_key(&self.config.storage_key, app_id, a),
+                crate::backup::member_key(&self.cluster_key, app_id, a),
             ))
         });
         RunEnv {
@@ -1331,7 +1371,7 @@ impl Node {
     /// key standing for that member (every account that may reach the app).
     fn tee_sealing(&self, app_id: &str) -> calimero_runtime::logic::SealingContext {
         use calimero_primitives::identity::PrivateKey;
-        let tee = PrivateKey::from(crate::backup::tee_key(&self.config.storage_key, app_id));
+        let tee = PrivateKey::from(crate::backup::tee_key(&self.cluster_key, app_id));
         let accounts: Vec<String> = self.sys(|s| {
             let Some(app) = s.apps.get(app_id) else {
                 return Vec::new();
@@ -1355,11 +1395,7 @@ impl Node {
         let mut account_devices = BTreeMap::new();
         let mut stand_ins = BTreeMap::new();
         for a in &accounts {
-            let key = PrivateKey::from(crate::backup::member_key(
-                &self.config.storage_key,
-                app_id,
-                a,
-            ));
+            let key = PrivateKey::from(crate::backup::member_key(&self.cluster_key, app_id, a));
             let id = Caller::Account { account: a.clone() }.account_bytes();
             let _prev = account_devices.insert(id, vec![id]);
             let _prev = stand_ins.insert(id, *AsRef::<[u8; 32]>::as_ref(&key.public_key()));
@@ -1379,7 +1415,7 @@ impl Node {
     /// cluster is every app's TEE).
     fn tee_sealing_key(&self, app_id: &str) -> calimero_runtime::logic::SealingKeyResolver {
         let tee = calimero_primitives::identity::PrivateKey::from(crate::backup::tee_key(
-            &self.config.storage_key,
+            &self.cluster_key,
             app_id,
         ));
         let public = *AsRef::<[u8; 32]>::as_ref(&tee.public_key());

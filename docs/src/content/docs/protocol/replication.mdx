@@ -188,8 +188,8 @@ in `crates/log/tests/cluster.rs`).
 A **snapshot** is a file of sealed frames under `<data-dir>/snapshots`, written
 from a consistent RocksDB view of the group's rows, never the whole state in
 memory. A follower that needs one receives the file in chunks. Every node of
-a cluster holds the same storage key, so a follower opens the leader's frames
-as they are. Installing writes the group's rows under the next **generation**
+a cluster holds the same cluster key K_c, whatever release it runs, so a
+follower opens the leader's frames as they are. Installing writes the group's rows under the next **generation**
 (`group ‖ generation ‖ key`) and switches generations in one batch, so a crash
 mid-install leaves the previous state intact. `calimero-log`'s tests stream a
 ~6 MiB state to a new node this way.

@@ -29,7 +29,7 @@ code, and app code beyond what its owner approved.
 | Party | Can | Cannot |
 | --- | --- | --- |
 | **Network / proxy** | See that clients talk to nodes, sizes, timing; drop or delay traffic | Read or forge requests, responses or frames; replay a request; impersonate a node without its attested key |
-| **Host / hypervisor** | Stop, freeze, restart a node; read sealed disks; withhold the network | Read memory of a non-debug TD; open sealed values without K_r; get K_r (it comes from mero-kms, not the host) |
+| **Host / hypervisor** | Stop, freeze, restart a node; read sealed disks; withhold the network | Read memory of a non-debug TD; open sealed values without K_c; get K_r (it comes from mero-kms, not the host) or K_c (wrapped under K_r, or delivered by a peer only to the attested TD at a registered node's address) |
 | **Operator** (ops token) | Register nodes, move replicas onto approved releases, set quotas, take sealed backups, read counts and Raft status; and whatever governance gives it | Read state, events, blobs or credentials; sign in as anyone; move an app's data to an unapproved image; upgrade apps, approve releases or outbound destinations unless governance gives it that decision |
 | **A node of the cluster** | Everything this reference describes | — (it is the trusted computing base; that is why every peer is attested) |
 | **An app's owner** | Upgrade it, change its access, approve releases and outbound prefixes for it (where governance says owner), delete it | Read other apps; act for other accounts |
@@ -43,7 +43,7 @@ code, and app code beyond what its owner approved.
   forward secrecy per session ([Networking](/protocol/networking/)).
 - **A fake or outdated node** — the quote check with a measurement policy and a
   release floor, for clients and peers alike ([Attestation](/protocol/tee-attestation/)).
-- **Reading disks** — AES-256-GCM under K_r, bound to row, group and column;
+- **Reading disks** — AES-256-GCM under K_c, bound to row, group and column;
   hidden row keys ([Encryption](/protocol/encryption/)).
 - **A new image reaching data** — release approvals, enforced by the replicas
   that hold the data before any Raft entry or snapshot leaves
@@ -72,7 +72,7 @@ code, and app code beyond what its owner approved.
 - **Rollback.** A host that restarts a node on an older copy of its disk is not
   detected. A rollback counter (a mero-kms epoch, restored nodes rejoining as
   learners) is proposed, not done.
-- **Keys per app.** One K_r covers every app on a cluster; keys per app from
+- **Keys per app.** One K_c covers every app on a cluster; keys per app from
   mero-kms are not done.
 - **Availability.** The host and operator can stop nodes. Raft tolerates the
   loss of a minority of an app's replicas; placement across zones is left to
