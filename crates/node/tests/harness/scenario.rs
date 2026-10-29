@@ -2956,6 +2956,27 @@ fn str_field(v: &Value, k: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{k} in {v}"))
 }
 
+/// The accounts `path`'s steps act as (`as`) that neither its org file nor the runner names:
+/// outsiders, who sign up but hold no place in the app's org.
+fn outsiders(path: &Path, spec: &OrgSpec) -> Result<Vec<String>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let steps: Vec<Value> =
+        serde_json::from_str(&text).map_err(|e| format!("not a JSON array: {e}"))?;
+    let known: Vec<String> = spec.roles().into_iter().map(|(name, _)| name).collect();
+    let mut out: Vec<String> = Vec::new();
+    for step in &steps {
+        let Some(name) = step.get("as").and_then(Value::as_str) else {
+            continue;
+        };
+        if name.starts_with('@') || known.iter().any(|k| k == name) || out.iter().any(|o| o == name)
+        {
+            continue;
+        }
+        out.push(name.to_owned());
+    }
+    Ok(out)
+}
+
 /// Runs the app-level scenario `path` (`apps/<app>/scenarios/<name>.json`) on a three-node
 /// cluster whose app clock starts at [`T0`].
 pub async fn run_app_scenario(path: &Path) -> Result<(), String> {
@@ -2965,11 +2986,12 @@ pub async fn run_app_scenario(path: &Path) -> Result<(), String> {
         .ok_or("an app-level scenario lives in apps/<app>/scenarios/")?;
     let wasm = build_app(app_dir)?;
     let spec = OrgSpec::beside(path)?;
+    let outsiders = outsiders(path, &spec)?;
     let now = i64::try_from(calimero_node::types::now_ms()).unwrap_or(0);
     let offset = i64::try_from(T0).unwrap_or(0) - now;
     let c = Cluster::start_with(3, move |cfg| cfg.clock_offset_ms = offset).await;
     let out = async {
-        let mut runner = AppRunner::setup(&c, &spec, wasm).await?;
+        let mut runner = AppRunner::setup(&c, &spec, &outsiders, wasm).await?;
         runner.open_streams().await;
         runner.run(path).await
     }
@@ -2982,7 +3004,12 @@ pub async fn run_app_scenario(path: &Path) -> Result<(), String> {
 }
 
 impl<'a> AppRunner<'a> {
-    async fn setup(c: &'a Cluster, spec: &OrgSpec, wasm: Vec<u8>) -> Result<Self, String> {
+    async fn setup(
+        c: &'a Cluster,
+        spec: &OrgSpec,
+        outsiders: &[String],
+        wasm: Vec<u8>,
+    ) -> Result<Self, String> {
         let owner = person(c, "owner").await?;
         let o = &owner.on[0];
         let org = str_field(
@@ -3030,6 +3057,12 @@ impl<'a> AppRunner<'a> {
                     .map_err(|e| format!("add {m} to {team}: {e}"))?;
             }
             let _prev = teams.insert(team.clone(), id);
+        }
+        // An account a step acts as that the org file does not name signs up and joins no
+        // org, so the node refuses it (`NOT_FOUND`) as the harness does.
+        for name in outsiders {
+            let p = person(c, name).await?;
+            let _prev = people.insert(name.clone(), p);
         }
         // The team's creator (the owner) leads it: drop that row unless the org file names
         // the owner in the team, so `in_team(owner)` answers as the harness does.
