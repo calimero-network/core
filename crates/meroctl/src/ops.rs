@@ -17,7 +17,11 @@ pub enum OpsCmd {
     Status,
     /// Prometheus metrics (text).
     Metrics,
-    /// Register a node so the system group admits it (it joins as a learner).
+    /// Where every context's replicas are, and each node's zone, release and
+    /// context count (ids and counts only), for rebalancing.
+    Placement,
+    /// Register a node so the system group admits it (it joins as a learner,
+    /// and becomes a voter while the system group has fewer than 3).
     AddNode {
         id: u64,
         /// Its URL.
@@ -122,6 +126,7 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
             print!("{}", client.get_text("ops/metrics").await?);
             return Ok(Value::Null);
         }
+        OpsCmd::Placement => client.get("ops/placement").await?,
         OpsCmd::AddNode { id, addr, zone } => {
             client
                 .post("ops/nodes", json!({ "id": id, "addr": addr, "zone": zone }))

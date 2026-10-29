@@ -42,8 +42,43 @@ learner of the system group once it is registered.
 </Steps>
 
 A learner holds the directory and can serve and host apps, but does not vote
-in the system group. It becomes a voter when a voter is removed (below) and
-fewer than 3 would be left.
+in the system group. While the system group has fewer than 3 voters, the
+system leader promotes caught-up learners to make exactly 3 (never 2), those in
+zones no voter is in first; a voter removed (below) is replaced the same way.
+It does not grow past 3 by itself.
+
+### Grow from one node
+
+A cluster can start on one node (`--bootstrap`, `--peers` naming only itself)
+and grow:
+
+<Steps>
+
+1. Until it has three voters the first node is a single point of failure: every
+   system write and access check needs it. Apps created now get one replica.
+
+2. Add two nodes as above, registering each with `--zone` when they are in
+   different zones. With only the second registered, the system group stays at 1 voter
+   (2 voters would tolerate no failure); once both have caught up, the leader
+   makes them voters in one change. `meroctl ops status` shows
+   `system.voters` `[1, 2, 3]`.
+
+3. Spread the apps placed while there was one node:
+
+   ```bash
+   meroctl ops placement          # each app's replicas, each node's app count
+   meroctl ops move <app> --replicas 1,2,3
+   ```
+
+   mdma does this as its rebalancer: it reads `GET /ops/placement` and sends
+   `POST /ops/apps/{app}/replicas`, which answers `unchanged: true` when the
+   app already has that set and `409 MOVE_IN_PROGRESS` while another move of the
+   app runs.
+
+4. A fourth node and later ones stay learners of the system group;
+   `ops placement` lists them with `apps: 0` until a move puts apps on them.
+
+</Steps>
 
 ## Remove a node
 
@@ -79,14 +114,18 @@ fewer than 3 would be left.
    meroctl sends it to the node you named; a follower answers
    `421 NOT_LEADER` and meroctl retries at the leader's URL.
 
-3. The leader adds the new nodes as learners, waits, switches the voters to the
-   new set, and records it. The answer is the group's new status.
+3. The leader hands the new nodes the app's bundle and blobs, adds them as
+   learners, waits, switches the voters to the new set, and records it. The
+   answer is the group's new status.
 
 </Steps>
 
 Refusals: `TOO_FEW` (fewer than `min(3, nodes in the cluster)` replicas),
-`403` naming a node whose release the app's owner has not approved, or
-`NOT_HOSTED` when the node asked does not hold the app.
+`DUPLICATE_REPLICA`, `UNKNOWN_NODE` (an id not registered), `403` naming a node
+whose release the app's owner has not approved, `NOT_HOSTED` when the node
+asked does not hold the app, or `409 MOVE_IN_PROGRESS` while another move of
+the app runs (retry once it answers). Repeating a move is safe: a move to the
+set the app already has answers `unchanged: true`.
 
 ## Back up app state
 
