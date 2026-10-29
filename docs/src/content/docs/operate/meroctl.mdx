@@ -89,7 +89,7 @@ cluster and verified on every node that runs it.
 | Command | Route | Meaning |
 | --- | --- | --- |
 | `app install PACKAGE[@VERSION] [--version V]` | `POST /packages/install` | Install a release from the node's registry. The version is required, as `@V` or `--version`. |
-| `app install --path FILE` | `POST /packages` or `POST /bundles` | Upload a signed `.mpk`; any other file is uploaded as a raw WASM bundle (development clusters only) and its hash printed. |
+| `app install --path FILE` | `POST /packages` or `POST /bundles` | Upload a signed `.mpk`, or any other file as a raw WASM bundle (its hash printed). Development clusters (`--dev`) only; production installs `PACKAGE@VERSION` from the registry. |
 | `app list` (`ls`, `list-packages`) | `GET /packages` | Installed applications and their versions. |
 | `app get PACKAGE` | `GET /packages/{package}` | One installed application. |
 | `app versions PACKAGE` (`list-versions`) | `GET /packages/{package}` | Its installed versions. |

@@ -53,6 +53,7 @@ fn config(dir: &std::path::Path, port: u16) -> Config {
         budget: None,
         registry: None,
         allow_unsigned_bundles: true,
+        allow_package_uploads: true,
         outbound: None,
         governance: Default::default(),
         apps_domain: None,

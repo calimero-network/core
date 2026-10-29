@@ -1923,6 +1923,7 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
     let c = Cluster::start_with(3, |cfg| {
         cfg.registry = Some(url.clone());
         cfg.allow_unsigned_bundles = false;
+        cfg.allow_package_uploads = false;
     })
     .await;
     let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
@@ -1937,6 +1938,18 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
     // Production nodes take no raw WASM: it carries no publisher signature.
     let e = alice.upload_bundle(kv.clone()).await.unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
+    // Nor an uploaded package, signed or not, from an account or the
+    // operator: every release comes from the registry, so any node that lacks
+    // it fetches it there, and none lives only where it was uploaded.
+    let signed = mpk("com.test.kv", "1.0.0", &kv, &publisher);
+    let e = alice.upload_package(signed.clone()).await.unwrap_err();
+    assert_eq!(e.code(), Some("UPLOADS_DISABLED"), "{e}");
+    let e = ops_at(&c, 0)
+        .await
+        .ops_upload_package(signed)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("UPLOADS_DISABLED"), "{e}");
 
     // Install by name; the node that installs it verifies it first.
     let installed = alice.install_package("com.test.kv", "1.0.0").await.unwrap();

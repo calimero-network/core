@@ -127,8 +127,9 @@ PACKAGE@VERSION`, `POST /apps { package, version }` for a release the cluster
 lacks, and owner upgrade runs install from it. A node that runs a registry
 release it does not hold fetches it from the registry, never from a peer, and
 refuses bytes whose hash differs from what the log recorded. Without
-`registry-url`, those requests answer `400 NO_REGISTRY`; uploaded `.mpk` files
-still work.
+`registry-url`, those requests answer `400 NO_REGISTRY`. Uploaded `.mpk` files
+(`POST /packages`) are taken only with `--dev`: in production every release
+comes from the registry.
 
 ## Outbound
 

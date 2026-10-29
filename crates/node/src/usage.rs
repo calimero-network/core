@@ -382,10 +382,13 @@ mod tests {
         if THREAD_CPU {
             assert!(slept.cpu < Duration::from_millis(25), "{slept:?}");
         }
+        // 300 ms of spinning, of which 15 ms must count: a loaded runner
+        // can deschedule the thread for most of a short window (CI saw 8 ms
+        // of CPU in a 30 ms spin).
         let (_sum, busy) = measure(|| {
             let started = Instant::now();
             let mut x = 0_u64;
-            while started.elapsed() < Duration::from_millis(30) {
+            while started.elapsed() < Duration::from_millis(300) {
                 x = std::hint::black_box(x.wrapping_add(1));
             }
             x
