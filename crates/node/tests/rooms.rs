@@ -177,11 +177,33 @@ fn failure(e: &ClientError) -> Failure {
 /// Every event each account received over its stream, in order: `(index, name)`.
 type Received = Arc<Mutex<Vec<(u64, String)>>>;
 
+/// How an account's stream ended (D81). The node's last frame when the
+/// account loses access is `access_lost` (no id): not one of the app's events,
+/// so it is kept here, never in [`Received`], and the shared scenario's
+/// `events` lists stay the same on every host.
+#[derive(Default)]
+struct Ending {
+    /// The stream was opened (a refused one has no ending to check).
+    opened: bool,
+    /// The data of its `access_lost` frame.
+    lost: Option<Value>,
+    /// Every frame after `access_lost`: none may come.
+    after: Vec<String>,
+    /// The stream has ended.
+    closed: bool,
+}
+
+type Ended = Arc<Mutex<Ending>>;
+
 struct Runner<'a> {
     c: &'a Cluster,
     org: &'a mut Org,
     vars: HashMap<String, Value>,
     received: BTreeMap<String, Received>,
+    /// How each account's stream ended, if it did.
+    ended: BTreeMap<String, Ended>,
+    /// The accounts `removeMember` took out of the organization.
+    removed: Vec<String>,
     /// The node each account's event stream is opened on.
     home: BTreeMap<String, usize>,
     advanced: bool,
@@ -191,21 +213,35 @@ impl<'a> Runner<'a> {
     /// Opens one live event stream per account (on a node of its own), from the log's start.
     async fn new(c: &'a Cluster, org: &'a mut Org) -> Self {
         let mut received = BTreeMap::new();
+        let mut ended = BTreeMap::new();
         let mut home = BTreeMap::new();
         for (n, (name, p)) in org.people.iter().enumerate() {
             let node = n % 3;
             let got: Received = Arc::default();
+            let end: Ended = Arc::default();
             // A stream the node refuses receives nothing.
             if let Ok(mut stream) = p.on[node].events(&org.app, 0).await {
+                end.lock().unwrap().opened = true;
                 let sink = Arc::clone(&got);
+                let end = Arc::clone(&end);
                 drop(tokio::spawn(async move {
-                    while let Some((id, kind, _data)) = stream.next().await {
-                        let index = id.split(':').next().and_then(|i| i.parse().ok());
-                        sink.lock().unwrap().push((index.unwrap_or(0), kind));
+                    while let Some((id, kind, data)) = stream.next().await {
+                        let mut e = end.lock().unwrap();
+                        if e.lost.is_some() {
+                            e.after.push(kind);
+                        } else if id.is_empty() && kind == "access_lost" {
+                            e.lost = Some(data);
+                        } else {
+                            drop(e);
+                            let index = id.split(':').next().and_then(|i| i.parse().ok());
+                            sink.lock().unwrap().push((index.unwrap_or(0), kind));
+                        }
                     }
+                    end.lock().unwrap().closed = true;
                 }));
             }
             let _prev = received.insert(name.clone(), got);
+            let _prev = ended.insert(name.clone(), end);
             let _prev = home.insert(name.clone(), node);
         }
         Self {
@@ -213,6 +249,8 @@ impl<'a> Runner<'a> {
             org,
             vars: HashMap::new(),
             received,
+            ended,
+            removed: Vec::new(),
             home,
             advanced: false,
         }
@@ -224,6 +262,23 @@ impl<'a> Runner<'a> {
         for (n, step) in steps.iter().enumerate() {
             if let Err(e) = self.step(n, step).await {
                 panic!("step {n}: {step}\n{e}");
+            }
+        }
+        // D81: only a removed account's stream ended, and no stream carried
+        // anything after its `access_lost`.
+        for (name, end) in &self.ended {
+            let e = end.lock().unwrap();
+            assert!(
+                e.after.is_empty(),
+                "{name}'s stream carried {:?} after access_lost",
+                e.after
+            );
+            if !self.removed.contains(name) {
+                assert!(
+                    e.lost.is_none() && !e.closed,
+                    "{name} kept access, but its stream ended ({:?})",
+                    e.lost
+                );
             }
         }
     }
@@ -251,8 +306,10 @@ impl<'a> Runner<'a> {
                 Ok(Value::Null)
             }
             "removeMember" => {
-                self.remove_member(args.as_str().ok_or("removeMember needs an account")?)
-                    .await?;
+                let name = args.as_str().ok_or("removeMember needs an account")?;
+                self.remove_member(name).await?;
+                self.ended_with_access_lost(name).await?;
+                self.removed.push(name.to_owned());
                 Ok(Value::Null)
             }
             other => return Err(format!("unknown op {other:?}")),
@@ -403,6 +460,50 @@ impl<'a> Runner<'a> {
             }
         }
         Ok(())
+    }
+
+    /// D81: once the removal is applied, `name`'s stream ends with exactly the
+    /// node's `access_lost` frame for a signed-in account the app no longer
+    /// admits (`404 NOT_FOUND`), and nothing after it. Waits up to 5 s, as
+    /// [`Self::events_reach`] does.
+    async fn ended_with_access_lost(&self, name: &str) -> Result<(), String> {
+        let end = self
+            .ended
+            .get(name)
+            .ok_or_else(|| format!("no account {name}"))?;
+        if !end.lock().unwrap().opened {
+            return Err(format!("{name} had no stream to end"));
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            {
+                let e = end.lock().unwrap();
+                if e.closed {
+                    let lost = e
+                        .lost
+                        .as_ref()
+                        .ok_or_else(|| format!("{name}'s stream ended without access_lost"))?;
+                    if lost["status"] != json!(404) || lost["error"] != json!("NOT_FOUND") {
+                        return Err(format!(
+                            "{name}'s stream ended with access_lost {lost}, not 404 NOT_FOUND"
+                        ));
+                    }
+                    if !e.after.is_empty() {
+                        return Err(format!(
+                            "{name}'s stream carried {:?} after access_lost",
+                            e.after
+                        ));
+                    }
+                    return Ok(());
+                }
+            }
+            if Instant::now() > deadline {
+                return Err(format!(
+                    "{name}'s stream did not end with access_lost after the removal"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     /// Waits until each live stream holds as many events as a fresh replay on its node.

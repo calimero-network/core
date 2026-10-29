@@ -1220,10 +1220,24 @@ async fn removed_member_stops_receiving_org_events() {
         .unwrap()
         .unwrap();
     assert_eq!(data["text"], "two");
+    // D81: bob's stream carries none of the app's events after his removal.
+    // Its last frame is exactly the node's `access_lost` (no id, 404
+    // NOT_FOUND, what the request would now get), and then it ends.
     let got = tokio::time::timeout(Duration::from_secs(2), bob_events.next()).await;
+    let Ok(Some((id, kind, data))) = got else {
+        panic!("a removed member's stream must end with access_lost, got {got:?}");
+    };
     assert!(
-        !matches!(got, Ok(Some(_))),
-        "a removed member still received {got:?}"
+        id.is_empty() && kind == "access_lost",
+        "a removed member still received {:?}",
+        (id, kind, data)
+    );
+    assert_eq!(data["status"], json!(404), "{data}");
+    assert_eq!(data["error"], json!("NOT_FOUND"), "{data}");
+    let after = tokio::time::timeout(Duration::from_secs(2), bob_events.next()).await;
+    assert!(
+        matches!(after, Ok(None)),
+        "a removed member's stream must end after access_lost, got {after:?}"
     );
 }
 

@@ -152,6 +152,28 @@ is its command line.
   `GET /apps/{app}` (#4723) and every client call's leader read the system state through `sys_fresh`
   (a read index), so a removal committed elsewhere holds before the next request. Regression:
   `an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behind`.
+- **Open streams lose access** (D81; `api::access_lost`, `until_access_lost`): an event stream
+  (`/apps/{app}/events`, local or proxied from a replica) and a presence stream judge their
+  caller again as the request would be judged now: the credential as `principal` judges it
+  (`credential_holds`: an API key revoked or expired, a session revoked or expired, its passkey
+  removed; `api_key_holds` and `session_holds` are `principal`'s own checks, moved out unchanged),
+  then `gate`'s access check (`reaches`, then `not_reached`: the app made private or deleted, the
+  caller removed from its org or team). On this node's applied system state, each time the system
+  group applies an entry (`Group::subscribe_applied`, one watch shared by every stream: no log
+  read, two in-memory lookups per stream per apply) and once at the credential's expiry (one timer
+  per stream). When it fails the stream sends `event: access_lost` (no id; `api::ACCESS_LOST_EVENT`)
+  with the error the request would now get (`{"status":401,"error":"UNAUTHENTICATED",...}`,
+  `{"status":404,"error":"NOT_FOUND",...}`) and ends, before anything sent after the change applied
+  here. The Rust client ends a stream on that frame (`calimero_client::access_lost`); mero-js:
+  #4754. There is no account deletion to cover (no command removes an account). Regressions:
+  `an_open_event_stream_closes_once_the_app_is_made_private`,
+  `a_removed_members_open_event_stream_closes`,
+  `an_open_event_stream_closes_once_its_member_leaves_the_team`,
+  `an_open_event_stream_closes_once_its_api_key_is_revoked`,
+  `an_open_event_stream_closes_when_its_api_key_expires`,
+  `an_open_event_stream_closes_once_its_session_is_revoked`,
+  `an_open_event_stream_closes_once_its_passkey_is_removed`,
+  `an_open_presence_stream_closes_once_the_app_is_made_private`.
 - **Raft addressee** (`PeerTransport::send`, `api::internal_raft`): every Raft message names the
   node it is for (`target`); a node that is not that node refuses it `421 WRONG_NODE`, so a message
   that reaches the wrong node (a reused port, a node moved or replaced) cannot move its term or log.

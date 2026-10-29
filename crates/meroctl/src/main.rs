@@ -227,8 +227,24 @@ async fn verified_release(
     }))
 }
 
+/// Exits [`context::ACCESS_LOST_EXIT`] when a stream ends because the caller
+/// lost access (`context::AccessLost`, printed to stderr); any other error is
+/// returned as before (`Error: ...`, exit 1).
 #[tokio::main]
-async fn main() -> eyre::Result<()> {
+async fn main() -> eyre::Result<std::process::ExitCode> {
+    match run().await {
+        Ok(()) => Ok(std::process::ExitCode::SUCCESS),
+        Err(e) => match e.downcast_ref::<context::AccessLost>() {
+            Some(lost) => {
+                eprintln!("{lost}");
+                Ok(std::process::ExitCode::from(context::ACCESS_LOST_EXIT))
+            }
+            None => Err(e),
+        },
+    }
+}
+
+async fn run() -> eyre::Result<()> {
     let cli = Cli::parse();
     let home = Home {
         dir: cli.home.clone(),

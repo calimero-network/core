@@ -147,7 +147,7 @@ the release fetches and verifies it again.
 | `DELETE /apps/{app}` | session | Delete (owner or org admin) | `context delete` |
 | `POST /apps/{app}/intents` | app access | `{ method, args, idempotencyKey?, confirm? }`: a call. A confirm method answers `412` first. | `call` |
 | `POST /apps/{app}/views` | app access | `{ method, args, consistency?: "stale", minIndex? }`: a read | `call --view` |
-| `GET /apps/{app}/events?from=N` | app access | Server-sent events: committed events from `N`, then live ones | `context watch` |
+| `GET /apps/{app}/events?from=N` | app access | Server-sent events: committed events from `N`, then live ones; ends with `access_lost` (below) | `context watch` |
 | `POST /apps/{app}/upgrade` | account holder | `{ bundle? \| package?, version?, service?, migrate?, confirm? }`; where the owner holds app upgrades | `context update` |
 | `POST /apps/{app}/transfer` | account holder | `{ to, confirm? }`: hand the app to another account (the owner, with a passkey step-up; an organization's app only to a member) | `context transfer` |
 | `POST /apps/{app}/access` | session | `{ access: { kind: owner \| org \| team \| accounts \| public, … } }` | `context access` |
@@ -156,7 +156,7 @@ the release fetches and verifies it again.
 | `GET /apps/{app}/abi` | app access | The bundle's embedded ABI | `context abi` |
 | `GET /apps/{app}/attestation` | app access | Every replica's receipt-key attestation | `attest --context` |
 | `GET/POST /apps/{app}/presence` | app access | Who is present; publish `{ seq, state }` | `context presence list/publish` |
-| `GET /apps/{app}/presence/stream` | app access | Server-sent events: `snapshot`, then `presence` diffs | `context presence stream` |
+| `GET /apps/{app}/presence/stream` | app access | Server-sent events: `snapshot`, then `presence` diffs; ends with `access_lost` (below) | `context presence stream` |
 | `POST /apps/{app}/blobs` | app access | Upload a blob | `blob upload` |
 | `GET /apps/{app}/blobs` | app access | List blobs | `blob list` |
 | `GET /apps/{app}/blobs/{id}` | app access | Download (id base58 or hex) | `blob download` |
@@ -165,6 +165,45 @@ the release fetches and verifies it again.
 
 Every `/intents` and `/views` answer carries a receipt signed by the answering
 node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
+
+### `access_lost`: an open stream's caller loses access
+
+An open `/apps/{app}/events` or `/apps/{app}/presence/stream` stream is judged
+again whenever the node applies a change to the system state, and when the
+caller's credential expires. When the request would no longer be admitted, the
+node sends one last event and ends the stream. Nothing written after the change
+reached that node is sent. The causes:
+
+- the app was made private or deleted;
+- the caller was removed from the app's organization or team;
+- the caller's API key was revoked or expired;
+- the caller's session was revoked or expired;
+- the passkey the session was opened with was removed.
+
+The last event has no `id`, the name `access_lost`, and the error the request
+would now get, in the API's error format:
+
+```text
+event: access_lost
+data: {"status":401,"error":"UNAUTHENTICATED","message":"sign in to use this app"}
+```
+
+```text
+event: access_lost
+data: {"status":404,"error":"NOT_FOUND","message":"no such app"}
+```
+
+- **`401 UNAUTHENTICATED`** goes to an anonymous caller once the app is no
+  longer public. It also goes to a caller whose credential no longer holds; the
+  `message` is then the credential's (`unknown API key`, `API key expired`,
+  `token expired`, `session revoked`, `the passkey this session used was removed`).
+- **`404 NOT_FOUND`** goes to a signed-in caller the app no longer admits.
+
+Clients must treat `access_lost` as final and must not reconnect. A reconnect
+is refused with the same status. An app's own events always carry an `id`, so
+an app event of the same name is not `access_lost`. The Rust client ends the
+stream on it (`calimero_client::access_lost` maps it to the call error), and
+`meroctl` exits `77`.
 
 ## Organizations and teams
 

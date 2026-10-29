@@ -177,6 +177,55 @@ pub enum PresenceCmd {
     },
 }
 
+/// The exit status of `context watch` and `context presence stream` when the
+/// node ends the stream because the caller can no longer use the context (its
+/// `access_lost` frame). Distinct from every other failure, which exits 1 (an
+/// error from `main`), and from a usage error (2, clap): BSD `sysexits`'
+/// `EX_NOPERM`.
+pub const ACCESS_LOST_EXIT: u8 = 77;
+
+/// The node ended a stream because the caller lost access: the error a request
+/// would now get (`401 UNAUTHENTICATED`, `404 NOT_FOUND`). `main` exits
+/// [`ACCESS_LOST_EXIT`] on it.
+#[derive(Debug)]
+pub struct AccessLost {
+    pub status: u16,
+    pub code: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for AccessLost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "access lost: {} {} ({})",
+            self.status, self.code, self.message
+        )
+    }
+}
+
+impl std::error::Error for AccessLost {}
+
+/// `frame` as an [`AccessLost`] error, when it is the node's last frame.
+fn access_lost(frame: &(String, String, Value)) -> Option<eyre::Report> {
+    match calimero_client::access_lost(frame)? {
+        calimero_client::Error::Api {
+            status,
+            code,
+            message,
+            ..
+        } => Some(
+            AccessLost {
+                status,
+                code,
+                message,
+            }
+            .into(),
+        ),
+        other => Some(other.into()),
+    }
+}
+
 pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
     let client = &env.client;
     Ok(match cmd {
@@ -278,7 +327,11 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
         } => {
             let stream = client.events(&env.app(&context).await?, from).await?;
             let mut stream = Box::pin(stream.take(limit.unwrap_or(usize::MAX)));
-            while let Some((id, kind, data)) = stream.next().await {
+            while let Some(frame) = stream.next().await {
+                if let Some(lost) = access_lost(&frame) {
+                    return Err(lost);
+                }
+                let (id, kind, data) = frame;
                 println!("{}", json!({ "id": id, "kind": kind, "data": data }));
             }
             return Ok(Value::Null);
@@ -340,7 +393,11 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
         ContextCmd::Presence(PresenceCmd::Stream { context, limit }) => {
             let stream = client.presence_stream(&env.app(&context).await?).await?;
             let mut stream = Box::pin(stream.take(limit.unwrap_or(usize::MAX)));
-            while let Some((_, kind, data)) = stream.next().await {
+            while let Some(frame) = stream.next().await {
+                if let Some(lost) = access_lost(&frame) {
+                    return Err(lost);
+                }
+                let (_, kind, data) = frame;
                 println!("{}", json!({ "kind": kind, "data": data }));
             }
             return Ok(Value::Null);

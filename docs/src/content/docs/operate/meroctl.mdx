@@ -28,6 +28,15 @@ Output is JSON, pretty-printed. Commands that stream (`context watch`,
 `context presence stream`, `ops metrics`, `blob download` to stdout, `app
 watch`, `dev`) print their own lines.
 
+## Exit status
+
+| Status | When |
+| --- | --- |
+| `0` | Done. |
+| `1` | Any error: the node refused the request, could not be reached or attested, or a local file or argument was wrong. The error is printed to stderr as `Error: ...`. |
+| `2` | Usage: unknown command or flag, missing argument. |
+| `77` | `context watch` or `context presence stream` ended because the caller lost access to the context (the node's [`access_lost`](/operate/admin-api/#access_lost-an-open-streams-caller-loses-access)). stderr says why, for example `access lost: 404 NOT_FOUND (no such app)` or `access lost: 401 UNAUTHENTICATED (session revoked)`. Retrying will not help until access is given back. |
+
 ## Global arguments
 
 | Flag | Environment | Default | Meaning |
@@ -109,7 +118,7 @@ App instances.
 | `context delete CONTEXT` (`del`) | `DELETE /apps/{app}` | Delete a context (its owner or an org admin). |
 | `context transfer CONTEXT ACCOUNT [--dev-passkey F]` | `POST /apps/{app}/transfer` | Hand the context to another account (its owner, with a passkey; an org's context only to a member of the org). |
 | `context update CONTEXT [--version V] [--package P] [--service S] [--bundle HASH] [--migrate EXPORT] [--dev-passkey FILE]` | `POST /apps/{app}/upgrade` | Move to another release or bundle, migrating state where the ABIs say how. `--bundle` conflicts with `--version` and `--package`. The owner approves. |
-| `context watch CONTEXT [--from N] [--limit N]` (`ws`) | `GET /apps/{app}/events` | Print committed events from index `--from` (default `0`), then live ones, as JSON lines; stop after `--limit`. |
+| `context watch CONTEXT [--from N] [--limit N]` (`ws`) | `GET /apps/{app}/events` | Print committed events from index `--from` (default `0`), then live ones, as JSON lines; stop after `--limit`. Exits `77` if the caller loses access ([Exit status](#exit-status)). |
 | `context alias add ALIAS CONTEXT` (`new`, `create`) | `PUT /auth/aliases/{alias}` | Name a context for this account. |
 | `context alias remove ALIAS` (`rm`, `del`, `delete`) | `DELETE /auth/aliases/{alias}` | Remove an alias. |
 | `context alias get [ALIAS]` | `GET /auth/aliases/{alias}` | Resolve an alias (default `default`). |
@@ -121,7 +130,7 @@ App instances.
 | `context abi CONTEXT` | `GET /apps/{app}/abi` | The ABI of the bundle it runs. |
 | `context presence list CONTEXT` (`ls`) | `GET /apps/{app}/presence` | Who is present now (ephemeral, never stored). |
 | `context presence publish CONTEXT --seq N [--state HEX]` | `POST /apps/{app}/presence` | Publish this device's presence; no `--state` retracts it. |
-| `context presence stream CONTEXT [--limit N]` | `GET /apps/{app}/presence/stream` | The snapshot, then each change, as JSON lines. |
+| `context presence stream CONTEXT [--limit N]` | `GET /apps/{app}/presence/stream` | The snapshot, then each change, as JSON lines. Exits `77` if the caller loses access ([Exit status](#exit-status)). |
 
 `context create` options:
 

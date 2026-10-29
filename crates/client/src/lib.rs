@@ -90,6 +90,86 @@ fn sealed_error(e: eyre::Report) -> Error {
     }
 }
 
+/// The node's error answer (`{ error, message, details }`) at `status`, as
+/// every request maps it: an [`Error::Api`] carrying the node's code (D64:
+/// `401 UNAUTHENTICATED` for an anonymous caller, `404 NOT_FOUND` for one the
+/// app does not admit).
+fn api_error(status: u16, v: &Value) -> Error {
+    Error::Api {
+        status,
+        code: v["error"].as_str().unwrap_or("ERROR").to_owned(),
+        message: v["message"].as_str().unwrap_or_default().to_owned(),
+        details: v.get("details").cloned().unwrap_or(Value::Null),
+    }
+}
+
+/// The last frame an event or presence stream sends when its caller can no
+/// longer use the app (the node's D81): no id, this event name, and the error
+/// the node would now answer as data. The stream ends after it.
+pub const ACCESS_LOST_EVENT: &str = "access_lost";
+
+/// The error a stream's last frame `(id, event, data)` carries, if it is the
+/// node's [`ACCESS_LOST_EVENT`]: the [`Error::Api`] a call would get now (a
+/// `401` or `404` mapped as any request's). `None` for any other frame. An
+/// app's own events always carry an id, so an app event of the same name is
+/// not taken for it.
+#[must_use]
+pub fn access_lost(frame: &(String, String, Value)) -> Option<Error> {
+    let (id, event, data) = frame;
+    (id.is_empty() && event == ACCESS_LOST_EVENT).then(|| {
+        let status = data["status"]
+            .as_u64()
+            .and_then(|s| u16::try_from(s).ok())
+            .unwrap_or(0);
+        api_error(status, data)
+    })
+}
+
+/// Server-sent event frames from `bytes`, `(id, event, data)` each, until the
+/// bytes end or after an [`ACCESS_LOST_EVENT`] frame: that one is final, so a
+/// caller reading on (or a reader built to reconnect) stops there.
+fn sse_frames<S, B, E>(bytes: S) -> impl Stream<Item = (String, String, Value)>
+where
+    S: Stream<Item = std::result::Result<B, E>> + Unpin,
+    B: AsRef<[u8]>,
+{
+    futures_util::stream::unfold(
+        (bytes, String::new(), false),
+        |(mut bytes, mut buf, done)| async move {
+            if done {
+                return None;
+            }
+            loop {
+                if let Some(pos) = buf.find("\n\n") {
+                    let frame: String = buf.drain(..pos + 2).collect();
+                    let (mut id, mut kind, mut data) =
+                        (String::new(), String::new(), String::new());
+                    for line in frame.lines() {
+                        if let Some(v) = line.strip_prefix("id:") {
+                            id = v.trim().to_owned();
+                        } else if let Some(v) = line.strip_prefix("event:") {
+                            kind = v.trim().to_owned();
+                        } else if let Some(v) = line.strip_prefix("data:") {
+                            data.push_str(v.trim());
+                        }
+                    }
+                    if kind.is_empty() && data.is_empty() {
+                        continue;
+                    }
+                    let value = serde_json::from_str(&data).unwrap_or(Value::String(data));
+                    let item = (id, kind, value);
+                    let last = access_lost(&item).is_some();
+                    return Some((item, (bytes, buf, last)));
+                }
+                match bytes.next().await {
+                    Some(Ok(chunk)) => buf.push_str(&String::from_utf8_lossy(chunk.as_ref())),
+                    _ => return None,
+                }
+            }
+        },
+    )
+}
+
 impl Error {
     #[must_use]
     pub fn code(&self) -> Option<&str> {
@@ -317,12 +397,7 @@ impl Client {
         let status = resp.status().as_u16();
         let v: Value = resp.json().await.unwrap_or(Value::Null);
         if status >= 400 {
-            return Err(Error::Api {
-                status,
-                code: v["error"].as_str().unwrap_or("ERROR").to_owned(),
-                message: v["message"].as_str().unwrap_or_default().to_owned(),
-                details: v.get("details").cloned().unwrap_or(Value::Null),
-            });
+            return Err(api_error(status, &v));
         }
         Ok(v)
     }
@@ -463,12 +538,7 @@ impl Client {
         let status = resp.status().as_u16();
         let v: Value = resp.json().await.unwrap_or(Value::Null);
         if status >= 400 {
-            return Err(Error::Api {
-                status,
-                code: v["error"].as_str().unwrap_or("ERROR").to_owned(),
-                message: v["message"].as_str().unwrap_or_default().to_owned(),
-                details: v.get("details").cloned().unwrap_or(Value::Null),
-            });
+            return Err(api_error(status, &v));
         }
         Ok(v)
     }
@@ -577,12 +647,7 @@ impl Client {
         let status = resp.status().as_u16();
         let v: Value = resp.json().await.unwrap_or(Value::Null);
         if status >= 400 {
-            return Err(Error::Api {
-                status,
-                code: v["error"].as_str().unwrap_or("ERROR").to_owned(),
-                message: v["message"].as_str().unwrap_or_default().to_owned(),
-                details: v.get("details").cloned().unwrap_or(Value::Null),
-            });
+            return Err(api_error(status, &v));
         }
         Ok(v)
     }
@@ -636,12 +701,7 @@ impl Client {
         let status = resp.status().as_u16();
         if status >= 400 {
             let v: Value = resp.json().await.unwrap_or(Value::Null);
-            return Err(Error::Api {
-                status,
-                code: v["error"].as_str().unwrap_or("ERROR").to_owned(),
-                message: v["message"].as_str().unwrap_or_default().to_owned(),
-                details: v.get("details").cloned().unwrap_or(Value::Null),
-            });
+            return Err(api_error(status, &v));
         }
         Ok(resp.bytes().await.map_err(eyre::Report::from)?.to_vec())
     }
@@ -1063,48 +1123,18 @@ impl Client {
     }
 
     /// A server-sent event stream: `(id, event, data)` per frame.
+    /// A server-sent event stream: `(id, event, data)` per frame. A refusal to
+    /// open it is mapped as any request's (`401`, `404`, ...); a stream whose
+    /// caller loses access ends after its [`ACCESS_LOST_EVENT`] frame, which
+    /// [`access_lost`] turns into that same error.
     async fn sse(&self, path: &str) -> Result<impl Stream<Item = (String, String, Value)>> {
         let resp = self.send(Method::GET, path, None).await?;
-        if !resp.status().is_success() {
-            return Err(Error::Api {
-                status: resp.status().as_u16(),
-                code: "EVENTS".into(),
-                message: "event stream refused".into(),
-                details: Value::Null,
-            });
+        let status = resp.status().as_u16();
+        if status >= 400 {
+            let v: Value = resp.json().await.unwrap_or(Value::Null);
+            return Err(api_error(status, &v));
         }
-        let bytes = resp.bytes_stream();
-        let stream = futures_util::stream::unfold(
-            (bytes, String::new()),
-            |(mut bytes, mut buf)| async move {
-                loop {
-                    if let Some(pos) = buf.find("\n\n") {
-                        let frame: String = buf.drain(..pos + 2).collect();
-                        let (mut id, mut kind, mut data) =
-                            (String::new(), String::new(), String::new());
-                        for line in frame.lines() {
-                            if let Some(v) = line.strip_prefix("id:") {
-                                id = v.trim().to_owned();
-                            } else if let Some(v) = line.strip_prefix("event:") {
-                                kind = v.trim().to_owned();
-                            } else if let Some(v) = line.strip_prefix("data:") {
-                                data.push_str(v.trim());
-                            }
-                        }
-                        if kind.is_empty() && data.is_empty() {
-                            continue;
-                        }
-                        let value = serde_json::from_str(&data).unwrap_or(Value::String(data));
-                        return Some(((id, kind, value), (bytes, buf)));
-                    }
-                    match bytes.next().await {
-                        Some(Ok(chunk)) => buf.push_str(&String::from_utf8_lossy(&chunk)),
-                        _ => return None,
-                    }
-                }
-            },
-        );
-        Ok(Box::pin(stream))
+        Ok(Box::pin(sse_frames(resp.bytes_stream())))
     }
 
     /// The node's attestation, unverified (for display).
@@ -1202,5 +1232,53 @@ mod retry_tests {
         .await;
         assert!(matches!(out, Err(Error::Api { status: 503, .. })));
         assert_eq!(*sent.lock().unwrap(), CALL_RETRIES + 1);
+    }
+}
+
+#[cfg(test)]
+mod sse_tests {
+    use futures_util::StreamExt;
+    use serde_json::json;
+
+    use super::{access_lost, sse_frames, Error};
+
+    /// The frames of `text`, sent in small chunks as a network would.
+    async fn frames(text: &str) -> Vec<(String, String, serde_json::Value)> {
+        let chunks: Vec<Result<Vec<u8>, std::convert::Infallible>> =
+            text.as_bytes().chunks(7).map(|c| Ok(c.to_vec())).collect();
+        sse_frames(futures_util::stream::iter(chunks))
+            .collect()
+            .await
+    }
+
+    /// The node's last frame ends the stream (nothing after it is read) and
+    /// maps to the error a call gets: 401 and 404 with the node's codes. An
+    /// app event of the same name, which carries an id, is an event.
+    #[tokio::test]
+    async fn an_access_lost_frame_is_final_and_maps_as_a_call_error() {
+        for (status, code) in [(401, "UNAUTHENTICATED"), (404, "NOT_FOUND")] {
+            let text = format!(
+                "id: 3:0\nevent: access_lost\ndata: {{\"app\":true}}\n\n\
+                 id: 4:0\nevent: Inserted\ndata: {{\"key\":\"a\"}}\n\n\
+                 event: access_lost\ndata: {{\"status\":{status},\"error\":\"{code}\",\"message\":\"m\"}}\n\n\
+                 id: 5:0\nevent: Inserted\ndata: {{\"key\":\"after\"}}\n\n"
+            );
+            let got = frames(&text).await;
+            assert_eq!(got.len(), 3, "{got:?}");
+            assert!(access_lost(&got[0]).is_none(), "an app event with an id");
+            assert!(access_lost(&got[1]).is_none());
+            match access_lost(&got[2]) {
+                Some(Error::Api {
+                    status: s,
+                    code: c,
+                    message,
+                    ..
+                }) => {
+                    assert_eq!((s, c.as_str(), message.as_str()), (status, code, "m"));
+                }
+                other => panic!("{other:?}"),
+            }
+            assert_eq!(got[2].2["status"], json!(status));
+        }
     }
 }

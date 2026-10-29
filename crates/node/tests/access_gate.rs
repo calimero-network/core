@@ -467,3 +467,527 @@ async fn a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind() 
     let err = read.expect_err("a blob deleted before the request must not be served");
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
 }
+
+// ------------------------------------------------- D81: open streams lose access
+
+type Frame = (String, String, serde_json::Value);
+
+/// The node leading `app`'s group, once it has one.
+async fn app_leader(c: &ProxiedCluster, app: &str) -> usize {
+    for _ in 0..250 {
+        if let Some(i) = (0..3).find(|i| {
+            c.nodes[*i]
+                .node
+                .hosted(app)
+                .is_some_and(|g| g.status().is_leader)
+        }) {
+            return i;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("{app} has no leader");
+}
+
+/// Wait until every node has applied every system entry the leader has.
+async fn system_applied_everywhere(c: &ProxiedCluster) {
+    let last = c.nodes[c.system_leader()]
+        .node
+        .system
+        .status()
+        .last_log
+        .unwrap_or(0);
+    for r in &c.nodes {
+        assert!(
+            r.node
+                .system
+                .wait_applied(last, Duration::from_secs(5))
+                .await,
+            "a node did not apply the system log"
+        );
+    }
+}
+
+/// Read `stream` to its end (at most 10 s): its last frame must be
+/// `access_lost` with `status` and `code`, and no frame may mention `after`.
+async fn ends_with_access_lost(
+    stream: &mut (impl futures_util::Stream<Item = Frame> + Unpin),
+    name: &str,
+    status: u16,
+    code: &str,
+    after: &str,
+) {
+    use futures_util::StreamExt;
+    let seen = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut seen = Vec::new();
+        while let Some(f) = stream.next().await {
+            seen.push(f);
+        }
+        seen
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the stream {name} stayed open after its caller lost access"));
+    assert!(
+        !seen.iter().any(|(_, _, d)| d.to_string().contains(after)),
+        "the stream {name} carried what was written after access was lost: {seen:?}"
+    );
+    let (_, kind, data) = seen
+        .last()
+        .unwrap_or_else(|| panic!("the stream {name} ended without a frame"));
+    assert_eq!(
+        kind, "access_lost",
+        "the stream {name} must end with access_lost: {seen:?}"
+    );
+    assert_eq!(data["status"], json!(status), "{name}: {data}");
+    assert_eq!(data["error"], json!(code), "{name}: {data}");
+}
+
+/// `stream` carries a frame mentioning `what` within 10 s, so it is still open.
+async fn carries(stream: &mut (impl futures_util::Stream<Item = Frame> + Unpin), what: &str) {
+    use futures_util::StreamExt;
+    let got = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some((_, _, d)) = stream.next().await {
+            if d.to_string().contains(what) {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(
+        got,
+        Ok(true),
+        "a stream that keeps access must stay open and carry {what}"
+    );
+}
+
+/// A public kv app of alice's (signed up on the system leader), public on
+/// every node; returns the app and its leader.
+async fn public_app(c: &ProxiedCluster, alice: &Client) -> (String, usize) {
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let created = alice
+        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+        .await
+        .unwrap();
+    let app = created["appId"].as_str().unwrap().to_owned();
+    let _ok = alice
+        .post(
+            &format!("apps/{app}/access"),
+            json!({ "access": { "kind": "public" } }),
+        )
+        .await
+        .unwrap();
+    system_applied_everywhere(c).await;
+    assert!(c.nodes.iter().all(|r| r
+        .node
+        .sys(|s| s.apps.get(&app).is_some_and(|a| s.may_reach(a, None)))));
+    let leader = app_leader(c, &app).await;
+    (app, leader)
+}
+
+/// An open event stream closes for a caller who can no longer see the app
+/// (D81): opened anonymously while the app is public, on the app's leader and
+/// on a follower, both send `access_lost` (401, what `gate` now answers an
+/// anonymous caller) and end once the app is made private, and neither carries
+/// an event written after that. The owner's own stream stays open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_open_event_stream_closes_once_the_app_is_made_private() {
+    let c = ProxiedCluster::start().await;
+    let (alice, mut alice_pk) = signed_up(&c, c.system_leader(), "alice").await;
+    let (app, leader) = public_app(&c, &alice).await;
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+
+    let mut on_leader = Box::pin(c.client(leader).events(&app, 0).await.unwrap());
+    let mut on_follower = Box::pin(c.client(follower).events(&app, 0).await.unwrap());
+    let alice_follower = c.client(follower);
+    let _s = alice_follower.sign_in(&mut alice_pk).await.unwrap();
+    let mut owners = Box::pin(alice_follower.events(&app, 0).await.unwrap());
+
+    let _ok = alice
+        .post(
+            &format!("apps/{app}/access"),
+            json!({ "access": { "kind": "owner" } }),
+        )
+        .await
+        .unwrap();
+    system_applied_everywhere(&c).await;
+    let _r = alice
+        .call(
+            &app,
+            "set",
+            json!({ "key": "after-private", "value": "v" }),
+            None,
+        )
+        .await
+        .unwrap();
+
+    ends_with_access_lost(
+        &mut on_leader,
+        "on the leader",
+        401,
+        "UNAUTHENTICATED",
+        "after-private",
+    )
+    .await;
+    ends_with_access_lost(
+        &mut on_follower,
+        "on a follower",
+        401,
+        "UNAUTHENTICATED",
+        "after-private",
+    )
+    .await;
+    carries(&mut owners, "after-private").await;
+}
+
+/// A member's open event stream closes once they are removed from the app's
+/// organization (D81), on the app's leader and on a follower: `access_lost`
+/// (404, what `gate` now answers them), then the end. Another member's stream
+/// stays open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_removed_members_open_event_stream_closes() {
+    let c = ProxiedCluster::start().await;
+    let (alice, mut alice_pk) = signed_up(&c, c.system_leader(), "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, c.system_leader(), "bob").await;
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let invite = alice
+        .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = bob
+        .post(&format!("invites/{invite}/redeem"), json!({}))
+        .await
+        .unwrap();
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice
+        .create_app("org-kv", &bundle, json!({ "org": org }))
+        .await
+        .unwrap();
+    system_applied_everywhere(&c).await;
+    let leader = app_leader(&c, &app).await;
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+
+    let mut bobs = Vec::new();
+    for (name, i) in [("on the leader", leader), ("on a follower", follower)] {
+        let client = c.client(i);
+        let _s = client.sign_in(&mut bob_pk).await.unwrap();
+        bobs.push((name, Box::pin(client.events(&app, 0).await.unwrap())));
+    }
+    let alice_follower = c.client(follower);
+    let _s = alice_follower.sign_in(&mut alice_pk).await.unwrap();
+    let mut alices = Box::pin(alice_follower.events(&app, 0).await.unwrap());
+
+    let _r = alice
+        .delete(&format!("orgs/{org}/members/{bob_id}"))
+        .await
+        .unwrap();
+    system_applied_everywhere(&c).await;
+    let _r = alice
+        .call(
+            &app,
+            "set",
+            json!({ "key": "after-removal", "value": "v" }),
+            None,
+        )
+        .await
+        .unwrap();
+
+    for (name, stream) in &mut bobs {
+        ends_with_access_lost(stream, name, 404, "NOT_FOUND", "after-removal").await;
+    }
+    carries(&mut alices, "after-removal").await;
+}
+
+/// The presence stream closes the same way (D81): opened anonymously while
+/// the app is public, on the app's leader and on a follower, both send
+/// `access_lost` and end once the app is made private, before presence
+/// published after that.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_open_presence_stream_closes_once_the_app_is_made_private() {
+    let c = ProxiedCluster::start().await;
+    let (alice, _alice_pk) = signed_up(&c, c.system_leader(), "alice").await;
+    let (app, leader) = public_app(&c, &alice).await;
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+
+    let mut on_leader = Box::pin(c.client(leader).presence_stream(&app).await.unwrap());
+    let mut on_follower = Box::pin(c.client(follower).presence_stream(&app).await.unwrap());
+
+    let _ok = alice
+        .post(
+            &format!("apps/{app}/access"),
+            json!({ "access": { "kind": "owner" } }),
+        )
+        .await
+        .unwrap();
+    system_applied_everywhere(&c).await;
+    let state = b"after-private";
+    let _r = alice.publish_presence(&app, 1, Some(state)).await.unwrap();
+    let after = hex::encode(state);
+
+    ends_with_access_lost(
+        &mut on_leader,
+        "on the leader",
+        401,
+        "UNAUTHENTICATED",
+        &after,
+    )
+    .await;
+    ends_with_access_lost(
+        &mut on_follower,
+        "on a follower",
+        401,
+        "UNAUTHENTICATED",
+        &after,
+    )
+    .await;
+}
+
+/// An open event stream opened with an API key closes once the key is revoked
+/// (D81): `access_lost` (401 "unknown API key", what `principal` now answers
+/// the key), then the end, on the app's leader and on a follower.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_open_event_stream_closes_once_its_api_key_is_revoked() {
+    let c = ProxiedCluster::start().await;
+    let (alice, _alice_pk) = signed_up(&c, c.system_leader(), "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let created = alice
+        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+        .await
+        .unwrap();
+    let app = created["appId"].as_str().unwrap().to_owned();
+    let (key_id, key) = alice
+        .create_api_key(json!({ "label": "agent" }))
+        .await
+        .unwrap();
+    system_applied_everywhere(&c).await;
+    let leader = app_leader(&c, &app).await;
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+
+    let mut agents = Vec::new();
+    for (name, i) in [("on the leader", leader), ("on a follower", follower)] {
+        let client = c.client(i);
+        client.use_api_key(&key).await;
+        agents.push((name, Box::pin(client.events(&app, 0).await.unwrap())));
+    }
+
+    let _r = alice
+        .delete(&format!("auth/apikeys/{key_id}"))
+        .await
+        .unwrap();
+    system_applied_everywhere(&c).await;
+    let _r = alice
+        .call(
+            &app,
+            "set",
+            json!({ "key": "after-revoke", "value": "v" }),
+            None,
+        )
+        .await
+        .unwrap();
+
+    for (name, stream) in &mut agents {
+        ends_with_access_lost(stream, name, 401, "UNAUTHENTICATED", "after-revoke").await;
+    }
+}
+
+/// An owner-only kv app of `alice`'s, created on every node; returns it and
+/// its leader.
+async fn owners_app(c: &ProxiedCluster, alice: &Client) -> (String, usize) {
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let created = alice
+        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+        .await
+        .unwrap();
+    let app = created["appId"].as_str().unwrap().to_owned();
+    system_applied_everywhere(c).await;
+    let leader = app_leader(c, &app).await;
+    (app, leader)
+}
+
+/// An open event stream opened with an API key closes when the key expires
+/// (D81), with no system entry to wake it: one timer per stream, set to the
+/// expiry. `access_lost` (401 "API key expired"), then the end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_open_event_stream_closes_when_its_api_key_expires() {
+    let c = ProxiedCluster::start().await;
+    let (alice, _alice_pk) = signed_up(&c, c.system_leader(), "alice").await;
+    let (app, leader) = owners_app(&c, &alice).await;
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let (_key_id, key) = alice
+        .create_api_key(json!({ "label": "short", "ttlSecs": 3 }))
+        .await
+        .unwrap();
+    system_applied_everywhere(&c).await;
+    let mut agents = Vec::new();
+    for (name, i) in [("on the leader", leader), ("on a follower", follower)] {
+        let client = c.client(i);
+        client.use_api_key(&key).await;
+        agents.push((name, Box::pin(client.events(&app, 0).await.unwrap())));
+    }
+    for (name, stream) in &mut agents {
+        ends_with_access_lost(stream, name, 401, "UNAUTHENTICATED", "never-written").await;
+    }
+}
+
+/// An open event stream closes once its session is revoked (D81): the
+/// account signs out everywhere; its streams on the app's leader and on a
+/// follower send `access_lost` (401 "session revoked") and end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_open_event_stream_closes_once_its_session_is_revoked() {
+    let c = ProxiedCluster::start().await;
+    let (alice, mut alice_pk) = signed_up(&c, c.system_leader(), "alice").await;
+    let (app, leader) = owners_app(&c, &alice).await;
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let mut streams = Vec::new();
+    for (name, i) in [("on the leader", leader), ("on a follower", follower)] {
+        let client = c.client(i);
+        let _s = client.sign_in(&mut alice_pk).await.unwrap();
+        streams.push((name, Box::pin(client.events(&app, 0).await.unwrap())));
+    }
+    let _r = alice.sign_out_everywhere().await.unwrap();
+    system_applied_everywhere(&c).await;
+    for (name, stream) in &mut streams {
+        ends_with_access_lost(stream, name, 401, "UNAUTHENTICATED", "never-written").await;
+    }
+}
+
+/// An open event stream of a session opened with a passkey closes once that
+/// passkey is removed from the account (D81): `access_lost` (401), then the
+/// end, on the app's leader and on a follower. The session opened with the
+/// account's other passkey keeps its stream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_open_event_stream_closes_once_its_passkey_is_removed() {
+    let c = ProxiedCluster::start().await;
+    let (laptop, mut laptop_pk) = signed_up(&c, c.system_leader(), "alice").await;
+    let mut phone_pk = SoftAuthenticator::new("localhost", ORIGIN);
+    let phone_cred = laptop.add_passkey(&mut phone_pk).await.unwrap();
+    let (app, leader) = owners_app(&c, &laptop).await;
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let mut phones = Vec::new();
+    for (name, i) in [("on the leader", leader), ("on a follower", follower)] {
+        let client = c.client(i);
+        let _s = client.sign_in(&mut phone_pk).await.unwrap();
+        phones.push((name, Box::pin(client.events(&app, 0).await.unwrap())));
+    }
+    let laptop_follower = c.client(follower);
+    let _s = laptop_follower.sign_in(&mut laptop_pk).await.unwrap();
+    let mut laptops = Box::pin(laptop_follower.events(&app, 0).await.unwrap());
+
+    let _r = laptop
+        .delete(&format!("auth/passkeys/{phone_cred}"))
+        .await
+        .unwrap();
+    system_applied_everywhere(&c).await;
+    let _r = laptop
+        .call(
+            &app,
+            "set",
+            json!({ "key": "after-removal", "value": "v" }),
+            None,
+        )
+        .await
+        .unwrap();
+    for (name, stream) in &mut phones {
+        ends_with_access_lost(stream, name, 401, "UNAUTHENTICATED", "after-removal").await;
+    }
+    carries(&mut laptops, "after-removal").await;
+}
+
+/// A member's open event stream on a team app closes once they are taken off
+/// the team, though they stay in the organization (D81): `access_lost` (404),
+/// then the end, on the app's leader and on a follower. The owner's stream
+/// stays open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_open_event_stream_closes_once_its_member_leaves_the_team() {
+    let c = ProxiedCluster::start().await;
+    let (alice, mut alice_pk) = signed_up(&c, c.system_leader(), "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, c.system_leader(), "bob").await;
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let team = alice
+        .post(
+            &format!("orgs/{org}/teams"),
+            json!({ "name": "eng", "join": "invite" }),
+        )
+        .await
+        .unwrap()["teamId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let invite = alice
+        .post(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": "member", "teams": [team] }),
+        )
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = bob
+        .post(&format!("invites/{invite}/redeem"), json!({}))
+        .await
+        .unwrap();
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice
+        .create_app(
+            "team-kv",
+            &bundle,
+            json!({ "org": org, "access": { "kind": "team", "team": team } }),
+        )
+        .await
+        .unwrap();
+    system_applied_everywhere(&c).await;
+    let leader = app_leader(&c, &app).await;
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+
+    let mut bobs = Vec::new();
+    for (name, i) in [("on the leader", leader), ("on a follower", follower)] {
+        let client = c.client(i);
+        let _s = client.sign_in(&mut bob_pk).await.unwrap();
+        bobs.push((name, Box::pin(client.events(&app, 0).await.unwrap())));
+    }
+    let alice_follower = c.client(follower);
+    let _s = alice_follower.sign_in(&mut alice_pk).await.unwrap();
+    let mut alices = Box::pin(alice_follower.events(&app, 0).await.unwrap());
+
+    let _r = alice
+        .delete(&format!("orgs/{org}/teams/{team}/members/{bob_id}"))
+        .await
+        .unwrap();
+    system_applied_everywhere(&c).await;
+    assert!(
+        c.nodes[follower]
+            .node
+            .sys(|s| s.orgs.get(&org).is_some_and(|o| o.role(&bob_id).is_some())),
+        "bob stays in the organization"
+    );
+    let _r = alice
+        .call(
+            &app,
+            "set",
+            json!({ "key": "after-team-change", "value": "v" }),
+            None,
+        )
+        .await
+        .unwrap();
+    for (name, stream) in &mut bobs {
+        ends_with_access_lost(stream, name, 404, "NOT_FOUND", "after-team-change").await;
+    }
+    carries(&mut alices, "after-team-change").await;
+}

@@ -25,6 +25,16 @@ claim names) and refuses an envelope whose registers or profile are not the veri
 quote's. `fetch_release_attestation` gets one from `GET /attestation/release`. Only
 managers use it (mdma, `meroctl attest-release`); mero-js has no counterpart.
 
+Streams (`events`, `presence_stream`, over `sse`): a refusal to open one is an
+`Error::Api` mapped as any request's (`api_error`). When the caller loses access to
+the app (the node's D81), the node sends one last frame, no id, event `access_lost`
+(`ACCESS_LOST_EVENT`), data the error it would now answer, and ends; the stream ends
+after that frame even if more bytes follow, and `access_lost(&frame)` turns it into
+the same `Error::Api` a call gets (`401 UNAUTHENTICATED`, `404 NOT_FOUND`). An app's
+own events always carry an id, so one named `access_lost` is not taken for it. The
+client never reconnects a stream. mero-js: issue #4754. Regression:
+`sse_tests::an_access_lost_frame_is_final_and_maps_as_a_call_error`.
+
 Errors: `Error::Api` is the node's answer (`{ error, message, details }`);
 `Error::Transport` is not reaching, attesting or understanding it. One envelope
 refusal is an answer too: a sealed request past `MAX_SEALED_BYTES` comes back

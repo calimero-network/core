@@ -34,6 +34,13 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   the owner approves in the console.
 - Output is JSON; commands that stream (watch, presence stream, metrics,
   downloads) write their own and answer `null`, which is not printed.
+- Exit status: `0` done, `1` any error (`main` returns it: `Error: ...`), `2` usage
+  (clap), `77` (`context::ACCESS_LOST_EXIT`, sysexits' `EX_NOPERM`) when `context
+  watch` or `context presence stream` ends on the node's `access_lost` frame
+  (`calimero_client::access_lost`; `main` maps `context::AccessLost` to it and
+  prints `access lost: {status} {code} ({message})`). Regression:
+  `tests/access_lost.rs` (its own binary: two local clusters at once in one
+  binary can take each other's ports).
 
 ```bash
 cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release   # test fixture

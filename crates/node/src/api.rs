@@ -212,6 +212,9 @@ pub struct Principal {
     pub caller: Caller,
     pub session: Option<SessionClaims>,
     pub api_key: Option<ApiKeyRecord>,
+    /// The hash `api_key` is kept under (`SystemState::api_keys`), so an open
+    /// stream checks the key again with one lookup ([`credential_holds`]).
+    pub api_key_hash: Option<String>,
 }
 
 impl Principal {
@@ -274,13 +277,8 @@ async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>
     node.sys_fresh().await;
     if let Some(_key) = token.strip_prefix("cal_") {
         let hash = calimero_identity::api_key_hash(token);
-        let rec = node
-            .sys_until(|s| s.api_keys.get(&hash).cloned())
-            .await
-            .ok_or_else(|| ApiError::unauthenticated("unknown API key"))?;
-        if rec.expires_at <= now_secs() {
-            return Err(ApiError::unauthenticated("API key expired"));
-        }
+        let rec = node.sys_until(|s| s.api_keys.get(&hash).cloned()).await;
+        let rec = api_key_holds(rec, now_secs())?;
         return Ok(Some(Principal {
             caller: Caller::ApiKey {
                 key: rec.key_id.clone(),
@@ -288,6 +286,7 @@ async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>
             },
             session: None,
             api_key: Some(rec),
+            api_key_hash: Some(hash),
         }));
     }
     let claims = peek_session(token).map_err(|_| ApiError::unauthenticated("malformed token"))?;
@@ -297,25 +296,78 @@ async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>
         .ok_or_else(|| ApiError::unauthenticated("token signed with an unknown key"))?;
     let claims = verify_session(&key, token, now_secs())
         .map_err(|e| ApiError::unauthenticated(&e.to_string()))?;
-    if node.sys(|s| s.revoked_sessions.contains(&claims.session)) {
-        return Err(ApiError::unauthenticated("session revoked"));
-    }
-    // A session opened with a passkey the account no longer has is over.
-    if let Some(passkey) = &claims.passkey {
-        let still = node.sys(|s| s.credentials.get(passkey) == Some(&claims.account));
-        if !still {
-            return Err(ApiError::unauthenticated(
-                "the passkey this session used was removed",
-            ));
-        }
-    }
+    node.sys(|s| session_holds(s, &claims))?;
     Ok(Some(Principal {
         caller: Caller::Account {
             account: claims.account.clone(),
         },
         session: Some(claims),
         api_key: None,
+        api_key_hash: None,
     }))
+}
+
+/// `principal`'s check of an API key's record, as found by its hash: unknown
+/// (`None`) or expired at `now` is refused. Moved out of `principal` unchanged,
+/// for [`credential_holds`] to make again.
+fn api_key_holds<R: std::borrow::Borrow<ApiKeyRecord>>(
+    rec: Option<R>,
+    now: u64,
+) -> Result<R, ApiError> {
+    let rec = rec.ok_or_else(|| ApiError::unauthenticated("unknown API key"))?;
+    if rec.borrow().expires_at <= now {
+        return Err(ApiError::unauthenticated("API key expired"));
+    }
+    Ok(rec)
+}
+
+/// `principal`'s checks of a verified session against the system state: not
+/// revoked, and its passkey still the account's. Moved out of `principal`
+/// unchanged (it made the two reads one after the other; they are one read
+/// now), for [`credential_holds`] to make again.
+fn session_holds(s: &SystemState, claims: &SessionClaims) -> Result<(), ApiError> {
+    if s.revoked_sessions.contains(&claims.session) {
+        return Err(ApiError::unauthenticated("session revoked"));
+    }
+    // A session opened with a passkey the account no longer has is over.
+    if let Some(passkey) = &claims.passkey {
+        if s.credentials.get(passkey) != Some(&claims.account) {
+            return Err(ApiError::unauthenticated(
+                "the passkey this session used was removed",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether the credential `p` was admitted with still admits a request at
+/// `now`, on `s`: what `principal` would answer it again, once it has the
+/// key's record or the session's verified claims. An API key: [`api_key_holds`]
+/// on the record under its hash (revoked: unknown). A session: its expiry, as
+/// `verify_session` judges it (the signing key cannot go: session keys are
+/// never removed), then [`session_holds`] (revoked, or its passkey removed).
+/// Anonymous: always. An open stream asks it on every applied entry (D81).
+fn credential_holds(s: &SystemState, p: &Principal, now: u64) -> Result<(), ApiError> {
+    if let Some(hash) = &p.api_key_hash {
+        let _rec = api_key_holds(s.api_keys.get(hash), now)?;
+    }
+    if let Some(claims) = &p.session {
+        if claims.expires_at <= now {
+            return Err(ApiError::unauthenticated(
+                &calimero_identity::Error::Expired.to_string(),
+            ));
+        }
+        session_holds(s, claims)?;
+    }
+    Ok(())
+}
+
+/// When the credential `p` was admitted with stops admitting requests by
+/// itself (Unix seconds): the API key's or the session's expiry.
+fn credential_expires(p: &Principal) -> Option<u64> {
+    let key = p.api_key.as_ref().map(|k| k.expires_at);
+    let session = p.session.as_ref().map(|c| c.expires_at);
+    key.into_iter().chain(session).min()
 }
 
 async fn signed_in(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError> {
@@ -1815,11 +1867,7 @@ async fn gate(
         node.sys_fresh().await;
     }
     if !reaches(node, app, account) {
-        return Err(if p.is_none() {
-            ApiError::unauthenticated("sign in to use this app")
-        } else {
-            ApiError::not_found("no such app")
-        });
+        return Err(not_reached(p.is_none()));
     }
     // A read-only row refuses what writes: a blob upload here, a call that
     // would write at commit (`Node::call_local`); v1 discarded such writes.
@@ -1844,7 +1892,20 @@ async fn gate(
         caller: Caller::Public,
         session: None,
         api_key: None,
+        api_key_hash: None,
     }))
+}
+
+/// What `gate` answers a caller the app does not admit (D64): an anonymous
+/// one `401` (signing in may help), anyone else `404`, which does not confirm
+/// the app exists. Moved out of `gate` unchanged; an open stream that loses
+/// access ends with the same (D81).
+fn not_reached(anonymous: bool) -> ApiError {
+    if anonymous {
+        ApiError::unauthenticated("sign in to use this app")
+    } else {
+        ApiError::not_found("no such app")
+    }
 }
 
 #[derive(Deserialize)]
@@ -2312,6 +2373,94 @@ fn local_events(
     Some(stream)
 }
 
+/// The event an open stream (`/apps/{app}/events`, `/apps/{app}/presence/stream`)
+/// sends last when its caller can no longer use the app (D81). Its data is the
+/// error `gate` would now answer the request with, as the API writes errors:
+/// `{"status":401,"error":"UNAUTHENTICATED","message":"sign in to use this app"}`
+/// for an anonymous caller, `{"status":404,"error":"NOT_FOUND","message":"no such app"}`
+/// for a signed-in one. A client stops on it instead of reconnecting.
+pub const ACCESS_LOST_EVENT: &str = "access_lost";
+
+/// Resolves once the caller of an open stream can no longer use `app`, with
+/// what the request would now be answered (D81): the caller's credential as
+/// `principal` judges it ([`credential_holds`]: an API key revoked or expired,
+/// a session revoked or expired, its passkey removed), then `gate`'s own access
+/// check (`reaches`, then [`not_reached`]: the app made private, deleted, the
+/// caller removed from its org or team). Judged on this node's applied system
+/// state, again each time the system group applies an entry here, and at the
+/// credential's expiry: the stream waits on the group's applied-index watch
+/// (`Group::subscribe_applied`, one channel the state machine signals, shared
+/// by every stream) and on one timer set to that expiry, so it reads no log and
+/// does no read-index round; each wake-up is two in-memory lookups. The watch
+/// keeps only the newest index, so a burst of entries wakes a stream once.
+async fn access_lost(node: Arc<Node>, app: crate::types::AppRecord, p: Principal) -> ApiError {
+    let anonymous = matches!(p.caller, Caller::Public);
+    let account = p.caller.account().map(str::to_owned);
+    let mut applied = node.system.subscribe_applied();
+    loop {
+        let now = now_secs();
+        if let Err(e) = node.sys(|s| credential_holds(s, &p, now)) {
+            return e;
+        }
+        if !reaches(&node, &app, account.as_deref()) {
+            return not_reached(anonymous);
+        }
+        // Whole seconds to the expiry (at least 1, as it is still ahead), so
+        // the check after the wait sees `now` at or past it.
+        let expiry =
+            credential_expires(&p).map(|at| Duration::from_secs(at.saturating_sub(now).max(1)));
+        tokio::select! {
+            changed = applied.changed() => {
+                if changed.is_err() {
+                    // The system group stopped: the node is shutting down and
+                    // ends its streams itself; access was not lost.
+                    return std::future::pending().await;
+                }
+            }
+            () = async {
+                match expiry {
+                    Some(d) => tokio::time::sleep(d).await,
+                    None => std::future::pending().await,
+                }
+            } => {}
+        }
+    }
+}
+
+/// `stream`, ended once `lost` resolves, after one last item made from its
+/// error by `last`. `lost` is polled before every item (`biased`), so nothing
+/// the stream would send after this node applied the change goes out.
+fn until_access_lost<S, T, L>(
+    stream: S,
+    lost: impl std::future::Future<Output = ApiError> + Send + 'static,
+    last: L,
+) -> impl Stream<Item = T> + Send
+where
+    S: Stream<Item = T> + Send + 'static,
+    T: Send + 'static,
+    L: Fn(&ApiError) -> T + Send + 'static,
+{
+    let state = (Box::pin(stream), Some(Box::pin(lost)), last);
+    futures_util::stream::unfold(state, |(mut stream, lost, last)| async move {
+        let mut lost = lost?;
+        tokio::select! {
+            biased;
+            e = &mut lost => {
+                let item = last(&e);
+                Some((item, (stream, None, last)))
+            }
+            item = stream.next() => item.map(|i| (i, (stream, Some(lost), last))),
+        }
+    })
+}
+
+/// The final [`ACCESS_LOST_EVENT`] of a stream the node serves itself.
+fn access_lost_event(e: &ApiError) -> Result<Event, Infallible> {
+    Ok(Event::default()
+        .event(ACCESS_LOST_EVENT)
+        .data(serde_json::to_string(e).unwrap_or_default()))
+}
+
 /// The most event streams one node serves at once (Xil's review, issue 12).
 pub const MAX_EVENT_STREAMS: usize = 4096;
 
@@ -2351,8 +2500,12 @@ async fn events(
     let p = gate(&node, &headers, &app, "*", false).await?;
     let subscriber = p.caller.account().map(str::to_owned);
     let slot = StreamSlot::take(&node)?;
+    // D81: the stream ends, after an `access_lost` event, once this node
+    // applies a change that takes the app away from the caller. Judged here,
+    // where the caller is connected, for a stream proxied from a replica too.
+    let lost = access_lost(Arc::clone(&node), app.clone(), p.clone());
     if let Some(stream) = local_events(&node, &app_id, q.from, subscriber.clone()) {
-        let stream = stream.map(move |e| {
+        let stream = until_access_lost(stream, lost, access_lost_event).map(move |e| {
             let _held = &slot;
             e
         });
@@ -2378,7 +2531,14 @@ async fn events(
         )
         .await
         .map_err(|e| ApiError::unavailable(&e.to_string()))?;
-    let body = axum::body::Body::from_stream(resp.bytes_stream().map(move |b| {
+    // The replica's bytes pass through as they come; the last frame is ours.
+    let upstream = until_access_lost(resp.bytes_stream(), lost, |e| {
+        Ok(axum::body::Bytes::from(format!(
+            "event: {ACCESS_LOST_EVENT}\ndata: {}\n\n",
+            serde_json::to_string(e).unwrap_or_default()
+        )))
+    });
+    let body = axum::body::Body::from_stream(upstream.map(move |b| {
         let _held = &slot;
         b
     }));
@@ -2457,8 +2617,11 @@ async fn presence_stream(
 ) -> Result<Response, ApiError> {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    let _p = gate(&node, &headers, &app, "*", false).await?;
+    let p = gate(&node, &headers, &app, "*", false).await?;
     let slot = StreamSlot::take(&node)?;
+    // D81, as for the event stream: ends after `access_lost` once the caller
+    // can no longer use the app.
+    let lost = access_lost(Arc::clone(&node), app.clone(), p.clone());
     let (now, rx) = node.presence.subscribe(&app_id);
     let first = futures_util::stream::once(async move {
         Ok::<_, Infallible>(
@@ -2475,9 +2638,13 @@ async fn presence_stream(
                 .event("presence")
                 .data(serde_json::to_string(&d).unwrap_or_default()))
         });
-    Ok(Sse::new(first.chain(live))
-        .keep_alive(KeepAlive::default())
-        .into_response())
+    Ok(Sse::new(until_access_lost(
+        first.chain(live),
+        lost,
+        access_lost_event,
+    ))
+    .keep_alive(KeepAlive::default())
+    .into_response())
 }
 
 /// A presence update another node took (and authenticated).
