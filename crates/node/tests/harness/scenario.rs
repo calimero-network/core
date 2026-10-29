@@ -1909,41 +1909,33 @@ impl<'a> Runner<'a> {
         }
     }
 
-    /// Waits (up to 10 s) until every replica of `app` applied the same index and the app
-    /// has no follow-up left to run (event handlers, xcalls): merobox's steps were slow
-    /// enough for the leader to run them before the next step read their effects, and
-    /// the converted scenarios read them right after the call.
-    async fn settle(&self, app: &str) {
+    /// Waits (up to [`SETTLE_TIMEOUT`]) until every replica of `app` applied the same index
+    /// and the app has no follow-up left to run (event handlers, xcalls): merobox's steps
+    /// were slow enough for the leader to run them before the next step read their effects,
+    /// and the converted scenarios read them right after the call.
+    async fn settle(&self, app: &str) -> Result<(), Fail> {
         let Some(first) = self.c.nodes.iter().flatten().next() else {
-            return;
+            return Ok(());
         };
         let app = first.node.canonical_app_id(app);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            let mut applied = Vec::new();
-            let mut idle = true;
-            for r in self.c.nodes.iter().flatten() {
-                if let Some(g) = r.node.hosted(&app) {
-                    applied.push(g.applied());
-                    idle &= g.read_local(|m, _| m.state.pending.is_empty());
-                }
-            }
-            if idle && applied.windows(2).all(|w| w[0] == w[1]) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        if std::env::var_os("SCENARIO_DEBUG").is_some() {
-            let state: Vec<(u64, usize)> = self
-                .c
+        let observe = || {
+            self.c
                 .nodes
                 .iter()
-                .flatten()
-                .filter_map(|r| r.node.hosted(&app))
-                .map(|g| (g.applied(), g.read_local(|m, _| m.state.pending.len())))
-                .collect();
-            eprintln!("    settle {app}: timed out, (applied, pending) per replica {state:?}");
-        }
+                .enumerate()
+                .filter_map(|(i, r)| {
+                    let g = r.as_ref()?.node.hosted(&app)?;
+                    Some(Progress {
+                        node: format!("node {} ({})", i + 1, self.c.urls[i]),
+                        applied: g.applied(),
+                        pending: g.read_local(|m, _| m.state.pending.len()),
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        settle_until(&app, SETTLE_TIMEOUT, observe)
+            .await
+            .map_err(Fail::Workflow)
     }
 
     async fn run_one(&mut self, step: &Map<String, Value>) -> StepResult {
@@ -2087,7 +2079,7 @@ impl<'a> Runner<'a> {
             "call" | "view" => {
                 let out = self.call_or_view(&kind, step).await?;
                 if kind == "call" {
-                    self.settle(&s(step, "app")).await;
+                    self.settle(&s(step, "app")).await?;
                 }
                 let mut o = out.as_object().cloned().unwrap_or_default();
                 let result = o.get("result").cloned().unwrap_or(Value::Null);
@@ -3428,18 +3420,125 @@ impl<'a> AppRunner<'a> {
     }
 }
 
+/// How long a call's replicas get to apply it, and to run its follow-ups, before the step
+/// fails.
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// One replica's progress on an app, as `settle` sees it.
+#[derive(Clone, Debug)]
+struct Progress {
+    /// Which replica: `node <id> (<url>)`.
+    node: String,
+    /// The last index it applied.
+    applied: u64,
+    /// The follow-ups it still has to run.
+    pending: usize,
+}
+
+/// `None` when every replica applied the same index and has nothing pending; otherwise what
+/// is missing: the index waited for (the highest any replica applied) and each replica short
+/// of it or with follow-ups left.
+fn unsettled(progress: &[Progress]) -> Option<String> {
+    let target = progress.iter().map(|p| p.applied).max()?;
+    let behind: Vec<String> = progress
+        .iter()
+        .filter(|p| p.applied < target || p.pending > 0)
+        .map(|p| {
+            let mut s = format!("{} had reached index {}", p.node, p.applied);
+            if p.pending > 0 {
+                s.push_str(&format!(" with {} follow-ups pending", p.pending));
+            }
+            s
+        })
+        .collect();
+    (!behind.is_empty()).then(|| format!("waited for index {target}; {}", behind.join(", ")))
+}
+
+/// Polls `observe` until the replicas settle ([`unsettled`] is `None`), or `timeout` passes.
+async fn settle_until(
+    app: &str,
+    timeout: Duration,
+    mut observe: impl FnMut() -> Vec<Progress>,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let Some(why) = unsettled(&observe()) else {
+            return Ok(());
+        };
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{app} did not settle within {}s after the call: {why}",
+                timeout.as_secs_f64()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// Checks of the placeholder and statement semantics against Python's, run by
 /// `tests/scenarios.rs` before any scenario (a custom test main has no `#[test]`s).
 pub fn self_check() {
     crate::py::self_check();
     placeholders_resolve_as_merobox_does();
     statements_evaluate_as_python_does();
+    settle_fails_naming_the_replica_behind();
 }
 
-use checks::{placeholders_resolve_as_merobox_does, statements_evaluate_as_python_does};
+use checks::{
+    placeholders_resolve_as_merobox_does, settle_fails_naming_the_replica_behind,
+    statements_evaluate_as_python_does,
+};
 
 mod checks {
     use super::*;
+
+    /// A replica that never reaches the call's index fails the step, naming the replica, the
+    /// index waited for and the one it had reached; replicas that catch up settle.
+    pub fn settle_fails_naming_the_replica_behind() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("a runtime for the settle check");
+        let at = |node: &str, applied: u64, pending: usize| Progress {
+            node: node.to_owned(),
+            applied,
+            pending,
+        };
+        let stuck = vec![
+            at("node 1", 42, 0),
+            at("node 2", 42, 0),
+            at("node 3", 41, 0),
+        ];
+        let err = rt
+            .block_on(settle_until("app", Duration::from_millis(100), || {
+                stuck.clone()
+            }))
+            .expect_err("a replica stuck behind must fail the step");
+        assert!(
+            err.contains("waited for index 42") && err.contains("node 3 had reached index 41"),
+            "{err}"
+        );
+        assert!(!err.contains("node 1") && !err.contains("node 2"), "{err}");
+
+        let busy = vec![at("node 1", 7, 1), at("node 2", 7, 0)];
+        let err = rt
+            .block_on(settle_until("app", Duration::from_millis(100), || {
+                busy.clone()
+            }))
+            .expect_err("a follow-up never run must fail the step");
+        assert!(
+            err.contains("node 1 had reached index 7 with 1 follow-ups pending"),
+            "{err}"
+        );
+
+        let mut polls = 0;
+        rt.block_on(settle_until("app", Duration::from_secs(5), || {
+            polls += 1;
+            let lag = u64::from(polls < 3);
+            vec![at("node 1", 9, 0), at("node 2", 9 - lag, 0)]
+        }))
+        .expect("replicas that catch up settle");
+    }
 
     fn vars(v: Value) -> Map<String, Value> {
         v.as_object().unwrap().clone()
