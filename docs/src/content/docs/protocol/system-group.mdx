@@ -57,12 +57,6 @@ refused usually fails fast and records nothing. The check at apply is the one
 that counts: two requests that each passed the API's check against slightly
 older state cannot both win.
 
-:::note[v1 comparison]
-v1 encoded membership and authority as signed governance operations in a
-causal DAG, judged "at the author's causal cut" so that peers receiving them in
-different orders still agreed. A single ordered log removes the reason for
-that machinery: there is one order, so there is one state to judge against.
-:::
 
 ## Genesis fixes the rules
 

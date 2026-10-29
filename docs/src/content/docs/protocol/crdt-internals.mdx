@@ -1,6 +1,6 @@
 ---
 title: CRDT collections — the state format
-description: What the SDK's CRDT collections still are on a cluster — the entity-per-value storage format and its derived ids — and which of their mechanisms the cluster no longer relies on.
+description: What the Rust SDK's CRDT collections are on a cluster — the entity-per-value storage format and its derived ids — and which of their mechanisms the cluster does not rely on.
 sidebar:
   label: CRDT collections
   order: 24
@@ -8,11 +8,10 @@ sidebar:
 
 An app's state is built from the collection types in
 `calimero_storage::collections` (`UnorderedMap`, `Vector`, `LwwRegister`,
-`Counter`, the text types, `SharedStorage`, …), the SDK and storage crate v1
-apps were built with (components built with `calimero-app-sdk` have their own
-collections). On a cluster they remain the **storage format** and the **API** apps
-program against. What changed is what makes replicas agree: not a merge, but a
-log. [Collections](/build/collections/) is the guide to choosing one; this page
+`Counter`, the text types, `SharedStorage`, …) of the Rust SDK and storage
+crate (components built with `calimero-app-sdk` have their own
+collections). They are the **storage format** and the **API** apps program
+against. What makes replicas agree is not a merge but a log. [Collections](/build/collections/) is the guide to choosing one; this page
 explains what is underneath.
 
 ## The format: one entity per value
@@ -36,15 +35,14 @@ exactly what the run's overlay records and what becomes the entry's **diff**
 ([Application execution](/protocol/execution/)). The node never interprets
 them: a follower copies the keys and values; it does not know they form a map.
 
-## What the cluster no longer relies on
+## What the cluster does not rely on
 
-In v1, two members could write the same entity concurrently on different
-nodes, and every replica had to resolve the collision the same way. The
-collections were designed for that: per-type merge rules (last-writer-wins
-registers, max-per-writer counters, add-wins maps and sets, union of immutable
-characters for text), a content-hash tiebreak for equal timestamps, a merge mode
-that zeroed timestamps so merged bytes hashed identically, and hybrid logical
-clocks to order writes across nodes.
+The collections carry machinery for replicas that write the same entity
+concurrently: per-type merge rules (last-writer-wins registers,
+max-per-writer counters, add-wins maps and sets, union of immutable
+characters for text), a content-hash tiebreak for equal timestamps, a merge
+mode that zeroes timestamps so merged bytes hash identically, and logical
+clocks to order writes.
 
 On a cluster, an app's calls run one at a time on its group's leader, each
 against the state the previous one left, and followers apply the result.
@@ -62,7 +60,7 @@ Nobody re-executes and nothing is merged on the replication path, so:
 
 The mechanisms are still in the storage crate and still shape the bytes an app
 writes; they are simply not what the cluster's correctness depends on. Choosing
-a collection is now about the data structure and its cost — point lookups,
+a collection is about the data structure and its cost — point lookups,
 ordering, text editing, per-writer access — rather than its merge semantics.
 
 ## What still matters
@@ -80,9 +78,3 @@ ordering, text editing, per-writer access — rather than its merge semantics.
   ([Upgrades & migrations](/protocol/upgrades/)).
 - **Search** re-indexes the entities a run touched, which the node reads from
   the run's commit artifact ([Reads](/protocol/reads/#search)).
-
-:::note[What happened to the HLC page]
-v1's reference had a chapter on the hybrid logical clock that stamped every
-operation and ordered last-writer-wins across nodes. On a cluster the log
-orders writes; the storage crate's timestamps are internal to the format.
-:::

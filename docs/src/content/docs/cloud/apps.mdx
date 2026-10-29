@@ -1,17 +1,18 @@
 ---
 title: Writing apps for a cluster
-description: What carries over from v1 apps, and what changes — init arguments, identity, organizations and teams, blobs, search, handlers, xcalls, timers, migrations, confirmations, limits.
+description: What an app sees on a cluster — packages, init arguments, identity, organizations and teams, blobs, search, handlers, xcalls, timers, upgrades, outbound HTTPS, confirmations, ordering and limits.
 sidebar:
   order: 3
 ---
 
-The contract is the same WASM on the same runtime: every app in the apps
-repository builds against the `release-v2` SDK and deploys unchanged
-(`scripts/cloud-v2-smoke.py` there checks all 28).
+An app is a WASM module built with the Rust SDK (`calimero-sdk`, a core
+module that runs on wasmer) or a `calimero:app` component (`calimero-app-sdk`,
+run on wasmtime). [Build](/build/) covers writing one; this page covers what
+it sees once it runs on a cluster.
 
-## What changes
+## On a cluster
 
-- **Packages.** Install a signed `.mpk` the way v1 did: by `package@version`
+- **Packages.** Install a signed `.mpk` by `package@version`
   from the operator's registry (`POST /packages/install`, `meroctl app install
   PACKAGE@VERSION`) or as a file (`POST /packages`). Every node that runs a
   release fetches it and checks the publisher's signature, the artifact digests
@@ -19,7 +20,7 @@ repository builds against the `release-v2` SDK and deploys unchanged
   release. Create an instance with `POST /apps { package, version }`, upgrade with
   `{ version }`, and delete with `DELETE /apps/{app}`. Raw WASM uploads
   (`POST /bundles`) are for development clusters only.
-- **Instances, not contexts.** An app instance is created with
+- **Instances.** An app instance (what `meroctl` calls a *context*) is created with
   `POST /apps { name, bundle, initArgs, org?, access?, confirmMethods? }`.
   `initArgs` (JSON) is what `#[app::init]` receives; a failed init answers
   `422 INIT_FAILED` instead of leaving a dead instance.
@@ -45,10 +46,10 @@ repository builds against the `release-v2` SDK and deploys unchanged
 
   `apps/org-gated` in core is a complete example; `TestHost::set_caller_org`
   drives it in unit tests.
-- **Teams are v1's subgroups.** A team is open (whoever reaches its parent, or
+- **Teams.** A team is open (whoever reaches its parent, or
   the organization at the top, is a member) or restricted (its members only),
   nests and moves, keeps the app's metadata (a folder's name and colour), and
-  each member's row has a role — lead, member or read-only — and v1's
+  each member's row has a role — lead, member or read-only — and
   capability bits. Deploy an app to a team with
   `access: { kind: "team", team }`: its members reach it, and a read-only
   member's calls run but one that would write is refused (`403`). A team they
@@ -57,14 +58,14 @@ repository builds against the `release-v2` SDK and deploys unchanged
 - **Devices are passkeys.** `env::account_id()` is the person; each passkey on
   the account is one of their devices (`POST /auth/passkeys/add/*`, and
   `/auth/me` names the session's `passkeyId`).
-- **Blobs.** `env::blob_*` work as in v1. A blob belongs to the app that wrote
+- **Blobs.** `env::blob_*` store and open content-addressed bytes. A blob belongs to the app that wrote
   or received it (`POST /apps/{app}/blobs`, `GET /apps/{app}/blobs/{id}`, ids
   base58 or hex); every node holds it, so announcing one is a no-op.
-- **Search.** `#[derive(app::Searchable)]` and `app::search_indexes!` work as in
-  v1: views query the app's own index, kept up to date from the log before the
+- **Search.** `#[derive(app::Searchable)]` and `app::search_indexes!` declare
+  full-text indexes: views query the app's own index, kept up to date from the log before the
   view runs. A declared `#[app::view]` called as a call runs as a view.
 - **Event handlers and xcalls** run once, after the entry that asked for them,
-  on the app's leader — not once per replica. v1's rules hold: only
+  on the app's leader — not once per replica. Only
   `#[app::handler]` methods run for an event; an xcall reaches only
   `#[app::xcall]` entry points (`from_same_app`: the same bundle) of apps in the
   caller's organization, as the calling app, with `env::xcall_origin()`.
@@ -72,13 +73,13 @@ repository builds against the `release-v2` SDK and deploys unchanged
   "..")]` methods fire once per period, `tee:` handlers run as the TEE, and
   `TeeOnly` / `TeeSecret` state works; a member's share opens only in their own
   calls.
-- **Upgrades.** `POST /apps/{app}/upgrade { bundle }` plans the migration from
-  the two bundles' embedded ABIs as v1 did (`#[app::state(version)]` and
+- **Upgrades.** `POST /apps/{app}/upgrade { version }` (or `{ bundle }` on a
+  development cluster) plans the migration from
+  the two bundles' embedded ABIs (`#[app::state(version)]` and
   `#[app::migrate]`), runs your migration check, and refuses a downgrade or a
   missing edge. Build bundles with `cargo mero build` so they carry their ABI:
   handlers, xcall entry points, timers and migrations are read from it.
-- **Outbound HTTPS** (`env::http_request`). v1's gate, with the owner in the
-  namespace admin's place: a call (never a view, init or migration, nor a
+- **Outbound HTTPS** (`env::http_request`). A call (never a view, init or migration, nor a
   read-only member's call) may send one request under a prefix its signed
   manifest declares (`outbound` in `[package.metadata.calimero]`), to a host
   the operator allows, once that prefix was approved for the publisher by
@@ -94,8 +95,16 @@ repository builds against the `release-v2` SDK and deploys unchanged
   assertion over the exact call (`callConfirmed` in the clients).
 - **Ordering.** Calls on one instance are applied in one order, so a write never
   merges with a concurrent one: CRDT collections still work, and plain values do
-  too. There are no offline replicas: a client without the cluster cannot write,
-  so v1's "edits made while partitioned" never happen.
+  too. There are no offline replicas: a client that cannot reach the cluster
+  cannot write, so there are never concurrent edits to reconcile later.
+
+## Components
+
+A `calimero:app` component gets calls, views, events, timers, upgrades
+(code-only) and its organization's standing. The node refuses it blobs,
+search, xcalls, event handlers, TEE runs and outbound HTTPS for now, and an
+app cannot move between the two runtimes with an upgrade. See
+[Application execution](/protocol/execution/).
 
 ## Limits
 

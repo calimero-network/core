@@ -1,6 +1,6 @@
 ---
 title: Crate guide
-description: Every crate and tool in the workspace, grouped by role, with what it is and who uses it — including the v1 crates kept only because the WASM runtime links them.
+description: Every crate and tool in the workspace, grouped by role, with what it is and who uses it — including the older crates kept only because the WASM runtime links them.
 sidebar:
   label: Crate guide
 ---
@@ -17,7 +17,7 @@ beside it) has its commands and detail. The same index, for agents, is
 | Crate | Package | What it is |
 | --- | --- | --- |
 | `crates/merod` | `merod` | The node binary: `init`, `run`, `config`, `local`, `inspect`, `kms disk-key`. Turns `NodeArgs` into the node's `Config`. |
-| `crates/meroctl` | `meroctl` | The command line for nodes, v1's command tree over the attested, sealed client. |
+| `crates/meroctl` | `meroctl` | The command line for nodes, over the attested, sealed client. |
 
 ## The node
 
@@ -49,8 +49,8 @@ beside it) has its commands and detail. The same index, for agents, is
 ## SDK and runtime
 
 Two app runtimes, picked per app from the WASM its bundle names. Check with
-their owner before changing these. The first is the one v1 apps were built
-against, so they deploy as they are:
+their owner before changing these. The first runs core modules built with the
+Rust SDK (SDK 0.12):
 
 | Crate | Package | What it is |
 | --- | --- | --- |
@@ -77,11 +77,11 @@ The second runs `calimero:app` components on wasmtime:
 | Crate | Package | What it is |
 | --- | --- | --- |
 | `crates/primitives` | `calimero-primitives` | Ids, keys, hashes and wire types used everywhere. |
-| `crates/account` | `calimero-account` | `AccountId` (and v1's device ids and credentials); the node uses `AccountId`. |
+| `crates/account` | `calimero-account` | `AccountId`, plus device ids and credentials only the runtime-linked crates use; the node uses `AccountId`. |
 
-## Runtime-only v1 crates
+## Runtime-only crates
 
-These are v1 node crates kept only because `calimero-runtime` still links them.
+These are older node crates kept only because `calimero-runtime` still links them.
 Nothing in the node uses them directly. Do not build on them.
 
 | Crate | Package | Kept for |
@@ -114,11 +114,5 @@ Nothing in the node uses them directly. Do not build on them.
 | `tools/storage-compare` | `storage-compare` | Storage workloads measured against a chosen `calimero-storage`. |
 | `tools/state-disk-cost` | `state-disk-cost` | On-disk RocksDB bytes per state entry under column-family options. |
 
-<Aside type="note">
-  Deleted with v1: `merod` and `meroctl` internals, `mero-auth` (`crates/auth`),
-  `authz`, `client`, `config`, `context` (except `context/config`), `dag`,
-  `governance-store`, `network` (except `primitives`), `node` (except
-  `primitives`), `op`, `op-adapter`, `projection`, `server` (with its
-  primitives), `store/encryption` and `merodb`. Today's `crates/client` and
-  `crates/node` are new crates under those names.
-</Aside>
+The crates removed with the earlier node are listed in
+[Coming from v1](/cloud/coming-from-v1/#crates-removed).

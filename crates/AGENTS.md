@@ -9,7 +9,7 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 ## Binaries
 
 - [merod](merod/AGENTS.md) (`merod`) - the node: `init`, `run`, `config`, `local`, `inspect`, `kms disk-key`, `attest`; turns `NodeArgs` into `calimero_node::Config`.
-- [meroctl](meroctl/AGENTS.md) (`meroctl`) - the command line for nodes, v1's command tree over the attested, sealed client.
+- [meroctl](meroctl/AGENTS.md) (`meroctl`) - the command line for nodes, over the attested, sealed client.
 
 ## The node
 
@@ -51,9 +51,9 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 ## Shared types
 
 - [primitives](primitives/AGENTS.md) (`calimero-primitives`) - ids, keys, hashes, wire types.
-- [account](account/AGENTS.md) (`calimero-account`) - `AccountId` (and v1's device ids and credentials).
+- [account](account/AGENTS.md) (`calimero-account`) - `AccountId` (plus device ids and credentials only the runtime-linked crates use).
 
-## Runtime-only v1 crates
+## Runtime-only crates
 
 Kept only because `calimero-runtime` still links them; nothing in the
 node uses them directly. Do not build on them.
@@ -76,14 +76,12 @@ node uses them directly. Do not build on them.
 Tools (`cargo-mero`, `mero-abi`, `mero-sign`, `storage-cost`, `storage-compare`,
 `state-disk-cost`, `search-bench`) are under [`../tools`](../tools/AGENTS.md).
 
-## Deleted with v1
+## Removed crates
 
-`merod`/`meroctl` v1 internals, `auth` (`mero-auth`), `authz`, `client`,
-`config`, `context` (except `context/config`), `dag`, `governance-store`,
-`network` (except `primitives`), `node` (except `primitives`), `op`,
-`op-adapter`, `projection`, `server` (with `server/primitives`),
-`store/encryption`, `merodb`. A document that describes them
-as current is stale.
+The earlier node's crates (`auth`, `authz`, `dag`, `op`, `projection`,
+`server`, the old `network`, `context` and `node`, and others) are gone; the
+list is in [Coming from v1](../docs/src/content/docs/cloud/coming-from-v1.mdx#crates-removed).
+A document that describes them as current is stale.
 
 ## Commands
 

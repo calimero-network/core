@@ -10,8 +10,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 A `merod` node serves one HTTP API on its `--listen` address. The route table is
 `router` in `crates/node/src/api.rs`; this page lists every route in it.
-v1's separate admin API, JSON-RPC endpoint, WebSocket and SSE server are gone:
-calls, reads, events and administration are all routes of this one API.
+Calls, reads, events (server-sent events) and administration are all routes of
+this one API.
 
 ## Transport
 
@@ -149,6 +149,7 @@ the release fetches and verifies it again.
 | `POST /apps/{app}/views` | app access | `{ method, args, consistency?: "stale", minIndex? }`: a read | `call --view` |
 | `GET /apps/{app}/events?from=N` | app access | Server-sent events: committed events from `N`, then live ones | `context watch` |
 | `POST /apps/{app}/upgrade` | account holder | `{ bundle? \| package?, version?, service?, migrate?, confirm? }`; where the owner holds app upgrades | `context update` |
+| `POST /apps/{app}/transfer` | account holder | `{ to, confirm? }`: hand the app to another account (the owner, with a passkey step-up; an organization's app only to a member) | `context transfer` |
 | `POST /apps/{app}/access` | session | `{ access: { kind: owner \| org \| team \| accounts \| public, … } }` | `context access` |
 | `POST /apps/{app}/metadata` | signed in | `{ metadata }` (owner or org admin; 16 KiB) | `context metadata` |
 | `GET /apps/{app}/storage` | app access | Keys, bytes and blobs held | `context storage` |
@@ -195,6 +196,9 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 
 Every route needs the ops token. The Ops API returns counts, Raft status,
 placement and per-app usage by id, never app state, names or credentials.
+A node started with `--metrics-listen ADDR` also serves the `/ops/metrics`
+text as plain-HTTP `GET /metrics` on that separate address, and nothing else
+there.
 
 | Route | What | meroctl |
 | --- | --- | --- |
@@ -227,7 +231,7 @@ default):
 ## Internal
 
 `/internal/raft`, `/internal/system`, `/internal/system/index`,
-`/internal/call`, `/internal/view`, `/internal/blob`, `/internal/blob/get`,
+`/internal/call`, `/internal/challenge/take`, `/internal/view`, `/internal/blob`, `/internal/blob/get`,
 `/internal/blob/held`, `/internal/blob/delete`, `/internal/storage`,
 `/internal/presence`, `/internal/app-ready` and `/internal/events` are for the
 cluster's own nodes: they need the cluster secret (an HMAC of the storage key

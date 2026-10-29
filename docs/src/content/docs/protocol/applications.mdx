@@ -5,6 +5,8 @@ sidebar:
   order: 17
 ---
 
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
 An app instance runs one **bundle**: a WASM module named by
 `hex(SHA-256(wasm))`. In production a bundle always comes out of a **package
 release**: a signed `.mpk` (`calimero-bundle`) built with `cargo mero build`
@@ -20,6 +22,38 @@ declares. The manifest is signed by the publisher's key, and every artifact in
 the archive is listed with its digest.
 
 ## Installing a release
+
+<SeqDiagram
+  id="d-package-flow"
+  title="From publisher to running replicas"
+  lanes={[
+    { label: 'Publisher', color: '#f0883e' },
+    { label: 'Registry', color: '#e3b341' },
+    { label: 'Installer', color: '#c9d1d9' },
+    { label: 'Any node', color: '#3fb950' },
+    { label: 'System log', color: '#a5ff11' },
+    { label: 'Replica', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'cargo mero build; mero-sign the manifest' },
+    { from: 0, to: 1, label: 'publish package@version (.mpk)' },
+    { from: 2, to: 3, label: 'POST /packages/install { package, version }' },
+    { from: 3, to: 1, label: 'fetch the .mpk (--registry-url)' },
+    { from: 3, to: 3, label: 'verify: signature, digests, min runtime, signer pin, WASM' },
+    { from: 3, to: 4, label: 'InstallPackage { .mpk hash, services, outbound }' },
+    { from: 4, to: 4, label: 'apply: signer pin again, quota' },
+    { from: 5, to: 1, label: 'first use: fetch the release itself' },
+    { from: 5, to: 5, label: 'hash = the logged one? verify again → run' },
+  ]}
+/>
+
+A release travels from its publisher to a registry, and from there to every
+node that runs it, never from node to node: the node that installs it verifies
+it before the system log records its hash, and each replica fetches and
+verifies the same bytes again before running them. The installer is an
+account (or an app's creator, since `POST /apps` installs a missing release
+first) or the operator. An uploaded `.mpk` (`POST /packages`) skips the
+registry and is spread to a majority of nodes instead.
 
 There are two ways in:
 
@@ -111,7 +145,7 @@ uses `localhost`.
   file, falling back to the entry for client-side routes. `/.well-known/calimero.json`
   names the package, its releases and the cluster's API URLs.
 - Only `GET` and `HEAD` of files. An unknown label under D is a `404`, never a
-  node route. Responses carry v1's content security policy with the cluster's
+  node route. Responses carry a fixed content security policy with the cluster's
   API origins added to `connect-src`.
 
 **Why its own origin.** An app's page is third-party code. Served from the

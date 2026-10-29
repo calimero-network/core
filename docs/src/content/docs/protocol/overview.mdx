@@ -51,20 +51,12 @@ after proving its own image.
 
 ## Why it is built this way
 
-The previous design ran a node per user and kept replicas convergent with
-signed operations in a causal DAG, CRDT merges and a sync protocol that
-repaired divergence after the fact. It worked without coordination, at the
-price of every replica merging every change through the app's own merge code
-(state had to be mergeable, in any order), and of
-authorization that had to be judged "at the author's causal cut" because no
-two nodes saw changes in the same order.
-
 A cluster of attested nodes can afford coordination. With one leader per app
 and a log every replica applies in the same order:
 
 - **Calls are linearized.** Two writes to one instance never race; the second
-  runs against the state the first left. CRDT collections still work and are
-  still the storage format, but no merge is needed to converge.
+  runs against the state the first left. CRDT collections are the storage
+  format, but no merge is needed to converge.
 - **Authorization is one verdict.** A command is checked against the state it
   applies to, which is the same state on every replica.
 - **Execution need not be deterministic for convergence.** Followers apply the
@@ -142,7 +134,6 @@ and search indexes that survive a restart.
 :::
 
 Apps are built with one of two SDKs: `calimero-sdk` and `calimero-storage`,
-whose core modules run on `calimero-runtime` (wasmer, the runtime v1 apps were
-built against), or `calimero-app-sdk`, whose `calimero:app` components run on
+whose core modules run on `calimero-runtime` (wasmer), or `calimero-app-sdk`, whose `calimero:app` components run on
 `calimero-app-engine-wasmtime`. What they do inside a run is described only as
 far as the node depends on it.

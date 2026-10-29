@@ -8,18 +8,21 @@ sidebar:
 
 import { Aside } from '@astrojs/starlight/components';
 
-`meroctl` is the command line for Calimero nodes. It keeps v1's command tree
-over the node API, through `calimero-client`: before anything is
-sent it fetches the node's attestation and judges the quote, then every request
-travels in the sealed channel. The source is `crates/meroctl/src`.
+`meroctl` is the command line for Calimero nodes, over the node API through
+`calimero-client`: before anything is sent it fetches the node's attestation
+and judges the quote, then every request travels in the sealed channel. The
+source is `crates/meroctl/src`.
 
-| v1 name | What it is now |
+Its command names differ from the rest of these docs for a few objects
+([glossary](/protocol/glossary/)):
+
+| Command | What it manages |
 | --- | --- |
-| application (`app`) | a signed package, installed once per cluster |
-| context (`context`) | an app instance |
-| namespace (`namespace`) | an organization |
-| group (`group`) | a team of an organization |
-| identity (`account`) | an account; each passkey is one of its devices |
+| `app` | signed packages (applications), installed once per cluster |
+| `context` | app instances |
+| `namespace` | organizations |
+| `group` | an organization's teams |
+| `account` | the signed-in account; each passkey is one of its devices |
 
 Output is JSON, pretty-printed. Commands that stream (`context watch`,
 `context presence stream`, `ops metrics`, `blob download` to stdout, `app
@@ -80,7 +83,7 @@ Saved nodes, in `{home}/meroctl/nodes.json` (mode `0600`). No network.
 
 ## app
 
-Signed packages (v1's applications). An application is installed once on the
+Signed packages. An application is installed once on the
 cluster and verified on every node that runs it.
 
 | Command | Route | Meaning |
@@ -96,7 +99,7 @@ cluster and verified on every node that runs it.
 
 ## context
 
-App instances (v1's contexts).
+App instances.
 
 | Command | Route | Meaning |
 | --- | --- | --- |
@@ -170,7 +173,7 @@ A context's blobs.
 
 ## namespace
 
-Organizations (v1's namespaces). Alias: `ns`. `ROLE` is `guest`, `member`,
+Organizations. Alias: `ns`. `ROLE` is `guest`, `member`,
 `admin` or `owner`; `JOIN` is `open` (whoever reaches the parent is a member)
 or `restricted` (only the members added).
 
@@ -197,7 +200,7 @@ or `restricted` (only the members added).
 
 ## group
 
-An organization's teams (v1's groups). `ROLE` is `lead`, `member` or
+An organization's teams. `ROLE` is `lead`, `member` or
 `read-only`.
 
 | Command | Route | Meaning |
@@ -292,13 +295,6 @@ Use it for what no command covers, such as `POST /auth/apikeys` with
 that needs a passkey assertion needs a command with `--dev-passkey`, or a
 browser. See the
 [node API reference](/operate/admin-api/).
-
-## Not carried over from v1
-
-`context sync` and `group sync` (Raft replicates), `context identity`,
-`account pair-*`, `seal-to` and `device-init` (a passkey is the device),
-`peers` (there is no gossip network) and `tee fleet-join` (`ops add-node`)
-have no meaning on a cluster.
 
 ## Example session
 

@@ -1,11 +1,14 @@
 ---
 title: Glossary
-description: Precise definitions of the terms the protocol reference and the code use, with the v1 names they replace.
+description: Precise definitions of the terms the protocol reference and the code use, and the names meroctl uses for some of them.
 sidebar: { order: 80 }
 ---
 
-Terms are grouped by theme. Where v1 used another word for the same thing, it
-is given in brackets; a v1 term with no counterpart is listed at the end.
+Terms are grouped by theme. Where `meroctl` or the earlier release (v1) used
+another word for the same thing, it is given in brackets: namespace =
+organization, group = team, context = app instance, application = signed
+package. [Coming from v1](/cloud/coming-from-v1/) lists the v1 terms that have
+no counterpart.
 
 ## Cluster & replication
 
@@ -141,7 +144,7 @@ rule and its own group. [Context]
 **Bundle** — A WASM module, named by `hex(SHA-256)`. Stored in the blob store;
 the log records its hash.
 
-**Package / release** — A signed `.mpk`: package, version, services, frontend,
+**Package / release** — [Application] A signed `.mpk`: package, version, services, frontend,
 declared outbound prefixes. A package's signer is **pinned** by its first
 release. See [Packages & frontends](/protocol/applications/).
 
@@ -178,15 +181,3 @@ the node.
 
 **Presence** — Ephemeral per-device state, in memory on every node. See
 [Presence](/protocol/presence/).
-
-## v1 terms with no counterpart
-
-Scope, scope root, op-log, operation id, causal DAG, head, causal cut,
-authorization at the cut, projection, fold, stamp, generation (of a DAG),
-gossip, topic, broadcast, stream, heartbeat (of DAG heads), sync, verdict,
-divergence, reconciliation, absorb buffer, scope key, key delivery, key
-rotation on removal, warrant, delegation, executor/relay, admitter, fleet node,
-`ReadOnlyTee`, `RelayTee`, self-purge, stale-schema fence. The chapters that
-replaced the mechanisms say why each is gone: [Replication](/protocol/replication/#what-replaced-v1s-sync),
-[Who a run acts as](/protocol/authorship/#what-happened-to-delegation-and-admission),
-[Encryption](/protocol/encryption/), [Attestation](/protocol/tee-attestation/).

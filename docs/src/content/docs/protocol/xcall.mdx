@@ -35,8 +35,7 @@ idempotent call followed by a `Done` entry (xcalls), a new leader picks up
 exactly what is still pending: it neither skips a follow-up nor runs one twice.
 A replayed driver pass that finds the follow-up already consumed does nothing.
 
-Handlers and xcalls run **once**, on the leader — not once per replica, as they
-did when every v1 node applied every delta itself.
+Handlers and xcalls run **once**, on the leader — not once per replica.
 
 ## Authorization
 

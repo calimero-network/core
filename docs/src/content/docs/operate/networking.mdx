@@ -9,9 +9,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 A node has one network surface: an HTTP listener. Clients and peers
 both reach it at the node's public URL, and everything except `/health` and
-`/attestation` travels inside the sealed channel. v1's libp2p swarm, gossip,
-mDNS, rendezvous, relays, DHT and NAT traversal are gone: nodes of a cluster
-are servers that know each other's URLs.
+`/attestation` travels inside the sealed channel. There is no peer discovery,
+relay or NAT traversal: nodes of a cluster are servers that know each other's
+URLs from the system group.
 
 ## Listener and public URL
 

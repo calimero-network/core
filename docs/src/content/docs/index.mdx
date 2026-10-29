@@ -16,6 +16,7 @@ hero:
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
+import ClusterArchitecture from '../../components/diagrams/ClusterArchitecture.astro';
 
 {/* Audience-routed landing (Tailscale/Vercel pattern) — pick your track. */}
 
@@ -42,17 +43,11 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 ## Architecture at a glance
 
-```text
-client (meroctl · mero-js · calimero-client-py · calimero-client)
-   │  verify the TDX quote → Noise NK session to the attested key → sealed requests
-   ▼
-any merod node ──── system group (group 1, every node): accounts, orgs, packages, app directory
-   │  forward over a peer sealed channel
-   ▼
-the app's leader ── runs the WASM call, appends { call, outcome { result, diff, events } }
-   │  Raft
-   ▼
-the app's followers ── apply the diff (nobody re-executes)
-```
+<ClusterArchitecture />
+
+A client verifies a node's TDX attestation, then talks to any node through a
+sealed channel. That node checks the caller against the cluster's system group
+and forwards the call to the app's leader, which runs the WASM and replicates
+the result to the app's other replicas. [More in Calimero Cloud →](/cloud/overview/)
 
 New here? [How to use these docs](/using-the-docs/) · [Journeys by goal](/journeys/) · [Browse by topic](/topics/)

@@ -5,6 +5,8 @@ sidebar:
   order: 10
 ---
 
+import KeyHierarchy from '../../../components/diagrams/KeyHierarchy.astro';
+
 There are two encryption boundaries, and between them nothing is in the clear:
 **in transit**, every request and response travels in a sealed session bound
 to an attested key; **at rest**, every value a node writes is sealed under the
@@ -24,6 +26,16 @@ ended (after an hour at most) cannot be opened later, not even with the node's
 transport key. See [Networking & sealed channels](/protocol/networking/).
 
 ## At rest: the storage key K_r
+
+<KeyHierarchy />
+
+Attestation comes before any key: a node gets nothing from mero-kms until its
+quote matches a release the KMS's policy accepts, and everything it writes is
+sealed under keys derived from what it got. Every node of a cluster derives the
+same K_r, so a follower opens a leader's snapshot as it is; a different cluster
+name gives a different K_r from the same KMS key. The keys that identify a node
+to clients — its transport and receipt keys — are made in memory at start and
+attested on their own, never derived from K_r.
 
 Each node's data — every Raft entry, vote, state row, snapshot frame and blob —
 is sealed under one 32-byte **storage key**, K_r.
@@ -93,10 +105,3 @@ replicas run. A restored older copy of a node's disk is not detected yet: the
 proposed rollback counter (a mero-kms epoch, with restored nodes rejoining as
 learners) is not done.
 
-:::note[v1 comparison]
-v1 encrypted each scope's operations under a symmetric scope key delivered to
-each member by ECDH, rotated it when a member was removed, and encrypted a
-node's store at rest under a key of its own. Here members never hold keys to
-app data: they read through the node, which checks their access on every
-request, so removing a member needs no rotation and no re-delivery.
-:::

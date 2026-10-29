@@ -47,10 +47,9 @@ member, so it gets the outbound client the app's approvals allow.
 
 ## The TEE authority
 
-In v1, a TEE fleet node held a hardware-attested authority that let it write
-state no member could forge, under a policy a namespace granted. Here the
-cluster *is* every app's TEE: every node is attested, and a run the leader
-fires on its own is the TEE's.
+Some state must be written only by code no member controls. The cluster *is*
+every app's TEE: every node is attested, and a run the leader fires on its own
+is the TEE's.
 
 A timer run and a `tee:` handler author as `AccountId::TEE_AUTHORITY` with
 `tee_trigger` set, which is the one writer `TeeOnly` state admits. The runtime
@@ -69,8 +68,8 @@ the node derives from the storage key for each app
   no member's run does.
 - **A member key per account** stands in for that member's devices. A TEE run
   that seals a share for a member seals it to their member key; only a run whose
-  caller is that member opens it with that key. In v1 the share was sealed to
-  each of the member's devices; a member reads through the node instead.
+  caller is that member opens it with that key; a member reads through the
+  node.
 
 ## Private spaces
 
@@ -87,12 +86,3 @@ asks for takes effect with the run's other writes, only if the run's account
 holds `ADMIN` in the set in effect, and never from a TEE run, an app's own run
 or a public call. The node writes the new set beside the cell in the app's state
 (`app::writers_key`). See [Application execution](/protocol/execution/#what-the-node-checks-after-the-run).
-
-## What happened to delegation and admission
-
-| v1 mechanism | Why it existed | Now |
-| --- | --- | --- |
-| Delegated authorship: a relay ran a member's request under a signed warrant, attributed to the member | A device that could not run the app still had to own its writes, and peers had to verify the attribution | The node runs every call for the caller it authenticated; the entry records the caller. Nothing to delegate |
-| Direct admission: an account with no node joined a namespace through an admitter named in the invitation | Joining meant holding the namespace's keys on some node | An invite token adds the account to an organization ([Organizations](/protocol/organizations/#invites)); access is checked per request |
-| TEE authorship policy and evidence | A TEE node's authority had to be granted and its attestation kept fresh | Every node is attested before it is a peer; the cluster is the TEE |
-| Client paths (own node, relay, TEE relay, TEE authority) | Each reached a member key differently | One path: any node, sealed ([The write path](/protocol/write-path/)) |

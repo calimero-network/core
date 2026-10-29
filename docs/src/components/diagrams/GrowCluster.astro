@@ -1,0 +1,106 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-grow-cluster">
+<svg viewBox="0 0 760 380" role="img" aria-label="Growing a cluster from one node: new nodes are registered and join the system group as learners, two caught-up learners are promoted so the system group goes from one voter to three, mdma's rebalancer moves app replicas onto them, and a drained node is removed once no app keeps a replica on it" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="gc-arrow" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="380" rx="10" fill="#0f0f16"/>
+
+  <!-- stage 1 -->
+  <g class="seq-step" style="--step-i:0">
+    <text x="95" y="26" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">1 · one node</text>
+    <rect x="20" y="40" width="150" height="250" rx="10" fill="none" stroke="#35354a"/>
+    <rect x="45" y="56" width="100" height="120" rx="8" fill="#10210f" stroke="#3fb950"/>
+    <text x="95" y="74" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">n1</text>
+    <text x="95" y="92" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="8.5">system voter</text>
+    <text x="95" y="114" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="8.5">app A</text>
+    <text x="95" y="130" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="8.5">app B</text>
+    <text x="95" y="146" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="8.5">app C</text>
+    <text x="95" y="210" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">--bootstrap with</text>
+    <text x="95" y="222" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">one peer; apps get</text>
+    <text x="95" y="234" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">min(--replicas, nodes)</text>
+    <text x="95" y="246" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">replicas: one each</text>
+    <text x="95" y="270" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8">no redundancy</text>
+  </g>
+
+  <!-- stage 2 -->
+  <g class="seq-step" style="--step-i:1">
+    <line x1="172" y1="120" x2="190" y2="120" stroke="#8b949e" stroke-width="1.3" marker-end="url(#gc-arrow)"/>
+    <text x="285" y="26" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">2 · add nodes</text>
+    <rect x="192" y="40" width="186" height="250" rx="10" fill="none" stroke="#35354a"/>
+    <rect x="202" y="56" width="52" height="120" rx="7" fill="#10210f" stroke="#3fb950"/>
+    <text x="228" y="74" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">n1</text>
+    <text x="228" y="92" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="8">voter</text>
+    <text x="228" y="114" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="8">A</text>
+    <text x="228" y="130" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="8">B</text>
+    <text x="228" y="146" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="8">C</text>
+    <rect x="259" y="56" width="52" height="120" rx="7" fill="#10210f" stroke="#3fb950" stroke-dasharray="4 3"/>
+    <text x="285" y="74" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">n2</text>
+    <text x="285" y="92" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">learner</text>
+    <text x="285" y="106" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="8">→ voter</text>
+    <rect x="316" y="56" width="52" height="120" rx="7" fill="#10210f" stroke="#3fb950" stroke-dasharray="4 3"/>
+    <text x="342" y="74" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">n3</text>
+    <text x="342" y="92" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">learner</text>
+    <text x="342" y="106" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="8">→ voter</text>
+    <text x="285" y="210" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">POST /ops/nodes {id, addr, zone}</text>
+    <text x="285" y="222" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">→ the system leader adds each</text>
+    <text x="285" y="234" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">as a learner; once two have</text>
+    <text x="285" y="246" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">caught up, both become voters</text>
+    <text x="285" y="270" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="8">system voters 1 → 3 (never 2)</text>
+  </g>
+
+  <!-- stage 3 -->
+  <g class="seq-step" style="--step-i:2">
+    <line x1="380" y1="120" x2="398" y2="120" stroke="#8b949e" stroke-width="1.3" marker-end="url(#gc-arrow)"/>
+    <text x="493" y="26" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">3 · rebalance</text>
+    <rect x="400" y="40" width="186" height="250" rx="10" fill="none" stroke="#35354a"/>
+    <rect x="410" y="56" width="52" height="120" rx="7" fill="#10210f" stroke="#3fb950"/>
+    <text x="436" y="74" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">n1</text>
+    <text x="436" y="92" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="8">voter</text>
+    <text x="436" y="114" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="8">A</text>
+    <text x="436" y="130" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="8">B</text>
+    <text x="436" y="146" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="8">C</text>
+    <rect x="467" y="56" width="52" height="120" rx="7" fill="#10210f" stroke="#3fb950"/>
+    <text x="493" y="74" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">n2</text>
+    <text x="493" y="92" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="8">voter</text>
+    <text x="493" y="114" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="8">A</text>
+    <text x="493" y="130" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="8">B</text>
+    <text x="493" y="146" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="8">C</text>
+    <rect x="524" y="56" width="52" height="120" rx="7" fill="#10210f" stroke="#3fb950"/>
+    <text x="550" y="74" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">n3</text>
+    <text x="550" y="92" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="8">voter</text>
+    <text x="550" y="114" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="8">A</text>
+    <text x="550" y="130" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="8">B</text>
+    <text x="550" y="146" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="8">C</text>
+    <text x="493" y="210" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">mdma's rebalancer reads</text>
+    <text x="493" y="222" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">GET /ops/placement, then one</text>
+    <text x="493" y="234" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">POST /ops/apps/{app}/replicas</text>
+    <text x="493" y="246" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">at a time (bundle + blobs first)</text>
+    <text x="493" y="270" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="8">apps survive a node loss</text>
+  </g>
+
+  <!-- stage 4 -->
+  <g class="seq-step" style="--step-i:3">
+    <line x1="588" y1="120" x2="606" y2="120" stroke="#8b949e" stroke-width="1.3" marker-end="url(#gc-arrow)"/>
+    <text x="674" y="26" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">4 · drain</text>
+    <rect x="608" y="40" width="134" height="250" rx="10" fill="none" stroke="#35354a"/>
+    <rect x="620" y="56" width="110" height="120" rx="7" fill="#161b22" stroke="#f0883e" stroke-dasharray="4 3"/>
+    <text x="675" y="74" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">nX draining</text>
+    <text x="675" y="96" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">replicas moved off</text>
+    <text x="675" y="110" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">first, then</text>
+    <text x="675" y="132" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8">DELETE /ops/nodes/{id}</text>
+    <text x="675" y="152" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">(system leader)</text>
+    <text x="675" y="210" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">refused while an app</text>
+    <text x="675" y="222" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">keeps a replica there;</text>
+    <text x="675" y="234" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">a removed voter is</text>
+    <text x="675" y="246" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">replaced by a caught-up</text>
+    <text x="675" y="258" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">learner</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:4">
+    <text x="380" y="318" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">merod never moves an app by itself: placement picks a new app's replicas, moves come through the Ops API.</text>
+    <text x="380" y="336" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">The system group grows to 3 voters by itself (zones no voter is in first) and no further; later nodes stay learners.</text>
+    <text x="380" y="354" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">Learners still serve: every node answers clients and forwards writes to the leaders.</text>
+  </g>
+</svg>
+</Figure>

@@ -73,14 +73,6 @@ debug image itself. What the peer's verified attestation named as its release
 is remembered and decides whether the peer may receive an app's data
 ([release approvals](/protocol/governance/#release-approvals)).
 
-:::note[v1 comparison]
-v1 used attestation to admit "fleet" nodes into a namespace as read-only TEE
-replicas or relays, with an admission handshake, a measurement allowlist set by
-the namespace's admins, and self-purge on eviction. Here every node is a TEE,
-and attestation is the precondition for any conversation, with a client or a
-peer. There is no admission role: a node that passes the check is a peer; one
-that fails is never sent a byte.
-:::
 
 ## Receipts
 

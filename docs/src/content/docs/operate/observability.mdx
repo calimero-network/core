@@ -34,11 +34,9 @@ account) so it can be billed; those are opaque random ids, never names. Whoever
 scrapes the metrics is the operator, who learns counts, and which app ids use
 how much, and nothing more.
 
-Where v1's merod exported the same measure, the name and labels are v1's
-(`http_requests_total`, `http_request_duration_seconds`, `merod_build_info`,
-`process_*`, `storage_disk_usage_bytes`), so dashboards built for v1 keep
-working on them. v1's sync, gossip, DAG, governance and network-channel
-metrics have no counterpart: those subsystems are gone.
+A few series keep conventional names (`http_requests_total`,
+`http_request_duration_seconds`, `merod_build_info`, `process_*`,
+`storage_disk_usage_bytes`), so standard dashboards read them.
 
 | Metric | Labels | Meaning |
 | --- | --- | --- |
@@ -64,8 +62,8 @@ metrics have no counterpart: those subsystems are gone.
 | `calimero_group_follower_lag` | `group`, `peer` | On the group's leader: how many entries the follower `peer` (a node id) is behind. |
 | `calimero_group_quorum_ack_age_seconds` | `group` | On the group's leader: seconds since a quorum last acknowledged it. |
 | `calimero_group_snapshot_index` | `group` | The index this node's latest snapshot of the group covers. |
-| `merod_build_info` | `version`, `peer_id` | Always `1`; `version` is the build's release, `peer_id` this node's id (v1's label; the node has no libp2p identity). |
-| `storage_disk_usage_bytes` | `store` | Disk a store takes, in allocated blocks, sampled at most every 30 s: `datastore` (the sealed store: log, state and blobs; v1's separate `blobstore` series is part of it) and `snapshots`. |
+| `merod_build_info` | `version`, `peer_id` | Always `1`; `version` is the build's release, `peer_id` this node's numeric id. |
+| `storage_disk_usage_bytes` | `store` | Disk a store takes, in allocated blocks, sampled at most every 30 s: `datastore` (the sealed store: log, state and blobs) and `snapshots`. |
 | `process_start_time_seconds` | | When this node's process started, in Unix seconds (from `/proc` on Linux; elsewhere when it started serving). |
 | `process_resident_memory_bytes`, `process_virtual_memory_bytes` | | Memory, from `/proc/self/status` (Linux). |
 | `process_threads`, `process_open_fds` | | Threads and open file descriptors (Linux). |

@@ -90,15 +90,15 @@ asserts that a state type reaches the same root on N in-memory replicas under
 reordered operations. The app-author guide is [Testing your app](/build/testing/).
 
 <Aside type="note">
-  An app instance's calls are applied in one order by its Raft
-  log, so convergence under concurrent writes matters less for the node than it
-  did for v1; it still matters for code that also targets v1.
+  An app instance's calls are applied in one order by its Raft log, so the
+  node never merges concurrent writes; `converge` checks the storage format's
+  own merge rules.
 </Aside>
 
 ## Scenario tests with merobox
 
 [merobox](https://github.com/calimero-network/merobox)'s `cloud-v2` backend
-(its `release-v2` branch) starts one `merod` process per node and runs YAML
+(CI pins it with `MEROBOX_REF`) starts one `merod` process per node and runs YAML
 scenarios: deploy, call and read as several accounts, then crash, freeze,
 restart or upgrade nodes and check the app keeps its data and answers within a
 time budget.
@@ -116,15 +116,11 @@ regression scenario there.
 
 ### Core and app workflows
 
-Core's workflows (`workflows/`: app migrations, sync, fuzzy loads) and every
-app's (`apps/*/workflows/`) are merobox workflows for the `cloud-v2` backend.
-Most were migrated from v1's workflows of the same names, in place, by
-`merobox cloud port`; each file's header lists the v1 steps that have no
-counterpart on a cluster (gossip waits, node logs and admin-API reads, scripts,
-partitions of a user's node) and every fix made in the migration, with its
-reason. They are maintained by hand from here on. An app with no v1 workflow
-(or none that applied) has one written for the cluster, so every deployable app
-has at least one. Run them against a build:
+Core's workflows (`workflows/`: app migrations, `sync-tests` (replication), fuzzy loads) and
+every app's (`apps/*/workflows/`) are merobox workflows for the `cloud-v2`
+backend; every deployable app has at least one. Some files' headers still
+record how they were ported from the earlier release's workflows. Run them
+against a build:
 
 ```bash
 python3 scripts/build-workflow-fixtures.py      # the releases and WASM they install
@@ -142,68 +138,6 @@ of them failing fails CI. Add a workflow to it once it passes, and its measured
 duration to `scripts/workflows-durations.json` (the shards are packed
 by it). A workflow not on the baseline still runs and is reported, so a fix
 shows up as a pass.
-
-#### Workflows deleted in the migration
-
-A v1 workflow whose subject has no counterpart on a cluster was deleted rather
-than kept unrun. Each, and why nothing replaces it (or what does):
-
-| Workflow | Its subject, and why a cluster has none |
-| --- | --- |
-| `apps/blobs/workflows/blob-presence-multi-holder.yml` | DHT provider discovery among user nodes holding a blob: a cluster's nodes all keep an app's blobs (blob-cross-node-transfer, blob-cross-node-sizes) |
-| `apps/blobs/workflows/blob-presence-tee-serves.yml` | a ReadOnlyTee availability node prefetching blobs: every cluster node is the TEE and keeps the app's blobs |
-| `apps/fugue-collab/workflows/fugue-collab-figure2.yml` | the Fugue paper's Figure 2, three isolated replicas typing at positions of their own unsynced views and merged after: a cluster orders every edit against one current text, so there is no concurrent merge (the other fugue-collab workflows cover editing) |
-| `apps/fugue-collab/workflows/fugue-collab-large-paste.yml` | a paste merged across a libp2p partition: a cluster has no partitioned user replica (concurrent edits: the other fugue-collab workflows) |
-| `apps/fugue-collab/workflows/fugue-collab-partition-heal.yml` | two sides of a network partition typing at the same position and merging when it heals: a cluster has no partitioned user replica and no merge |
-| `apps/kv-store/workflows/ephemeral-open-subgroup-e2e.yml` | presence over v1's WS/SSE for a member inheriting an open subgroup, checked by a script on v1's endpoints (ephemeral-presence-e2e covers presence) |
-| `apps/nested-crdt-test/workflows/nested-crdt-offline-catchup.yml` | an offline node catching up over v1's HashComparison sync: a cluster replicates by its Raft log |
-| `apps/rich-collab/workflows/rich-catchup.yml` | offline and replaced nodes catching up over v1's HashComparison sync: a cluster replicates by its Raft log |
-| `apps/scaffolding-e2e/workflows/account-namespace-left-unfollows.yml` | v1 devices following and unfollowing an account's namespaces: a device is a passkey of the account and follows nothing |
-| `apps/scaffolding-e2e/workflows/account-pairing-application-scope.yml` | pairing scoped by namespace and application: a passkey signs in to the whole account |
-| `apps/scaffolding-e2e/workflows/account-pairing-missed-publish.yml` | a partitioned device missing the pairing's one-shot publish of its link and scope key: no keys are delivered to devices |
-| `apps/scaffolding-e2e/workflows/account-registry-replicates.yml` | the v1 account namespace recording each device's scope: an account's passkeys are cluster system state |
-| `apps/scaffolding-e2e/workflows/account-revoke-lost-device.yml` | revoking a device with a proof minted from the account root's recovery phrase: an account has passkeys, no root key |
-| `apps/scaffolding-e2e/workflows/account-revoked-device-misses-new-restricted-subgroup.yml` | a revoked device's key excluded from a subgroup opened later (key delivery): removing a passkey ends its sessions (account-device-revoke-lockout) |
-| `apps/scaffolding-e2e/workflows/account-revoked-device-repairs.yml` | a revoked node re-minting its device and re-pairing: a removed passkey is gone; signing in again is a new passkey (add_device) |
-| `apps/scaffolding-e2e/workflows/account-sibling-projected-by-founder.yml` | a device carried into a namespace by a sibling device: a device is a passkey of the account and needs no carrying |
-| `apps/scaffolding-e2e/workflows/admit-without-credential.yml` | v1's admission handler publishing a keyholder's signed join without a node credential: an invite token is redeemed by a signed-in person |
-| `apps/scaffolding-e2e/workflows/delegated-authorship.yml` | a keyholder writing through a relay under a signed warrant (delegated authorship): there are no relays, the node runs every call for the caller it authenticated |
-| `apps/scaffolding-e2e/workflows/delegated-invitation-routing.yml` | routing a join to an admitter named in the invitation: there are no admitters, any node redeems an invite |
-| `apps/scaffolding-e2e/workflows/delegated-proof.yml` | delegated execution by a signed request (CallerProof) to a node the caller has no account on: every call is the authenticated caller's own |
-| `apps/scaffolding-e2e/workflows/delegated-session.yml` | a device key obtaining a session on a node it does not own (delegated sessions): a passkey signs in to any node |
-| `apps/scaffolding-e2e/workflows/group-held-flip-applies-when-member-added.yml` | a governance op held until the subgroup key arrives: teams are system state with no keys to deliver |
-| `apps/scaffolding-e2e/workflows/group-held-flip-nonmember-keeps-up.yml` | a sealed governance op a non-member cannot settle stalling its governance: teams are system state ordered by one log |
-| `apps/scaffolding-e2e/workflows/group-join-mesh-not-ready.yml` | a join failing closed while no admitter is reachable over the mesh, then recovering: there are no admitters, any node redeems an invite (38-namespace-invite-join-regression covers joining) |
-| `apps/scaffolding-e2e/workflows/group-leave-context.yml` | leave_context, a node-local opt-out that stops a node syncing one context: a member holds no replica to stop; access follows the organization and team |
-| `apps/scaffolding-e2e/workflows/kad-routing-from-identify.yml` | libp2p Kademlia routing among user nodes: a cluster's peers are its attested nodes |
-| `apps/scaffolding-e2e/workflows/member-removed-partition-window-reconcile.yml` | v1's reconcile rolling back a write a removed member made in a partition window the admin had not seen: a cluster orders the write and the removal in one log, so there is no window to reconcile |
-| `apps/scaffolding-e2e/workflows/namespace-restore-kicked-member.yml` | restoring a namespace a node removed from its own disk: a cluster keeps no per-member copy to remove |
-| `apps/scaffolding-e2e/workflows/namespace-restore-without-invitation.yml` | restoring a namespace a node removed from its own disk: a cluster keeps no per-member copy to remove |
-| `apps/scaffolding-e2e/workflows/offline-account-root.yml` | a node joining under a certificate its account root signed elsewhere (the root kept offline): an account has passkeys, no root key |
-| `apps/scaffolding-e2e/workflows/public-intents.yml` | a relay serving delegated execution with --public-intents: there are no relays |
-| `apps/scaffolding-e2e/workflows/relay-device-login.yml` | a fleet relay in proxy auth mode behind mero-auth serving device-key login: there are no relays, and every node authenticates its callers |
-| `apps/scaffolding-e2e/workflows/sync-resilience-lossy-link.yml` | v1 sync recovering from packet loss on a user node's link: a cluster replicates by its Raft log |
-| `apps/scaffolding-e2e/workflows/sync-resilience-network-partition-symmetric.yml` | v1 sync and relay reservations across a NAT partition: a cluster replicates by its Raft log |
-| `apps/scaffolding-e2e/workflows/sync-resilience-network-partition.yml` | v1 sync and relay reservations across a NAT partition: a cluster replicates by its Raft log |
-| `apps/scaffolding-e2e/workflows/sync-resilience-peer-pause-symmetric.yml` | v1 sync after a paused peer re-dials its relay: a cluster replicates by its Raft log |
-| `apps/scaffolding-e2e/workflows/sync-resilience-peer-pause.yml` | v1 sync after a paused peer re-dials its relay: a cluster replicates by its Raft log |
-| `apps/scaffolding-e2e/workflows/sync-resilience-peer-restart-symmetric.yml` | v1 sync after a restarted peer re-registers its relay reservation: a cluster replicates by its Raft log |
-| `apps/scaffolding-e2e/workflows/sync-resilience-peer-restart.yml` | v1 sync after a restarted peer re-registers its relay reservation: a cluster replicates by its Raft log |
-| `apps/scaffolding-e2e/workflows/tee-admission-mode-relay.yml` | a namespace's TEE admission mode (RelayTee vs ReadOnlyTee): the cluster is the TEE and there are no relays |
-| `apps/tee-cards/workflows/tee-cards-failover.yml` | failover between TEE authorities elected per trigger: the cluster is the TEE and its leader runs every trigger (tee-cards covers the game) |
-| `apps/tee-cards/workflows/tee-cards-late-tee.yml` | a TEE admitted later opening a deck sealed before (the namespace TEE key): the cluster is the TEE and holds the app's key |
-| `apps/tee-cards/workflows/tee-cards-rotate.yml` | rotating the namespace TEE key when a TEE is removed: the cluster is the TEE and holds the app's key |
-| `workflows/app-migration/26-owner-driven-authored.yml` | identity-gated entries migrating lazily at each owner's next write: an upgrade migrates the app's one state at once (16 covers UserStorage) |
-| `workflows/app-migration/28-get-migration-status.yml` | the rollup of members' migration heartbeats: no member holds its own copy; an upgrade run reports the apps (00, 14) |
-| `workflows/app-migration/36-chained-catchup.yml` | a member left several releases behind replaying the upgrade ladder lazily: no member replica falls behind, each upgrade migrates at once |
-| `workflows/app-migration/37-stranded-resync.yml` | a member stranded by an unobtainable intermediate release, recovered by resync: no member replica falls behind |
-| `workflows/app-migration/42-activate-upgrade-on-an-idle-node.yml` | activating an upgrade on a member's idle node (POST .../upgrade/activate): the cluster installs and switches every node |
-| `workflows/app-migration/43-retarget-before-activate.yml` | a member's activation refused after the admin retargeted: there is no per-member activation |
-| `workflows/app-migration/45-frontend-two-releases.yml` | each release serving its own frontend, checked by a v1 script on the app host: the node serves a package's frontend from its own origin (`{label}.{apps_domain}`, routed by Host), which no runner step addresses; the cluster test `app_frontends_are_served_and_their_sessions_are_bound` (`crates/node/tests/cluster.rs`) covers serving a release's frontend there, one release only |
-| `workflows/app-migration/46-frontend-proxy-mode.yml` | an app host on a node in proxy auth mode passing no token: a cluster node always authenticates |
-| `workflows/app-migration/47-missing-releases-before-activate.yml` | a member installing the releases it missed before activating: the cluster installs releases on every node |
-| `workflows/app-migration/48-member-installs-only-the-newest-release.yml` | a member that installed only the newest release replaying the ladder: the cluster installs and migrates at once |
-| `workflows/auth-seam.yml` | v1's client tokens minted by the auth frontend (POST /admin/client-key): a cluster signs in with passkeys and scopes API keys (merobox's orgs-and-keys example) |
 
 ### In CI
 
@@ -246,8 +180,8 @@ with `docker create` and `docker cp`):
   (a prerelease included) and runs the four shards, soak included, on the
   workflows, fixtures and baseline of the commit the image was built from
   (its `org.opencontainers.image.revision`), so a workflow added after the
-  release does not fail it. A release published before the v1 node was
-  deleted is a v1 node, which merobox does not run: the job says so in its summary and the shards
+  release does not fail it. A release older than 1.0 runs the earlier node,
+  which merobox does not run: the job says so in its summary and the shards
   are skipped. On the release branch the nightly tests `release-v2-edge`
   instead, the image of the branch's latest merge
   ([Release branch](#release-branch)).
@@ -321,9 +255,9 @@ fuzzy workflow (a third, another node).
 
 ## Release branch
 
-`release-v2-parity` is the long-lived release branch: PRs merge into
-it, and it never merges into master. Its CI is master's, with its own image
-tags and nightly:
+Calimero 1.0 was developed on `release-v2-parity`, which has since been merged
+into master (`1.0.0-rc.1`). CI still treats that branch as a release branch,
+with its own image tags:
 
 | When | What runs | What publishes |
 | --- | --- | --- |
@@ -338,10 +272,8 @@ the clients' own `release-v2-parity` branches when nothing is paired
 (`sdk-ref:`, `py-ref:` or a same-named branch), since their master has no
 cluster tests.
 
-GitHub runs `schedule` only from the default branch, so the nightly is started
-by `.github/workflows/nightly-release-v2.yml` on master, which runs
-`gh workflow run <workflow> --ref release-v2-parity` for the three workflows
-above (with `GITHUB_TOKEN` and `actions: write`). To run one by hand:
+GitHub runs `schedule` only from the default branch, so the branch's nightly
+runs only when dispatched. To run one by hand:
 
 ```bash
 gh workflow run e2e.yml --ref release-v2-parity -f nightly=true
@@ -354,7 +286,7 @@ built and link-checked (`docs-ci.yml`) but not deployed.
 
 ## What scenario tests cannot catch
 
-Every node in a merobox run is the same build on fresh state, so it never
+Every node in a scenario run is the same build on fresh state, so it never
 tests data written by an older version. A change to an on-disk or wire format
 needs its own migration test, as `calimero-log`'s `migration_tests.rs` does for
 the `log.redb` store.
