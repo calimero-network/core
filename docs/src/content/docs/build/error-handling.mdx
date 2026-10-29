@@ -1,6 +1,6 @@
 ---
 title: Error handling
-description: How errors work in a Calimero app — app::Result, the Error type, the bail!/err! macros, and what a returned error looks like to a JSON-RPC caller.
+description: How errors work in a Calimero app — app::Result, the Error type, the bail!/err! macros, and what a returned error looks like to the client that called.
 sidebar:
   label: Error handling
 ---
@@ -184,46 +184,49 @@ receives the whole object, `kind` tag included, not just a flattened message.
 ## What the caller sees
 
 When your method returns `Err`, the SDK serializes the error as the `Err`
-variant of the return value. The runtime carries it out on the execution
-outcome, and `crates/server` turns it into a JSON-RPC error response. Through the
-JSON-RPC `execute` path it arrives as a `FunctionCallError`:
+variant of the return value, the runtime carries it on the run's outcome, and
+the node answers the call `422 APP_ERROR`, with your error in `details.error`
+and the entry's log index in `details.index`:
 
 ```json
 {
-  "jsonrpc": "2.0",
-  "id": 1,
-  "error": {
-    "type": "FunctionCallError",
-    "data": "insufficient balance: need 100, have 40"
-  }
+  "error": "APP_ERROR",
+  "message": "the app refused the call",
+  "details": { "index": 42, "error": "insufficient balance: need 100, have 40" }
 }
 ```
 
-The `data` field holds your serialized error — a string for the message forms,
-or the JSON object for the `Serialize` form. The `TransferError` above, returned
-when the balance is too low, arrives as a structured object the client can branch
-on by `kind`:
+`details.error` holds your serialized error: a string for the message forms, or
+the JSON object for the `Serialize` form. The `TransferError` above arrives as a
+structured object the client can branch on by `kind`:
 
 ```json
 {
-  "jsonrpc": "2.0",
-  "id": 1,
-  "error": {
-    "type": "FunctionCallError",
-    "data": { "kind": "InsufficientBalance", "need": 100, "have": 40 }
-  }
+  "error": "APP_ERROR",
+  "message": "the app refused the call",
+  "details": { "index": 42, "error": { "kind": "InsufficientBalance", "need": 100, "have": 40 } }
 }
 ```
 
-Decoding failures and lower-level execution faults arrive under their own
-variants (`SerdeError`, `ExecuteError`).
+The clients surface it as their error type:
+
+- **mero-js:** `client.call(...)` rejects with a `CalimeroError` whose `status`
+  is `422`, `code` is `"APP_ERROR"` and `details.error` is your error.
+- **calimero-client-py:** `call(...)` raises `CloudError(message, status, code,
+  details)`, with `details` the JSON text of the same object.
+- **meroctl:** `meroctl call` prints the node's error and exits non-zero.
+
+A run that traps (a panic, out of gas, an unknown method) answers `422 TRAP`
+instead, and a read the app refuses answers `422 APP_ERROR` the same way. The
+other statuses a call can answer are in
+[The write path](/protocol/write-path/#answers-and-errors).
 
 ## Traps and panics discard everything
 
-A returned `Err` is a *value* — the method ran to completion and chose to fail.
-A **trap or panic** is different: it aborts the WASM execution. When that
-happens the runtime produces an error outcome and **no state is committed** —
-there is no partial write. Either a mutating call commits its full state or it
+A returned `Err` is a *value*: the method ran to completion and chose to fail,
+and it writes nothing either. A **trap or panic** is different: it aborts the
+WASM execution. When that happens the runtime produces an error outcome and
+**no state is committed**: there is no partial write. Either a mutating call commits its full state or it
 commits nothing.
 
 <Aside type="caution">
@@ -231,12 +234,12 @@ commits nothing.
   an error". A panic gives the caller an opaque execution fault and throws away
   the outcome. For an error you want the caller to handle, return `Err`
   (via `bail!`/`err!`) so it serializes cleanly and reaches them as
-  `FunctionCallError`.
+  `APP_ERROR`.
 </Aside>
 
 ## Next steps
 
 <CardGrid>
   <LinkCard title="SDK macros" href="/build/sdk-macros/" description="The #[app::*] and function-like macros, including err! and bail!." />
-  <LinkCard title="Admin API" href="/operate/admin-api/" description="How a client invokes a method and reads back results or errors." />
+  <LinkCard title="The write path" href="/protocol/write-path/" description="How a call reaches the leader, and every answer it can get." />
 </CardGrid>
