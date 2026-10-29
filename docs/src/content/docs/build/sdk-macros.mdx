@@ -369,10 +369,10 @@ pub struct TeamStats {
 
 `apps/search-chat` derives it on its `Message`, `Reply` and `Doc` values. A
 hand-written `Mergeable` is in [Advanced SDK](/build/advanced-sdk/).
-`apps/team-metrics-macro` and `apps/team-metrics-custom` used to show the derive
-and a hand-written merge; they are now on the component SDK, where state is
-plain records ordered by one log and nothing is merged, and their doc comments
-say what each v1 merge became.
+Two team-metrics apps used to show the derive and a hand-written merge; they
+are now one component app, `apps/team-metrics`, where state is plain records
+ordered by one log and nothing is merged, and its doc comment says what each
+v1 merge became.
 
 ## Helper macros
 

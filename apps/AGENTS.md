@@ -54,19 +54,18 @@ cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 | `fugue-editor`           | Collaborative text (Fugue) | `FugueText` CRDT       |
 | `fugue-collab`           | Collaborative text (Fugue), with deletes | E2E guest |
 | `rich-collab`            | Collaborative rich text (blocks, marks) | `RichDocument` / `RichText` E2E guest |
-| `team-metrics-macro`     | Team metrics (component SDK) | Per-team counts as a plain record: what v1's `#[derive(Mergeable)]` becomes when one log orders every call |
-| `team-metrics-custom`    | Team metrics with badges (component SDK) | A bitmask field set by read-modify-write: what v1's custom `#[app::mergeable]` rule becomes |
+| `team-metrics`           | Team metrics with badges (component SDK) | Per-team counts and a bitmask as a plain record: what v1's `#[derive(Mergeable)]` and custom `#[app::mergeable]` rule become when one log orders every call |
 | `xcall-example`          | Cross-context calls    | XCall pattern          |
 | `outbound-probe`         | Outbound HTTPS         | `env::http_request` from each kind of run; E2E fixture for the outbound gates, against the test build's `.test` echo |
 
 ## Component apps (`calimero-app-sdk`, `wasm32-wasip2`)
 
-Seventeen apps are on the component SDK: `rooms`, `authored-sorted-kv-store`,
+Sixteen apps are on the component SDK: `rooms`, `authored-sorted-kv-store`,
 `components-demo`, `custom-key-store`, `indexed-forum`, `indexed-issue-tracker`,
 `kv-store`, `kv-store-init`, `kv-store-with-shared-storage`,
 `kv-store-with-user-and-frozen-storage`, `name-registry-admin`, `org-gated`
 (package `org-gated-notes`), `permissions-showcase`, `sorted-kv-store`,
-`sorted-set-store`, `team-metrics-custom` and `team-metrics-macro`. The wasmer
+`sorted-set-store` and `team-metrics`. The wasmer
 builds of `kv-store`, `kv-store-with-shared-storage` and `org-gated` stay as
 fixtures in `wasmer-fixtures/`. The other apps stay on the wasmer SDK until the
 component SDK has what they use (blobs, xcall, search, event handlers, TEE

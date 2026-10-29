@@ -62,8 +62,8 @@ impl Mergeable for TeamStats {
 }
 ```
 
-`apps/team-metrics-custom` showed this (with a `badges |= other.badges` rule) on
-this SDK until it moved to the component SDK, where one Raft log orders every
+The team-metrics app showed this (with a `badges |= other.badges` rule) on
+this SDK until it moved to the component SDK as `apps/team-metrics`, where one Raft log orders every
 call and there is no merge to write: its `award_badge` reads the current mask
 and sets a bit, so concurrent awards both land. Its doc comment says what
 replaced the merge rule.

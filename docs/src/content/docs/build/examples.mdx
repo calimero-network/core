@@ -81,8 +81,7 @@ the source is short enough to read end to end.
 | [`fugue-collab`](https://github.com/calimero-network/core/tree/master/apps/fugue-collab) | A `FugueText` document edited by several members, with anchors and id-carrying events | [Build a collaborative editor](/build/guides/collaborative-text/) |
 | [`rich-collab`](https://github.com/calimero-network/core/tree/master/apps/rich-collab) | A `RichDocument`: blocks, formatting marks, split and merge, undo | [Build a collaborative editor](/build/guides/collaborative-text/) |
 | [`nested-crdt-test`](https://github.com/calimero-network/core/tree/master/apps/nested-crdt-test) | Nesting collections inside collection values (maps of maps, vectors of counters) | [Advanced SDK](/build/advanced-sdk/) |
-| [`team-metrics-macro`](https://github.com/calimero-network/core/tree/master/apps/team-metrics-macro) | On the component SDK: per-team counts as a plain `Table` record, what v1's `#[derive(Mergeable)]` struct became **(walkthrough below)** | [SDK macros](/build/sdk-macros/) |
-| [`team-metrics-custom`](https://github.com/calimero-network/core/tree/master/apps/team-metrics-custom) | On the component SDK: the same counts plus a badge bitmask set by read-modify-write, what v1's hand-written merge rule became **(walkthrough below)** | [Advanced SDK](/build/advanced-sdk/) |
+| [`team-metrics`](https://github.com/calimero-network/core/tree/master/apps/team-metrics) | On the component SDK: per-team counts and a badge bitmask as a plain `Table` record, what v1's `#[derive(Mergeable)]` struct and hand-written merge rule became **(walkthrough below)** | [SDK macros](/build/sdk-macros/) |
 | [`blobs`](https://github.com/calimero-network/core/tree/master/apps/blobs) | Blob storage: hold file metadata + announce blobs to the app **(walkthrough below)** | [Blobs](/build/guides/blobs/) |
 | [`xcall-example`](https://github.com/calimero-network/core/tree/master/apps/xcall-example) | Cross-context calls + the `#[app::xcall]` entry-point gate **(walkthrough below)** | [Cross-context calls](/build/guides/cross-context/) |
 
@@ -232,17 +231,16 @@ appears with two members editing the same app: interleave their
 `insert_text` / `delete_text` calls and read `get_text()` as each; see
 [Quickstart](/build/quickstart/) for the install flow.
 
-## team-metrics (macro & custom)
+## team-metrics
 
-Two sibling apps on the component SDK that keep a `TeamStats` record per team —
-wins, losses and draws, and in `team-metrics-custom` a badge bitmask — and show
-what v1's merge code becomes when one Raft log orders every call. In v1,
-`team-metrics-macro` derived `Mergeable` for a struct of `Counter`s and
-`team-metrics-custom` hand-wrote a merge (`badges |= other.badges`); for the
-v1 SDK's derive and a hand-written impl, see [SDK macros](/build/sdk-macros/)
-and [Advanced SDK](/build/advanced-sdk/).
+A component-SDK app that keeps a `TeamStats` record per team (wins, losses,
+draws and a badge bitmask) and shows what v1's merge code becomes when one Raft
+log orders every call. In v1 two apps showed this: one derived `Mergeable` for a
+struct of `Counter`s, the other hand-wrote a merge (`badges |= other.badges`).
+For the v1 SDK's derive and a hand-written impl, see
+[SDK macros](/build/sdk-macros/) and [Advanced SDK](/build/advanced-sdk/).
 
-**State shape** ([`apps/team-metrics-macro/src/lib.rs`](https://github.com/calimero-network/core/tree/master/apps/team-metrics-macro/src/lib.rs)):
+**State shape** ([`apps/team-metrics/src/lib.rs`](https://github.com/calimero-network/core/tree/master/apps/team-metrics/src/lib.rs)):
 
 ```rust
 #[derive(Record)]
@@ -252,6 +250,8 @@ pub struct TeamStats {
     pub wins: u64,
     pub losses: u64,
     pub draws: u64,
+    /// Achievement bitmask, one bit per badge (0-63).
+    pub badges: u64,
 }
 
 #[app::state(version = 1)]
@@ -262,9 +262,8 @@ pub struct TeamMetricsApp {
 
 A record call reads the team's row (or starts one at zero), adds one, and
 upserts it; two members recording a win at once are two entries in the log,
-each adding one, so there is nothing to merge. `team-metrics-custom` adds
-`badges: u64`, and `award_badge` ORs a bit into the current mask, so two
-concurrent awards both land without a merge rule.
+each adding one, so there is nothing to merge. `award_badge` ORs a bit into the
+current mask, so two concurrent awards both land without a merge rule.
 
 **Key methods** (ABI names are camelCase; `u64` travels as a decimal string):
 
@@ -272,13 +271,12 @@ concurrent awards both land without a merge rule.
 |--------|--------------|
 | `recordWin { teamId }` / `recordLoss` / `recordDraw` | Add one to the matching count, return the new total, emit `WinRecorded` / `LossRecorded` / `DrawRecorded`. |
 | `getWins { teamId }` / `getLosses` / `getDraws` | Read a team's count; `TeamNotFound { teamId }` before its first record. |
-| `awardBadge { teamId, badge }` / `getBadges` / `getBadgeCount` | `team-metrics-custom` only: set bit `badge` and return the mask; read the mask or how many bits it holds. |
+| `awardBadge { teamId, badge }` / `getBadges` / `getBadgeCount` | Set bit `badge` (0-63, else `BadgeOutOfRange`) and return the mask; read the mask or how many bits it holds. |
 
-**Build & run.** `cargo test --manifest-path apps/team-metrics-macro/Cargo.toml`
-(or `team-metrics-custom`) builds the component and runs its harness tests and
-`scenarios/*.json`. `cargo run -p calimero-app-build -- apps/team-metrics-macro
---out team_metrics_macro.wasm` builds the component to install as in
-[kv-store](#kv-store).
+**Build & run.** `cargo test --manifest-path apps/team-metrics/Cargo.toml`
+builds the component and runs its harness tests and `scenarios/*.json`.
+`cargo run -p calimero-app-build -- apps/team-metrics --out team_metrics.wasm`
+builds the component to install as in [kv-store](#kv-store).
 
 ## blobs
 

@@ -4,13 +4,14 @@
 
 ### Changed
 
-- **Seventeen example apps are on the component SDK** (`calimero-app-sdk`,
+- **Sixteen example apps are on the component SDK** (`calimero-app-sdk`,
   `wasm32-wasip2`, standalone crates outside the root workspace):
   authored-sorted-kv-store, components-demo, custom-key-store, indexed-forum,
   indexed-issue-tracker, kv-store, kv-store-init, kv-store-with-shared-storage,
   kv-store-with-user-and-frozen-storage, name-registry-admin, org-gated
   (package `org-gated-notes`), permissions-showcase, rooms, sorted-kv-store,
-  sorted-set-store, team-metrics-custom and team-metrics-macro. The wasmer
+  sorted-set-store and team-metrics (two v1 apps, one with badges, merged: with
+  one log ordering every call they differed only by the badges). The wasmer
   builds of kv-store, kv-store-with-shared-storage and org-gated, which the
   node's tests load, moved to `apps/wasmer-fixtures/`. The other apps stay on
   the wasmer SDK until the component SDK has blobs, xcall, search, handlers,

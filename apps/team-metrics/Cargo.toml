@@ -1,9 +1,9 @@
 [package]
-name = "team-metrics-macro"
+name = "team-metrics"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Per-team win, loss and draw counts on the v2 app SDK"
+description = "Per-team counts and a badge bitmask on the v2 app SDK"
 
 [lib]
 crate-type = ["cdylib"]
