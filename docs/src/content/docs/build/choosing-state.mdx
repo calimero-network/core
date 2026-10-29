@@ -79,12 +79,12 @@ there (`entries_at`).
 
 ## Writing: who may change it
 
-Every stored entity carries a stamp that says who may write it, and **every
-node checks that stamp when it applies a peer's write.** A modified node can
-skip your method's checks, but it cannot get a write it was not allowed to
-make accepted anywhere else. The checks inside your methods (`only_owner()`,
-`is_moderator()`, …) only make a refused write fail early; see
-[the two planes](/build/permissioned-storage/#the-two-planes-read-this-first).
+Every stored entity carries a stamp that says who may write it, and the
+wrapper checks it on **every** write to that entity, from any method: a call
+runs the app's own code on the app's leader, so nobody skips the check. A
+check inside one of your methods (`only_owner()`, `is_moderator()`, …) guards
+that method only; see
+[where the rule is checked](/build/permissioned-storage/#where-the-rule-is-checked).
 
 | You want | Use | Enforced by every node |
 |---|---|---|
