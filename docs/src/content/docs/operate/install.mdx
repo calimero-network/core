@@ -125,7 +125,7 @@ meroctl network status
 For a three-node cluster in Docker, run three containers on one Docker network,
 each with its own `--node-id` and a `--public-url` the others can reach (the
 container name), the same `--peers` list, and `--bootstrap` on one of them.
-merobox does this for you; see [Testing](/contribute/testing/#scenario-tests-with-merobox).
+The multi-process test suites do this for you; see [Testing](/contribute/testing/).
 
 <Aside type="note">
   If the node cannot write `/data` (a bind mount owned by another user), mount

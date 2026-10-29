@@ -1,14 +1,18 @@
 ---
 title: Production Deployment
-description: Deploying a merod cluster on TDX — the storage key from mero-kms, forming the cluster, choosing governance, TLS and load balancers in front, and a checklist.
+description: Deploying a merod cluster on TDX — the storage key from mero-kms, forming the cluster, growing it from one node, choosing governance, TLS and load balancers in front, and a checklist.
 sidebar:
   order: 10
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
+import GrowCluster from '../../../components/diagrams/GrowCluster.astro';
 
-A production cluster is three or more `merod` nodes, each in an Intel TDX VM
-booted from a signed mero-tee image. Nodes run on Linux only. This page is what
+A production cluster is `merod` nodes, each in an Intel TDX VM booted from a
+signed mero-tee image: three or more for redundancy, or one that grows
+([below](#growing-a-cluster)). Calimero runs shared clusters and dedicated ones
+([Calimero Cloud](/cloud/overview/#shared-and-dedicated-clusters)); the steps
+here are the same for either. Nodes run on Linux only. This page is what
 you decide and configure; the flags are in the [merod reference](/operate/merod/)
 and the file in [Configuration](/operate/config/).
 
@@ -105,6 +109,25 @@ ramfs only.
 Nodes added later are not in `--peers`: see
 [Add a node](/operate/runbooks/#add-a-node).
 
+## Growing a cluster
+
+<GrowCluster />
+
+A cluster may be bootstrapped on one node (`--peers` naming only itself) and
+grown. While it is one node, every app gets one replica and that node is a
+single point of failure. Each node registered later (`POST /ops/nodes`, with
+its `zone`) joins the system group as a learner; once two learners have caught
+up, the system leader makes them voters in one change, so the system group
+goes from one voter to three, never two, and never past three by itself. Apps
+placed while the cluster was small are spread by replica moves: mdma's
+rebalancer reads `GET /ops/placement` and sends one
+`POST /ops/apps/{app}/replicas` at a time, and the app's leader hands the new
+replicas the app's bundle and blobs before they join. To retire a node, move
+its replicas away first; `DELETE /ops/nodes/{id}` is refused while an app
+keeps a replica there. The steps are in the runbooks:
+[Grow from one node](/operate/runbooks/#grow-from-one-node),
+[Remove a node](/operate/runbooks/#remove-a-node).
+
 ## Governance
 
 Three decisions are each given, when the cluster is formed, to either each
@@ -157,9 +180,9 @@ attested node, so a TLS terminator in front of it sees only sealed bytes, plus
 - `--public-url` must be the URL clients and peers actually use, and it must
   reach that node, not any node: peers send Raft traffic to it, and the system
   directory records it.
-- If one name balances across nodes, give `/auth/passkey/*`,
-  `/auth/passkeys/add/*` and calls that answer `412 CONFIRM_REQUIRED` session
-  affinity: a ceremony's challenge lives on the node that issued it.
+- One name may balance across nodes: a passkey ceremony or a confirmation
+  begun on one node can finish on another, which takes the challenge from the
+  node that issued it (`internal/challenge/take`).
 - `/apps/{app}/events` and `/apps/{app}/presence/stream` are server-sent event
   streams; turn off response buffering for them. Each node serves at most 4096
   open streams.

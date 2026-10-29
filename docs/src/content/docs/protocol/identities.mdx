@@ -112,10 +112,3 @@ only a development cluster whose relying party accepts it can use it. Against
 a real cluster, people use their own authenticators in a browser and give
 programs API keys.
 
-:::note[v1 comparison]
-v1 gave each person an account root and per-device keys, endorsed devices with
-certificate chains, paired new devices, and backed up and recovered the root.
-Its devices signed operations, so they needed keys. A cloud device signs only
-passkey assertions to the node; the account's recovery is whatever its
-authenticators provide (a synced passkey, or a second device added in time).
-:::

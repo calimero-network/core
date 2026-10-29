@@ -22,7 +22,7 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | `a TDX node needs MERO_TEE_VERSION and MERO_TEE_PROFILE` | Not running in a mero-tee image, or the image did not set them | Run in the image, or set `--tee-release`/`--tee-profile` (or `--peer-profiles`); for a local node use `--dev`. |
 | `TDX quote: …` | TDX mode outside a TD | Use `--dev` outside a TD. |
 | `… exists: merod --node NAME config ... changes it` | A second `init` | `config` to change it, `init --force` to replace it. |
-| `config.toml: unknown field …` | A typo or a removed v1 key in the file | Remove it; keys are kebab-case and listed in [Configuration](/operate/config/#keys). |
+| `config.toml: unknown field …` | A typo, or a key this release does not have | Remove it; keys are kebab-case and listed in [Configuration](/operate/config/#keys). |
 | `Address already in use` | Another process on `--listen` (often a running `merod local` on 2501–2503) | Stop it or choose another port. |
 | `the local cluster did not form within 20 s` | `merod local` nodes could not reach each other | Check the ports are free; try `--fresh`. |
 

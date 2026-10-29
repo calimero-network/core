@@ -75,11 +75,5 @@ Restoring a snapshot into a running cluster is not done yet.
 
 `merod inspect` reads a stopped node's store: without the storage key, the
 layout and sealed sizes only; with it, each group's metadata (vote, applied
-index, membership). It is the counterpart of v1's `merodb`.
+index, membership).
 
-:::note[v1 comparison]
-v1's operator ran their own node and its admin API could read everything that
-node held. Here the operator runs other people's nodes, so the line moved: the
-operator sees enough to keep the cluster running, and the people whose data it
-holds see — through attestation — what the operator is allowed to change.
-:::

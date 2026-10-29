@@ -15,7 +15,7 @@ other replicas apply what the run produced ([Replication](/protocol/replication/
 
 An app runs on one of two runtimes, decided once from the WASM its bundle names
 (`AppRecord::executor`): a core module built with `calimero-sdk` runs on
-`calimero-runtime` (wasmer), the runtime v1 apps were built against; a
+`calimero-runtime` (wasmer); a
 `calimero:app` component built with `calimero-app-sdk` runs on
 `calimero-app-engine-wasmtime` through the host core `calimero-app-host`. For a
 core module the node calls `Module::run_cloud` (`crates/node/src/app.rs`,
@@ -94,8 +94,7 @@ Exported methods take no arguments and return nothing: input arrives through
 | **Private** (`env::private_storage_*`) | The app's state, under `\0calimero.private\0 ‖ account ‖ 0` | Only runs whose caller is that account |
 | **Host** (`\0calimero.*`) | The app's state: private spaces, shared-cell writer sets, blob marks | Only the node |
 
-In v1, private storage stayed on the member's own node and never synced. An
-app on a cluster has no member nodes, so the caller's private space is part of the
+The caller's private space is part of the app's
 replicated state, sealed on disk like the rest, and the host hands a run only
 its caller's space: app code cannot address another account's.
 
@@ -140,11 +139,9 @@ every gate holds:
 The request is made while the leader holds the group's propose lock, on its own
 thread. A run repeated after a leader race sends it again.
 
-## Determinism is no longer what converges
+## Determinism is not what converges
 
-In v1 every replica had to reach the same state from the same operations, so
-execution had to be a pure function of prior state and input. Here only the
-leader runs, so `time_now`, `random_bytes`, outbound responses and search
+Only the leader runs, so `time_now`, `random_bytes`, outbound responses and search
 answers cannot make replicas disagree. Runs are still bounded and
 transactional: resources are capped ([Limits](/protocol/limits/#execution-limits)),
 and a trap or an app error leaves an empty diff.

@@ -176,7 +176,7 @@ merod --node NAME inspect [--storage-key-file FILE]
 merod inspect --data-dir DIR [--storage-key-file FILE]
 ```
 
-Prints, as JSON, what a stopped node's data directory holds (v1's `merodb`).
+Prints, as JSON, what a stopped node's data directory holds.
 Without a key it reads the raw layout only, and sizes are sealed sizes. With
 `--storage-key-file` (a file holding the storage key K_r as 64 hex characters)
 it also reads each group's metadata: vote, applied index, membership. K_r

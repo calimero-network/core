@@ -17,12 +17,10 @@ inside a node, and the path a call takes. The full crate list is in the
 
 | Binary | Crate | Is |
 | --- | --- | --- |
-| `merod` | `crates/merod` | A thin command line: it turns flags, `MEROD_*` variables and `config.toml` (`node_config::NodeArgs`) into `calimero_node::Config` and calls `calimero_node::run`. Also `local`, `inspect` and `kms disk-key`. |
-| `meroctl` | `crates/meroctl` | v1's command tree over `calimero-client`: every request is attested and sealed. |
+| `merod` | `crates/merod` | A thin command line: it turns flags, `MEROD_*` variables and `config.toml` (`node_config::NodeArgs`) into `calimero_node::Config` and calls `calimero_node::run`. Also `local`, `inspect`, `kms disk-key` and `attest`. |
+| `meroctl` | `crates/meroctl` | The command line over `calimero-client`: every request is attested and sealed. |
 
 Everything a node does is in `calimero-node` (`crates/node`).
-v1's actor-based node (`NodeManager`, `ContextManager`, `NetworkManager`, the
-sync manager, gossip, the DAG) is deleted.
 
 ## Inside a node
 
@@ -31,8 +29,8 @@ sync manager, gossip, the DAG) is deleted.
 | Log engine | `calimero-log` | Multi-group Raft (openraft) over one sealed RocksDB per node: logs, votes, state, blobs and snapshots. |
 | System group | `node/src/system.rs` (group 1) | The fleet, app directory, packages and bundle hashes, accounts, passkeys, API keys, refresh tokens, session keys, organizations, teams, invites, quotas, governance. Commands carry their actor and are authorized in `apply`, so the log decides. Kept in memory, checkpointed with snapshots. |
 | App groups | `node/src/app.rs` | One Raft group per app instance on its replicas. State lives on disk as hidden rows of the group; only a small head is in memory. |
-| Executor | `app::Executor` over `calimero-runtime` | Runs a call's WASM on the leader against a copy-on-write overlay and returns `{ result, diff, events }`. |
-| Node | `node/src/node.rs` | Routing to leaders, placement, reconciling hosted groups with the directory, follow-ups (event handlers, xcalls, timers), blob replication, backups. |
+| Executors | `app::Executor` over `calimero-runtime` (wasmer); `node/component.rs` over `calimero-app-engine-wasmtime` | Run a call's WASM on the leader against the applied state and return `{ result, diff, events }`; the app's record names which one. |
+| Node | `node/src/node.rs`, `membership.rs` | Routing to leaders, placement, system voter promotion, reconciling hosted groups with the directory, follow-ups (event handlers, xcalls, timers), blob replication, backups. |
 | API | `node/src/api.rs` | The HTTP routes (`router`): `/auth`, `/packages`, `/bundles`, `/apps`, `/orgs`, `/invites`, `/ops`, `/internal`. |
 | Sealed transport | `calimero-sealed` | Wraps the router from outside; opens sealed requests and routes them afresh. |
 | Identity | `calimero-identity` | WebAuthn verification, session tokens, API keys, confirm challenges. |
@@ -83,14 +81,14 @@ sync manager, gossip, the DAG) is deleted.
 
 ## The two app runtimes
 
-The SDK (`calimero-sdk`, `calimero-storage`, `calimero-sys`,
-`calimero-wasm-abi`) and the WASM runtime (`calimero-runtime`, wasmer) are the
-ones v1 apps were built against, so every v1 app deploys unchanged. Beside them,
+The Rust SDK (`calimero-sdk`, `calimero-storage`, `calimero-sys`,
+`calimero-wasm-abi`) builds core modules that run on `calimero-runtime`
+(wasmer). Beside them,
 `calimero:app` components (the WIT world in `calimero-app-wit`, built with
 `calimero-app-sdk` and `calimero-app-build`) run on wasmtime
 (`calimero-app-engine-wasmtime`) through the host core `calimero-app-host`. The
 node picks the runtime once per app, from the WASM its bundle names. `calimero-runtime`
-still links a few v1 node crates: `calimero-node-primitives` (which brings
+still links a few older node crates: `calimero-node-primitives` (which brings
 `calimero-governance-types`, `calimero-network-primitives`,
 `calimero-blobstore` and `calimero-utils-actix`), `calimero-context-config`,
 `calimero-store` and `calimero-crypto`. They stay only for that, and the crate

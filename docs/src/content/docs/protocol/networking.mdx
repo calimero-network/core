@@ -109,10 +109,3 @@ response. Forwarded calls go to `internal/call`, views to `internal/view`,
 system writes to `internal/system`. A forward to an app's leader is bounded at
 5 seconds; a system write keeps the 30-second HTTP timeout.
 
-:::note[v1 comparison]
-v1 ran libp2p: gossipsub topics per scope, point-to-point streams for sync,
-blobs and key delivery, a DHT for discovery, and three layers of encryption.
-A cluster of known, attested nodes needs none of that: the peers are listed in
-the system group, and every byte between them travels in a sealed session
-bound to an attested key.
-:::

@@ -27,13 +27,6 @@ one of three ways, and all three end up in the same handlers:
   gets a session bound to that package ([Packages &
   frontends](/protocol/applications/#frontends)).
 
-:::note[v1 comparison]
-v1 had four write paths: a member's own node, a relay executing under a
-warrant, a TEE relay sealed end to end, and the TEE authority. They existed
-because a write had to be signed by a member key on some node. Here the node
-runs the call for an authenticated caller and the log records who that was, so
-there is one path.
-:::
 
 ## Step by step
 
@@ -43,20 +36,33 @@ there is one path.
   lanes={[
     { label: 'Client', color: '#f0883e' },
     { label: 'Entry node', color: '#3fb950' },
+    { label: 'System leader', color: '#a5ff11' },
     { label: 'App leader', color: '#58a6ff' },
+    { label: 'Followers', color: '#a371f7' },
   ]}
   steps={[
+    { from: 0, to: 1, label: 'GET /attestation?nonce — verify quote' },
     { from: 0, to: 1, label: 'sealed POST /apps/{app}/intents' },
-    { from: 1, to: 1, label: 'open the envelope; route the inner request' },
-    { from: 1, to: 1, label: 'credential → principal (fresh system state)' },
-    { from: 1, to: 1, label: 'gate: reach the app? API-key scope?' },
-    { from: 1, to: 1, label: 'confirm method? → 412 or check assertion' },
-    { from: 1, to: 2, label: 'internal/call (5 s bound, retried)' },
-    { from: 2, to: 2, label: 'replay idempotency key, or run and append' },
-    { from: 2, to: 1, label: 'Applied { index, status, result, events }', dashed: true },
+    { from: 1, to: 2, label: 'read index (internal/system/index)' },
+    { from: 2, to: 1, label: 'applied index n', dashed: true },
+    { from: 1, to: 1, label: 'apply to n; credential → principal' },
+    { from: 1, to: 1, label: 'gate: access rule, API-key scope, confirm' },
+    { from: 1, to: 3, label: 'internal/call (5 s bound, retried)' },
+    { from: 3, to: 3, label: 'fresh org standing; idempotency; run WASM' },
+    { from: 3, to: 4, label: 'append { call, outcome }', color: '#a5ff11' },
+    { from: 4, to: 3, label: 'majority acknowledges', dashed: true },
+    { from: 3, to: 1, label: 'Applied { index, result, events }', dashed: true },
+    { from: 1, to: 1, label: 'sign receipt (app, index, H(result), node)' },
     { from: 1, to: 0, label: '{ index, result, events, receipt }', dashed: true },
   ]}
 />
+
+The entry node judges the caller on system state at least as new as the system
+leader's, so a credential revoked or a member removed through any node is
+refused here before the call reaches the app. The app's leader is the only node
+that runs the WASM; the followers only apply what it appended. The answer
+carries a receipt signed by the entry node's attested receipt key, so a client
+can later prove which node answered what at which log index.
 
 1. **Open.** The sealed envelope wraps the whole router: the node opens the
    request and routes the inner one afresh, so a sealed request meets exactly
@@ -128,8 +134,9 @@ with a fresh passkey assertion over that exact call:
 4. The assertion travels in the entry as `consent`, so the log records what was
    approved and by whom.
 
-Challenges are held in the memory of the node that issued them; the retry must
-reach the same node. An API key can carry a person's assertion only if it was
+A challenge lives in the memory of the node that issued it, under an id that
+names that node; a retry that reaches another node takes it from the issuer
+(`internal/challenge/take`), so it is used once wherever it is answered. An API key can carry a person's assertion only if it was
 created with `allowConfirm`; it cannot produce one. A confirm method called
 through `/views` is refused with `412`: as a view its writes would be dropped,
 but its answer would have been handed back unconfirmed.

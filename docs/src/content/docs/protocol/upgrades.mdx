@@ -66,10 +66,9 @@ on the new.
    (`UpgradeApp`, which checks the upgrader's authority again and notes
    `lastUpgrade`).
 
-A migration runs once, on the leader. In v1 every node ran it lazily on first
-access and had to reach a byte-identical result, which needed the stale-schema
-delta fence and a write gate during upgrades; a single ordered log needs
-neither.
+A migration runs once, on the leader, and its result is replicated like any
+other entry: no replica migrates on its own, so there is no window in which
+replicas hold different schemas.
 
 ## Failure
 
@@ -80,9 +79,9 @@ reason and records it on the instance (`UpgradeFailed` sets the app's `lastUpgra
 
 ## Organization-wide upgrade runs
 
-v1's group upgrade with cascade became an **upgrade run**: every app of an
+An **upgrade run** moves every app of an
 organization that runs `package` — or only a team's apps, and with `cascade`
-the apps of the teams below it — moved to `version`.
+the apps of the teams below it — to `version`.
 
 - **Start.** `POST /orgs/{org}/upgrade { package, version, team?, cascade?, migrate? }`
   by the organization's owner, with one passkey step-up for the whole run; or

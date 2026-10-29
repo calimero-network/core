@@ -35,7 +35,7 @@ state](/protocol/system-group/#reading-the-system-state)).
 
 A member whose **direct row** in the app's team is **read-only** still reaches
 the app and its calls run, but a call that would write anything is refused with
-`403` (v1 discarded such writes silently). A blob upload by them is refused
+`403`. A blob upload by them is refused
 before it starts.
 
 ## Organizations
@@ -64,7 +64,7 @@ recent upgrade runs. Each metadata value is at most 16 KiB of JSON.
 
 ## Teams
 
-Teams (`types::Team`, v1's subgroups) nest (`parent`), move
+Teams (`types::Team`; `meroctl`'s *groups*) nest (`parent`), move
 (`UpdateTeam { parent }`, never under themselves), and are one of two kinds:
 
 - **Open** (`join: everyone`): whoever reaches the parent team — at the top,
@@ -97,8 +97,8 @@ team (a member whose row is not read-only).
 
 ## Capabilities
 
-Beyond their role, a member holds capability bits (`types::caps`, v1's
-`MemberCapabilities` at the same values): organization-wide, with a default the
+Beyond their role, a member holds capability bits (`types::caps`, the
+`MemberCapabilities` values): organization-wide, with a default the
 organization sets, and per direct team row (a new row takes the member's
 organization value). Admins and team leads hold them all where they manage.
 
@@ -123,16 +123,3 @@ is never `owner`. An inviter below admin may name only teams they manage.
 `POST /invites/{token}/redeem`, by a signed-in person, adds them at the invite's
 role (or keeps a higher role they already have) and gives them a plain row in
 each named team.
-
-## What v1's edge cases became
-
-| v1 rule | Now |
-| --- | --- |
-| Inheritance walked the scope tree at the author's causal cut | `Org::in_team` walks the parent chain on the applied state |
-| Last-admin protection | The owner cannot be removed; ownership moves only by the owner's own command |
-| Owner immunity from involuntary removal | The same |
-| Self-leave versus admin removal (key rotation owed) | No keys to rotate; a manager's removal also sticks against inheritance |
-| Concurrent governance ops at the same parents | The log orders them; each applies to the state the previous one left |
-| Per-signer nonce windows against replay | Commands are proposed by nodes from authenticated requests; there is nothing to replay |
-| Cascade delete of a subgroup | `DeleteTeam` takes the subtree and its apps |
-| The deny-list | Withholding `JOIN_OPEN_TEAMS` keeps a member out of open teams |

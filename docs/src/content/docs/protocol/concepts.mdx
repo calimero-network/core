@@ -5,6 +5,8 @@ sidebar:
   order: 2
 ---
 
+import RaftGroups from '../../../components/diagrams/RaftGroups.astro';
+
 ## The nouns
 
 - **Cluster** — A set of `merod` nodes that share one system group and one
@@ -58,8 +60,11 @@ cluster "eu1"
     └── group 13 on nodes 2,3,4  ← another instance
 ```
 
+<RaftGroups />
+
 The system group is replicated to every node, so any node can answer who an
-account is and where an app lives. An app group is replicated only to the
+account is and where an app lives. Only its voters decide commits; the rest of
+the nodes follow it as learners. An app group is replicated only to the
 instance's replicas; a request that reaches another node is forwarded to them.
 
 ## Why two kinds of group
@@ -76,19 +81,5 @@ The split follows who has to agree on what.
   data is held only by the nodes placed to hold it — which is what lets an
   owner [restrict which images](/protocol/governance/) may hold it.
 
-## What happened to v1's nouns
-
-| v1 | Now |
-| --- | --- |
-| A node per user, joined by invitation | A cluster of attested nodes; people have accounts, not nodes |
-| Namespace | Organization |
-| Group / subgroup (Open or Restricted) | Team, nested; open or restricted |
-| Context | App instance (its context id is still `SHA-256(app_id)`) |
-| Scope, op-log, causal DAG, scope root | One Raft log per app and one for the cluster |
-| Member identity and per-device keys | Account; passkeys are its devices |
-| Scope keys, key delivery, rotation on removal | The node seals everything under one storage key; access is checked per request |
-| Gossip, sync, divergence recovery | Raft replication, snapshots and learners |
-| Governance ops judged at the causal cut | System commands checked at apply |
-
-Where a v1 feature has a counterpart, the chapters say what it became; the
-[glossary](/protocol/glossary/) lists both names.
+The [glossary](/protocol/glossary/) defines every term; the names `meroctl`
+still uses (`context`, `namespace`, `group`) are mapped there.

@@ -38,9 +38,10 @@ meroctl context watch kv
 meroctl account api-key create --context kv --read-only
 ```
 
-`meroctl` keeps v1's commands: `app` is an application (a signed package),
-`context` an instance of one, `namespace` an organization, `group` one of its
-teams, `account` you (passkeys are your devices) and `ops` the operator.
+In `meroctl`, an `app` is a signed package, a `context` an app instance, a
+`namespace` an organization, a `group` one of its teams, `account` you (each
+passkey is one of your devices) and `ops` the operator
+([glossary](/protocol/glossary/)).
 `--dev-passkey` keeps a passkey in a file, which only a development cluster
 accepts. Against a real cluster, use an API key made in the console
 (`CALIMERO_API_KEY`) and name the images you trust:
@@ -75,17 +76,11 @@ The apps repo's `apps/kv-store/app-cloud` is a complete browser frontend (passke
 sign-in, a store per user, live events) with a Playwright test that drives a real
 passkey ceremony through Chromium's virtual authenticator.
 
-## 4. Scenario tests with merobox
+## 4. Next
 
-merobox's `cloud-v2` backend (branch `release-v2`) starts a cluster with one
-`merod` process per node and runs YAML scenarios against it: deploy, call and
-read as several accounts, then crash, freeze, restart or upgrade nodes and check
-the app keeps its data and answers within a time budget.
-
-```bash
-MEROD_V2_BINARY=target/debug/merod \
-KV_STORE_WASM=target/wasm32-unknown-unknown/app-release/kv_store.wasm \
-merobox cloud run workflow-examples/cloud-v2/frozen-leader.yml
-```
-
-See merobox's `workflow-examples/cloud-v2/README.md` for the step reference.
+- [Writing apps](/cloud/apps/) for what an app sees on a cluster, and
+  [Build](/build/) for the SDK.
+- [Install & first run](/operate/install/) and [Deployment](/operate/deployment/)
+  to run real nodes.
+- [Testing strategy](/contribute/testing/) for the in-process cluster tests and
+  multi-process scenarios.

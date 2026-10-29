@@ -10,9 +10,10 @@ const SITE = 'https://calimero-network.github.io';
 const BASE = '/core';
 
 const TRACKS: Record<string, string> = {
+  cloud: 'Calimero Cloud — overview, quickstart, writing apps',
   build: 'Build — write WASM apps on the SDK',
-  operate: 'Operate — run and configure nodes',
-  protocol: 'Protocol Reference — reimplement a node from scratch',
+  operate: 'Operate — run and configure a cluster',
+  protocol: 'Protocol Reference — how a cluster works and why',
   contribute: 'Contribute — work on Calimero core itself',
 };
 
@@ -34,9 +35,9 @@ export const GET: APIRoute = async () => {
   const lines: string[] = [
     '# Calimero Core',
     '',
-    '> A peer-to-peer framework for sandboxed WASM apps over causally-consistent',
-    '> shared state. No consensus, no quorum — a signed operation DAG that folds',
-    '> to a state and a root hash, with divergence detected, not prevented.',
+    '> A confidential cloud for collaborative WASM apps: each app instance is',
+    '> replicated by its own Raft log across attested Intel TDX nodes, and clients',
+    '> reach them through a sealed channel after verifying the node\'s attestation.',
     '',
     `Docs site: ${SITE}${BASE}/`,
     '',
