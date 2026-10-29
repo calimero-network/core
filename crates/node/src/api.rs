@@ -29,7 +29,7 @@ use crate::app::{Applied, Status};
 use crate::attest::{quote, report_data, AttestationDoc, Release};
 use crate::error::ApiError;
 use crate::node::{CallRequest, Node, ViewRequest};
-use crate::system::SystemCmd;
+use crate::system::{SystemCmd, SystemState};
 use crate::types::{
     now_secs, Access, Account, ApiKeyRecord, Caller, Invite, OrgRole, RefreshRecord, TeamJoin,
 };
@@ -996,6 +996,16 @@ async fn set_outbound_approval(
 ) -> ApiResult {
     let p = holder(node, headers).await?;
     let account = p.account()?;
+    // A package none of whose releases the caller may see is not installed
+    // for them: answered before the passkey ceremony, as a missing one.
+    node.sys_fresh().await;
+    if !node.sys(|s| {
+        s.packages
+            .get(&body.package)
+            .is_some_and(|pkg| s.visible_versions(pkg, &account).next().is_some())
+    }) {
+        return Err(ApiError::not_found("no such package"));
+    }
     let subject = match &scope {
         crate::system::ReleaseScope::Org { org } => format!("org:{org}"),
         crate::system::ReleaseScope::Account => format!("account:{account}"),
@@ -1257,14 +1267,31 @@ async fn package_install(
     ))
 }
 
-fn package_json(p: &crate::system::PackageRecord) -> Value {
-    let mut versions: Vec<&crate::system::PackageVersion> = p.versions.values().collect();
+/// `p` as `who` (an account, or `system::OPERATOR`) may see it: only the
+/// releases [`SystemState::sees_release`] lets them see, `None` when that is
+/// none, so a package they may not use is not listed and answers `404`.
+/// `frontend`: `who` came through `p`'s own frontend, public by name, and
+/// sees every release of it.
+fn package_json(
+    s: &SystemState,
+    p: &crate::system::PackageRecord,
+    who: &str,
+    frontend: bool,
+) -> Option<Value> {
+    let mut versions: Vec<&crate::system::PackageVersion> = p
+        .versions
+        .values()
+        .filter(|v| frontend || s.sees_release(v, who))
+        .collect();
+    if versions.is_empty() {
+        return None;
+    }
     versions.sort_by(|a, b| crate::system::compare_versions(&a.version, &b.version));
-    json!({
+    Some(json!({
         "package": p.name,
         "signerId": p.signer_id,
         "owner": p.owner,
-        "latest": p.latest().map(|v| v.version.clone()),
+        "latest": versions.last().map(|v| v.version.clone()),
         "versions": versions.iter().map(|v| json!({
             "version": v.version,
             "mpk": v.mpk,
@@ -1276,13 +1303,28 @@ fn package_json(p: &crate::system::PackageRecord) -> Value {
             "installedBy": v.installed_by,
             "installedAt": v.installed_at,
         })).collect::<Vec<_>>(),
-    })
+    }))
 }
 
+/// The packages the caller may see (`package_json`): on a cluster several
+/// organizations share, one organization's releases are not another's to list.
 async fn package_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
-    let _p = signed_in(&node, &headers).await?;
+    let principal = signed_in(&node, &headers).await?;
+    let account = principal.account()?;
     node.sys_fresh().await;
-    let packages: Vec<Value> = node.sys(|s| s.packages.values().map(package_json).collect());
+    let packages: Vec<Value> = node.sys(|s| {
+        s.packages
+            .values()
+            .filter_map(|p| {
+                package_json(
+                    s,
+                    p,
+                    &account,
+                    principal.bound_app() == Some(p.name.as_str()),
+                )
+            })
+            .collect()
+    });
     Ok(Json(json!({ "packages": packages })))
 }
 
@@ -1291,9 +1333,11 @@ async fn package_get(
     headers: HeaderMap,
     Path(package): Path<String>,
 ) -> ApiResult {
-    let _p = signed_in(&node, &headers).await?;
+    let principal = signed_in(&node, &headers).await?;
+    let account = principal.account()?;
+    let frontend = principal.bound_app() == Some(package.as_str());
     node.sys_fresh().await;
-    node.sys(|s| s.packages.get(&package).map(package_json))
+    node.sys(|s| package_json(s, s.packages.get(&package)?, &account, frontend))
         .map(Json)
         .ok_or_else(|| ApiError::not_found("no such package"))
 }
@@ -1357,12 +1401,18 @@ async fn ops_package_install(
     ))
 }
 
-/// Installed packages, for the operator: publisher metadata, no app data.
+/// The releases the operator installed: publisher metadata, no app data, and
+/// nothing an account installed.
 async fn ops_package_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
     // An install committed through another node is listed (read index).
     node.sys_fresh().await;
-    let packages: Vec<Value> = node.sys(|s| s.packages.values().map(package_json).collect());
+    let packages: Vec<Value> = node.sys(|s| {
+        s.packages
+            .values()
+            .filter_map(|p| package_json(s, p, crate::system::OPERATOR, false))
+            .collect()
+    });
     Ok(Json(json!({ "packages": packages })))
 }
 
@@ -1408,10 +1458,16 @@ async fn bundle_named(
     version: Option<&str>,
     service: Option<&str>,
     actor: &str,
+    frontend: bool,
 ) -> Result<String, ApiError> {
     match (bundle, package) {
-        (Some(b), None) => Ok(b),
-        (None, Some(p)) => node.resolve_release(p, version, service, actor).await,
+        // A hash names a release's WASM only for who may see that release.
+        (Some(b), None) if node.sys(|s| s.sees_bundle(&b, actor)) => Ok(b),
+        (Some(_), None) => Err(crate::node::rejected("unknown bundle")),
+        (None, Some(p)) => {
+            node.resolve_release(p, version, service, actor, frontend)
+                .await
+        }
         _ => Err(ApiError::bad_request(
             "BAD_REQUEST",
             "name either a bundle or a package",
@@ -1478,6 +1534,8 @@ async fn app_create(
         body.version.as_deref(),
         body.service.as_deref(),
         &owner,
+        // Checked above: a bound session names its own package only.
+        p.bound_app().is_some(),
     )
     .await?;
     // The executor is decided once, here, from the WASM the bundle names (a
@@ -2480,6 +2538,7 @@ async fn app_upgrade(
         body.version.as_deref(),
         service.as_deref(),
         &account,
+        false,
     )
     .await?;
     if !node.sys(|s| s.bundles.contains_key(&bundle)) {
@@ -2664,19 +2723,40 @@ fn run_targets(
         .collect()
 }
 
-/// The bundle `version` of the package gives an app (same service), if installed.
-fn target_bundle(node: &Node, app: &crate::types::AppRecord, version: &str) -> Option<String> {
+/// The bundle `version` of the package gives an app (same service), if
+/// installed and the upgrader may see it ([`upgrade_sees`]).
+fn target_bundle(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    version: &str,
+    who: &Upgrader,
+) -> Option<String> {
     let r = node.release_of(&app.bundle)?;
     let service = r.at.service.clone().unwrap_or_default();
     node.sys(|s| {
-        s.packages
-            .get(&r.at.package)?
-            .versions
-            .get(version)?
-            .services
-            .get(&service)
-            .cloned()
+        let v = s.packages.get(&r.at.package)?.versions.get(version)?;
+        if !upgrade_sees(s, v, app, &who.actor, who.by_operator) {
+            return None;
+        }
+        v.services.get(&service).cloned()
     })
+}
+
+/// Whether an upgrade may move `app` to release `v`: one the upgrading
+/// account may see, or, for the operator, one it installed or one the app's
+/// owner may see. A release of another organization never reaches an app.
+fn upgrade_sees(
+    s: &SystemState,
+    v: &crate::system::PackageVersion,
+    app: &crate::types::AppRecord,
+    actor: &str,
+    by_operator: bool,
+) -> bool {
+    if by_operator {
+        s.sees_release(v, crate::system::OPERATOR) || s.sees_release(v, &app.owner)
+    } else {
+        s.sees_release(v, actor)
+    }
 }
 
 /// Start an organization-wide upgrade: recorded, then run app by app in the
@@ -2716,7 +2796,7 @@ async fn start_run(
     let migrate = body.migrate.clone();
     let _task = tokio::spawn(async move {
         for app in apps {
-            match target_bundle(&node, &app, &version) {
+            match target_bundle(&node, &app, &version, &who) {
                 Some(bundle) if bundle == app.bundle => {
                     // Already there: done, nothing to run.
                     let _r = node
@@ -2781,7 +2861,7 @@ async fn org_upgrade(
     }
     // Installed from the registry first if the cluster lacks the release.
     let _bundle = node
-        .resolve_release(&body.package, Some(&body.version), None, &account)
+        .resolve_release(&body.package, Some(&body.version), None, &account, false)
         .await;
     let consent = consent(
         &node,
@@ -4600,6 +4680,7 @@ async fn ops_upgrade(
                 s.packages
                     .get(&package)
                     .and_then(|p| p.versions.get(&version))
+                    .filter(|v| upgrade_sees(s, v, &app, crate::system::OPERATOR, true))
                     .and_then(|v| v.services.get(&service).cloned())
             })
             .ok_or_else(|| {
@@ -4617,7 +4698,10 @@ async fn ops_upgrade(
             ))
         }
     };
-    if !node.sys(|s| s.bundles.contains_key(&bundle)) {
+    // A raw hash is the operator's own, or one the app's owner may name.
+    if !node.sys(|s| {
+        s.sees_bundle(&bundle, crate::system::OPERATOR) || s.sees_bundle(&bundle, &app.owner)
+    }) {
         return Err(crate::node::rejected("unknown bundle"));
     }
     run_upgrade(

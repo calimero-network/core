@@ -267,7 +267,7 @@ others.
 | `ops set-quotas JSON` | `POST /ops/quotas` | Replace them. |
 | `ops release VERSION [--withdraw]` | `POST /ops/releases` | Approve (or withdraw) a mero-tee release for every app, where the operator holds release approvals. |
 | `ops outbound --package P [--prefix URL]... [--replace]` | `POST /ops/outbound` | Approve outbound prefixes cluster-wide, where the operator holds outbound approvals. |
-| `ops packages` | `GET /ops/packages` | Installed applications. |
+| `ops packages` | `GET /ops/packages` | The applications the operator installed (not the accounts'). |
 | `ops install PACKAGE[@VERSION] [--version V]` / `ops install --path FILE` | `POST /ops/packages/install`, `POST /ops/packages` | Install a release for the operator's upgrades, from the registry or a signed `.mpk`. |
 | `ops uninstall PACKAGE [--version V]` | `DELETE /ops/packages/{package}[/{version}]` | Uninstall what the operator installed. |
 | `ops upgrade CONTEXT [--version V] [--package P] [--service S] [--bundle HASH] [--migrate EXPORT]` | `POST /ops/apps/{app}/upgrade` | Update a context to an installed release, where the operator holds app upgrades. |
