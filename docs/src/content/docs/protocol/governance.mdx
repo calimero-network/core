@@ -14,18 +14,30 @@ could still put an app's data in front of something new:
 | **App upgrades** | `--app-upgrades` | New app code reading the app's state |
 | **Outbound approvals** | `--outbound-approvals` | A new destination the app may send data to over HTTPS |
 
-Each is held by exactly one party, chosen when the cluster is deployed
-(`system::Governance`, `Authority`):
+Each is held by one side, chosen when the cluster is deployed
+(`system::Governance`, `Authority`), and the same rules hold on every cluster,
+shared or dedicated:
 
-- **`owner`** (the default): each app's owner decides for that app — for an
-  organization's apps, the organization's owner — with a fresh passkey
-  assertion that is logged as consent. The operator cannot.
 - **`operator`**: the operator decides for every app, through the
-  [Ops API](/protocol/operator/). Owners cannot. This suits a managed
+  [Ops API](/protocol/operator/). Nobody else can. This suits a managed
   deployment whose users trust its operator with that decision.
+- **`owner`** (the default; the attested value keeps this name): the decision
+  belongs to the parties around each app, with a fresh passkey assertion that
+  is logged as consent. The operator cannot. Who exactly depends on the
+  decision:
 
-Whichever party does not hold a decision is refused by the API (`403`) and,
-should a command get that far, by `apply`.
+| Decision | `owner` side: who holds it | Who acts | Where |
+| --- | --- | --- | --- |
+| Release (node image) approvals | The app's **publisher**: the organization its package's signing key is bound to ([Publishers](#publishers)). For a package whose key is not bound yet, or a raw bundle (development only), the app's owning organization, or its owner account outside one | Members of that organization holding `APPROVE_RELEASES` (its owner and admins hold it); for an account, the account | `POST /orgs/{org}/releases`, `POST /auth/releases` |
+| App upgrades | Per app, as its package's signed manifest declares (`upgrades`): **`owner`** (the default): the instance's owner, or its organization's `MANAGE_APPLICATION` holders; **`publisher`**: the publisher organization's `MANAGE_APPLICATION` holders, for every instance | The holder, with a passkey step-up over the exact upgrade | `POST /apps/{app}/upgrade`, `POST /orgs/{org}/upgrade` (owner side), `POST /orgs/{org}/packages/{package}/upgrade` (publisher side) |
+| Outbound approvals | The app's owning organization or account, per publisher key | `MANAGE_APPLICATION` holders organization-wide; the account | `POST /orgs/{org}/outbound`, `POST /auth/outbound` |
+| Who publishes a package | The holder of the package's pinned signing key, whatever governance says | A member holding `APPROVE_RELEASES` in the organization, sending the key's signature | `POST /orgs/{org}/publishers` |
+| Release deadlines | Always the operator ([below](#release-deadlines)) | The operator | `POST /ops/releases/{version}/deadline` |
+
+With `operator`, each row's decision is the operator's instead
+(`POST /ops/releases`, `/ops/apps/{app}/upgrade`, `/ops/orgs/{org}/upgrade`,
+`/ops/outbound`). Whichever side does not hold a decision is refused by the API
+(`403`) and, should a command get that far, by `apply`.
 
 ## Fixed at genesis, attested with every receipt key
 
@@ -41,6 +53,32 @@ every replica of an app to attest the same governance and returns it, so a user
 can prove, from hardware quotes, who may move their app to new code before they
 trust it with data ([Attestation & receipts](/protocol/tee-attestation/#verifying-the-whole-app-cluster)).
 
+## Publishers
+
+A package is identified by its name and its **pinned signer**, the publisher
+key (`did:key`) that signed its first release
+([Packages](/protocol/applications/#installing-a-release)). Who installed a
+package first says nothing about who publishes it: anyone may install a
+registry package. An organization becomes the **publisher** of every package a
+key signs only by **binding** the key, with the key's own signature:
+
+- `GET /publishers/{signerId}` answers the cluster's name and the key's
+  binding **generation** (how many bindings it has had here).
+- The key signs `calimero-publisher-binding/v1\n{cluster}\n{org}\n{signerId}\n{generation}`
+  (`system::publisher_binding_message`), and a member of the organization
+  holding `APPROVE_RELEASES` sends it with a passkey step-up:
+  `POST /orgs/{org}/publishers { signerId, publicKey, signature }`
+  (`BindPublisher`).
+- `apply` verifies the signature itself (Ed25519, the key must derive the
+  `did:key`), so no node, operator or member binds a key without its holder.
+  Each binding moves the generation on, so a signature binds once: it cannot
+  be replayed on this cluster or another, nor after the key moved on.
+- Binding again (to another organization) takes a new signature from the same
+  key; the organization it leaves cannot keep it. The pinned key never
+  changes, so a package's publisher is always whoever its key last signed for.
+
+`GET /orgs/{org}` lists the keys an organization publishes (`publishes`).
+
 ## Release approvals
 
 A mero-tee release is a node image: kernel, firmware, `merod` build. Upgrading
@@ -48,16 +86,23 @@ the cluster means starting nodes on a new release, and those nodes would then
 receive app data. So the replicas that hold an app's data decide, per app,
 which releases may receive it:
 
-- **Approved set.** Where owners decide, an organization's set lives on the
-  organization (`Org::approved_releases`) and covers its apps; an account's own
-  set covers the apps it owns outside any organization. The release of the node
-  an organization was created through, or an account signed up through, is
-  approved from the start. Where the operator decides, one set covers every app
-  (`operator_releases`), seeded with the founding node's release.
-- **Changing it.** `POST /orgs/{org}/releases` or `/auth/releases`
-  `{ version, approved }` by the owner with a passkey step-up, or
-  `POST /ops/releases` by the operator. The last approved release cannot be
-  withdrawn.
+- **Approved set.** Where the operator decides, one set covers every app
+  (`operator_releases`), seeded with the founding node's release. Otherwise an
+  app's set is its **publisher's** (`Org::approved_releases` of the
+  organization its package's key is bound to), covering every instance of
+  every package it publishes, its customers' included. An app whose package's
+  key is not bound yet, or that runs a raw bundle, is judged by its owning
+  organization's set, or its owner account's outside one
+  (`SystemState::approved_for_bundle`). The release of the node an organization
+  was created through, or an account signed up through, is approved from the
+  start.
+- **Changing it.** `POST /orgs/{org}/releases` `{ version, approved }` by a
+  member holding `APPROVE_RELEASES` there (the owner and admins hold it; a
+  member when granted organization-wide, [Capabilities](/protocol/organizations/#capabilities)),
+  or `/auth/releases` by the account for its own set, each with a passkey
+  step-up; or `POST /ops/releases` by the operator. The last approved release
+  cannot be withdrawn. `GET /orgs/{org}` lists who may approve
+  (`releaseApprovers`).
 - **Enforcement** is by the nodes that already hold the data:
   - `Node::may_send` refuses every Raft entry and snapshot of an app group to a
     peer whose verified attestation names a release outside the app's set (a
@@ -70,19 +115,76 @@ So a node on an unapproved image can join the cluster and replicate the system
 group, but receives no app's data until that app's approver approves its
 release.
 
+## Release deadlines
+
+Like a store's target-SDK deadline, the operator may announce, per release,
+when work on older images ends: `POST /ops/releases/{version}/deadline
+{ after: "2026-12-01T00:00:00Z" }` (`DELETE` lifts it; `SetReleaseDeadline`).
+Deadlines are public: `GET /releases`, which anyone may call inside the sealed
+channel, answers the governance and every deadline.
+
+From a release's deadline on, a party whose newest approved release is older
+than it (by semver) loses **new work** on the old image, judged on the set that
+governs the app (the publisher's, or the fallback above):
+
+- creating an app, installing a release (refused only when every scope the
+  installer could use it in is stopped) and upgrading an app are refused
+  `409 RELEASE_DEADLINE`, naming the release to approve and the deadline;
+- placement gives no new app a node on a release older than one whose
+  deadline passed.
+
+Existing apps keep running: their calls, reads, writes and replicas go on as
+before, and no data moves. Approving the release (or a newer one) lifts the
+stop at once. `GET /orgs/{org}` says whether its own set is stopped
+(`newWorkStopped`).
+
+**Why the operator may do this.** A deadline cannot move data (no release is
+approved by it, and `may_send` reads only approvals), cannot block an approval
+(approvals are never judged against deadlines), and cannot touch running apps.
+It only withholds new work, which is availability, and availability is already
+the operator's: it can stop nodes or withhold the network. Announcing the rule
+in advance and in public is better for users than an unannounced stop.
+
+**Time.** `apply` judges a deadline against the time the command carries
+(`CreateApp`'s `createdAt`, `UpgradeApp`'s `at`, `InstallPackage`'s
+`installedAt`), stamped once by the proposing node and replicated with the
+command, never against each node's clock: every replica and every replay of the
+log decides the same. The system log has no consensus timestamp of its own; the
+proposing node is an attested node of the cluster, and a skewed clock only
+moves when an announced, operator-chosen deadline takes effect, which is the
+operator's to decide anyway. An upgrade carries the time the API judged it at,
+before its migration ran, so `apply` never refuses the record of an upgrade
+the app's group already ran.
+
 ## App upgrades
 
 An upgrade switches an app to another bundle and runs its migration over the
-existing state ([Upgrades & migrations](/protocol/upgrades/)). Where owners
-decide, the app's owner may upgrade it, and so may, for an organization's
-app, whoever holds `MANAGE_APPLICATION` on its team or across the
-organization: its owner, an admin, the team's leads, or a member granted the
-capability ([Organizations](/protocol/organizations/#capabilities)). Each
-does so with their own passkey step-up over the exact upgrade (`consent` on
-`UpgradeApp`). A personal app stays its owner's alone. Where the
+existing state ([Upgrades & migrations](/protocol/upgrades/)). Where the
 operator decides, `POST /ops/apps/{app}/upgrade` and organization-wide runs
 through `/ops/orgs/{org}/upgrade` upgrade to a release the operator installed
-itself (`/ops/packages`, recorded as installed by `operator`).
+itself (`/ops/packages`, recorded as installed by `operator`). Otherwise each
+app's package says who upgrades it, in its signed manifest
+(`upgrades: "owner" | "publisher"`, `calimero_bundle::UpgradeAuthority`):
+
+- **`owner`** (the default when the manifest leaves `upgrades` out): the
+  app's owner may upgrade it, and so may, for an organization's app, whoever
+  holds `MANAGE_APPLICATION` on its team or across the organization: its
+  owner, an admin, the team's leads, or a member granted the capability
+  ([Organizations](/protocol/organizations/#capabilities)). A personal app
+  stays its owner's alone.
+- **`publisher`**: the publisher organization's `MANAGE_APPLICATION` holders
+  (organization-wide) upgrade every instance, whoever owns it, alone or all at
+  once (`POST /orgs/{org}/packages/{package}/upgrade { version, migrate? }`).
+  The instance's owner cannot. Until the package's key is bound to an
+  organization, nobody upgrades its instances (`409`).
+
+Each acts with their own passkey step-up over the exact upgrade (`consent` on
+`UpgradeApp`). The declaration may only loosen toward owners: a release
+declaring `publisher` is refused once a lower version of the package declared
+`owner` (and an `owner` release below a `publisher` one), and an upgrade that
+would move an app from an `owner` release to a `publisher` one is refused. An
+owner who accepted a package as theirs to upgrade never has that taken from
+them by a later release.
 
 ## Outbound approvals
 
