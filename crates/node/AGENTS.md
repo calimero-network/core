@@ -38,9 +38,9 @@ is its command line.
 - **Routing** (`node.rs`): system writes go to the system leader, calls and strong
   views to the app's leader, over **peer sealed channels** (`internal/*`) whose key
   is attested like any client's, plus the cluster secret (HMAC of K_c).
-- **API** (`api.rs`), all inside the sealed channel except `/attestation` and `/health`:
+- **API** (`api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
-  `/orgs/*`, `/invites/{token}/redeem`, `/internal/*` (peers), `/ops/*` (mdma: counts and placement by id only, no read path into apps).
+  `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts and placement by id only, no read path into apps).
 - **Reserved methods** (`node::reserved_method`, `__*`): the node's own commands
   (`HOST_METHODS`: `__upgrade`, `__blob`, `__blob_forget`) run only for a
   `CallRequest::host` request, which only the API builds after judging who may;
@@ -330,6 +330,30 @@ is its command line.
   reads and writes, listings), `unbound`/`holder` refuse it credentials, API
   keys, approvals, upgrades, uninstalls and uploads, and it creates instances
   of its own package only. Its step-ups come from its own origin only.
+- **Consent page** (`consent_page.rs`; docs: protocol "The consent page"): an
+  app (any session of the account, package-bound included) asks
+  `POST /consent/requests { kind: release|upgrade|outbound, scope?, subject,
+  returnTo }` (sealed) and gets `{ requestId, url, expiresAt }`; `returnTo` is
+  the package's own frontend origin or one its newest signed manifest names
+  (unbound sessions: `config.origins`). The request (this node's memory,
+  `CONSENT_REQUEST_TTL`, per-account and per-node bounds, decided once) freezes
+  a model from node state and verified manifests (an upgrade's capability
+  sheet is `consent_page::diff`). `GET /consent/{id}` (static HTML in the
+  binary, hash-only CSP, `frame-ancestors 'none'`), `/model`, `/approve`,
+  `/decline` are an outer layer in the clear on the node's own origin (outside
+  CORS and the sealed channel); `/approve` runs the same route code
+  (`api::upgrade_app`, `set_release_approval`, `set_outbound_approval`) as a
+  `Principal { consent_page: true }` for the request's account, so the
+  `412 CONFIRM_REQUIRED` challenge is over the frozen arguments, and the
+  step-up may come from the nodes' own origins (`consent_page::relying_party`).
+  Upgrade consent always binds the target's manifest hash
+  (`VerifiedBundle::manifest_hash`); a release approval always binds its
+  measurements digest (`consent_page::release_digest`: Sigstore-verified,
+  `503` when unfetchable, over no measurements on mock attestation); neither
+  route takes the hash from the client. `GET /consent/{id}/result`
+  (sealed, same account; forwarded to the holder over `internal/consent/result`).
+  Package-bound sessions are still refused the approval routes themselves.
+  Regressions: `tests/consent_page.rs`.
 - **Presence** (`presence.rs`, the ephemeral awareness channel): in memory on
   every node, never in a log. `POST /apps/{app}/presence { seq, state }` (anyone
   who reaches the app; one entry per account and device) applies it here and

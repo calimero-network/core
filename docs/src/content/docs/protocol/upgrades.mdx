@@ -27,6 +27,22 @@ New code reads the app's data, so an upgrade is one of the three decisions
 
 A version alone means the app's own package and service.
 
+**What the passkey signs.** The challenge's arguments are
+`{ bundle, migrate, manifest }`: the target WASM's hash and the target
+release's signed-manifest hash, so another manifest installed under the same
+version (other outbound prefixes or frontend origins, the same WASM) is not
+the upgrade that was approved. The node computes both; a target that changes
+between the challenge and the assertion no longer matches it, and the upgrade
+is refused. A raw development bundle has no manifest, and `manifest` is
+`null`.
+
+**From the app itself.** An app's frontend cannot upgrade its instance (its
+session is bound to its package). It asks the node for a consent request
+(`{ kind: "upgrade", subject: { app, toVersion } }`); the node's own page shows
+the capability sheet (outbound, frontend origins, interfaces, methods,
+events, timers, migration, build) and takes the owner's passkey there
+([The consent page](/protocol/consent-page/)).
+
 ## Planning the migration
 
 Unless the request names a migration (`migrate`), the leader plans one from the

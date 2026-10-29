@@ -94,6 +94,7 @@ the key is shown once. A key may be scoped:
 | Install packages, create apps | ✓ | instances of its own package only | ✓ | — |
 | Manage passkeys, API keys, approvals, upgrades, uninstalls | ✓ | — | — | — |
 | Approve a confirm method | ✓ (with step-up) | from its own origin | only with `allowConfirm`, relaying an assertion | same |
+| Ask for an approval on the node's consent page | ✓ | ✓ (returns to its own origin) | — | — |
 
 Deleting an app, changing its access, creating organizations and issuing
 invites also need a passkey session: an API key cannot do them.

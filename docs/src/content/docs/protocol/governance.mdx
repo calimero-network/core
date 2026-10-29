@@ -98,6 +98,23 @@ later release adds reads as *awaiting approval* rather than approved. The
 operator additionally bounds which hosts any app may reach and holds the
 secrets requests may carry ([Application execution](/protocol/execution/#outbound-https)).
 
+## Asking from an app: the consent page
+
+Where owners decide, an app often needs its user to make one of these
+decisions: a new version of the app is out, a feature needs an outbound host,
+the operator rolled a new image. The app cannot run the passkey ceremony
+itself: an assertion is blind, so the page that asks for it decides what the
+person thinks they approve, and an app's page is the publisher's code. A
+session opened on an app's frontend is refused every approval route.
+
+Instead the app asks the node (`POST /consent/requests`), and the node serves
+a **consent page** of its own, on its own origin, that shows what is being
+approved from node-side data only (for an upgrade, a capability sheet diffed
+from the two signed manifests), asks for the passkey there, and sends the
+person back to the app with the result. The consent then binds the release's
+measurements digest or the target's signed-manifest hash, not just a version.
+See [The consent page](/protocol/consent-page/).
+
 ## Choosing
 
 Giving the operator a decision is giving it the power to put new code, a new

@@ -347,6 +347,7 @@ pub struct VerifiedBundle {
     data: Arc<[u8]>,
     manifest: BundleManifest,
     signer_id: String,
+    manifest_hash: [u8; 32],
 }
 
 impl VerifiedBundle {
@@ -354,7 +355,10 @@ impl VerifiedBundle {
     /// is what the manifest's `minRuntimeVersion` must not exceed.
     pub fn open(data: Arc<[u8]>, runtime_version: &Version) -> eyre::Result<Self> {
         let (manifest_json, manifest) = extract_bundle_manifest(&data, runtime_version)?;
-        let ManifestVerification { signer_id, .. } = verify_manifest_signature(&manifest_json)?;
+        let ManifestVerification {
+            signer_id,
+            bundle_hash,
+        } = verify_manifest_signature(&manifest_json)?;
         // After the signature, not during the scan: reaching the end of a large
         // archive needs the archive cap, which the pre-auth scan must not spend.
         ensure_single_manifest(&data)?;
@@ -363,11 +367,20 @@ impl VerifiedBundle {
             data,
             manifest,
             signer_id,
+            manifest_hash: bundle_hash,
         })
     }
 
     pub fn manifest(&self) -> &BundleManifest {
         &self.manifest
+    }
+
+    /// SHA-256 of the signed manifest's canonical bytes (signature and
+    /// `_`-prefixed fields stripped): the identity of what the publisher
+    /// signed, every artifact digest included. Two bundles with the same
+    /// package and version but any other difference have different hashes.
+    pub fn manifest_hash(&self) -> [u8; 32] {
+        self.manifest_hash
     }
 
     pub fn signer_id(&self) -> &str {

@@ -34,7 +34,7 @@ code, and app code beyond what its owner approved.
 | **A node of the cluster** | Everything this reference describes | — (it is the trusted computing base; that is why every peer is attested) |
 | **An app's owner** | Upgrade it, change its access, approve releases and outbound prefixes for it (where governance says owner), delete it | Read other apps; act for other accounts |
 | **A member** | What the app's access rule and the app's own code allow | Read another member's private space; forge a writer rotation, a blob mark or TEE-only state; write if their team row is read-only |
-| **An app's frontend** (third-party page) | Act as the signed-in person for that package's apps only | Reach other apps, manage credentials or API keys, approve anything, upgrade or uninstall |
+| **An app's frontend** (third-party page) | Act as the signed-in person for that package's apps only; ask the node to show its user a consent page | Reach other apps, manage credentials or API keys, approve anything, upgrade or uninstall, or choose what the consent page shows or where it returns |
 | **An API key** | What its scope allows | Manage credentials or keys; produce a passkey assertion |
 
 ## Which mechanism stops which attack
@@ -61,6 +61,11 @@ code, and app code beyond what its owner approved.
 - **Forged authority in the log** — commands built only by nodes from verified
   credentials, and authority checked again at apply.
 - **A malicious app frontend** — its own origin and a package-bound session.
+- **An app's page driving an approval** — approvals are refused to
+  package-bound sessions; an app asks the node, whose own consent page shows
+  node-side facts and takes the passkey, and the consent binds the target
+  manifest's hash or the release's measurements digest
+  ([The consent page](/protocol/consent-page/)).
 - **A malicious app** — the WASM sandbox and its limits; the host's key space
   is closed to it; it reaches only its own blobs and its caller's private space;
   xcalls only into entry points within its organization.
@@ -80,6 +85,11 @@ code, and app code beyond what its owner approved.
   moving existing apps between zones is the operator's (`ops placement`, `ops move`).
 - **Event audiences.** Everyone who reaches an app receives all its events.
 - **Side channels** on the TD and timing of requests are outside this model.
+- **The consent page under TLS.** The node's consent page and its model travel
+  as plain HTTPS, not in the sealed channel: whoever terminates TLS in front of
+  a node can read what a person is asked to approve, or serve another page. It
+  cannot change what is approved nor approve without the passkey
+  ([The consent page](/protocol/consent-page/#what-it-does-not-protect)).
 - **A debug image.** A debug TD exposes its memory to the host. Clients refuse
   debug profiles unless told otherwise, and nodes trust debug peers only when
   they are debug themselves; a cluster on a debug image protects nothing.

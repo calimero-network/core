@@ -308,7 +308,19 @@ impl Search {
 /// with an ABI and the other without.
 pub fn plan_upgrade(current: &[u8], target: &[u8]) -> Result<Option<String>, String> {
     use calimero_wasm_abi::embed::read_embedded_state_schema as abi;
-    let (cur, tgt) = match (abi(current), abi(target)) {
+    plan_from_abis(abi(current), abi(target))
+}
+
+/// [`plan_upgrade`] from the two ABIs already read (the consent page shows
+/// the plan before anything runs).
+///
+/// # Errors
+/// As [`plan_upgrade`].
+pub fn plan_from_abis(
+    current: Option<calimero_wasm_abi::schema::Manifest>,
+    target: Option<calimero_wasm_abi::schema::Manifest>,
+) -> Result<Option<String>, String> {
+    let (cur, tgt) = match (current, target) {
         (None, None) => return Ok(None),
         (Some(c), Some(t)) => (c, t),
         (None, Some(_)) => return Err("the current bundle embeds no ABI to plan from".into()),

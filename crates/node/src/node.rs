@@ -347,6 +347,8 @@ pub struct Node {
     pub presence: crate::presence::Presence,
     /// Release frontends opened for `app_host`.
     pub frontends: crate::app_host::FrontendCache,
+    /// Consent requests this node issued, and the facts their pages show.
+    pub consent: crate::consent_page::ConsentRequests,
     /// Nodes being added to the system group now.
     joining: Mutex<std::collections::HashSet<NodeId>>,
     /// Apps whose replicas this node is moving now ([`Node::begin_move`]).
@@ -516,6 +518,7 @@ impl Node {
             event_streams: std::sync::Arc::default(),
             presence: crate::presence::Presence::default(),
             frontends: crate::app_host::FrontendCache::default(),
+            consent: crate::consent_page::ConsentRequests::default(),
             joining: Mutex::default(),
             moving: Mutex::default(),
             promoting: std::sync::atomic::AtomicBool::new(false),

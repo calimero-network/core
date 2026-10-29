@@ -52,6 +52,7 @@ calimero-search.workspace = true
 calimero-wasm-abi.workspace = true
 calimero-sealed.workspace = true
 calimero-tee-attestation.workspace = true
+calimero-tee-release.workspace = true
 
 # Thread CPU time of a WASM run (`usage::measure`).
 [target.'cfg(unix)'.dependencies]
