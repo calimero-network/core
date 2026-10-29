@@ -51,13 +51,14 @@ pub struct AttestationDoc {
 }
 
 /// Who holds one decision over a cluster's apps. Chosen when the cluster is
-/// deployed, recorded in its system state at genesis, and never changed.
+/// deployed, recorded in its system state at genesis, and never changed. The
+/// same on every cluster, shared or dedicated.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Authority {
-    /// Each app's owner (for an organization's apps, whoever holds
-    /// `MANAGE_APPLICATION` there), with a passkey assertion. The operator
-    /// cannot.
+    /// The parties around each app, with a passkey assertion; the operator
+    /// cannot. Which party depends on the decision ([`Governance`]'s fields).
+    /// The attested value keeps the name `owner`.
     #[default]
     Owner,
     /// The operator, for every app (the Ops API). Owners cannot. For a
@@ -71,11 +72,22 @@ pub enum Authority {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Governance {
-    /// Which mero-tee releases may hold the apps' data (cluster upgrades).
+    /// Which mero-tee releases (node images) may hold the apps' data. `owner`:
+    /// each app's **publisher**, the organization that proved it holds the
+    /// package's signing key (its `APPROVE_RELEASES` holders), for every
+    /// instance of its packages; for an unclaimed package or a raw bundle, the
+    /// app's own organization or owner account. `operator`: the operator.
     pub releases: Authority,
-    /// Who upgrades an app to another bundle.
+    /// Who upgrades an app to another bundle. `owner`: per app, as its
+    /// package's signed manifest declares (`upgrades`): the instance's owner
+    /// or its organization's `MANAGE_APPLICATION` holders (`owner`, the
+    /// default), or the publisher's `MANAGE_APPLICATION` holders
+    /// (`publisher`); a package only ever loosens toward owners. `operator`:
+    /// the operator.
     pub app_upgrades: Authority,
-    /// Who approves the URL prefixes an app may call out to.
+    /// Who approves the URL prefixes an app may call out to: the app's owner
+    /// (organization `MANAGE_APPLICATION` holders), per publisher key, or the
+    /// operator.
     pub outbound: Authority,
 }
 

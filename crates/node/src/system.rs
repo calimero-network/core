@@ -231,6 +231,16 @@ pub struct SystemState {
     /// reads and writes as it did.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub release_deadlines: BTreeMap<String, u64>,
+    /// Publishers (`SetPublisher`): a package signing key (`did:key`) -> the
+    /// organization that proved it holds it. Where owners hold release
+    /// approvals, that organization's approved releases govern every instance
+    /// of every package the key signs, whoever owns the instance
+    /// ([`SystemState::approved_for_bundle`]); where a package declares
+    /// `upgrades: publisher`, its `MANAGE_APPLICATION` holders upgrade them
+    /// ([`SystemState::may_upgrade`]). Absent in state from before, and left
+    /// out when empty, so such a state reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub publishers: BTreeMap<String, OrgId>,
     /// When each session in `revoked_sessions` was revoked (Unix seconds), so
     /// it can be forgotten once no token of it can still be valid.
     #[serde(default)]
@@ -302,6 +312,54 @@ pub fn rfc3339(secs: u64) -> String {
         )
 }
 
+/// What a package signing key signs to let an organization claim it: the
+/// claim names the organization, so it makes no other organization the
+/// publisher.
+#[must_use]
+pub fn publisher_claim_message(org: &str, signer_id: &str) -> Vec<u8> {
+    format!("calimero-publisher-claim/v1\n{org}\n{signer_id}").into_bytes()
+}
+
+/// The longest signer id a publisher claim names.
+pub const MAX_SIGNER_ID_BYTES: usize = 128;
+
+/// A package signing key's proof that an organization holds it: the key
+/// (base64url of its 32 Ed25519 bytes) and its signature over
+/// [`publisher_claim_message`] (base64url of 64 bytes).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublisherProof {
+    pub public_key: String,
+    pub signature: String,
+}
+
+impl PublisherProof {
+    /// Whether the proof is `signer_id`'s key signing `org`'s claim.
+    #[must_use]
+    pub fn proves(&self, org: &str, signer_id: &str) -> bool {
+        let (Ok(key), Ok(sig)) = (
+            calimero_identity::from_b64url(&self.public_key),
+            calimero_identity::from_b64url(&self.signature),
+        ) else {
+            return false;
+        };
+        let (Ok(key), Ok(sig)) = (<[u8; 32]>::try_from(key), <[u8; 64]>::try_from(sig)) else {
+            return false;
+        };
+        if calimero_bundle::derive_signer_id_did_key(&key) != signer_id {
+            return false;
+        }
+        let Ok(key) = ed25519_dalek::VerifyingKey::from_bytes(&key) else {
+            return false;
+        };
+        key.verify_strict(
+            &publisher_claim_message(org, signer_id),
+            &ed25519_dalek::Signature::from_bytes(&sig),
+        )
+        .is_ok()
+    }
+}
+
 /// How long a revoked session is remembered: past every token it could have
 /// minted (sessions live 15 minutes), with room for clock differences.
 pub const REVOKED_SESSION_KEEP_SECS: u64 = 60 * 60;
@@ -312,7 +370,44 @@ impl SystemState {
     /// (state from before approvals), which leaves the app unrestricted.
     #[must_use]
     pub fn approved_releases(&self, app: &AppRecord) -> Option<&BTreeSet<String>> {
-        self.approved_for(app.org.as_deref(), &app.owner)
+        self.approved_for_bundle(&app.bundle, app.org.as_deref(), &app.owner)
+    }
+
+    /// The organization that publishes the package `signer` signs: the one
+    /// that proved it holds the key and still exists.
+    #[must_use]
+    pub fn publisher_of_signer(&self, signer: &str) -> Option<&OrgId> {
+        self.publishers
+            .get(signer)
+            .filter(|o| self.orgs.contains_key(o.as_str()))
+    }
+
+    /// The organization that publishes the release `bundle` ships in; `None`
+    /// for a raw upload or a package no organization has claimed.
+    #[must_use]
+    pub fn publisher_of(&self, bundle: &str) -> Option<&OrgId> {
+        let at = self.bundles.get(bundle)?.package.as_ref()?;
+        self.publisher_of_signer(&self.packages.get(&at.package)?.signer_id)
+    }
+
+    /// The releases approved to hold an app running `bundle`, of `org` (or of
+    /// `owner` outside one): the operator's where it holds release
+    /// approvals; else the bundle's publisher's, for every instance of its
+    /// packages; else, for a raw upload or an unclaimed package, the app's own
+    /// organization's or owner's ([`Self::approved_for`]).
+    #[must_use]
+    pub fn approved_for_bundle(
+        &self,
+        bundle: &str,
+        org: Option<&str>,
+        owner: &str,
+    ) -> Option<&BTreeSet<String>> {
+        match self.publisher_of(bundle) {
+            Some(p) if self.governance().releases == Authority::Owner => {
+                self.approved_for(Some(p), owner)
+            }
+            _ => self.approved_for(org, owner),
+        }
     }
 
     /// Whether `who` (an account, or [`OPERATOR`]) may see and use the
@@ -506,10 +601,25 @@ impl SystemState {
             })
     }
 
-    /// [`Self::stalled`] for the apps of `org` (or of `owner` outside one).
+    /// [`Self::stalled`] for the set `org` (or `owner` outside one) holds
+    /// itself: what governs the packages it publishes and its own apps of
+    /// unclaimed packages.
     #[must_use]
     pub fn stalled_for(&self, org: Option<&str>, owner: &str, now: u64) -> Option<Stall> {
         self.stalled(self.approved_for(org, owner), now)
+    }
+
+    /// [`Self::stalled`] for an app of `org` (or of `owner`) running `bundle`:
+    /// judged on the set that governs it ([`Self::approved_for_bundle`]).
+    #[must_use]
+    pub fn stalled_for_bundle(
+        &self,
+        bundle: &str,
+        org: Option<&str>,
+        owner: &str,
+        now: u64,
+    ) -> Option<Stall> {
+        self.stalled(self.approved_for_bundle(bundle, org, owner), now)
     }
 
     /// Whether `actor` may install no release at `now`. An installed release
@@ -517,10 +627,16 @@ impl SystemState {
     /// organization they are a member of, so the install is refused only when
     /// every one of those scopes is stalled; the app it would become is
     /// judged on its own (`CreateApp`). The operator's installs never are.
+    /// A release of a claimed key is judged on its publisher's set instead.
     #[must_use]
-    pub fn install_stalled(&self, actor: &str, now: u64) -> Option<Stall> {
+    pub fn install_stalled(&self, actor: &str, signer: &str, now: u64) -> Option<Stall> {
         if actor == OPERATOR {
             return None;
+        }
+        if let Some(p) = self.publisher_of_signer(signer) {
+            if self.governance().releases == Authority::Owner {
+                return self.stalled_for(Some(p), actor, now);
+            }
         }
         let own = self.stalled_for(None, actor, now)?;
         let an_org_may = self.orgs.values().any(|o| {
@@ -864,6 +980,19 @@ pub enum SystemCmd {
         #[serde(default)]
         capability: bool,
     },
+    /// An organization claims (`org: Some`) a package signing key, proving
+    /// with `proof` that it holds it, or its publisher lets the key go
+    /// (`None`). By the organization's admins or owner, with a passkey
+    /// assertion. A key has one publisher at a time.
+    SetPublisher {
+        signer_id: String,
+        org: Option<OrgId>,
+        #[serde(default)]
+        proof: Option<PublisherProof>,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
     /// The operator sets (`Some`, Unix seconds) or lifts (`None`) the
     /// deadline after which a scope that has not approved `version` (or a
     /// newer release) starts no new work. Availability only: it moves no data
@@ -1092,15 +1221,17 @@ impl SystemMachine {
         let s = &self.state;
         match cmd {
             SystemCmd::CreateApp { app } => {
-                s.stalled_for(app.org.as_deref(), &app.owner, app.created_at)
+                s.stalled_for_bundle(&app.bundle, app.org.as_deref(), &app.owner, app.created_at)
             }
-            SystemCmd::UpgradeApp { app_id, at, .. } => {
+            SystemCmd::UpgradeApp {
+                app_id, bundle, at, ..
+            } => {
                 let a = s.apps.get(app_id)?;
-                s.stalled_for(a.org.as_deref(), &a.owner, *at)
+                s.stalled_for_bundle(bundle, a.org.as_deref(), &a.owner, *at)
             }
-            SystemCmd::InstallPackage { release, .. } => {
-                s.install_stalled(&release.installed_by, release.installed_at)
-            }
+            SystemCmd::InstallPackage {
+                release, signer_id, ..
+            } => s.install_stalled(&release.installed_by, signer_id, release.installed_at),
             _ => None,
         }
     }
@@ -1785,6 +1916,59 @@ impl SystemMachine {
                 }
                 Ok(json!({ "approvedReleases": set }))
             }
+            SystemCmd::SetPublisher {
+                signer_id,
+                org,
+                proof,
+                actor,
+                consent: _,
+            } => {
+                let current = s.publisher_of_signer(&signer_id).cloned();
+                let Some(org) = org else {
+                    // Let go: by the publisher's admins or owner.
+                    let p = current.ok_or("no organization publishes that key")?;
+                    if !s.is_org_admin(&p, &actor) {
+                        return Err("only the publisher's admins or owner let its key go");
+                    }
+                    let _gone = s.publishers.remove(&signer_id);
+                    return Ok(Value::Null);
+                };
+                if signer_id.len() > MAX_SIGNER_ID_BYTES {
+                    return Err("a signer id is at most 128 bytes");
+                }
+                if !s.is_org_admin(&org, &actor) {
+                    return Err("only an organization's admins or owner claim a key for it");
+                }
+                if !proof.is_some_and(|p| p.proves(&org, &signer_id)) {
+                    return Err("the proof is not that key's signature over this claim");
+                }
+                match current {
+                    Some(p) if p == org => return Ok(Value::Null),
+                    Some(_) => return Err("another organization publishes that key"),
+                    None => {}
+                }
+                // The releases its instances were judged by until now join
+                // the publisher's set, so no running instance loses its
+                // replicas the moment the key is claimed.
+                let held: BTreeSet<String> = s
+                    .apps
+                    .values()
+                    .filter(|a| {
+                        s.bundles
+                            .get(&a.bundle)
+                            .and_then(|b| b.package.as_ref())
+                            .and_then(|at| s.packages.get(&at.package))
+                            .is_some_and(|p| p.signer_id == signer_id)
+                    })
+                    .filter_map(|a| s.approved_for(a.org.as_deref(), &a.owner))
+                    .flatten()
+                    .cloned()
+                    .collect();
+                let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
+                o.approved_releases.extend(held);
+                let _prev = s.publishers.insert(signer_id, org);
+                Ok(Value::Null)
+            }
             SystemCmd::SetReleaseDeadline { version, after } => {
                 // Closed input: a semver release, so it orders against the
                 // approved ones; a bounded number of them.
@@ -1924,6 +2108,7 @@ impl SystemMachine {
                 }
                 let _gone = s.orgs.remove(&org);
                 s.invites.retain(|_, i| i.org != org);
+                s.publishers.retain(|_, p| *p != org);
                 let apps: Vec<String> = s
                     .apps
                     .values()
@@ -3216,5 +3401,201 @@ mod tests {
         assert_eq!(snap["releaseDeadlines"], json!({ "2.1.0": 5 }));
         let restored: SystemState = serde_json::from_value(snap).unwrap();
         assert_eq!(restored.release_deadlines.get("2.1.0"), Some(&5));
+    }
+
+    /// A package signing key, its `did:key`, and a claim of it for `org`.
+    fn publisher_key(seed: u8) -> (ed25519_dalek::SigningKey, String) {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let did = calimero_bundle::derive_signer_id_did_key(&key.verifying_key().to_bytes());
+        (key, did)
+    }
+
+    fn claim(
+        key: &ed25519_dalek::SigningKey,
+        signer: &str,
+        org: &str,
+        as_org: &str,
+        actor: &str,
+    ) -> SystemCmd {
+        use ed25519_dalek::Signer as _;
+        let sig = key.sign(&super::publisher_claim_message(as_org, signer));
+        SystemCmd::SetPublisher {
+            signer_id: signer.into(),
+            org: Some(org.into()),
+            proof: Some(super::PublisherProof {
+                public_key: calimero_identity::b64url(&key.verifying_key().to_bytes()),
+                signature: calimero_identity::b64url(&sig.to_bytes()),
+            }),
+            actor: actor.into(),
+            consent: serde_json::Value::Null,
+        }
+    }
+
+    /// A cluster with a publisher org `pub` (pam owner, bob member), a
+    /// customer org `cust` (cora owner), the package `p` signed by `signer`
+    /// (release 1.0.0 ships `b1`, `upgrades` as given), a raw bundle `raw`,
+    /// and the customer's instances `inst` (of `p`) and `rawapp`.
+    fn publishing(signer: &str, upgrades: &str) -> SystemMachine {
+        let mut m = SystemMachine::default();
+        let _ok = m.run(genesis(all(Authority::Owner))).unwrap();
+        for who in ["pam", "bob", "cora", "dan"] {
+            let _ok = m.run(account(who)).unwrap();
+        }
+        let mut o = org(&[("pam", "owner"), ("bob", "member")], &[], &["2.0.0"]);
+        o.org_id = "pub".into();
+        let _prev = m.state.orgs.insert("pub".into(), o);
+        let mut o = org(
+            &[("cora", "owner"), ("dan", "member")],
+            &[],
+            &["2.0.0", "1.9.0"],
+        );
+        o.org_id = "cust".into();
+        let _prev = m.state.orgs.insert("cust".into(), o);
+        for (hash, package) in [
+            ("b1", json!({ "package": "p", "version": "1.0.0" })),
+            ("b2", json!({ "package": "p", "version": "1.1.0" })),
+            ("raw", json!(null)),
+        ] {
+            let _prev = m.state.bundles.insert(
+                hash.into(),
+                serde_json::from_value(json!({
+                    "hash": hash, "size": 1, "uploadedBy": "cora", "package": package
+                }))
+                .unwrap(),
+            );
+        }
+        let _prev = m.state.packages.insert(
+            "p".into(),
+            serde_json::from_value(json!({
+                "name": "p", "signerId": signer, "owner": "pam",
+                "versions": {
+                    "1.0.0": {
+                        "version": "1.0.0", "mpk": "00", "mpkSize": 1, "source": "upload",
+                        "services": { "": "b1" }, "installedBy": "pam", "installedAt": 0,
+                        "upgrades": upgrades
+                    },
+                    "1.1.0": {
+                        "version": "1.1.0", "mpk": "01", "mpkSize": 1, "source": "upload",
+                        "services": { "": "b2" }, "installedBy": "pam", "installedAt": 0,
+                        "upgrades": upgrades
+                    }
+                }
+            }))
+            .unwrap(),
+        );
+        for (id, bundle) in [("inst", "b1"), ("rawapp", "raw")] {
+            let _prev = m.state.apps.insert(
+                id.into(),
+                serde_json::from_value(json!({
+                    "appId": id, "name": id, "group": 2, "bundle": bundle, "owner": "cora",
+                    "org": "cust", "access": { "kind": "org" }, "replicas": [1], "createdAt": 0
+                }))
+                .unwrap(),
+            );
+        }
+        m
+    }
+
+    /// An organization that proves it holds a package's key publishes it:
+    /// its approved releases then govern every instance of the package,
+    /// its customers' included; a raw bundle and an unclaimed package stay
+    /// with their owner's set. The claim is the key's own signature, checked
+    /// at apply, and a key has one publisher at a time.
+    #[test]
+    fn a_publisher_approves_the_releases_of_every_instance_of_its_packages() {
+        let (key, signer) = publisher_key(7);
+        let (other, _) = publisher_key(8);
+        let mut m = publishing(&signer, "owner");
+        let inst = |m: &SystemMachine| m.state.apps["inst"].clone();
+        let rawapp = |m: &SystemMachine| m.state.apps["rawapp"].clone();
+        assert_eq!(
+            m.state.approved_releases(&inst(&m)),
+            Some(&m.state.orgs["cust"].approved_releases),
+            "unclaimed: the owner's set"
+        );
+
+        // Forged or misplaced claims are refused at apply.
+        let wrong_key = claim(&other, &signer, "pub", "pub", "pam");
+        let for_another_org = claim(&key, &signer, "pub", "cust", "pam");
+        let by_a_member = claim(&key, &signer, "pub", "pub", "bob");
+        let by_an_outsider = claim(&key, &signer, "pub", "pub", "cora");
+        for cmd in [wrong_key, for_another_org, by_a_member, by_an_outsider] {
+            assert!(m.run(cmd).is_err());
+        }
+        assert!(m.state.publishers.is_empty());
+
+        let _ok = m.run(claim(&key, &signer, "pub", "pub", "pam")).unwrap();
+        assert_eq!(m.state.publisher_of("b1"), Some(&"pub".to_owned()));
+        // The releases its instances ran on join the publisher's set.
+        assert!(m.state.orgs["pub"].approved_releases.contains("1.9.0"));
+        assert_eq!(
+            m.state.approved_releases(&inst(&m)),
+            Some(&m.state.orgs["pub"].approved_releases)
+        );
+        assert_eq!(
+            m.state.approved_releases(&rawapp(&m)),
+            Some(&m.state.orgs["cust"].approved_releases),
+            "a raw bundle stays its owner's"
+        );
+
+        // The customer approving a release changes nothing for the instance;
+        // the publisher approving it does.
+        let _ok = m.run(approve("cust", "2.1.0", "cora", true)).unwrap();
+        assert!(!m.state.release_may_hold(&inst(&m), Some("2.1.0")));
+        assert!(m.state.release_may_hold(&rawapp(&m), Some("2.1.0")));
+        let _ok = m.run(approve("pub", "2.1.0", "pam", true)).unwrap();
+        assert!(m.state.release_may_hold(&inst(&m), Some("2.1.0")));
+
+        // One publisher at a time.
+        assert!(m.run(claim(&key, &signer, "cust", "cust", "cora")).is_err());
+
+        // Deadlines judge the instance on its publisher's set.
+        let _ok = m
+            .run(SystemCmd::SetReleaseDeadline {
+                version: "2.2.0".into(),
+                after: Some(10),
+            })
+            .unwrap();
+        let _ok = m.run(approve("cust", "2.2.0", "cora", true)).unwrap();
+        let create = |id: &str, bundle: &str| SystemCmd::CreateApp {
+            app: Box::new(
+                serde_json::from_value(json!({
+                    "appId": id, "name": id, "group": 0, "bundle": bundle, "owner": "cora",
+                    "org": "cust", "access": { "kind": "org" }, "replicas": [1], "createdAt": 10
+                }))
+                .unwrap(),
+            ),
+        };
+        let e = m.run(create("second", "b1")).unwrap_err();
+        assert!(e.starts_with(super::DEADLINE_PREFIX), "{e}");
+        let _ok = m.run(create("raw2", "raw")).unwrap();
+        let _ok = m.run(approve("pub", "2.2.0", "pam", true)).unwrap();
+        let _ok = m.run(create("second", "b1")).unwrap();
+
+        // Let go (by its admins or owner): the instances fall back to their owner.
+        let release = |actor: &str| SystemCmd::SetPublisher {
+            signer_id: signer.clone(),
+            org: None,
+            proof: None,
+            actor: actor.into(),
+            consent: serde_json::Value::Null,
+        };
+        assert!(m.run(release("cora")).is_err());
+        let _ok = m.run(release("pam")).unwrap();
+        assert_eq!(
+            m.state.approved_releases(&inst(&m)),
+            Some(&m.state.orgs["cust"].approved_releases)
+        );
+
+        // Deleting the publisher drops its claim.
+        let _ok = m.run(claim(&key, &signer, "pub", "pub", "pam")).unwrap();
+        let _ok = m
+            .run(SystemCmd::DeleteOrg {
+                org: "pub".into(),
+                actor: "pam".into(),
+                consent: serde_json::Value::Null,
+            })
+            .unwrap();
+        assert!(m.state.publishers.is_empty());
     }
 }

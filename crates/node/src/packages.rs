@@ -132,7 +132,12 @@ impl Node {
         version: &str,
         actor: &str,
     ) -> Result<Value, ApiError> {
-        self.refuse_stalled_install(actor)?;
+        // Before the fetch, judged by the key the package is pinned to (none
+        // yet: unclaimed); `record_release` judges the verified key again.
+        let pinned = self
+            .sys(|s| s.packages.get(package).map(|p| p.signer_id.clone()))
+            .unwrap_or_default();
+        self.refuse_stalled_install(actor, &pinned)?;
         let mpk = self.fetch_from_registry(package, version).await?;
         let verified = self.verify_release(mpk, BundleSource::Registry, actor)?;
         if verified.package != package || verified.release.version != version {
@@ -151,8 +156,8 @@ impl Node {
     /// `actor` may install nothing past a release deadline
     /// ([`crate::system::SystemState::install_stalled`]); `InstallPackage`
     /// asks again at apply.
-    fn refuse_stalled_install(&self, actor: &str) -> Result<(), ApiError> {
-        match self.sys(|s| s.install_stalled(actor, now_secs())) {
+    fn refuse_stalled_install(&self, actor: &str, signer: &str) -> Result<(), ApiError> {
+        match self.sys(|s| s.install_stalled(actor, signer, now_secs())) {
             Some(stall) => Err(crate::node::stalled(&stall)),
             None => Ok(()),
         }
@@ -160,7 +165,6 @@ impl Node {
 
     /// Install an uploaded `.mpk`.
     pub async fn install_upload(&self, mpk: Arc<[u8]>, actor: &str) -> Result<Value, ApiError> {
-        self.refuse_stalled_install(actor)?;
         let verified = self.verify_release(Arc::clone(&mpk), BundleSource::Upload, actor)?;
         self.record_release(verified, Some(mpk)).await
     }
@@ -241,6 +245,7 @@ impl Node {
         v: Verified,
         upload: Option<Arc<[u8]>>,
     ) -> Result<Value, ApiError> {
+        self.refuse_stalled_install(&v.release.installed_by, &v.signer_id)?;
         for (service, bytes) in &v.wasm {
             let hash = &v.release.services[service];
             self.engine

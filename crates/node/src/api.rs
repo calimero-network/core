@@ -1555,12 +1555,7 @@ async fn app_create(
         return Err(ApiError::forbidden("read-only API key"));
     }
     let owner = p.account()?;
-    // Past a release deadline its scope has not approved, no new app (and
-    // no registry install on the way to one); `CreateApp` asks again.
     let now = now_secs();
-    if let Some(stall) = node.sys(|s| s.stalled_for(body.org.as_deref(), &owner, now)) {
-        return Err(crate::node::stalled(&stall));
-    }
     let bundle = bundle_named(
         &node,
         body.bundle,
@@ -1587,9 +1582,20 @@ async fn app_create(
             Vec::new()
         }
     };
-    // Only nodes on an approved release (the owner's, or the operator's where
-    // the deployment gave it release approvals) may hold the app.
-    let approved = node.sys(|s| s.approved_for(body.org.as_deref(), &owner).cloned());
+    // Past a release deadline the app's approver has not met, no new app;
+    // `CreateApp` asks again at the same time.
+    if let Some(stall) =
+        node.sys(|s| s.stalled_for_bundle(&bundle, body.org.as_deref(), &owner, now))
+    {
+        return Err(crate::node::stalled(&stall));
+    }
+    // Only nodes on an approved release (the publisher's, the owner's for an
+    // unclaimed package, or the operator's where the deployment gave it
+    // release approvals) may hold the app.
+    let approved = node.sys(|s| {
+        s.approved_for_bundle(&bundle, body.org.as_deref(), &owner)
+            .cloned()
+    });
     let replicas = node.place(approved.as_ref(), now).await;
     if replicas.is_empty() {
         return Err(ApiError::unavailable(
@@ -2554,7 +2560,6 @@ async fn app_upgrade(
             "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization",
         ));
     }
-    refuse_stalled(&node, &app, now_secs())?;
     // A version alone means the app's own package and service.
     let current = node.release_of(&app.bundle);
     let package = body.package.clone().or_else(|| {
@@ -2579,6 +2584,7 @@ async fn app_upgrade(
     if !node.sys(|s| s.bundles.contains_key(&bundle)) {
         return Err(crate::node::rejected("unknown bundle"));
     }
+    refuse_stalled(&node, &app, &bundle, now_secs())?;
     // A fresh passkey assertion over this exact upgrade, logged as consent.
     let consent = consent(
         &node,
@@ -2646,7 +2652,7 @@ async fn run_upgrade(
     let begun = now_secs();
     let stall = node.sys(|s| {
         let a = s.apps.get(&app_id)?;
-        s.stalled_for(a.org.as_deref(), &a.owner, begun)
+        s.stalled_for_bundle(&bundle, a.org.as_deref(), &a.owner, begun)
     });
     if let Some(stall) = stall {
         let e = crate::node::stalled(&stall);
@@ -2699,10 +2705,15 @@ async fn run_upgrade(
     ))
 }
 
-/// Refused `409 RELEASE_DEADLINE` when `app`'s scope may start no new work
-/// at `now` ([`crate::system::SystemState::stalled_for`]).
-fn refuse_stalled(node: &Node, app: &crate::types::AppRecord, now: u64) -> Result<(), ApiError> {
-    match node.sys(|s| s.stalled_for(app.org.as_deref(), &app.owner, now)) {
+/// Refused `409 RELEASE_DEADLINE` when `app`, upgraded to `bundle`, may start
+/// no new work at `now` ([`crate::system::SystemState::stalled_for_bundle`]).
+fn refuse_stalled(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    bundle: &str,
+    now: u64,
+) -> Result<(), ApiError> {
+    match node.sys(|s| s.stalled_for_bundle(bundle, app.org.as_deref(), &app.owner, now)) {
         Some(stall) => Err(crate::node::stalled(&stall)),
         None => Ok(()),
     }
@@ -2826,11 +2837,6 @@ async fn start_run(
     apps: Vec<crate::types::AppRecord>,
     who: Upgrader,
 ) -> ApiResult {
-    // An organization's apps share its approvals: a run it may not start is
-    // refused whole rather than failing app by app.
-    if let Some(stall) = node.sys(|s| s.stalled_for(Some(&org), "", now_secs())) {
-        return Err(crate::node::stalled(&stall));
-    }
     let run_id = typed_id::<12>();
     let run = crate::types::UpgradeRun {
         run_id: run_id.clone(),
@@ -2921,9 +2927,6 @@ async fn org_upgrade(
         return Err(ApiError::forbidden(
             "upgrading the organization's apps needs MANAGE_APPLICATION there",
         ));
-    }
-    if let Some(stall) = node.sys(|s| s.stalled_for(Some(&org), "", now_secs())) {
-        return Err(crate::node::stalled(&stall));
     }
     // Installed from the registry first if the cluster lacks the release.
     let _bundle = node
@@ -3209,16 +3212,23 @@ async fn org_get(
     if let Some(teams) = v.get_mut("teams").and_then(Value::as_object_mut) {
         teams.retain(|id, _| o.sees_team(&account, id));
     }
-    // Who may approve its releases, and whether a passed deadline has
-    // stopped its new work (`null`: it has not).
-    let (approvers, stall) = node.sys(|s| {
+    // Who may approve its releases, the keys it publishes, and whether a
+    // passed deadline has stopped new work on its own set (`null`: it has
+    // not).
+    let (approvers, publishes, stall) = node.sys(|s| {
         (
             s.release_approvers(&org),
+            s.publishers
+                .iter()
+                .filter(|(_, o)| **o == org)
+                .map(|(k, _)| k.clone())
+                .collect::<Vec<_>>(),
             s.stalled_for(Some(&org), "", now_secs()),
         )
     });
     if let Some(obj) = v.as_object_mut() {
         let _prev = obj.insert("releaseApprovers".into(), json!(approvers));
+        let _prev = obj.insert("publishes".into(), json!(publishes));
         let _prev = obj.insert(
             "newWorkStopped".into(),
             stall.map_or(
@@ -4890,6 +4900,95 @@ async fn ops_release_deadline_lift(
     ))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PublisherBody {
+    signer_id: String,
+    /// The key's proof, to claim it; absent with `release` to let it go.
+    #[serde(default)]
+    public_key: Option<String>,
+    #[serde(default)]
+    signature: Option<String>,
+    #[serde(default)]
+    release: bool,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Claim a package signing key for the organization (the key's signature over
+/// `system::publisher_claim_message`), or let it go (`release`): by its admins
+/// or owner, with a passkey assertion. The publisher then approves the
+/// releases that hold every instance of the key's packages.
+async fn org_publisher(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<PublisherBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    node.sys_fresh().await;
+    let (member, admin) = node.sys(|s| {
+        (
+            s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some()),
+            s.is_org_admin(&org, &account),
+        )
+    });
+    if !member {
+        return Err(ApiError::not_found("no such organization"));
+    }
+    if !admin {
+        return Err(ApiError::forbidden(
+            "only an organization's admins or owner manage its publisher keys",
+        ));
+    }
+    let proof = match (body.release, body.public_key, body.signature) {
+        (true, None, None) => None,
+        (false, Some(public_key), Some(signature)) => {
+            let proof = crate::system::PublisherProof {
+                public_key,
+                signature,
+            };
+            if !proof.proves(&org, &body.signer_id) {
+                return Err(ApiError::forbidden(
+                    "the proof is not that key's signature over this claim",
+                ));
+            }
+            Some(proof)
+        }
+        _ => {
+            return Err(ApiError::bad_request(
+                "BAD_REQUEST",
+                "claim with `publicKey` and `signature`, or let go with `release: true`",
+            ))
+        }
+    };
+    let method = if body.release {
+        "__release_publisher"
+    } else {
+        "__claim_publisher"
+    };
+    let consent = consent(
+        &node,
+        &p,
+        &format!("org:{org}"),
+        method,
+        &json!({ "signerId": body.signer_id }),
+        body.confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::SetPublisher {
+            signer_id: body.signer_id,
+            org: (!body.release).then_some(org),
+            proof,
+            actor: account,
+            consent,
+        })
+        .await?,
+    ))
+}
+
 /// The cluster's release rules, for anyone, signed in or not (inside the
 /// sealed channel, so from an attested node): the governance, and each
 /// release's end-of-new-work deadline. Users see the rules before they rely
@@ -5088,6 +5187,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/orgs/{org}/teams/{team}", get(team_get).post(team_update).delete(team_delete))
         .route("/orgs/{org}/capabilities", post(org_capabilities))
         .route("/orgs/{org}/releases", post(org_release_approval))
+        .route("/orgs/{org}/publishers", post(org_publisher))
         .route("/orgs/{org}/outbound", post(org_outbound_approval))
         .route("/orgs/{org}/teams/{team}/members", post(team_set_member))
         .route(
