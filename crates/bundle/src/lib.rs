@@ -217,14 +217,13 @@ pub struct BundleService {
 #[serde(rename_all = "lowercase")]
 pub enum UpgradeAuthority {
     /// Each instance's owner, or, for an organization's instance, whoever
-    /// holds `MANAGE_APPLICATION` there. The default, and what a manifest
-    /// without `upgrades` (every one from before) means.
+    /// holds `MANAGE_APPLICATION` there. The default when the manifest
+    /// leaves `upgrades` out.
     #[default]
     Owner,
-    /// The organization that publishes the package (proved it holds the
-    /// package's signing key): its `MANAGE_APPLICATION` holders upgrade every
-    /// instance, whoever owns it. Until an organization claims the key, this
-    /// reads as [`Self::Owner`].
+    /// The organization the package's signing key is bound to: its `MANAGE_APPLICATION` holders upgrade every
+    /// instance, whoever owns it. Until an organization has bound the key
+    /// (`BindPublisher`), nobody upgrades them.
     Publisher,
 }
 
@@ -317,7 +316,6 @@ pub struct BundleManifest {
     /// Who upgrades the package's instances ([`UpgradeAuthority`]); absent
     /// means [`UpgradeAuthority::Owner`]. Signed with the rest; a value other
     /// than `owner` or `publisher` fails to parse, so the bundle is refused.
-    /// An older node ignores it and leaves upgrades to owners.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upgrades: Option<UpgradeAuthority>,
 

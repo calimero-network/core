@@ -73,16 +73,17 @@ pub enum Authority {
 #[serde(rename_all = "camelCase")]
 pub struct Governance {
     /// Which mero-tee releases (node images) may hold the apps' data. `owner`:
-    /// each app's **publisher**, the organization that proved it holds the
-    /// package's signing key (its `APPROVE_RELEASES` holders), for every
-    /// instance of its packages; for an unclaimed package or a raw bundle, the
-    /// app's own organization or owner account. `operator`: the operator.
+    /// each app's **publisher**, the organization its package's signing key
+    /// is bound to by the key's own signature (its `APPROVE_RELEASES`
+    /// holders), for every instance of the key's packages; for an unbound
+    /// package or a raw bundle, the app's own organization or owner account. `operator`: the operator.
     pub releases: Authority,
     /// Who upgrades an app to another bundle. `owner`: per app, as its
     /// package's signed manifest declares (`upgrades`): the instance's owner
     /// or its organization's `MANAGE_APPLICATION` holders (`owner`, the
     /// default), or the publisher's `MANAGE_APPLICATION` holders
-    /// (`publisher`); a package only ever loosens toward owners. `operator`:
+    /// (`publisher`; nobody while its key is unbound); a package only ever
+    /// loosens toward owners. `operator`:
     /// the operator.
     pub app_upgrades: Authority,
     /// Who approves the URL prefixes an app may call out to: the app's owner

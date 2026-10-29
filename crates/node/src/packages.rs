@@ -133,7 +133,7 @@ impl Node {
         actor: &str,
     ) -> Result<Value, ApiError> {
         // Before the fetch, judged by the key the package is pinned to (none
-        // yet: unclaimed); `record_release` judges the verified key again.
+        // yet: unbound); `record_release` judges the verified key again.
         let pinned = self
             .sys(|s| s.packages.get(package).map(|p| p.signer_id.clone()))
             .unwrap_or_default();

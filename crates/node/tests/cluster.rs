@@ -5373,11 +5373,18 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
     assert_eq!(public["deadlines"], json!([]), "{public}");
 }
 
-/// The key's signature over `calimero-publisher-claim/v1\n{org}\n{signer}`.
-fn publisher_claim(key: &ed25519_dalek::SigningKey, org: &str) -> Value {
+/// The binding of `key` to `org`: the key's signature over
+/// `calimero-publisher-binding/v1\n{cluster}\n{org}\n{signer}\n{generation}`,
+/// with the cluster's name and the key's generation as the node names them.
+async fn publisher_binding(cl: &Client, key: &ed25519_dalek::SigningKey, org: &str) -> Value {
     use ed25519_dalek::Signer as _;
     let signer = calimero_bundle::derive_signer_id_did_key(key.verifying_key().as_bytes());
-    let message = format!("calimero-publisher-claim/v1\n{org}\n{signer}");
+    let next = cl.get(&format!("publishers/{signer}")).await.unwrap();
+    let message = format!(
+        "calimero-publisher-binding/v1\n{}\n{org}\n{signer}\n{}",
+        next["cluster"].as_str().unwrap(),
+        next["generation"]
+    );
     json!({
         "signerId": signer,
         "publicKey": calimero_identity::b64url(key.verifying_key().as_bytes()),
@@ -5385,9 +5392,10 @@ fn publisher_claim(key: &ed25519_dalek::SigningKey, org: &str) -> Value {
     })
 }
 
-/// A publisher proves it holds its package's key, then upgrades its
-/// customers' instances of a `publisher` package, which the customer may
-/// not; a later release may give upgrades to owners, never back.
+/// A publisher binds its package's key with the key's signature, then
+/// upgrades its customers' instances of a `publisher` package, which the
+/// customer may not (and nobody may before the binding); a later release may
+/// give upgrades to owners, never back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_publisher_upgrades_the_instances_of_its_publisher_packages() {
     use calimero_bundle::UpgradeAuthority::{Owner, Publisher};
@@ -5417,29 +5425,47 @@ async fn a_publisher_upgrades_the_instances_of_its_publisher_packages() {
         .await
         .unwrap();
 
-    // Only the key's own signature over this organization's claim counts.
+    // Until the key is bound, nobody upgrades a `publisher` package.
+    let e = cora
+        .post(
+            &format!("apps/{inst}/upgrade"),
+            json!({ "version": "1.0.0" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("409"), "{e}");
+
+    // Only the key's own signature over this organization's binding counts.
     let e = cora
         .post_confirmed(
             &format!("orgs/{customer}/publishers"),
-            publisher_claim(&key, &publisher),
+            publisher_binding(&cora, &key, &publisher).await,
             &mut cora_pk,
         )
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
+    let binding = publisher_binding(&pam, &key, &publisher).await;
     let _ok = pam
         .post_confirmed(
             &format!("orgs/{publisher}/publishers"),
-            publisher_claim(&key, &publisher),
+            binding.clone(),
             &mut pam_pk,
         )
         .await
         .unwrap();
     let view = pam.get(&format!("orgs/{publisher}")).await.unwrap();
-    assert_eq!(
-        view["publishes"][0],
-        publisher_claim(&key, &publisher)["signerId"]
-    );
+    assert_eq!(view["publishes"][0], binding["signerId"]);
+    // The same signature again is spent.
+    let e = pam
+        .post_confirmed(
+            &format!("orgs/{publisher}/publishers"),
+            binding,
+            &mut pam_pk,
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("403"), "{e}");
 
     let _ok = pam
         .upload_package(release("1.1.0", &variant(&kv, "v2"), Publisher))

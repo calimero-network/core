@@ -949,7 +949,6 @@ async fn set_release_approval(
             approved: body.approved,
             actor: account,
             consent,
-            capability: true,
         })
         .await?,
     ))
@@ -1590,7 +1589,7 @@ async fn app_create(
         return Err(crate::node::stalled(&stall));
     }
     // Only nodes on an approved release (the publisher's, the owner's for an
-    // unclaimed package, or the operator's where the deployment gave it
+    // unbound package, or the operator's where the deployment gave it
     // release approvals) may hold the app.
     let approved = node.sys(|s| {
         s.approved_for_bundle(&bundle, body.org.as_deref(), &owner)
@@ -2555,9 +2554,20 @@ async fn app_upgrade(
     // their own passkey: new code reads the app's data.
     let app = node.app(&app_id).await?;
     owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
-    if !node.sys(|s| s.may_upgrade(&app, &account)) {
+    let (may, unbound) = node.sys(|s| {
+        (
+            s.may_upgrade(&app, &account),
+            !s.upgrades_of(&app.bundle).is_owner() && s.publisher_of(&app.bundle).is_none(),
+        )
+    });
+    if unbound {
+        return Err(ApiError::conflict(
+            "this app's package is upgraded by its publisher, and no organization has bound its key yet",
+        ));
+    }
+    if !may {
         return Err(ApiError::forbidden(
-            "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization",
+            "upgrading this app needs whoever its package names: its owner (or MANAGE_APPLICATION in its organization), or its publisher's MANAGE_APPLICATION holders",
         ));
     }
     // A version alone means the app's own package and service.
@@ -3326,7 +3336,7 @@ async fn org_get(
             s.release_approvers(&org),
             s.publishers
                 .iter()
-                .filter(|(_, o)| **o == org)
+                .filter(|(_, b)| b.org == org)
                 .map(|(k, _)| k.clone())
                 .collect::<Vec<_>>(),
             s.stalled_for(Some(&org), "", now_secs()),
@@ -5010,21 +5020,20 @@ async fn ops_release_deadline_lift(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PublisherBody {
     signer_id: String,
-    /// The key's proof, to claim it; absent with `release` to let it go.
-    #[serde(default)]
-    public_key: Option<String>,
-    #[serde(default)]
-    signature: Option<String>,
-    #[serde(default)]
-    release: bool,
+    public_key: String,
+    signature: String,
     #[serde(default)]
     confirm: Option<ConfirmBody>,
 }
 
-/// Claim a package signing key for the organization (the key's signature over
-/// `system::publisher_claim_message`), or let it go (`release`): by its admins
-/// or owner, with a passkey assertion. The publisher then approves the
-/// releases that hold every instance of the key's packages.
+/// Bind a package signing key to the organization: the key's Ed25519
+/// signature over `system::publisher_binding_message` (this cluster's name,
+/// the organization, the key, the key's binding generation from
+/// `GET /publishers/{signer}`), by a member holding `APPROVE_RELEASES`, with a
+/// passkey assertion. The organization then approves the node images every
+/// instance of the key's packages runs on, and upgrades those whose package
+/// says `upgrades: publisher`. Binding again moves the key, with a new
+/// signature from it.
 async fn org_publisher(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -5034,65 +5043,72 @@ async fn org_publisher(
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     node.sys_fresh().await;
-    let (member, admin) = node.sys(|s| {
+    let (member, holds, generation) = node.sys(|s| {
         (
             s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some()),
-            s.is_org_admin(&org, &account),
+            s.holds_approve_releases(&org, &account),
+            s.binding_generation(&body.signer_id),
         )
     });
     if !member {
         return Err(ApiError::not_found("no such organization"));
     }
-    if !admin {
+    if !holds {
         return Err(ApiError::forbidden(
-            "only an organization's admins or owner manage its publisher keys",
+            "binding a publisher key needs APPROVE_RELEASES in the organization",
         ));
     }
-    let proof = match (body.release, body.public_key, body.signature) {
-        (true, None, None) => None,
-        (false, Some(public_key), Some(signature)) => {
-            let proof = crate::system::PublisherProof {
-                public_key,
-                signature,
-            };
-            if !proof.proves(&org, &body.signer_id) {
-                return Err(ApiError::forbidden(
-                    "the proof is not that key's signature over this claim",
-                ));
-            }
-            Some(proof)
-        }
-        _ => {
-            return Err(ApiError::bad_request(
-                "BAD_REQUEST",
-                "claim with `publicKey` and `signature`, or let go with `release: true`",
-            ))
-        }
+    let cluster = node.config.cluster.clone();
+    let proof = crate::system::PublisherProof {
+        public_key: body.public_key,
+        signature: body.signature,
     };
-    let method = if body.release {
-        "__release_publisher"
-    } else {
-        "__claim_publisher"
-    };
+    let message =
+        crate::system::publisher_binding_message(&cluster, &org, &body.signer_id, generation);
+    if !proof.proves(&body.signer_id, &message) {
+        return Err(ApiError::forbidden(
+            "the proof is not that key's signature over this binding",
+        ));
+    }
     let consent = consent(
         &node,
         &p,
         &format!("org:{org}"),
-        method,
-        &json!({ "signerId": body.signer_id }),
+        "__bind_publisher",
+        &json!({ "signerId": body.signer_id, "generation": generation }),
         body.confirm,
     )
     .await?;
     Ok(Json(
-        node.sys_write(&SystemCmd::SetPublisher {
+        node.sys_write(&SystemCmd::BindPublisher {
             signer_id: body.signer_id,
-            org: (!body.release).then_some(org),
+            org,
+            cluster,
             proof,
             actor: account,
             consent,
         })
         .await?,
     ))
+}
+
+/// What a key signs to bind it here next: this cluster's name and the key's
+/// binding generation, and whether it is bound now. For anyone signed in.
+async fn publisher_binding(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(signer): Path<String>,
+) -> ApiResult {
+    let _p = signed_in(&node, &headers).await?;
+    node.sys_fresh().await;
+    Ok(Json(node.sys(|s| {
+        json!({
+            "signerId": signer,
+            "cluster": node.config.cluster,
+            "generation": s.binding_generation(&signer),
+            "bound": s.publisher_of_signer(&signer).is_some(),
+        })
+    })))
 }
 
 /// The cluster's release rules, for anyone, signed in or not (inside the
@@ -5294,6 +5310,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/orgs/{org}/capabilities", post(org_capabilities))
         .route("/orgs/{org}/releases", post(org_release_approval))
         .route("/orgs/{org}/publishers", post(org_publisher))
+        .route("/publishers/{signer}", get(publisher_binding))
         .route(
             "/orgs/{org}/packages/{package}/upgrade",
             post(publisher_upgrade),
