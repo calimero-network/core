@@ -75,6 +75,27 @@ bytes (`Node::collect_blob`): it deletes them on every node unless
 Known window: if the same content is uploaded to another app between that check
 and the deletion, the other app's mark survives but its bytes are gone.
 
+## Files of component apps
+
+A component app has no blob routes.
+Its runs make files instead: a file is written in a call, tick or `init`, and read in any run but a migration.
+The node seals a file in the TD as 64 KiB AES-256-GCM chunks under a random data key, and wraps that key under a key derived from the cluster key for this app.
+The blob id is the SHA-256 of the ciphertext, so a replica can check what a peer sends.
+The app's state records a mark per file: the plaintext size and SHA-256, and the wrapped key.
+The log entry carries the marks and never the ciphertext.
+
+The ciphertext lives on the app's replicas, not on every node.
+Before the leader proposes the entry, the new files are stored on it and pushed to the app's other replicas.
+The call proceeds only once a majority of the app's voters hold every new file; otherwise it fails with a retryable `503`, nothing is logged, and its idempotency key is not spent.
+A replica that misses a file fetches it from the other replicas when a run opens it.
+If no replica can serve it, a call, tick or `init` is aborted with a retryable `503` and not logged, while a view is told the bytes are not available.
+A run reads a file by decrypting it as it goes, and the end of the stream checks the plaintext size and SHA-256 against the mark.
+A file that was altered or cut short fails the run with a trap, so no app can ignore it.
+
+A run that deletes a file removes its mark with the entry.
+Every replica that applies that entry drops the bytes from its own store.
+Each file has its own random key, so no other app can mark the same ciphertext.
+
 ## Limits
 
 | Limit | Value |

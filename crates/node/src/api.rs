@@ -40,6 +40,9 @@ use crate::types::{
     now_secs, Access, Account, ApiKeyRecord, Caller, Invite, OrgRole, RefreshRecord, TeamJoin,
 };
 
+/// How long a replica move retries the second hand-over of files, and how long it pauses.
+const HAND_OVER_AGAIN_WITHIN: Duration = Duration::from_secs(10);
+const HAND_OVER_AGAIN_PAUSE: Duration = Duration::from_millis(500);
 const SESSION_TTL: u64 = 15 * 60;
 const REFRESH_TTL: u64 = 30 * 24 * 60 * 60;
 const CHALLENGE_TTL: u64 = 5 * 60;
@@ -4146,17 +4149,6 @@ async fn caller_may_hold_app(
     caller_may_hold(node, caller, &app)
 }
 
-/// Whether a blob is code (a bundle, a package release): what any node of
-/// the cluster may fetch. Anything else is an app's data.
-fn is_code(node: &Node, hash: &str) -> bool {
-    node.sys(|s| {
-        s.bundles.contains_key(hash)
-            || s.packages
-                .values()
-                .any(|p| p.versions.values().any(|v| v.mpk == hash))
-    })
-}
-
 /// The apps hosted here whose state marks blob `hash`.
 fn hosted_holders(node: &Node, hash: &str) -> Vec<crate::types::AppRecord> {
     let Some(raw) = hex::decode(hash)
@@ -4309,9 +4301,21 @@ async fn internal_blob_put(
     if hex::encode(sha256(&wasm.0)) != body.hash {
         return Err(ApiError::bad_request("BAD_REQUEST", "hash does not match"));
     }
+    #[cfg(feature = "testing")]
+    node.note_blob_put();
+    #[cfg(feature = "testing")]
+    let mode = node.peer_blobs_mode();
+    #[cfg(feature = "testing")]
+    if mode == crate::node::PeerBlobs::Refuse {
+        return Err(ApiError::unavailable("blob puts are refused"));
+    }
     node.engine
         .put_blob(&body.hash, &wasm.0)
         .map_err(|e| ApiError::internal(&e.to_string()))?;
+    #[cfg(feature = "testing")]
+    if mode == crate::node::PeerBlobs::StoreThenFail {
+        return Err(ApiError::unavailable("blob put answered late"));
+    }
     Ok(Json(json!({})))
 }
 
@@ -4324,7 +4328,7 @@ async fn internal_blob_get(
     let caller = peer(&node, &headers, key).await?;
     // Code goes to any node of the cluster; an app's blob only to a node
     // approved for an app hosted here that marks it.
-    if !is_code(&node, &body.hash) {
+    if !node.is_code_blob(&body.hash) {
         let allowed = hosted_holders(&node, &body.hash)
             .iter()
             .any(|app| caller_may_hold(&node, &caller, app).is_ok());
@@ -4620,19 +4624,17 @@ async fn internal_blob_delete(
     Json(body): Json<Value>,
 ) -> ApiResult {
     let _caller = peer(&node, &headers, key).await?;
+    #[cfg(feature = "testing")]
+    if node.peer_blobs_mode() == crate::node::PeerBlobs::IgnoreDeletes {
+        return Ok(Json(json!({})));
+    }
     let hash = body["hash"].as_str().unwrap_or_default().to_owned();
     // The node that collects a blob checked that no app marks it; one here
     // that still does keeps its bytes, whoever asks.
     if !hosted_holders(&node, &hash).is_empty() {
         return Err(ApiError::forbidden("an app here still holds that blob"));
     }
-    let code = node.sys(|s| {
-        s.bundles.contains_key(&hash)
-            || s.packages
-                .values()
-                .any(|p| p.versions.values().any(|v| v.mpk == hash))
-    });
-    if !code {
+    if !node.is_code_blob(&hash) {
         node.engine
             .delete_blob(&hash)
             .map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -5427,7 +5429,9 @@ async fn move_replicas(
         .filter(|(id, _)| !current.contains(id))
         .cloned()
         .collect();
-    let _handed = node.hand_over_bytes(&app, &g, &joining).await?;
+    let handed = node
+        .hand_over_bytes(&app, &g, &joining, &std::collections::HashSet::new())
+        .await?;
     for (id, addr) in addrs {
         if !g.status().voters.contains(&id) {
             g.add_learner(id, addr)
@@ -5438,6 +5442,15 @@ async fn move_replicas(
     g.change_voters(target.clone())
         .await
         .map_err(|e| membership_err(&e))?;
+    // Files made while the move ran may have reached a majority that left the joining nodes
+    // out: hand those over before the old nodes go, but never abandon the move for it.
+    let again = crate::node::retry_within(HAND_OVER_AGAIN_WITHIN, HAND_OVER_AGAIN_PAUSE, || {
+        node.hand_over_bytes(&app, &g, &joining, &handed)
+    })
+    .await;
+    if let Err(e) = again {
+        warn!(app = %app_id, error = %e, "files made during the move were not handed over");
+    }
     let _ok = node
         .sys_write(&SystemCmd::SetReplicas {
             app_id,

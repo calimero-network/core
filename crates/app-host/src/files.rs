@@ -18,6 +18,8 @@ pub const MAX_RUN_FILE_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_READ_CHUNK: u32 = 1024 * 1024;
 /// Files one run may delete.
 pub const MAX_DELETES: usize = 1_000;
+/// Files one run may finish.
+pub const MAX_NEW_FILES: usize = 1_000;
 
 /// The soft errors of the `files` interface (the WIT `result<_, string>`), fixed so every
 /// engine and SDK returns and matches the same strings.
@@ -31,6 +33,11 @@ pub const FILE_FAILED: &str = "file write failed";
 pub const FILE_DELETED_TWICE: &str = "file already deleted";
 pub const FILE_CREATED_IN_RUN: &str = "file created in this run";
 pub const FILE_TOO_MANY_DELETES: &str = "too many deletes";
+pub const FILE_TOO_MANY_NEW: &str = "too many new files";
+/// The bytes of a file cannot be had now (a view's soft error; a logged run is aborted).
+pub const FILE_UNAVAILABLE: &str = "file bytes are not available";
+/// The reason of the trap a corrupt or truncated file ends the run with; never a soft error.
+pub const FILE_CORRUPT: &str = "file failed its integrity check";
 
 /// A file's plaintext size and SHA-256, as the app's mark records them.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,11 +57,30 @@ pub struct NewFile {
     pub ciphertext: Vec<u8>,
 }
 
+/// Why a file could not be opened or created.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileError {
+    /// The guest is told (the WIT `result<_, string>`).
+    Failed(String),
+    /// The node cannot serve the file now. A logged run is aborted and retried (never a
+    /// choice the guest makes, which would be logged); a view gets `FILE_UNAVAILABLE`.
+    Unavailable,
+}
+
+/// Why a read failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadError {
+    /// The guest is told (the WIT `result<_, string>`).
+    Failed(String),
+    /// The stored bytes are altered or cut short: the run traps, so no guest can ignore it.
+    Corrupt,
+}
+
 /// Plaintext of one file, read front to back.
 pub trait FileRead: Send {
     /// Up to `max` bytes (the host core truncates a longer answer); an empty vector is the
-    /// end of the file.
-    fn read(&mut self, max: usize) -> Result<Vec<u8>, String>;
+    /// end of the file, and only after the whole file proved authentic.
+    fn read(&mut self, max: usize) -> Result<Vec<u8>, ReadError>;
 }
 
 /// A file being written.
@@ -66,24 +92,24 @@ pub trait FileWrite: Send {
 /// The node's file store, as one run sees it.
 pub trait Files: Send + Sync {
     /// Opens a file the app marks; `NO_SUCH_FILE` for any other id.
-    fn open(&self, id: &str) -> Result<Box<dyn FileRead>, String>;
+    fn open(&self, id: &str) -> Result<Box<dyn FileRead>, FileError>;
     fn info(&self, id: &str) -> Option<FileInfo>;
-    fn create(&self) -> Result<Box<dyn FileWrite>, String>;
+    fn create(&self) -> Result<Box<dyn FileWrite>, FileError>;
 }
 
 /// The provider of a node that has no file store: nothing exists and nothing can be made.
 pub struct NoFiles;
 
 impl Files for NoFiles {
-    fn open(&self, _id: &str) -> Result<Box<dyn FileRead>, String> {
-        Err(NO_SUCH_FILE.to_owned())
+    fn open(&self, _id: &str) -> Result<Box<dyn FileRead>, FileError> {
+        Err(FileError::Failed(NO_SUCH_FILE.to_owned()))
     }
 
     fn info(&self, _id: &str) -> Option<FileInfo> {
         None
     }
 
-    fn create(&self) -> Result<Box<dyn FileWrite>, String> {
-        Err(FILES_DISABLED.to_owned())
+    fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
+        Err(FileError::Failed(FILES_DISABLED.to_owned()))
     }
 }

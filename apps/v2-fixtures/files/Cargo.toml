@@ -1,0 +1,17 @@
+[package]
+name = "v2-fixture-files"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Cluster-test fixture on the v2 app SDK: files"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-app-sdk = { path = "../../../crates/app-sdk" }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.11"
+
+# Standalone, like the SDK's sample guest: the test builds this crate for wasm32-wasip2.
+[workspace]

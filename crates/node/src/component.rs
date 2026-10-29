@@ -56,7 +56,30 @@ pub struct Outcome {
     /// The owner-only app log (spec section 5); kept whatever the status.
     #[serde(default)]
     pub logs: Vec<String>,
+    /// The files the run finished: their marks only, the ciphertext never enters the log.
+    #[serde(default)]
+    pub files: Vec<FileMark>,
+    /// The ids of the files the run deleted.
+    #[serde(default)]
+    pub deleted_files: Vec<String>,
 }
+
+/// What the app's state records of a file (ciphertext lives outside the log, by `id`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileMark {
+    /// Hex SHA-256 of the ciphertext: the blob's name.
+    pub id: String,
+    /// Plaintext bytes.
+    pub size: u64,
+    /// SHA-256 of the plaintext.
+    pub sha256: Bytes,
+    /// The data key, wrapped under the app's file key.
+    pub wrapped_key: Bytes,
+}
+
+/// The app's file marks by id, shared between the machine and the runs reading it.
+pub type Marks = Arc<BTreeMap<String, FileMark>>;
 
 /// The name a trap kind has on the wire (the spec's names).
 #[must_use]
@@ -88,6 +111,7 @@ impl Outcome {
     #[must_use]
     pub fn from_host(out: host::Outcome) -> Self {
         let logs = out.logs;
+        let (files, deleted_files) = (out.new_files, out.deleted_files);
         let mut outcome = match out.status {
             host::Status::Ok => Self::ok(out.result, out.diff, out.events),
             host::Status::AppError { code, message } => Self {
@@ -101,6 +125,10 @@ impl Outcome {
             host::Status::Trap { kind, detail } => Self::trap(kind, &detail),
         };
         outcome.logs = logs;
+        if outcome.status == Status::Ok {
+            outcome.files = files.into_iter().map(FileMark::from).collect();
+            outcome.deleted_files = deleted_files;
+        }
         outcome
     }
 
@@ -136,7 +164,7 @@ impl Outcome {
                 })
                 .collect(),
             events: out,
-            logs: Vec::new(),
+            ..Self::default()
         }
     }
 
@@ -145,6 +173,17 @@ impl Outcome {
     #[must_use]
     pub fn is_timeout(&self) -> bool {
         self.status == Status::Trap && self.error["kind"] == trap_name(host::TrapKind::Timeout)
+    }
+}
+
+impl From<host::NewFile> for FileMark {
+    fn from(file: host::NewFile) -> Self {
+        Self {
+            id: file.id,
+            size: file.size,
+            sha256: Bytes(file.sha256),
+            wrapped_key: Bytes(file.wrapped_key),
+        }
     }
 }
 
@@ -353,17 +392,26 @@ pub struct ComponentState {
     /// The app's data, stored keys (generation prefix included). Shared with
     /// running calls and views as their `StateView` (D46).
     pub kv: Kv,
+    /// The app's files (marks), shared with running calls and views like `kv`.
+    pub files: Marks,
 }
 
 impl ComponentState {
-    /// Read the app's storage rows into memory (after a restart or a snapshot install).
+    /// Read the app's storage and file rows into memory (after a restart or a snapshot install).
     pub fn load(&mut self, state: &GroupState) -> eyre::Result<()> {
         let mut kv = BTreeMap::new();
         state.scan_hidden(rows::CKV, |k, v| {
             let _prev = kv.insert(k.to_vec(), v.to_vec());
             Ok(true)
         })?;
+        let mut files = BTreeMap::new();
+        state.scan_hidden(rows::CFILE, |_, v| {
+            let mark: FileMark = serde_json::from_slice(v)?;
+            let _prev = files.insert(mark.id.clone(), mark);
+            Ok(true)
+        })?;
         self.kv = Arc::new(kv);
+        self.files = Arc::new(files);
         Ok(())
     }
 }
@@ -419,6 +467,12 @@ impl AppMachine {
         Arc::clone(&self.state.component.kv) as Arc<dyn host::StateView>
     }
 
+    /// The files the app holds, as a run sees them.
+    #[must_use]
+    pub fn file_marks(&self) -> Marks {
+        Arc::clone(&self.state.component.files)
+    }
+
     /// Whether `slot` of `timer` was already applied.
     #[must_use]
     pub fn tick_applied(&self, timer: &str, slot: u64) -> bool {
@@ -460,6 +514,7 @@ impl AppMachine {
                     }
                 }
             }
+            self.apply_files(tx, index, outcome);
             for (seq, e) in outcome.events.iter().enumerate() {
                 self.push_event(
                     tx,
@@ -486,6 +541,33 @@ impl AppMachine {
             },
             conflict: false,
             timeout: false,
+        }
+    }
+
+    /// Marks the files an `Ok` run finished and forgets the ones it deleted.
+    fn apply_files(&mut self, tx: &mut StateTx<'_>, index: u64, outcome: &Outcome) {
+        if outcome.files.is_empty() && outcome.deleted_files.is_empty() {
+            return;
+        }
+        let files = Arc::make_mut(&mut self.state.component.files);
+        for mark in &outcome.files {
+            match serde_json::to_vec(mark) {
+                Ok(row) => tx.put_hidden(rows::CFILE, mark.id.as_bytes(), &row),
+                Err(e) => tx.fail(e),
+            }
+            let _prev = files.insert(mark.id.clone(), mark.clone());
+        }
+        for id in &outcome.deleted_files {
+            tx.delete_hidden(rows::CFILE, id.as_bytes());
+            let _prev = files.remove(id);
+        }
+        // The node drops the bytes once entry `index` shows as applied, so a failed commit keeps them.
+        if let Some(forgotten) = self
+            .forgotten
+            .as_ref()
+            .filter(|_| !outcome.deleted_files.is_empty())
+        {
+            let _sent = forgotten.send((index, outcome.deleted_files.clone()));
         }
     }
 
@@ -898,6 +980,99 @@ mod tests {
             key: Bytes(k.as_bytes().to_vec()),
             value: Some(Bytes(v.as_bytes().to_vec())),
         }
+    }
+
+    fn mark(id: &str) -> FileMark {
+        FileMark {
+            id: id.into(),
+            size: 5,
+            sha256: Bytes(vec![1; 32]),
+            wrapped_key: Bytes(vec![2; 60]),
+        }
+    }
+
+    fn call_with_files(
+        base: u64,
+        status: Status,
+        files: Vec<FileMark>,
+        deleted: Vec<&str>,
+    ) -> Vec<u8> {
+        let mut cmd: ComponentCmd = serde_json::from_slice(&call(base, None, Vec::new())).unwrap();
+        if let ComponentCmd::Call(c) = &mut cmd {
+            c.outcome.status = status;
+            c.outcome.files = files;
+            c.outcome.deleted_files = deleted.into_iter().map(str::to_owned).collect();
+        }
+        serde_json::to_vec(&cmd).unwrap()
+    }
+
+    fn marked(r: &Rig) -> Vec<String> {
+        r.machine.state.component.files.keys().cloned().collect()
+    }
+
+    #[test]
+    fn an_ok_entry_marks_and_unmarks_files_and_a_failed_one_does_not() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let _a = r.apply(
+            2,
+            &call_with_files(1, Status::Ok, vec![mark("a"), mark("b")], vec![]),
+        );
+        assert_eq!(marked(&r), ["a", "b"]);
+        let _a = r.apply(
+            3,
+            &call_with_files(2, Status::AppError, vec![mark("c")], vec!["a"]),
+        );
+        assert_eq!(marked(&r), ["a", "b"], "a failed run changed the marks");
+        let _a = r.apply(4, &call_with_files(3, Status::Ok, vec![], vec!["a"]));
+        assert_eq!(marked(&r), ["b"]);
+        // Built on a state that is no longer current: nothing applied.
+        assert!(
+            r.apply(5, &call_with_files(1, Status::Ok, vec![mark("d")], vec![]))
+                .conflict
+        );
+        assert_eq!(marked(&r), ["b"]);
+    }
+
+    #[test]
+    fn the_stored_files_count_as_blob_bytes_with_their_tags() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let _a = r.apply(
+            2,
+            &call_with_files(1, Status::Ok, vec![mark("a"), mark("b")], vec![]),
+        );
+        assert_eq!(r.machine.storage_stats().blob_bytes, 2 * (5 + 16));
+        let _a = r.apply(3, &call_with_files(2, Status::Ok, vec![], vec!["a"]));
+        assert_eq!(r.machine.storage_stats().blob_bytes, 5 + 16);
+    }
+
+    #[test]
+    fn the_marks_come_back_from_their_rows_after_a_restore() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let _a = r.apply(
+            2,
+            &call_with_files(1, Status::Ok, vec![mark("a"), mark("b")], vec![]),
+        );
+        let _a = r.apply(3, &call_with_files(2, Status::Ok, vec![], vec!["a"]));
+        calimero_log::Machine::restore(&mut r.machine, &[]).unwrap();
+        assert_eq!(marked(&r), ["b"]);
+        assert_eq!(r.machine.state.component.files["b"], mark("b"));
+    }
+
+    #[test]
+    fn an_entry_logged_before_files_existed_still_decodes_and_applies() {
+        let old = br#"{"op":"componentCall","method":"m","args":null,
+            "caller":{"kind":"account","account":"a"},"tsMs":1,"baseIndex":1,"idTerm":1,"idSeq":1,
+            "outcome":{"status":"ok","result":null,"error":null,"diff":[],"events":[],"logs":[]}}"#;
+        let ComponentCmd::Call(entry) = serde_json::from_slice(old).unwrap() else {
+            panic!("not a call");
+        };
+        assert!(entry.outcome.files.is_empty() && entry.outcome.deleted_files.is_empty());
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        assert!(!r.apply(2, old).conflict);
     }
 
     #[test]

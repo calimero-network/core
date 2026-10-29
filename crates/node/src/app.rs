@@ -269,6 +269,8 @@ pub(crate) mod rows {
 
     /// A component's storage (`crate::component`): its stored keys.
     pub const CKV: u8 = b'c';
+    /// A component's files: one mark per file, keyed by blob id.
+    pub const CFILE: u8 = b'f';
     /// A component's idempotency records, by `caller|key`.
     pub const CIDEM: u8 = b'j';
     /// A component's idempotency keys per class in the order they were recorded:
@@ -479,6 +481,9 @@ pub struct AppMachine {
     pub ticks: crate::component::Ticks,
     /// Idempotency floors and cap, both executors (D74's; tests scale them down).
     pub(crate) idem_limits: crate::idempotency::Limits,
+    /// Where an applied entry's index and the ids of the files it deleted go, so this replica
+    /// drops their bytes outside `apply`; not part of the state.
+    pub forgotten: Option<tokio::sync::mpsc::UnboundedSender<(u64, Vec<String>)>>,
 }
 
 impl AppMachine {
@@ -494,6 +499,7 @@ impl AppMachine {
             #[cfg(feature = "testing")]
             ticks: crate::component::Ticks::new(),
             idem_limits: crate::idempotency::Limits::default(),
+            forgotten: None,
         }
     }
 
@@ -558,10 +564,11 @@ impl AppMachine {
         Some(out)
     }
 
-    /// Whether `id` (hex) is a blob of this app.
+    /// Whether `id` is a blob of this app or, for a component, one of its files.
     #[must_use]
     pub fn holds_blob(&self, id: &[u8; 32]) -> bool {
         self.state.kv.get(&blob_key(id)).is_some()
+            || self.state.component.files.contains_key(&hex::encode(id))
     }
 
     /// The size of one of the app's blobs, if it is one.
@@ -575,12 +582,15 @@ impl AppMachine {
     /// a scan of its whole state.
     #[must_use]
     pub fn storage_stats(&self) -> StorageStats {
-        // A component's storage is its own keyspace, in memory: no blob marks (R8).
+        // A component's storage is its own keyspace, in memory; its files count as blob bytes.
         if self.state.executor() == Some(crate::types::Executor::Component) {
             let kv = &self.state.component.kv;
             return StorageStats {
                 keys: kv.len() as u64,
                 bytes: kv.iter().map(|(k, v)| (k.len() + v.len()) as u64).sum(),
+                blob_bytes: (self.state.component.files.values())
+                    .map(|f| crate::files::sealed_len(f.size))
+                    .sum(),
                 ..StorageStats::default()
             };
         }
@@ -779,6 +789,7 @@ impl Machine for AppMachine {
         self.state.set_head(head);
         // A component's storage, in memory again from its rows.
         self.state.component.kv = crate::component::Kv::default();
+        self.state.component.files = crate::component::Marks::default();
         if self.state.executor() == Some(crate::types::Executor::Component) {
             if let Some(state) = self.state.kv.state.clone() {
                 self.state.component.load(&state)?;
