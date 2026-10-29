@@ -21,4 +21,7 @@ strings.
 
 `cargo test` runs `tests/harness.rs` (v1's tests, method for method) and
 `scenarios/permissions-showcase.json`, the merobox workflow as a scenario with exact
-results, in the org of `permissions-showcase.org.json`.
+results, in the org of `permissions-showcase.org.json`. `scenarios/forged-writes.json`
+replays what v1's storage refused on apply (rewriting a written-once message or
+announcement, removing an announcement or appointing a moderator without being one,
+revising someone else's page) as calls, each refused by the method's check.

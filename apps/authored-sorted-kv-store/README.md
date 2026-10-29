@@ -45,3 +45,6 @@ cargo test --manifest-path apps/authored-sorted-kv-store/Cargo.toml
 `scenarios/authored-sorted-kv-store.json` (the former merobox workflow: the
 owner gate refused to the other account, both notes on one seq, the slice
 unmoved by a 150-note flood) in the harness. The cluster runs the same file.
+`scenarios/forged-writes.json` replays what v1's storage refused a patched peer
+(another account editing or retracting a note) as calls, refused by the author
+check in `edit` and `retract`, with the board unchanged.

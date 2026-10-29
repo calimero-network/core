@@ -37,4 +37,7 @@ key), `HasSeparator { value }`.
 
 `cargo test` runs `tests/harness.rs` (v1's tests, method for method) and
 `scenarios/indexed-forum.json`, the merobox workflow as a scenario with exact results, in
-the org of `indexed-forum.org.json`.
+the org of `indexed-forum.org.json`. `scenarios/forged-writes.json` replays what v1's
+storage refused a patched peer (editing, retagging, pinning, deleting or moderating
+someone else's post, editing or deleting their comment, taking back their vote) as
+calls, each refused by the method's author or moderator check, with the post unchanged.

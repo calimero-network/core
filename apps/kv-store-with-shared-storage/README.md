@@ -28,4 +28,6 @@ Errors: `NotWriter { field }` (`"value"` or `"map"`), `NoWriters`, `TooManyWrite
 
 `cargo test` runs `tests/harness.rs` (v1's tests and the refusals) and
 `scenarios/shared-storage.json`, the merobox workflow `test_shared_storage.yml` as a
-scenario, in the org of `shared-storage.org.json`.
+scenario, in the org of `shared-storage.org.json`. `scenarios/forged-writes.json`
+replays v1's forged writes and rotation (a non-writer setting the value or the map,
+or rotating the value's writers) as calls, each refused by the writer check.

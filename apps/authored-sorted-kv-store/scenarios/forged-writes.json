@@ -1,0 +1,18 @@
+[
+  { "as": "owner", "op": "call", "method": "post", "args": { "topic": "news", "seq": "1", "text": "owner's note" }, "save": "k1" },
+  { "as": "mallory", "op": "call", "method": "edit", "args": { "key": "$k1", "text": "forged" },
+    "expect": { "error": "NotFound", "fields": { "key": "$k1" } } },
+  { "as": "mallory", "op": "call", "method": "retract", "args": { "key": "$k1" },
+    "expect": { "error": "NotFound", "fields": { "key": "$k1" } } },
+  { "as": "mallory", "op": "call", "method": "post", "args": { "topic": "news", "seq": "1", "text": "mallory's note" }, "save": "k2" },
+  { "as": "owner", "op": "view", "method": "get", "args": { "key": "$k1" }, "expect": { "ok": "owner's note" } },
+  { "as": "owner", "op": "view", "method": "ownerOf", "args": { "key": "$k1" }, "expect": { "ok": "@owner" } },
+  { "as": "owner", "op": "view", "method": "ownerOf", "args": { "key": "$k2" }, "expect": { "ok": "@mallory" } },
+  { "as": "owner", "op": "view", "method": "readTopic", "args": { "topic": "news" },
+    "expect": { "ok": [
+      { "key": "$k1", "author": "@owner", "text": "owner's note", "keyMatchesOwner": true },
+      { "key": "$k2", "author": "@mallory", "text": "mallory's note", "keyMatchesOwner": true } ] } },
+  { "as": "owner", "op": "view", "method": "verifiedNotes", "args": { "topic": "news" }, "expect": { "ok": 2 } },
+  { "as": "owner", "op": "view", "method": "myNotes", "args": { "topic": "news" }, "expect": { "ok": ["$k1"] } },
+  { "as": "mallory", "op": "view", "method": "myNotes", "args": { "topic": "news" }, "expect": { "ok": ["$k2"] } }
+]
