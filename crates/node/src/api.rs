@@ -3727,7 +3727,31 @@ async fn internal_cluster_key(
 #[derive(Deserialize)]
 struct RaftBody {
     group: u64,
+    /// The node the sender meant (`PeerTransport::send`). Absent from a peer
+    /// on a release before it; accepted then, until every peer sends it.
+    #[serde(default)]
+    target: Option<calimero_log::NodeId>,
     rpc: calimero_log::RpcRequest,
+}
+
+/// How often, at most, `internal_raft` warns that it accepted a Raft message
+/// without an addressee: a peer on an earlier release sends one per heartbeat.
+pub const NO_TARGET_WARN_EVERY: Duration = Duration::from_secs(60);
+
+/// Whether a warning about an accepted message without an addressee is due:
+/// true for the first one, then at most once per `NO_TARGET_WARN_EVERY` (one
+/// slot per process, taken with a compare-and-swap, so concurrent messages
+/// warn once between them). The count in between is in
+/// `calimero_raft_misaddressed_total{reason="no_target"}`.
+fn no_target_warning_due() -> bool {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = now_secs().max(1);
+    let last = LAST.load(Ordering::Relaxed);
+    (last == 0 || now.saturating_sub(last) >= NO_TARGET_WARN_EVERY.as_secs())
+        && LAST
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
 }
 
 async fn internal_raft(
@@ -3736,6 +3760,37 @@ async fn internal_raft(
     Json(body): Json<RaftBody>,
 ) -> ApiResult {
     peer_only(&node, &headers)?;
+    match body.target {
+        // A message meant for another node (an address now held by another
+        // node of this cluster: a reused port, a node moved or replaced) is
+        // refused, never handled as this node's: a vote or append there would
+        // move this node's term or log for a sender that meant someone else.
+        Some(target) if target != node.config.node_id => {
+            let _seen = crate::metrics::raft_misaddressed(crate::metrics::RaftAddressee::WrongNode);
+            return Err(ApiError::new(
+                421,
+                "WRONG_NODE",
+                &format!(
+                    "this Raft message is for node {target}; this is node {}",
+                    node.config.node_id
+                ),
+            ));
+        }
+        Some(_) => {}
+        // No addressee: a peer on a release before it. Accepted this release,
+        // counted, and warned about at most once per `NO_TARGET_WARN_EVERY`;
+        // the release after refuses it (crates/node/AGENTS.md, "Raft addressee").
+        None => {
+            let seen = crate::metrics::raft_misaddressed(crate::metrics::RaftAddressee::NoTarget);
+            if no_target_warning_due() {
+                warn!(
+                    group = body.group,
+                    seen,
+                    "accepted a Raft message without an addressee (a peer on an earlier release); the release after this one refuses them"
+                );
+            }
+        }
+    }
     let r = node.engine.handle_rpc(body.group, body.rpc).await;
     Ok(Json(serde_json::to_value(r).unwrap_or_default()))
 }
@@ -5027,5 +5082,24 @@ mod tests {
             assert!(!id.starts_with('-'), "{id}");
             assert_eq!(id.len(), 22);
         }
+    }
+
+    /// The warning for a Raft message without an addressee is given once, then
+    /// not again within `NO_TARGET_WARN_EVERY`, however many arrive at once.
+    #[test]
+    fn the_no_target_warning_is_given_at_most_once_a_minute() {
+        let due: usize = std::thread::scope(|s| {
+            let threads: Vec<_> = (0..16)
+                .map(|_| {
+                    s.spawn(|| {
+                        (0..1_000)
+                            .filter(|_| super::no_target_warning_due())
+                            .count()
+                    })
+                })
+                .collect();
+            threads.into_iter().map(|t| t.join().unwrap_or(0)).sum()
+        });
+        assert_eq!(due, 1);
     }
 }

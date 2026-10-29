@@ -54,6 +54,7 @@ A few series keep conventional names (`http_requests_total`,
 | `calimero_system_voters` | | System group voters. |
 | `calimero_system_learners` | | System group learners. |
 | `calimero_build_conflicts_total` | | Counter: entries this node appended as leader that applied as conflicts (built on state that changed first) and ran again. |
+| `calimero_raft_misaddressed_total` | `reason` | Counter: Raft messages from peers whose addressee did not check out. `wrong_node`: addressed to another node, refused (`421 WRONG_NODE`); a steady rate means a peer reaches this node at an address the cluster has for another one. `no_target`: no addressee, from a peer on an earlier release; accepted this release (with a warning at most once a minute) and refused from the next, so it should fall to zero once every node runs this release. |
 | `calimero_group_applied` | `group` | An app group's applied index here, per hosted group (the label is the group number, not the app's name). |
 | `calimero_build_info` | `release` | Always `1`; `release` is this node's release. |
 | `calimero_group_term` | `group` | The group's Raft term here; `group` is `system` or an app group's number. A change is an election. |

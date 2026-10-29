@@ -152,6 +152,16 @@ is its command line.
   `GET /apps/{app}` (#4723) and every client call's leader read the system state through `sys_fresh`
   (a read index), so a removal committed elsewhere holds before the next request. Regression:
   `an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behind`.
+- **Raft addressee** (`PeerTransport::send`, `api::internal_raft`): every Raft message names the
+  node it is for (`target`); a node that is not that node refuses it `421 WRONG_NODE`, so a message
+  that reaches the wrong node (a reused port, a node moved or replaced) cannot move its term or log.
+  Regression: `a_raft_message_for_another_node_is_refused_and_the_group_stays_healthy`. Both cases
+  are counted in `calimero_raft_misaddressed_total{reason}`. **Transition:** a message without
+  `target` comes from a peer on a release before this one; this release accepts it, counts it
+  (`no_target`) and warns at most once per `api::NO_TARGET_WARN_EVERY` (60 s, one slot per process
+  taken by compare-and-swap; the count in between is in the metric). The release after this one
+  refuses a missing `target` too (`RaftBody::target` stops being optional): ship it only once every
+  node runs this release, which `no_target` at zero on every node shows.
 - **Joining nodes**: a node started without `--bootstrap` waits; once
   `/ops/nodes` registers it, the system leader adds it to the system group as a
   learner (`Node::admit_registered_nodes`, from `reconcile`), it catches up and

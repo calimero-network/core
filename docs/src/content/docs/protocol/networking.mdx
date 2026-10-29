@@ -103,9 +103,13 @@ only nodes holding the cluster key K_c can compute
 ([Encryption](/protocol/encryption/#the-cluster-key-k_c)). `/internal/*` routes
 refuse a request without it, compared in constant time.
 
-Raft itself is an RPC: `POST /internal/raft { group, rpc }` carries an
+Raft itself is an RPC: `POST /internal/raft { group, target, rpc }` carries an
 `AppendEntries`, `Vote` or `InstallSnapshot` request as JSON and returns the
-response. Forwarded calls go to `internal/call`, views to `internal/view`,
+response. `target` is the node id the sender meant: a node answering at that
+address under another id (a reused port, a node moved or replaced) refuses it
+with `421 WRONG_NODE` instead of taking the message as its own. A message
+without `target` comes from a peer on an earlier release; it is still accepted,
+counted and warned about, and the release after refuses it. Forwarded calls go to `internal/call`, views to `internal/view`,
 system writes to `internal/system`. A forward to an app's leader is bounded at
 5 seconds; a system write keeps the 30-second HTTP timeout.
 

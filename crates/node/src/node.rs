@@ -394,7 +394,7 @@ struct PeerTransport {
 impl Transport for PeerTransport {
     fn send(
         &self,
-        _target: NodeId,
+        target: NodeId,
         addr: String,
         group: GroupId,
         request: RpcRequest,
@@ -407,7 +407,9 @@ impl Transport for PeerTransport {
                     "{addr} runs a release the app's owner has not approved; it gets none of the app's data"
                 ));
             }
-            let body = json!({ "group": group, "rpc": request });
+            // The addressee, so a node that answers at `addr` but is not
+            // `target` refuses the message (`api::internal_raft`).
+            let body = json!({ "group": group, "target": target, "rpc": request });
             let resp = node
                 .peer_post(&addr, "internal/raft", &body)
                 .await
