@@ -2,7 +2,7 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
-// The docs site: Starlight, our theme, and hand-authored SVG diagrams
+// The docs site: Starlight, the landing's theme (src/styles/theme.css), and hand-authored SVG diagrams
 // (src/components/diagrams) plus the SeqDiagram engine. Content is MDX.
 export default defineConfig({
   site: 'https://calimero-network.github.io',
@@ -26,6 +26,8 @@ export default defineConfig({
     '/protocol/tee-authorship/': '/core/protocol/authorship/',
     '/protocol/client-paths/': '/core/protocol/write-path/',
     '/cloud/operate/': '/core/operate/deployment/',
+    '/cloud/coming-from-v1/': '/core/protocol/glossary/',
+    '/build/delegated-execution-client/': '/core/protocol/write-path/',
   },
   integrations: [
     starlight({
@@ -40,13 +42,12 @@ export default defineConfig({
       },
       favicon: '/favicon.svg',
       customCss: ['./src/styles/theme.css'],
-      // Vivid, high-contrast code highlighting with a code surface lifted off
-      // the page background (theme-reactive via our gray vars) so blocks stand
-      // out instead of blending into #0d1117.
+      // Code blocks in the landing's style: square, ruled, on the paper-2
+      // surface (theme-reactive via the gray vars theme.css maps).
       expressiveCode: {
         themes: ['github-dark', 'github-light'],
         styleOverrides: {
-          borderRadius: '0.5rem',
+          borderRadius: '0',
           borderColor: 'var(--sl-color-gray-6)',
           codeBackground: 'var(--sl-color-gray-7)',
           codeFontFamily: 'var(--sl-font-mono)',
@@ -61,7 +62,7 @@ export default defineConfig({
         baseUrl: 'https://github.com/calimero-network/core/edit/master/docs/',
       },
       head: [
-        { tag: 'meta', attrs: { name: 'theme-color', content: '#09090b' } },
+        { tag: 'meta', attrs: { name: 'theme-color', content: '#121211' } },
       ],
       social: [
         {
@@ -82,7 +83,7 @@ export default defineConfig({
         {
           // Overview, quickstart and writing apps.
           label: 'Get started',
-          items: ['cloud/overview', 'cloud/quickstart', 'cloud/apps', 'cloud/coming-from-v1'],
+          items: ['cloud/overview', 'cloud/quickstart', 'cloud/apps'],
         },
         {
           label: 'Build',

@@ -1,5 +1,8 @@
 /**
- * Shared client behaviour for both diagram components:
+ * Shared client behaviour for both diagram components. Colours are written as
+ * the palette's authoring keys (hex attributes, alpha as opacity); theme.css
+ * repaints every key with the site's tokens, per light/dark theme.
+ *
  *  - renders every data-driven sequence diagram ([data-seq]) via the bespoke engine
  *  - wires every Replay button ([data-replay]) to re-run the step cascade
  *
@@ -31,13 +34,13 @@ function render(box: HTMLElement) {
 
   const svg = S('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': `${data.title} sequence diagram` });
   svg.appendChild(S('title', null, data.title));
-  svg.appendChild(S('rect', { x: 0, y: 0, width: W, height: H, fill: '#0f0f16', rx: 10 }));
+  svg.appendChild(S('rect', { class: 'seq-bg', x: 0, y: 0, width: W, height: H, fill: '#0f0f16' }));
 
   lanes.forEach((lane: any, i: number) => {
     const x = cx[i], hw = Math.min(lw - 10, 134);
-    svg.appendChild(S('rect', { x: x - hw / 2, y: 10, width: hw, height: 32, rx: 6, fill: lane.color + '18', stroke: lane.color + '50', 'stroke-width': 1 }));
+    svg.appendChild(S('rect', { x: x - hw / 2, y: 10, width: hw, height: 32, fill: lane.color, 'fill-opacity': 0.09, stroke: lane.color, 'stroke-opacity': 0.5, 'stroke-width': 1 }));
     svg.appendChild(S('text', { x, y: 31, 'text-anchor': 'middle', fill: lane.color, 'font-family': 'var(--sl-font-mono)', 'font-size': lane.label.length > 11 ? '9.5' : '10.5', 'font-weight': '600' }, lane.label));
-    svg.appendChild(S('line', { x1: x, y1: 48, x2: x, y2: H - 14, stroke: '#252538', 'stroke-width': 1, 'stroke-dasharray': '3,4' }));
+    svg.appendChild(S('line', { class: 'seq-lifeline', x1: x, y1: 48, x2: x, y2: H - 14, stroke: '#252538', 'stroke-width': 1, 'stroke-dasharray': '3,4' }));
   });
 
   let stepNum = 0;
@@ -45,15 +48,15 @@ function render(box: HTMLElement) {
     const y = SS + i * SH;
     const g = S('g', { class: 'seq-step', style: `--step-i:${i}` });
     if (step.type === 'divider') {
-      g.appendChild(S('line', { x1: L, y1: y, x2: W - R, y2: y, stroke: '#35354a', 'stroke-width': 1, 'stroke-dasharray': '6,4' }));
+      g.appendChild(S('line', { class: 'seq-divider', x1: L, y1: y, x2: W - R, y2: y, stroke: '#35354a', 'stroke-width': 1, 'stroke-dasharray': '6,4' }));
       const dlw = step.label.length * 6.2 + 24;
-      g.appendChild(S('rect', { x: W / 2 - dlw / 2, y: y - 11, width: dlw, height: 20, fill: '#0f0f16', rx: 4 }));
-      g.appendChild(S('text', { x: W / 2, y: y + 4, 'text-anchor': 'middle', fill: '#9aa4b2', 'font-family': 'var(--sl-font)', 'font-size': '10.5', 'font-style': 'italic' }, step.label));
+      g.appendChild(S('rect', { class: 'seq-bg', x: W / 2 - dlw / 2, y: y - 11, width: dlw, height: 20, fill: '#0f0f16' }));
+      g.appendChild(S('text', { class: 'seq-note', x: W / 2, y: y + 4, 'text-anchor': 'middle', fill: '#9aa4b2', 'font-family': 'var(--sl-font)', 'font-size': '10.5', 'font-style': 'italic' }, step.label));
       svg.appendChild(g);
       return;
     }
     stepNum++;
-    g.appendChild(S('text', { x: 12, y: y + 4, fill: '#5a6472', 'font-family': 'var(--sl-font-mono)', 'font-size': '9.5', 'font-weight': '700' }, String(stepNum)));
+    g.appendChild(S('text', { class: 'seq-num', x: 12, y: y + 4, fill: '#5a6472', 'font-family': 'var(--sl-font-mono)', 'font-size': '9.5', 'font-weight': '700' }, String(stepNum)));
     const fx = cx[step.from], tx = cx[step.to];
     const col = step.color || lanes[step.to].color;
     if (step.from === step.to) {
@@ -67,13 +70,13 @@ function render(box: HTMLElement) {
     } else {
       const d = tx > fx ? 1 : -1;
       const x1 = fx + d * 5, x2 = tx - d * 5;
-      g.appendChild(S('circle', { cx: fx, cy: y, r: 2.5, fill: col + '70' }));
+      g.appendChild(S('circle', { cx: fx, cy: y, r: 2.5, fill: col, 'fill-opacity': 0.45 }));
       g.appendChild(S('circle', { cx: tx, cy: y, r: 3, fill: col }));
       const dashVal = step.dashed ? '5,3' : 'none';
       const opVal = step.dashed ? '.55' : '1';
       g.appendChild(S('line', { x1, y1: y, x2, y2: y, stroke: col, 'stroke-width': 1.5, 'stroke-dasharray': dashVal, 'stroke-opacity': opVal }));
       g.appendChild(S('polygon', { points: `${x2},${y} ${x2 - d * 7},${y - 3.5} ${x2 - d * 7},${y + 3.5}`, fill: col, 'fill-opacity': opVal }));
-      g.appendChild(S('text', { x: (x1 + x2) / 2, y: y - 8, 'text-anchor': 'middle', fill: '#c4c4cc', 'font-family': 'var(--sl-font-mono)', 'font-size': '9.5' }, step.label));
+      g.appendChild(S('text', { class: 'seq-label', x: (x1 + x2) / 2, y: y - 8, 'text-anchor': 'middle', fill: '#c4c4cc', 'font-family': 'var(--sl-font-mono)', 'font-size': '9.5' }, step.label));
     }
     svg.appendChild(g);
   });
