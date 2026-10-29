@@ -1,14 +1,15 @@
 //! `#[app::error]` and `#[app::event]`: enums whose variants carry JSON payloads.
 //!
-//! The variant name is the error code or event name. Fields are camelCase JSON keys;
-//! tuple fields are keyed `"0"`, `"1"`, ...; `u64`/`i64` fields are decimal strings (D20,
+//! The variant name is the error code or event name. Fields are camelCase JSON keys, and
+//! every field is named (D63): a tuple variant, or a tuple struct in place of the enum, is a
+//! compile error; a unit variant has no fields. `u64`/`i64` fields are decimal strings (D20,
 //! Ruling 25). Each macro also emits its part of the ABI as a module-level constant that
 //! `#[app::logic]` in the same module picks up.
 
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::{quote, ToTokens};
 use serde_json::{Map, Value};
-use syn::{Fields, ItemEnum};
+use syn::{Fields, Item, ItemEnum};
 
 use crate::types::{abi_type, camel, canonical, check_wire, wire, Wire};
 
@@ -17,6 +18,45 @@ use crate::types::{abi_type, camel, canonical, check_wire, wire, Wire};
 pub enum Payload {
     Error,
     Event,
+}
+
+impl Payload {
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Event => "event",
+        }
+    }
+}
+
+/// The refusal of fields without names (D63), pointing at `at`.
+fn unnamed(kind: Payload, at: impl ToTokens, what: &str, name: &str) -> syn::Error {
+    syn::Error::new_spanned(
+        at,
+        format!(
+            "app {}s name every field (D63): {what} `{name}` has unnamed fields; write `{name} {{ field: Type }}`",
+            kind.noun()
+        ),
+    )
+}
+
+/// `#[app::error]` / `#[app::event]` on any item: an enum is expanded, a tuple struct is
+/// refused naming D63, anything else is refused as not an enum.
+pub fn expand_item(kind: Payload, item: &Item) -> syn::Result<TokenStream> {
+    match item {
+        Item::Enum(item) => expand(kind, item),
+        Item::Struct(s) if matches!(s.fields, Fields::Unnamed(_)) => {
+            Err(unnamed(kind, s, "tuple struct", &s.ident.to_string()))
+        }
+        other => Err(syn::Error::new_spanned(
+            other,
+            format!(
+                "app {}s are an enum: one variant per {}, each with named fields",
+                kind.noun(),
+                kind.noun()
+            ),
+        )),
+    }
 }
 
 pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
@@ -31,15 +71,19 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
     let mut arms = Vec::new();
     for variant in &item.variants {
         let vname = &variant.ident;
+        if let Fields::Unnamed(_) = &variant.fields {
+            return Err(unnamed(kind, variant, "tuple variant", &vname.to_string()));
+        }
         let code = vname.to_string();
         let mut fields_abi = Map::new();
         let mut binds = Vec::new();
         let mut inserts = Vec::new();
-        for (i, field) in variant.fields.iter().enumerate() {
-            let (key, bind) = match &field.ident {
-                Some(ident) => (camel(&ident.to_string()), ident.clone()),
-                None => (i.to_string(), format_ident!("__f{}", i)),
+        for field in &variant.fields {
+            // Every field is named: tuple variants were refused above.
+            let Some(bind) = field.ident.clone() else {
+                return Err(unnamed(kind, field, "tuple variant", &vname.to_string()));
             };
+            let key = camel(&bind.to_string());
             check_wire(&field.ty)?;
             let _ = fields_abi.insert(key.clone(), Value::String(abi_type(&field.ty)));
             let value = match wire(&field.ty) {
@@ -80,9 +124,8 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
         }
         let _ = abi.insert(code.clone(), Value::Object(fields_abi));
         let pattern = match &variant.fields {
-            Fields::Named(_) => quote! { #name::#vname { #(#binds),* } },
-            Fields::Unnamed(_) => quote! { #name::#vname ( #(#binds),* ) },
             Fields::Unit => quote! { #name::#vname },
+            Fields::Named(_) | Fields::Unnamed(_) => quote! { #name::#vname { #(#binds),* } },
         };
         arms.push(quote! {
             #pattern => {
@@ -151,6 +194,36 @@ mod tests {
         };
         let out = expand(Payload::Event, &item).unwrap().to_string();
         let abi = r#"{"Alpha":{},"Zeta":{"aField":"string","bField":"u32","data":"bytes"}}"#;
+        let lit = proc_macro2::Literal::string(abi).to_string();
+        assert!(out.contains(&lit), "{out}");
+    }
+
+    #[test]
+    fn tuple_variants_are_refused_naming_d63() {
+        for kind in [Payload::Error, Payload::Event] {
+            let item: ItemEnum =
+                parse_quote! { pub enum E { Ok { a: u32 }, Invalid(String), Gone } };
+            let err = expand(kind, &item).expect_err("refused");
+            let msg = err.to_string();
+            assert!(msg.contains("D63") && msg.contains("`Invalid`"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn a_tuple_struct_is_refused_naming_d63() {
+        let item: Item = parse_quote! { pub struct Booked(String, u32); };
+        let err = expand_item(Payload::Event, &item).expect_err("refused");
+        assert!(err.to_string().contains("D63"), "{err}");
+        let item: Item = parse_quote! { pub struct Booked { id: String } };
+        let err = expand_item(Payload::Event, &item).expect_err("refused");
+        assert!(err.to_string().contains("an enum"), "{err}");
+    }
+
+    #[test]
+    fn unit_and_named_variants_are_kept() {
+        let item: ItemEnum = parse_quote! { pub enum E { Gone, Taken { start: u64 } } };
+        let out = expand(Payload::Error, &item).unwrap().to_string();
+        let abi = r#"{"Gone":{},"Taken":{"start":"u64"}}"#;
         let lit = proc_macro2::Literal::string(abi).to_string();
         assert!(out.contains(&lit), "{out}");
     }

@@ -37,7 +37,7 @@ pub struct Rooms {
 pub enum Error {
     NotFound,
     Taken { start: u64 },
-    Invalid(String),
+    Invalid { reason: String },
 }
 
 #[app::event]
@@ -66,7 +66,9 @@ impl Rooms {
     /// Books `room_id` at `start`; `Taken` when the slot is held.
     pub fn book(&mut self, room_id: String, start: u64, title: String) -> app::Result<String> {
         if title.is_empty() {
-            app::bail!(Error::Invalid("empty title".into()));
+            app::bail!(Error::Invalid {
+                reason: "empty title".into()
+            });
         }
         if self.slot_taken(&room_id, start)? {
             app::bail!(Error::Taken { start });
@@ -232,7 +234,9 @@ impl Rooms {
     #[app::every("1m")]
     pub fn flaky(&mut self) -> app::Result<String> {
         if self.titles.get(&"fail".to_owned())?.is_some() {
-            app::bail!(Error::Invalid("flaky".into()));
+            app::bail!(Error::Invalid {
+                reason: "flaky".into()
+            });
         }
         let Some(tick) = env::timer() else {
             app::bail!(Error::NotFound);

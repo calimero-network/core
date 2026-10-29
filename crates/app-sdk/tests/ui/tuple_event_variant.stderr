@@ -1,0 +1,5 @@
+error: app events name every field (D63): tuple variant `Released` has unnamed fields; write `Released { field: Type }`
+ --> tests/ui/tuple_event_variant.rs:6:5
+  |
+6 |     Released(String, u32),
+  |     ^^^^^^^^^^^^^^^^^^^^^

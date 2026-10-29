@@ -3,7 +3,7 @@
 //! an app depends on the SDK alone.
 
 use proc_macro::TokenStream;
-use syn::{parse_macro_input, DeriveInput, ItemEnum, ItemImpl, ItemStruct};
+use syn::{parse_macro_input, DeriveInput, Item, ItemImpl, ItemStruct};
 
 mod logic;
 mod payload;
@@ -38,17 +38,19 @@ pub fn logic(args: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 /// The app's error enum: the variant name is the error code, its fields the error's fields.
+/// Every field is named (D63): a tuple variant is a compile error.
 #[proc_macro_attribute]
 pub fn error(_args: TokenStream, input: TokenStream) -> TokenStream {
-    let item = parse_macro_input!(input as ItemEnum);
-    emit(payload::expand(payload::Payload::Error, &item))
+    let item = parse_macro_input!(input as Item);
+    emit(payload::expand_item(payload::Payload::Error, &item))
 }
 
 /// The app's event enum: the variant name is the event name, its fields the event data.
+/// Every field is named (D63): a tuple variant, or a tuple struct, is a compile error.
 #[proc_macro_attribute]
 pub fn event(_args: TokenStream, input: TokenStream) -> TokenStream {
-    let item = parse_macro_input!(input as ItemEnum);
-    emit(payload::expand(payload::Payload::Event, &item))
+    let item = parse_macro_input!(input as Item);
+    emit(payload::expand_item(payload::Payload::Event, &item))
 }
 
 /// A table record: `#[derive(Record)] #[table(key = "id", unique(..), index(..), count(..))]`.
