@@ -858,9 +858,7 @@ impl Node {
         if !self.is_peer(claimed) {
             return None;
         }
-        let addr = self
-            .sys(|s| s.nodes.get(&claimed).map(|n| n.addr.clone()))
-            .or_else(|| self.config.peers.get(&claimed).cloned())?;
+        let addr = self.addr_of(claimed)?;
         let url: Url = addr.parse().ok()?;
         let release = Arc::new(Mutex::new(None));
         let attestor = HttpAttestor {
@@ -897,14 +895,23 @@ impl Node {
     }
 
     /// Whether `id` is a node of this cluster: registered (or in `--peers`)
-    /// and not removed.
+    /// and not removed, or still a voter or learner of the system group (a
+    /// node being removed takes part until its membership change commits).
     #[must_use]
     pub fn is_peer(&self, id: NodeId) -> bool {
         id != self.config.node_id
-            && self.sys(|s| {
+            && (self.sys(|s| {
                 !s.removed_nodes.contains(&id)
                     && (s.nodes.contains_key(&id) || self.config.peers.contains_key(&id))
-            })
+            }) || self.system.member_addr(id).is_some())
+    }
+
+    /// Where node `id` is reached: its registered address, its `--peers`
+    /// entry, or the address the system group's membership has for it.
+    fn addr_of(&self, id: NodeId) -> Option<String> {
+        self.sys(|s| s.nodes.get(&id).map(|n| n.addr.clone()))
+            .or_else(|| self.config.peers.get(&id).cloned())
+            .or_else(|| self.system.member_addr(id))
     }
 
     /// The node that issued a session (`claims.node`), as this node attested
@@ -929,9 +936,7 @@ impl Node {
         if !self.is_peer(id) {
             return None;
         }
-        let addr = self
-            .sys(|s| s.nodes.get(&id).map(|n| n.addr.clone()))
-            .or_else(|| self.config.peers.get(&id).cloned())?;
+        let addr = self.addr_of(id)?;
         let nonce = calimero_identity::random::<32>();
         let mut url =
             calimero_sealed::client::resolve_path(&addr.parse().ok()?, "attestation").ok()?;

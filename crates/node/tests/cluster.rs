@@ -4597,6 +4597,9 @@ async fn nodes_on_the_next_release_keep_the_data_of_the_ones_before() {
     // Only the next release's nodes are left, and they hold everything.
     let cl = c.client(next[0]);
     cl.use_session(alice.session().await.unwrap()).await;
+    // The founders signed alice's session: with them gone, it refreshes into
+    // one a node of the next release signs.
+    let _fresh = cl.refresh().await.unwrap();
     let v = eventually(&cl, &kv, "get", json!({ "key": "a" }), |v| v == &json!("1")).await;
     assert_eq!(v, json!("1"), "the app's state");
     let mine = eventually(&cl, &cards, "my_hand", json!({}), |v| v == &hand).await;

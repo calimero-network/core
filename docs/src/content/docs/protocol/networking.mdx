@@ -120,7 +120,7 @@ release gate on what a node sends:
 | `internal/blob/get` | Any node of the cluster for code (a bundle, a release `.mpk`); for any other blob, on a release approved for an app hosted here that marks it |
 | `internal/blob/delete` | Any node of the cluster, and no app hosted here may still mark the blob |
 | `internal/raft` | The node the RPC names as its sender (leader or candidate); for an app group also on an approved release and a replica or member of the group |
-| `internal/system`, `system/index`, `blob`, `challenge/take` | A registered node that is not removed; what it proposes is judged where it applies ([system group](/protocol/system-group/)) |
+| `internal/system`, `system/index`, `blob`, `challenge/take` | A registered node that is not removed (or a node still in the system group's membership while its removal commits); what it proposes is judged where it applies ([system group](/protocol/system-group/)) |
 
 An anonymous peer session (Noise NK) is refused on every internal route.
 
