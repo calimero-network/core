@@ -120,7 +120,7 @@ fn release_claim(
         (None, _) => None,
     };
     Ok(calimero_node::attest::release::ReleaseClaim {
-        merod_version: env!("CARGO_PKG_VERSION").to_owned(),
+        merod_version: calimero_node::RELEASE_VERSION.to_owned(),
         merod_sha256: Some(hex::encode(calimero_identity::sha256(&binary))),
         tee_release: args
             .tee_release
@@ -400,7 +400,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
         } else {
             args.origins.clone()
         },
-        release: env!("CARGO_PKG_VERSION").to_owned(),
+        release: calimero_node::RELEASE_VERSION.to_owned(),
         ops_token: args.ops_token.clone(),
         ops_token_sha256: args.ops_token_sha256.clone(),
         metrics_listen: args.metrics_listen,
