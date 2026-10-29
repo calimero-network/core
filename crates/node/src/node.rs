@@ -119,6 +119,11 @@ pub struct Config {
     /// Take raw WASM uploads (`POST /bundles`), which carry no publisher
     /// signature. Development only; production installs signed packages.
     pub allow_unsigned_bundles: bool,
+    /// Take uploaded `.mpk` releases (`POST /packages`, `/ops/packages`).
+    /// Development only: in production every release comes from the registry
+    /// (`/packages/install`), so any node that lacks one fetches it there again
+    /// and no release lives only on the nodes it was uploaded to.
+    pub allow_package_uploads: bool,
     /// The domain app frontends are served under (`--apps-domain`): a
     /// package's at `{label}.{apps_domain}` (`app_host`). `None`: not served.
     pub apps_domain: Option<String>,

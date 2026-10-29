@@ -73,7 +73,8 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | --- | --- | --- |
 | `403` "this node takes signed packages only" | Raw WASM on a node without `--allow-unsigned-bundles` | Install a signed `.mpk`. |
 | `400 BAD_PACKAGE` | Signature, digest, pinned signer or `minRuntimeVersion` check failed | Rebuild and sign with `cargo mero`; a package keeps its first release's signer. |
-| `400 NO_REGISTRY` | `PACKAGE@VERSION` with no `--registry-url` | Configure the registry, or upload the `.mpk`. |
+| `400 NO_REGISTRY` | `PACKAGE@VERSION` with no `--registry-url` | Configure the registry (on a `--dev` cluster you may upload the `.mpk` instead). |
+| `403 UPLOADS_DISABLED` | An uploaded `.mpk` on a node without `--dev` | Publish it to the registry and install `PACKAGE@VERSION`. |
 | `422 INIT_FAILED` | The app's `init` failed; no instance is left behind | Check `initArgs`. |
 | `422 UPGRADE_FAILED` | The migration did not run or its check failed | See `details`; the app stays on its bundle. |
 | an upgrade refused as a downgrade, jump or missing edge | The ABIs give no single migration step | Add the `#[app::migrate]` edge, or upgrade one state version at a time. |

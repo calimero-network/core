@@ -52,15 +52,16 @@ node that runs it, never from node to node: the node that installs it verifies
 it before the system log records its hash, and each replica fetches and
 verifies the same bytes again before running them. The installer is an
 account (or an app's creator, since `POST /apps` installs a missing release
-first) or the operator. An uploaded `.mpk` (`POST /packages`) skips the
-registry and is spread to a majority of nodes instead.
+first) or the operator. On a development cluster (`--dev`) an uploaded `.mpk`
+(`POST /packages`) skips the registry and is spread to a majority of nodes
+instead; a production node refuses uploads (`403 UPLOADS_DISABLED`).
 
 There are two ways in:
 
 - `POST /packages/install { package, version }` fetches `package@version` from
   the operator's registry (`--registry-url`, `calimero-app-downloader`'s
   `HttpRegistry`).
-- `POST /packages` takes an uploaded `.mpk`.
+- `POST /packages` takes an uploaded `.mpk`, on a development cluster only.
 
 Before the system log records anything (`InstallPackage`), the node that took
 the request verifies the release (`Node::verify_release`):
@@ -96,9 +97,12 @@ to: `(package, signer)`.
   bytes whose hash differs from the one the log recorded, and verifies the
   release again before using its WASM. That is the one-source rule: the
   registry is the only place a registry release comes from.
-- An **uploaded** release has no registry. The `.mpk` is stored on a majority
-  of nodes before the log records it; a node that lacks it fetches it from a
-  peer, checks the recorded hash and verifies it again.
+- An **uploaded** release (development clusters only) has no registry. The
+  `.mpk` is stored on a majority of nodes before the log records it; a node
+  that lacks it fetches it from a peer, checks the recorded hash and verifies
+  it again. Production takes no uploads: an upload's only copies are on the
+  nodes it reached, and a cluster that grows from one node and retires it would
+  lose the release, while a registry release can always be fetched again.
 - Each service's WASM is also kept in the installing node's blob store under
   its bundle hash; other nodes extract it from the `.mpk` on first use.
 
