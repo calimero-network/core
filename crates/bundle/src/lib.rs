@@ -204,6 +204,38 @@ pub struct BundleService {
     pub abi: Option<BundleArtifact>,
 }
 
+/// Who upgrades the instances of a package, as its signed manifest declares
+/// (`upgrades`), where the cluster leaves app upgrades to owners
+/// (`--app-upgrades owner`; where the operator holds them, it alone does).
+///
+/// The declaration may only loosen toward owners: once a release declares
+/// `owner`, no later version of the package may declare `publisher` (a node
+/// refuses to install it), and no instance is upgraded from an `owner`
+/// release to a `publisher` one. Whoever accepted an instance as theirs to
+/// upgrade never loses that to a later release.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpgradeAuthority {
+    /// Each instance's owner, or, for an organization's instance, whoever
+    /// holds `MANAGE_APPLICATION` there. The default, and what a manifest
+    /// without `upgrades` (every one from before) means.
+    #[default]
+    Owner,
+    /// The organization that publishes the package (proved it holds the
+    /// package's signing key): its `MANAGE_APPLICATION` holders upgrade every
+    /// instance, whoever owns it. Until an organization claims the key, this
+    /// reads as [`Self::Owner`].
+    Publisher,
+}
+
+impl UpgradeAuthority {
+    /// Whether this is [`Self::Owner`] (the default, left out when stored).
+    #[must_use]
+    pub fn is_owner(&self) -> bool {
+        *self == Self::Owner
+    }
+}
+
 /// Bundle manifest describing the contents of a bundle archive.
 ///
 /// Supports two formats:
@@ -282,6 +314,13 @@ pub struct BundleManifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outbound: Vec<String>,
 
+    /// Who upgrades the package's instances ([`UpgradeAuthority`]); absent
+    /// means [`UpgradeAuthority::Owner`]. Signed with the rest; a value other
+    /// than `owner` or `publisher` fails to parse, so the bundle is refused.
+    /// An older node ignores it and leaves upgrades to owners.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrades: Option<UpgradeAuthority>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<BundleSignature>,
 }
@@ -356,6 +395,7 @@ impl BundleManifest {
             links: _,
             frontend_aliases: _,
             outbound: _,
+            upgrades: _,
             signature: _,
         } = self;
 
@@ -605,6 +645,40 @@ mod tests {
             serde_json::json!(["https://api.example.com/v1/check"])
         );
         assert!(stored_meta("").get("outbound").is_none());
+    }
+
+    /// `upgrades` says who upgrades a package's instances: absent (every
+    /// manifest from before) is the owner and is written back absent, an
+    /// unknown value is refused, and the field is signed with the rest.
+    #[test]
+    fn upgrades_is_owner_unless_the_manifest_says_publisher() {
+        let parse = |block: &str| serde_json::from_str::<BundleManifest>(&manifest_json(block));
+        let none = parse("").unwrap();
+        assert_eq!(none.upgrades, None);
+        assert!(serde_json::to_value(&none)
+            .unwrap()
+            .get("upgrades")
+            .is_none());
+        assert_eq!(
+            parse(r#""upgrades": "publisher","#).unwrap().upgrades,
+            Some(UpgradeAuthority::Publisher)
+        );
+        assert_eq!(
+            parse(r#""upgrades": "owner","#).unwrap().upgrades,
+            Some(UpgradeAuthority::Owner)
+        );
+        assert!(parse(r#""upgrades": "everyone","#).is_err());
+
+        let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let mut signed: serde_json::Value =
+            serde_json::from_str(&manifest_json(r#""upgrades": "owner","#)).unwrap();
+        let _sig = sign_manifest_json(&mut signed, &key).unwrap();
+        assert!(verify_manifest_signature(&signed).is_ok());
+        signed["upgrades"] = serde_json::json!("publisher");
+        assert!(
+            verify_manifest_signature(&signed).is_err(),
+            "a changed declaration breaks the signature"
+        );
     }
 
     #[test]

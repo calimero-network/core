@@ -2584,6 +2584,11 @@ async fn app_upgrade(
     if !node.sys(|s| s.bundles.contains_key(&bundle)) {
         return Err(crate::node::rejected("unknown bundle"));
     }
+    if !node.sys(|s| s.upgrade_keeps_authority(&app.bundle, &bundle)) {
+        return Err(ApiError::forbidden(
+            "an app whose owner upgrades it is not moved to a release its publisher upgrades",
+        ));
+    }
     refuse_stalled(&node, &app, &bundle, now_secs())?;
     // A fresh passkey assertion over this exact upgrade, logged as consent.
     let consent = consent(
@@ -2650,12 +2655,25 @@ async fn run_upgrade(
     // so `apply` judges the deadline at the same moment and never refuses
     // the record of an upgrade the app's group already ran.
     let begun = now_secs();
-    let stall = node.sys(|s| {
+    // Who may, and where to: judged here, for every path (one app, an
+    // organization's run, a publisher's run), before anything runs on the
+    // app's group; `UpgradeApp` judges both again.
+    let refusal = node.sys(|s| {
         let a = s.apps.get(&app_id)?;
+        if !who.by_operator && !s.may_upgrade(a, &who.actor) {
+            return Some(ApiError::forbidden(
+                "upgrading this app needs whoever its package names: its owner (or MANAGE_APPLICATION in its organization), or its publisher's MANAGE_APPLICATION holders",
+            ));
+        }
+        if !who.by_operator && !s.upgrade_keeps_authority(&a.bundle, &bundle) {
+            return Some(ApiError::forbidden(
+                "an app whose owner upgrades it is not moved to a release its publisher upgrades",
+            ));
+        }
         s.stalled_for_bundle(&bundle, a.org.as_deref(), &a.owner, begun)
+            .map(|stall| crate::node::stalled(&stall))
     });
-    if let Some(stall) = stall {
-        let e = crate::node::stalled(&stall);
+    if let Some(e) = refusal {
         let error = json!({ "code": e.code, "message": e.message });
         note_failed_upgrade(node, &app_id, &bundle, &who, error).await;
         return Err(e);
@@ -2961,6 +2979,94 @@ async fn org_upgrade(
         run: None,
     };
     start_run(node, org, body, apps, who).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublisherUpgradeBody {
+    version: String,
+    #[serde(default)]
+    migrate: Option<String>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Upgrade every instance of `package`, whoever owns it, that its publisher
+/// upgrades (its release declares `upgrades: publisher`): for whoever holds
+/// `MANAGE_APPLICATION` in the publisher organization (`org`, which proved
+/// it holds the package's key), with one passkey assertion over the run.
+/// The run is kept on the publisher; each app is still checked on its own.
+async fn publisher_upgrade(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((org, package)): Path<(String, String)>,
+    Json(mut body): Json<PublisherUpgradeBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
+    node.sys_fresh().await;
+    let publishes = node.sys(|s| {
+        s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some())
+            && s.packages
+                .get(&package)
+                .and_then(|pk| s.publisher_of_signer(&pk.signer_id))
+                .is_some_and(|o| *o == org)
+    });
+    if !publishes {
+        return Err(ApiError::not_found(
+            "the organization publishes no such package",
+        ));
+    }
+    if !node.sys(|s| s.manages_apps(&org, &account, None)) {
+        return Err(ApiError::forbidden(
+            "upgrading a published package's instances needs MANAGE_APPLICATION in the publisher",
+        ));
+    }
+    // Installed from the registry first if the cluster lacks the release.
+    let _bundle = node
+        .resolve_release(&package, Some(&body.version), None, &account, false)
+        .await;
+    let consent = consent(
+        &node,
+        &p,
+        &format!("org:{org}"),
+        "__upgrade_published",
+        &json!({ "package": package, "version": body.version, "migrate": body.migrate }),
+        body.confirm.take(),
+    )
+    .await?;
+    let apps: Vec<crate::types::AppRecord> = node.sys(|s| {
+        s.apps
+            .values()
+            .filter(|a| {
+                s.bundles
+                    .get(&a.bundle)
+                    .and_then(|b| b.package.as_ref())
+                    .is_some_and(|at| at.package == package)
+                    && s.may_upgrade(a, &account)
+            })
+            .cloned()
+            .collect()
+    });
+    let who = Upgrader {
+        caller: Caller::Account {
+            account: account.clone(),
+        },
+        actor: account,
+        by_operator: false,
+        consent,
+        run: None,
+    };
+    let run = OrgUpgradeBody {
+        package,
+        version: body.version,
+        team: None,
+        cascade: false,
+        migrate: body.migrate,
+        confirm: None,
+    };
+    start_run(node, org, run, apps, who).await
 }
 
 /// [`org_upgrade`] by the operator, where the deployment gave it app upgrades.
@@ -5188,6 +5294,10 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/orgs/{org}/capabilities", post(org_capabilities))
         .route("/orgs/{org}/releases", post(org_release_approval))
         .route("/orgs/{org}/publishers", post(org_publisher))
+        .route(
+            "/orgs/{org}/packages/{package}/upgrade",
+            post(publisher_upgrade),
+        )
         .route("/orgs/{org}/outbound", post(org_outbound_approval))
         .route("/orgs/{org}/teams/{team}/members", post(team_set_member))
         .route(

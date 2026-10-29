@@ -190,6 +190,17 @@ impl Node {
                 )));
             }
         }
+        let upgrades = manifest.upgrades.unwrap_or_default();
+        let in_order = self.sys(|s| {
+            s.packages
+                .get(&package)
+                .is_none_or(|p| p.upgrades_in_order(&manifest.app_version, upgrades))
+        });
+        if !in_order {
+            return Err(ApiError::conflict(
+                "a release may not give its package's upgrades back to the publisher once a lower one gave them to owners",
+            ));
+        }
         let mut services = BTreeMap::new();
         let mut wasm_by_service = BTreeMap::new();
         for (service, bytes) in wasm {
@@ -233,6 +244,7 @@ impl Node {
                 installed_by: actor.to_owned(),
                 installed_at: now_secs(),
                 installers: BTreeSet::new(),
+                upgrades,
             },
             wasm: wasm_by_service,
         })

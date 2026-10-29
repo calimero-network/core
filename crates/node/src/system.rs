@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use calimero_bundle::UpgradeAuthority;
 use calimero_identity::Credential;
 use calimero_log::Machine;
 use serde::{Deserialize, Serialize};
@@ -142,6 +143,11 @@ pub struct PackageVersion {
     /// left out when empty, so such a record reads and writes as it did.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub installers: BTreeSet<AccountId>,
+    /// Who upgrades the instances running this release, from its signed
+    /// manifest ([`UpgradeAuthority`]). Absent in records from before (and
+    /// left out for `owner`), which read as `owner`, what they meant.
+    #[serde(default, skip_serializing_if = "UpgradeAuthority::is_owner")]
+    pub upgrades: UpgradeAuthority,
 }
 
 impl PackageVersion {
@@ -160,6 +166,21 @@ impl PackageVersion {
 }
 
 impl PackageRecord {
+    /// Whether `v` keeps the package's upgrade declarations in order: in
+    /// version order, `publisher` releases first, then `owner` ones, so a
+    /// release never takes upgrades back from owners.
+    #[must_use]
+    pub fn upgrades_in_order(&self, version: &str, upgrades: UpgradeAuthority) -> bool {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        self.versions
+            .values()
+            .all(|u| match compare_versions(&u.version, version) {
+                Less => !(u.upgrades.is_owner() && !upgrades.is_owner()),
+                Greater => !(!u.upgrades.is_owner() && upgrades.is_owner()),
+                Equal => true,
+            })
+    }
+
     /// The highest release by semver (a version that does not parse sorts first).
     #[must_use]
     pub fn latest(&self) -> Option<&PackageVersion> {
@@ -528,11 +549,45 @@ impl SystemState {
         self.governance.clone().unwrap_or_default()
     }
 
-    /// Whether `account` may upgrade `app`: its owner, or, for an org app,
-    /// whoever [manages the organization's apps](Self::manages_apps) on the
-    /// app's team.
+    /// Who upgrades an app running `bundle`: its release's declaration; a raw
+    /// upload is its owner's.
+    #[must_use]
+    pub fn upgrades_of(&self, bundle: &str) -> UpgradeAuthority {
+        self.bundles
+            .get(bundle)
+            .and_then(|b| b.package.as_ref())
+            .and_then(|at| self.packages.get(&at.package)?.versions.get(&at.version))
+            .map_or(UpgradeAuthority::Owner, |v| v.upgrades)
+    }
+
+    /// The publisher that upgrades an app running `bundle`: only when its
+    /// release declares `publisher` and an organization claimed its key.
+    #[must_use]
+    pub fn upgraded_by_publisher(&self, bundle: &str) -> Option<&OrgId> {
+        if self.upgrades_of(bundle).is_owner() {
+            return None;
+        }
+        self.publisher_of(bundle)
+    }
+
+    /// Whether moving an app from `from` to `to` keeps upgrades where they
+    /// may go: never from an `owner` release to a `publisher` one.
+    #[must_use]
+    pub fn upgrade_keeps_authority(&self, from: &str, to: &str) -> bool {
+        !(self.upgrades_of(from).is_owner() && !self.upgrades_of(to).is_owner())
+    }
+
+    /// Whether `account` may upgrade `app`. For a `publisher` package whose
+    /// key an organization claimed: whoever holds `MANAGE_APPLICATION` in
+    /// that organization, org-wide, and nobody else. Otherwise (`owner`):
+    /// its owner, or, for an org app, whoever
+    /// [manages the organization's apps](Self::manages_apps) on the app's
+    /// team.
     #[must_use]
     pub fn may_upgrade(&self, app: &AppRecord, account: &str) -> bool {
+        if let Some(p) = self.upgraded_by_publisher(&app.bundle) {
+            return self.manages_apps(p, account, None);
+        }
         let team = match &app.access {
             Access::Team { team } => Some(team.as_str()),
             _ => None,
@@ -1309,6 +1364,14 @@ impl SystemMachine {
                         return Ok(json!({ "package": package, "version": release.version }));
                     }
                 }
+                if s.packages
+                    .get(&package)
+                    .is_some_and(|p| !p.upgrades_in_order(&release.version, release.upgrades))
+                {
+                    return Err(
+                        "a release may not give its package's upgrades back to the publisher once a lower one gave them to owners",
+                    );
+                }
                 let used: u64 = s
                     .bundles
                     .values()
@@ -1474,6 +1537,12 @@ impl SystemMachine {
                     return Err("unknown bundle");
                 }
                 let operator = s.governance().app_upgrades == Authority::Operator;
+                let from = s.apps.get(&app_id).map(|a| a.bundle.clone());
+                if !by_operator && from.is_some_and(|f| !s.upgrade_keeps_authority(&f, &bundle)) {
+                    return Err(
+                        "an app whose owner upgrades it is not moved to a release its publisher upgrades",
+                    );
+                }
                 if by_operator != operator {
                     return Err(if operator {
                         "this cluster's apps are upgraded by its operator"
@@ -3597,5 +3666,107 @@ mod tests {
             })
             .unwrap();
         assert!(m.state.publishers.is_empty());
+    }
+
+    /// A package's manifest says who upgrades its instances. `publisher`:
+    /// the publisher's `MANAGE_APPLICATION` holders, for every instance, and
+    /// not the customer; until a key is claimed, the owner as before. The
+    /// declaration only loosens toward owners, at install and at upgrade.
+    #[test]
+    fn a_package_says_whether_its_publisher_or_each_owner_upgrades_it() {
+        use super::PackageVersion;
+        use crate::types::caps::MANAGE_APPLICATION;
+        let (key, signer) = publisher_key(9);
+        let mut m = publishing(&signer, "publisher");
+        if let Some(o) = m.state.orgs.get_mut("pub") {
+            let _prev = o.capabilities.insert("bob".into(), MANAGE_APPLICATION);
+        }
+        if let Some(o) = m.state.orgs.get_mut("cust") {
+            let _prev = o.capabilities.insert("dan".into(), MANAGE_APPLICATION);
+        }
+        let inst = |m: &SystemMachine| m.state.apps["inst"].clone();
+        let may = |m: &SystemMachine, who: &str| m.state.may_upgrade(&inst(m), who);
+
+        // Unclaimed: `publisher` reads as `owner`.
+        assert!(may(&m, "cora") && may(&m, "dan") && !may(&m, "pam"));
+
+        let _ok = m.run(claim(&key, &signer, "pub", "pub", "pam")).unwrap();
+        for (who, expected) in [
+            ("pam", true),
+            ("bob", true),
+            ("cora", false),
+            ("dan", false),
+        ] {
+            assert_eq!(may(&m, who), expected, "{who}");
+        }
+        let upgrade = |actor: &str, bundle: &str| SystemCmd::UpgradeApp {
+            app_id: "inst".into(),
+            bundle: bundle.into(),
+            by_operator: false,
+            actor: actor.into(),
+            at: 0,
+            run: None,
+            consent: serde_json::Value::Null,
+        };
+        assert!(
+            m.run(upgrade("cora", "b2")).is_err(),
+            "the customer may not"
+        );
+        let _ok = m.run(upgrade("bob", "b2")).unwrap();
+
+        // Releases: publisher first, then owner, never back.
+        let install = |version: &str, upgrades: &str| SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: signer.clone(),
+            release: serde_json::from_value::<PackageVersion>(json!({
+                "version": version, "mpk": version, "mpkSize": 1, "source": "upload",
+                "services": { "": format!("h{version}") }, "installedBy": "pam",
+                "installedAt": 0, "upgrades": upgrades
+            }))
+            .unwrap(),
+        };
+        let _ok = m.run(install("1.2.0", "owner")).unwrap();
+        assert!(
+            m.run(install("1.3.0", "publisher")).is_err(),
+            "back to the publisher"
+        );
+        assert!(
+            m.run(install("1.1.5", "owner")).is_ok(),
+            "owner between them"
+        );
+        assert!(
+            m.run(install("0.9.0", "owner")).is_err(),
+            "owner below a publisher release"
+        );
+        let _ok = m.run(install("0.8.0", "publisher")).unwrap();
+
+        // The instance moves to the owner release, by its publisher; then it
+        // is its owner's, and never goes back.
+        let _prev = m.state.bundles.insert(
+            "h1.2.0".into(),
+            serde_json::from_value(json!({
+                "hash": "h1.2.0", "size": 1, "uploadedBy": "pam",
+                "package": { "package": "p", "version": "1.2.0" }
+            }))
+            .unwrap(),
+        );
+        let _ok = m.run(upgrade("pam", "h1.2.0")).unwrap();
+        assert!(may(&m, "cora") && !may(&m, "pam"));
+        assert!(
+            m.run(upgrade("cora", "b1")).is_err(),
+            "never back to the publisher"
+        );
+        let _ok = m.run(upgrade("cora", "h1.2.0")).unwrap();
+
+        // A release from before the declaration reads as `owner` and writes
+        // back as it was.
+        let old = json!({
+            "version": "1.0.0", "mpk": "ab", "mpkSize": 3, "source": "upload",
+            "services": { "": "cd" }, "metadata": null, "outbound": [],
+            "installedBy": "alice", "installedAt": 7,
+        });
+        let v: PackageVersion = serde_json::from_value(old.clone()).unwrap();
+        assert!(v.upgrades.is_owner());
+        assert_eq!(serde_json::to_value(&v).unwrap(), old);
     }
 }
