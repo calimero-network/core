@@ -33,6 +33,16 @@ fn workspace_release() -> String {
     line.split('"').nth(1).unwrap().to_owned()
 }
 
+#[test]
+fn version_names_the_release() {
+    let out = ok(merod(Path::new("/nonexistent"))
+        .arg("--version")
+        .output()
+        .unwrap());
+    assert_eq!(out.trim(), format!("merod {}", workspace_release()));
+    assert!(!out.contains("0.0.0"), "{out}");
+}
+
 fn ok(out: Output) -> String {
     assert!(
         out.status.success(),

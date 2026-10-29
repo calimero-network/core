@@ -32,7 +32,8 @@ use env::{json_arg, load_dev_passkey, save_passkey, write_private, Env, Home, Tr
 #[derive(Debug, Parser)]
 #[command(
     name = "meroctl",
-    version,
+    // The release, not `CARGO_PKG_VERSION`: that is the workspace placeholder `0.0.0`.
+    version = env!("CALIMERO_RELEASE_VERSION"),
     about = "Command line for Calimero nodes",
     after_help = "Examples:\n  \
         meroctl node add local http://127.0.0.1:2501 --allow-mock\n  \
