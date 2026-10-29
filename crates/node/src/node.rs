@@ -141,6 +141,10 @@ pub struct Config {
     /// The limits of every component call and view; `None` is `Budget::call()`.
     /// Tests only.
     pub budget: Option<calimero_app_host::Budget>,
+    /// What this node verified of the KMS replicas its keys came from (the
+    /// storage key, and the data disk's when the boot script recorded it).
+    /// Reported, bound into the quote, by `GET /attestation?purpose=kms`.
+    pub kms_keys: calimero_client::attest::KmsKeys,
 }
 
 impl Config {
