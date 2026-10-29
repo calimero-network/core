@@ -77,8 +77,12 @@ and the deletion, the other app's mark survives but its bytes are gone.
 
 ## Files of component apps
 
-A component app has no blob routes.
-Its runs make files instead: a file is written in a call, tick or `init`, and read in any run but a migration.
+A component app's runs make files: a file is written in a call, tick or `init`, and read in any run but a migration.
+A signed-in caller who may write to the app can also upload one with `POST /apps/{app}/blobs` (the raw bytes, up to the same size cap as a blob), and the answer is `{ id, size, sha256, index }` for the plaintext.
+A node that does not lead the app passes the upload to the leader, which seals it, stores it on a majority of the app's voters as a run's files are, and then commits the mark as a command of the node's own, which no `/intents` call can name.
+Only the app's owner and members (not guests) of its organization may upload, even where the app is public.
+The same people alone may list the files or read their info, because a mark's SHA-256 is the plaintext's and would let anyone confirm a guessed document; everyone else gets `403`.
+`GET /apps/{app}/blobs` and `/blobs/{id}/info` list the files from their marks, `DELETE /apps/{app}/blobs/{id}` (the app's owner or an organization admin) removes one, and `GET /apps/{app}/blobs/{id}` answers `409 NOT_SUPPORTED`: only the app's own code reads a file.
 The node seals a file in the TD as 64 KiB AES-256-GCM chunks under a random data key, and wraps that key under a key derived from the cluster key for this app.
 The blob id is the SHA-256 of the ciphertext, so a replica can check what a peer sends.
 The app's state records a mark per file: the plaintext size and SHA-256, and the wrapped key.
@@ -95,6 +99,15 @@ A file that was altered or cut short fails the run with a trap, so no app can ig
 A run that deletes a file removes its mark with the entry.
 Every replica that applies that entry drops the bytes from its own store.
 Each file has its own random key, so no other app can mark the same ciphertext.
+Deleting the app drops each replica's bytes as it stops hosting the app.
+
+The plaintext bytes of an organization's files (a personal account's, for an app outside one) count against `maxFileBytesPerOrg` (default 50 GB).
+The count is charged before a mark is committed, so an upload or a call that would pass the quota fails with `429 QUOTA_EXCEEDED`, nothing is logged and the stored bytes are removed.
+A delete refunds what it frees, and deleting an app or an organization frees its files in the same system command.
+The count and the app's log are not one atomic step.
+When a mark commit fails, the leader checks whether the mark was logged and settles the count either way; a crash between the two can still leave an over-count.
+Transferring a personal app is refused if its files would pass the new owner's quota.
+`GET /auth/usage` shows an account's file bytes per payer.
 
 ## Limits
 

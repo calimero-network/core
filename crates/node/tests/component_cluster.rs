@@ -2806,16 +2806,13 @@ async fn the_abi_storage_and_blob_routes_answer_for_a_component() {
         other => panic!("{other:?}"),
     };
     let id = "00".repeat(32);
-    let e = alice.list_blobs(&app).await.unwrap_err();
-    assert_eq!(refused(e), (409, "NOT_SUPPORTED".to_owned()));
+    assert_eq!(alice.list_blobs(&app).await.unwrap()["blobs"], json!([]));
     let e = alice.blob_info(&app, &id).await.unwrap_err();
-    assert_eq!(refused(e), (409, "NOT_SUPPORTED".to_owned()));
+    assert_eq!(refused(e), (404, "NOT_FOUND".to_owned()));
     let e = alice.download_blob(&app, &id).await.unwrap_err();
     assert_eq!(refused(e), (409, "NOT_SUPPORTED".to_owned()));
     let e = alice.delete_blob(&app, &id).await.unwrap_err();
-    assert_eq!(refused(e), (409, "NOT_SUPPORTED".to_owned()));
-    let e = alice.upload_blob(&app, b"x".to_vec()).await.unwrap_err();
-    assert_eq!(refused(e), (409, "NOT_SUPPORTED".to_owned()));
+    assert_eq!(refused(e), (404, "NOT_FOUND".to_owned()));
 }
 
 /// The engine tests' `spin` guest (`crates/app-engine-wasmtime/tests/guests/spin`): its
@@ -3071,7 +3068,7 @@ async fn the_blob_routes_hide_a_private_component_app_from_outsiders() {
     );
     // Its owner still gets the component's answer.
     assert_eq!(
-        status(alice.list_blobs(&app).await.unwrap_err()),
+        status(alice.download_blob(&app, &id).await.unwrap_err()),
         (409, "NOT_SUPPORTED".to_owned())
     );
 }

@@ -81,7 +81,7 @@ is its command line.
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).
 - **Reserved methods** (`node::reserved_method`, `__*`): the node's own commands
-  (`HOST_METHODS`: `__upgrade`, `__blob`, `__blob_forget`) run only for a
+  (`HOST_METHODS`: `__upgrade`, `__blob`, `__blob_forget`, `__file_forget`) run only for a
   `CallRequest::host` request, which only the API builds after judging who may;
   `/intents` and `/views` refuse a `__` method (`400 RESERVED_METHOD`), and an
   xcall or follow-up naming one is refused at the leader. Regression:
@@ -581,6 +581,11 @@ is its command line.
   `a_removed_nodes_sessions_are_refused`.
 - **Quotas** (`system::Quotas`, set with `POST /ops/quotas`) live in the system state and
   are checked at apply, so every node enforces the same limits; refusals are `429 QUOTA_EXCEEDED`.
+  `maxFileBytesPerOrg` counts a component's file bytes: `SystemState::app_file_bytes` per app,
+  `payer_file_bytes` is its sum per payer (`usage::payer`), kept in step by `set_app_file_bytes`, so `DeleteApp`, `DeleteOrg` and
+  `DeleteTeam` free files through `remove_app`; `SystemCmd::ChargeFileBytes { app_id, delta }`
+  refuses a charge past the quota and floors a refund at 0; `TransferApp` of a personal app is
+  refused when the new owner's quota would not hold its files.
 - **Read-your-writes across nodes**: lookups of system objects (`Node::sys_until`) wait
   up to `Config::read_wait` (2 s) for the local replica to apply a write committed
   elsewhere (`sys_fresh` waits as long, and says whether it caught up). A
@@ -679,8 +684,9 @@ API and system group. What differs from the wasmer path:
   for a personal app. Test: `a_component_sees_no_organization_but_its_own`.
 - **Per-executor endpoints** (`the_abi_storage_and_blob_routes_answer_for_a_component`):
   `/apps/{app}/abi` answers the ABI the component embeds (`calimero:abi`);
-  `/apps/{app}/storage` counts its keys and bytes; the blob routes answer
-  `409 NOT_SUPPORTED` (R8; a component's files are made in its runs, not uploaded here).
+  `/apps/{app}/storage` counts its keys and bytes; the blob routes are its files' (see
+  "Files": upload, list, info and delete work (list and info need the upload
+  authority, as they show plaintext hashes), download answers `409 NOT_SUPPORTED`).
   The host refuses blobs, search, xcall, event handlers,
   TEE runs and outbound HTTPS to a component; a wasmer app's
   xcall into a component is refused (`node::COMPONENT_REFUSES`).
@@ -719,6 +725,29 @@ API and system group. What differs from the wasmer path:
   Replica moves hand over the marked files with the bundle (`hand_over_bytes`), and again
   after the voters change, only what the joining nodes do not hold, for files made while the
   move ran; the second hand-over is retried for 10 s and never abandons the move.
+  Quota: a logged entry's new files are charged first, within `CHARGE_WAIT` (`Node::charge_files`,
+  from the run's thread; refused: nothing is pushed, the call is `429`, nothing logged; a charge
+  that lands after the wait is refunded when its answer arrives), undone by `Node::discard` if
+  the entry does not commit. Refunds after a commit come from `Applied::freed`, the bytes of
+  marks that entry really removed, so a racing delete never refunds twice. **Uploads** reuse the
+  blob routes: a node that does not lead the app seals and stores nothing, it passes the body to
+  the leader (`internal/file-upload`, one hop: a follower answers `421 NOT_LEADER` with
+  `details.leaderUrl` and the receiver follows it), which (`Node::upload_local`) seals through
+  `NodeFiles::create`, charges, pushes to its group's voters and commits `ComponentCmd::File`
+  under a key made per HTTP request (the blob route takes no client key), so only a forward
+  retried inside that request replays the first answer; a recorded answer for another file
+  wins and the new file is undone. If the commit fails, a `componentBarrier` entry (applies as
+  nothing) is committed through the leader, so the failed entry has either committed or never
+  will, and the leader then reads the mark: marked, the upload succeeded; not, bytes and
+  charge go; no barrier possible, they stay. Only the app's owner and organization members
+  of role Member or above may upload.
+  Delete (`forget_file`) is the host command `__file_forget` (`ComponentCmd::FileForget`, in
+  `HOST_METHODS`, so `/intents` refuses it as reserved), idempotent under its key too.
+  `storage_stats` lists a component's marks as its blobs (with plaintext hashes), which the
+  list and info routes read. A node that stops hosting a deleted app drops its file bytes.
+  **Upgrade note (quota):** an older system leader rejects `ChargeFileBytes`, so uploads and
+  file-creating calls fail until the system group runs this release; a snapshot from before
+  carries no file-byte counts, so files stored earlier start from zero.
   **Upgrade note (rolling upgrade):** a node on a release without files refuses to prepare a
   bundle that imports `calimero:app/files` (`ForbiddenImport`), so it never runs, leads or
   answers for an app that uses files. Replicas of different releases coexist only while a

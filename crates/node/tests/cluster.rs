@@ -3123,7 +3123,7 @@ async fn the_nodes_own_commands_cannot_be_called_as_methods() {
         .unwrap();
     let id = up["id"].as_str().unwrap().to_owned();
     let (mine, _) = deploy(&bob, "mine", kv.clone(), json!({})).await;
-    for method in ["__blob", "__blob_forget"] {
+    for method in ["__blob", "__blob_forget", "__file", "__file_forget"] {
         let r = bob
             .call(&mine, method, json!({ "id": id, "size": 7 }), None)
             .await;
