@@ -5136,3 +5136,320 @@ async fn metrics_count_requests_errors_and_raft_without_naming_anyone() {
         );
     }
 }
+
+// ---------------------------------------------------------------- version and approval reports
+
+/// The entry for `app` in a paged app report (`ops/apps`, `orgs/{org}/apps`,
+/// `auth/apps`), reading every page.
+async fn reported_app(cl: &Client, route: &str, app: &str) -> Value {
+    let mut after = String::new();
+    for _ in 0..100 {
+        let sep = if route.contains('?') { '&' } else { '?' };
+        let page = cl
+            .get(&format!("{route}{sep}limit=1{after}"))
+            .await
+            .unwrap_or_else(|e| panic!("{route}: {e}"));
+        let apps = page["apps"].as_array().unwrap();
+        assert!(apps.len() <= 1, "limit=1 answers one at most: {page}");
+        if let Some(a) = apps.iter().find(|a| a["app"] == json!(app)) {
+            return a.clone();
+        }
+        match page["next"].as_str() {
+            Some(next) => after = format!("&after={next}"),
+            None => panic!("{app} not in {route}"),
+        }
+    }
+    panic!("{route} never ended");
+}
+
+/// What runs where, as the operator and an organization's members read it:
+/// each app's package release (to the operator only for a release it can see,
+/// else its bundle digest alone), its last upgrade with the kind of actor (an
+/// account id or name never reaches the operator), the releases that may hold
+/// its data and, per replica, whether that node's release is one of them. A
+/// member reads its organization's apps with the upgrader's account; a
+/// non-member reads nothing; an account reads its own apps with the releases
+/// it has not approved yet and the newer releases it could upgrade to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn app_versions_and_release_approvals_are_reported_without_names() {
+    let c = Cluster::start_with(3, |cfg| {
+        // The operator rolled node 3 onto a new release.
+        cfg.tee_release = Some(if cfg.node_id == 3 { "2.0.0" } else { "1.0.0" }.into());
+    })
+    .await;
+    let (alice, mut apk) = signed_up(&c, 0, "alice-the-owner").await;
+    let (bob, _bpk) = signed_up(&c, 1, "bob-the-member").await;
+    let (carol, _cpk) = signed_up(&c, 1, "carol-the-outsider").await;
+    let alice_id = account_id(&alice).await;
+    let bob_id = account_id(&bob).await;
+    let org = alice
+        .post("orgs", json!({ "name": "Acme Secret Org" }))
+        .await
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = alice
+        .post(
+            &format!("orgs/{org}/members"),
+            json!({ "account": bob_id, "role": "member" }),
+        )
+        .await
+        .unwrap();
+    let kv = kv_wasm();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let _ = alice
+        .upload_package(mpk("com.test.track", "1.0.0", &kv, &publisher))
+        .await
+        .unwrap();
+    let _ = alice
+        .upload_package(mpk(
+            "com.test.track",
+            "1.1.0",
+            &variant(&kv, "next"),
+            &publisher,
+        ))
+        .await
+        .unwrap();
+    let created = alice
+        .post(
+            "apps",
+            json!({
+                "name": "tracked-secret-name",
+                "package": "com.test.track",
+                "version": "1.0.0",
+                "org": org,
+                "access": { "kind": "org" },
+            }),
+        )
+        .await
+        .unwrap();
+    let app = created["appId"].as_str().unwrap().to_owned();
+    let _ = alice
+        .upgrade_app(&app, json!({ "version": "1.1.0" }), &mut apk)
+        .await
+        .unwrap();
+
+    // The operator: ids, digests and kinds, never a name or an account.
+    let ops = c.client(1);
+    ops.use_api_key("ops-secret").await;
+    let a = reported_app(&ops, "ops/apps", &app).await;
+    assert_eq!(a["scope"], json!({ "kind": "org", "org": org }), "{a}");
+    assert_eq!(
+        a["package"],
+        Value::Null,
+        "a release the operator did not install stays unnamed: {a}"
+    );
+    assert_eq!(a["publisher"], Value::Null, "{a}");
+    assert!(a["bundle"].as_str().is_some_and(|b| b.len() == 64), "{a}");
+    assert_eq!(a["upgradesHeldBy"], json!("owner"), "{a}");
+    assert_eq!(a["lastUpgrade"]["actorKind"], json!("owner"), "{a}");
+    assert_eq!(a["lastUpgrade"]["ok"], json!(true), "{a}");
+    assert_eq!(a["lastUpgrade"]["to"]["bundle"], a["bundle"], "{a}");
+    assert!(a["lastUpgrade"].get("actor").is_none(), "{a}");
+    assert_eq!(a["approvedReleases"], json!(["1.0.0"]), "{a}");
+    let replicas = a["replicas"].as_array().unwrap();
+    assert_eq!(replicas.len(), 2, "{a}");
+    for r in replicas {
+        assert_eq!(r["release"], json!("1.0.0"), "{a}");
+        assert_eq!(r["approved"], json!(true), "{a}");
+    }
+    let report = ops.get("ops/apps").await.unwrap();
+    assert_eq!(
+        report["governance"]["appUpgrades"],
+        json!("owner"),
+        "{report}"
+    );
+    let orgs = ops.get("ops/orgs").await.unwrap();
+    let o = orgs["orgs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["org"] == json!(org))
+        .unwrap_or_else(|| panic!("{org} in {orgs}"));
+    assert_eq!(o["approvedReleases"], json!(["1.0.0"]), "{orgs}");
+    for secret in [
+        alice_id.as_str(),
+        bob_id.as_str(),
+        "alice-the-owner",
+        "tracked-secret-name",
+        "Acme Secret Org",
+        "com.test.track",
+    ] {
+        assert!(
+            !report.to_string().contains(secret) && !orgs.to_string().contains(secret),
+            "{secret} reached the operator"
+        );
+    }
+    // The placement read keeps its shape.
+    let p = ops.get("ops/placement").await.unwrap();
+    assert!(p["apps"][0].get("replicas").is_some(), "{p}");
+    assert!(p["nodes"][0].get("release").is_some(), "{p}");
+
+    // A member: the package, who upgraded it, and the release not approved yet.
+    let route = format!("orgs/{org}/apps");
+    let m = bob.get(&route).await.unwrap();
+    assert_eq!(m["scope"], json!({ "kind": "org", "org": org }), "{m}");
+    assert_eq!(m["approvedReleases"], json!(["1.0.0"]), "{m}");
+    assert_eq!(m["governance"]["releases"], json!("owner"), "{m}");
+    let cluster: Vec<(String, bool)> = m["clusterReleases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["release"].as_str().unwrap().to_owned(),
+                r["approved"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert!(cluster.contains(&("2.0.0".into(), false)), "{m}");
+    assert!(cluster.contains(&("1.0.0".into(), true)), "{m}");
+    let a = reported_app(&bob, &route, &app).await;
+    assert_eq!(a["name"], json!("tracked-secret-name"), "{a}");
+    assert_eq!(a["package"]["package"], json!("com.test.track"), "{a}");
+    assert_eq!(a["package"]["version"], json!("1.1.0"), "{a}");
+    assert!(
+        a["publisher"]["signer"]
+            .as_str()
+            .is_some_and(|k| k.starts_with("did:key:")),
+        "{a}"
+    );
+    assert_eq!(a["lastUpgrade"]["from"]["version"], json!("1.0.0"), "{a}");
+    assert_eq!(a["lastUpgrade"]["to"]["version"], json!("1.1.0"), "{a}");
+    assert_eq!(a["lastUpgrade"]["actorKind"], json!("owner"), "{a}");
+    assert_eq!(a["lastUpgrade"]["actor"], json!(alice_id), "{a}");
+    // Someone outside the organization reads nothing of it.
+    let e = carol.get(&route).await.unwrap_err();
+    assert!(e.to_string().starts_with("404"), "{e}");
+    let e = ops.get(&route).await.unwrap_err();
+    assert!(
+        e.to_string().starts_with("401") || e.to_string().starts_with("404"),
+        "{e}"
+    );
+
+    // The owner approves 2.0.0: both views show it.
+    let _ = alice
+        .approve_release(Some(&org), "2.0.0", &mut apk)
+        .await
+        .unwrap();
+    let m = bob.get(&route).await.unwrap();
+    assert_eq!(m["approvedReleases"], json!(["1.0.0", "2.0.0"]), "{m}");
+    let orgs = ops.get("ops/orgs").await.unwrap();
+    assert!(
+        orgs["orgs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o["org"] == json!(org) && o["approvedReleases"] == json!(["1.0.0", "2.0.0"])),
+        "{orgs}"
+    );
+
+    // An account's own app: its approvals, the releases it has not approved,
+    // and the newer release it could upgrade to.
+    let mine = alice
+        .post(
+            "apps",
+            json!({ "name": "mine", "package": "com.test.track", "version": "1.0.0" }),
+        )
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let own = alice.get("auth/apps").await.unwrap();
+    assert_eq!(own["scope"], json!({ "kind": "account" }), "{own}");
+    assert_eq!(own["approvedReleases"], json!(["1.0.0"]), "{own}");
+    assert!(
+        own["clusterReleases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["release"] == json!("2.0.0") && r["approved"] == json!(false)),
+        "{own}"
+    );
+    let a = reported_app(&alice, "auth/apps", &mine).await;
+    assert_eq!(a["package"]["version"], json!("1.0.0"), "{a}");
+    assert_eq!(a["availableVersions"], json!(["1.1.0"]), "{a}");
+    assert_eq!(a["lastUpgrade"], Value::Null, "{a}");
+    assert!(
+        !own.to_string().contains(&app),
+        "an organization's app is not the account's own: {own}"
+    );
+    // Another account sees none of alice's.
+    let theirs = carol.get("auth/apps").await.unwrap();
+    assert_eq!(theirs["apps"], json!([]), "{theirs}");
+    // The page size is bounded.
+    let e = alice.get("auth/apps?limit=100000").await.unwrap_err();
+    assert!(e.to_string().starts_with("400"), "{e}");
+}
+
+/// Where the operator upgrades apps, the reports name the release it
+/// installed and the actor kind `operator`, to the operator and to the owner.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_operator_upgrade_is_reported_as_the_operators() {
+    use calimero_node::system::{Authority, Governance};
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.governance = Governance {
+            app_upgrades: Authority::Operator,
+            ..Governance::default()
+        };
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let kv = kv_wasm();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+    let ops = c.client(1);
+    ops.use_api_key("ops-secret").await;
+    let _ = ops
+        .ops_upload_package(mpk("com.test.opsup", "1.0.0", &kv, &publisher))
+        .await
+        .unwrap();
+    let app = alice
+        .post("apps", json!({ "name": "kv", "package": "com.test.opsup" }))
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = ops
+        .ops_upload_package(mpk(
+            "com.test.opsup",
+            "1.1.0",
+            &variant(&kv, "next"),
+            &publisher,
+        ))
+        .await
+        .unwrap();
+    let _ = ops
+        .post(
+            &format!("ops/apps/{app}/upgrade"),
+            json!({ "version": "1.1.0" }),
+        )
+        .await
+        .unwrap();
+
+    let a = reported_app(&ops, "ops/apps", &app).await;
+    assert_eq!(a["scope"], json!({ "kind": "account" }), "{a}");
+    assert_eq!(a["upgradesHeldBy"], json!("operator"), "{a}");
+    assert_eq!(
+        a["package"],
+        json!({ "package": "com.test.opsup", "version": "1.1.0" }),
+        "a release the operator installed is named: {a}"
+    );
+    assert!(
+        a["publisher"]["signer"]
+            .as_str()
+            .is_some_and(|k| k.starts_with("did:key:")),
+        "{a}"
+    );
+    assert_eq!(a["lastUpgrade"]["actorKind"], json!("operator"), "{a}");
+    assert_eq!(a["lastUpgrade"]["from"]["version"], json!("1.0.0"), "{a}");
+
+    let a = reported_app(&alice, "auth/apps", &app).await;
+    assert_eq!(a["lastUpgrade"]["actorKind"], json!("operator"), "{a}");
+    assert_eq!(a["lastUpgrade"]["actor"], json!("operator"), "{a}");
+    assert_eq!(a["availableVersions"], json!([]), "{a}");
+    let own = alice.get("auth/apps").await.unwrap();
+    assert_eq!(own["governance"]["appUpgrades"], json!("operator"), "{own}");
+}
