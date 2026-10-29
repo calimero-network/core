@@ -33,11 +33,42 @@ is its command line.
   A data directory written before components opens and its apps run on wasmer
   (`old_datadir.rs`, from a directory `a09547b2b` wrote).
 - **System group** (`system.rs`, group 1): fleet, app directory, bundles, accounts,
-  passkeys, API keys, refresh tokens, session keys, organizations, teams, invites.
+  passkeys, API keys, refresh tokens, organizations, teams, invites, used proofs.
   Commands carry their `actor`; `apply` checks authority, so the log decides.
 - **Routing** (`node.rs`): system writes go to the system leader, calls and strong
   views to the app's leader, over **peer sealed channels** (`internal/*`) whose key
   is attested like any client's, plus the cluster secret (HMAC of K_c).
+- **Peer identity and the inbound gate** (Phase 0 of
+  `docs/specs/gate-system-group.md`): a node's channel to a peer is identified
+  (Noise IK with its own transport key, `x-calimero-node: <id>`);
+  `Node::identify_peer` attests the claimed node's registered address itself and
+  takes the claim only if that quote names the proven key (cached by key; the
+  quote's release with it). `api::peer` replaces the bare cluster-secret check
+  and refuses an anonymous session. Routes: app data
+  (`view`, `call`, `events`, `storage`, `blob/held`, `app-ready`, `presence`)
+  need a release approved for the app (`caller_may_hold`); `blob/get` code to any
+  node, other blobs only for an approved hosted app that marks them; `blob/delete`
+  refused while a hosted app marks the blob; `raft` needs `rpc.sender()` = the
+  caller and, for an app group, an approved release and membership (replicas or
+  the group's voters/learners): openraft itself never checks (F4). Outbound,
+  blobs (`spread_blob`) and presence go only to peers `may_send` allows.
+  No interop with nodes before this (a hard cutover: clusters are recreated).
+  Regression (`tests/approval_bypasses.rs`):
+  `a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes`.
+- **Decisions carry proofs** (`proof.rs`, `system::authorize`, run before every command):
+  consent is logged as `{ subject, method, args, nonce, assertion }`
+  (`api::consent` keeps the nonce in `Pending::Confirm`); `apply` rebuilds
+  `confirm_challenge`, verifies it under a passkey of the actor
+  (`calimero_identity::verify_consent`), checks the statement says what the
+  command does, and spends it (`used_proofs`). Operator decisions carry an
+  Ed25519 signature under `SystemState::operator_key` (`--operator-key`,
+  recorded at genesis); ops routes answer `428
+  OPERATOR_SIGNATURE_REQUIRED` with the bytes to sign (`api::operator_proof`).
+  An org run is consented once (`StartUpgradeRun { consent }`); its per-app
+  `UpgradeApp { run }` is judged by the run. Tests run commands' own authority
+  rules through `run_authorized`. Test clusters start with the harness's
+  operator key (`ops_signed` signs like mdma). Regressions: `forged_decisions_are_refused_where_they_apply_on_every_node`,
+  `operator_decisions_need_the_operator_signature`, `system::tests`.
 - **API** (`api.rs`), all inside the sealed channel except `/attestation` and `/health`:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/internal/*` (peers), `/ops/*` (mdma: counts and placement by id only, no read path into apps).
@@ -421,8 +452,15 @@ is its command line.
 - **Peers' quotes** are judged like a client's (`calimero_client::Measurements`):
   in TDX mode the signed mero-tee release the peer names, profiles from
   `--peer-profiles` (default: this node's `MERO_TEE_PROFILE`), floor `--peer-min-release`.
-- **Session keys** rotate: the system leader adds K_s v+1 once the current key is
-  `session_key_rotation_secs` old (default 6 h); the previous key keeps verifying.
+- **Sessions are node-signed**: `api::session_token` mints `v2.<claims>.<sig>`
+  with the node's receipt key (`Node::mint_session`); a node whose release may
+  not serve the account answers `421 WRONG_NODE` instead; `api::verify_token`
+  attests the issuer's receipt key at its registered address
+  (`Node::session_issuer`, again when the token names a newer key) and requires
+  its release to serve the account (`SystemState::release_may_serve_account`);
+  `Principal::issuer_release` then must be approved for each app it reaches
+  (`Principal::within`). There is no shared session key. Regression:
+  `sessions_signed_by_an_unapproved_node_reach_nothing`.
 - **Quotas** (`system::Quotas`, set with `POST /ops/quotas`) live in the system state and
   are checked at apply, so every node enforces the same limits; refusals are `429 QUOTA_EXCEEDED`.
 - **Read-your-writes across nodes**: lookups of system objects (`Node::sys_until`) wait

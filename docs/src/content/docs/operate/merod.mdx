@@ -113,10 +113,10 @@ environment variable. See [Configuration](/operate/config/) for the file.
 | `--origins URL,...` | `MEROD_ORIGINS` | `http://localhost:3000` | Origins allowed to run passkey ceremonies and to call the API from a browser (CORS). |
 | `--ops-token TOKEN` | `MEROD_OPS_TOKEN` | none | The Ops API bearer token. Without it or `--ops-token-sha256` the Ops API answers `403`. |
 | `--ops-token-sha256 HEX` | `MEROD_OPS_TOKEN_SHA256` | none | The ops token's hex SHA-256 instead of the token, so the machine's configuration holds nothing usable. Conflicts with `--ops-token`. |
+| `--operator-key HEX` | `MEROD_OPERATOR_KEY` | none | The operator's Ed25519 verify key (32 bytes, hex). Recorded at genesis; every operator decision governance gives the operator must be signed with it ([Operator](/protocol/operator/#the-credential)). Without one, such decisions are refused. |
 | `--metrics-listen ADDR` | `MEROD_METRICS_LISTEN` | off | A plain-HTTP `host:port` serving only `GET /metrics` (the `/ops/metrics` text) for a Prometheus scraper; no credential, so bind it to a private address. |
 | `--replicas N` | `MEROD_REPLICAS` | `3` | How many nodes hold each new app. |
 | `--backup-dir DIR` | `MEROD_BACKUP_DIR` | none | Where encrypted app snapshots are written. When set, the node writes them every 60 seconds; without it, no backups. |
-| `--session-key-rotation-secs N` | `MEROD_SESSION_KEY_ROTATION` | `21600` | Rotate the session-signing key after this many seconds. Values below `1800` are raised to `1800`. |
 | `--tee-release VERSION` | `MERO_TEE_VERSION` | none | The mero-tee release this image is; the node's attestation names it so clients and peers fetch the signed measurements. Required in TDX mode. |
 | `--tee-profile NAME` | `MERO_TEE_PROFILE` | none | The mero-tee image profile this node runs. |
 | `--peer-profiles NAME,...` | `MEROD_PEER_PROFILES` | `--tee-profile` | Profiles a peer's quote may match. |

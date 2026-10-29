@@ -36,7 +36,7 @@ The `Authorization: Bearer` header carries one of:
 
 | Credential | Form | Obtained from |
 | --- | --- | --- |
-| Session token | `v1.<claims>.<mac>`, 15 minutes | a passkey ceremony, or `/auth/refresh` |
+| Session token | `v2.<claims>.<signature>` by the issuing node, 15 minutes | a passkey ceremony, or `/auth/refresh` |
 | API key | `cal_…` | `POST /auth/apikeys` |
 | Ops token | the configured token | `--ops-token` / `--ops-token-sha256` |
 

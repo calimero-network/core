@@ -51,18 +51,35 @@ method, an upgrade, an approval or an organization's deletion — needs the user
 
 ## Sessions
 
-A session token is `v1.<claims>.<HMAC-SHA256>` under the cluster's
-session-signing key K_s. The claims are the account, a session id, the expiry
-(15 minutes), the K_s version, the passkey the session was opened with, and,
-for a session opened on a package's frontend, that package. Signing in also
-returns a refresh token (`rt_…`, 30 days, single use): `POST /auth/refresh`
-exchanges it for a new token and a new refresh token, and a refresh token
-presented a second time revokes its session.
+A session token is `v2.<claims>.<Ed25519 signature>`, signed by the node that
+issued it with its receipt key (made in memory at start, attested with
+`GET /attestation?purpose=receipts`) over `"calimero.session.v2\0" ‖ claims`.
+The claims are the account, a session id, the expiry (15 minutes), the passkey
+the session was opened with, for a session opened on a package's frontend that
+package, and the issuing node with its key. Signing in also returns a refresh
+token (`rt_…`, 30 days, single use): `POST /auth/refresh` on any node exchanges
+it for a new token, signed by that node, and a new refresh token; a refresh
+token presented a second time revokes its session.
 
-Any node verifies a token without asking anyone: it reads K_s from the system
-state, checks the MAC and expiry, then checks — on fresh system state — that the
-session is not revoked and that its passkey still belongs to the account. See
-[Keys & their lifetimes](/protocol/key-rotation/) for rotation and revocation.
+A node verifies a token issued elsewhere without asking the issuer: it attests
+the issuer's receipt key at the address the cluster registered for it (once,
+and again when a token names a newer key: the issuer restarted), checks the
+signature and expiry, and that the issuer's attested release may vouch for the
+account: a release the account approved for its own apps or an organization it
+belongs to approved (where the operator holds release approvals, one it
+approved). Each app access then also requires the issuer's release to be
+approved for that app's data. So a node on a release nobody approved can mint
+tokens, but no other node takes them. Then — on fresh system state — the node
+checks that the session is not revoked and that its passkey still belongs to
+the account. See [Keys & their lifetimes](/protocol/key-rotation/) for
+revocation.
+
+A node restart ends the tokens it issued (its key is new). Once a node stops,
+its tokens verify only on nodes that attested its key before; elsewhere they
+answer `401`, and clients refresh through another node.
+A node on a release the account's owners have not approved neither issues nor
+takes the account's sessions: it answers `421 WRONG_NODE`, and the client uses
+another node.
 
 ## Devices
 

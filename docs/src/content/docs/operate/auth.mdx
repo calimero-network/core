@@ -57,16 +57,17 @@ Devices: `POST /auth/passkeys/add/*` adds one (`meroctl account device add`),
 A successful ceremony answers `{ accountId, sessionToken, expiresAt,
 refreshToken }`.
 
-- **Session token:** `v1.<claims>.<HMAC-SHA256>`, valid 15 minutes, naming the
-  account, the session, the passkey it was opened with and the signing key's
-  version.
+- **Session token:** `v2.<claims>.<Ed25519 signature>`, valid 15 minutes,
+  naming the account, the session, the passkey it was opened with and the node
+  that issued and signed it. Other nodes take it only if that node's attested
+  release may serve the account ([Sessions](/protocol/identities/#sessions)).
+  A node on a release the account's owners have not approved answers
+  `421 WRONG_NODE` instead of issuing or taking one: use another node.
 - **Refresh token:** `rt_…`, valid 30 days; `POST /auth/refresh` exchanges it
   for a new session and a new refresh token. Reusing a refresh token is
   recorded and ends the session.
-- **Signing key rotation.** The system leader adds a new session-signing key
-  once the current one is `--session-key-rotation-secs` old (default 6 hours,
-  at least 30 minutes). The previous key keeps verifying, so sessions it signed
-  run out normally.
+- **Signing keys.** Each node signs with its receipt key, made in memory at
+  start: a node's restart ends the sessions it issued, and clients refresh.
 - **Ending sessions:** `POST /auth/logout` ends one; `POST /auth/logout-all`
   (`meroctl logout --all`) ends every session of the account.
 

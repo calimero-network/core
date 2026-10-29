@@ -73,6 +73,17 @@ debug image itself. What the peer's verified attestation named as its release
 is remembered and decides whether the peer may receive an app's data
 ([release approvals](/protocol/governance/#release-approvals)).
 
+The check runs the other way too. A node calling a peer proves its own
+attested transport key in the handshake (Noise IK), and the receiving node
+attests the caller's registered address with a fresh nonce, under its own
+peer policy: the caller is the node whose quote names that key, on the release
+that quote names. So a node knows which node calls an internal route and on
+which release, and judges it as it judges where to send
+([Networking](/protocol/networking/#between-nodes)). The same goes for
+sessions: a node attests the receipt key of the node that signed a session
+token (`purpose=receipts`) before it takes the token
+([Sessions](/protocol/identities/#sessions)).
+
 
 ## Receipts
 

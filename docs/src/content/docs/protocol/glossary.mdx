@@ -94,12 +94,13 @@ changes with each mero-tee release.
 
 **Passkey** — A WebAuthn credential on an account; each one is a **device**.
 
-**Session** — A 15-minute token signed with K_s, naming the account, the
-passkey, and, for a frontend, the package it is bound to. Renewed with a
-single-use refresh token.
+**Session** — A 15-minute token signed by the node that issued it (its
+attested receipt key), naming the account, the passkey, the issuing node, and,
+for a frontend, the package it is bound to. Renewed with a single-use refresh
+token.
 
-**K_s** — The session-signing key, in the system state, rotated by the system
-leader; the previous version keeps verifying.
+**Operator key** — The operator's Ed25519 key; its public half is recorded at
+genesis and every operator decision carries its signature.
 
 **API key** — A `cal_…` key acting for an account, optionally scoped to apps,
 methods, read-only, and relaying confirmations.
