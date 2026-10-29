@@ -1231,9 +1231,23 @@ async fn package_upload(
     body: Body,
 ) -> ApiResult {
     let account = installer(&node, &headers).await?.account()?;
+    uploads_allowed(&node)?;
     Ok(Json(
         node.install_upload(Arc::from(body.to_vec()), &account)
             .await?,
+    ))
+}
+
+/// Uploads are for development: a production cluster installs every release
+/// from its registry, which any node can fetch it from again.
+fn uploads_allowed(node: &Node) -> Result<(), ApiError> {
+    if node.config.allow_package_uploads {
+        return Ok(());
+    }
+    Err(ApiError::new(
+        403,
+        "UPLOADS_DISABLED",
+        "this node installs packages from its registry only (POST /packages/install); uploads are for development (--dev)",
     ))
 }
 
@@ -1372,6 +1386,7 @@ async fn ops_package_upload(
     body: Body,
 ) -> ApiResult {
     operator(&node, &headers)?;
+    uploads_allowed(&node)?;
     Ok(Json(
         node.install_upload(Arc::from(body.to_vec()), crate::system::OPERATOR)
             .await?,

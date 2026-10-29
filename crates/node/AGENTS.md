@@ -61,7 +61,9 @@ is its command line.
 - **Packages** (`packages.rs`, `system::PackageRecord`): signed `.mpk` releases.
   `POST /packages/install { package, version }` fetches from the
   operator's registry (`--registry-url`, `calimero-app-downloader`'s `HttpRegistry`);
-  `POST /packages` takes an uploaded file. Before `InstallPackage` is logged the
+  `POST /packages` takes an uploaded file, only with `Config::allow_package_uploads`
+  (`--dev`; else `403 UPLOADS_DISABLED`: a production release comes from the
+  registry, which any node can fetch it from again). Before `InstallPackage` is logged the
   node checks the publisher signature and every artifact digest
   (`calimero_bundle::VerifiedBundle`), `minRuntimeVersion` (build.rs's
   `CALIMERO_RELEASE_VERSION`), the package's pinned signer (first release wins,

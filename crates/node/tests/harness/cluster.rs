@@ -74,6 +74,7 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
         budget: None,
         registry: None,
         allow_unsigned_bundles: true,
+        allow_package_uploads: true,
         outbound: None,
         governance: Default::default(),
         apps_domain: None,
