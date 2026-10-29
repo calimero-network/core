@@ -1052,14 +1052,6 @@ impl From<String> for Fail {
     }
 }
 
-fn refused(message: &str, code: &str, details: &Value) -> Fail {
-    Fail::Refused(Refusal {
-        message: message.to_owned(),
-        code: code.to_owned(),
-        details: py::str_of(details),
-    })
-}
-
 type StepResult = Result<Value, Fail>;
 
 /// Required fields per step type (merobox's `STEP_TYPES`), for the ones this runner runs.
@@ -1785,17 +1777,13 @@ impl<'a> Runner<'a> {
             out.extend(e);
         }
         if kind == "team_join" {
-            if !truthy(t.get("member")) {
-                return Err(refused(
-                    &format!("not a member of {}", team.unwrap_or_default()),
-                    "NOT_FOUND",
-                    &Value::Null,
-                ));
-            }
+            // Joining is the node's to allow or refuse: a caller the team view does not list
+            // as a member (kicked, left, never admitted) asks the node to add it, as one that
+            // reaches the team by inheritance does, and the node's answer is the step's.
             let me = cl.me().await?;
             let me_id = me["accountId"].as_str().unwrap_or_default().to_owned();
             let inherited = t.get("myRole").is_none_or(Value::is_null);
-            if inherited {
+            if inherited || !truthy(t.get("member")) {
                 let _r = cl
                     .post(
                         &format!("{base}/members"),
@@ -2048,11 +2036,10 @@ impl<'a> Runner<'a> {
                     let _p = versions.insert(id, v);
                 }
                 if let Some(unknown) = apps.iter().find(|a| !versions.contains_key(*a)) {
-                    return Err(refused(
-                        &format!("migration_status: no such app {unknown}"),
-                        "NOT_FOUND",
-                        &Value::Null,
-                    ));
+                    // The runner's finding, not the node's answer: never a refusal to expect.
+                    return Err(Fail::Workflow(format!(
+                        "migration_status: {unknown} is not among the apps GET /apps listed"
+                    )));
                 }
                 let mine: Vec<Option<String>> = apps
                     .iter()
@@ -2254,7 +2241,11 @@ impl<'a> Runner<'a> {
                         .as_array()
                         .and_then(|m| m.iter().find(|r| r["account"] == json!(who)).cloned());
                     let Some(row) = row else {
-                        return Err(refused("not a member of the team", "NOT_FOUND", &t));
+                        // The node has no route answering one member's capabilities, so an
+                        // absent row is the runner's finding, never a refusal to expect.
+                        return Err(Fail::Workflow(format!(
+                            "member_capabilities: {who} is not among the members of team {team} the node listed"
+                        )));
                     };
                     return Ok(json!({ "capabilities": row["capabilities"] }));
                 }
@@ -2263,7 +2254,9 @@ impl<'a> Runner<'a> {
                     .as_object()
                     .is_some_and(|m| m.contains_key(&who))
                 {
-                    return Err(refused("not a member of the organization", "NOT_FOUND", &o));
+                    return Err(Fail::Workflow(format!(
+                        "member_capabilities: {who} is not among the members of org {org} the node listed"
+                    )));
                 }
                 let default = o
                     .get("defaultCapabilities")
