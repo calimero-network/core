@@ -228,7 +228,7 @@ struct InspectArgs {
     /// The data directory (default: the `--node`'s).
     #[arg(long)]
     data_dir: Option<PathBuf>,
-    /// The storage key K_r, hex, in a file.
+    /// The storage key K_r, hex, in a file (it unwraps the cluster key).
     #[arg(long)]
     storage_key_file: Option<PathBuf>,
 }

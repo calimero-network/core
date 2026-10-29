@@ -19,7 +19,8 @@ process that made them. This page lists them all, shortest-lived first.
 | Session-signing key K_s | The system leader, random, in the system state | `--session-key-rotation-secs` (6 h default, 30 min minimum), then still verifying | The leader adds version n+1; two versions are kept |
 | API key (`cal_…`) | Generated for an account; only its hash is stored | Up to 1 year (`ttlSecs`) | Revoked by the account, or expires |
 | Passkey | The person's authenticator | Until removed from the account | Added and removed by the account (at least one stays) |
-| Storage key K_r | HKDF of the KMS key and the cluster name | The cluster's lifetime | Not rotated |
+| Storage key K_r | HKDF of the KMS key and the cluster name | One mero-tee release (each has its own mero-kms) | Replaced with the release; it only wraps K_c |
+| Cluster key K_c | The founding node's K_r; handed to new nodes by attestation | The cluster's lifetime | Not rotated |
 
 ## Session keys rotate in the log
 
@@ -59,9 +60,10 @@ counter is refused.
 
 ## What does not rotate yet
 
-- **K_r** is fixed for the cluster. Rotating it would mean re-sealing every
-  value and snapshot, and every node would need the new key from mero-kms at
-  once; nothing does that today. Keys per app from mero-kms are not done.
+- **K_c** is fixed for the cluster. K_r changes with every release, but it
+  only wraps K_c ([The cluster key](/protocol/encryption/#the-cluster-key-k_c)).
+  Rotating K_c would mean re-sealing every value and snapshot; nothing does
+  that today. Keys per app are not done.
 - **A rollback counter** — something that would let a node notice it was
   restarted on an older copy of its disk — is not done.
 

@@ -33,9 +33,17 @@ impl Cluster {
     /// Start one more node, not a founder: it knows the cluster's addresses
     /// but joins only once the operator registers it (`/ops/nodes`).
     async fn join(&mut self) -> usize {
+        self.join_with(|_| {}).await
+    }
+
+    /// [`Self::join`], the node's configuration changed by `configure`. As in a
+    /// deployment, the node starts first: on an empty data directory it waits
+    /// for the cluster key, serving `/health`, until the operator registers it
+    /// (`/ops/nodes`, no zone yet) and a peer delivers the key to its address.
+    async fn join_with(&mut self, configure: impl Fn(&mut calimero_node::Config)) -> usize {
         let id = self.urls.len() as u64 + 1;
         let url = format!("http://127.0.0.1:{}/", free_port());
-        self.urls.push(url);
+        self.urls.push(url.clone());
         let peers: BTreeMap<u64, String> = self
             .urls
             .iter()
@@ -46,7 +54,24 @@ impl Cluster {
         let mut config = node_config(id, &peers, dir.path());
         config.cluster.clone_from(&self.name);
         config.bootstrap = false;
-        self.nodes.push(Some(run(config).await.unwrap()));
+        configure(&mut config);
+        let starting = tokio::spawn(run(config));
+        let mut waiting = Value::Null;
+        for _ in 0..100 {
+            if let Ok(r) = reqwest::get(format!("{url}health")).await {
+                waiting = r.json().await.unwrap_or_default();
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(waiting["waiting"].is_string(), "{waiting}");
+        let at = self.nodes.iter().position(Option::is_some).unwrap();
+        let _ = ops_at(self, at)
+            .await
+            .post("ops/nodes", json!({ "id": id, "addr": url, "zone": "" }))
+            .await
+            .unwrap();
+        self.nodes.push(Some(starting.await.unwrap().unwrap()));
         self._dirs.push(dir);
         self.nodes.len() - 1
     }
@@ -454,7 +479,7 @@ async fn backups_are_encrypted_and_restorable() {
         .path();
     let raw = std::fs::read(&file).unwrap();
     assert!(!String::from_utf8_lossy(&raw).contains("plaintext-value"));
-    let (_index, data) = calimero_node::backup::latest(&dir, &node.config.storage_key, &app)
+    let (_index, data) = calimero_node::backup::latest(&dir, node.cluster_key(), &app)
         .unwrap()
         .unwrap();
     // The app's rows are in it, opened with the storage key.
@@ -4072,6 +4097,222 @@ async fn replica_moves_are_idempotent_and_one_at_a_time() {
         json!(recorded),
         voters,
         "the directory names the group's voters"
+    );
+}
+
+/// A release upgrade, as the runbook does it: nodes on the next mero-tee
+/// release join, every app moves onto them, and the founders leave. The next
+/// release's nodes take their storage key from that release's mero-kms, whose
+/// root is its own, so their K_r is not the founders'. The apps' state, a value
+/// sealed to the app's TEE (`TeeSecret`), a member's sealed share and a backup
+/// taken before the upgrade must all still open on the new nodes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn nodes_on_the_next_release_keep_the_data_of_the_ones_before() {
+    let mut c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (kv, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    let _ = alice
+        .call(&kv, "set", json!({ "key": "a", "value": "1" }), None)
+        .await
+        .unwrap();
+    let (cards, _) = deploy(
+        &alice,
+        "cards",
+        mero_wasm("tee-cards", "tee_cards"),
+        json!({}),
+    )
+    .await;
+    let _ = eventually(&alice, &cards, "cards_left", json!({}), |v| !v.is_null()).await;
+    let _ = alice.call(&cards, "sit", json!({}), None).await.unwrap();
+    let _ = alice.call(&cards, "draw", json!({}), None).await.unwrap();
+    let hand = eventually(&alice, &cards, "my_hand", json!({}), |v| {
+        v.as_array().is_some_and(|h| h.len() == 1)
+    })
+    .await;
+    let old_leader = c.app_leader(&kv).unwrap();
+    let old = &c.nodes[old_leader].as_ref().unwrap().node;
+    assert!(old.backup().await.unwrap() >= 1);
+    let backups = old.config.backup_dir.clone().unwrap();
+
+    // The next release: its own KMS, so another K_r.
+    let mut next = Vec::new();
+    for _ in 0..3 {
+        next.push(c.join_with(|config| config.storage_key = [43; 32]).await);
+    }
+    let next_ids: Vec<u64> = next.iter().map(|i| *i as u64 + 1).collect();
+    let sys_leader = |c: &Cluster| {
+        c.nodes.iter().enumerate().find_map(|(i, r)| {
+            r.as_ref()
+                .filter(|r| r.node.system.status().is_leader)
+                .map(|_| i)
+        })
+    };
+    let mut caught_up = false;
+    for _ in 0..200 {
+        caught_up = next.iter().all(|i| {
+            c.nodes[*i]
+                .as_ref()
+                .unwrap()
+                .node
+                .sys(|s| s.apps.contains_key(&kv) && s.apps.contains_key(&cards))
+        });
+        if caught_up {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        caught_up,
+        "the next release's nodes never caught up with the system group"
+    );
+
+    // Every app moves onto the next release's nodes.
+    for app in [&kv, &cards] {
+        let mut moved = None;
+        for _ in 0..100 {
+            if let Some(leader) = c.app_leader(app) {
+                match ops_at(&c, leader)
+                    .await
+                    .post(
+                        &format!("ops/apps/{app}/replicas"),
+                        json!({ "replicas": next_ids }),
+                    )
+                    .await
+                {
+                    Ok(v) => {
+                        moved = Some(v);
+                        break;
+                    }
+                    Err(e) => eprintln!("move {app}: {e}"),
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(moved.is_some(), "{app} never moved to the next release");
+    }
+
+    // The founders leave.
+    for gone in 0..3_usize {
+        let mut removed = false;
+        for _ in 0..100 {
+            if let Some(leader) = sys_leader(&c) {
+                match ops_at(&c, leader)
+                    .await
+                    .delete(&format!("ops/nodes/{}", gone + 1))
+                    .await
+                {
+                    Ok(_) => {
+                        removed = true;
+                        break;
+                    }
+                    Err(e) => eprintln!("remove node {}: {e}", gone + 1),
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(removed, "node {} was never removed", gone + 1);
+        c.stop(gone).await;
+    }
+
+    // Only the next release's nodes are left, and they hold everything.
+    let cl = c.client(next[0]);
+    cl.use_session(alice.session().await.unwrap()).await;
+    let v = eventually(&cl, &kv, "get", json!({ "key": "a" }), |v| v == &json!("1")).await;
+    assert_eq!(v, json!("1"), "the app's state");
+    let mine = eventually(&cl, &cards, "my_hand", json!({}), |v| v == &hand).await;
+    assert_eq!(mine, hand, "a member's sealed share");
+    // Dealing opens the deck, which is sealed to the app's TEE.
+    let _ = cl.call(&cards, "draw", json!({}), None).await.unwrap();
+    let hand = eventually(&cl, &cards, "my_hand", json!({}), |v| {
+        v.as_array().is_some_and(|h| h.len() == 2)
+    })
+    .await;
+    assert_eq!(hand.as_array().map(Vec::len), Some(2), "the TEE's deck");
+    let new = &c.nodes[next[0]].as_ref().unwrap().node;
+    let (_index, rows) = calimero_node::backup::latest(&backups, new.cluster_key(), &kv)
+        .expect("a backup from before the upgrade opens on the next release")
+        .unwrap();
+    assert!(!rows.is_empty());
+}
+
+/// `internal/cluster-key` is reached without the cluster secret (a node of the
+/// next release has none yet), so it judges the request alone, and never
+/// answers with the key: it delivers it to the address the cluster has for the
+/// node id asked about. Asking under another node's id, another cluster's, an
+/// unknown or a removed one gets the asker nothing. A data directory whose
+/// wrapped key another K_r cannot open stops the node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_cluster_key_goes_only_to_the_address_of_a_node_the_cluster_knows() {
+    use calimero_node::cluster_key::Request;
+
+    let mut c = Cluster::start(3).await;
+    let ask = |cluster: &str, node: u64| {
+        serde_json::to_value(Request {
+            cluster: cluster.to_owned(),
+            node,
+            token: hex::encode([1_u8; 32]),
+        })
+        .unwrap()
+    };
+    let cl = c.client(0);
+    let name = c.name.clone();
+    // Node 2's id: the key goes to node 2's address, which (running already)
+    // takes no delivery, and the asker gets no key.
+    let e = cl
+        .post("internal/cluster-key", ask(&name, 2))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("could not be delivered"), "{e}");
+    assert!(!e.to_string().contains(&hex::encode(
+        c.nodes[0].as_ref().unwrap().node.cluster_key()
+    )));
+    let e = cl
+        .post("internal/cluster-key", ask(&name, 9))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("not a node of this cluster"), "{e}");
+    let e = cl
+        .post("internal/cluster-key", ask("elsewhere", 2))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("another cluster"), "{e}");
+    // A node that joined, then was removed.
+    let new = c.join().await;
+    let new_id = new as u64 + 1;
+    let leader = (0..3)
+        .find(|i| c.nodes[*i].as_ref().unwrap().node.system.status().is_leader)
+        .unwrap();
+    let _ = ops_at(&c, leader)
+        .await
+        .delete(&format!("ops/nodes/{new_id}"))
+        .await
+        .unwrap();
+    let e = c
+        .client(leader)
+        .post("internal/cluster-key", ask(&name, new_id))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("not a node of this cluster"), "{e}");
+
+    // The same data directory booted with another release's K_r stops.
+    c.stop(1).await;
+    let peers: BTreeMap<u64, String> = c
+        .urls
+        .iter()
+        .enumerate()
+        .map(|(i, u)| (i as u64 + 1, u.clone()))
+        .collect();
+    let mut config = node_config(2, &peers, c._dirs[1].path());
+    config.cluster.clone_from(&c.name);
+    config.bootstrap = false;
+    config.storage_key = [43; 32];
+    let e = run(config)
+        .await
+        .err()
+        .expect("another K_r must not open it");
+    assert!(
+        format!("{e:#}").contains("another mero-tee release"),
+        "{e:#}"
     );
 }
 

@@ -36,8 +36,10 @@ because its attestation names them and it judges its peers by them.
 
 ## Storage key
 
-Each node seals everything on disk under a storage key K_r =
-HKDF-SHA256(KMS key, salt `calimero.cloud.storage.v1`, info = `--cluster`).
+Each node takes a storage key K_r =
+HKDF-SHA256(KMS key, salt `calimero.cloud.storage.v1`, info = `--cluster`), and
+seals everything on disk under the cluster key K_c, which it keeps wrapped
+under K_r ([The cluster key](/protocol/encryption/#the-cluster-key-k_c)).
 In TDX mode the KMS key comes from mero-kms only:
 
 ```bash
@@ -50,8 +52,8 @@ merod --node n1 init ... --kms-url https://kms.internal.example.com/ \
   `MERO_TEE_VERSION`); the key is sealed to this TD.
 - The KMS derives one key per identity. All nodes of a cluster must present the
   **same disk identity file** and the same `--cluster`, so they derive the same
-  K_r: a follower opens the leader's snapshots with it, and the cluster secret
-  peers present is derived from it. `merod` creates the identity file if it is
+  K_r. The founding node takes its K_r as K_c; the others, and later every node
+  of a new release (whose mero-kms gives another K_r), take K_c from a peer. `merod` creates the identity file if it is
   missing; create it once and give every node a copy.
 - `--storage-key` and `--storage-key-file` are refused without `--dev`: a key
   the host could hand the node would let whoever runs the host read the disks.
