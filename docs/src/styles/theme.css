@@ -1,105 +1,237 @@
-/* Calimero brand theme for Starlight — the universal Calimero design system:
- * DM Sans + JetBrains Mono, the #a5ff11 lime accent, and the dark
- * surface/semantic palette lifted verbatim from the brand design system. */
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;600;700&display=swap');
+/* Calimero theme for Starlight: the landing page's design ("Sealed", the
+ * calimero.network site's public/assets/v2.css). Paper and ink with one
+ * wax-seal red, Inter Tight + JetBrains Mono, hairline rules, square corners,
+ * no shadows, mono uppercase labels. Light and dark use the same tokens as
+ * the landing, so the docs, the landing and the console read as one system.
+ * Diagrams take their colours from the same tokens (bottom of this file). */
+@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
-:root {
-  --sl-font: 'DM Sans', ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --sl-font-mono: 'JetBrains Mono', ui-monospace, "SFMono-Regular", Menlo, monospace;
+/* ---- Landing tokens ---- */
+:root,
+:root[data-theme='light'] {
+  --cal-paper: #f4f1ea;
+  --cal-paper-2: #ece7dc;
+  --cal-card: #fffdf8;
+  --cal-ink: #111111;
+  --cal-ink-2: #3a3935;
+  --cal-muted: #5c5a54;
+  --cal-rule: #d6d0c3;
+  --cal-box-line: #a19c90;
+  --cal-seal: #b8261a;
+  --cal-seal-soft: #f5e1da;
+  --cal-seal-deep: #8f1d14;
+  --cal-ok: #1c6a43;
+  --cal-ok-soft: #dcefe3;
+  --cal-warn: #8a5a00;
+  --cal-warn-soft: #f6ead0;
+  /* Diagram-only hues: the landing has none, so these sit in its key —
+   * desaturated and at the same weight as --cal-ok / --cal-warn. */
+  --cal-blue: #2d5b8c;
+  --cal-blue-soft: #e3e9f0;
+  --cal-violet: #6a4a8c;
+  --cal-violet-soft: #ebe4f0;
+  --cal-teal: #1d6b6e;
+  --cal-teal-soft: #dfecec;
+}
+:root[data-theme='dark'] {
+  --cal-paper: #121211;
+  --cal-paper-2: #191917;
+  --cal-card: #1c1b18;
+  --cal-ink: #f1ede4;
+  --cal-ink-2: #cdc7ba;
+  --cal-muted: #a29d91;
+  --cal-rule: #34322d;
+  --cal-box-line: #5a564e;
+  --cal-seal: #ef6150;
+  --cal-seal-soft: #3a1914;
+  --cal-seal-deep: #c9402f;
+  --cal-ok: #62c792;
+  --cal-ok-soft: #14291d;
+  --cal-warn: #e3ac45;
+  --cal-warn-soft: #2e2310;
+  --cal-blue: #8fb4dc;
+  --cal-blue-soft: #18212b;
+  --cal-violet: #b8a1d9;
+  --cal-violet-soft: #211b2a;
+  --cal-teal: #7cc4c6;
+  --cal-teal-soft: #142423;
 }
 
-/* Compact density: bake in the ~80% browser-zoom feel the team preferred.
- * Starlight sizes fonts, spacing, sidebar and content width in rem, so scaling
- * the root shrinks everything together (just like zoom). Nudge to taste:
- * 80% ≈ 12.8px, 87.5% = 14px. */
-:root { font-size: 81.25%; } /* 13px base */
-@media (max-width: 50rem) { :root { font-size: 87.5%; } } /* a touch larger on phones */
-
-/* Layout: give the main content column more room and the right-hand table of
- * contents less. Starlight reserves `sidebar-width + (leftover)/2` for the TOC,
- * so widening the content column both enlarges the main text/diagrams AND
- * shrinks the TOC reserve. This also offsets the rem shrink from the scaling
- * above. Content goes wider still on large monitors. */
+/* ---- Starlight mapped onto the tokens ---- */
 :root {
+  --sl-font: 'Inter Tight', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --sl-font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
   --sl-content-width: 54rem;
   --sl-sidebar-width: 18rem;
 }
 @media (min-width: 86em) {
-  :root { --sl-content-width: 66rem; }
+  :root { --sl-content-width: 64rem; }
 }
-/* Structural diagrams and media never overflow the (now wider) column. */
+:root[data-theme='light'] {
+  --sl-color-accent-low: var(--cal-seal-soft);
+  --sl-color-accent: var(--cal-seal);
+  --sl-color-accent-high: var(--cal-seal-deep);
+  --sl-color-text-accent: var(--cal-seal);
+
+  --sl-color-white: var(--cal-ink);
+  --sl-color-gray-1: #1f1e1b;
+  --sl-color-gray-2: var(--cal-ink-2);
+  --sl-color-gray-3: var(--cal-muted);
+  --sl-color-gray-4: var(--cal-box-line);
+  --sl-color-gray-5: var(--cal-rule);
+  --sl-color-gray-6: #e2dccf;
+  --sl-color-gray-7: var(--cal-paper-2);
+  --sl-color-black: var(--cal-paper);
+
+  --sl-color-bg: var(--cal-paper);
+  --sl-color-bg-nav: rgb(244 241 234 / 94%);
+  --sl-color-bg-sidebar: var(--cal-paper);
+  --sl-color-bg-inline-code: var(--cal-paper-2);
+  --sl-color-hairline-light: var(--cal-rule);
+  --sl-color-hairline: var(--cal-rule);
+  --sl-color-hairline-shade: var(--cal-rule);
+}
+:root[data-theme='dark'] {
+  --sl-color-accent-low: var(--cal-seal-soft);
+  --sl-color-accent: var(--cal-seal);
+  --sl-color-accent-high: #ff9a8f;
+  --sl-color-text-accent: var(--cal-seal);
+
+  --sl-color-white: var(--cal-ink);
+  --sl-color-gray-1: #e6e1d7;
+  --sl-color-gray-2: var(--cal-ink-2);
+  --sl-color-gray-3: var(--cal-muted);
+  --sl-color-gray-4: var(--cal-box-line);
+  --sl-color-gray-5: var(--cal-rule);
+  --sl-color-gray-6: #2c2a26;
+  --sl-color-gray-7: var(--cal-paper-2);
+  --sl-color-black: var(--cal-paper);
+
+  --sl-color-bg: var(--cal-paper);
+  --sl-color-bg-nav: rgb(18 18 17 / 92%);
+  --sl-color-bg-sidebar: var(--cal-paper);
+  --sl-color-bg-inline-code: var(--cal-paper-2);
+  --sl-color-hairline-light: var(--cal-rule);
+  --sl-color-hairline: var(--cal-rule);
+  --sl-color-hairline-shade: var(--cal-rule);
+}
+
+/* ---- Type: the landing's heavy, tight headings and mono labels ---- */
+.sl-markdown-content { line-height: 1.7; }
+h1#_top, .sl-markdown-content :is(h1, h2) { font-weight: 800; letter-spacing: -0.022em; line-height: 1.1; }
+.sl-markdown-content h3 { font-weight: 700; letter-spacing: -0.02em; }
+.sl-markdown-content h2 { margin-top: 2.6rem; padding-top: 1.1rem; border-top: 1px solid var(--cal-rule); }
+.sl-markdown-content a { text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.sl-markdown-content a:hover { color: var(--cal-ink); text-decoration-color: var(--cal-seal); }
+
+/* Sidebar group labels and the "On this page" heading: mono, uppercase, tracked. */
+.sidebar-content summary .group-label .large,
+.right-sidebar h2,
+starlight-toc h2 {
+  font-family: var(--sl-font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--cal-muted);
+}
+.sidebar-content a[aria-current='page'] {
+  background: transparent;
+  color: var(--cal-seal);
+  font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--cal-seal);
+  border-radius: 0;
+}
+
+/* Square corners and hairlines everywhere; no shadows. */
+:root { --sl-shadow-sm: none; --sl-shadow-md: none; --sl-shadow-lg: none; }
+.card, .sl-link-card, .starlight-aside, .expressive-code .frame, pre, kbd,
+button, input, .sl-badge, site-search button, dialog {
+  border-radius: 0 !important;
+}
+.card, .sl-link-card { border: 1px solid var(--cal-rule); background: var(--cal-card); box-shadow: none; }
+.sl-link-card:hover { border-color: var(--cal-ink); background: var(--cal-card); }
+.card .title { font-weight: 800; letter-spacing: -0.02em; }
+.card .icon { color: var(--cal-seal) !important; background: transparent !important; border: 1px solid var(--cal-seal); }
+
+/* Callouts: a rule on the left in the callout's colour, paper ground. */
+.starlight-aside { border-width: 0 0 0 3px; background: var(--cal-card); }
+.starlight-aside__title { font-family: var(--sl-font-mono); font-size: 0.75rem; letter-spacing: 0.1em; text-transform: uppercase; }
+.starlight-aside--note { border-color: var(--cal-ink); }
+.starlight-aside--tip { border-color: var(--cal-ok); }
+.starlight-aside--caution { border-color: var(--cal-warn); }
+.starlight-aside--danger { border-color: var(--cal-seal); }
+
+/* Tables: ruled, mono uppercase heads, scroll when wide. */
+.sl-markdown-content table { font-size: 0.9rem; display: block; overflow-x: auto; max-width: 100%; border-collapse: collapse; }
+.sl-markdown-content th {
+  font-family: var(--sl-font-mono); font-size: 0.72rem; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--cal-muted);
+  background: transparent; border-bottom: 1px solid var(--cal-ink);
+}
+.sl-markdown-content :is(th, td) { border-color: var(--cal-rule); }
+
+/* Inline code: paper chip, no radius. */
+.sl-markdown-content :not(pre) > code { border-radius: 0; border: 1px solid var(--cal-rule); padding: 0.05em 0.3em; }
+
+/* The header: ruled, paper. */
+header.header { border-bottom: 1px solid var(--cal-rule); }
+
+/* Structural diagrams and media never overflow the column. */
 .sl-markdown-content :is(svg, img, .archmap) { max-width: 100%; height: auto; }
 
-/* ---- Dark theme (default) ----
- * Palette ported verbatim from the published Calimero docs
- * (docs.calimero.network, also Starlight): the #a5ff11 brand lime on the
- * neutral Zinc ramp over near-black #09090b. */
-:root[data-theme='dark'] {
-  --sl-color-accent-low: #1a2210;
-  --sl-color-accent: #a5ff11;        /* the Calimero brand lime */
-  --sl-color-accent-high: #a5ff11;
-  --sl-color-text-accent: #b8ff44;   /* brighter lime for links/inline accents */
-
-  --sl-color-white: #fafafa;
-  --sl-color-gray-1: #e4e4e7;
-  --sl-color-gray-2: #a1a1aa;
-  --sl-color-gray-3: #71717a;
-  --sl-color-gray-4: #52525b;
-  --sl-color-gray-5: #3f3f46;
-  --sl-color-gray-6: #27272a;        /* borders/hairline — lifted for definition on near-black */
-  --sl-color-gray-7: #18181b;        /* code/raised surface — lifts off the page bg */
-  --sl-color-black: #09090b;
-
-  --sl-color-bg: #09090b;
-  --sl-color-bg-nav: rgba(9, 9, 11, .9);
-  --sl-color-bg-sidebar: #111113;
-  --sl-color-hairline-shade: #27272a;
-}
-
-/* ---- Light theme (Zinc, inverted — accent darkened for AA contrast) ---- */
-:root[data-theme='light'] {
-  --sl-color-accent-low: #edffd0;
-  --sl-color-accent: #5a8f00;
-  --sl-color-accent-high: #5a8f00;
-  --sl-color-text-accent: #4a7600;
-
-  --sl-color-white: #09090b;
-  --sl-color-gray-1: #18181b;
-  --sl-color-gray-2: #3f3f46;
-  --sl-color-gray-3: #71717a;
-  --sl-color-gray-4: #a1a1aa;
-  --sl-color-gray-5: #d4d4d8;
-  --sl-color-gray-6: #e4e4e7;
-  --sl-color-gray-7: #f4f4f5;
-  --sl-color-black: #fafafa;
-
-  --sl-color-bg: #fafafa;
-  --sl-color-bg-nav: rgba(250, 250, 250, .92);
-  --sl-color-bg-sidebar: #f4f4f5;
-  --sl-color-hairline-shade: #e4e4e7;
-}
-
-/* A touch more air in prose; restrained accent on links. */
-.sl-markdown-content { line-height: 1.7; }
-.sl-markdown-content a { text-decoration-thickness: 1px; text-underline-offset: 2px; }
-
-/* Calmer heading hierarchy (Linear/Tailscale feel): authority via size, not weight. */
-.sl-markdown-content :is(h1, h2, h3) { letter-spacing: -0.012em; }
-.sl-markdown-content h2 { margin-top: 2.3rem; }
-.sl-markdown-content table { font-size: 0.9rem; }
-
-/* Wide spec/reference tables scroll instead of overflowing on small screens. */
-.sl-markdown-content table { display: block; overflow-x: auto; max-width: 100%; }
-
-/* Light theme: keep the diagram Replay control legible. */
-:root[data-theme='light'] .replay-btn {
-  background: #f4f4f5; color: #52525b; border-color: #d4d4d8;
-}
-
-/* ---- Animated diagram engine (ported from the bespoke site) ---- */
+/* ---- Diagrams ----
+ * Hand-authored SVGs (src/components/diagrams) and the sequence engine
+ * (src/scripts/diagrams.client.ts) share one palette, set here per theme.
+ * The SVG sources keep their original hex attributes as authoring keys; the
+ * rules below repaint each key with a landing token (a CSS `fill`/`stroke`
+ * beats a presentation attribute), so every diagram follows the theme. */
 .diagram-container { overflow-x: auto; margin: 1.25rem 0; }
-.diagram-container svg { border-radius: 10px; max-height: 75vh; }
+.diagram-container svg { max-height: 75vh; border: 1px solid var(--cal-rule); font-family: var(--sl-font-mono); }
 .diagram-container.seq svg { min-width: 700px; }
+/* Square boxes, as on the landing (geometry property; overrides `rx`). */
+.diagram-container rect { rx: 0; ry: 0; }
+
+/* grounds */
+.diagram-container :is([fill='#0f0f16'], [fill='#0d1117']) { fill: var(--cal-card); }
+.diagram-container :is([fill='#161b22'], [fill='#10151c']) { fill: var(--cal-paper); }
+/* text */
+.diagram-container :is([fill='#c9d1d9'], [fill='#c4c4cc']) { fill: var(--cal-ink); }
+.diagram-container :is([fill='#8b949e'], [fill='#9aa4b2'], [fill='#6b6b80'], [fill='#5a6472']) { fill: var(--cal-muted); }
+.diagram-container :is([stroke='#8b949e'], [stroke='#6b6b80']) { stroke: var(--cal-muted); }
+/* lines */
+.diagram-container :is([stroke='#252538'], [stroke='#35354a'], [stroke='#30363d']) { stroke: var(--cal-rule); }
+.diagram-container [stroke='#444c56'] { stroke: var(--cal-box-line); }
+.diagram-container [fill='#444c56'] { fill: var(--cal-box-line); }
+/* accent: the seal red */
+.diagram-container [fill='#a5ff11'] { fill: var(--cal-seal); }
+.diagram-container [stroke='#a5ff11'] { stroke: var(--cal-seal); }
+.diagram-container [fill='#13160f'] { fill: var(--cal-seal-soft); }
+/* ok / warn */
+.diagram-container [fill='#3fb950'] { fill: var(--cal-ok); }
+.diagram-container [stroke='#3fb950'] { stroke: var(--cal-ok); }
+.diagram-container [fill='#10210f'] { fill: var(--cal-ok-soft); }
+.diagram-container :is([fill='#f0883e'], [fill='#e3b341']) { fill: var(--cal-warn); }
+.diagram-container :is([stroke='#f0883e'], [stroke='#e3b341']) { stroke: var(--cal-warn); }
+.diagram-container [fill='#231708'] { fill: var(--cal-warn-soft); }
+/* the three secondary hues */
+.diagram-container [fill='#58a6ff'] { fill: var(--cal-blue); }
+.diagram-container [stroke='#58a6ff'] { stroke: var(--cal-blue); }
+.diagram-container [fill='#a371f7'] { fill: var(--cal-violet); }
+.diagram-container [stroke='#a371f7'] { stroke: var(--cal-violet); }
+.diagram-container [fill='#1a1430'] { fill: var(--cal-violet-soft); }
+.diagram-container [fill='#39d0d8'] { fill: var(--cal-teal); }
+.diagram-container [stroke='#39d0d8'] { stroke: var(--cal-teal); }
+.diagram-container :is([fill='#16222e'], [fill='#10201f']) { fill: var(--cal-teal-soft); }
+
+/* The sequence engine paints with these (diagrams.client.ts). */
+.diagram-container .seq-bg { fill: var(--cal-card); }
+.diagram-container .seq-lifeline, .diagram-container .seq-divider { stroke: var(--cal-rule); }
+.diagram-container .seq-num { fill: var(--cal-muted); }
+.diagram-container .seq-label { fill: var(--cal-ink); }
+.diagram-container .seq-note { fill: var(--cal-muted); }
+
+/* ---- Animated diagram engine ---- */
 .seq-step { opacity: 0; }
 .diagram-container.animating .seq-step {
   animation: stepIn .4s ease-out forwards;
@@ -108,12 +240,12 @@
 @keyframes stepIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 .diagram-tools { display: flex; justify-content: flex-end; margin-bottom: .5rem; }
 .replay-btn {
-  padding: 6px 16px; border: 1px solid var(--sl-color-gray-5);
-  background: var(--sl-color-gray-6); color: var(--sl-color-gray-2);
-  font-family: var(--sl-font-mono); font-size: .74rem; border-radius: 8px; cursor: pointer;
-  transition: border-color .15s, color .15s;
+  padding: 6px 14px; border: 1px solid var(--cal-ink);
+  background: transparent; color: var(--cal-ink);
+  font: 600 .7rem/1 var(--sl-font-mono); letter-spacing: .1em; text-transform: uppercase;
+  cursor: pointer; transition: background .15s, color .15s;
 }
-.replay-btn:hover { border-color: var(--sl-color-accent); color: var(--sl-color-accent); }
+.replay-btn:hover { background: var(--cal-ink); color: var(--cal-paper); }
 @media (prefers-reduced-motion: reduce) {
   .seq-step { opacity: 1; }
   .diagram-container.animating .seq-step { animation: none; }

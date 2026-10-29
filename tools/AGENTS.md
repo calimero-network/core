@@ -1,7 +1,7 @@
 # tools/ - Development Tools
 
 Development tools for Calimero apps and the storage layer. A stopped node's
-store is inspected with `merod inspect` (`crates/merod`), which replaces v1's `merodb`.
+store is inspected with `merod inspect` (`crates/merod`).
 
 ## Available Tools
 

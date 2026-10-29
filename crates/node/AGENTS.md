@@ -322,7 +322,7 @@ is its command line.
   `{label}.D` (`app_host::label`, 52 base32 characters), from its release's
   `.mpk` (`Node::release_mpk`, verified before a byte is served, opened ones
   cached). Outermost layer: only `GET`/`HEAD` of files, `/` → newest release,
-  client routes and relative tails as v1, v1's CSP plus the cluster's API
+  client routes and relative tails served as the bundle's, its CSP plus the cluster's API
   origins in `connect-src`, `/.well-known/calimero.json`; an unknown label under
   D is a 404, never a node route. App origins pass CORS, and a passkey ceremony
   from one opens a session bound to its package (`SessionClaims::app`, carried

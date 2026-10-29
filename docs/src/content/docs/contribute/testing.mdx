@@ -118,9 +118,7 @@ regression scenario there.
 
 Core's workflows (`workflows/`: app migrations, `sync-tests` (replication), fuzzy loads) and
 every app's (`apps/*/workflows/`) are merobox workflows for the `cloud-v2`
-backend; every deployable app has at least one. Some files' headers still
-record how they were ported from the earlier release's workflows. Run them
-against a build:
+backend; every deployable app has at least one. Run them against a build:
 
 ```bash
 python3 scripts/build-workflow-fixtures.py      # the releases and WASM they install
