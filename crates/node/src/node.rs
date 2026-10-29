@@ -21,6 +21,7 @@ use crate::app::{
 };
 use crate::attest::{HttpAttestor, Mode, Policy};
 use crate::error::ApiError;
+use crate::membership::{grow_voters, PROMOTE_MAX_LAG, SYSTEM_VOTERS};
 use crate::services::{AppBlobs, BundleFacts, Search};
 use crate::system::{output, SystemCmd, SystemMachine, SystemState};
 use crate::types::{now_ms, AppRecord, Caller, Executor as Kind, NodeRecord};
@@ -240,6 +241,23 @@ pub struct ViewAnswer {
     pub timeout: bool,
 }
 
+/// A replica move of one app in progress on this node ([`Node::begin_move`]).
+pub struct MoveGuard {
+    node: Arc<Node>,
+    app: String,
+}
+
+impl Drop for MoveGuard {
+    fn drop(&mut self) {
+        let _was = self
+            .node
+            .moving
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.app);
+    }
+}
+
 /// Shared node state.
 pub struct Node {
     pub config: Config,
@@ -286,6 +304,10 @@ pub struct Node {
     pub frontends: crate::app_host::FrontendCache,
     /// Nodes being added to the system group now.
     joining: Mutex<std::collections::HashSet<NodeId>>,
+    /// Apps whose replicas this node is moving now ([`Node::begin_move`]).
+    moving: Mutex<HashSet<String>>,
+    /// A promotion of learners to system voters is under way.
+    promoting: std::sync::atomic::AtomicBool,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
     /// Full-text search over the apps hosted here.
@@ -445,6 +467,8 @@ impl Node {
             presence: crate::presence::Presence::default(),
             frontends: crate::app_host::FrontendCache::default(),
             joining: Mutex::default(),
+            moving: Mutex::default(),
+            promoting: std::sync::atomic::AtomicBool::new(false),
             peer_releases: Mutex::new(HashMap::new()),
             sys_reads: ReadRounds::default(),
             conflicts: std::sync::atomic::AtomicU64::new(0),
@@ -847,6 +871,23 @@ impl Node {
         Ok(g)
     }
 
+    /// Claim `app` for a replica move: `None` while another move of it runs
+    /// here. The claim ends when the guard drops.
+    #[must_use]
+    pub fn begin_move(self: &Arc<Self>, app: &str) -> Option<MoveGuard> {
+        let mut moving = self
+            .moving
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !moving.insert(app.to_owned()) {
+            return None;
+        }
+        Some(MoveGuard {
+            node: Arc::clone(self),
+            app: app.to_owned(),
+        })
+    }
+
     /// On the system leader: every registered node that is not yet in the
     /// system group joins it as a learner (a node `/ops/nodes` added to a
     /// running cluster), and catches up from the log or a snapshot; then it
@@ -892,6 +933,64 @@ impl Node {
         }
     }
 
+    /// On the system leader: while the system group has fewer than
+    /// [`SYSTEM_VOTERS`] voters, promote caught-up registered learners so it
+    /// has exactly that many, in one membership change (joint consensus). A
+    /// cluster started on one node never passes through 2 voters, which
+    /// tolerate no failure and make every write wait on both: it waits until
+    /// enough learners exist to reach 3. Never grows past 3. Runs in the
+    /// background, one change at a time.
+    fn promote_learners(&self) {
+        let status = self.system.status();
+        if !status.is_leader || status.voters.len() >= SYSTEM_VOTERS {
+            return;
+        }
+        let Some(me) = self.this.lock().ok().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        let metrics = self.system.raft().metrics().borrow().clone();
+        let last = metrics.last_log_index.unwrap_or(0);
+        let matched: BTreeMap<NodeId, u64> = metrics
+            .replication
+            .iter()
+            .flatten()
+            .map(|(peer, log)| (*peer, log.map_or(0, |l| l.index)))
+            .collect();
+        let (voter_zones, candidates) = self.sys(|s| {
+            let zone = |id: &NodeId| s.nodes.get(id).map(|n| n.zone.clone()).unwrap_or_default();
+            let voter_zones: Vec<String> = status.voters.iter().map(zone).collect();
+            let candidates: Vec<(NodeId, String)> = status
+                .learners
+                .iter()
+                .filter(|l| s.nodes.contains_key(l) && !s.removed_nodes.contains(l))
+                .filter(|l| {
+                    matched
+                        .get(l)
+                        .is_some_and(|m| last.saturating_sub(*m) <= PROMOTE_MAX_LAG)
+                })
+                .map(|l| (*l, zone(l)))
+                .collect();
+            (voter_zones, candidates)
+        });
+        let Some(voters) = grow_voters(&status.voters, &voter_zones, &candidates) else {
+            return;
+        };
+        if self
+            .promoting
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        drop(tokio::spawn(async move {
+            match me.system.change_voters(voters.clone()).await {
+                Ok(()) => info!(?voters, "learners became system voters"),
+                Err(e) => warn!(error = %e, "could not promote learners to system voters yet"),
+            }
+            me.promoting
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }));
+    }
+
     /// Bring hosted groups in line with the system state.
     pub async fn reconcile(&self) {
         // The cluster's first leader fixes its governance, registers the
@@ -921,6 +1020,7 @@ impl Node {
                 let _r = self.sys_write(&SystemCmd::RegisterNode { node }).await;
             }
             self.admit_registered_nodes();
+            self.promote_learners();
             // The first session key, then a new one whenever the current one is old enough.
             let current = self.sys(|s| s.session_keys.last().map(|k| (k.version, k.created_at)));
             let now = crate::types::now_secs();
@@ -1258,6 +1358,60 @@ impl Node {
             return Err(ApiError::unavailable(
                 "the blob could not reach a majority of nodes",
             ));
+        }
+        Ok(())
+    }
+
+    /// Hand `to` (nodes about to become replicas of `app`) the bytes the app
+    /// needs that live outside its log: its bundle and every blob its state
+    /// marks. They would otherwise be fetched from a peer on first use, and a
+    /// cluster grown from one node holds them only on that node: once it is
+    /// gone, nobody could run the app. Returns how many it handed over.
+    pub async fn hand_over_bytes(
+        &self,
+        app: &AppRecord,
+        g: &Group<AppMachine>,
+        to: &[(NodeId, String)],
+    ) -> Result<usize, ApiError> {
+        if to.is_empty() {
+            return Ok(0);
+        }
+        let bundle = g
+            .read_local(|m, _| m.state.bundle.clone())
+            .unwrap_or_else(|| app.bundle.clone());
+        let wasm = self.bundle_wasm(&bundle).await?;
+        self.hand_to(&bundle, wasm, to).await?;
+        // One blob in memory at a time: an app may hold many large ones.
+        let blobs = g.read_local(|m, _| m.storage_stats().blobs);
+        for (id, _size) in &blobs {
+            let id = hex::encode(id);
+            let bytes = match self
+                .engine
+                .get_blob(&id)
+                .map_err(|e| ApiError::internal(&e.to_string()))?
+            {
+                Some(b) => b,
+                None => self.fetch_blob(&id).await?,
+            };
+            self.hand_to(&id, bytes, to).await?;
+        }
+        Ok(1 + blobs.len())
+    }
+
+    /// Store `bytes` (named by their hash) on each of `to`.
+    async fn hand_to(
+        &self,
+        hash: &str,
+        bytes: Vec<u8>,
+        to: &[(NodeId, String)],
+    ) -> Result<(), ApiError> {
+        let body = json!({ "hash": hash, "wasm": calimero_log::Bytes(bytes) });
+        for (id, addr) in to {
+            if let Err(e) = self.peer_post(addr, "internal/blob", &body).await {
+                return Err(ApiError::unavailable(&format!(
+                    "node {id} could not take the app's bytes: {e}"
+                )));
+            }
         }
         Ok(())
     }

@@ -200,8 +200,10 @@ placement and per-app usage by id, never app state, names or credentials.
 | --- | --- | --- |
 | `GET /ops/status` | `{ node, system, governance, groups, nodes, apps, accounts }` | `ops status` |
 | `GET /ops/metrics` | Prometheus text, including per-app usage for billing; see [Observability](/operate/observability/) and [usage metering](/operate/observability/#usage-metering) | `ops metrics` |
-| `POST /ops/nodes` | `{ id, addr, zone? }`: register a node; the system leader adds it as a learner | `ops add-node` |
-| `POST /ops/apps/{app}/replicas` | `{ replicas: [id, …] }`: move an app (at least `min(3, nodes in the cluster)` replicas, and only nodes on a release the app's owner approved). On a follower: `421 NOT_LEADER`. | `ops move` |
+| `GET /ops/placement` | `{ fresh, apps: [{ app, group, replicas }], nodes: [{ id, zone, release, apps }] }`: where every app's replicas are, ids and counts only, read after a read index (`fresh`: this node caught up with the system leader); `release` is the node's attested release, `null` when unknown | `ops placement` |
+| `POST /ops/nodes` | `{ id, addr, zone? }`: register a node; the system leader adds it as a learner, and promotes caught-up learners while fewer than 3 voters are left (straight to 3, never 2) | `ops add-node` |
+| `DELETE /ops/nodes/{id}` | Remove a node no app keeps a replica on (system leader; elsewhere `421 NOT_LEADER`) | `ops remove-node` |
+| `POST /ops/apps/{app}/replicas` | `{ replicas: [id, …] }`: move an app (at least `min(3, nodes in the cluster)` registered nodes, and only nodes on a release the app's owner approved) → `{ status, unchanged }`. The set it already has: `unchanged: true`, nothing written. Another move of the app running: `409 MOVE_IN_PROGRESS`. On a follower: `421 NOT_LEADER`. | `ops move` |
 | `POST /ops/backup` | Snapshot the apps this node leads into `--backup-dir` → `{ written }` | `ops backup` |
 | `GET /ops/quotas`, `POST /ops/quotas` | Read or replace the per-account quotas | `ops quotas`, `ops set-quotas` |
 | `POST /ops/releases` | `{ version, approved }`, where the operator holds release approvals | `ops release` |

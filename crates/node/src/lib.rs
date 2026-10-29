@@ -23,6 +23,7 @@ pub mod idempotency;
 pub mod inspect;
 pub mod kms;
 pub mod local;
+pub mod membership;
 pub mod metrics;
 pub mod node;
 pub mod packages;
