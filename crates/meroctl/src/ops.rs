@@ -155,12 +155,12 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
         OpsCmd::Quotas => client.get("ops/quotas").await?,
         OpsCmd::SetQuotas { quotas } => client.post("ops/quotas", json_arg(&quotas)?).await?,
         OpsCmd::Release { version, withdraw } => {
-            client
-                .post(
-                    "ops/releases",
-                    json!({ "version": version, "approved": !withdraw }),
-                )
-                .await?
+            decide(
+                env,
+                "ops/releases",
+                json!({ "version": version, "approved": !withdraw }),
+            )
+            .await?
         }
         OpsCmd::Outbound {
             package,
@@ -172,12 +172,12 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
             } else {
                 json!(prefixes)
             };
-            client
-                .post(
-                    "ops/outbound",
-                    json!({ "package": package, "prefixes": prefixes, "replace": replace }),
-                )
-                .await?
+            decide(
+                env,
+                "ops/outbound",
+                json!({ "package": package, "prefixes": prefixes, "replace": replace }),
+            )
+            .await?
         }
         OpsCmd::Packages => client.get("ops/packages").await?,
         OpsCmd::Install {
@@ -205,15 +205,15 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
             bundle,
             migrate,
         } => {
-            client
-                .post(
-                    &format!("ops/apps/{context}/upgrade"),
-                    json!({
-                        "bundle": bundle, "package": package, "version": version,
-                        "service": service, "migrate": migrate,
-                    }),
-                )
-                .await?
+            decide(
+                env,
+                &format!("ops/apps/{context}/upgrade"),
+                json!({
+                    "bundle": bundle, "package": package, "version": version,
+                    "service": service, "migrate": migrate,
+                }),
+            )
+            .await?
         }
         OpsCmd::UpgradeNamespace {
             namespace,
@@ -223,15 +223,44 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
             cascade,
             migrate,
         } => {
-            client
-                .post(
-                    &format!("ops/orgs/{namespace}/upgrade"),
-                    json!({
-                        "package": package, "version": version, "team": group,
-                        "cascade": cascade, "migrate": migrate,
-                    }),
-                )
-                .await?
+            decide(
+                env,
+                &format!("ops/orgs/{namespace}/upgrade"),
+                json!({
+                    "package": package, "version": version, "team": group,
+                    "cascade": cascade, "migrate": migrate,
+                }),
+            )
+            .await?
         }
     })
+}
+
+/// Send an operator decision: when the node asks for the operator's
+/// signature (`428 OPERATOR_SIGNATURE_REQUIRED`, naming the bytes to sign),
+/// sign them with `--operator-key-file` and send it again with the proof.
+async fn decide(env: &Env, path: &str, mut body: Value) -> eyre::Result<Value> {
+    use ed25519_dalek::Signer;
+    match env.client.post(path, body.clone()).await {
+        Err(e) if e.code() == Some("OPERATOR_SIGNATURE_REQUIRED") => {
+            let file = env.operator_key_file.as_ref().ok_or_else(|| {
+                eyre::eyre!("{e}: pass --operator-key-file (the operator's Ed25519 key)")
+            })?;
+            let seed: [u8; 32] = hex::decode(std::fs::read_to_string(file)?.trim())?
+                .try_into()
+                .map_err(|_| eyre::eyre!("{}: not a 32-byte hex key", file.display()))?;
+            let details = e.details().cloned().unwrap_or_default();
+            let message = base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                details["message"].as_str().unwrap_or_default(),
+            )?;
+            let signature = ed25519_dalek::SigningKey::from_bytes(&seed).sign(&message);
+            body["operatorProof"] = json!({
+                "nonce": details["nonce"],
+                "signature": hex::encode(signature.to_bytes()),
+            });
+            Ok(env.client.post(path, body).await?)
+        }
+        other => Ok(other?),
+    }
 }

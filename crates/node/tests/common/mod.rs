@@ -45,6 +45,46 @@ fn build(dir: &Path) -> Vec<u8> {
 
 pub const ORIGIN: &str = "http://localhost:3000";
 
+/// The operator key test clusters start with (`Config::operator_key`).
+pub const OPERATOR_SEED: [u8; 32] = [9; 32];
+
+/// [`OPERATOR_SEED`]'s public key, hex, as `--operator-key` takes it.
+pub fn operator_public() -> String {
+    hex::encode(
+        ed25519_dalek::SigningKey::from_bytes(&OPERATOR_SEED)
+            .verifying_key()
+            .to_bytes(),
+    )
+}
+
+/// POST an operator decision as mdma does: sent as is, and once the node
+/// names what to sign (`428 OPERATOR_SIGNATURE_REQUIRED`), again with the
+/// operator key's signature over it.
+pub async fn ops_signed(
+    client: &Client,
+    path: &str,
+    mut body: serde_json::Value,
+) -> Result<serde_json::Value, calimero_client::Error> {
+    use ed25519_dalek::Signer;
+    match client.post(path, body.clone()).await {
+        Err(e) if e.code() == Some("OPERATOR_SIGNATURE_REQUIRED") => {
+            let d = e.details().cloned().unwrap_or_default();
+            let message = base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                d["message"].as_str().unwrap_or_default(),
+            )
+            .unwrap_or_default();
+            let signature = ed25519_dalek::SigningKey::from_bytes(&OPERATOR_SEED).sign(&message);
+            body["operatorProof"] = serde_json::json!({
+                "nonce": d["nonce"],
+                "signature": hex::encode(signature.to_bytes()),
+            });
+            client.post(path, body).await
+        }
+        other => other,
+    }
+}
+
 pub fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -124,7 +164,6 @@ impl Cluster {
                         election_max_ms: 1000,
                         snapshot_every: 200,
                     },
-                    session_key_rotation_secs: 6 * 3600,
                     read_wait: Duration::from_secs(2),
                     tee_release: None,
                     tee_profile: None,
@@ -138,6 +177,7 @@ impl Cluster {
                     outbound: None,
                     governance: Default::default(),
                     apps_domain: None,
+                    operator_key: Some(operator_public()),
                 };
                 configure(&mut config);
                 configs.push(config.clone());
@@ -167,13 +207,13 @@ impl Cluster {
             configs,
             _dirs: dirs,
         };
-        // Wait for the system group to elect, register nodes and mint a session key.
-        for _ in 0..100 {
-            let ready = c.nodes[0]
-                .as_ref()
-                .unwrap()
-                .node
-                .sys(|s| s.nodes.len() == n as usize && !s.session_keys.is_empty());
+        // Wait for the system group to elect and every node to know them all.
+        for _ in 0..300 {
+            let ready = c
+                .nodes
+                .iter()
+                .flatten()
+                .all(|r| r.node.sys(|s| s.nodes.len() == n as usize));
             if ready {
                 return c;
             }

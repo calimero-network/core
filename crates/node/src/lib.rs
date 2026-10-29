@@ -30,6 +30,7 @@ pub mod node;
 pub mod packages;
 pub mod placement;
 pub mod presence;
+pub mod proof;
 pub mod services;
 pub mod system;
 pub mod types;

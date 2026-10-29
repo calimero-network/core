@@ -690,39 +690,6 @@ async fn quotas_are_enforced_by_the_log() {
     assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn session_keys_rotate_and_old_sessions_stay_valid() {
-    let c = Cluster::start_with(3, |cfg| cfg.session_key_rotation_secs = 3).await;
-    let (alice, pk) = signed_up(&c, 0, "alice").await;
-    let version = || {
-        c.nodes[0]
-            .as_ref()
-            .unwrap()
-            .node
-            .sys(|s| s.session_keys.last().map(|k| k.version))
-            .unwrap()
-    };
-    let before = version();
-    // Wait for exactly one rotation (keys are kept: current and previous).
-    let mut after = before;
-    for _ in 0..80 {
-        after = version();
-        if after > before {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(after > before, "key did not rotate ({before} -> {after})");
-    // The session minted under the previous key still works...
-    let _me = alice.me().await.unwrap();
-    // ...and a new sign-in is signed with the current key.
-    let mut pk = pk;
-    let fresh = c.client(2);
-    let s = fresh.sign_in(&mut pk).await.unwrap();
-    let claims = calimero_identity::peek_session(&s.session_token).unwrap();
-    assert_eq!(claims.key_version, after);
-}
-
 async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value {
     cl.view(app, method, args, Consistency::Strong)
         .await
@@ -3024,13 +2991,13 @@ async fn the_operator_installs_the_releases_it_upgrades_to() {
         .unwrap();
     let listed = ops.get("ops/packages").await.unwrap();
     assert!(listed.to_string().contains("1.1.0"), "{listed}");
-    let _ = ops
-        .post(
-            &format!("ops/apps/{app}/upgrade"),
-            json!({ "version": "1.1.0" }),
-        )
-        .await
-        .unwrap_or_else(|e| panic!("the operator upgrades to its release: {e}"));
+    let _ = harness::ops_signed(
+        &ops,
+        &format!("ops/apps/{app}/upgrade"),
+        json!({ "version": "1.1.0" }),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the operator upgrades to its release: {e}"));
     let a = alice.get("apps?package=com.test.ops").await.unwrap();
     assert_eq!(a["apps"][0]["version"], "1.1.0", "{a}");
 
@@ -3138,12 +3105,12 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
         assert_eq!(status["governance"], json!(g), "{g:?}");
 
         // App upgrades: exactly one of the two may.
-        let by_operator = ops
-            .post(
-                &format!("ops/apps/{app}/upgrade"),
-                json!({ "bundle": next }),
-            )
-            .await;
+        let by_operator = harness::ops_signed(
+            &ops,
+            &format!("ops/apps/{app}/upgrade"),
+            json!({ "bundle": next }),
+        )
+        .await;
         assert_eq!(
             by_operator.is_ok(),
             op(g.app_upgrades),
@@ -3165,9 +3132,8 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
             .unwrap();
 
         // Release approvals.
-        let ops_release = ops
-            .post("ops/releases", json!({ "version": "9.0.0" }))
-            .await;
+        let ops_release =
+            harness::ops_signed(&ops, "ops/releases", json!({ "version": "9.0.0" })).await;
         assert_eq!(
             ops_release.is_ok(),
             op(g.releases),
@@ -3181,9 +3147,8 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
         );
 
         // Outbound approvals.
-        let ops_outbound = ops
-            .post("ops/outbound", json!({ "package": "com.test.gov" }))
-            .await;
+        let ops_outbound =
+            harness::ops_signed(&ops, "ops/outbound", json!({ "package": "com.test.gov" })).await;
         assert_eq!(
             ops_outbound.is_ok(),
             op(g.outbound),
@@ -4244,6 +4209,11 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     alice2.use_session(session).await;
     let mut wrote = Err(String::new());
     for _ in 0..100 {
+        // Node 1 signed the session: with it gone, the session refreshes
+        // into one a live node signs.
+        if wrote.as_ref().is_err_and(|e| e.starts_with("401")) {
+            let _ = alice2.refresh().await;
+        }
         wrote = alice2
             .call(&app, "set", json!({ "key": "b", "value": "2" }), None)
             .await

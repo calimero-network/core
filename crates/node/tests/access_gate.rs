@@ -157,10 +157,7 @@ impl ProxiedCluster {
             _dirs: dirs,
         };
         for _ in 0..200 {
-            if c.nodes.iter().all(|r| {
-                r.node
-                    .sys(|s| s.nodes.len() == 3 && !s.session_keys.is_empty())
-            }) {
+            if c.nodes.iter().all(|r| r.node.sys(|s| s.nodes.len() == 3)) {
                 return c;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;

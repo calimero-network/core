@@ -72,7 +72,6 @@ pub async fn start(
             replicas: usize::try_from(n.min(3))?,
             backup_dir: Some(dir.join("backups")),
             raft: calimero_log::Config::default(),
-            session_key_rotation_secs: 6 * 3600,
             read_wait: std::time::Duration::from_secs(2),
             tee_release: None,
             tee_profile: None,
@@ -85,14 +84,13 @@ pub async fn start(
             outbound: None,
             governance: Default::default(),
             apps_domain: Some("localhost".into()),
+            operator_key: None,
         };
         nodes.push(run(config).await?);
     }
     // Ready once the system group has every node and a session key.
     for _ in 0..200 {
-        let ready = nodes[0]
-            .node
-            .sys(|s| s.nodes.len() == nodes.len() && !s.session_keys.is_empty());
+        let ready = nodes[0].node.sys(|s| s.nodes.len() == nodes.len());
         if ready {
             return Ok(LocalCluster {
                 nodes,

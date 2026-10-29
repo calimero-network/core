@@ -102,9 +102,6 @@ pub struct Config {
     /// Where encrypted snapshots go (object storage stand-in), if anywhere.
     pub backup_dir: Option<PathBuf>,
     pub raft: calimero_log::Config,
-    /// How old the session-signing key K_s gets before the leader adds a new one.
-    /// The previous key keeps verifying, so it must outlive a session (15 min).
-    pub session_key_rotation_secs: u64,
     /// How long a lookup of a system object (`Node::sys_until`) waits for a
     /// write committed elsewhere to reach this replica before answering.
     pub read_wait: Duration,
@@ -141,6 +138,9 @@ pub struct Config {
     /// The limits of every component call and view; `None` is `Budget::call()`.
     /// Tests only.
     pub budget: Option<calimero_app_host::Budget>,
+    /// The operator's Ed25519 verify key, hex (`--operator-key`): recorded at
+    /// genesis, and what every operator decision must be signed with.
+    pub operator_key: Option<String>,
 }
 
 impl Config {
@@ -299,6 +299,34 @@ impl Drop for MoveGuard {
     }
 }
 
+/// The header a node names itself with on a peer request. A claim only: the
+/// receiving node believes it once the session's proven key is the one that
+/// node's address attests ([`Node::identify_peer`]).
+pub const PEER_NODE_HEADER: &str = "x-calimero-node";
+
+/// A peer that called identified, as this node verified it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerIdentity {
+    pub node: NodeId,
+    /// The release its attestation named.
+    pub release: Option<String>,
+}
+
+/// A node that signs sessions, as this node attested it: its receipt key and
+/// release, from one quote ([`Node::session_issuer`]).
+#[derive(Clone, Debug)]
+pub struct Issuer {
+    pub key: [u8; 32],
+    pub release: Option<String>,
+    /// When it was attested (Unix seconds): a key that no longer verifies
+    /// is attested again at most every [`ISSUER_RETRY_SECS`].
+    pub at: u64,
+}
+
+/// How often a node attests a session issuer again whose key did not verify
+/// a token (it may have restarted).
+pub const ISSUER_RETRY_SECS: u64 = 5;
+
 /// Shared node state.
 pub struct Node {
     pub config: Config,
@@ -341,6 +369,15 @@ pub struct Node {
     pub challenges: Mutex<HashMap<String, crate::api::Pending>>,
     /// The release each peer's verified attestation named, by address.
     peer_releases: Mutex<HashMap<String, Arc<Mutex<Option<String>>>>>,
+    /// Peers that called this node identified, by the transport key they
+    /// proved: the node registered at the address that attests that key, and
+    /// the release that attestation named ([`Self::identify_peer`]).
+    callers: Mutex<HashMap<[u8; 32], PeerIdentity>>,
+    /// One attestation of a caller at a time per node id.
+    identifying: tokio::sync::Mutex<()>,
+    /// The issuers of node-signed sessions this node has attested, by node id
+    /// ([`Self::session_issuer`]).
+    issuers: Mutex<HashMap<NodeId, Issuer>>,
     /// Event streams this node is serving (`/apps/{app}/events`).
     pub event_streams: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Every app's ephemeral presence, in memory only.
@@ -520,6 +557,9 @@ impl Node {
             moving: Mutex::default(),
             promoting: std::sync::atomic::AtomicBool::new(false),
             peer_releases: Mutex::new(HashMap::new()),
+            callers: Mutex::new(HashMap::new()),
+            identifying: tokio::sync::Mutex::new(()),
+            issuers: Mutex::new(HashMap::new()),
             sys_reads: ReadRounds::default(),
             conflicts: std::sync::atomic::AtomicU64::new(0),
             usage: Usage::default(),
@@ -575,10 +615,13 @@ impl Node {
             seen_release,
             policy: self.config.peer_policy(),
         };
-        let t = Arc::new(calimero_sealed::client::SealedTransport::attested(
+        // Identified (Noise IK, with this node's transport key), so the peer
+        // knows which node calls and can judge its release.
+        let t = Arc::new(calimero_sealed::client::SealedTransport::identified_as(
             url,
             self.http.clone(),
             Arc::new(attestor),
+            self.transport.static_key(),
         ));
         let _prev = peers.insert(addr.to_owned(), Arc::clone(&t));
         Ok(t)
@@ -592,6 +635,7 @@ impl Node {
             .http
             .post(url)
             .header("x-cluster-auth", &self.cluster_secret)
+            .header(PEER_NODE_HEADER, self.config.node_id.to_string())
             .json(body)
             .build()?;
         let resp = peer.execute(req).await?;
@@ -630,6 +674,7 @@ impl Node {
             .http
             .get(url)
             .header("x-cluster-auth", &self.cluster_secret)
+            .header(PEER_NODE_HEADER, self.config.node_id.to_string())
             .build()?;
         peer.execute(req).await
     }
@@ -673,6 +718,21 @@ impl Node {
             tokio::time::sleep(Duration::from_millis(150)).await;
         }
         Err(ApiError::unavailable("the system group has no leader"))
+    }
+
+    /// The voters and learners of app group `group` as this node's replica
+    /// knows them; `None` when it does not host the group.
+    #[must_use]
+    pub fn group_members(&self, group: GroupId) -> Option<std::collections::BTreeSet<NodeId>> {
+        let status = self.app_group(group)?.status();
+        Some(
+            status
+                .voters
+                .iter()
+                .chain(status.learners.iter())
+                .copied()
+                .collect(),
+        )
     }
 
     fn app_group(&self, group: GroupId) -> Option<Arc<Group<AppMachine>>> {
@@ -768,6 +828,145 @@ impl Node {
         self.release_at(&addr)
     }
 
+    /// Which node holds `key`, the transport key a caller proved on an
+    /// identified session, claiming to be node `claimed`: the node registered
+    /// (or in `--peers`) at an address whose attestation names that key, and
+    /// the release that same attestation names. Attested here, with a fresh
+    /// nonce, at the address the cluster has for `claimed`; cached by key (a
+    /// key lives as long as the process holding it). `None` when the claim
+    /// does not hold: no such node, removed, or another key there.
+    pub async fn identify_peer(&self, key: [u8; 32], claimed: NodeId) -> Option<PeerIdentity> {
+        let cached = |node: &Self| {
+            node.callers
+                .lock()
+                .ok()?
+                .get(&key)
+                .filter(|p| p.node == claimed)
+                .cloned()
+        };
+        if let Some(p) = cached(self) {
+            return self.is_peer(p.node).then_some(p);
+        }
+        let _one = self.identifying.lock().await;
+        if let Some(p) = cached(self) {
+            return self.is_peer(p.node).then_some(p);
+        }
+        if !self.is_peer(claimed) {
+            return None;
+        }
+        let addr = self
+            .sys(|s| s.nodes.get(&claimed).map(|n| n.addr.clone()))
+            .or_else(|| self.config.peers.get(&claimed).cloned())?;
+        let url: Url = addr.parse().ok()?;
+        let release = Arc::new(Mutex::new(None));
+        let attestor = HttpAttestor {
+            seen_release: Arc::clone(&release),
+            policy: self.config.peer_policy(),
+        };
+        let attested =
+            calimero_sealed::client::Attest::attest_transport_key(&attestor, &self.http, &url)
+                .await;
+        let attested = match attested {
+            Ok(k) => k,
+            Err(e) => {
+                warn!(node = claimed, error = %format!("{e:#}"), "could not attest a calling peer");
+                return None;
+            }
+        };
+        if attested != key {
+            warn!(
+                node = claimed,
+                "a peer called with a key its node's address does not attest"
+            );
+            return None;
+        }
+        let identity = PeerIdentity {
+            node: claimed,
+            release: release.lock().ok()?.clone(),
+        };
+        if let Ok(mut callers) = self.callers.lock() {
+            // A restarted node has a new key: forget its old one.
+            callers.retain(|_, p| p.node != claimed);
+            let _prev = callers.insert(key, identity.clone());
+        }
+        Some(identity)
+    }
+
+    /// Whether `id` is a node of this cluster: registered (or in `--peers`)
+    /// and not removed.
+    #[must_use]
+    pub fn is_peer(&self, id: NodeId) -> bool {
+        id != self.config.node_id
+            && self.sys(|s| {
+                !s.removed_nodes.contains(&id)
+                    && (s.nodes.contains_key(&id) || self.config.peers.contains_key(&id))
+            })
+    }
+
+    /// The node that issued a session (`claims.node`), as this node attested
+    /// it: its receipt key and release, from one receipt-key quote fetched at
+    /// the address the cluster has for it (this node itself: its own).
+    /// `refresh` attests it again, at most every [`ISSUER_RETRY_SECS`] (it may
+    /// have restarted with a new key). `None` when it cannot be attested.
+    pub async fn session_issuer(&self, id: NodeId, refresh: bool) -> Option<Issuer> {
+        if id == self.config.node_id {
+            return Some(Issuer {
+                key: self.receipt_public(),
+                release: Some(self.own_release()),
+                at: crate::types::now_secs(),
+            });
+        }
+        let known = self.issuers.lock().ok()?.get(&id).cloned();
+        let now = crate::types::now_secs();
+        match &known {
+            Some(i) if !refresh || i.at + ISSUER_RETRY_SECS > now => return known,
+            _ => {}
+        }
+        if !self.is_peer(id) {
+            return None;
+        }
+        let addr = self
+            .sys(|s| s.nodes.get(&id).map(|n| n.addr.clone()))
+            .or_else(|| self.config.peers.get(&id).cloned())?;
+        let nonce = calimero_identity::random::<32>();
+        let mut url =
+            calimero_sealed::client::resolve_path(&addr.parse().ok()?, "attestation").ok()?;
+        let _q = url
+            .query_pairs_mut()
+            .append_pair("nonce", &hex::encode(nonce))
+            .append_pair("purpose", "receipts");
+        let doc: crate::attest::AttestationDoc = async {
+            self.http
+                .get(url)
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await
+        }
+        .await
+        .ok()?;
+        let (key, _governance) = crate::attest::verify_receipt_key(
+            &doc,
+            &nonce,
+            &self.config.peer_policy(),
+        )
+        .await
+        .map_err(
+            |e| warn!(node = id, error = %format!("{e:#}"), "could not attest a session issuer"),
+        )
+        .ok()?;
+        let issuer = Issuer {
+            key,
+            release: Some(doc.release.version.clone()),
+            at: now,
+        };
+        if let Ok(mut issuers) = self.issuers.lock() {
+            let _prev = issuers.insert(id, issuer.clone());
+        }
+        Some(issuer)
+    }
+
     fn release_at(&self, addr: &str) -> Option<String> {
         let slot = self.peer_releases.lock().ok()?.get(addr).cloned()?;
         let r = slot.lock().ok()?.clone();
@@ -793,6 +992,15 @@ impl Node {
         }
         let release = self.release_at(addr);
         self.sys(|s| s.release_may_hold(&app, release.as_deref()))
+    }
+
+    /// A session token for `claims`, signed with this node's receipt key
+    /// (attested with `purpose=receipts`), naming this node as its issuer.
+    #[must_use]
+    pub fn mint_session(&self, mut claims: calimero_identity::SessionClaims) -> String {
+        claims.node = self.config.node_id;
+        claims.key = calimero_identity::b64url(&self.receipt_public());
+        calimero_identity::mint_session(&self.receipt_key.to_bytes(), &claims)
     }
 
     /// This node's receipt key (Ed25519 public).
@@ -1036,16 +1244,28 @@ impl Node {
         }));
     }
 
+    /// The operator key this node was configured with, as the state records it.
+    fn operator_key(&self) -> Option<crate::proof::OperatorKey> {
+        self.config
+            .operator_key
+            .as_ref()
+            .map(|k| crate::proof::OperatorKey {
+                key: k.to_ascii_lowercase(),
+                cluster: self.config.cluster.clone(),
+            })
+    }
+
     /// Bring hosted groups in line with the system state.
     pub async fn reconcile(&self) {
-        // The cluster's first leader fixes its governance, registers the
-        // configured peers and the first session key.
+        // The cluster's first leader fixes its governance and registers the
+        // configured peers.
         if self.system.status().is_leader {
             if self.sys(|s| s.governance.is_none() && s.accounts.is_empty()) {
                 let _r = self
                     .sys_write(&SystemCmd::Genesis {
                         governance: self.config.governance.clone(),
                         release: Some(self.own_release()),
+                        operator_key: self.operator_key(),
                     })
                     .await;
             }
@@ -1066,24 +1286,6 @@ impl Node {
             }
             self.admit_registered_nodes();
             self.promote_learners();
-            // The first session key, then a new one whenever the current one is old enough.
-            let current = self.sys(|s| s.session_keys.last().map(|k| (k.version, k.created_at)));
-            let now = crate::types::now_secs();
-            let due = current.map_or(Some(1), |(version, created_at)| {
-                (created_at + self.config.session_key_rotation_secs <= now).then_some(version + 1)
-            });
-            if let Some(version) = due {
-                let key = crate::system::SecretKey(calimero_identity::b64url(
-                    &calimero_identity::random::<32>(),
-                ));
-                let _r = self
-                    .sys_write(&SystemCmd::AddSessionKey {
-                        version,
-                        key,
-                        created_at: now,
-                    })
-                    .await;
-            }
         }
         let mine: Vec<AppRecord> = self.sys(|s| {
             s.apps
@@ -1359,7 +1561,9 @@ impl Node {
 
     /// Store a blob here and on the other nodes; `Ok` once a majority holds it.
     /// Its id is `hex(SHA-256(bytes))`, the key the store files it under.
-    pub async fn store_blob(&self, bytes: &[u8]) -> Result<String, ApiError> {
+    /// `app` names the app it is a blob of (`None`: code, a package release):
+    /// an app's blob goes only to nodes whose release may hold its data.
+    pub async fn store_blob(&self, bytes: &[u8], app: Option<&str>) -> Result<String, ApiError> {
         if bytes.len() > MAX_BLOB_BYTES {
             return Err(ApiError::new(
                 413,
@@ -1374,12 +1578,15 @@ impl Node {
         self.engine
             .put_blob(&id, bytes)
             .map_err(|e| ApiError::internal(&e.to_string()))?;
-        self.spread_blob(&id, bytes).await?;
+        self.spread_blob(&id, bytes, app).await?;
         Ok(id)
     }
 
-    /// Hand a blob this node holds to every other node; `Ok` once a majority holds it.
-    async fn spread_blob(&self, id: &str, bytes: &[u8]) -> Result<(), ApiError> {
+    /// Hand a blob this node holds to every other node that may hold it (for
+    /// `app`'s blob, a node whose release `app`'s owner approved, as
+    /// [`Self::may_send`] judges a Raft entry); `Ok` once a majority of those
+    /// holds it.
+    async fn spread_blob(&self, id: &str, bytes: &[u8], app: Option<&str>) -> Result<(), ApiError> {
         let peers: Vec<String> = self.sys(|s| {
             s.nodes
                 .values()
@@ -1387,15 +1594,22 @@ impl Node {
                 .map(|n| n.addr.clone())
                 .collect()
         });
+        let group = app.and_then(|a| self.sys(|s| s.apps.get(a).map(|r| r.group)));
+        let mut eligible = Vec::with_capacity(peers.len());
+        for addr in peers {
+            if group.is_none() || self.may_send(&addr, group.unwrap_or(SYSTEM_GROUP)).await {
+                eligible.push(addr);
+            }
+        }
         let body = json!({ "hash": id, "wasm": calimero_log::Bytes(bytes.to_vec()) });
         let results = futures_util::future::join_all(
-            peers
+            eligible
                 .iter()
                 .map(|addr| self.peer_post(addr, "internal/blob", &body)),
         )
         .await;
         let held = 1 + results.iter().filter(|r| r.is_ok()).count();
-        if held * 2 <= peers.len() + 1 {
+        if held * 2 <= eligible.len() + 1 {
             return Err(ApiError::unavailable(
                 "the blob could not reach a majority of nodes",
             ));
@@ -1737,9 +1951,19 @@ impl Node {
         });
         let node = Arc::clone(self);
         let body = serde_json::to_value(&u).unwrap_or_default();
+        let group = self.sys(|s| s.apps.get(&u.app).map(|a| a.group));
         drop(tokio::spawn(async move {
+            // Only to nodes whose release may hold the app's data.
+            let mut eligible = Vec::with_capacity(peers.len());
+            for addr in peers {
+                if let Some(g) = group {
+                    if node.may_send(&addr, g).await {
+                        eligible.push(addr);
+                    }
+                }
+            }
             let _r = futures_util::future::join_all(
-                peers
+                eligible
                     .iter()
                     .map(|addr| node.peer_post(addr, "internal/presence", &body)),
             )
@@ -1748,9 +1972,9 @@ impl Node {
     }
 
     /// After a run's entry committed: its blobs to the other nodes.
-    async fn spread_blobs(&self, blobs: Vec<(String, Vec<u8>)>) {
+    async fn spread_blobs(&self, app: &str, blobs: Vec<(String, Vec<u8>)>) {
         for (id, bytes) in blobs {
-            if let Err(e) = self.spread_blob(&id, &bytes).await {
+            if let Err(e) = self.spread_blob(&id, &bytes, Some(app)).await {
                 warn!(blob = %id, error = %e.message, "blob held by too few nodes");
             }
         }
@@ -1964,7 +2188,7 @@ impl Node {
         }
         if p.appended && !applied.conflict {
             self.kick.notify_one();
-            self.spread_blobs(fresh_blobs).await;
+            self.spread_blobs(&req.app_id, fresh_blobs).await;
         }
         Ok(applied)
     }
