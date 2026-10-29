@@ -2158,6 +2158,202 @@ async fn an_uploaded_package_is_verified_and_reaches_the_other_nodes() {
     assert_eq!(p["versions"][0]["source"], json!("upload"));
 }
 
+/// The names of the packages `cl` lists, with the versions it sees of each.
+async fn listed(cl: &Client) -> BTreeMap<String, Vec<String>> {
+    cl.packages()
+        .await
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            let versions = p["versions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v["version"].as_str().unwrap().to_owned())
+                .collect();
+            (p["package"].as_str().unwrap().to_owned(), versions)
+        })
+        .collect()
+}
+
+/// On a cluster many organizations share, a release is listed only to who may
+/// use it: the account that installed it, members of an organization it is
+/// in, accounts that reach an app running it; the operator lists only its own
+/// installs, which every account sees. For anyone else it is as if it were not installed: not listed,
+/// `404` by name, and creating an app from it (by release or by its WASM's
+/// hash) answers what a release the cluster lacks answers. Before, every
+/// signed-in account listed every package the cluster held.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
+    let registry = FakeRegistry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.registry = Some(url.clone());
+        cfg.allow_unsigned_bundles = false;
+    })
+    .await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let kv = kv_wasm();
+    // Alice's organization (Acme, with Amy) and Bob, outside it, in his own.
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (amy, _m) = signed_up(&c, 1, "amy").await;
+    let (bob, _b) = signed_up(&c, 2, "bob").await;
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let acme = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let invite = alice
+        .post(&format!("orgs/{acme}/invites"), json!({ "role": "member" }))
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = amy
+        .post(&format!("invites/{invite}/redeem"), json!({}))
+        .await
+        .unwrap();
+    let _o = bob.post("orgs", json!({ "name": "Bobco" })).await.unwrap();
+
+    // Alice uploads a private package (no registry has it).
+    let secret = variant(&kv, "secret");
+    let _ = alice
+        .upload_package(mpk("com.acme.secret", "1.0.0", &secret, &publisher))
+        .await
+        .unwrap();
+    let only_secret = BTreeMap::from([("com.acme.secret".to_owned(), vec!["1.0.0".to_owned()])]);
+    assert_eq!(listed(&alice).await, only_secret);
+    assert_eq!(listed(&amy).await, only_secret, "a member of Alice's org");
+
+    // Bob, in another organization, sees nothing of it.
+    assert_eq!(listed(&bob).await, BTreeMap::new());
+    let e = bob.package("com.acme.secret").await.unwrap_err();
+    assert!(e.to_string().starts_with("404"), "{e}");
+    // Approving its outbound hosts answers as for a missing package, before
+    // any passkey ceremony.
+    for package in ["com.acme.secret", "com.never.installed"] {
+        let e = bob
+            .post("auth/outbound", json!({ "package": package }))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().starts_with("404"), "{package}: {e}");
+    }
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let ops_listed = ops.get("ops/packages").await.unwrap()["packages"].clone();
+    assert_eq!(ops_listed, json!([]), "the operator installed none");
+
+    // Creating from it answers as for a release the cluster lacks.
+    let named = |package: &str, version: Option<&str>| json!({ "name": "x", "package": package, "version": version });
+    let hidden = bob
+        .post("apps", named("com.acme.secret", Some("1.0.0")))
+        .await
+        .unwrap_err();
+    let missing = bob
+        .post("apps", named("com.never.installed", Some("1.0.0")))
+        .await
+        .unwrap_err();
+    assert!(hidden.to_string().starts_with("404"), "{hidden}");
+    assert_eq!(hidden.code(), missing.code(), "{hidden} / {missing}");
+    let hidden = bob
+        .post("apps", named("com.acme.secret", None))
+        .await
+        .unwrap_err();
+    let missing = bob
+        .post("apps", named("com.never.installed", None))
+        .await
+        .unwrap_err();
+    assert_eq!(hidden.code(), Some("VERSION_REQUIRED"), "{hidden}");
+    assert_eq!(hidden.code(), missing.code(), "{hidden} / {missing}");
+    // Its WASM's hash is no way in either.
+    let hash = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&secret));
+    let by_hash = bob
+        .post("apps", json!({ "name": "x", "bundle": hash }))
+        .await
+        .unwrap_err();
+    let unknown = bob
+        .post("apps", json!({ "name": "x", "bundle": "00".repeat(32) }))
+        .await
+        .unwrap_err();
+    assert_eq!(by_hash.to_string(), unknown.to_string());
+    // A failed attempt installed nothing that Bob now lists.
+    assert_eq!(listed(&bob).await, BTreeMap::new());
+
+    // Alice and Amy create apps from it.
+    let _ = alice
+        .post("apps", named("com.acme.secret", Some("1.0.0")))
+        .await
+        .unwrap();
+    let shared = amy
+        .post(
+            "apps",
+            json!({
+                "name": "shared", "package": "com.acme.secret",
+                "access": { "kind": "accounts", "accounts": [bob_id] },
+            }),
+        )
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Once Bob reaches an app running it, he sees that release.
+    assert_eq!(listed(&bob).await, only_secret, "Bob reaches {shared}");
+    let _ = amy.delete_app(&shared).await.unwrap();
+    assert_eq!(listed(&bob).await, BTreeMap::new());
+
+    // A registry release is private to its installers too; Bob installing the
+    // same release himself makes it his as well.
+    registry.publish(
+        "com.test.kv",
+        "1.0.0",
+        mpk("com.test.kv", "1.0.0", &kv, &publisher),
+    );
+    let _ = alice.install_package("com.test.kv", "1.0.0").await.unwrap();
+    assert!(!listed(&bob).await.contains_key("com.test.kv"));
+    let _ = bob.install_package("com.test.kv", "1.0.0").await.unwrap();
+    assert_eq!(
+        listed(&bob).await,
+        BTreeMap::from([("com.test.kv".to_owned(), vec!["1.0.0".to_owned()])])
+    );
+    let _ = bob
+        .post("apps", named("com.test.kv", Some("1.0.0")))
+        .await
+        .unwrap();
+
+    // The operator lists only the releases it installed; those are the
+    // cluster's own catalog, which every account sees and may run.
+    let ops_kv = variant(&kv, "ops");
+    registry.publish(
+        "com.test.ops",
+        "1.0.0",
+        mpk("com.test.ops", "1.0.0", &ops_kv, &publisher),
+    );
+    let _ = ops
+        .post(
+            "ops/packages/install",
+            json!({ "package": "com.test.ops", "version": "1.0.0" }),
+        )
+        .await
+        .unwrap();
+    let ops_listed = ops.get("ops/packages").await.unwrap()["packages"].clone();
+    let names: Vec<&str> = ops_listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["package"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["com.test.ops"], "{ops_listed}");
+    assert!(listed(&alice).await.contains_key("com.test.ops"));
+    assert!(listed(&bob).await.contains_key("com.test.ops"));
+}
+
 /// A refresh token presented again is a stolen copy, and the session ends,
 /// whichever node it is presented to: a replica that has not applied the
 /// exchange yet must not answer "unknown" and let the thief keep trying.
@@ -2556,7 +2752,24 @@ async fn outbound_requests_need_the_owners_approval() {
         "{before}"
     );
 
-    // Bob approving for his own apps reaches nothing of Alice's.
+    // Bob sees no release of Alice's private upload: approving it answers as
+    // for a missing package. Once he installs the same release himself, his
+    // approval for his own apps reaches nothing of Alice's.
+    let e = bob
+        .approve_outbound(None, PACKAGE, None, false, &mut bob_pk)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("404"), "{e}");
+    let _ = bob
+        .upload_package(mpk_declaring(
+            PACKAGE,
+            "0.1.0",
+            &wasm("outbound_probe"),
+            &publisher,
+            &[PREFIX],
+        ))
+        .await
+        .unwrap();
     let _ = bob
         .approve_outbound(None, PACKAGE, None, false, &mut bob_pk)
         .await

@@ -73,7 +73,21 @@ is its command line.
   it from the registry first); upgrade takes `{ version }`; `DELETE /apps/{app}`;
   `DELETE /packages/{p}[/{v}]` is refused while an app runs the release (a WASM
   another release ships stays). Raw `POST /bundles` is development only
-  (`allow_unsigned_bundles`, on with `--dev`).
+  (`allow_unsigned_bundles`, on with `--dev`). **Who sees a release**
+  (`SystemState::sees_release`): its installers (`installed_by`, and
+  `PackageVersion::installers`, added when someone installs the same release
+  again), everyone for a release the operator installed (the catalog), accounts
+  sharing an organization with an installing account, accounts that reach an
+  app running it, a session bound to the package's frontend (all its releases),
+  and the operator for its own installs only. For
+  anyone else it is not installed: `GET /packages[/{p}]` and `GET /ops/packages`
+  leave it out (`404` by name), `resolve_release` treats it as missing (a
+  registry install makes it theirs; an upload answers as a missing release), a
+  bundle hash it ships is an unknown bundle (`sees_bundle`), outbound approval
+  answers `404`, and upgrade runs skip it (`api::upgrade_sees`; the operator's:
+  its own or the app owner's). Frontends stay public by name. Regressions:
+  `a_private_package_is_listed_only_to_accounts_that_may_use_it`,
+  `a_release_from_before_installers_reads_and_records_who_installs_it_again`.
 - **Governance** (`system::Governance`, `Authority`, shared with clients in
   `calimero_client::attest`): three decisions, each held by exactly one
   party chosen at deployment, `owner` (default) or `operator`:

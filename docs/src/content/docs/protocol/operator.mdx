@@ -36,8 +36,8 @@ the operator that decision:
 | Route | Decision |
 | --- | --- |
 | `POST /ops/releases { version, approved }` | Release approvals, for every app |
-| `POST /ops/apps/{app}/upgrade`, `POST /ops/orgs/{org}/upgrade` | App upgrades, to a release it installed |
-| `POST /ops/packages`, `/ops/packages/install`, `GET /ops/packages`, `DELETE /ops/packages/{p}[/{v}]` | Installing the releases it upgrades to (it removes only what it installed) |
+| `POST /ops/apps/{app}/upgrade`, `POST /ops/orgs/{org}/upgrade` | App upgrades, to a release it installed or one the app's owner may see |
+| `POST /ops/packages`, `/ops/packages/install`, `GET /ops/packages`, `DELETE /ops/packages/{p}[/{v}]` | Installing the releases it upgrades to (it lists and removes only what it installed) |
 | `POST /ops/outbound { package, prefixes, replace }` | Outbound approvals, for every app |
 
 Elsewhere, the operator configures the node: the outbound policy (which hosts

@@ -136,6 +136,27 @@ pub struct PackageVersion {
     pub outbound: Vec<String>,
     pub installed_by: AccountId,
     pub installed_at: u64,
+    /// Who installed this same release again after `installed_by` (an
+    /// account, or [`OPERATOR`]): it is theirs to see and use too
+    /// ([`SystemState::sees_release`]). Absent in records from before, and
+    /// left out when empty, so such a record reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub installers: BTreeSet<AccountId>,
+}
+
+impl PackageVersion {
+    /// Whether `who` installed this release, first or again.
+    #[must_use]
+    pub fn installed_by_any(&self, who: &str) -> bool {
+        self.installed_by == who || self.installers.contains(who)
+    }
+
+    /// The accounts that installed it (the operator left out).
+    fn installing_accounts(&self) -> impl Iterator<Item = &AccountId> {
+        std::iter::once(&self.installed_by)
+            .chain(&self.installers)
+            .filter(|a| *a != OPERATOR)
+    }
 }
 
 impl PackageRecord {
@@ -237,6 +258,62 @@ impl SystemState {
     #[must_use]
     pub fn approved_releases(&self, app: &AppRecord) -> Option<&BTreeSet<String>> {
         self.approved_for(app.org.as_deref(), &app.owner)
+    }
+
+    /// Whether `who` (an account, or [`OPERATOR`]) may see and use the
+    /// release `v`: whoever installed it; everyone, for a release the
+    /// operator installed (the cluster's own catalog, which it upgrades apps
+    /// to); an account sharing an organization with an account that installed
+    /// it; and an account that reaches an app running one of its services.
+    /// The operator sees only the releases it installed. Anyone else is
+    /// answered as if it were not installed.
+    #[must_use]
+    pub fn sees_release(&self, v: &PackageVersion, who: &str) -> bool {
+        if v.installed_by_any(who) || v.installed_by_any(OPERATOR) {
+            return true;
+        }
+        if who == OPERATOR {
+            return false;
+        }
+        let shares_org = v.installing_accounts().any(|installer| {
+            self.orgs
+                .values()
+                .any(|o| o.role(installer).is_some() && o.role(who).is_some())
+        });
+        shares_org
+            || self.apps.values().any(|a| {
+                v.services.values().any(|h| *h == a.bundle) && self.may_reach(a, Some(who))
+            })
+    }
+
+    /// The releases of `p` that `who` may see ([`Self::sees_release`]).
+    pub fn visible_versions<'a>(
+        &'a self,
+        p: &'a PackageRecord,
+        who: &'a str,
+    ) -> impl Iterator<Item = &'a PackageVersion> + 'a {
+        p.versions
+            .values()
+            .filter(move |v| self.sees_release(v, who))
+    }
+
+    /// Whether `who` may name the bundle `hash` for an app: it must be
+    /// recorded, and if a package release ships it, one such release must be
+    /// visible to `who`, or `who` uploaded the same WASM as a raw bundle.
+    #[must_use]
+    pub fn sees_bundle(&self, hash: &str, who: &str) -> bool {
+        let Some(b) = self.bundles.get(hash) else {
+            return false;
+        };
+        let mut shipped = self
+            .packages
+            .values()
+            .flat_map(|p| p.versions.values())
+            .filter(|v| v.services.values().any(|h| h == hash))
+            .peekable();
+        shipped.peek().is_none()
+            || b.uploaded_by == who
+            || shipped.any(|v| self.sees_release(v, who))
     }
 
     /// [`Self::approved_releases`] for an app of `org` (or of `owner` outside
@@ -885,13 +962,22 @@ impl SystemMachine {
                         return Err("the package is published under another key");
                     }
                     if let Some(v) = p.versions.get(&release.version) {
-                        // The same release again is a no-op; other bytes under
-                        // its version are a different, conflicting release.
-                        return if v.mpk == release.mpk {
-                            Ok(json!({ "package": package, "version": release.version }))
-                        } else {
-                            Err("that version is installed with other contents")
-                        };
+                        // Other bytes under its version are a different,
+                        // conflicting release. The same release again changes
+                        // nothing but who installed it: it is theirs too.
+                        if v.mpk != release.mpk {
+                            return Err("that version is installed with other contents");
+                        }
+                        if !v.installed_by_any(&actor) {
+                            if let Some(v) = s
+                                .packages
+                                .get_mut(&package)
+                                .and_then(|p| p.versions.get_mut(&release.version))
+                            {
+                                let _new = v.installers.insert(actor);
+                            }
+                        }
+                        return Ok(json!({ "package": package, "version": release.version }));
                     }
                 }
                 let used: u64 = s
@@ -2509,5 +2595,83 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A release recorded before `installers` existed (system log entries and
+    /// snapshots are JSON) reads with none and writes back byte for byte as
+    /// before; installing the same release again records the new installer,
+    /// who then sees it, and the record restores from a snapshot with them.
+    #[test]
+    fn a_release_from_before_installers_reads_and_records_who_installs_it_again() {
+        use super::{PackageVersion, OPERATOR};
+
+        // `PackageVersion` as the previous release wrote it.
+        let old = json!({
+            "version": "1.0.0", "mpk": "ab", "mpkSize": 3, "source": "upload",
+            "services": { "": "cd" }, "metadata": null, "outbound": [],
+            "installedBy": "alice", "installedAt": 7,
+        });
+        let release: PackageVersion = serde_json::from_value(old.clone()).unwrap();
+        assert!(release.installers.is_empty());
+        assert_eq!(serde_json::to_value(&release).unwrap(), old);
+
+        let mut m = SystemMachine::default();
+        let _ok = m.run(genesis(all(Authority::Owner))).unwrap();
+        for who in ["alice", "bob", "carol"] {
+            let _ok = m.run(account(who)).unwrap();
+        }
+        let install = |by: &str| SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: "did:key:z".into(),
+            release: PackageVersion {
+                installed_by: by.into(),
+                ..release.clone()
+            },
+        };
+        let _ok = m.run(install("alice")).unwrap();
+        let snapshot = serde_json::to_value(&m.state).unwrap();
+        assert_eq!(snapshot["packages"]["p"]["versions"]["1.0.0"], old);
+        let seen =
+            |s: &SystemState, who: &str| s.sees_release(&s.packages["p"].versions["1.0.0"], who);
+        assert!(seen(&m.state, "alice"));
+        assert!(!seen(&m.state, "bob"), "another account, no shared org");
+        assert!(!seen(&m.state, OPERATOR));
+
+        // Installed again: by Bob (twice), then by the operator, which puts
+        // it in the cluster's catalog; Alice stays first.
+        let _ok = m.run(install("bob")).unwrap();
+        let _ok = m.run(install("bob")).unwrap();
+        assert!(seen(&m.state, "bob"));
+        assert!(!seen(&m.state, "carol") && !seen(&m.state, OPERATOR));
+        let _ok = m.run(install(OPERATOR)).unwrap();
+        let v = &m.state.packages["p"].versions["1.0.0"];
+        assert_eq!(v.installed_by, "alice");
+        assert_eq!(
+            v.installers.iter().collect::<Vec<_>>(),
+            vec!["bob", OPERATOR]
+        );
+        assert!(seen(&m.state, OPERATOR) && seen(&m.state, "carol"));
+
+        // Other bytes under the same version are still refused.
+        let other = SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: "did:key:z".into(),
+            release: PackageVersion {
+                mpk: "ef".into(),
+                installed_by: "carol".into(),
+                ..release.clone()
+            },
+        };
+        assert!(m.run(other).is_err());
+
+        // A snapshot carries the installers; an old one restores without.
+        let restored: SystemState =
+            serde_json::from_value(serde_json::to_value(&m.state).unwrap()).unwrap();
+        assert!(seen(&restored, "bob"));
+        let old_state: SystemState = serde_json::from_value(snapshot).unwrap();
+        assert!(old_state.packages["p"].versions["1.0.0"]
+            .installers
+            .is_empty());
+        assert!(seen(&old_state, "alice") && !seen(&old_state, "bob"));
     }
 }
