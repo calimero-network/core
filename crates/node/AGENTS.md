@@ -341,7 +341,10 @@ is its command line.
 - **Inspection**:
   `GET /apps/{app}/storage` (keys, bytes, blobs), `GET /apps/{app}/abi` (the
   bundle's embedded ABI), `GET /auth/usage` (the account's apps, bundle bytes,
-  API keys, owned orgs, and the quotas).
+  API keys, owned orgs, the quotas, and `fuelToday`/`writesToday` summed over its
+  personal component apps), `GET /orgs/{org}/usage` (the same figures over an
+  organization's apps, its admins only, D78), `GET /apps/{app}/usage` (a component's
+  runs, owner and org admins only; see "Usage" below).
 - **Search** (`services::Search`): tantivy indexes, in memory per
   app and built from the app's `__calimero_search_*` exports. A view brings them
   up to the very state it reads first: from the entities entries touched
@@ -425,6 +428,20 @@ is its command line.
   `session_key_rotation_secs` old (default 6 h); the previous key keeps verifying.
 - **Quotas** (`system::Quotas`, set with `POST /ops/quotas`) live in the system state and
   are checked at apply, so every node enforces the same limits; refusals are `429 QUOTA_EXCEEDED`.
+  The exception is `maxFuelPerPayerPerDay` (Q20, D76, D78; 0, the default, is no
+  limit). It is charged to the app's payer, #4739's `usage::payer` (D78): an org app's
+  organization, a personal app's owner (`account:{owner}`). The fuel lives in the app
+  groups' usage books, so it is checked where a client's call runs
+  (`Node::fuel_quota_refusal`, from `call_local_component` and the wasmer `call_local`,
+  after the idempotent replay, before the run), against the payer's fuel today summed
+  over its component apps (`Node::payer_usage_today`; a replica here, else a peer's
+  answer at most `USAGE_CACHE`, 1 s, old; an app no replica answers for counts as
+  nothing). Over it, calls to every app of that payer are refused, wasmer apps
+  included, though only components are metered (D76); an organization over its cap
+  leaves its owner's personal apps running (D78). The refusal is not logged, so the
+  key is not spent; `init`, timer ticks and follow-ups are never refused, and a
+  component's still count toward the payer's day. The quota is fuel; wall time is
+  information only (D76).
 - **Read-your-writes across nodes**: lookups of system objects (`Node::sys_until`) wait
   up to `Config::read_wait` (2 s) for the local replica to apply a write committed
   elsewhere (`sys_fresh` waits as long, and says whether it caught up). A
@@ -514,6 +531,24 @@ API and system group. What differs from the wasmer path:
   `internal/events`) and a call's answer check `SystemState::receives` when they
   send it, so a removed member stops receiving at once. A wasmer app's events have
   no audience and go out as before.
+- **Usage** (Q20, `component::RunUsage`, `DayUsage`): each `componentInit`,
+  `componentCall` and `componentTick` outcome carries `usage { fuel, wallMs, writes,
+  bytesWritten, events }`, measured by the leader (`Outcome::from_host`; a `HostDenied`
+  replacement keeps fuel, wall time and writes). Applying a non-conflicting entry adds
+  it to `ComponentHead::usage`, per UTC day of the entry's `ts_ms`, the newest
+  `USAGE_DAYS` (31) days; followers never measure, so every replica's book is the same
+  (a snapshot carries it in `Head`). Timeouts are not logged, so not counted (#4736);
+  views are not counted (Q9). The API gives every figure as a decimal string (D20):
+  `/apps/{app}/usage`, `bundleBytes`, `fuelToday`, `writesToday` in `/auth/usage`
+  (personal apps only, D78), and `fuelToday`, `writesToday` in `/orgs/{org}/usage`.
+  Tests: `the_usage_book_sums_what_the_entries_carry`,
+  `usage_survives_a_leader_change_and_a_snapshot_install`,
+  `an_account_over_its_daily_fuel_gets_429_and_its_timers_still_tick`,
+  `a_fuel_limit_of_zero_never_refuses`, `only_the_owner_and_org_admins_read_an_apps_usage`,
+  `a_wasmer_app_of_an_account_over_its_fuel_gets_429`,
+  `an_org_apps_runs_count_toward_the_org_not_its_owner`,
+  `an_org_over_its_fuel_cap_gets_429_while_its_owners_personal_apps_run`,
+  `only_an_orgs_admins_read_its_usage`.
 - **Upgrades**: the node's route and authority (`POST /apps/{app}/upgrade`,
   passkey consent, `UpgradeApp`); at the leader a component upgrades code-only
   (`componentUpgrade`) and a named `migrate` is refused `MigrationsNotSupported`.

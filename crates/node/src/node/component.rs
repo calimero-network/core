@@ -15,7 +15,7 @@
 //! key or per batch replaces both ends at once. `Node::next_id` runs inside the
 //! builder, one id pair per run, so a batch keeps one pair per run it carries.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,7 +30,9 @@ use tracing::debug;
 
 use super::{status_of, CallRequest, Node, ViewAnswer, ViewRequest};
 use crate::app::{AppMachine, Status};
-use crate::component::{Applied, CallEntry, ComponentCmd, Outcome, SysDirectory, TickEntry};
+use crate::component::{
+    utc_day, Applied, CallEntry, ComponentCmd, DayUsage, Outcome, SysDirectory, TickEntry,
+};
 use crate::error::ApiError;
 use crate::types::{now_ms, AppRecord, Caller, Executor};
 use crate::usage::{Kind as RunKind, Meter};
@@ -78,6 +80,13 @@ pub const MAX_ARGS_BYTES: usize = 512 * 1024;
 /// How often an app group's leader looks for due timer ticks (D34).
 pub const TIMER_POLL: Duration = Duration::from_millis(100);
 
+/// An app's usage book: [`DayUsage`] per UTC day ([`crate::component::ComponentHead::usage`]).
+pub type UsageBook = BTreeMap<u64, DayUsage>;
+
+/// How long the fuel quota reuses a peer's answer about an app this node does not
+/// host. Apps hosted here are read from the replica every time.
+pub const USAGE_CACHE: Duration = Duration::from_secs(1);
+
 /// `413 ARGS_TOO_LARGE`: arguments over [`MAX_ARGS_BYTES`], refused before running.
 #[must_use]
 pub fn args_too_large() -> ApiError {
@@ -123,10 +132,20 @@ pub fn args_bytes(args: &Value) -> Vec<u8> {
 }
 
 /// Why a run on this replica did not happen: the log's answer, or a refusal the
-/// replica made before running (its own checks, against its own state).
-enum LocalError {
+/// replica made before running (its own checks, against its own state). Both
+/// executors' local calls answer with it.
+pub(super) enum LocalError {
     Write(WriteError),
     Refused(ApiError),
+}
+
+impl std::fmt::Display for LocalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Write(e) => e.fmt(f),
+            Self::Refused(e) => e.fmt(f),
+        }
+    }
 }
 
 impl From<WriteError> for LocalError {
@@ -199,11 +218,11 @@ fn entry_bytes(mut cmd: ComponentCmd) -> Vec<u8> {
     if bytes.len() <= calimero_log::MAX_ENTRY_BYTES {
         return bytes;
     }
-    let denied = Outcome::trap(TrapKind::HostDenied, "entry too large");
+    const DENIED: &str = "entry too large";
     match &mut cmd {
-        ComponentCmd::Call(entry) => entry.outcome = denied,
-        ComponentCmd::Tick(entry) => entry.outcome = denied,
-        ComponentCmd::Init { outcome, .. } => **outcome = denied,
+        ComponentCmd::Call(entry) => entry.outcome = entry.outcome.denied(DENIED),
+        ComponentCmd::Tick(entry) => entry.outcome = entry.outcome.denied(DENIED),
+        ComponentCmd::Init { outcome, .. } => **outcome = outcome.denied(DENIED),
         ComponentCmd::Upgrade { .. } => {}
     }
     serde_json::to_vec(&cmd).unwrap_or_default()
@@ -668,6 +687,12 @@ impl Node {
             Some(app) => crate::api::read_only_in(self, app, req.caller.account()).await,
             None => false,
         };
+        // An owner over its daily fuel is refused before the run (Q20); a retry of a
+        // call that committed still replays, below.
+        let over_quota = match &app {
+            Some(app) => self.fuel_quota_refusal(app).await,
+            None => None,
+        };
         let args = args_bytes(&req.args);
         let mut refused = None;
         let meter = self.meter(&req.app_id, &bundle);
@@ -682,6 +707,10 @@ impl Node {
                     if let Some(prev) = m.component_replay(&req.caller, key) {
                         return Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default());
                     }
+                }
+                if let Some(e) = &over_quota {
+                    refused = Some(e.clone());
+                    return Proposal::Reply(Vec::new());
                 }
                 // An upgrade applied since the checks: run it again on the new bundle.
                 if m.state.bundle.as_deref() != Some(bundle.as_str()) {
@@ -770,6 +799,99 @@ impl Node {
             self.usage.called(&meter, RunKind::Mutation);
         }
         Ok(a)
+    }
+
+    /// `app`'s usage book (Q20), from a replica: this node's if it hosts the app,
+    /// else one that does. A wasmer app has none.
+    pub async fn app_usage(&self, app: &AppRecord) -> Result<UsageBook, ApiError> {
+        if app.executor != Executor::Component {
+            return Ok(UsageBook::new());
+        }
+        if let Some(g) = self.hosted(&app.app_id) {
+            return Ok(g.read_local(|m, _| m.state.component.head.usage.clone()));
+        }
+        let body = json!({ "app": app.app_id });
+        for id in &app.replicas {
+            let Some(addr) = self.sys(|s| s.nodes.get(id).map(|n| n.addr.clone())) else {
+                continue;
+            };
+            if let Ok(v) = self.peer_forward(&addr, "internal/usage", &body).await {
+                if let Ok(book) = serde_json::from_value::<UsageBook>(v["usage"].clone()) {
+                    return Ok(book);
+                }
+            }
+        }
+        Err(ApiError::unavailable("no replica answered"))
+    }
+
+    /// Today's usage (UTC, on app time) of `app`: this node's replica if it hosts the
+    /// app, else a replica's answer at most [`USAGE_CACHE`] old. An app no replica
+    /// answers for counts as nothing.
+    async fn app_usage_today(&self, app: &AppRecord, today: u64) -> DayUsage {
+        if let Some(g) = self.hosted(&app.app_id) {
+            return g.read_local(|m, _| m.state.component.head.usage_on(today));
+        }
+        let cached = self.usage_cache.lock().ok().and_then(|c| {
+            c.get(&app.app_id)
+                .filter(|(at, _)| at.elapsed() < USAGE_CACHE)
+                .map(|(_, book)| book.get(&today).copied().unwrap_or_default())
+        });
+        if let Some(day) = cached {
+            return day;
+        }
+        match self.app_usage(app).await {
+            Ok(book) => {
+                let day = book.get(&today).copied().unwrap_or_default();
+                if let Ok(mut c) = self.usage_cache.lock() {
+                    // Apps that left this account (deleted, moved) leave the cache too.
+                    c.retain(|_, (at, _)| at.elapsed() < USAGE_CACHE);
+                    let _prev = c.insert(app.app_id.clone(), (std::time::Instant::now(), book));
+                }
+                day
+            }
+            Err(e) => {
+                debug!(app = %app.app_id, error = %e, "usage not known; counted as none");
+                DayUsage::default()
+            }
+        }
+    }
+
+    /// What `payer`'s apps used today (UTC, on app time), summed over its component
+    /// apps (Q20, D78). The payer is `usage::payer`'s: an organization's id for its
+    /// apps, `account:{owner}` (`usage::account_payer`) for an account's personal ones.
+    pub async fn payer_usage_today(&self, payer: &str) -> DayUsage {
+        let today = utc_day(self.clock.now_ms());
+        let apps: Vec<AppRecord> = self.sys(|s| {
+            s.apps
+                .values()
+                .filter(|a| a.executor == Executor::Component && crate::usage::payer(a) == payer)
+                .cloned()
+                .collect()
+        });
+        let mut total = DayUsage::default();
+        for app in &apps {
+            total.add(&self.app_usage_today(app, today).await);
+        }
+        total
+    }
+
+    /// The refusal of a new call to `app`, of either executor, when its payer (its
+    /// organization, or for a personal app its owner; D78) is at or over
+    /// `max_fuel_per_payer_per_day` (D76; 0: no limit, nothing is read). Only a
+    /// client's call is refused: `init`, timer ticks and follow-ups still run, and
+    /// the component runs among them still count toward the payer's day.
+    pub(super) async fn fuel_quota_refusal(&self, app: &AppRecord) -> Option<ApiError> {
+        let limit = self.sys(|s| s.quotas.max_fuel_per_payer_per_day);
+        if limit == 0 {
+            return None;
+        }
+        let used = self.payer_usage_today(&crate::usage::payer(app)).await.fuel;
+        (used >= limit).then(|| {
+            super::rejected(&format!(
+                "{}: fuel per payer per day ({used} of {limit})",
+                crate::system::QUOTA_PREFIX
+            ))
+        })
     }
 
     /// The ABI checks the host makes before invoking a component (S5, D13), from

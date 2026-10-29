@@ -100,6 +100,7 @@ Per account, set by the operator (`POST /ops/quotas`), checked at apply
 | API keys | 50 |
 | Organizations owned | 20 |
 | Accounts on the cluster | 100 000 |
+| Fuel per payer per UTC day (an org for its apps, an account for its personal apps, D78), over its component apps | 0 (no limit); checked before a client's call to any of its apps runs, not at apply: `init` and timer ticks still run and count (D76) |
 
 ## Roles and capabilities
 

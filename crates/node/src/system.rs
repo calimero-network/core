@@ -50,6 +50,14 @@ pub struct Quotas {
     /// Accounts the cluster takes in all: sign-up is open, so this is what
     /// keeps it from growing without bound (Xil's review, issue 12).
     pub max_accounts: u32,
+    /// Fuel a payer's apps may burn per UTC day, summed over its component apps
+    /// (Q20, D76, D78); 0 (the default) is no limit. The payer is #4739's
+    /// (`usage::payer`): an organization for its apps, `account:{owner}` for a
+    /// personal app. Over it, a client's call to any of the payer's apps, wasmer
+    /// apps included, is refused before it runs (`429 QUOTA_EXCEEDED`); `init` and
+    /// timer ticks still run, and still count. Checked where the call runs, against
+    /// the apps' usage books, not at apply: those live in the app groups.
+    pub max_fuel_per_payer_per_day: u64,
 }
 
 impl Default for Quotas {
@@ -60,6 +68,7 @@ impl Default for Quotas {
             max_api_keys_per_account: 50,
             max_orgs_per_account: 20,
             max_accounts: 100_000,
+            max_fuel_per_payer_per_day: 0,
         }
     }
 }

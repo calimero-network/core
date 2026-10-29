@@ -70,9 +70,13 @@ impl Kind {
 /// app `account:{owner}` (`:` is not base64url, so the two never collide).
 #[must_use]
 pub fn payer(app: &AppRecord) -> String {
-    app.org
-        .clone()
-        .unwrap_or_else(|| format!("account:{}", app.owner))
+    app.org.clone().unwrap_or_else(|| account_payer(&app.owner))
+}
+
+/// The payer of an account's personal apps: `account:{account}` ([`payer`]).
+#[must_use]
+pub fn account_payer(account: &str) -> String {
+    format!("account:{account}")
 }
 
 /// What one run took.

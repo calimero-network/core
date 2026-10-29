@@ -29,9 +29,11 @@ use crate::usage::{Kind as RunKind, Meter, Usage};
 
 mod component;
 
+use component::LocalError;
+
 pub use component::{
-    app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, BAD_BUNDLE,
-    MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL,
+    app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, UsageBook, BAD_BUNDLE,
+    MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL, USAGE_CACHE,
 };
 
 /// The system group's id.
@@ -327,6 +329,9 @@ pub struct Node {
     /// Component app groups whose timer ticks are being run now (one round per
     /// app at a time).
     ticking: Mutex<HashSet<GroupId>>,
+    /// The usage books of apps not hosted here, as a replica last answered, for the
+    /// fuel quota (`component::USAGE_CACHE`).
+    usage_cache: Mutex<HashMap<String, (std::time::Instant, component::UsageBook)>>,
     pub transport: Arc<calimero_sealed::SealedTransport>,
     /// Signs receipts for the results this node returns. Made in memory at
     /// start, never stored; its public half is attested (`purpose=receipts`).
@@ -506,6 +511,7 @@ impl Node {
             clock,
             id_seqs: Mutex::new(HashMap::new()),
             ticking: Mutex::new(HashSet::new()),
+            usage_cache: Mutex::new(HashMap::new()),
             transport: sealed,
             receipt_key: ed25519_dalek::SigningKey::from_bytes(&calimero_identity::random::<32>()),
             peers: Mutex::new(HashMap::new()),
@@ -1761,7 +1767,7 @@ impl Node {
         &self,
         g: &Group<AppMachine>,
         req: &CallRequest,
-    ) -> Result<Applied, WriteError> {
+    ) -> Result<Applied, LocalError> {
         // The caller's standing (org role, teams, read-only rows) is read from
         // the system state below; for a client's call it must include every
         // change committed before the call, wherever it was committed.
@@ -1769,7 +1775,7 @@ impl Node {
             self.sys_fresh().await;
         }
         if req.host && req.method == "__upgrade" {
-            return self.upgrade_local(g, req).await;
+            return Ok(self.upgrade_local(g, req).await?);
         }
         // Everything below runs a wasmer app's code or writes its keyspace; a
         // component's calls are `call_component`'s, and its blobs wait for R8.
@@ -1796,7 +1802,7 @@ impl Node {
             let bytes = serde_json::to_vec(&cmd).unwrap_or_default();
             let (_index, out) = g.write(bytes).await?;
             return serde_json::from_slice(&out)
-                .map_err(|e| WriteError::Unavailable(e.to_string()));
+                .map_err(|e| WriteError::Unavailable(e.to_string()).into());
         }
         if req.host && req.method == "__blob" {
             let cmd = AppCmd::Blob {
@@ -1806,7 +1812,7 @@ impl Node {
             let bytes = serde_json::to_vec(&cmd).unwrap_or_default();
             let (_index, out) = g.write(bytes).await?;
             return serde_json::from_slice(&out)
-                .map_err(|e| WriteError::Unavailable(e.to_string()));
+                .map_err(|e| WriteError::Unavailable(e.to_string()).into());
         }
         let mut env = self.env(&req.app_id, &req.caller);
         // Who may reach this method, when the node runs it itself.
@@ -1862,14 +1868,27 @@ impl Node {
                 )
             });
         }
+        // An owner over its daily fuel (D76) is refused before a client's call
+        // runs, as on the component path; a retry of a call that committed still
+        // replays, below. Timers, follow-ups and the node's own commands still run.
+        let over_quota = match self.sys(|s| s.apps.get(&req.app_id).cloned()) {
+            Some(app) if req.trigger.is_none() && !req.host => self.fuel_quota_refusal(&app).await,
+            _ => None,
+        };
+        let mut quota_refused = None;
         let mut fresh_blobs = Vec::new();
         let mut ran = false;
         let p = g
             .propose(|m, applied| {
+                quota_refused = None;
                 if let Some(key) = &req.idempotency_key {
                     if let Some(prev) = m.replay(&req.caller, key) {
                         return Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default());
                     }
+                }
+                if let Some(e) = &over_quota {
+                    quota_refused = Some(e.clone());
+                    return Proposal::Reply(Vec::new());
                 }
                 // A follow-up already run (a replayed driver pass) is not run twice.
                 if let Some(Trigger::FollowUp { seq }) = &req.trigger {
@@ -1938,6 +1957,9 @@ impl Node {
                 Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
             })
             .await?;
+        if let Some(e) = quota_refused {
+            return Err(LocalError::Refused(e));
+        }
         if p.output.is_empty() {
             // A follow-up someone already ran: nothing to answer.
             return Ok(Applied {
@@ -2291,11 +2313,14 @@ impl Node {
                 match self.call_local(&g, req).await {
                     Ok(a) if a.conflict => None,
                     Ok(a) => return Ok(a),
-                    Err(WriteError::NotLeader {
+                    Err(LocalError::Refused(e)) => return Err(e),
+                    Err(LocalError::Write(WriteError::NotLeader {
                         leader: Some((id, addr)),
-                    }) if id != self.config.node_id && !addr.is_empty() => Some(addr),
+                    })) if id != self.config.node_id && !addr.is_empty() => Some(addr),
                     // No leader will take it either: answer now, as a forward does.
-                    Err(e @ WriteError::TooLarge { .. }) => return Err(status_of(&e)),
+                    Err(LocalError::Write(e @ WriteError::TooLarge { .. })) => {
+                        return Err(status_of(&e))
+                    }
                     Err(e) => {
                         debug!(error = %e, "call not yet possible here");
                         None
@@ -2345,9 +2370,10 @@ impl Node {
             .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
         match self.call_local(&g, req).await {
             Ok(a) => Ok(a),
-            Err(WriteError::NotLeader {
+            Err(LocalError::Refused(e)) => Err(e),
+            Err(LocalError::Write(WriteError::NotLeader {
                 leader: Some((id, addr)),
-            }) if id != self.config.node_id && !addr.is_empty() => {
+            })) if id != self.config.node_id && !addr.is_empty() => {
                 let body =
                     serde_json::to_value(req).map_err(|e| ApiError::internal(&e.to_string()))?;
                 let v = self
@@ -2356,7 +2382,7 @@ impl Node {
                     .map_err(|e| ApiError::unavailable(&e.to_string()))?;
                 serde_json::from_value(v).map_err(|e| ApiError::internal(&e.to_string()))
             }
-            Err(e) => Err(status_of(&e)),
+            Err(LocalError::Write(e)) => Err(status_of(&e)),
         }
     }
 
