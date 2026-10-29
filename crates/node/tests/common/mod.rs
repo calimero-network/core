@@ -169,6 +169,7 @@ impl Cluster {
                     tee_profile: None,
                     peer_measurements: calimero_client::Measurements::None,
                     clock_offset_ms: 0,
+                    kms_keys: Default::default(),
                     budget: None,
                     registry: None,
                     // The component fixtures are raw uploads (`POST /bundles`), development only.

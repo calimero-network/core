@@ -451,6 +451,110 @@ async fn clients_refuse_unattested_nodes_and_plain_requests() {
     assert_eq!(e.code(), Some("FORBIDDEN"));
 }
 
+/// A node that took its keys from mero-kms reports what it verified of that
+/// KMS, but only to a client that asks (`purpose=kms`), and only inside the
+/// quote: the record is bound into the report data with the transport key, so
+/// a relay that swaps, adds or strips it fails the same check that attests the
+/// key. Not asking (every client before this) gets the report data it always
+/// has, and a node with no record answers as an older node does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_reports_the_kms_it_verified_inside_its_quote() {
+    use calimero_client::attest::{report_data, verify, AttestationDoc, KmsKeys};
+    use calimero_tee_attestation::KmsEvidence;
+
+    let reported = KmsKeys {
+        storage: Some(KmsEvidence {
+            kms_host: "kms.internal:8080".into(),
+            release: "2.4.1".into(),
+            profile: Some("locked-read-only".into()),
+            mrtd: "aa".repeat(48),
+            rtmr0: "00".repeat(48),
+            rtmr1: "11".repeat(48),
+            rtmr2: "22".repeat(48),
+            rtmr3: "33".repeat(48),
+            tcb_status: Some("UpToDate".into()),
+            quote_sha256: "44".repeat(32),
+            verified_at: 1_790_000_000,
+            mock: false,
+        }),
+        disk: None,
+    };
+    let given = reported.clone();
+    let c = Cluster::start_with(1, move |cfg| cfg.kms_keys = given.clone()).await;
+    let plain = reqwest::Client::new();
+    let mock = Policy {
+        allow_mock: true,
+        ..Policy::default()
+    };
+    let attest = |url: String, purpose: Option<&'static str>| {
+        let plain = plain.clone();
+        async move {
+            let nonce = calimero_identity::random::<32>();
+            let mut request = format!("{url}attestation?nonce={}", hex::encode(nonce));
+            if let Some(p) = purpose {
+                request.push_str(&format!("&purpose={p}"));
+            }
+            let doc: AttestationDoc = plain
+                .get(request)
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            (nonce, doc)
+        }
+    };
+
+    let (nonce, doc) = attest(c.urls[0].clone(), Some("kms")).await;
+    assert_eq!(doc.kms.as_ref(), Some(&reported));
+    verify(&doc, &nonce, &mock)
+        .await
+        .expect("the record is bound into the quote");
+    let mut swapped = doc.clone();
+    if let Some(storage) = swapped.kms.as_mut().and_then(|k| k.storage.as_mut()) {
+        storage.release = "2.3.1".into();
+    }
+    assert!(
+        verify(&swapped, &nonce, &mock).await.is_err(),
+        "a swapped record"
+    );
+    let stripped = AttestationDoc {
+        kms: None,
+        ..doc.clone()
+    };
+    assert!(
+        verify(&stripped, &nonce, &mock).await.is_err(),
+        "a stripped record"
+    );
+
+    // Not asked: no record, and the report data every older client checks.
+    let (nonce, doc) = attest(c.urls[0].clone(), None).await;
+    assert!(doc.kms.is_none());
+    let quote =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &doc.quote).unwrap();
+    let key: [u8; 32] = hex::decode(&doc.transport_key).unwrap().try_into().unwrap();
+    let header = calimero_client::attest::MOCK_QUOTE_HEADER.len();
+    assert_eq!(
+        quote[header..header + 64],
+        report_data(&nonce, &[0; 32], &key),
+        "unchanged for a client that does not ask"
+    );
+    verify(&doc, &nonce, &mock)
+        .await
+        .expect("an unasked attestation");
+
+    // A node with no record answers `purpose=kms` as a node from before it.
+    let bare = Cluster::start(1).await;
+    let (nonce, doc) = attest(bare.urls[0].clone(), Some("kms")).await;
+    assert!(doc.kms.is_none());
+    verify(&doc, &nonce, &mock)
+        .await
+        .expect("no record, no binding");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn backups_are_encrypted_and_restorable() {
     let c = Cluster::start(3).await;

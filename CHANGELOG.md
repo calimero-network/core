@@ -31,6 +31,22 @@ tokens or log entries; existing clusters are recreated.
   `AddSessionKey` and `--session-key-rotation-secs` are gone. A node whose
   release may not serve an account answers `421 WRONG_NODE`.
 
+### Added
+
+- **A node reports which KMS it verified, inside its quote.** Each key fetch
+  from mero-kms now keeps what it accepted: the KMS quote's MRTD and RTMR0-3,
+  TCB status, the signed mero-kms release and profile whose policy it matched,
+  the KMS host, the quote's SHA-256 and the time (`KmsEvidence`). `GET
+  /attestation?purpose=kms` returns it as `kms` (`storage`, and `disk` when
+  the boot script recorded the data disk's with `merod kms disk-key
+  --evidence-out` and merod reads it with `--kms-disk-evidence` /
+  `MEROD_KMS_DISK_EVIDENCE`) and binds it into the quote:
+  `report_data = nonce || SHA-256("calimero.tee-attest.kms-evidence.v1" ||
+  transport_binding || SHA-256(JCS(kms)))`. `attest::verify` checks that
+  binding whenever `kms` is present. Opt in: without `purpose=kms` the report
+  data is unchanged, so mero-js, calimero-client-py and older Rust clients see
+  no difference; a node with no record answers `purpose=kms` as before.
+
 ## [1.0.0-rc.3] - 2026-10-29
 
 ### Fixed

@@ -171,6 +171,10 @@ is its command line.
   (`GET /attestation?purpose=receipts`, report data `nonce || receipt_key_binding`),
   and `GET /apps/{app}/attestation` gathers every replica's
   (`Client::verify_app_cluster`).
+- **KMS evidence**: `GET /attestation?purpose=kms` adds `kms` (`config.kms_keys`: the
+  KMS quote merod accepted for its storage key, and the boot script's record for the
+  data disk's, `--kms-disk-evidence`) and binds it (`kms_report_data`). Without a
+  record, or without `purpose=kms`, the answer is the plain transport form.
 - **Release attestations** (`attest.rs`, `release_attestation`, `serve_release`): a
   quote over a manager's nonce and `ReleaseClaim`, for `merod attest` before the node
   has any key. Not a route of a running node: `serve_release` is its own tiny server

@@ -141,6 +141,10 @@ pub struct Config {
     /// The operator's Ed25519 verify key, hex (`--operator-key`): recorded at
     /// genesis, and what every operator decision must be signed with.
     pub operator_key: Option<String>,
+    /// What this node verified of the KMS replicas its keys came from (the
+    /// storage key, and the data disk's when the boot script recorded it).
+    /// Reported, bound into the quote, by `GET /attestation?purpose=kms`.
+    pub kms_keys: calimero_client::attest::KmsKeys,
 }
 
 impl Config {

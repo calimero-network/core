@@ -133,6 +133,12 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_KMS_IDENTITY")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kms_identity: Option<PathBuf>,
+    /// What `merod kms disk-key --evidence-out` recorded of the KMS that
+    /// released the data disk's key (on tmpfs/ramfs), to report in the node's
+    /// attestation beside the storage key's.
+    #[arg(long, env = "MEROD_KMS_DISK_EVIDENCE")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kms_disk_evidence: Option<PathBuf>,
     /// The mero-tee release this image is (names the signed measurements).
     #[arg(long, env = "MERO_TEE_VERSION")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -221,6 +227,7 @@ impl NodeArgs {
             storage_key_file: self.storage_key_file.or(base.storage_key_file),
             kms_url: self.kms_url.or(base.kms_url),
             kms_identity: self.kms_identity.or(base.kms_identity),
+            kms_disk_evidence: self.kms_disk_evidence.or(base.kms_disk_evidence),
             tee_release: self.tee_release.or(base.tee_release),
             tee_profile: self.tee_profile.or(base.tee_profile),
             peer_profiles: list(self.peer_profiles, base.peer_profiles),

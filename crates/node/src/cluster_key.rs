@@ -242,6 +242,7 @@ async fn waiting_attestation(
         mock: w.mode == crate::attest::Mode::Mock,
         receipt_key: None,
         governance: None,
+        kms: None,
     }))
 }
 

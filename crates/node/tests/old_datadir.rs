@@ -49,6 +49,7 @@ fn config(dir: &std::path::Path, port: u16) -> Config {
         tee_profile: None,
         peer_measurements: calimero_client::Measurements::None,
         clock_offset_ms: 0,
+        kms_keys: Default::default(),
         budget: None,
         registry: None,
         allow_unsigned_bundles: true,
