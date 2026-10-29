@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+use crate::files::NewFile;
+
 /// Fuel per call or view (D28); Task 13 measures the real ratio to wall time.
 pub const DEFAULT_FUEL: u64 = 200_000_000;
 /// Memory per instance: 1,024 WASM pages (64 MiB).
@@ -152,6 +154,9 @@ pub struct Outcome {
     pub events: Vec<Event>,
     /// The owner-only app log (stdout, stderr, `log`); kept whatever the status.
     pub logs: Vec<String>,
+    /// Files the run finished and the files it deleted; empty unless the status is `Ok`.
+    pub new_files: Vec<NewFile>,
+    pub deleted_files: Vec<String>,
     pub usage: Usage,
 }
 

@@ -23,7 +23,7 @@ fn echo_guest_builds_into_a_component_with_only_world_imports() {
     assert_eq!(built.imports, imports_of(&built.component).unwrap());
 
     let expected: serde_json::Value = serde_json::from_str(
-        r#"{"world":"calimero:app@0.5.0","methods":{"echo":{"kind":"call"}}}"#,
+        r#"{"world":"calimero:app@0.5.1","methods":{"echo":{"kind":"call"}}}"#,
     )
     .unwrap();
     assert_eq!(built.abi, Some(expected.clone()));

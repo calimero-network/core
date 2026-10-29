@@ -1,4 +1,4 @@
-package calimero:app@0.5.0;
+package calimero:app@0.5.1;
 
 interface types {
   type account-id = string;
@@ -67,6 +67,22 @@ interface blobs {
   grant: func(id: blob-id, ttl-seconds: u32) -> string;
 }
 
+// Encrypted files kept by the node. Writes are logged-write kinds only; reads work in views too.
+interface files {
+  use types.{blob-id, blob-info};
+  resource writer {
+    write: func(bytes: list<u8>) -> result<_, string>;
+    finish: func() -> result<blob-id, string>;
+  }
+  resource reader {
+    read: func(max: u32) -> result<list<u8>, string>;   // an empty list is the end of the file; max 0 is read as 1
+  }
+  create: func() -> result<writer, string>;
+  open: func(id: blob-id) -> result<reader, string>;
+  info: func(id: blob-id) -> option<blob-info>;       // mime is "" for files; size and sha256 are of the plaintext
+  delete: func(id: blob-id) -> result<_, string>;
+}
+
 interface xcall {
   send: func(app: string, method: string, args: list<u8>) -> result<_, string>; // outbox; delivered after commit
 }
@@ -84,6 +100,7 @@ world app {
   import context;
   import events;
   import blobs;
+  import files;
   import xcall;
   import action;
 

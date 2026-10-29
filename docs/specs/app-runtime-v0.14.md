@@ -293,10 +293,10 @@ State access (D46): the host core reads app state through a `StateView` trait, `
 
 ## 4. The calimero:app WIT world
 
-Apps import eight Calimero interfaces (including types) and a fixed set of WASI interfaces that the host implements or stubs, and export one dispatcher; nothing else crosses the boundary.
+Apps import nine Calimero interfaces (including types) and a fixed set of WASI interfaces that the host implements or stubs, and export one dispatcher; nothing else crosses the boundary.
 
 ```wit
-package calimero:app@0.5.0;
+package calimero:app@0.5.1;
 
 interface types {
   type account-id = string;
@@ -365,6 +365,22 @@ interface blobs {
   grant: func(id: blob-id, ttl-seconds: u32) -> string;
 }
 
+// Encrypted files kept by the node. Writes are logged-write kinds only; reads work in views too.
+interface files {
+  use types.{blob-id, blob-info};
+  resource writer {
+    write: func(bytes: list<u8>) -> result<_, string>;
+    finish: func() -> result<blob-id, string>;
+  }
+  resource reader {
+    read: func(max: u32) -> result<list<u8>, string>;   // an empty list is the end of the file; max 0 is read as 1
+  }
+  create: func() -> result<writer, string>;
+  open: func(id: blob-id) -> result<reader, string>;
+  info: func(id: blob-id) -> option<blob-info>;       // mime is "" for files; size and sha256 are of the plaintext
+  delete: func(id: blob-id) -> result<_, string>;
+}
+
 interface xcall {
   send: func(app: string, method: string, args: list<u8>) -> result<_, string>; // outbox; delivered after commit
 }
@@ -382,6 +398,7 @@ world app {
   import context;
   import events;
   import blobs;
+  import files;
   import xcall;
   import action;
 
@@ -410,6 +427,20 @@ Rules the host enforces, whatever the guest says:
 - The method's attributes (`view`, `confirm`, `public`, `every`, outbound hosts) come from the bundle's ABI, signed with it. The host checks them before calling `handle`.
 - Blob references in state are typed in the ABI, so the host tracks retention itself (requirement R8).
 - A component that imports anything outside this world, including `wasi:filesystem` and `wasi:sockets`, is refused at install.
+
+### Files
+
+The `files` interface, added in 0.5.1, gives an app encrypted byte streams that the node stores on the app's replicas.
+`create`, `writer.write`, `writer.finish` and `delete` work only in invocations that become log entries (call, timer, init, xcall delivery); anywhere else they trap `HostDenied`.
+`open`, `reader.read` and `info` work in every kind except migrate.
+`info` reports the plaintext size and SHA-256, and `mime` is empty.
+A file is a mark in app state; it exists only once the run that finished it commits, and a delete takes effect with its entry.
+In one run, a deleted file is gone at once: `info` returns none and `open` fails with `no such file`.
+A run holds at most 16 open readers and writers, writes at most 47 MiB to a file and 64 MiB in all, reads at most 1 MiB per `read`, and deletes at most 1,000 files.
+Every refusal that is not a policy violation is a fixed soft error string: `no such file`, `files are not enabled`, `too many open files`, `file too large`, `run wrote too much`, `file already finished`, `file write failed`, `file already deleted`, `file created in this run`, `too many deletes`.
+A storage failure inside the provider is passed through as an opaque soft error, and the writer then answers `file write failed`.
+An unknown handle, or running out of handle ids, traps `HostDenied`.
+A component built against 0.5.0 keeps installing and running: the engine accepts `calimero:app/*` imports at any 0.5 patch up to the world's, and the linker matches them by semver within the minor.
 
 ### WASI, implemented by the host
 

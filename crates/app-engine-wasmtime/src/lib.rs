@@ -101,10 +101,10 @@ const DISABLED_FEATURES: WasmFeatures = WasmFeatures::THREADS
     .union(WasmFeatures::CM_ERROR_CONTEXT)
     .union(WasmFeatures::CM_GC);
 
-/// WASI interfaces are pinned to 0.2.12 (D43); an import of an older 0.2 patch links
-/// through semver matching (Ruling 15).
-const WASI_PREFIX: &str = "wasi:";
-const WASI_MINOR: &str = "0.2.";
+/// Interfaces are pinned to WASI 0.2.12 (D43) and `calimero:app` 0.5.1; an import of an older
+/// patch of the same minor links through semver matching (Ruling 15), so an app built before
+/// a patch keeps running.
+const PATCHED: [(&str, &str); 2] = [("wasi:", "0.2."), ("calimero:app/", "0.5.")];
 
 /// Runs `calimero:app` components on wasmtime.
 pub struct WasmtimeEngine {
@@ -296,8 +296,9 @@ fn trap(kind: TrapKind, detail: &str) -> Status {
     }
 }
 
-/// An import is allowed if the world or the D44 stubs list it, or if it is a WASI
-/// interface they list at a 0.2 patch no newer than the listed one (D43, Ruling 15).
+/// An import is allowed if the world or the D44 stubs list it, or if it is a WASI or
+/// `calimero:app` interface they list at a patch of the same minor no newer than the listed
+/// one (D43, Ruling 15).
 fn import_allowed(import: &str) -> bool {
     let listed = || allowed_imports().iter().chain(stubbed_imports());
     if listed().any(|l| *l == import) {
@@ -306,12 +307,12 @@ fn import_allowed(import: &str) -> bool {
     let Some((interface, version)) = import.split_once('@') else {
         return false;
     };
-    let Some(patch) = wasi_patch(interface, version) else {
+    let Some(patch) = patch_of(interface, version) else {
         return false;
     };
     listed().any(|l| {
         l.split_once('@').is_some_and(|(li, lv)| {
-            li == interface && wasi_patch(li, lv).is_some_and(|max| patch <= max)
+            li == interface && patch_of(li, lv).is_some_and(|max| patch <= max)
         })
     })
 }
@@ -328,12 +329,12 @@ fn defined_memories(component: &[u8]) -> Result<usize, PrepareError> {
     Ok(count)
 }
 
-/// The patch number of a `wasi:*@0.2.<patch>` version.
-fn wasi_patch(interface: &str, version: &str) -> Option<u32> {
-    if !interface.starts_with(WASI_PREFIX) {
-        return None;
-    }
-    version.strip_prefix(WASI_MINOR)?.parse().ok()
+/// The patch number of a `wasi:*@0.2.<patch>` or `calimero:app/*@0.5.<patch>` version.
+fn patch_of(interface: &str, version: &str) -> Option<u32> {
+    let (_, minor) = PATCHED
+        .iter()
+        .find(|(prefix, _)| interface.starts_with(prefix))?;
+    version.strip_prefix(minor)?.parse().ok()
 }
 
 /// A store's data: the host core plus what wasmtime-wasi needs. One per invocation.
@@ -452,8 +453,12 @@ mod tests {
     use super::import_allowed;
 
     #[test]
-    fn imports_match_the_lists_with_older_wasi_patches_only() {
+    fn imports_match_the_lists_with_older_patches_only() {
+        assert!(import_allowed("calimero:app/storage@0.5.1"));
         assert!(import_allowed("calimero:app/storage@0.5.0"));
+        assert!(!import_allowed("calimero:app/storage@0.5.2"));
+        assert!(!import_allowed("calimero:app/storage@0.6.0"));
+        assert!(!import_allowed("calimero:app/nothing@0.5.0"));
         assert!(import_allowed("wasi:cli/stdin@0.2.12"));
         assert!(import_allowed("wasi:cli/stdin@0.2.0"));
         assert!(import_allowed("wasi:http/types@0.2.10"));
