@@ -132,6 +132,7 @@ impl Node {
         version: &str,
         actor: &str,
     ) -> Result<Value, ApiError> {
+        self.refuse_stalled_install(actor)?;
         let mpk = self.fetch_from_registry(package, version).await?;
         let verified = self.verify_release(mpk, BundleSource::Registry, actor)?;
         if verified.package != package || verified.release.version != version {
@@ -146,8 +147,20 @@ impl Node {
         self.record_release(verified, None).await
     }
 
+    /// Refused `409 RELEASE_DEADLINE` before any fetch or verification when
+    /// `actor` may install nothing past a release deadline
+    /// ([`crate::system::SystemState::install_stalled`]); `InstallPackage`
+    /// asks again at apply.
+    fn refuse_stalled_install(&self, actor: &str) -> Result<(), ApiError> {
+        match self.sys(|s| s.install_stalled(actor, now_secs())) {
+            Some(stall) => Err(crate::node::stalled(&stall)),
+            None => Ok(()),
+        }
+    }
+
     /// Install an uploaded `.mpk`.
     pub async fn install_upload(&self, mpk: Arc<[u8]>, actor: &str) -> Result<Value, ApiError> {
+        self.refuse_stalled_install(actor)?;
         let verified = self.verify_release(Arc::clone(&mpk), BundleSource::Upload, actor)?;
         self.record_release(verified, Some(mpk)).await
     }

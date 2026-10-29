@@ -435,9 +435,24 @@ pub const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);
 /// (`calimero_sealed::server::MAX_SEALED_BYTES`), with 1 MiB left for the rest.
 pub const MAX_BLOB_BYTES: usize = (calimero_sealed::server::MAX_SEALED_BYTES - (1 << 20)) / 4 * 3;
 
+/// The code of a refusal of new work past a release deadline.
+pub const RELEASE_DEADLINE: &str = "RELEASE_DEADLINE";
+
+/// New work refused past a release deadline: `409 RELEASE_DEADLINE`, naming
+/// the release to approve and its deadline in `details`.
+pub fn stalled(stall: &crate::system::Stall) -> ApiError {
+    ApiError::new(409, RELEASE_DEADLINE, &stall.message()).with_details(json!({
+        "release": stall.release,
+        "after": crate::system::rfc3339(stall.after),
+        "afterSecs": stall.after,
+    }))
+}
+
 pub fn rejected(reason: &str) -> ApiError {
     if reason.starts_with(crate::system::QUOTA_PREFIX) {
         ApiError::new(429, "QUOTA_EXCEEDED", reason)
+    } else if reason.starts_with(crate::system::DEADLINE_PREFIX) {
+        ApiError::new(409, RELEASE_DEADLINE, reason)
     } else {
         ApiError::bad_request("REJECTED", reason)
     }
@@ -2474,21 +2489,25 @@ impl Node {
 
     #[must_use]
     /// Pick replicas for a new app among the nodes whose release is in
-    /// `approved` (when the app's owner restricted releases): spread over as
-    /// many zones as those nodes are in, least loaded first
+    /// `approved` (when the app's owner restricted releases) and not
+    /// [retired](crate::system::SystemState::retired) at `now`: spread over
+    /// as many zones as those nodes are in, least loaded first
     /// ([`crate::placement::replicas`]).
     pub async fn place(
         &self,
         approved: Option<&std::collections::BTreeSet<String>>,
+        now: u64,
     ) -> Vec<NodeId> {
+        // Past a release's deadline, a node on an older one keeps its apps
+        // but takes no new one.
+        let deadlines = self.sys(|s| s.any_deadline_passed(now));
         let mut allowed = Vec::new();
         for id in self.sys(|s| s.nodes.keys().copied().collect::<Vec<_>>()) {
-            let ok = match approved {
-                None => true,
-                Some(set) => self
-                    .release_of_node(id)
-                    .await
-                    .is_some_and(|r| set.contains(&r)),
+            let ok = match (approved, deadlines) {
+                (None, false) => true,
+                (approved, _) => self.release_of_node(id).await.is_some_and(|r| {
+                    approved.is_none_or(|set| set.contains(&r)) && !self.sys(|s| s.retired(&r, now))
+                }),
             };
             if ok {
                 allowed.push(id);

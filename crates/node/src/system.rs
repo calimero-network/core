@@ -222,6 +222,15 @@ pub struct SystemState {
     /// what it approved, by package signer, for every app.
     #[serde(default)]
     pub operator_outbound: BTreeMap<String, crate::types::OutboundApproval>,
+    /// The operator's end-of-new-work deadlines (`SetReleaseDeadline`): mero-tee
+    /// release -> Unix seconds. From a release's deadline on, an organization
+    /// or account whose newest approved release is older creates, installs
+    /// and upgrades nothing until it approves that release or a newer one
+    /// ([`SystemState::stalled`]); its apps keep running, and no data moves.
+    /// Absent in state from before, and left out when empty, so such a state
+    /// reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub release_deadlines: BTreeMap<String, u64>,
     /// When each session in `revoked_sessions` was revoked (Unix seconds), so
     /// it can be forgotten once no token of it can still be valid.
     #[serde(default)]
@@ -245,6 +254,52 @@ pub enum ReleaseScope {
     /// Every app, by the operator: only where the deployment gave it this
     /// decision ([`Governance`]).
     Cluster,
+}
+
+/// The prefix of every apply error that refuses new work past a release
+/// deadline ([`Stall`]); the API answers it `409 RELEASE_DEADLINE`.
+pub const DEADLINE_PREFIX: &str = "new work stopped";
+
+/// How many releases may carry a deadline at once.
+pub const MAX_RELEASE_DEADLINES: usize = 64;
+
+/// The longest release version a deadline names.
+pub const MAX_RELEASE_VERSION_BYTES: usize = 64;
+
+/// Why a scope (an organization, or an account's own apps) may start no new
+/// work: the newest release whose deadline has passed and that the scope has
+/// not approved (nor anything newer), and that deadline.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Stall {
+    pub release: String,
+    /// Unix seconds.
+    pub after: u64,
+}
+
+impl Stall {
+    /// The refusal, naming the release to approve and its deadline.
+    #[must_use]
+    pub fn message(&self) -> String {
+        format!(
+            "{DEADLINE_PREFIX}: approve mero-tee release {} (its deadline, {}, has passed); \
+             apps already running keep running",
+            self.release,
+            rfc3339(self.after)
+        )
+    }
+}
+
+/// Unix seconds as RFC 3339 (UTC), or the number itself past what that writes.
+#[must_use]
+pub fn rfc3339(secs: u64) -> String {
+    i64::try_from(secs)
+        .ok()
+        .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
+        .map_or_else(
+            || secs.to_string(),
+            |t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        )
 }
 
 /// How long a revoked session is remembered: past every token it could have
@@ -404,6 +459,101 @@ impl SystemState {
             o.role(account).is_some_and(|r| r >= OrgRole::Member)
                 && o.may(account, team, crate::types::caps::MANAGE_APPLICATION)
         })
+    }
+
+    /// `APPROVE_RELEASES`: whether `account` may approve (or withdraw) the
+    /// mero-tee releases that hold `org`'s apps. The owner, an admin, or a
+    /// member granted the capability organization-wide (a team grant does not
+    /// reach it: one approval covers every app of the organization); never
+    /// someone outside it or below member, and nobody where the operator
+    /// holds release approvals.
+    #[must_use]
+    pub fn approves_releases(&self, org: &str, account: &str) -> bool {
+        self.governance().releases == Authority::Owner
+            && self.orgs.get(org).is_some_and(|o| {
+                o.role(account).is_some_and(|r| r >= OrgRole::Member)
+                    && o.may(account, None, crate::types::caps::APPROVE_RELEASES)
+            })
+    }
+
+    /// Who may approve `org`'s releases ([`Self::approves_releases`]).
+    #[must_use]
+    pub fn release_approvers(&self, org: &str) -> Vec<AccountId> {
+        self.orgs.get(org).map_or_else(Vec::new, |o| {
+            o.members
+                .keys()
+                .filter(|a| self.approves_releases(org, a))
+                .cloned()
+                .collect()
+        })
+    }
+
+    /// Whether a scope whose approved releases are `approved` has lost new
+    /// work at `now`: some release's deadline has passed and the newest
+    /// release it approved is older than that release. The newest such
+    /// release is named, since approving it lifts every one. `None` approved
+    /// (state from before approvals) is unrestricted, and so never stalled.
+    #[must_use]
+    pub fn stalled(&self, approved: Option<&BTreeSet<String>>, now: u64) -> Option<Stall> {
+        let newest = approved?.iter().max_by(|a, b| compare_versions(a, b))?;
+        self.release_deadlines
+            .iter()
+            .filter(|(r, after)| **after <= now && compare_versions(newest, r).is_lt())
+            .max_by(|a, b| compare_versions(a.0, b.0))
+            .map(|(r, after)| Stall {
+                release: r.clone(),
+                after: *after,
+            })
+    }
+
+    /// [`Self::stalled`] for the apps of `org` (or of `owner` outside one).
+    #[must_use]
+    pub fn stalled_for(&self, org: Option<&str>, owner: &str, now: u64) -> Option<Stall> {
+        self.stalled(self.approved_for(org, owner), now)
+    }
+
+    /// Whether `actor` may install no release at `now`. An installed release
+    /// belongs to its installer, who may use it in their own apps or in any
+    /// organization they are a member of, so the install is refused only when
+    /// every one of those scopes is stalled; the app it would become is
+    /// judged on its own (`CreateApp`). The operator's installs never are.
+    #[must_use]
+    pub fn install_stalled(&self, actor: &str, now: u64) -> Option<Stall> {
+        if actor == OPERATOR {
+            return None;
+        }
+        let own = self.stalled_for(None, actor, now)?;
+        let an_org_may = self.orgs.values().any(|o| {
+            o.role(actor).is_some_and(|r| r >= OrgRole::Member)
+                && self.stalled_for(Some(&o.org_id), actor, now).is_none()
+        });
+        (!an_org_may).then_some(own)
+    }
+
+    /// Whether a node on `release` is past a deadline at `now`: some newer
+    /// release's deadline has passed. Such a node keeps the apps it holds but
+    /// is placed no new one.
+    #[must_use]
+    pub fn retired(&self, release: &str, now: u64) -> bool {
+        self.release_deadlines
+            .iter()
+            .any(|(r, after)| *after <= now && compare_versions(release, r).is_lt())
+    }
+
+    /// Whether any release's deadline has passed at `now`.
+    #[must_use]
+    pub fn any_deadline_passed(&self, now: u64) -> bool {
+        self.release_deadlines.values().any(|after| *after <= now)
+    }
+
+    /// The deadlines as the read APIs show them, oldest release first.
+    #[must_use]
+    pub fn deadlines_json(&self) -> Vec<Value> {
+        let mut out: Vec<(&String, &u64)> = self.release_deadlines.iter().collect();
+        out.sort_by(|a, b| compare_versions(a.0, b.0));
+        out.into_iter()
+            .map(|(r, after)| json!({ "version": r, "after": rfc3339(*after), "afterSecs": after }))
+            .collect()
     }
 
     /// Whether a node on `release` may hold `app`'s data. `None` is a node
@@ -578,7 +728,9 @@ pub enum SystemCmd {
         #[serde(default)]
         by_operator: bool,
         actor: AccountId,
-        /// When it was proposed (Unix seconds), for the app's upgrade record.
+        /// When the upgrade began (Unix seconds), for the app's upgrade
+        /// record; release deadlines are judged at this time, the one the
+        /// API judged them at before the migration ran.
         #[serde(default)]
         at: u64,
         /// The organization-wide run it belongs to.
@@ -695,8 +847,9 @@ pub enum SystemCmd {
         version: String,
         approved: bool,
     },
-    /// The owner approves (or withdraws) a mero-tee release for an org's apps,
-    /// or for their own apps outside one. Logged with the passkey consent.
+    /// A mero-tee release is approved (or withdrawn) for an org's apps by
+    /// whoever holds `APPROVE_RELEASES` there, or by an account for its own
+    /// apps outside one. Logged with the passkey consent.
     SetReleaseApproval {
         scope: ReleaseScope,
         version: String,
@@ -704,6 +857,20 @@ pub enum SystemCmd {
         actor: AccountId,
         #[serde(default)]
         consent: Value,
+        /// Judged by `APPROVE_RELEASES` (every command this release writes).
+        /// Absent in an entry written before the capability existed, which is
+        /// judged as it was then (the organization's owner only), so
+        /// replaying the log never turns a refused approval into one.
+        #[serde(default)]
+        capability: bool,
+    },
+    /// The operator sets (`Some`, Unix seconds) or lifts (`None`) the
+    /// deadline after which a scope that has not approved `version` (or a
+    /// newer release) starts no new work. Availability only: it moves no data
+    /// and blocks no approval.
+    SetReleaseDeadline {
+        version: String,
+        after: Option<u64>,
     },
     /// The owner approves URL prefixes for a package's publisher to call out
     /// to, in an org's apps or their own outside one. `selection` is the latest release's declared
@@ -907,8 +1074,39 @@ impl SystemMachine {
         self.state.orgs.get_mut(org).ok_or("no such organization")
     }
 
+    /// Apply `cmd`: refused if it is new work its scope has lost
+    /// ([`Self::new_work_refusal`]), else by its own rules.
+    fn run(&mut self, cmd: SystemCmd) -> Result<Value, String> {
+        if let Some(stall) = self.new_work_refusal(&cmd) {
+            return Err(stall.message());
+        }
+        self.run_cmd(cmd).map_err(str::to_owned)
+    }
+
+    /// Creating an app, upgrading one or installing a release is new work:
+    /// past a release's deadline, refused for a scope that has not approved
+    /// it. Judged at the time the command carries (the proposing node's
+    /// clock, stamped once and replicated with it), so every replica, and
+    /// every replay, decides the same. Anything else, calls included, goes on.
+    fn new_work_refusal(&self, cmd: &SystemCmd) -> Option<Stall> {
+        let s = &self.state;
+        match cmd {
+            SystemCmd::CreateApp { app } => {
+                s.stalled_for(app.org.as_deref(), &app.owner, app.created_at)
+            }
+            SystemCmd::UpgradeApp { app_id, at, .. } => {
+                let a = s.apps.get(app_id)?;
+                s.stalled_for(a.org.as_deref(), &a.owner, *at)
+            }
+            SystemCmd::InstallPackage { release, .. } => {
+                s.install_stalled(&release.installed_by, release.installed_at)
+            }
+            _ => None,
+        }
+    }
+
     #[allow(clippy::too_many_lines, reason = "one arm per command")]
-    fn run(&mut self, cmd: SystemCmd) -> Result<Value, &'static str> {
+    fn run_cmd(&mut self, cmd: SystemCmd) -> Result<Value, &'static str> {
         let s = &mut self.state;
         match cmd {
             SystemCmd::RegisterNode { node } => {
@@ -1587,12 +1785,36 @@ impl SystemMachine {
                 }
                 Ok(json!({ "approvedReleases": set }))
             }
+            SystemCmd::SetReleaseDeadline { version, after } => {
+                // Closed input: a semver release, so it orders against the
+                // approved ones; a bounded number of them.
+                if version.len() > MAX_RELEASE_VERSION_BYTES
+                    || semver::Version::parse(&version).is_err()
+                {
+                    return Err("a deadline names a semver release of at most 64 bytes");
+                }
+                match after {
+                    Some(t) => {
+                        if !s.release_deadlines.contains_key(&version)
+                            && s.release_deadlines.len() >= MAX_RELEASE_DEADLINES
+                        {
+                            return Err("too many release deadlines; lift an old one first");
+                        }
+                        let _prev = s.release_deadlines.insert(version, t);
+                    }
+                    None => {
+                        let _gone = s.release_deadlines.remove(&version);
+                    }
+                }
+                Ok(json!({ "deadlines": s.deadlines_json() }))
+            }
             SystemCmd::SetReleaseApproval {
                 scope,
                 version,
                 approved,
                 actor,
                 consent: _,
+                capability,
             } => {
                 if s.governance().releases == Authority::Operator {
                     return Err("this cluster's releases are approved by its operator");
@@ -1600,8 +1822,13 @@ impl SystemMachine {
                 let set = match &scope {
                     ReleaseScope::Cluster => return Err("the operator uses SetOperatorRelease"),
                     ReleaseScope::Org { org } => {
+                        if capability && !s.approves_releases(org, &actor) {
+                            return Err(
+                                "approving releases needs APPROVE_RELEASES in the organization",
+                            );
+                        }
                         let o = s.orgs.get_mut(org).ok_or("no such organization")?;
-                        if o.role(&actor) != Some(OrgRole::Owner) {
+                        if !capability && o.role(&actor) != Some(OrgRole::Owner) {
                             return Err("only the organization's owner approves releases");
                         }
                         &mut o.approved_releases
@@ -2166,7 +2393,7 @@ impl Machine for SystemMachine {
         match serde_json::from_slice::<SystemCmd>(command) {
             Ok(cmd) => match self.run(cmd) {
                 Ok(v) => ok(v),
-                Err(e) => err(e),
+                Err(e) => err(&e),
             },
             Err(e) => err(&format!("malformed command: {e}")),
         }
@@ -2521,6 +2748,7 @@ mod tests {
             approved: true,
             actor: "alice".into(),
             consent: serde_json::Value::Null,
+            capability: true,
         });
         assert_eq!(
             ops_release.is_ok(),
@@ -2673,5 +2901,320 @@ mod tests {
             .installers
             .is_empty());
         assert!(seen(&old_state, "alice") && !seen(&old_state, "bob"));
+    }
+
+    /// An organization of `who` (account -> role), each holding `caps`
+    /// organization-wide, with `releases` approved.
+    fn org(members: &[(&str, &str)], caps: &[(&str, u32)], releases: &[&str]) -> crate::types::Org {
+        let members: serde_json::Map<String, serde_json::Value> = members
+            .iter()
+            .map(|(a, r)| ((*a).to_owned(), json!(r)))
+            .collect();
+        let caps: serde_json::Map<String, serde_json::Value> = caps
+            .iter()
+            .map(|(a, c)| ((*a).to_owned(), json!(c)))
+            .collect();
+        serde_json::from_value(json!({
+            "orgId": "org", "name": "Docs", "members": members, "capabilities": caps,
+            "approvedReleases": releases, "teams": {}
+        }))
+        .unwrap()
+    }
+
+    fn approve(org: &str, version: &str, actor: &str, capability: bool) -> SystemCmd {
+        SystemCmd::SetReleaseApproval {
+            scope: ReleaseScope::Org { org: org.into() },
+            version: version.into(),
+            approved: true,
+            actor: actor.into(),
+            consent: serde_json::Value::Null,
+            capability,
+        }
+    }
+
+    /// `APPROVE_RELEASES`: the owner and admins hold it (as `MANAGE_APPLICATION`),
+    /// a member only when granted organization-wide; a team grant, a guest,
+    /// someone outside, a revoked grant and a removed member do not. An entry
+    /// written before the capability existed replays under the owner-only rule.
+    #[test]
+    fn approving_releases_is_a_capability() {
+        use crate::types::caps::APPROVE_RELEASES;
+        let mut m = SystemMachine::default();
+        let _ok = m.run(genesis(all(Authority::Owner))).unwrap();
+        for who in ["alice", "bob", "carol", "dave", "erin", "frank", "gina"] {
+            let _ok = m.run(account(who)).unwrap();
+        }
+        let mut o = org(
+            &[
+                ("alice", "owner"),
+                ("bob", "member"),
+                ("carol", "member"),
+                ("dave", "admin"),
+                ("frank", "member"),
+                ("gina", "guest"),
+            ],
+            &[("bob", APPROVE_RELEASES), ("gina", APPROVE_RELEASES)],
+            &["2.0.0"],
+        );
+        let _prev = o.teams.insert(
+            "t".into(),
+            serde_json::from_value(json!({
+                "teamId": "t", "name": "T", "join": "invite",
+                "members": { "frank": false }, "capabilities": { "frank": APPROVE_RELEASES }
+            }))
+            .unwrap(),
+        );
+        let _prev = m.state.orgs.insert("org".into(), o);
+
+        for (actor, may) in [
+            ("alice", true),
+            ("dave", true),
+            ("bob", true),
+            ("carol", false),
+            ("frank", false),
+            ("gina", false),
+            ("erin", false),
+        ] {
+            assert_eq!(
+                m.state.approves_releases("org", actor),
+                may,
+                "{actor} holds it"
+            );
+            let r = m.run(approve("org", &format!("2.1.{}", actor.len()), actor, true));
+            assert_eq!(r.is_ok(), may, "{actor} approving: {r:?}");
+        }
+        assert_eq!(
+            m.state.release_approvers("org"),
+            vec!["alice".to_owned(), "bob".into(), "dave".into()]
+        );
+
+        // Revoked: refused at apply, whatever the API saw before.
+        let _ok = m
+            .run(SystemCmd::SetCapabilities {
+                org: "org".into(),
+                team: None,
+                account: "bob".into(),
+                capabilities: 0,
+                actor: "alice".into(),
+            })
+            .unwrap();
+        assert!(m.run(approve("org", "2.2.0", "bob", true)).is_err());
+        // Removed: gone with the membership.
+        let _ok = m
+            .run(SystemCmd::SetCapabilities {
+                org: "org".into(),
+                team: None,
+                account: "bob".into(),
+                capabilities: APPROVE_RELEASES,
+                actor: "alice".into(),
+            })
+            .unwrap();
+        let _ok = m
+            .run(SystemCmd::RemoveOrgMember {
+                org: "org".into(),
+                account: "bob".into(),
+                actor: "dave".into(),
+            })
+            .unwrap();
+        assert!(m.run(approve("org", "2.2.0", "bob", true)).is_err());
+
+        // An entry from before the capability: the owner's alone, so a
+        // replay never turns a refusal into an approval.
+        assert!(m.run(approve("org", "2.3.0", "dave", false)).is_err());
+        assert!(m.run(approve("org", "2.3.0", "alice", false)).is_ok());
+
+        // An account's own releases stay its own.
+        let own = SystemCmd::SetReleaseApproval {
+            scope: ReleaseScope::Account,
+            version: "2.4.0".into(),
+            approved: true,
+            actor: "erin".into(),
+            consent: serde_json::Value::Null,
+            capability: true,
+        };
+        let _ok = m.run(own).unwrap();
+        assert!(m.state.accounts["erin"].approved_releases.contains("2.4.0"));
+
+        // Where the operator holds release approvals, nobody in an org does.
+        let mut m = SystemMachine::default();
+        let _ok = m.run(genesis(all(Authority::Operator))).unwrap();
+        let _ok = m.run(account("alice")).unwrap();
+        let _prev = m
+            .state
+            .orgs
+            .insert("org".into(), org(&[("alice", "owner")], &[], &["2.0.0"]));
+        assert!(!m.state.approves_releases("org", "alice"));
+        assert!(m.run(approve("org", "2.1.0", "alice", true)).is_err());
+    }
+
+    /// Past a release's deadline, a scope whose newest approved release is
+    /// older creates, upgrades and installs nothing; one that approved it is
+    /// untouched, and approving lifts the stop at once. Judged at the time
+    /// each command carries, so replicas and replays agree.
+    #[test]
+    fn a_release_deadline_stops_new_work_until_the_release_is_approved() {
+        use super::{PackageVersion, DEADLINE_PREFIX, OPERATOR};
+        const T: u64 = 1_000;
+        let mut m = SystemMachine::default();
+        let _ok = m.run(genesis(all(Authority::Owner))).unwrap();
+        for who in ["alice", "bob"] {
+            let _ok = m.run(account(who)).unwrap();
+            if let Some(a) = m.state.accounts.get_mut(who) {
+                let _new = a.approved_releases.insert("2.0.0".into());
+            }
+        }
+        let mut a = org(&[("alice", "owner")], &[], &["2.0.0"]);
+        a.org_id = "a".into();
+        let mut b = org(&[("bob", "owner")], &[], &["2.0.0", "2.1.0"]);
+        b.org_id = "b".into();
+        let _prev = m.state.orgs.insert("a".into(), a);
+        let _prev = m.state.orgs.insert("b".into(), b);
+        for hash in ["b1", "b2"] {
+            let _prev = m.state.bundles.insert(
+                hash.into(),
+                serde_json::from_value(json!({ "hash": hash, "size": 1, "uploadedBy": "alice" }))
+                    .unwrap(),
+            );
+        }
+        let app = |id: &str, org: &str, owner: &str, at: u64| SystemCmd::CreateApp {
+            app: Box::new(
+                serde_json::from_value(json!({
+                    "appId": id, "name": id, "group": 0, "bundle": "b1", "owner": owner,
+                    "org": org, "access": { "kind": "org" }, "replicas": [1], "createdAt": at
+                }))
+                .unwrap(),
+            ),
+        };
+        let upgrade = |id: &str, actor: &str, at: u64| SystemCmd::UpgradeApp {
+            app_id: id.into(),
+            bundle: "b2".into(),
+            by_operator: false,
+            actor: actor.into(),
+            at,
+            run: None,
+            consent: serde_json::Value::Null,
+        };
+        let install = |by: &str, version: &str, at: u64| SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: "did:key:z".into(),
+            release: serde_json::from_value::<PackageVersion>(json!({
+                "version": version, "mpk": version, "mpkSize": 1, "source": "upload",
+                "services": { "": "b1" }, "installedBy": by, "installedAt": at
+            }))
+            .unwrap(),
+        };
+        let _ok = m.run(app("old", "a", "alice", 1)).unwrap();
+
+        // The operator announces 2.1.0's deadline; closed input first.
+        for bad in ["latest", "", &"9".repeat(80)] {
+            assert!(m
+                .run(SystemCmd::SetReleaseDeadline {
+                    version: bad.into(),
+                    after: Some(T),
+                })
+                .is_err());
+        }
+        let _ok = m
+            .run(SystemCmd::SetReleaseDeadline {
+                version: "2.1.0".into(),
+                after: Some(T),
+            })
+            .unwrap();
+
+        // Before it, everything goes on.
+        let _ok = m.run(app("early", "a", "alice", T - 1)).unwrap();
+        let _ok = m.run(upgrade("old", "alice", T - 1)).unwrap();
+        let _ok = m.run(install("alice", "1.0.0", T - 1)).unwrap();
+        assert!(!m.state.retired("2.0.0", T - 1));
+
+        // From it, the organization that has not approved 2.1.0 starts nothing.
+        let refused = |r: Result<serde_json::Value, String>| {
+            let e = r.unwrap_err();
+            assert!(e.starts_with(DEADLINE_PREFIX) && e.contains("2.1.0"), "{e}");
+        };
+        refused(m.run(app("late", "a", "alice", T)));
+        refused(m.run(upgrade("old", "alice", T)));
+        refused(m.run(install("alice", "1.1.0", T)));
+        assert!(m.state.apps.contains_key("old"), "its apps stay");
+        assert_eq!(
+            m.state.stalled_for(Some("a"), "alice", T).unwrap().release,
+            "2.1.0"
+        );
+        assert!(m.state.retired("2.0.0", T) && !m.state.retired("2.1.0", T));
+
+        // The organization that approved it is unaffected.
+        let _ok = m.run(app("theirs", "b", "bob", T)).unwrap();
+        // So is the operator's install, and the approval itself.
+        let _ok = m.run(install(OPERATOR, "1.2.0", T)).unwrap();
+
+        // Approving 2.1.0 lifts it at once.
+        let _ok = m.run(approve("a", "2.1.0", "alice", true)).unwrap();
+        let _ok = m.run(app("late", "a", "alice", T)).unwrap();
+        let _ok = m.run(upgrade("old", "alice", T)).unwrap();
+
+        // A later deadline names the newest release not approved.
+        let _ok = m
+            .run(SystemCmd::SetReleaseDeadline {
+                version: "2.2.0".into(),
+                after: Some(T + 10),
+            })
+            .unwrap();
+        assert!(m.state.stalled_for(Some("a"), "alice", T + 9).is_none());
+        assert_eq!(
+            m.state
+                .stalled_for(Some("b"), "bob", T + 10)
+                .unwrap()
+                .release,
+            "2.2.0"
+        );
+        // Lifted by the operator: gone.
+        let _ok = m
+            .run(SystemCmd::SetReleaseDeadline {
+                version: "2.2.0".into(),
+                after: None,
+            })
+            .unwrap();
+        assert!(m.state.stalled_for(Some("b"), "bob", T + 10).is_none());
+    }
+
+    /// State and commands written before deadlines and `APPROVE_RELEASES`
+    /// (system snapshots and log entries are JSON) read as they did and
+    /// write back byte for byte; the new field is left out while empty.
+    #[test]
+    fn state_from_before_deadlines_reads_and_writes_as_it_did() {
+        let mut m = SystemMachine::default();
+        let _ok = m.run(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run(account("alice")).unwrap();
+        let before = serde_json::to_value(&m.state).unwrap();
+        assert!(before.get("releaseDeadlines").is_none());
+        let restored: SystemState = serde_json::from_value(before.clone()).unwrap();
+        assert!(restored.release_deadlines.is_empty());
+        assert_eq!(serde_json::to_value(&restored).unwrap(), before);
+
+        // A `SetReleaseApproval` entry as the previous release wrote it.
+        let old: SystemCmd = serde_json::from_value(json!({
+            "op": "setReleaseApproval", "scope": { "kind": "account" },
+            "version": "2.1.0", "approved": true, "actor": "alice", "consent": null
+        }))
+        .unwrap();
+        assert!(matches!(
+            old,
+            SystemCmd::SetReleaseApproval {
+                capability: false,
+                ..
+            }
+        ));
+
+        // With a deadline, a snapshot carries it and restores with it.
+        let _ok = m
+            .run(SystemCmd::SetReleaseDeadline {
+                version: "2.1.0".into(),
+                after: Some(5),
+            })
+            .unwrap();
+        let snap = serde_json::to_value(&m.state).unwrap();
+        assert_eq!(snap["releaseDeadlines"], json!({ "2.1.0": 5 }));
+        let restored: SystemState = serde_json::from_value(snap).unwrap();
+        assert_eq!(restored.release_deadlines.get("2.1.0"), Some(&5));
     }
 }

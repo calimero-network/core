@@ -890,8 +890,10 @@ const fn yes() -> bool {
 }
 
 /// Approve (or withdraw) a mero-tee release for the apps of `scope`, with a
-/// passkey assertion over the exact change. Until the owner approves a
-/// release, nodes on it get none of those apps' data.
+/// passkey assertion over the exact change: an organization's by whoever
+/// holds `APPROVE_RELEASES` there (`SystemState::approves_releases`), an
+/// account's own by the account. Until it is approved, nodes on the release
+/// get none of those apps' data.
 async fn set_release_approval(
     node: &Node,
     headers: &HeaderMap,
@@ -906,6 +908,26 @@ async fn set_release_approval(
         crate::system::ReleaseScope::Cluster => "cluster".to_owned(),
     };
     owner_holds(node, |g| g.releases, "release approvals")?;
+    // Asked before the passkey ceremony, on fresh state, so a member whose
+    // capability was revoked or who left is refused at once; `apply` asks
+    // again.
+    if let crate::system::ReleaseScope::Org { org } = &scope {
+        node.sys_fresh().await;
+        let (member, approves) = node.sys(|s| {
+            (
+                s.orgs.get(org).is_some_and(|o| o.role(&account).is_some()),
+                s.approves_releases(org, &account),
+            )
+        });
+        if !member {
+            return Err(ApiError::not_found("no such organization"));
+        }
+        if !approves {
+            return Err(ApiError::forbidden(
+                "approving releases needs APPROVE_RELEASES in the organization",
+            ));
+        }
+    }
     let method = if body.approved {
         "__approve_release"
     } else {
@@ -927,6 +949,7 @@ async fn set_release_approval(
             approved: body.approved,
             actor: account,
             consent,
+            capability: true,
         })
         .await?,
     ))
@@ -1532,6 +1555,12 @@ async fn app_create(
         return Err(ApiError::forbidden("read-only API key"));
     }
     let owner = p.account()?;
+    // Past a release deadline its scope has not approved, no new app (and
+    // no registry install on the way to one); `CreateApp` asks again.
+    let now = now_secs();
+    if let Some(stall) = node.sys(|s| s.stalled_for(body.org.as_deref(), &owner, now)) {
+        return Err(crate::node::stalled(&stall));
+    }
     let bundle = bundle_named(
         &node,
         body.bundle,
@@ -1561,7 +1590,7 @@ async fn app_create(
     // Only nodes on an approved release (the owner's, or the operator's where
     // the deployment gave it release approvals) may hold the app.
     let approved = node.sys(|s| s.approved_for(body.org.as_deref(), &owner).cloned());
-    let replicas = node.place(approved.as_ref()).await;
+    let replicas = node.place(approved.as_ref(), now).await;
     if replicas.is_empty() {
         return Err(ApiError::unavailable(
             "no node runs a release this app's owner approved",
@@ -1586,7 +1615,7 @@ async fn app_create(
                 confirm_methods,
                 executor,
                 replicas,
-                created_at: now_secs(),
+                created_at: now,
                 init_args: body.init_args,
                 metadata: body.metadata,
                 last_upgrade: None,
@@ -2525,6 +2554,7 @@ async fn app_upgrade(
             "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization",
         ));
     }
+    refuse_stalled(&node, &app, now_secs())?;
     // A version alone means the app's own package and service.
     let current = node.release_of(&app.bundle);
     let package = body.package.clone().or_else(|| {
@@ -2610,6 +2640,20 @@ async fn run_upgrade(
     migrate: Option<String>,
     who: Upgrader,
 ) -> ApiResult {
+    // Judged once, before the migration runs; `UpgradeApp` carries this time
+    // so `apply` judges the deadline at the same moment and never refuses
+    // the record of an upgrade the app's group already ran.
+    let begun = now_secs();
+    let stall = node.sys(|s| {
+        let a = s.apps.get(&app_id)?;
+        s.stalled_for(a.org.as_deref(), &a.owner, begun)
+    });
+    if let Some(stall) = stall {
+        let e = crate::node::stalled(&stall);
+        let error = json!({ "code": e.code, "message": e.message });
+        note_failed_upgrade(node, &app_id, &bundle, &who, error).await;
+        return Err(e);
+    }
     let applied = match node
         .call(&CallRequest::host(
             app_id.clone(),
@@ -2645,7 +2689,7 @@ async fn run_upgrade(
             bundle,
             by_operator: who.by_operator,
             actor: who.actor,
-            at: now_secs(),
+            at: begun,
             run: who.run,
             consent: who.consent,
         })
@@ -2653,6 +2697,15 @@ async fn run_upgrade(
     Ok(Json(
         json!({ "index": applied.index, "status": applied.status, "error": applied.error }),
     ))
+}
+
+/// Refused `409 RELEASE_DEADLINE` when `app`'s scope may start no new work
+/// at `now` ([`crate::system::SystemState::stalled_for`]).
+fn refuse_stalled(node: &Node, app: &crate::types::AppRecord, now: u64) -> Result<(), ApiError> {
+    match node.sys(|s| s.stalled_for(app.org.as_deref(), &app.owner, now)) {
+        Some(stall) => Err(crate::node::stalled(&stall)),
+        None => Ok(()),
+    }
 }
 
 async fn note_failed_upgrade(
@@ -2773,6 +2826,11 @@ async fn start_run(
     apps: Vec<crate::types::AppRecord>,
     who: Upgrader,
 ) -> ApiResult {
+    // An organization's apps share its approvals: a run it may not start is
+    // refused whole rather than failing app by app.
+    if let Some(stall) = node.sys(|s| s.stalled_for(Some(&org), "", now_secs())) {
+        return Err(crate::node::stalled(&stall));
+    }
     let run_id = typed_id::<12>();
     let run = crate::types::UpgradeRun {
         run_id: run_id.clone(),
@@ -2863,6 +2921,9 @@ async fn org_upgrade(
         return Err(ApiError::forbidden(
             "upgrading the organization's apps needs MANAGE_APPLICATION there",
         ));
+    }
+    if let Some(stall) = node.sys(|s| s.stalled_for(Some(&org), "", now_secs())) {
+        return Err(crate::node::stalled(&stall));
     }
     // Installed from the registry first if the cluster lacks the release.
     let _bundle = node
@@ -3147,6 +3208,24 @@ async fn org_get(
     let mut v = serde_json::to_value(&o).unwrap_or_default();
     if let Some(teams) = v.get_mut("teams").and_then(Value::as_object_mut) {
         teams.retain(|id, _| o.sees_team(&account, id));
+    }
+    // Who may approve its releases, and whether a passed deadline has
+    // stopped its new work (`null`: it has not).
+    let (approvers, stall) = node.sys(|s| {
+        (
+            s.release_approvers(&org),
+            s.stalled_for(Some(&org), "", now_secs()),
+        )
+    });
+    if let Some(obj) = v.as_object_mut() {
+        let _prev = obj.insert("releaseApprovers".into(), json!(approvers));
+        let _prev = obj.insert(
+            "newWorkStopped".into(),
+            stall.map_or(
+                Value::Null,
+                |st| json!({ "release": st.release, "after": crate::system::rfc3339(st.after) }),
+            ),
+        );
     }
     Ok(Json(v))
 }
@@ -4762,6 +4841,70 @@ async fn ops_release(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpsDeadlineBody {
+    /// RFC 3339: from then on, a scope that has not approved the release
+    /// starts no new work.
+    after: String,
+}
+
+/// Set the end-of-new-work deadline of a mero-tee release, in any
+/// governance: it decides availability, which is the operator's already. It
+/// moves no data and blocks no approval; a scope that approves the release
+/// (or a newer one) is past it at once.
+async fn ops_release_deadline(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(version): Path<String>,
+    Json(body): Json<OpsDeadlineBody>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    let after = chrono::DateTime::parse_from_rfc3339(&body.after)
+        .ok()
+        .and_then(|t| u64::try_from(t.timestamp()).ok())
+        .ok_or_else(|| {
+            ApiError::bad_request("BAD_REQUEST", "`after` is an RFC 3339 time after 1970")
+        })?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::SetReleaseDeadline {
+            version,
+            after: Some(after),
+        })
+        .await?,
+    ))
+}
+
+/// Lift a release's deadline.
+async fn ops_release_deadline_lift(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(version): Path<String>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::SetReleaseDeadline {
+            version,
+            after: None,
+        })
+        .await?,
+    ))
+}
+
+/// The cluster's release rules, for anyone, signed in or not (inside the
+/// sealed channel, so from an attested node): the governance, and each
+/// release's end-of-new-work deadline. Users see the rules before they rely
+/// on them.
+async fn releases_public(State(node): State<Arc<Node>>) -> ApiResult {
+    node.sys_fresh().await;
+    Ok(Json(node.sys(|s| {
+        json!({
+            "governance": s.governance(),
+            "deadlines": s.deadlines_json(),
+        })
+    })))
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OpsOutboundBody {
     package: String,
@@ -4976,6 +5119,11 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))
         .route("/ops/backup", post(ops_backup))
         .route("/ops/releases", post(ops_release))
+        .route(
+            "/ops/releases/{version}/deadline",
+            post(ops_release_deadline).delete(ops_release_deadline_lift),
+        )
+        .route("/releases", get(releases_public))
         .route("/ops/outbound", post(ops_outbound))
         .route("/ops/apps/{app}/upgrade", post(ops_upgrade))
         .route("/ops/orgs/{org}/upgrade", post(ops_org_upgrade))
