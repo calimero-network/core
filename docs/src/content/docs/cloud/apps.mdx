@@ -14,12 +14,13 @@ it sees once it runs on a cluster.
 
 - **Packages.** Install a signed `.mpk` by `package@version`
   from the operator's registry (`POST /packages/install`, `meroctl app install
-  PACKAGE@VERSION`) or as a file (`POST /packages`). Every node that runs a
+  PACKAGE@VERSION`); a file (`POST /packages`) only on a development cluster.
+  Every node that runs a
   release fetches it and checks the publisher's signature, the artifact digests
   and the hash the fleet recorded; a package keeps the publisher key of its first
   release. Create an instance with `POST /apps { package, version }`, upgrade with
   `{ version }`, and delete with `DELETE /apps/{app}`. Raw WASM uploads
-  (`POST /bundles`) are for development clusters only.
+  (`POST /bundles`) are for development clusters only too.
 - **Instances.** An app instance (what `meroctl` calls a *context*) is created with
   `POST /apps { name, bundle, initArgs, org?, access?, confirmMethods? }`.
   `initArgs` (JSON) is what `#[app::init]` receives; a failed init answers

@@ -123,7 +123,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
 | `POST /bundles` | installer | Upload raw WASM (16 MiB at most). Only with `--allow-unsigned-bundles` or `--dev`. | `app install --path X.wasm` |
-| `POST /packages` | installer | Upload a signed `.mpk` | `app install --path X.mpk` |
+| `POST /packages` | installer | Upload a signed `.mpk`. Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. | `app install --path X.mpk` |
 | `POST /packages/install` | installer | `{ package, version }` from the registry | `app install P@V` |
 | `GET /packages` | signed in | Installed packages, only the releases the caller may see ([who sees a release](/protocol/applications/#who-sees-a-release)) | `app list` |
 | `GET /packages/{package}` | signed in | One package and the versions the caller may see; `404` when none | `app get`, `app versions`, `app get-latest-version` |
