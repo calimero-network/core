@@ -27,6 +27,8 @@ against `env::caller()`, before anything is written:
 | `boardStats { board }` | the `boardPins (board, pinned)` count; no post is loaded |
 
 `createPost` mints the post id `"<caller>-<id>"`, so two accounts' `p1` are two posts.
+A post's tags come back sorted and de-duplicated (`createPost` and `retag` store them that
+way; v1 kept them as given).
 Pages read at most 1000 rows, offset included. `u64` values (`createdAt`, `at`, `after`,
 scores, counts) travel as decimal strings.
 

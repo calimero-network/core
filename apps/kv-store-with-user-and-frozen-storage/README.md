@@ -16,6 +16,11 @@ Shared items: `set`, `get`, `entries`, `len`, `getResult`, `getUnchecked` (traps
 on a missing key, on purpose), `remove`, `clear`. Every method needs an org
 member (or above).
 
+Events: `Inserted`, `Updated`, `Removed`, `Cleared` for the shared items;
+`UserSimpleSet { account, value }`, `UserNestedSet { account, key, value }` and
+`FrozenAdded { hash, value }`. The user events name the writer's **account**:
+v1 named its device (`executor_id`), and there are no devices here.
+
 ```bash
 cargo test --manifest-path apps/kv-store-with-user-and-frozen-storage/Cargo.toml
 ```

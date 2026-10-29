@@ -30,6 +30,9 @@ Names are camelCase; `u64` values travel as decimal strings. Errors are
 Events: `Inserted { key, value }`, `Updated { key, value }`, `Removed { key }`, `Cleared`,
 to `Audience::All`.
 
+`getOrInsert` and `remove` are plain calls: v1 marked them `#[app::idempotent]`, which the
+component SDK has no counterpart for; the node's idempotency keys cover retries.
+
 [`GUIDE.md`](GUIDE.md) tells an agent (or a person) how to use the store.
 
 ## Build and test
