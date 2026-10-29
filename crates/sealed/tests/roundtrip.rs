@@ -7,9 +7,10 @@ use axum::http::{HeaderMap, Method, Uri};
 use axum::response::sse::{Event, Sse};
 use axum::response::IntoResponse;
 use axum::routing::{any, get};
+use axum::Extension;
 use axum::Router;
 use calimero_sealed::client::{SealedTransport as Client, StaleTransportKey};
-use calimero_sealed::{intercept, SealedOptions, SealedTransport};
+use calimero_sealed::{intercept, PeerKey, SealedOptions, SealedTransport};
 use futures_util::StreamExt;
 use url::Url;
 
@@ -36,10 +37,32 @@ async fn events() -> impl IntoResponse {
     Sse::new(stream)
 }
 
+/// Which node the opened request says is calling.
+async fn caller(peer: Option<Extension<PeerKey>>) -> impl IntoResponse {
+    axum::Json(serde_json::json!({
+        "peer": peer.map(|Extension(PeerKey(key))| hex::encode(key)),
+    }))
+}
+
+/// Attests a key known in advance.
+#[derive(Debug)]
+struct Known([u8; 32]);
+
+impl calimero_sealed::client::Attest for Known {
+    fn attest_transport_key<'a>(
+        &'a self,
+        _http: &'a reqwest::Client,
+        _api_url: &'a Url,
+    ) -> futures_util::future::BoxFuture<'a, eyre::Result<[u8; 32]>> {
+        Box::pin(async move { Ok(self.0) })
+    }
+}
+
 async fn serve(options: SealedOptions) -> (Url, Arc<SealedTransport>, tokio::task::JoinHandle<()>) {
     let transport = Arc::new(SealedTransport::generate(&options));
     let app = Router::new()
         .route("/events", get(events))
+        .route("/caller", get(caller))
         .route("/{*rest}", any(echo));
     // The envelope wraps the router from outside, so an opened request is routed afresh.
     let app = tower::Layer::layer(
@@ -117,6 +140,7 @@ async fn required_mode_refuses_plain_requests() {
     let options = SealedOptions {
         required: true,
         unsealed_paths: vec!["/attestation".into()],
+        ..SealedOptions::default()
     };
     let (url, _transport, _h) = serve(options).await;
     let plain = reqwest::get(url.join("apps/x/intents").unwrap())
@@ -265,4 +289,58 @@ async fn a_request_past_the_cap_is_answered_after_it_is_sent() {
         .await
         .unwrap_or_else(|e| panic!("chunked: no answer: {e}"));
     assert!(answer.starts_with("HTTP/1.1 4"), "{answer}");
+}
+
+/// A node calling a peer proves its own transport key (Noise IK), and every
+/// request of that session names it; an anonymous session names nobody.
+#[tokio::test]
+async fn an_identified_session_names_its_caller() {
+    let (url, transport, _h) = serve(SealedOptions::default()).await;
+    let http = reqwest::Client::new();
+    let me = SealedTransport::generate(&SealedOptions::default());
+    let peer = Client::identified_as(
+        url.clone(),
+        http.clone(),
+        Arc::new(Known(transport.public_key())),
+        me.static_key(),
+    );
+    for _ in 0..2 {
+        let req = http.get(url.join("caller").unwrap()).build().unwrap();
+        let v: serde_json::Value = peer.execute(req).await.unwrap().json().await.unwrap();
+        assert_eq!(v["peer"], hex::encode(me.public_key()));
+    }
+
+    let anonymous = Client::with_key(url.clone(), http.clone(), transport.public_key());
+    let req = http.get(url.join("caller").unwrap()).build().unwrap();
+    let v: serde_json::Value = anonymous.execute(req).await.unwrap().json().await.unwrap();
+    assert_eq!(v["peer"], serde_json::Value::Null);
+}
+
+/// A static key the caller does not hold cannot be claimed: the handshake
+/// fails, so no session names it.
+#[tokio::test]
+async fn an_identified_handshake_with_another_nodes_key_is_refused() {
+    let (url, transport, _h) = serve(SealedOptions::default()).await;
+    let http = reqwest::Client::new();
+    // An IK message 1 built with one static key, its sealed static key swapped
+    // for another node's: the responder cannot open it.
+    let other = SealedTransport::generate(&SealedOptions::default());
+    let mut noise = snow::Builder::new("Noise_IK_25519_AESGCM_SHA256".parse().unwrap())
+        .prologue(b"calimero/sealed-http/v2")
+        .local_private_key(&[7; 32])
+        .remote_public_key(&transport.public_key())
+        .build_initiator()
+        .unwrap();
+    let mut message_1 = vec![0u8; 96];
+    let len = noise.write_message(&[], &mut message_1).unwrap();
+    message_1.truncate(len);
+    message_1[32..64].copy_from_slice(&other.public_key());
+    let body = [&[3u8][..], &transport.public_key(), &message_1].concat();
+    let r = http
+        .post(url.join("sealed/v2/handshake").unwrap())
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
 }
