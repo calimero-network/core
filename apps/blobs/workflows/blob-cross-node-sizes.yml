@@ -31,8 +31,7 @@ description: "Cross-node blob transfer at increasing sizes, asserting the receiv
   \ keeps dialing unreachable public peers, the Kademlia provider lookup burns its rounds on them, and\
   \ fetches fail `Blob query failed: Timeout` at seemingly arbitrary sizes — a harness artifact, not a\
   \ blob defect. Note that is a DIFFERENT failure from `NotFound { closest_peers: [] }`, which means the\
-  \ lookup resolved and had nobody to ask:\n\n  cd apps/blobs && ./scripts/gen-blob-fixtures.sh\n  MERO_AUTH_ADMIN_USER=dev\
-  \ MERO_AUTH_ADMIN_PASSWORD=dev-password \\\n    merobox bootstrap run workflows/blob-cross-node-sizes.yml\
+  \ lookup resolved and had nobody to ask:\n\n  cd apps/blobs && ./scripts/gen-blob-fixtures.sh\n  merobox bootstrap run workflows/blob-cross-node-sizes.yml\
   \ --e2e-mode\n\nPass `--image merod:local` to test an unreleased fix: the image pinned below is `merod:edge`,\
   \ built from MASTER, so a fix on your own branch is not in it. CI builds merod:local from the PR and\
   \ does exactly this.\nWHY THE KAD PRECONDITION: blob bytes ride a Kademlia provider lookup, not gossipsub.\
