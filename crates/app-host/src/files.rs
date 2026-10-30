@@ -14,6 +14,9 @@ pub const MAX_FILE_BYTES: u64 = 47 * 1024 * 1024;
 /// Plaintext bytes one run may write across all its files; the node holds a logged run's new
 /// ciphertext in memory until its entry is proposed.
 pub const MAX_RUN_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// Plaintext bytes a compute run may write across all its files; a job node keeps them sealed
+/// on disk, not in memory.
+pub const MAX_COMPUTE_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Bytes one `read` returns at most; a larger `max` is clamped.
 pub const MAX_READ_CHUNK: u32 = 1024 * 1024;
 /// Files one run may delete.

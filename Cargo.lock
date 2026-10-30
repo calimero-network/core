@@ -1067,6 +1067,7 @@ dependencies = [
  "calimero-app-host",
  "calimero-app-sdk",
  "calimero-app-sdk-macros",
+ "calimero-app-wit",
  "ciborium",
  "eyre",
  "hex",

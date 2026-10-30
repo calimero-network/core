@@ -4,12 +4,15 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+use crate::abi::ComputeCaps;
 use crate::files::NewFile;
 
 /// Fuel per call or view (D28); Task 13 measures the real ratio to wall time.
 pub const DEFAULT_FUEL: u64 = 200_000_000;
 /// Memory per instance: 1,024 WASM pages (64 MiB).
 pub const DEFAULT_MEMORY_PAGES: u32 = 1_024;
+/// 64 KiB wasm pages in a MiB.
+const PAGES_PER_MIB: u32 = 16;
 /// Epoch deadline for a call or a view (spec section 5).
 pub const CALL_WALL_CLOCK: Duration = Duration::from_secs(2);
 
@@ -42,6 +45,15 @@ pub struct TimerCtx {
     pub previous_ms: Option<u64>,
 }
 
+/// The run a compute invocation belongs to: its id, the app's owner as fixed at the start,
+/// and the files it may read. A run sees nothing else of the app's context.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComputeCtx {
+    pub run_id: String,
+    pub owner: String,
+    pub inputs: Vec<String>,
+}
+
 /// One invocation of an app method.
 ///
 /// `id_term` is the leader's Raft term while it runs the invocation and `id_seq` the
@@ -51,7 +63,8 @@ pub struct TimerCtx {
 /// (D47, Ruling 12). `entry_ts_ms` is the entry timestamp
 /// for calls, timers, init, migrate and xcall delivery, and the timestamp of the applied
 /// entry being read for views (D19). `seed` is the leader's fresh seed for the run; views
-/// and actions ignore it and draw from the node's CSPRNG.
+/// and actions ignore it and draw from the node's CSPRNG. A compute run is an action that
+/// carries `compute`: it draws from `seed` and sees `entry_ts_ms`, like a logged run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Invocation {
     pub kind: InvocationKind,
@@ -63,6 +76,7 @@ pub struct Invocation {
     pub id_seq: u64,
     pub seed: [u8; 32],
     pub timer: Option<TimerCtx>,
+    pub compute: Option<ComputeCtx>,
 }
 
 /// Per-invocation limits the engine enforces.
@@ -84,6 +98,16 @@ impl Budget {
         }
     }
 
+    /// The budget a compute method declares.
+    #[must_use]
+    pub fn compute(caps: &ComputeCaps) -> Self {
+        Self {
+            wall_clock: Duration::from_secs(caps.wall_secs.into()),
+            memory_pages: caps.memory_mib.saturating_mul(PAGES_PER_MIB),
+            fuel: caps.fuel,
+        }
+    }
+
     /// The budget of a view; the same limits as a call.
     #[must_use]
     pub const fn view() -> Self {
@@ -95,7 +119,13 @@ impl Budget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrapKind {
     OutOfFuel,
+    /// The wall-clock budget ran out.
     Timeout,
+    /// A compute run's interrupt flag was set.
+    Cancelled,
+    /// The node could not serve the run (no instance slot, allocation or file bytes): never the
+    /// app's fault, retryable.
+    Unavailable,
     OutOfMemory,
     StackOverflow,
     Fault,
@@ -137,12 +167,14 @@ pub struct Event {
     pub audience: Audience,
 }
 
-/// What an invocation cost. `writes` is counted by the host core.
+/// What an invocation cost. `writes` is counted by the host core; `peak_memory` is the most
+/// linear memory the engine granted, in bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Usage {
     pub fuel: u64,
     pub cpu: Duration,
     pub writes: u32,
+    pub peak_memory: u64,
 }
 
 /// Everything the executor sees of an invocation; exactly what the log stores.
@@ -214,4 +246,10 @@ pub enum InvalidInvocation {
     /// A `TimerCtx` on an invocation that is not a timer tick.
     #[error("only a timer invocation carries a timer slot")]
     SlotOutsideTimer,
+    /// An action invocation without its run.
+    #[error("an action invocation needs its compute run")]
+    ActionWithoutRun,
+    /// A compute run on an invocation that is not an action.
+    #[error("only an action invocation carries a compute run")]
+    RunOutsideAction,
 }

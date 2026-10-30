@@ -6,10 +6,12 @@ use std::time::Duration;
 use std::time::Instant;
 
 use calimero_app_build::build_component;
-use calimero_app_engine_wasmtime::WasmtimeEngine;
+use calimero_app_engine_wasmtime::{
+    WasmtimeEngine, CANCELLED, MAX_RANDOM_BYTES_PER_CALL, WALL_CLOCK_EXCEEDED,
+};
 use calimero_app_host::{
-    Budget, Caller, Directory, Engine, HostCore, Invocation, InvocationKind, MemoryFiles, OrgRole,
-    Outcome, PrepareError, Prepared, Status, TrapKind, FILES_DISABLED,
+    Budget, Caller, ComputeCtx, Directory, Engine, HostCore, Invocation, InvocationKind,
+    MemoryFiles, OrgRole, Outcome, PrepareError, Prepared, Status, TrapKind, FILES_DISABLED,
 };
 use sha2::{Digest, Sha256};
 
@@ -65,6 +67,7 @@ fn host_with(kind: InvocationKind, method: &str, args: &[u8], panic_on_org: bool
         id_seq: 1,
         seed: [7; 32],
         timer: None,
+        compute: None,
     };
     let state: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
     HostCore::new(
@@ -808,7 +811,7 @@ fn an_exhausted_instance_pool_is_a_retryable_timeout() {
         assert_eq!(
             out.status,
             Status::Trap {
-                kind: TrapKind::Timeout,
+                kind: TrapKind::Unavailable,
                 detail: "instance pool exhausted".to_owned(),
             }
         );
@@ -846,5 +849,261 @@ fn leb_bytes(mut value: usize) -> Vec<u8> {
             return out;
         }
         out.push(byte | 0x80);
+    }
+}
+
+fn compute_engine() -> WasmtimeEngine {
+    WasmtimeEngine::for_compute().expect("compute engine")
+}
+
+fn compute_host(method: &str, seed: u8) -> HostCore {
+    let inv = Invocation {
+        kind: InvocationKind::Action,
+        method: method.to_owned(),
+        args: b"{}".to_vec(),
+        caller: Caller::System,
+        entry_ts_ms: ENTRY_TS_MS,
+        id_term: 0,
+        id_seq: 0,
+        seed: [seed; 32],
+        timer: None,
+        compute: Some(ComputeCtx {
+            run_id: "run-1".to_owned(),
+            owner: "owner".to_owned(),
+            inputs: Vec::new(),
+        }),
+    };
+    let state: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+    HostCore::new(
+        "app-1",
+        Arc::new(state),
+        0,
+        inv,
+        Arc::new(TestDir {
+            panic_on_org: false,
+        }),
+    )
+    .expect("valid invocation")
+}
+
+fn compute_budget() -> Budget {
+    Budget {
+        fuel: 20_000_000_000,
+        wall_clock: Duration::from_secs(30),
+        memory_pages: 1_024,
+    }
+}
+
+fn prepare_compute(engine: &WasmtimeEngine, name: &str) -> Prepared {
+    engine
+        .prepare(&format!("{name}-hash"), &guest(name))
+        .unwrap_or_else(|e| panic!("prepare {name}: {e}"))
+}
+
+#[test]
+fn a_compute_run_past_its_fuel_is_out_of_fuel() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "spin");
+    let budget = Budget {
+        fuel: 5_000_000,
+        ..compute_budget()
+    };
+    let out = engine.invoke(&app, compute_host("spin", 1), budget);
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::OutOfFuel),
+        "{:?}",
+        out.status
+    );
+    assert_eq!(out.usage.fuel, 5_000_000);
+}
+
+#[test]
+fn a_compute_run_past_its_wall_is_a_timeout() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "spin");
+    let budget = Budget {
+        wall_clock: Duration::from_millis(300),
+        ..compute_budget()
+    };
+    let start = Instant::now();
+    let out = engine.invoke_cancellable(&app, compute_host("spin", 1), budget, Arc::default());
+    assert_eq!(
+        out.status,
+        Status::Trap {
+            kind: TrapKind::Timeout,
+            detail: WALL_CLOCK_EXCEEDED.to_owned()
+        }
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn a_compute_run_past_its_memory_is_out_of_memory_and_reports_its_peak() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "membomb");
+    let out = engine.invoke(&app, compute_host("bomb", 1), compute_budget());
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::OutOfMemory),
+        "{:?}",
+        out.status
+    );
+    let limit = 1_024 * 64 * 1024;
+    assert!(
+        out.usage.peak_memory > limit / 2 && out.usage.peak_memory <= limit,
+        "{}",
+        out.usage.peak_memory
+    );
+}
+
+#[test]
+fn a_compute_run_is_cancelled_from_another_thread() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "spin");
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = Arc::clone(&cancel);
+    let setter = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    let start = Instant::now();
+    let out = engine.invoke_cancellable(&app, compute_host("spin", 1), compute_budget(), cancel);
+    setter.join().unwrap();
+    assert_eq!(
+        out.status,
+        Status::Trap {
+            kind: TrapKind::Cancelled,
+            detail: CANCELLED.to_owned()
+        }
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn compute_runs_with_the_same_seed_draw_the_same_bytes_and_other_seeds_differ() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "clock_reader");
+    let draw = |seed| engine.invoke(&app, compute_host("random", seed), compute_budget());
+    let (a, b, c) = (draw(3), draw(3), draw(4));
+    assert_eq!(a.status, Status::Ok, "{:?}", a.status);
+    assert_eq!(a.result.len(), 32);
+    assert_eq!(a.result, b.result);
+    assert_ne!(a.result, c.result);
+}
+
+#[test]
+fn compute_runs_see_the_start_entry_clock() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "clock_reader");
+    let out = engine.invoke(&app, compute_host("wall", 1), compute_budget());
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    let seconds = u64::from_le_bytes(out.result[..8].try_into().unwrap());
+    assert_eq!(seconds, ENTRY_TS_MS / 1_000);
+}
+
+#[test]
+fn nans_are_canonical_and_identical_across_compute_runs() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "probe");
+    let run = || engine.invoke(&app, compute_host("nan", 1), compute_budget());
+    let (a, b) = (run(), run());
+    assert_eq!(a.status, Status::Ok, "{:?}", a.status);
+    assert_eq!(a.result, b.result);
+    let canonical32 = 0x7fc0_0000u32.to_le_bytes();
+    let canonical64 = 0x7ff8_0000_0000_0000u64.to_le_bytes();
+    let mut want = Vec::new();
+    want.extend(canonical32);
+    want.extend(canonical32);
+    want.extend(canonical64);
+    want.extend(canonical64);
+    want.extend(canonical32);
+    assert_eq!(a.result, want);
+}
+
+fn pages(result: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(result[at * 8..at * 8 + 8].try_into().unwrap())
+}
+
+#[test]
+fn a_compute_run_may_hold_more_than_a_pool_slot_and_reports_the_peak() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "membomb");
+    let budget = Budget {
+        memory_pages: 2_048,
+        ..compute_budget()
+    };
+    let out = engine.invoke(&app, compute_host("bomb", 1), budget);
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::OutOfMemory),
+        "{:?}",
+        out.status
+    );
+    let (floor, limit) = (64 * 1024 * 1024, 2_048 * 64 * 1024);
+    assert!(
+        out.usage.peak_memory > floor && out.usage.peak_memory <= limit,
+        "{}",
+        out.usage.peak_memory
+    );
+}
+
+#[test]
+fn a_compute_run_may_grow_to_four_gib() {
+    let engine = compute_engine();
+    let app = prepare_compute(&engine, "probe");
+    let budget = Budget {
+        memory_pages: 65_536,
+        ..compute_budget()
+    };
+    let out = engine.invoke(&app, compute_host("grow", 1), budget);
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    assert_ne!(pages(&out.result, 1), 0xffff_ffff, "memory.grow failed");
+    assert_eq!(pages(&out.result, 2), 65_536);
+    assert_eq!(out.usage.peak_memory, 65_536 * 64 * 1024);
+}
+
+#[test]
+fn random_requests_over_the_per_call_limit_are_denied_in_every_engine() {
+    let compute = compute_engine();
+    let cache = tempfile::tempdir().unwrap();
+    let pooled = WasmtimeEngine::new(cache.path().to_path_buf(), &CACHE_KEY).unwrap();
+    for engine in [&compute, &pooled] {
+        let app = prepare_compute(engine, "probe");
+        let ask = |len: u64| {
+            let mut host = compute_host("random", 1);
+            let mut inv = host.invocation().clone();
+            inv.args = len.to_string().into_bytes();
+            host = HostCore::new(
+                "app-1",
+                Arc::new(BTreeMap::<Vec<u8>, Vec<u8>>::new()),
+                0,
+                inv,
+                Arc::new(TestDir {
+                    panic_on_org: false,
+                }),
+            )
+            .unwrap();
+            engine.invoke(&app, host, compute_budget())
+        };
+        let ok = ask(MAX_RANDOM_BYTES_PER_CALL as u64);
+        assert_eq!(ok.status, Status::Ok, "{:?}", ok.status);
+        for len in [MAX_RANDOM_BYTES_PER_CALL as u64 + 1, u64::MAX] {
+            let out = ask(len);
+            assert_eq!(
+                trap_kind(&out),
+                Some(TrapKind::HostDenied),
+                "{len}: {:?}",
+                out.status
+            );
+        }
     }
 }

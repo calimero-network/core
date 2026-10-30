@@ -34,6 +34,8 @@ use wasmtime::ResourceLimiter;
 use wasmtime::Store;
 use wasmtime::StoreLimits;
 use wasmtime::StoreLimitsBuilder;
+use wasmtime::Trap;
+use wasmtime::UpdateDeadline;
 use wasmtime::WasmFeatures;
 use wasmtime_wasi::WasiCtx;
 use wasmtime_wasi::WasiCtxBuilder;
@@ -47,7 +49,9 @@ mod wasi;
 
 use bindings::AppPre;
 use cache::Cache;
-use errors::{classify, GrowRefused, HostPanic, Phase};
+use errors::{classify, Cancelled, GrowFailed, GrowRefused, HostPanic, Phase};
+
+pub use errors::{CANCELLED, WALL_CLOCK_EXCEEDED};
 use wasi::{LogPipe, SharedLog};
 
 /// Wasm stack per call, as in the v1 runtime (spec section 5).
@@ -66,12 +70,15 @@ pub const MAX_MEMORIES: usize = 1;
 pub const MAX_TABLES: usize = 2;
 /// Host resources (streams, pollables, cursors' backing entries) one store may hold.
 pub const MAX_RESOURCES: usize = 4_096;
+pub use calimero_app_wit::MAX_RANDOM_BYTES_PER_CALL;
 /// How often the ticker thread advances the engine's epoch.
 pub const EPOCH_TICK: Duration = Duration::from_millis(10);
 
 const WASM_PAGE_BYTES: usize = 64 * 1024;
 /// Largest memory a pool slot holds: 1,024 pages (64 MiB).
 const MAX_MEMORY_BYTES: usize = DEFAULT_MEMORY_PAGES as usize * WASM_PAGE_BYTES;
+/// Largest memory a compute run may be given: 65,536 pages (4 GiB), wasm32's whole space.
+const COMPUTE_MAX_MEMORY_BYTES: usize = 65_536 * WASM_PAGE_BYTES;
 /// Component instances alive at once across the node, and the core instances, memories
 /// and tables the pool reserves for them.
 const POOL_COMPONENT_INSTANCES: u32 = 256;
@@ -110,7 +117,10 @@ const PATCHED: [(&str, &str); 2] = [("wasi:", "0.2."), ("calimero:app/", "0.5.")
 pub struct WasmtimeEngine {
     engine: wasmtime::Engine,
     linker: Linker<StoreData>,
-    cache: Cache,
+    /// None on a compute engine: a job node keeps prepared components in memory only.
+    cache: Option<Cache>,
+    /// Most linear memory one run may be given.
+    max_memory_bytes: usize,
     ticker_stop: Arc<AtomicBool>,
 }
 
@@ -134,6 +144,16 @@ impl WasmtimeEngine {
         Self::build(cache_dir, cache_key, instances)
     }
 
+    /// The engine of a job node's compute runs on-demand instances instead of pool
+    /// slots, NaN results canonicalized so floating point is bit-reproducible, memory up to
+    /// 4 GiB, and no disk cache (a job node holds no key to authenticate one).
+    pub fn for_compute() -> EyreResult<Self> {
+        let mut config = Self::config();
+        let _ = config.cranelift_nan_canonicalization(true);
+        let engine = wasmtime::Engine::new(&config).map_err(report)?;
+        Self::finish(engine, None, COMPUTE_MAX_MEMORY_BYTES)
+    }
+
     fn build(cache_dir: PathBuf, cache_key: &[u8; 32], instances: u32) -> EyreResult<Self> {
         let mut pool = PoolingAllocationConfig::default();
         let _ = pool
@@ -143,6 +163,17 @@ impl WasmtimeEngine {
             .total_tables(instances.saturating_mul(POOL_TABLES_PER_INSTANCE))
             .max_memory_size(MAX_MEMORY_BYTES)
             .table_elements(MAX_TABLE_ELEMENTS);
+        let mut config = Self::config();
+        let _ = config
+            .memory_reservation(MAX_MEMORY_BYTES as u64)
+            .allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
+        let engine = wasmtime::Engine::new(&config).map_err(report)?;
+        let cache = Cache::new(cache_dir, &engine, cache_key)?;
+        Self::finish(engine, Some(cache), MAX_MEMORY_BYTES)
+    }
+
+    /// What every engine shares: fuel, epochs, the stack and the pinned feature set.
+    fn config() -> Config {
         let mut config = Config::new();
         let _ = config
             .consume_fuel(true)
@@ -152,16 +183,19 @@ impl WasmtimeEngine {
             // output needs (MVP, bulk memory, reference types, multi-value, SIMD, sign
             // extension, saturating conversions, the component model), nothing else.
             .wasm_features(DISABLED_FEATURES, false)
-            .wasm_component_model(true)
-            .memory_reservation(MAX_MEMORY_BYTES as u64)
-            .allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
-        let engine = wasmtime::Engine::new(&config).map_err(report)?;
+            .wasm_component_model(true);
+        config
+    }
 
+    fn finish(
+        engine: wasmtime::Engine,
+        cache: Option<Cache>,
+        max_memory_bytes: usize,
+    ) -> EyreResult<Self> {
         let mut linker = Linker::new(&engine);
         bindings::add_to_linker(&mut linker).map_err(report)?;
         wasi::add_to_linker(&mut linker).map_err(report)?;
 
-        let cache = Cache::new(cache_dir, &engine, cache_key)?;
         let ticker_stop = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&ticker_stop);
         let ticking = engine.clone();
@@ -177,6 +211,7 @@ impl WasmtimeEngine {
             engine,
             linker,
             cache,
+            max_memory_bytes,
             ticker_stop,
         })
     }
@@ -206,7 +241,11 @@ impl Engine for WasmtimeEngine {
             )));
         }
 
-        let compiled: Component = self.cache.load_or_compile(&self.engine, component)?;
+        let compiled: Component = match &self.cache {
+            Some(cache) => cache.load_or_compile(&self.engine, component)?,
+            None => Component::new(&self.engine, component)
+                .map_err(|e| PrepareError::Compile(e.to_string()))?,
+        };
         let mut linker = self.linker.clone();
         let pre = wasi::stub_http(&mut linker, &self.engine, &compiled)
             .and_then(|()| linker.instantiate_pre(&compiled))
@@ -220,6 +259,30 @@ impl Engine for WasmtimeEngine {
     }
 
     fn invoke(&self, app: &Prepared, host: HostCore, budget: Budget) -> Outcome {
+        self.run(app, host, budget, None)
+    }
+}
+
+impl WasmtimeEngine {
+    /// Like [`Engine::invoke`], but the run also ends, detail [`CANCELLED`], at the next
+    /// epoch tick after `cancel` is set from another thread.
+    pub fn invoke_cancellable(
+        &self,
+        app: &Prepared,
+        host: HostCore,
+        budget: Budget,
+        cancel: Arc<AtomicBool>,
+    ) -> Outcome {
+        self.run(app, host, budget, Some(cancel))
+    }
+
+    fn run(
+        &self,
+        app: &Prepared,
+        host: HostCore,
+        budget: Budget,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Outcome {
         let Some(pre) = (*app.inner).downcast_ref::<AppPre<StoreData>>() else {
             let status = trap(TrapKind::Fault, "not prepared by this engine");
             return host.finish(status, Vec::new(), Usage::default());
@@ -232,14 +295,33 @@ impl Engine for WasmtimeEngine {
         let (kind, method) = (inv.kind.into(), inv.method.clone());
 
         let log: SharedLog = Arc::default();
-        let mut store = Store::new(&self.engine, StoreData::new(host, &budget, &log));
+        let mut store = Store::new(
+            &self.engine,
+            StoreData::new(host, &budget, &log, self.max_memory_bytes),
+        );
         store.limiter(|d| &mut d.limits);
         let ticks = budget
             .wall_clock
             .as_nanos()
             .div_ceil(EPOCH_TICK.as_nanos())
             .max(1);
-        store.set_epoch_deadline(u64::try_from(ticks).unwrap_or(u64::MAX));
+        match cancel {
+            None => store.set_epoch_deadline(u64::try_from(ticks).unwrap_or(u64::MAX)),
+            Some(cancel) => {
+                // Every tick looks at the flag and the wall clock.
+                let deadline = Instant::now() + budget.wall_clock;
+                store.set_epoch_deadline(1);
+                store.epoch_deadline_callback(move |_| {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err(wasmtime::Error::new(Cancelled));
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(wasmtime::Error::new(Trap::Interrupt));
+                    }
+                    Ok(UpdateDeadline::Continue(1))
+                });
+            }
+        }
         let started = Instant::now();
         let mut phase = Phase::Instantiate;
         let ran = store.set_fuel(budget.fuel).and_then(|()| {
@@ -259,6 +341,7 @@ impl Engine for WasmtimeEngine {
             fuel: budget.fuel.saturating_sub(store.get_fuel().unwrap_or(0)),
             cpu: started.elapsed(),
             writes: 0,
+            peak_memory: store.data().limits.peak as u64,
         };
 
         let mut data = store.into_data();
@@ -343,14 +426,13 @@ pub(crate) struct StoreData {
     table: ResourceTable,
     wasi: WasiCtx,
     limits: Limits,
-    max_random_bytes: usize,
 }
 
 impl StoreData {
-    fn new(host: HostCore, budget: &Budget, log: &SharedLog) -> Self {
+    fn new(host: HostCore, budget: &Budget, log: &SharedLog, max_memory_bytes: usize) -> Self {
         let memory_bytes = (budget.memory_pages as usize)
             .saturating_mul(WASM_PAGE_BYTES)
-            .min(MAX_MEMORY_BYTES);
+            .min(max_memory_bytes);
         let wasi = WasiCtxBuilder::new()
             .stdout(LogPipe::stdout(log))
             .stderr(LogPipe::stderr(log))
@@ -361,16 +443,16 @@ impl StoreData {
             host,
             table,
             wasi,
-            limits: Limits(
-                StoreLimitsBuilder::new()
+            limits: Limits {
+                inner: StoreLimitsBuilder::new()
                     .memory_size(memory_bytes)
                     .table_elements(MAX_TABLE_ELEMENTS)
                     .instances(MAX_INSTANCES)
                     .memories(MAX_MEMORIES)
                     .tables(MAX_TABLES)
                     .build(),
-            ),
-            max_random_bytes: memory_bytes,
+                peak: 0,
+            },
         }
     }
 }
@@ -385,8 +467,13 @@ impl WasiView for StoreData {
 }
 
 /// `StoreLimits`, except that a refused growth traps `GrowRefused` instead of handing the
-/// guest a failed `memory.grow`, so the run ends `Trap(OutOfMemory)`.
-struct Limits(StoreLimits);
+/// guest a failed `memory.grow`, so the run ends `Trap(OutOfMemory)`; it also records the
+/// peak memory it granted.
+struct Limits {
+    inner: StoreLimits,
+    /// The most linear memory the limiter granted, in bytes.
+    peak: usize,
+}
 
 impl ResourceLimiter for Limits {
     fn memory_growing(
@@ -395,14 +482,15 @@ impl ResourceLimiter for Limits {
         desired: usize,
         maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
-        if self.0.memory_growing(current, desired, maximum)? {
+        if self.inner.memory_growing(current, desired, maximum)? {
+            self.peak = self.peak.max(desired);
             return Ok(true);
         }
         Err(wasmtime::Error::new(GrowRefused))
     }
 
     fn memory_grow_failed(&mut self, _error: wasmtime::Error) -> wasmtime::Result<()> {
-        Err(wasmtime::Error::new(GrowRefused))
+        Err(wasmtime::Error::new(GrowFailed))
     }
 
     fn table_growing(
@@ -411,7 +499,7 @@ impl ResourceLimiter for Limits {
         desired: usize,
         maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
-        if self.0.table_growing(current, desired, maximum)? {
+        if self.inner.table_growing(current, desired, maximum)? {
             return Ok(true);
         }
         Err(wasmtime::Error::new(GrowRefused))
@@ -422,15 +510,15 @@ impl ResourceLimiter for Limits {
     }
 
     fn instances(&self) -> usize {
-        self.0.instances()
+        self.inner.instances()
     }
 
     fn tables(&self) -> usize {
-        self.0.tables()
+        self.inner.tables()
     }
 
     fn memories(&self) -> usize {
-        self.0.memories()
+        self.inner.memories()
     }
 }
 

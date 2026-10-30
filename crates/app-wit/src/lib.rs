@@ -6,6 +6,9 @@ pub const WIT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/wit");
 /// The fully qualified world every app component targets.
 pub const WORLD: &str = "calimero:app/app@0.5.1";
 
+/// Most bytes one `wasi:random` call returns; the host refuses more and the SDK asks in pieces.
+pub const MAX_RANDOM_BYTES_PER_CALL: usize = 1024 * 1024;
+
 const ALLOWED_IMPORTS: &[&str] = &[
     "calimero:app/types@0.5.1",
     "calimero:app/storage@0.5.1",
@@ -13,6 +16,7 @@ const ALLOWED_IMPORTS: &[&str] = &[
     "calimero:app/events@0.5.1",
     "calimero:app/blobs@0.5.1",
     "calimero:app/files@0.5.1",
+    "calimero:app/compute@0.5.1",
     "calimero:app/xcall@0.5.1",
     "calimero:app/action@0.5.1",
     "calimero:app/rebuild@0.5.1",

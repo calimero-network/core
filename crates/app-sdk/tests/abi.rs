@@ -11,8 +11,8 @@ use std::time::Duration;
 use calimero_app_build::{build_component, Built};
 use calimero_app_engine_wasmtime::WasmtimeEngine;
 use calimero_app_host::{
-    Abi, Budget, Caller, Directory, Engine, HostCore, Invocation, InvocationKind, MethodKind,
-    OrgRole, Outcome, Prepared, Status, TimerCtx,
+    Abi, Budget, Caller, ComputeCaps, ComputeCtx, Directory, Engine, HostCore, Invocation,
+    InvocationKind, MethodKind, OrgRole, Outcome, Prepared, Status, TimerCtx,
 };
 use serde_json::{json, Value};
 
@@ -56,6 +56,7 @@ struct App {
     prepared: Prepared,
     state: BTreeMap<Vec<u8>, Vec<u8>>,
     seq: u64,
+    budget: Budget,
     _cache: tempfile::TempDir,
 }
 
@@ -71,6 +72,7 @@ impl App {
             prepared,
             state: BTreeMap::new(),
             seq: 0,
+            budget: Budget::call(),
             _cache: cache,
         }
     }
@@ -94,6 +96,7 @@ impl App {
             id_seq: self.seq,
             seed: [7; 32],
             timer,
+            compute: None,
         };
         let host = HostCore::new(
             "app-1",
@@ -103,7 +106,7 @@ impl App {
             Arc::new(Dir),
         )
         .expect("valid invocation");
-        let out = self.engine.invoke(&self.prepared, host, Budget::call());
+        let out = self.engine.invoke(&self.prepared, host, self.budget);
         if out.status == Status::Ok {
             for w in &out.diff {
                 match &w.value {
@@ -160,6 +163,17 @@ fn abi_lists_every_method_with_its_attributes() {
     assert_eq!(m("releaseNoShows").every, Some(Duration::from_secs(60)));
     assert!(m("releaseNoShows").allow_system);
     assert!(m("roomCount").public);
+    assert_eq!(
+        m("checksum").kind,
+        MethodKind::Compute(ComputeCaps {
+            fuel: 5_000_000_000,
+            memory_mib: 512,
+            wall_secs: 60,
+            result: "onChecksum".to_owned()
+        })
+    );
+    assert!(m("onChecksum").compute_result && m("onChecksum").allow_system);
+    assert!(!m("checksum").compute_result);
     assert!(!m("book").public && !m("book").confirm && !m("book").allow_system);
     assert!(
         !abi.methods.contains_key("slotTaken"),
@@ -459,4 +473,89 @@ fn wide_integers_refuse_leading_zeros_and_plus() {
     }
     let out = app.view("echoStart", br#"{"start": "0"}"#);
     assert_eq!(ok_json(&out), json!("0"));
+}
+
+/// Runs `method` as a compute run on a compute engine.
+fn compute_run(kind: InvocationKind, caller: Caller, method: &str, args: &[u8]) -> Outcome {
+    let engine = WasmtimeEngine::for_compute().expect("compute engine");
+    let prepared = engine
+        .prepare("sample-hash", &built().component)
+        .unwrap_or_else(|e| panic!("prepare sample: {e}"));
+    let inv = Invocation {
+        kind,
+        method: method.to_owned(),
+        args: args.to_vec(),
+        caller,
+        entry_ts_ms: ENTRY_TS_MS,
+        id_term: 0,
+        id_seq: 0,
+        seed: [7; 32],
+        timer: None,
+        compute: (kind == InvocationKind::Action).then(|| ComputeCtx {
+            run_id: "run-9".to_owned(),
+            owner: "owner".to_owned(),
+            inputs: vec!["a".to_owned(), "b".to_owned()],
+        }),
+    };
+    let state: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+    let host = HostCore::new("app-1", Arc::new(state), 0, inv, Arc::new(Dir)).expect("valid");
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    let host = host.with_progress(Arc::new(move |p, s| {
+        sink.lock().unwrap().push((p, s.to_owned()));
+    }));
+    let budget = Budget {
+        fuel: 5_000_000_000,
+        wall_clock: Duration::from_secs(60),
+        memory_pages: 1_024,
+    };
+    let out = engine.invoke(&prepared, host, budget);
+    if out.status == Status::Ok {
+        assert_eq!(*seen.lock().unwrap(), vec![(50, "halfway".to_owned())]);
+    }
+    out
+}
+
+#[test]
+fn a_compute_method_runs_only_as_an_action_whatever_the_caller() {
+    let public = compute_run(
+        InvocationKind::Action,
+        Caller::Public,
+        "checksum",
+        br#"{"rounds":3}"#,
+    );
+    assert_eq!(ok_json(&public), json!("run-9:2:3"));
+    let system = compute_run(
+        InvocationKind::Action,
+        Caller::System,
+        "checksum",
+        br#"{"rounds":3}"#,
+    );
+    assert_eq!(ok_json(&system), json!("run-9:2:3"));
+
+    let call = compute_run(
+        InvocationKind::Call,
+        Caller::System,
+        "checksum",
+        br#"{"rounds":3}"#,
+    );
+    assert_eq!(app_error(&call).0, "WrongKind");
+    let view = compute_run(
+        InvocationKind::View,
+        Caller::System,
+        "checksum",
+        br#"{"rounds":3}"#,
+    );
+    assert_eq!(app_error(&view).0, "NotAView");
+    let other = compute_run(InvocationKind::Action, Caller::System, "bump", b"{}");
+    assert_eq!(app_error(&other).0, "WrongKind");
+}
+
+#[test]
+fn random_bytes_past_the_hosts_per_call_limit_are_asked_in_pieces() {
+    let mut app = App::new();
+    // Megabytes of guest work outlast the default deadline on a loaded runner.
+    app.budget.wall_clock = Duration::from_secs(30);
+    let out = app.call("rollLen", br#"{"len": "3145733"}"#);
+    assert_eq!(ok_json(&out), json!("3145733"));
 }

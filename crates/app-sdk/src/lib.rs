@@ -16,6 +16,7 @@ pub mod bindings;
 
 pub mod app;
 pub mod collections;
+pub mod compute;
 pub mod encoding;
 pub mod env;
 pub mod error;

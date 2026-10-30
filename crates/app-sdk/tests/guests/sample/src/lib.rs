@@ -2,6 +2,7 @@
 
 use std::io::{Read, Write};
 
+use calimero_app_sdk::compute;
 use calimero_app_sdk::files::{self, FileId};
 use calimero_app_sdk::prelude::*;
 
@@ -196,6 +197,11 @@ impl Rooms {
         Ok(env::random_bytes(len as usize))
     }
 
+    /// How many random bytes `env::random_bytes(len)` returns.
+    pub fn roll_len(&mut self, len: u64) -> app::Result<u64> {
+        Ok(env::random_bytes(len as usize).len() as u64)
+    }
+
     /// Stores `data` as a file and returns its id.
     pub fn save_file(&mut self, data: Vec<u8>) -> app::Result<String> {
         let mut writer = files::create()?;
@@ -288,6 +294,20 @@ impl Rooms {
     /// The counter, for a call that touches no table.
     pub fn bump(&mut self) -> app::Result<u64> {
         Ok(self.next_id.increment()?)
+    }
+
+    /// A compute run: reports its id, its input count and a progress step.
+    #[app::compute(fuel = 5_000_000_000, memory_mib = 512, wall_secs = 60, result = "on_checksum")]
+    pub fn checksum(rounds: u32) -> app::Result<String> {
+        compute::progress(50, "halfway");
+        let run = compute::run_id().unwrap_or_default();
+        Ok(format!("{run}:{}:{rounds}", compute::inputs().len()))
+    }
+
+    /// Receives the outcome of `checksum`.
+    #[app::compute_result]
+    pub fn on_checksum(&mut self) -> app::Result<()> {
+        Ok(())
     }
 
     fn slot_taken(&self, room_id: &str, start: u64) -> app::Result<bool> {

@@ -60,7 +60,12 @@ pub fn time_now_ms() -> Option<u64> {
 }
 
 pub fn random_bytes(len: usize) -> Vec<u8> {
-    random::get_random_bytes(len as u64)
+    let mut out = Vec::with_capacity(len);
+    while out.len() < len {
+        let piece = (len - out.len()).min(calimero_app_wit::MAX_RANDOM_BYTES_PER_CALL);
+        out.extend(random::get_random_bytes(piece as u64));
+    }
+    out
 }
 
 pub fn emit(name: &str, data: Vec<u8>, audience: Audience) -> Result<()> {

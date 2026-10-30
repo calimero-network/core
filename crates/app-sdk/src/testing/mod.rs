@@ -197,7 +197,10 @@ impl TestApp {
             Some(ctx),
         );
         // A failed tick counts as applied (D34).
-        if !matches!(res, Err(Failure::Trap(TrapKind::Timeout))) {
+        if !matches!(
+            res,
+            Err(Failure::Trap(TrapKind::Timeout | TrapKind::Unavailable))
+        ) {
             self.last_tick.insert(method.to_owned(), ctx.scheduled_ms);
         }
         res
@@ -358,6 +361,7 @@ impl TestApp {
             id_seq: self.seq,
             seed: self.next_seed(),
             timer,
+            compute: None,
         };
         let host = HostCore::new(
             APP_ID,
@@ -379,7 +383,7 @@ impl TestApp {
         if matches!(
             out.status,
             Status::Trap {
-                kind: TrapKind::Timeout,
+                kind: TrapKind::Timeout | TrapKind::Unavailable,
                 ..
             }
         ) {
@@ -494,7 +498,7 @@ impl TestApp {
         else {
             return refuse("UnknownMethod");
         };
-        if !matches!(m.kind, MethodKind::Call | MethodKind::View) {
+        if !matches!(m.kind, MethodKind::Call | MethodKind::View) || m.compute_result {
             return refuse("WrongKind");
         }
         if view && m.confirm {

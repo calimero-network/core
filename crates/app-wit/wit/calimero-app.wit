@@ -83,6 +83,14 @@ interface files {
   delete: func(id: blob-id) -> result<_, string>;
 }
 
+// Available only while handling a compute run (kind = action with a run); a call or view sees no run.
+interface compute {
+  use types.{blob-id, action-id};
+  run-id: func() -> option<action-id>;
+  inputs: func() -> list<blob-id>;
+  progress: func(percent: u8, step: string);   // compute runs only; step is cut at 128 bytes; the last value wins, never logged
+}
+
 interface xcall {
   send: func(app: string, method: string, args: list<u8>) -> result<_, string>; // outbox; delivered after commit
 }
@@ -101,6 +109,7 @@ world app {
   import events;
   import blobs;
   import files;
+  import compute;
   import xcall;
   import action;
 

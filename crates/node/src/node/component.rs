@@ -174,7 +174,7 @@ fn abi_check(
     let Some(m) = prepared.abi.methods.get(method) else {
         return Err(app_refusal("UnknownMethod"));
     };
-    if !matches!(m.kind, MethodKind::Call | MethodKind::View) {
+    if !matches!(m.kind, MethodKind::Call | MethodKind::View) || m.compute_result {
         return Err(app_refusal("WrongKind"));
     }
     if view && m.confirm {
@@ -661,6 +661,7 @@ impl Node {
                             id_seq,
                             seed: calimero_identity::random::<32>(),
                             timer: None,
+                            compute: None,
                         },
                     ),
                     Err(why) => Ran {
@@ -669,7 +670,7 @@ impl Node {
                     },
                 };
                 let outcome = ran.outcome;
-                if outcome.is_timeout() {
+                if outcome.is_retryable() {
                     // Not logged (D23): reconcile runs init again.
                     timed_out = true;
                     return Proposal::Reply(Vec::new());
@@ -836,11 +837,12 @@ impl Node {
                             scheduled_ms: slot,
                             previous_ms,
                         }),
+                        compute: None,
                     },
                 );
                 let outcome = ran.outcome;
-                if outcome.is_timeout() {
-                    debug!(app = %app_id, timer, slot, "tick timed out; proposed again");
+                if outcome.is_retryable() {
+                    debug!(app = %app_id, timer, slot, "tick hit its wall clock or the node was unavailable; proposed again");
                     return Proposal::Reply(Vec::new());
                 }
                 let cmd = ComponentCmd::Tick(Box::new(TickEntry {
@@ -866,7 +868,7 @@ impl Node {
             })
             .await
             .inspect_err(|e| self.discard_failed(app_id, std::mem::take(&mut persisted), e))?;
-        // A tick that timed out was not logged and runs again.
+        // A tick that was retryable (wall clock or node unavailable) was not logged and runs again.
         if p.appended {
             self.usage.called(&meter, RunKind::FollowUp);
             let applied: Applied = serde_json::from_slice(&p.output)
@@ -970,11 +972,13 @@ impl Node {
                         id_seq,
                         seed: calimero_identity::random::<32>(),
                         timer: None,
+                        compute: None,
                     },
                 );
                 let outcome = ran.outcome;
-                // A timeout is not logged and does not spend the key (D23).
-                if outcome.is_timeout() {
+                // A retryable run (wall clock or node unavailable) is not logged and does not spend the
+                // key (D23).
+                if outcome.is_retryable() {
                     let a = Applied::unlogged(applied, outcome);
                     return Proposal::Reply(serde_json::to_vec(&a).unwrap_or_default());
                 }
@@ -1228,6 +1232,7 @@ impl Node {
                 id_seq: 0,
                 seed: [0; 32],
                 timer: None,
+                compute: None,
             },
         );
         let meter = self.meter(&req.app_id, &bundle);
@@ -1241,12 +1246,12 @@ impl Node {
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
         self.usage.ran(&meter, run);
-        if !out.is_timeout() {
+        if !out.is_retryable() {
             self.usage.called(&meter, RunKind::View);
         }
         Ok(ViewAnswer {
             index: applied,
-            timeout: out.is_timeout(),
+            timeout: out.is_retryable(),
             status: out.status,
             result: out.result,
             error: out.error,
@@ -1333,5 +1338,35 @@ mod tests {
         // Five missed slots collapse into the latest one.
         assert_eq!(due_slot(10_000, every, 16_500), Some(16_000));
         assert_eq!(due_slot(10_000, Duration::ZERO, 16_500), None);
+    }
+
+    #[test]
+    fn compute_and_compute_result_methods_are_refused_to_every_caller() {
+        let abi = calimero_app_host::Abi::from_json(&json!({
+            "abiVersion": 1,
+            "methods": {
+                "digest": { "kind": "compute", "compute": { "fuel": 1, "result": "onDone" } },
+                "onDone": { "kind": "call", "computeResult": true, "allowSystem": true },
+                "plain": { "kind": "call", "allowSystem": true, "public": true },
+            }
+        }))
+        .unwrap();
+        let prepared = Prepared {
+            hash: String::new(),
+            abi,
+            inner: std::sync::Arc::new(()),
+        };
+        let account = Caller::Account {
+            account: "alice".to_owned(),
+        };
+        for caller in [account, Caller::System, Caller::Public] {
+            for view in [false, true] {
+                for method in ["digest", "onDone"] {
+                    let refused = abi_check(&prepared, method, &caller, view, true).unwrap_err();
+                    assert_eq!(refused.details["code"], "WrongKind", "{method} {caller:?}");
+                }
+            }
+        }
+        assert!(abi_check(&prepared, "plain", &Caller::System, false, true).is_ok());
     }
 }
