@@ -1,9 +1,13 @@
 """Real-process end-to-end test of compute actions: 3 replicas and 2 job nodes, all `merod run`.
 
-Scenarios: happy path, a job node killed mid-run, restart determinism, cancel, the three caps.
-Forged finals and per-run key isolation need a forger inside the cluster, so the in-process
-tests that prove them are run and quoted. Release binaries (`RV2_BIN_DIR`, default
-target/release) and the compute fixture (cached by the node tests under target/app-components):
+Scenarios: happy path, a job node killed mid-run, restart determinism, cancel, the three caps,
+an output the result method does not store, the quota. Forged finals, per-run key isolation and
+the collection of unreferenced files after `BLOB_IDLE_MS` (an hour of entry time, which only an
+in-process clock can pass) are proved by in-process tests that are run and quoted. Binaries from
+`RV2_BIN_DIR` (default target/release); the compute fixture is built by `mero-app-build` from
+there, or taken from `COMPUTE_E2E_WASM`. Work dir and logs: `COMPUTE_E2E_DIR` (default
+target/compute-e2e). The operator's decisions (`/ops/nodes`, `/ops/quotas`) are signed with the
+key the nodes start with (`--operator-key`), as the node tests' harness signs them.
 
     python3 -I crates/node/tests/fault/compute_e2e.py [--skip-cargo-tests]
 """
@@ -23,20 +27,26 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rv2 import MEROD, ORIGIN, ROOT, Client, Cluster, http  # noqa: E402
+from rv2 import BIN, MEROD, ORIGIN, ROOT, Client, Cluster, http  # noqa: E402
 
 BASE_PORT = 7650
 JOBS = (4, 5)
 SMALL_MIB = 5
+VIEW_BYTES = 100_000  # a view's fuel hashes little: what readKept can read back
 BIG_MIB = 40  # long enough to kill the job node mid-run
 WAIT = 180
 CANCEL_DEADLINE = 20  # the leader's wait for a job node to report a cancel
 SETTLE = 12  # poll rounds after a resume, in seconds
 UPLOAD_TRIES = 5  # FILES_UNAVAILABLE is retryable on an overloaded runner
+OPERATOR_SEED = "09" * 32  # the node tests' operator key (harness OPERATOR_SEED, [9; 32])
+OPERATOR_PUBLIC = "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"  # its verify key
 IN_PROCESS = [
     ("forged final", "compute_runs", "a_final_not_signed_by_the_assigned_job_node_changes_nothing"),
     ("key isolation", "job_runs", "a_job_node_takes_work_only_from_its_cluster_leader_with_its_runs_token_and_keys"),
     ("seed determinism", "job_runs", "a_run_streams_its_input_and_seals_its_output_and_a_second_node_writes_the_same_bytes"),
+    ("kept output", "compute_runs", "an_output_the_result_method_stores_is_kept_past_the_idle_time_and_the_app_reads_it_back"),
+    ("unkept output", "compute_runs", "an_output_the_result_method_does_not_store_is_collected_and_its_quota_released"),
+    ("retired job node", "job_nodes", "a_job_node_on_a_retired_release_is_not_attested"),
 ]
 RESULTS: list[tuple[str, bool]] = []
 
@@ -59,7 +69,7 @@ class E2E(Cluster):
 
     def args(self, i):
         if i <= self.n:
-            return super().args(i)
+            return super().args(i) + ["--operator-key", OPERATOR_PUBLIC]
         return [MEROD, "run", "--job-node", "--node-id", str(i), "--listen", f"127.0.0.1:{self.base_port + i}",
                 "--data-dir", str(self.dir(i)), "--cluster", self.cluster, "--dev",
                 "--cluster-identity", self.identity]
@@ -81,15 +91,21 @@ class E2E(Cluster):
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.read().decode()
 
+    def operate(self, *args):
+        """An operator decision through meroctl, which signs it with the operator key when the node asks."""
+        return self.cli(1, "--ops-token", self.ops_token, "--operator-key-file", str(self.workdir / "operator.key"),
+                        "ops", *args)
+
     def job_load(self, i):
         return http("GET", self.url(i) + "job/load", timeout=5)
 
 
-def compute_wasm():
-    found = sorted((ROOT / "target" / "app-components").glob("compute-*.wasm"), key=lambda p: p.stat().st_mtime)
-    if not found:
-        raise SystemExit("no compute component: run cargo test --release -p calimero-node --test compute_runs")
-    return str(found[-1])
+def compute_wasm(wd):
+    if os.environ.get("COMPUTE_E2E_WASM"):
+        return os.environ["COMPUTE_E2E_WASM"]
+    built = wd / "compute.wasm"
+    subprocess.run([str(BIN / "mero-app-build"), "apps/v2-fixtures/compute", "--out", str(built)], cwd=ROOT, check=True)
+    return str(built)
 
 
 def cargo_tests():
@@ -103,17 +119,22 @@ def cargo_tests():
     return out
 
 
-def upload(cl, key, app, size):
-    data = bytes((i * 7 + 3) % 251 for i in range(1 << 20)) * size
-    req = urllib.request.Request(cl.url(1) + f"apps/{app}/blobs", data=data, method="POST",
+def upload(cl, key, app, mib=0, length=0):
+    """A sealed file of `mib` MiB (or `length` bytes): its blob id and plaintext SHA-256, as the answer gives them."""
+    piece = bytes((i * 7 + 3) % 251 for i in range(1 << 20))
+    data = piece * mib if mib else piece[:length]
+    req = urllib.request.Request(cl.url(1) + f"apps/{app}/blobs?sealed=true", data=data, method="POST",
                                  headers={"authorization": f"Bearer {key}", "content-type": "application/octet-stream"})
     for tries in range(1, UPLOAD_TRIES + 1):
         try:
             with urllib.request.urlopen(req, timeout=120) as r:
-                return json.loads(r.read())["id"], hashlib.sha256(data).hexdigest()
+                answer = json.loads(r.read())
+            assert answer["sha256"] == hashlib.sha256(data).hexdigest(), answer
+            return answer["id"], answer["sha256"]
         except urllib.error.HTTPError as e:
-            if e.code != 503 or tries == UPLOAD_TRIES or json.loads(e.read()).get("error") != "FILES_UNAVAILABLE":
-                raise
+            body = e.read()
+            if e.code != 503 or tries == UPLOAD_TRIES or json.loads(body).get("error") != "FILES_UNAVAILABLE":
+                raise RuntimeError(f"upload refused: {e.code} {body[:300]!r}") from None
             time.sleep(1)
 
 
@@ -135,6 +156,18 @@ class Rig:
                 return json.loads(r)
             time.sleep(0.5)
         raise TimeoutError(f"run {run} did not end: {self.record(run)}")
+
+    def output_ids(self, run):
+        return [o["id"] for o in (self.record(run).get("final") or {}).get("outputs", [])]
+
+    def info(self, blob):
+        return http("GET", self.cl.url(1) + f"apps/{self.app}/blobs/{blob}/info", headers=self.client.h)
+
+    def read_kept(self, blob):
+        return self.client.view(1, "readKept", {"id": blob})["result"]
+
+    def until_final(self, run, timeout=WAIT):
+        return self.until(f"run {run} final", lambda: self.record(run)["state"] in ("done", "failed", "cancelled"), timeout)
 
     def done(self):
         return int(self.client.view(1, "done", {})["result"])
@@ -182,29 +215,71 @@ def stuck_cancel(cl, rig):
           f"{SETTLE}s after SIGCONT state {rec['state']}, results {rig.done()}, outcome unchanged {after_out == out}")
 
 
+def unkept_output(cl, rig, in_process):
+    say("\n== 8 an output the result method does not store")
+    file8, _ = upload(cl, rig.client.h["authorization"][7:], rig.app, length=VIEW_BYTES)
+    before_done = rig.done()
+    run = rig.start("startUnkept", {"inputs": [file8]})
+    rig.until_final(run)
+    rec = rig.record(run)
+    out = rig.output_ids(run)
+    info = rig.info(out[0]) if out else {}
+    held = rig.read_kept(out[0]) if out else None
+    check("8 unkept output is registered, then left to R8", rec["state"] == "done" and len(out) == 1
+          and info.get("size") == VIEW_BYTES and held and rig.done() == before_done + 1,
+          f"startUnkept on input {file8[:12]}, results {before_done}",
+          f"state {rec['state']}, output {out[0][:12] if out else None} registered (size {info.get('size')}) "
+          f"and readable (sha256 {str(held)[:16]}), results {rig.done()}")
+    for label in ("kept output", "unkept output"):
+        t = in_process.get(label)
+        if not t:
+            say(f"  {label}: skipped (--skip-cargo-tests)")
+            continue
+        say("  BLOB_IDLE_MS is an hour of entry time, so the collection after it (bytes dropped on every")
+        say("  replica, quota released) is proved by the in-process test named here:")
+        say(f"  cargo test --release -p calimero-node --test {t[0]} {t[1]}: {'ok' if t[2] else 'FAILED'}")
+        check(f"8 {label} (in-process)", t[2], t[1], "; ".join(t[3][-2:]))
+
+
+def quota(cl, rig):
+    say("\n== 9 quota: an output that would pass the organization's file quota")
+    key = rig.client.h["authorization"][7:]
+    used = sum(http("GET", cl.url(1) + "auth/usage", headers=rig.client.h)["fileBytes"].values())
+    cap = used + (SMALL_MIB + 1 << 20)
+    cl.operate("set-quotas", json.dumps({"maxFileBytesPerOrg": cap}))
+    file9, _ = upload(cl, key, rig.app, SMALL_MIB)
+    run = rig.start("startDigest", {"inputs": [file9]})
+    out = rig.outcome(run)
+    check("9 quota", out["status"] == "failed" and out["reason"] == "quota" and out["outputs"] == 0,
+          f"{used} bytes charged, quota {cap}, input uploaded, digest started",
+          f"status {out['status']} reason {out['reason']} outputs {out['outputs']}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-cargo-tests", action="store_true")
-    ap.add_argument("--workdir", default=str(ROOT / ".scratch" / "compute-actions" / "e2e" / "work"))
+    ap.add_argument("--workdir", default=os.environ.get("COMPUTE_E2E_DIR", str(ROOT / "target" / "compute-e2e")))
     args = ap.parse_args()
     offset = int(os.environ.get("WORKFLOW_PORT_OFFSET", "0"))
     wd = Path(args.workdir)
     shutil.rmtree(wd, ignore_errors=True)
     wd.mkdir(parents=True)
     in_process = {} if args.skip_cargo_tests else cargo_tests()
-    wasm = compute_wasm()
+    wasm = compute_wasm(wd)
     cl = E2E(wd, base_port=BASE_PORT + offset, cluster="computee2e")
     try:
         cl.start()
         (wd / "cfg").mkdir(parents=True, exist_ok=True)
+        (wd / "operator.key").write_text(OPERATOR_SEED)
         cl.cli(1, "login", "--dev-passkey", str(wd / "dev-passkey.json"), "--name", "owner", "--origin", ORIGIN)
         org = cl.cli(1, "namespace", "create", "Acme")["orgId"]
         app = cl.cli(1, "context", "create", "--name", "compute", "--path", wasm, "--namespace", org)["appId"]
-        key = cl.cli(1, "account", "api-key", "create", "--label", "compute-e2e")["key"]
+        key = cl.cli(1, "account", "api-key", "create", "--label", "compute-e2e",
+                      "--dev-passkey", str(wd / "dev-passkey.json"))["key"]
         identity = cl.ops(1, "ops/cluster")["identity"]
         for j in JOBS:
             cl.start_job(j, identity)
-            cl.cli(1, "--ops-token", cl.ops_token, "ops", "add-node", str(j), cl.url(j), "--role", "job")
+            cl.operate("add-node", str(j), cl.url(j), "--role", "job")
         time.sleep(3)
         rig = Rig(cl, app, key)
         scenarios(cl, rig, in_process)
@@ -233,8 +308,20 @@ def scenarios(cl, rig, in_process):
           f"results recorded {before['done']}, input sha256 {plain_sha[:16]}",
           f"status {out1['status']} attempt {out1['attempt']} output sha256 {out1.get('sha256')} results {rig.done()}")
 
+    say("\n== 1b the app reads a kept output back")
+    small, _ = upload(cl, rig.client.h["authorization"][7:], rig.app, length=VIEW_BYTES)
+    run_b = rig.start("startDigest", {"inputs": [small]})
+    out_b = rig.outcome(run_b)
+    kept = rig.output_ids(run_b)
+    read_back = rig.read_kept(kept[0]) if kept else None
+    check("1b kept output read back by the app", out_b["status"] == "done" and read_back == out_b["sha256"],
+          f"{VIEW_BYTES} byte input, result method stores the output's BlobRef",
+          f"output {kept[0][:12] if kept else None}, outcome sha256 {str(out_b.get('sha256'))[:16]}, "
+          f"readKept {str(read_back)[:16]}")
+
     say("\n== 2 kill the assigned job node mid-run")
     big, _ = upload(cl, rig.client.h["authorization"][7:], rig.app, BIG_MIB)
+    done0 = rig.done()
     run2 = rig.start("startDigest", {"inputs": [big]})
     rig.until("attempt assigned", lambda: rig.record(run2).get("attempts"))
     first = rig.record(run2)["attempts"][0]["node"]
@@ -244,7 +331,7 @@ def scenarios(cl, rig, in_process):
     rec2 = rig.record(run2)
     nodes = [a["node"] for a in rec2["attempts"]]
     check("2 kill assigned job node", out2["status"] == "done" and len(nodes) == 2 and nodes[1] != first
-          and rig.done() == 2, before,
+          and rig.done() == done0 + 1, before,
           f"attempts on nodes {nodes}, status {out2['status']}, results {rig.done()} (one new)")
 
     say("\n== 3 restart determinism")
@@ -275,8 +362,9 @@ def scenarios(cl, rig, in_process):
         check(f"5 cap {method}", o["status"] == "failed" and o["reason"] == reason and o["outputs"] == 0,
               f"{method} started", f"status {o['status']} reason {o['reason']} outputs {o['outputs']}")
 
-    say("\n== 6 forged final and unassigned-node decryption (in-process, a forger must sit inside the cluster)")
-    for label in ("forged final", "key isolation"):
+    say("\n== 6 forged final, unassigned-node decryption and a retired job node (in-process: a forger or a")
+    say("  release the operator retired must sit inside the cluster)")
+    for label in ("forged final", "key isolation", "retired job node"):
         t = in_process.get(label)
         if not t:
             say(f"  {label}: skipped (--skip-cargo-tests)")
@@ -285,6 +373,8 @@ def scenarios(cl, rig, in_process):
         check(f"6 {label} (in-process)", t[2], t[1], "; ".join(t[3][-2:]))
 
     stuck_cancel(cl, rig)
+    unkept_output(cl, rig, in_process)
+    quota(cl, rig)
 
 
 if __name__ == "__main__":

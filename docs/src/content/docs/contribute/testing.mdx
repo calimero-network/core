@@ -419,6 +419,11 @@ gates; latency gates nothing.
   soak's latency and throughput ([below](#soak-latency-and-throughput)) go in
   the job summary; the artifact `process-suite` holds the results, the soak
   report and failed tests' node logs;
+- job `compute actions, real processes` (`compute-e2e`):
+  `crates/node/tests/fault/compute_e2e.py` starts three replicas and two
+  `merod run --job-node` processes of a release build and drives compute runs
+  through a job node's loss, a cancel, the caps and the collection of files no
+  state references (logs are the artifact `compute-e2e-logs` on failure);
 - job `clients against merod` (`clients`): mero-js's `test:cloud-v2` and
   calimero-client-py's cluster tests against this tree's `merod`. A change that
   breaks a client goes green with the client's fix: a same-named branch there,
