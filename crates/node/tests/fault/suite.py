@@ -264,8 +264,10 @@ def orgs_and_keys(ctx, cl):
     # clear needs a fresh passkey assertion: refused without, done with alice's passkey.
     expect_refused("CONFIRM_REQUIRED", lambda: alice.cli("call", "--context", app, "clear"))
     alice.cli("call", "--context", app, "clear", "--dev-passkey", str(alice.passkey))
+    # Minting a key needs a passkey assertion too: refused without, made with alice's.
+    expect_refused("CONFIRM_REQUIRED", lambda: alice.cli("account", "api-key", "create", "--label", "service"))
     key = alice.cli("account", "api-key", "create", "--label", "service", "--read-only",
-                    "--context", app)["key"]
+                    "--context", app, "--dev-passkey", str(alice.passkey))["key"]
     got = alice.view(app, "len", key=key)["result"]
     check(got == 0, f"len through the read-only key: {got!r}, want 0")
     expect_refused("FORBIDDEN", lambda: alice.call(app, "set", {"key": "x", "value": "y"}, key=key))
