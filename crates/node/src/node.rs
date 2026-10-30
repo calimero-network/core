@@ -397,7 +397,7 @@ pub struct Node {
     identifying: Arc<tokio::sync::Mutex<()>>,
     /// Attestations of callers under way, by key and claimed node: each runs
     /// in a task of its own, so a caller that hangs up does not abort it.
-    identifications: Mutex<HashMap<([u8; 32], NodeId), Detached<Option<PeerIdentity>>>>,
+    identifications: Mutex<HashMap<CallerClaim, Detached<Option<PeerIdentity>>>>,
     /// Channels to peers being opened, by address: each in a task of its own
     /// ([`Self::connected`]).
     connecting: Mutex<HashMap<String, Detached<Result<(), String>>>>,
@@ -457,6 +457,9 @@ struct ReadRounds {
 
 /// Work that runs to the end in a task of its own, whoever still waits on it.
 type Detached<T> = futures_util::future::Shared<futures_util::future::BoxFuture<'static, T>>;
+
+/// A caller's proven transport key and the node it claims to be.
+type CallerClaim = ([u8; 32], NodeId);
 
 /// Most detached attestations of one kind under way at once (callers being
 /// identified, peer channels being opened); past it the request is refused
