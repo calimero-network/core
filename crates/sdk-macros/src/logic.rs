@@ -451,6 +451,18 @@ fn run_arm(index: usize, m: &Method, state: &Type) -> TokenStream {
             None => quote! { #sdk::__private::encode(&__out) },
         }
     };
+    if m.attrs.compute_result {
+        if let [(name, ty)] = m.params.as_slice() {
+            // The node's outcome is one JSON object that the parameter takes whole.
+            return quote! {
+                #index => {
+                    let #name: #ty = #sdk::__private::decode_args::<#ty>(args)?;
+                    let __out = #call;
+                    #encode
+                }
+            };
+        }
+    }
     quote! {
         #index => {
             #[derive(#sdk::__private::serde::Deserialize)]

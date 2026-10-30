@@ -244,6 +244,21 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
     }));
 
+    // Compute runs of the component apps this node leads.
+    let weak = Arc::downgrade(&node);
+    let stop = shutdown.clone();
+    drop(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = tokio::time::sleep(node::JOB_POLL) => {}
+                () = runs_kick(&weak) => {}
+            }
+            let Some(node) = weak.upgrade() else { return };
+            node.drive_runs();
+        }
+    }));
+
     // Presence entries nobody refreshed leave.
     let weak = Arc::downgrade(&node);
     let stop = shutdown.clone();
@@ -301,4 +316,12 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         shutdown,
         server,
     })
+}
+
+/// Wait for a call that started or cancelled a compute run.
+async fn runs_kick(node: &std::sync::Weak<Node>) {
+    match node.upgrade() {
+        Some(n) => n.runs_kick.notified().await,
+        None => std::future::pending().await,
+    }
 }
