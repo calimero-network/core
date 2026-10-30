@@ -69,7 +69,7 @@ pub struct Comment {
 
 /// One account's upvote of one post.
 #[derive(Record)]
-#[table(key = ["post", "voter"], count(score = "post"))]
+#[table(key = ["post", "voter"], index(by_post = "post"), count(score = "post"))]
 pub struct Vote {
     pub post: String,
     pub voter: String,
@@ -232,8 +232,8 @@ impl Forum {
         Ok(page.items.into_iter().map(|m| m.account).collect())
     }
 
-    /// Removes the post at `id`, whoever wrote it. Moderators only. Its votes and
-    /// comments stay; every read of them goes through a live post.
+    /// Removes the post at `id`, whoever wrote it, with its votes and comments. Moderators
+    /// only.
     pub fn moderate_post(&mut self, id: String) -> app::Result<()> {
         if !self.posts.contains(&id)? {
             return Err(Error::NoPost { id }.into());
@@ -340,8 +340,8 @@ impl Forum {
         })
     }
 
-    /// Deletes the caller's post. Its votes and comments stay, each its own author's;
-    /// every read of them goes through a live post, so a re-post takes a new id.
+    /// Deletes the caller's post with its votes and comments, so a post later filed at the
+    /// same id starts with none.
     pub fn delete_post(&mut self, id: String) -> app::Result<()> {
         let _post = self.own_post(&id)?;
         self.remove_post(&id)?;
@@ -578,8 +578,36 @@ impl Forum {
         Ok(())
     }
 
+    /// Removes the post with its tags, votes and comments, so a post later filed at the same
+    /// id starts with none of them.
     fn remove_post(&mut self, id: &str) -> app::Result<()> {
         self.drop_tags(id)?;
+        loop {
+            let page = self.votes.find(
+                "byPost",
+                &[id.to_key_part()],
+                FindOpts::default().limit(MAX_ROWS),
+            )?;
+            if page.items.is_empty() {
+                break;
+            }
+            for v in page.items {
+                self.votes.remove(&(v.post.as_str(), v.voter.as_str()))?;
+            }
+        }
+        loop {
+            let page = self.comments.find(
+                "thread",
+                &[id.to_key_part()],
+                FindOpts::default().limit(MAX_ROWS),
+            )?;
+            if page.items.is_empty() {
+                break;
+            }
+            for c in page.items {
+                self.comments.remove(&c.key)?;
+            }
+        }
         self.posts.remove(id)?;
         Ok(())
     }

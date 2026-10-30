@@ -203,15 +203,15 @@ impl KvStore {
         }
     }
 
-    /// Removes the item at `key`, returning its value.
+    /// Removes the item at `key`, returning its value; `Removed` only when there was one.
     pub fn remove(&mut self, key: String) -> app::Result<Option<String>> {
         guards::require_member()?;
         let old = self.items.get(&key)?;
         if old.is_some() {
             self.items.remove(&key)?;
             self.item_count.add(-1)?;
+            env::emit(Event::Removed { key }, Audience::Org)?;
         }
-        env::emit(Event::Removed { key }, Audience::Org)?;
         Ok(old.map(|i| i.value))
     }
 
@@ -297,7 +297,7 @@ impl KvStore {
     // --- Frozen values: content-addressed, never changed ---
 
     /// Stores `value` under its content hash and returns the hash (hex). The same content
-    /// again stores nothing and returns the same hash.
+    /// again stores nothing, emits nothing and returns the same hash.
     pub fn add_frozen(&mut self, value: String) -> app::Result<String> {
         guards::require_member()?;
         let hash = content_hash(&value);
@@ -306,14 +306,14 @@ impl KvStore {
                 hash: hash.clone(),
                 value: value.clone(),
             })?;
+            env::emit(
+                Event::FrozenAdded {
+                    hash: hash.clone(),
+                    value,
+                },
+                Audience::Org,
+            )?;
         }
-        env::emit(
-            Event::FrozenAdded {
-                hash: hash.clone(),
-                value,
-            },
-            Audience::Org,
-        )?;
         Ok(hash)
     }
 

@@ -28,7 +28,9 @@ against `env::caller()`, before anything is written:
 
 `createPost` mints the post id `"<caller>-<id>"`, so two accounts' `p1` are two posts.
 A post's tags come back sorted and de-duplicated (`createPost` and `retag` store them that
-way; v1 kept them as given).
+way; v1 kept them as given). `deletePost` and `moderatePost` remove the post's votes and
+comments with it, so a post later filed at the same id starts with none
+(`scenarios/repost.json`).
 Pages read at most 1000 rows, offset included. `u64` values (`createdAt`, `at`, `after`,
 scores, counts) travel as decimal strings.
 
