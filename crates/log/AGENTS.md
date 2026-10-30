@@ -27,7 +27,12 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   `testing::hold_apply(dir, group)` / `release_apply` hold every apply of a group
   on the node opened at `dir` (from its next start), so a test decides when a
   restarted leader catches up. Used by the node's
-  `unique_ids_survive_a_crash_before_the_commit_index_reaches_the_disk`.
+  `unique_ids_survive_a_crash_before_the_commit_index_reaches_the_disk`;
+  `testing::slow_close(dir, delay)` makes closing that node's store wait first,
+  as a stalled last holder would (`tests/store_close.rs`).
+- `Engine::store_watch` reports the store open until RocksDB has closed and
+  released its lock (`Db::closed`, the last field), not merely until the last
+  `Arc<Db>` starts dropping.
 - Storage (`store.rs`): one RocksDB per node (`<data-dir>/store`), opened with
   `tuning`'s column and table options (one bounded block cache,
   `BLOCK_CACHE_BYTES`). Column families `log`, `meta`, `state`, `blobs`. Every value
