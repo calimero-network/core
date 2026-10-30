@@ -2,9 +2,9 @@
 //! set is refused inside the SDK, so it is never committed: the node runs a
 //! call once, on the leader, with no peer to re-check it at merge.
 //!
-//! Needs `apps/kv-store-with-shared-storage/res/kv_store_with_shared_storage.wasm`
+//! Needs `apps/wasmer-fixtures/kv-store-with-shared-storage/res/kv_store_with_shared_storage.wasm`
 //! built from THIS checkout's SDK (a fixture built from a published SDK proves
-//! nothing): `cargo mero build --manifest-path apps/kv-store-with-shared-storage/Cargo.toml`.
+//! nothing): `cargo mero build --manifest-path apps/wasmer-fixtures/kv-store-with-shared-storage/Cargo.toml`.
 //! Set `KV_SHARED_WASM` to use another path.
 
 use std::path::PathBuf;
@@ -26,13 +26,13 @@ fn shared_kv_wasm() -> Vec<u8> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-                "../../apps/kv-store-with-shared-storage/res/kv_store_with_shared_storage.wasm",
+                "../../apps/wasmer-fixtures/kv-store-with-shared-storage/res/kv_store_with_shared_storage.wasm",
             )
         });
     std::fs::read(&path).unwrap_or_else(|e| {
         panic!(
             "{}: {e}; build it with cargo mero build --manifest-path \
-             apps/kv-store-with-shared-storage/Cargo.toml",
+             apps/wasmer-fixtures/kv-store-with-shared-storage/Cargo.toml",
             path.display()
         )
     })

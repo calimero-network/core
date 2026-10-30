@@ -69,10 +69,11 @@ posts.query("tags").eq("rust").count()?;
 ```
 
 A score or vote count cannot be an index key, because an index key has to come
-from the value and a converging count lives in its own collection. See
-`apps/indexed-forum`, which keeps each vote as its voter's own entry at the
-post's id in an `AuthoredMap`, and reads the tally as the number of entries
-there (`entries_at`).
+from the value and a converging count lives in its own collection: keep each
+vote as its voter's own entry at the post's id in an `AuthoredMap`, and read the
+tally as the number of entries there (`entries_at`). (`apps/indexed-forum`, now
+on the component SDK, keeps votes as `(post, voter)` rows with a maintained
+count.)
 
 ## Writing: who may change it
 
@@ -194,11 +195,11 @@ A trigger may fire more than once, so `resolve` is idempotent.
 `Owned { stable: false }` says the state holds a rival verdict for the same
 epoch.
 
-`apps/name-registry` is the `Tee` example; `apps/name-registry-admin` is the
-`Admin` one. With `Admin`, the account that ran `init` is the only admin until
-an admin calls `set_admins`, and a verdict is checked against the admins in
-effect when it is written, so an admin who handed the role on can no longer
-resolve.
+`apps/name-registry` is the `Tee` example. With `Admin`, the account that ran
+`init` is the only admin until an admin calls `set_admins`, and a verdict is
+checked against the admins in effect when it is written, so an admin who handed
+the role on can no longer resolve. `apps/name-registry-admin` keeps those rules
+on the component SDK, as tables and an admin check against `env::caller()`.
 
 ## What is replicated
 
@@ -308,7 +309,7 @@ owned by Alice, or a member of that cell.
 
 ## A worked example
 
-`apps/indexed-forum` uses most of this in one app:
+A forum needs most of this at once:
 
 | Field | Type | Why |
 |---|---|---|
@@ -317,7 +318,7 @@ owned by Alice, or a member of that cell.
 | `comments` | `AuthoredSortedMap<String, …>` | a thread is one key prefix, and only a comment's author edits it |
 | `votes` | `AuthoredMap<String, LwwRegister<bool>>` | one entry per voter per post, the voter's own: none is lost, and nobody votes in someone else's name |
 
-`apps/permissions-showcase` covers the rest, one field per policy:
+and a team space the remaining policies:
 
 | Field | Type | Why |
 |---|---|---|
@@ -326,3 +327,8 @@ owned by Alice, or a member of that cell.
 | `announcements` | `ModeratedOnce<UnorderedMap<String, Message>>` | never edited, removed only by a moderator |
 | `pages` | `Authored<UnorderedMap<String, Page>>` | the author owns the page and the revisions nested in it |
 | `evidence` | `ContentAddressed<IndexedMap<[u8; 32], Evidence>>` | de-duplicated by content, found by kind |
+
+`apps/indexed-forum` and `apps/permissions-showcase` were these two apps on this
+SDK; both now run on the component SDK, where a component runs on its app's
+leader and each policy is a table plus an explicit check against
+`env::caller()` (their READMEs map each policy to its check).

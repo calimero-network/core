@@ -1,0 +1,191 @@
+{
+  "name": "E2E Scaffolding - only a Restricted subgroup's creator may open it",
+  "description": "#4522. Opening a Restricted subgroup is its creator's decision alone - not an admin promoted inside it. The creator is fixed at the subgroup's birth and recorded from its GroupCreated, which every namespace member reads, so a member OUTSIDE the subgroup verifies an opening flip without the subgroup's sealed history: it applies the flip as it arrives, instead of parking it until some key holder serves it the subgroup's key.\nTopology:\n  * node-1 - the namespace owner, creates the subgroup.\n  * node-2 - made an Admin of the subgroup, but not its creator.\n  * node-3 - a namespace member outside the subgroup, offline through the\n    flip.\n\nPinned:\n  * node-2's opening flip is refused (an admin is not the creator);\n  * node-1's is accepted, and node-3 - back online - reads the subgroup Open\n    without a single backfill apply failing on the way.\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  assert statement on a dropped step's output x1: checks what the dropped steps did",
+    "  assert_log_absent x1: v1 node logs",
+    "  login (unknown) x4: checks what the dropped steps did",
+    "  output read during a v1 partition x1: checks what the dropped steps did",
+    "  start_node x1: a user's node going offline has no counterpart in a cluster",
+    "  stop_node x1: a user's node going offline has no counterpart in a cluster",
+    "  wait_for_sync x3: replication is synchronous: a read sees every committed write",
+    "Migration note: v1's first check, a subgroup admin who is not its creator refused the",
+    "  opening flip (#4522: only the creator's flip verifies without the subgroup's sealed",
+    "  history), is dropped: a team has no sealed history, and whoever leads it manages it,",
+    "  its join rule included (docs/src/content/docs/protocol/organizations.mdx). The",
+    "  creator's opening and a member outside the team reading it open stand"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "e2e-node-1",
+    "e2e-node-2",
+    "e2e-node-3"
+  ],
+  "steps": [
+    {
+      "name": "Install application on node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "e2e-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.scaffolding-e2e"
+      }
+    },
+    {
+      "name": "Assert application installed",
+      "type": "assert",
+      "statements": [
+        "is_set({{app_id}})"
+      ]
+    },
+    {
+      "name": "Create namespace on node-1",
+      "type": "create_org",
+      "org_name": "Create namespace on node-1",
+      "outputs": {
+        "namespace_id": "orgId"
+      },
+      "account": "e2e-node-1"
+    },
+    {
+      "name": "Assert namespace created",
+      "type": "assert",
+      "statements": [
+        "is_set({{namespace_id}})"
+      ]
+    },
+    {
+      "name": "Invite node-2 to namespace",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "e2e-node-1",
+      "outputs": {
+        "invite_node2": "token"
+      }
+    },
+    {
+      "name": "Node-2 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{invite_node2}}",
+      "account": "e2e-node-2"
+    },
+    {
+      "type": "whoami",
+      "account": "e2e-node-2",
+      "outputs": {
+        "identity_node2": "publicKey"
+      }
+    },
+    {
+      "name": "Invite node-3 to namespace",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "e2e-node-1",
+      "outputs": {
+        "invite_node3": "token"
+      }
+    },
+    {
+      "name": "Node-3 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{invite_node3}}",
+      "account": "e2e-node-3"
+    },
+    {
+      "type": "whoami",
+      "account": "e2e-node-3",
+      "outputs": {
+        "identity_node3": "publicKey"
+      }
+    },
+    {
+      "name": "Node-1 creates the subgroup",
+      "type": "create_team",
+      "org": "{{namespace_id}}",
+      "team_name": "club",
+      "join": "invite",
+      "outputs": {
+        "club_sub": "teamId"
+      },
+      "account": "e2e-node-1"
+    },
+    {
+      "name": "Node-1 marks the subgroup Restricted",
+      "type": "team_update",
+      "org": "{{namespace_id}}",
+      "team": "{{club_sub}}",
+      "join": "invite",
+      "account": "e2e-node-1"
+    },
+    {
+      "name": "Node-1 names the subgroup (an op sealed under its key)",
+      "type": "team_update",
+      "org": "{{namespace_id}}",
+      "team": "{{club_sub}}",
+      "metadata": {
+        "name": "Club",
+        "data": {}
+      },
+      "account": "e2e-node-1"
+    },
+    {
+      "name": "Node-1 makes node-2 an Admin of the subgroup",
+      "type": "team_add",
+      "org": "{{namespace_id}}",
+      "team": "{{club_sub}}",
+      "members": [
+        "{{identity_node2}}"
+      ],
+      "role": "lead",
+      "account": "e2e-node-1"
+    },
+    {
+      "name": "Let node-2 receive the subgroup key",
+      "type": "wait",
+      "seconds": 10.0
+    },
+    {
+      "name": "Node-1, its creator, opens it",
+      "type": "team_update",
+      "org": "{{namespace_id}}",
+      "team": "{{club_sub}}",
+      "join": "everyone",
+      "account": "e2e-node-1"
+    },
+    {
+      "name": "Let node-3 apply what it pulled",
+      "type": "wait",
+      "seconds": 10.0
+    },
+    {
+      "name": "Node-3 reads the subgroup's visibility",
+      "type": "team_get",
+      "org": "{{namespace_id}}",
+      "team": "{{club_sub}}",
+      "account": "e2e-node-3",
+      "outputs": {
+        "node3_visibility": "subgroupVisibility"
+      }
+    },
+    {
+      "name": "Assert node-3 reads the subgroup Open",
+      "type": "assert",
+      "statements": [
+        "equals({{node3_visibility}}, open)"
+      ]
+    }
+  ]
+}

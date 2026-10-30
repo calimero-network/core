@@ -58,8 +58,8 @@ Neither ever fails the PR. On a fork PR the comparison runs but cannot comment (
 
 ## Tier 3 - macro
 
-`.github/workflows/e2e.yml` runs the fuzzy loads (`workflows/fuzzy-tests/`) for 15 minutes each as a nightly soak, against this tree's `merod` (a debug build) and against the `merod` in the latest release's image.
-Each records per-call latency (p50/p95/p99) and calls/s per operation (merobox's `MEROBOX_SOAK_REPORT`), shown in the job summary and uploaded as `soak-metrics-K` (and inside `e2e-release-results-K`); like Tier 2, it gates nothing, and only the pass rate can fail.
+`.github/workflows/e2e.yml` runs the process suite's kv-store soak (`kv-soak` in `crates/node/tests/fault/suite.py`, kv-store's fuzzy load on three `merod run --dev` processes): 30 s on a PR, 900 s nightly, against this tree's `merod` (a release build, job `process-suite`) and against the `merod` in the latest release's image (job `release-process-suite`); `release.yml` runs it for 30 s on a PR's own image. The fuzzy scenarios (`workflows/fuzzy-tests/`) also run 900 s nightly in the in-process scenario shards.
+The soak records per-call latency (p50/p95/p99) and calls/s per operation (`soak.py`'s report), shown in the job summary and uploaded with the job's artifact (`process-suite`, `release-process-suite`, `image-e2e-results`); like Tier 2, it gates nothing, and only the pass rate can fail.
 The calls run one at a time, so the numbers are one caller's latency and rate, not the cluster's capacity (the cluster bench measures that); compare a night with earlier nights of the same job, and read the release image's rows for the shipped build's speed.
 The same nightly run profiles one node through the kv-store soak with `perf record -g` and renders a flamegraph with inferno (artifact `merod-flamegraph`, with the folded stacks for `inferno-diff-folded`).
 The [testing page](src/content/docs/contribute/testing.mdx#soak-latency-and-throughput) has the commands and a sample.

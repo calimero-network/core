@@ -20,27 +20,13 @@ exclude = [
     "./apps/fugue-editor",
     "./apps/fugue-collab",
     "./apps/rich-collab",
-    "./apps/kv-store",
-    "./apps/org-gated",
-    "./apps/custom-key-store",
     "./apps/migration-harness-example",
-    "./apps/sorted-kv-store",
-    "./apps/sorted-set-store",
-    "./apps/authored-sorted-kv-store",
-    "./apps/indexed-issue-tracker",
-    "./apps/indexed-forum",
     "./apps/search-chat",
-    "./apps/permissions-showcase",
-    "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
-	"./apps/kv-store-with-user-and-frozen-storage",
-	"./apps/kv-store-with-shared-storage",
     "./apps/tee-dice",
     "./apps/tee-cards",
     "./apps/name-registry",
-    "./apps/name-registry-admin",
     "./apps/outbound-probe",
-	"./apps/components-demo",
     "./apps/migrations/migration-suite-v1",
     "./apps/migrations/migration-suite-v2-add-field",
     "./apps/migrations/migration-suite-v3-remove-field",
@@ -84,14 +70,15 @@ exclude = [
     "./apps/migrations/scenario-migration-check-fail-v1",
     "./apps/migrations/scenario-migration-check-fail-v2",
     "./apps/nested-crdt-test",
-    "./apps/team-metrics-macro",
-    "./apps/team-metrics-custom",
     "./apps/private_data",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
     "./apps/scaffolding-e2e",
     "./apps/scaffolding-e2e-multi",
     "./crates/build-utils",
+    "./apps/wasmer-fixtures/kv-store",
+    "./apps/wasmer-fixtures/kv-store-with-shared-storage",
+    "./apps/wasmer-fixtures/org-gated",
 ]
 
 [workspace]
@@ -144,27 +131,13 @@ members = [
 
     "./apps/scaffolding-e2e",
     "./apps/scaffolding-e2e-multi",
-    "./apps/kv-store",
-    "./apps/org-gated",
-    "./apps/custom-key-store",
     "./apps/migration-harness-example",
-    "./apps/sorted-kv-store",
-    "./apps/sorted-set-store",
-    "./apps/authored-sorted-kv-store",
-    "./apps/indexed-issue-tracker",
-    "./apps/indexed-forum",
     "./apps/search-chat",
-    "./apps/permissions-showcase",
-    "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
-	"./apps/kv-store-with-user-and-frozen-storage",
-	"./apps/kv-store-with-shared-storage",
     "./apps/tee-dice",
     "./apps/tee-cards",
     "./apps/name-registry",
-    "./apps/name-registry-admin",
     "./apps/outbound-probe",
-	"./apps/components-demo",
     "./apps/migrations/migration-suite-v1",
     "./apps/migrations/migration-suite-v2-add-field",
     "./apps/migrations/migration-suite-v3-remove-field",
@@ -208,8 +181,6 @@ members = [
     "./apps/migrations/scenario-migration-check-fail-v1",
     "./apps/migrations/scenario-migration-check-fail-v2",
     "./apps/nested-crdt-test",
-    "./apps/team-metrics-macro",
-    "./apps/team-metrics-custom",
     "./apps/private_data",
     "./apps/blobs",
     "./apps/bulk-write-bench",
@@ -227,6 +198,9 @@ members = [
     "./tools/storage-cost",
     "./tools/state-disk-cost",
     "./tools/search-bench",
+    "./apps/wasmer-fixtures/kv-store",
+    "./apps/wasmer-fixtures/kv-store-with-shared-storage",
+    "./apps/wasmer-fixtures/org-gated",
 ]
 
 [workspace.dependencies]
@@ -435,7 +409,7 @@ calimero-utils-fs = { path = "./crates/utils/fs" }
 calimero-wasm-abi = { path = "./crates/wasm-abi" }
 mero-abi = { path = "./tools/calimero-abi" }
 mero-sign = { path = "./tools/mero-sign" }
-kv-store = { path = "./apps/kv-store" }
+kv-store = { path = "./apps/wasmer-fixtures/kv-store" }
 xcall-example = { path = "./apps/xcall-example" }
 
 [profile.dev]

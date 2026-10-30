@@ -1,84 +1,50 @@
-# KV Store Application
+# kv-store
 
-A simple key-value store application built with Calimero SDK.
+A string key-value store shared by everyone the app admits: the component SDK's basic
+example (`calimero-app-sdk`, built for `wasm32-wasip2` into a `calimero:app` component).
+State is one `Table<Entry>` keyed by `key` and a `Counter` of the keys; every change emits
+an event to the app's whole audience.
 
-## Guide
+The wasmer build of the same store, which the node's own tests, the size gate and the
+release's test bundle use, is [`../wasmer-fixtures/kv-store`](../wasmer-fixtures/kv-store).
 
-`GUIDE.md` tells an agent (or a person) how to use the store without reading this code; `cargo mero bundle` ships it as `metadata.guide`, and the method docs in `src/lib.rs` reach the ABI.
-`scripts/check-kv-store-fixture.sh` keeps both complete.
+## ABI
 
-## Building
+Names are camelCase; `u64` values travel as decimal strings. Errors are
+`422 APP_ERROR {code, fields}`.
 
-To build the application for WASM:
+| Method | Kind | Params | Returns | Notes |
+| --- | --- | --- | --- | --- |
+| `init` | init | | | the store starts empty |
+| `set` | call | `key, value` | | `Inserted` for a new key, `Updated` for an existing one |
+| `updateIfExists` | call | `key, value` | `bool` | `false` writes nothing; `Updated` when it writes |
+| `getOrInsert` | call | `key, value` | `string` | the value the key holds after the call; `Inserted` when it writes |
+| `get` | view | `key` | `string \| null` | |
+| `getResult` | view | `key` | `string` | `NotFound { key }` when absent |
+| `getUnchecked` | view | `key` | `string` | traps when absent: kept to show a guest panic |
+| `entries` | view | | `{key: value}` | ordered by key, up to 1000 |
+| `len` | view | | `u64` | |
+| `remove` | call | `key` | `string \| null` | the old value; `Removed` only when there was one |
+| `clear` | call | | | any member, no confirmation (as in v1); `Cleared` only when the store was not empty |
 
-```bash
-cargo mero build
-```
+Events: `Inserted { key, value }`, `Updated { key, value }`, `Removed { key }`, `Cleared`,
+to `Audience::All`.
 
-## ABI Extraction
+`getOrInsert` and `remove` are plain calls: v1 marked them `#[app::idempotent]`, which the
+component SDK has no counterpart for; the node's idempotency keys cover retries.
 
-To extract the ABI from the compiled WASM:
+[`GUIDE.md`](GUIDE.md) tells an agent (or a person) how to use the store.
 
-```bash
-calimero-abi extract target/wasm32-unknown-unknown/debug/kv_store.wasm -o apps/kv-store/res/abi.json
-```
-
-## State Schema
-
-The state schema (state root type and all its dependencies) is automatically generated during build and written to `res/state-schema.json`. This schema contains only the types needed for state serialization/deserialization, making it useful for tools like `merodb` that need to decode state without loading the full WASM module.
-
-### Build-time Generation
-
-The state schema is automatically emitted during build:
-
-```bash
-cargo mero build
-# res/state-schema.json is automatically created
-```
-
-### Extraction from WASM
-
-You can also extract the state schema from a compiled WASM file:
+## Build and test
 
 ```bash
-# Extract state schema from WASM
-./target/debug/calimero-abi state apps/kv-store/res/kv_store.wasm -o state-schema.json
+cargo test                                                       # here: harness + scenarios
+cargo run -p calimero-app-build -- apps/kv-store --out kv_store.wasm   # from the repo root
 ```
 
-Both methods produce the same format, which can be used with `merodb`:
-
-```bash
-merodb export --db-path /path/to/db --all --state-schema-file res/state-schema.json --output export.json
-```
-
-## Canonical Types
-
-The ABI uses the following canonical WASM types:
-
-- **Scalar types**: `bool`, `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `string`, `bytes`
-- **Collection types**: `list<T>`, `map<string,V>`
-- **Nullable types**: `Option<T>` is represented as nullable `T`
-- **Result types**: `Result<T,E>` is normalized to return `T` with errors handled separately
-
-## Type Normalization Rules
-
-- `usize`/`isize` → `u32`/`i32` (wasm32)
-- `&str` → `string`
-- `Vec<T>` → `list<T>`
-- `Option<T>` → nullable `T`
-- `Result<T,E>` → `T` (error handling separate)
-- Custom types → `$ref` to type name (use `#[app::abi_type]` to expand)
-
-## Type Expansion
-
-By default, custom types are referenced using `$ref` in the ABI. To expand a type definition in the ABI, use the `#[app::abi_type]` macro:
-
-```rust
-#[app::abi_type]
-pub struct MyCustomType {
-    field1: String,
-    field2: i32,
-}
-```
-
-This will expand the type definition in the ABI's `types` section, making it available for reference by other types. 
+`cargo test` builds the component for `wasm32-wasip2` and runs it on the real engine
+(`calimero_app_sdk::testing::TestApp`): `tests/harness.rs` is v1's `TestHost` suite, and
+`tests/scenarios.rs` runs every `scenarios/*.json` in the org its `.org.json` names. The
+scenarios replace the merobox workflows (`simple-store`, `bundle-invitation`,
+`workflow-example`); `kv-store.json` covers the rest of the ABI. The crate is standalone
+(its own `[workspace]`).

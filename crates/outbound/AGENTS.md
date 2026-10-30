@@ -23,7 +23,7 @@ scoped by package, signer and host, and are redacted from the response.
   (the node's `calimero_app_outbound_requests_total`).
 - `merge_approval` computes the approval an owner's selection leaves.
 - Feature `outbound-testing`: `[outbound.testing] echo` answers `.test` hosts
-  in-process (merobox, cluster tests) and takes literal secrets.
+  in-process (cluster tests and scenarios) and takes literal secrets.
 
 ```bash
 cargo test -p calimero-outbound --features outbound-testing

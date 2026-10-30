@@ -78,9 +78,9 @@ run 2
 
 sleep 1
 
-app_id=`${meroctl} --node n1 --output-format json app install --path ../../apps/kv-store/res/kv_store.wasm | jq -r .data.applicationId`
+app_id=`${meroctl} --node n1 --output-format json app install --path ../../apps/wasmer-fixtures/kv-store/res/kv_store.wasm | jq -r .data.applicationId`
 
-${meroctl} --node n2 app install --path ../../apps/kv-store/res/kv_store.wasm
+${meroctl} --node n2 app install --path ../../apps/wasmer-fixtures/kv-store/res/kv_store.wasm
 
 create_response=`${meroctl} --node n1 --output-format json context create --application-id $app_id --name default --as default | jq -s first`
 

@@ -1,19 +1,20 @@
 [package]
 name = "sorted-kv-store"
-version.workspace = true
-authors.workspace = true
-edition.workspace = true
-repository.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2021"
 publish = false
+description = "Key-ordered key-value store on the v2 app SDK: range, prefix, page, first, last"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-thiserror.workspace = true
-calimero-sdk.workspace = true
-calimero-storage.workspace = true
+calimero-app-sdk = { path = "../../crates/app-sdk" }
 
-[package.metadata.workspaces]
-independent = true
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-app-sdk = { path = "../../crates/app-sdk", features = ["testing"] }
+calimero-app-build = { path = "../../crates/app-build" }
+serde_json = "1"
+
+# Standalone, like the SDK's sample guest: the tests build this crate for wasm32-wasip2.
+[workspace]

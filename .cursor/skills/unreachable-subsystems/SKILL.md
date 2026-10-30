@@ -40,8 +40,8 @@ An anchor is something outside the code that can pull it into execution:
 | --- | --- |
 | an HTTP route | `router` in `crates/node/src/api.rs` (every `.route(`) |
 | a CLI subcommand a user can type | the clap enums in `crates/meroctl/src/*.rs`, `crates/merod/src/main.rs` and `crates/merod/src/node_config.rs` |
-| a merobox step or scenario | `apps/*/workflows/*.yml`, `workflows/**`, and the step's existence in the merobox package |
-| a CI job | `.github/workflows/*.yml` — a scenario file that exists but is registered nowhere never runs |
+| a scenario step or file | `apps/*/scenarios/**/*.json`, `workflows/**/scenarios/**/*.json` (the runner, `crates/node/tests/harness/scenario.rs`, discovers them and dispatches each step type), and the process suite's tests in `crates/node/tests/fault/suite.py` |
+| a CI job | `.github/workflows/*.yml` — a script or test binary no job invokes never runs |
 | a test | any `#[test]` / `#[tokio::test]` that actually asserts on it |
 | a wire/event payload | types named in `calimero-primitives` events, WASM host functions, `#[app::*]` macros |
 | a public SDK/API surface | something an external consumer imports by name |
@@ -102,9 +102,10 @@ Places where this class accumulates:
 4. **v1 crates kept for the runtime** (`node/primitives`, `context/config`,
    `network/primitives`, `governance-types`, `store`, `store/blobs`,
    `utils/actix`, `crypto`): items in them only the deleted v1 node used.
-5. **merobox scenario files** not registered in any `.github/workflows/*.yml`
-   matrix — they exist, look maintained, and never run. The v1 scenarios under
-   `apps/*/workflows/` and `workflows/` are the first place to look.
+5. **Scenario files that never run**: one listed in
+   `crates/node/tests/scenarios-skip.txt` (reported, not run), or a file outside
+   the runner's globs (`apps/*/scenarios/*.json`, `apps/*/scenarios/cluster/**/*.json`,
+   `workflows/**/scenarios/**/*.json`), such as a leftover `workflows/*.yml`.
 6. **Types superseded by a newer model** where the old one was left in place:
    grep for concepts the docs describe in the past tense, or fields naming
    abandoned integrations (`wallet_`, `near_`, `did_`).
@@ -116,7 +117,7 @@ Do **not** report something as dead until you have ruled out:
 
 - **Serde-only wire types.** A struct with no Rust callers may still be
   deserialized from JSON by an external client. Check `mero-js`,
-  `calimero-client-py`, and merobox before concluding.
+  `calimero-client-py`, and the scenario runner and process suite before concluding.
 - **Macro-generated references.** `#[app::*]`, derive macros, and
   `storage-macros` can reference types no plain grep will show.
 - **Trait impls as the whole point.** An `impl Report for X` is a "reference" to

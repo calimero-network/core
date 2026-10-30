@@ -26,7 +26,7 @@ on:
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
       - "!**/*.mdx"
-      - "apps/kv-store/GUIDE.md"
+      - "apps/wasmer-fixtures/kv-store/GUIDE.md"
       - "tools/calimero-abi/README.md"
 
 env:

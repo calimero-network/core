@@ -95,7 +95,7 @@ Put a tool on PATH once, then call it by its plain name at every call site; `car
 
 ```bash
 PATH="$(scripts/setup-cargo-mero.sh):$PATH"   # in CI: ./.github/actions/setup-cargo-mero
-cargo mero build --manifest-path apps/kv-store/Cargo.toml
+cargo mero build --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml
 ```
 
 Write `cargo mero build` bare where the working directory is already the app: a per-app README documents the command, not the path to itself.

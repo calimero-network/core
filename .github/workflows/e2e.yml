@@ -1,41 +1,44 @@
 name: E2E
 
-# merobox's cloud-v2 backend (one `merod` process per node) against this
-# tree's node:
+# End-to-end tests of this tree's node, in three layers (docs:
+# contribute/testing):
 #
-#   - every workflow, core's (workflows/: app migrations, sync,
-#     fuzzy loads) and every app's (apps/*/workflows/), most migrated from v1's
-#     merobox workflows, in four shards (job `scenarios`), gated by
-#     scripts/workflows-baseline.json: a workflow on that list that
-#     fails is a regression;
-#   - merobox's own cloud-v2 examples: a crash and a frozen node, a frozen
-#     leader under a latency budget, organizations and keys, signed packages
-#     from a registry, and a rolling upgrade of every node;
-#   - the clients (job `clients`): mero-js's and
-#     calimero-client-py's cluster tests against this tree's `merod`. Pair a
-#     breaking change with its client fix by a same-named branch, or by
-#     `sdk-ref: <ref>` / `py-ref: <ref>` in the PR body
-#     (scripts/resolve-paired-ref.sh).
+#   - scenarios (job `scenarios`, four shards): every app's scenarios
+#     (apps/*/scenarios/: app-level, on the app's own harness, and cluster/)
+#     and core's (workflows/**/scenarios/: app migrations, sync, fuzzy
+#     loads), on an in-process 3-node cluster
+#     (`cargo test -p calimero-node --test scenarios`). A scenario on
+#     crates/node/tests/scenarios-skip.txt is reported, not run;
+#   - the process suite (job `process-suite`): real `merod run --dev`
+#     processes, one per node (crates/node/tests/fault/suite.py): a crash and
+#     a frozen node, a frozen leader under a latency budget, organizations and
+#     keys, signed packages from a registry, a rolling upgrade of every node,
+#     and the kv-store soak (calls/s and p50/p95/p99 per operation in the job
+#     summary);
+#   - the clients (job `clients`): mero-js's and calimero-client-py's cluster
+#     tests against this tree's `merod`. Pair a breaking change with its
+#     client fix by a same-named branch, or by `sdk-ref: <ref>` /
+#     `py-ref: <ref>` in the PR body (scripts/resolve-paired-ref.sh).
 #
-# The nightly run is the soak: the fuzzy loads for their full duration, each
-# reporting calls/s and p50/p95/p99 latency per operation
-# (MEROBOX_SOAK_REPORT, in the job summary). Nightly also:
+# Nightly runs the suite with `--nightly` (three iterations, a 900 s soak,
+# rooms_fault.py's randomized nemesis) and the fuzzy scenarios for 900 s.
+# Nightly also:
 #
-#   - the same shards against the `merod` inside the latest published release
-#     image (ghcr.io/<owner>/merod:<version>, release.yml), on the workflows
-#     and fixtures of the commit that image was built from: the shipped
-#     artifact, not a fresh cargo build (jobs `release-*`);
+#   - the process suite against the `merod` inside the latest published
+#     release image (ghcr.io/<owner>/merod:<version>, release.yml), with the
+#     suite and fixtures of the commit that image was built from: the shipped
+#     artifact, not a fresh cargo build (job `release-process-suite`);
+#   - every scenario, in four shards, at that commit (jobs `release-fixtures`
+#     and `release-scenarios`): the runner is in process, so the release's
+#     node is its source, the one its merod was built from;
 #   - a flamegraph of one node through the kv-store soak, by `perf record -g`
 #     and inferno (job `flamegraph`, scripts/soak-flamegraph.sh).
 #
 # A PR's own image is tested in release.yml (`E2E on the merod image`), which
 # builds it.
 #
-# GitHub runs `schedule` only from the default branch (master). The
-# release branch (release-v2-parity) gets its nightly from a dispatcher on
-# master that runs this workflow there with `nightly: true` (docs:
-# contribute/testing, "Release branch"); a nightly dispatch runs every job a
-# scheduled run does, and tests the branch's own image (release-v2-edge).
+# GitHub runs `schedule` only from the default branch (master); a nightly
+# dispatch (`nightly: true`) runs every job a scheduled run does.
 
 on:
   pull_request:
@@ -46,7 +49,8 @@ on:
       - "apps/**"
       - "tools/cargo-mero/**"
       - "workflows/**"
-      - "scripts/run-workflows.py"
+      - "scripts/soak-summary.sh"
+      - "scripts/soak-flamegraph.sh"
       - "scripts/build-workflow-fixtures.py"
       - "scripts/resolve-paired-ref.sh"
       - ".github/workflows/e2e.yml"
@@ -54,7 +58,7 @@ on:
       # these files are code: a bundle embeds them or a build reads them.
       - "!**/*.md"
       - "!**/*.mdx"
-      - "apps/kv-store/GUIDE.md"
+      - "apps/wasmer-fixtures/kv-store/GUIDE.md"
       - "tools/cargo-mero/README.md"
       - "tools/cargo-mero/tests/fixtures/demo-app/GUIDE.md"
       - "tools/cargo-mero/tests/fixtures/multi-app/GUIDE.md"
@@ -66,16 +70,16 @@ on:
   workflow_dispatch:
     inputs:
       nightly:
-        description: Run as the nightly does (the 15-minute soak, the release image's shards, the flamegraph)
+        description: Run as the nightly does (the 15-minute soak, the release image's process suite, the flamegraph)
         type: boolean
         required: false
         default: false
       soak_seconds:
-        description: How long each fuzzy_test step runs (the scenarios' own value applies when empty)
+        description: How long the soak and each fuzzy_test step run (the defaults apply when empty)
         required: false
         default: ""
       release_image:
-        description: Also run the shards against a release image's merod ("latest" for the newest release, a tag of ghcr.io/<owner>/merod such as release-v2-edge, or an image reference); empty skips it, except on a nightly run
+        description: Also run the process suite against a release image's merod ("latest" for the newest release, a tag of ghcr.io/<owner>/merod such as release-v2-edge, or an image reference); empty skips it, except on a nightly run
         required: false
         default: ""
       flamegraph:
@@ -98,17 +102,15 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
-  # The merobox revision whose cloud-v2 backend and examples this runs
-  # (release.yml's `E2E on the merod image` names the same).
-  MEROBOX_REF: release-v2-parity
   # The flamegraph job's renderer (`cargo install inferno`, cached).
   INFERNO_VERSION: 0.12.8
 
 jobs:
-  # merod, the fixtures every workflow installs and merobox's example inputs,
-  # built once and handed to each shard.
+  # The wasmer apps every cluster scenario installs (target/workflow-wasm),
+  # built once and handed to each shard. Component apps are built by the
+  # runner, each in its own crate.
   fixtures:
-    name: merobox fixtures
+    name: scenario fixtures
     runs-on: big-machine
     timeout-minutes: 60
     steps:
@@ -128,53 +130,22 @@ jobs:
       - name: Setup cargo mero
         uses: ./.github/actions/setup-cargo-mero
 
-      - name: Build merod
-        run: cargo build -p merod
-
       - name: Build the fixtures
-        run: |
-          set -euo pipefail
-          python3 scripts/build-workflow-fixtures.py
-          mkdir -p target/e2e
-          cp "$CARGO_TARGET_DIR/debug/merod" target/e2e/merod
-          # merobox's examples: kv-store's WASM, two signed releases of it,
-          # and a second, different build of merod for the rolling upgrade.
-          cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
-          cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/app-release/kv_store.wasm" target/e2e/
-          for v in 1.0.0 1.1.0; do
-            (cd apps/kv-store && cargo mero bundle --dev --no-icon --app-version "$v")
-            cp "dist/com.calimero.kv-store-$v.mpk" target/e2e/
-          done
-          cp target/e2e/merod target/e2e/merod-next
-          printf '\0' >> target/e2e/merod-next
-
-      # outbound-probe's outbound.yml drives every outbound gate through the
-      # test build's in-process `.test` echo (`[outbound.testing]` in its
-      # cluster.settings), which only this feature compiles; a plain merod
-      # refuses those settings. The shards hand it over as MEROD_OUTBOUND_BINARY.
-      - name: Build merod with outbound-testing
-        run: |
-          set -euo pipefail
-          cargo build -p merod --features calimero-node/outbound-testing
-          cp "$CARGO_TARGET_DIR/debug/merod" target/e2e/merod-outbound
+        run: python3 scripts/build-workflow-fixtures.py
 
       - name: Upload them
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-fixtures
-          path: |
-            target/e2e
-            target/workflow-wasm
+          path: target/workflow-wasm
           if-no-files-found: error
           retention-days: 1
 
-  # Every workflow: core's (workflows/**: app migrations, sync,
-  # fuzzy loads) and every app's (apps/*/workflows/**), packed into shards of
-  # about equal length by their measured durations
-  # (scripts/workflows-durations.json). A workflow listed in
-  # scripts/workflows-baseline.json that fails is a regression.
+  # Every scenario, app-level and cluster, split into four shards by
+  # SCENARIO_SHARD. Each runs on an in-process 3-node cluster
+  # (crates/node/tests/harness/scenario.rs); no merod process.
   scenarios:
-    name: merobox workflows (${{ matrix.shard }}/4)
+    name: scenarios (${{ matrix.shard }}/4)
     needs: fixtures
     runs-on: big-machine
     timeout-minutes: 90
@@ -189,70 +160,197 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - name: Checkout merobox
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # wasm32-wasip2: the component apps the runner builds.
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
         with:
-          repository: calimero-network/merobox
-          ref: ${{ env.MEROBOX_REF }}
-          path: merobox
-          persist-credentials: false
+          targets: wasm32-unknown-unknown,wasm32-wasip2
+          shared-key: ci-checks
+          save-if: false
 
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.12"
-
-      # merobox pulls calimero-client-py, built from source against core.
-      - name: Install merobox
-        run: pip install ./merobox
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
 
       - name: Download the fixtures
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: e2e-fixtures
-          path: target
+          path: target/workflow-wasm
 
-      - name: Workflows of shard ${{ matrix.shard }}
-        env:
-          MEROD_BINARY: ${{ github.workspace }}/target/e2e/merod
-          # The feature build a workflow names by `cluster.binary` (outbound.yml).
-          MEROD_OUTBOUND_BINARY: ${{ github.workspace }}/target/e2e/merod-outbound
-          MEROBOX_FUZZY_SECONDS: ${{ (github.event_name == 'schedule' || inputs.nightly) && '900' || inputs.soak_seconds || '30' }}
-          MEROBOX_SOAK_REPORT: ${{ github.workspace }}/target/e2e/soak-${{ matrix.shard }}.json
+      # ci-checks' required `scope` job checks discovery with a script; it must see what
+      # the runner sees.
+      - name: The discovery check lists what the runner discovers
         run: |
-          chmod +x "$MEROD_BINARY" "$MEROD_OUTBOUND_BINARY"
-          python3 scripts/run-workflows.py --shard ${{ matrix.shard }}/4 \
-            --json target/e2e/workflows-${{ matrix.shard }}.json
+          set -euo pipefail
+          diff <(python3 scripts/check-scenario-discovery.py --list) \
+            <(cargo test -p calimero-node --test scenarios -- --list | sed -n 's/: test$//p')
+
+      - name: Scenarios of shard ${{ matrix.shard }}
+        env:
+          CORE_WASM_DIR: ${{ github.workspace }}/target/workflow-wasm
+          SCENARIO_SHARD: ${{ matrix.shard }}/4
+          SCENARIO_FUZZY_SECONDS: ${{ (github.event_name == 'schedule' || inputs.nightly) && '900' || inputs.soak_seconds || '10' }}
+        run: cargo test -p calimero-node --test scenarios -- --test-threads 2
+
+  # Process-level tests on real `merod run --dev` processes, one per node: a crash,
+  # a frozen node and a restart; a frozen leader under a 10 s budget; organizations
+  # and keys; signed packages from a registry; a rolling upgrade of every node under
+  # load; the kv-store soak (latency and throughput in the summary). A PR runs each
+  # once with a 30 s soak; a nightly runs `--nightly` (three iterations, a 900 s
+  # soak, rooms_fault.py's randomized nemesis for 50 iterations).
+  process-suite:
+    name: process suite (merod processes)
+    runs-on: big-machine
+    timeout-minutes: ${{ (github.event_name == 'schedule' || inputs.nightly) && 150 || 45 }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          # wasm32-wasip2: the Rooms component the nightly's rooms-fault builds.
+          targets: wasm32-unknown-unknown,wasm32-wasip2
+          shared-key: release
+          save-if: false
+
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Build merod, meroctl and the fixtures
+        env:
+          NIGHTLY: ${{ (github.event_name == 'schedule' || inputs.nightly) && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          cargo build --release -p merod -p meroctl
+          cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
+          for v in 1.0.0 1.1.0; do
+            (cd apps/wasmer-fixtures/kv-store && cargo mero bundle --dev --no-icon --app-version "$v")
+          done
+          if [ "$NIGHTLY" = true ]; then
+            # Builds the Rooms component into target/app-components (tests/common/mod.rs).
+            cargo test --release -p calimero-node --test rooms
+          fi
+
+      - name: Process suite
+        env:
+          SOAK_SECONDS: ${{ inputs.soak_seconds }}
+          NIGHTLY: ${{ (github.event_name == 'schedule' || inputs.nightly) && '--nightly' || '' }}
+        run: |
+          python3 -I crates/node/tests/fault/suite.py $NIGHTLY \
+            --soak-report target/process-suite/soak.json --json target/process-suite/results.json
 
       - name: Soak latency and throughput
         if: ${{ !cancelled() }}
-        env:
-          SHARD: ${{ matrix.shard }}
-        run: bash scripts/soak-summary.sh "target/e2e/soak-$SHARD.json" "Soak, shard $SHARD/4 (this tree's merod)"
+        run: bash scripts/soak-summary.sh target/process-suite/soak.json "Soak, kv-store (this tree's merod, release build)"
 
       - name: Upload the results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: e2e-results-${{ matrix.shard }}
-          path: target/e2e/workflows-${{ matrix.shard }}.json
+          name: process-suite
+          # Failed tests keep their work directory: node logs (nodeN.log) and data.
+          path: |
+            target/process-suite
+            target/fault-suite
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 14
 
-      - name: Upload the soak report
+  # Nightly: where one node's CPU goes during the kv-store soak.
+  flamegraph:
+    name: merod flamegraph (kv-store soak)
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.nightly || inputs.flamegraph))
+    runs-on: big-machine
+    timeout-minutes: 75
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          targets: wasm32-unknown-unknown
+          shared-key: release
+          save-if: false
+
+      - name: Build merod and meroctl for profiling, and kv-store
+        env:
+          RUSTFLAGS: -C force-frame-pointers=yes
+        run: |
+          set -euo pipefail
+          cargo build -p merod -p meroctl --profile profiling
+          RUSTFLAGS= cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install perf
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends linux-tools-common linux-tools-generic "linux-tools-$(uname -r)" \
+            || sudo apt-get install -y -q --no-install-recommends linux-tools-common linux-tools-generic
+          perf="/usr/lib/linux-tools/$(uname -r)/perf"
+          [ -x "$perf" ] || perf=$(find /usr/lib/linux-tools -name perf -type f | sort -V | tail -n1)
+          "$perf" --version
+          echo "PERF=$perf" >> "$GITHUB_ENV"
+          sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
+
+      - name: Restore inferno
+        id: inferno
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.inferno
+          key: inferno-${{ env.INFERNO_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install inferno
+        if: steps.inferno.outputs.cache-hit != 'true'
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/inferno-build
+        run: cargo install inferno --version "$INFERNO_VERSION" --locked --root ~/.inferno
+
+      - name: Profile node 1 through the kv-store soak
+        env:
+          MEROD_BINARY: ${{ github.workspace }}/target/profiling/merod
+          MEROCTL_BINARY: ${{ github.workspace }}/target/profiling/meroctl
+          SOAK_SECONDS: "300"
+        run: |
+          PATH="$HOME/.inferno/bin:$PATH"
+          bash scripts/soak-flamegraph.sh target/flamegraph
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          bash scripts/soak-summary.sh target/flamegraph/soak.json "Soak while profiled (profiling build, node 1 under perf)"
+          if [ -s target/flamegraph/merod-flamegraph.svg ]; then
+            echo "Flamegraph: artifact \`merod-flamegraph\` (merod-flamegraph.svg; merod.folded for inferno-diff-folded)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the flamegraph
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: soak-metrics-${{ matrix.shard }}
-          path: target/e2e/soak-${{ matrix.shard }}.json
+          name: merod-flamegraph
+          path: target/flamegraph
           if-no-files-found: ignore
           retention-days: 30
 
   # Nightly: the shipped artifact. The newest published release (a prerelease
   # included) has its image tagged with its version by release.yml; its merod
-  # runs the four shards of the commit the image was built from (its
-  # org.opencontainers.image.revision label), with that commit's fixtures and
-  # baseline, so a workflow added after the release cannot fail it. A release
-  # whose merod is a v1 node is reported and not run. On the release
+  # runs the process suite of the commit the image was built from (its
+  # org.opencontainers.image.revision label), with that commit's meroctl and
+  # fixtures, so a test added after the release cannot fail it. A release
+  # whose commit has no process suite is reported and not run. On the release
   # branch, until a release with this node ships, a nightly tests the branch's own
   # image instead: release-v2-edge, which release.yml pushes on every merge.
   release-image:
@@ -270,6 +368,7 @@ jobs:
       version: ${{ steps.image.outputs.version }}
       revision: ${{ steps.image.outputs.revision }}
       testable: ${{ steps.image.outputs.testable }}
+      scenarios: ${{ steps.image.outputs.scenarios }}
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -312,19 +411,22 @@ jobs:
           id=$(docker create --platform linux/amd64 "$image")
           docker cp "$id:/usr/local/bin/merod" release/merod
           docker rm "$id"
-          # The workflow runner, at that commit: a v1 release has none. It
-          # was scripts/cloud-v2-workflows.py before the rename.
+          # The process suite, at that commit: an older release has none.
           testable=false
-          for runner in scripts/run-workflows.py scripts/cloud-v2-workflows.py; do
-            if gh api "repos/$REPO/contents/$runner?ref=$revision" --silent 2>/dev/null; then
-              testable=true
-            fi
-          done
+          if gh api "repos/$REPO/contents/crates/node/tests/fault/suite.py?ref=$revision" --silent 2>/dev/null; then
+            testable=true
+          fi
+          # The scenario runner, at that commit: a release older than it has none.
+          scenarios=false
+          if gh api "repos/$REPO/contents/crates/node/tests/scenarios.rs?ref=$revision" --silent 2>/dev/null; then
+            scenarios=true
+          fi
           {
             echo "image=$image"
             echo "version=$version"
             echo "revision=$revision"
             echo "testable=$testable"
+            echo "scenarios=$scenarios"
           } >> "$GITHUB_OUTPUT"
           {
             echo "### Latest release image"
@@ -332,7 +434,11 @@ jobs:
             echo "\`$image\` (\`$("$PWD/release/merod" --version 2>/dev/null || echo "merod, no --version")\`), built from $revision."
             if [ "$testable" != true ]; then
               echo
-              echo "That commit has no workflow runner: its merod is a v1 node, which merobox's cloud-v2 backend does not run. Nothing is tested until a release with this node ships."
+              echo "That commit has no process suite (crates/node/tests/fault/suite.py). Nothing is tested until a release with one ships."
+            fi
+            if [ "$scenarios" != true ]; then
+              echo
+              echo "That commit has no scenario runner (crates/node/tests/scenarios.rs), so its scenarios are not run."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -345,10 +451,15 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Nightly: the release's scenarios. The runner is in process (it links
+  # calimero-node, not a merod binary), so the release's node is its commit's
+  # source, the source the image's merod was built from; the binary itself is
+  # the process suite's (release-process-suite). Fixtures, scenarios and runner
+  # are all that commit's, so a scenario added after the release cannot fail it.
   release-fixtures:
-    name: merobox fixtures (release ${{ needs.release-image.outputs.version }})
+    name: scenario fixtures (release ${{ needs.release-image.outputs.version }})
     needs: release-image
-    if: needs.release-image.outputs.testable == 'true'
+    if: needs.release-image.outputs.scenarios == 'true'
     runs-on: big-machine
     timeout-minutes: 60
     steps:
@@ -362,25 +473,25 @@ jobs:
         uses: ./.github/actions/setup-rust-ci
         with:
           targets: wasm32-unknown-unknown
-          shared-key: ci-checks
+          shared-key: release
           save-if: false
 
       - name: Setup cargo mero
         uses: ./.github/actions/setup-cargo-mero
 
-      - name: Build the fixtures
+      - name: Build the fixtures (the release's commit)
         run: python3 scripts/build-workflow-fixtures.py
 
       - name: Upload them
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: e2e-release-fixtures
+          name: release-e2e-fixtures
           path: target/workflow-wasm
           if-no-files-found: error
           retention-days: 1
 
   release-scenarios:
-    name: merobox workflows on release ${{ needs.release-image.outputs.version }} (${{ matrix.shard }}/4)
+    name: scenarios on release ${{ needs.release-image.outputs.version }} (${{ matrix.shard }}/4)
     needs: [release-image, release-fixtures]
     runs-on: big-machine
     timeout-minutes: 90
@@ -395,26 +506,64 @@ jobs:
           ref: ${{ needs.release-image.outputs.revision }}
           persist-credentials: false
 
-      - name: Checkout merobox
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          targets: wasm32-unknown-unknown,wasm32-wasip2
+          shared-key: release
+          save-if: false
+
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
+      - name: Download the fixtures
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-e2e-fixtures
+          path: target/workflow-wasm
+
+      - name: Scenarios of shard ${{ matrix.shard }} (the release's commit)
+        env:
+          CORE_WASM_DIR: ${{ github.workspace }}/target/workflow-wasm
+          SCENARIO_SHARD: ${{ matrix.shard }}/4
+          SCENARIO_FUZZY_SECONDS: ${{ (github.event_name == 'schedule' || inputs.nightly) && '900' || inputs.soak_seconds || '10' }}
+        run: cargo test -p calimero-node --test scenarios -- --test-threads 2
+
+  release-process-suite:
+    name: process suite on release ${{ needs.release-image.outputs.version }}
+    needs: release-image
+    if: needs.release-image.outputs.testable == 'true'
+    runs-on: big-machine
+    timeout-minutes: 90
+    steps:
+      - name: Checkout the release's commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: calimero-network/merobox
-          ref: ${{ env.MEROBOX_REF }}
-          path: merobox
+          ref: ${{ needs.release-image.outputs.revision }}
           persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          targets: wasm32-unknown-unknown
+          shared-key: release
+          save-if: false
+
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
-      - name: Install merobox
-        run: pip install ./merobox
-
-      - name: Download the fixtures
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: e2e-release-fixtures
-          path: target/workflow-wasm
+      - name: Build meroctl and the fixtures (the release's commit)
+        run: |
+          set -euo pipefail
+          cargo build --release -p meroctl
+          cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
+          for v in 1.0.0 1.1.0; do
+            (cd apps/wasmer-fixtures/kv-store && cargo mero bundle --dev --no-icon --app-version "$v")
+          done
 
       - name: Download the release's merod
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -422,191 +571,33 @@ jobs:
           name: release-merod
           path: target/release-image
 
-      - name: Workflows of shard ${{ matrix.shard }}
+      - name: Process suite (every test but the upgrade, a 900 s soak)
         env:
-          MEROD_BINARY: ${{ github.workspace }}/target/release-image/merod
-          MEROBOX_FUZZY_SECONDS: ${{ (github.event_name == 'schedule' || inputs.nightly) && '900' || inputs.soak_seconds || '30' }}
-          MEROBOX_SOAK_REPORT: ${{ github.workspace }}/target/release-image/soak-${{ matrix.shard }}.json
+          VERSION: ${{ needs.release-image.outputs.version }}
         run: |
-          chmod +x "$MEROD_BINARY"
-          python3 scripts/run-workflows.py --shard ${{ matrix.shard }}/4 \
-            --json target/release-image/workflows-${{ matrix.shard }}.json
+          chmod +x target/release-image/merod
+          python3 -I crates/node/tests/fault/suite.py \
+            --only kv-failover,frozen-leader,orgs-and-keys,packages,kv-soak --soak-seconds 900 \
+            --merod target/release-image/merod --meroctl "${CARGO_TARGET_DIR:-target}/release/meroctl" \
+            --soak-report target/release-image/soak.json --json target/release-image/results.json
 
-      # The script is this run's: the release's commit may predate it.
       - name: Soak latency and throughput
         if: ${{ !cancelled() }}
         env:
-          SHARD: ${{ matrix.shard }}
           VERSION: ${{ needs.release-image.outputs.version }}
-          REPORT: target/release-image/soak-${{ matrix.shard }}.json
-        run: |
-          if [ -s "$REPORT" ]; then
-            merobox cloud soak-report "$REPORT" --title "Soak, shard $SHARD/4 (release $VERSION's merod)" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "No soak report for shard $SHARD/4 (release $VERSION)." >> "$GITHUB_STEP_SUMMARY"
-          fi
+        run: bash scripts/soak-summary.sh target/release-image/soak.json "Soak, kv-store (release $VERSION's merod)"
 
       - name: Upload the results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: e2e-release-results-${{ matrix.shard }}
+          name: release-process-suite
           path: |
-            target/release-image/workflows-${{ matrix.shard }}.json
-            target/release-image/soak-${{ matrix.shard }}.json
+            target/release-image/results.json
+            target/release-image/soak.json
+            target/fault-suite
           if-no-files-found: ignore
           retention-days: 30
-
-  # Nightly: where one node's CPU goes during the kv-store soak. merod is built
-  # with the `profiling` profile (optimized, with symbols) and frame pointers,
-  # so `perf record -g` sees whole stacks; scripts/soak-flamegraph.sh records
-  # node 1 for most of a 5-minute fuzzy run and inferno draws the SVG.
-  flamegraph:
-    name: merod flamegraph (kv-store soak)
-    needs: fixtures
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.nightly || inputs.flamegraph))
-    runs-on: big-machine
-    timeout-minutes: 75
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Checkout merobox
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: calimero-network/merobox
-          ref: ${{ env.MEROBOX_REF }}
-          path: merobox
-          persist-credentials: false
-
-      # No cache to share: nothing else builds the profiling profile, and a
-      # nightly-only entry would evict the PR caches from the repo's 10 GB.
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
-        with:
-          shared-key: release
-          save-if: false
-
-      - name: Build merod for profiling
-        env:
-          RUSTFLAGS: -C force-frame-pointers=yes
-        run: cargo build -p merod --profile profiling
-
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.12"
-
-      - name: Install merobox
-        run: pip install ./merobox
-
-      - name: Download the fixtures
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: e2e-fixtures
-          path: target
-
-      - name: Install perf
-        run: |
-          set -euo pipefail
-          sudo apt-get update -q
-          # The tools built for the running kernel when the archive has them;
-          # perf from another kernel's package records user stacks as well.
-          sudo apt-get install -y -q --no-install-recommends linux-tools-common linux-tools-generic "linux-tools-$(uname -r)" \
-            || sudo apt-get install -y -q --no-install-recommends linux-tools-common linux-tools-generic
-          perf="/usr/lib/linux-tools/$(uname -r)/perf"
-          [ -x "$perf" ] || perf=$(find /usr/lib/linux-tools -name perf -type f | sort -V | tail -n1)
-          "$perf" --version
-          echo "PERF=$perf" >> "$GITHUB_ENV"
-          # Let the runner's user sample its own processes, with kernel symbols.
-          sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
-
-      - name: Restore inferno
-        id: inferno
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.inferno
-          key: inferno-${{ env.INFERNO_VERSION }}-${{ runner.os }}-${{ runner.arch }}
-
-      - name: Install inferno
-        if: steps.inferno.outputs.cache-hit != 'true'
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/inferno-build
-        run: cargo install inferno --version "$INFERNO_VERSION" --locked --root ~/.inferno
-
-      - name: Profile node 1 through the kv-store soak
-        env:
-          MEROD_BINARY: ${{ github.workspace }}/target/profiling/merod
-          MEROBOX_FUZZY_SECONDS: "300"
-        run: |
-          PATH="$HOME/.inferno/bin:$PATH"
-          bash scripts/soak-flamegraph.sh target/flamegraph
-
-      - name: Summary
-        if: ${{ !cancelled() }}
-        run: |
-          bash scripts/soak-summary.sh target/flamegraph/soak.json "Soak while profiled (profiling build, node 1 under perf)"
-          if [ -s target/flamegraph/merod-flamegraph.svg ]; then
-            echo "Flamegraph: artifact \`merod-flamegraph\` (merod-flamegraph.svg; merod.folded for inferno-diff-folded)." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload the flamegraph
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: merod-flamegraph
-          path: target/flamegraph
-          if-no-files-found: ignore
-          retention-days: 30
-
-  # merobox's own cloud-v2 examples: a crash and a frozen node, a frozen leader
-  # under a latency budget, organizations and keys, signed packages from a
-  # registry, and a rolling upgrade of every node.
-  examples:
-    name: merobox examples
-    needs: fixtures
-    runs-on: big-machine
-    timeout-minutes: 30
-    steps:
-      - name: Checkout merobox
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: calimero-network/merobox
-          ref: ${{ env.MEROBOX_REF }}
-          path: merobox
-          persist-credentials: false
-
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.12"
-
-      - name: Install merobox
-        run: pip install ./merobox
-
-      - name: Download the fixtures
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: e2e-fixtures
-          path: target
-
-      - name: merobox's examples
-        env:
-          KV_STORE_WASM: ${{ github.workspace }}/target/e2e/kv_store.wasm
-          KV_STORE_MPK: ${{ github.workspace }}/target/e2e/com.calimero.kv-store-1.0.0.mpk
-          KV_STORE_MPK_NEXT: ${{ github.workspace }}/target/e2e/com.calimero.kv-store-1.1.0.mpk
-          MEROD_V2_BINARY: ${{ github.workspace }}/target/e2e/merod
-          MEROD_V2_UPGRADE_BINARY: ${{ github.workspace }}/target/e2e/merod-next
-        run: |
-          set -uo pipefail
-          chmod +x "$MEROD_V2_BINARY" "$MEROD_V2_UPGRADE_BINARY"
-          failed=0
-          for wf in merobox/workflow-examples/cloud-v2/*.yml; do
-            echo "::group::$wf"
-            merobox cloud run "$wf" || { echo "::error::$wf failed"; failed=1; }
-            echo "::endgroup::"
-          done
-          exit "$failed"
 
   clients:
     name: clients against merod

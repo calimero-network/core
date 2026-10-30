@@ -1,0 +1,260 @@
+{
+  "name": "04 — Scenario \"rename field\" (v3-remove-field → v4-rename-field, 2-node)",
+  "description": "2-node per-context migration for the rename-field scenario. v3-remove-field has `description: LwwRegister<String>`. v4-rename-field renames it to `details: LwwRegister<String>` — the field is the same logical thing, but borsh would never line up automatically because borsh ordering is positional, not nominal. `migrate_v3_to_v4` explicitly forwards `old.description → new.details`, proving an explicit-migrate rename works.\nAsserts: pre-upgrade v3 has `description` set; post-upgrade v4 has `details` (same value) on BOTH nodes and `description` is no longer accepted by the v4 binary's setter / getter. Phase 7d round-trips the renamed setter (`set_details` on node 1 → `get_details` on node 2) as the cross-node convergence proof.\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  assert_log_present x2: v1 node logs",
+    "  assert_migration_complete x1: v1 group migration",
+    "  delete_context (unknown) x1: checks what the dropped steps did",
+    "  delete_namespace x1: v1 namespace deletion",
+    "  uninstall_application (unknown) x1: checks what the dropped steps did",
+    "  wait_for_sync x2: replication is synchronous: a read sees every committed write",
+    "Fixed in the migration (converter bugs): a cascade upgrade_group",
+    "upgrades every app in the namespace's teams; of get_migration_status",
+    "only the outputs that mean the same here are kept."
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "app-migration-rename-1",
+    "app-migration-rename-2"
+  ],
+  "steps": [
+    {
+      "name": "Install migration-suite-v3-remove-field on node 1",
+      "type": "install_package",
+      "mpk": "{{env.CORE_WASM_DIR}}/dist/com.calimero.migration-suite-3.0.0.mpk",
+      "outputs": {
+        "app_v3": "package",
+        "app_v3_version": "version"
+      },
+      "account": "app-migration-rename-1"
+    },
+    {
+      "name": "Create namespace (v3) on node 1",
+      "type": "create_org",
+      "org_name": "Create namespace (v3) on node 1",
+      "outputs": {
+        "namespace_id": "orgId"
+      },
+      "account": "app-migration-rename-1"
+    },
+    {
+      "name": "Create Open subgroup under namespace",
+      "type": "create_team",
+      "org": "{{namespace_id}}",
+      "team_name": "rename-scenario-subgroup",
+      "join": "invite",
+      "outputs": {
+        "group_id": "teamId"
+      },
+      "account": "app-migration-rename-1"
+    },
+    {
+      "name": "Mark subgroup as Open",
+      "type": "team_update",
+      "org": "{{namespace_id}}",
+      "team": "{{group_id}}",
+      "join": "everyone",
+      "account": "app-migration-rename-1"
+    },
+    {
+      "name": "Create context in subgroup on node 1 (v3)",
+      "type": "deploy",
+      "account": "app-migration-rename-1",
+      "package": "{{app_v3}}",
+      "version": "{{app_v3_version}}",
+      "app_name": "Create context in subgroup on node 1 (v3)",
+      "org": "{{namespace_id}}",
+      "access": {
+        "kind": "team",
+        "team": "{{group_id}}"
+      },
+      "outputs": {
+        "ctx_id": "contextId"
+      }
+    },
+    {
+      "name": "Create namespace invitation for node 2",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "app-migration-rename-1",
+      "outputs": {
+        "namespace_invitation": "token"
+      }
+    },
+    {
+      "name": "Node 2 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{namespace_invitation}}",
+      "account": "app-migration-rename-2"
+    },
+    {
+      "name": "Node 2 materialises subgroup membership via inheritance",
+      "type": "team_join",
+      "org": "{{namespace_id}}",
+      "team": "{{group_id}}",
+      "account": "app-migration-rename-2"
+    },
+    {
+      "name": "Set description (v3 — the field that gets renamed)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set_description",
+      "args": {
+        "description": "rename-scenario-original"
+      },
+      "account": "app-migration-rename-1"
+    },
+    {
+      "name": "Increment counter (v3)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "increment_counter",
+      "args": {},
+      "account": "app-migration-rename-1"
+    },
+    {
+      "name": "Sanity-check v3 schema on node 1",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "schema_info",
+      "args": {},
+      "account": "app-migration-rename-1",
+      "outputs": {
+        "v3_schema": "rpc"
+      }
+    },
+    {
+      "name": "Assert v3 has description set",
+      "type": "json_assert",
+      "statements": [
+        "json_subset({{v3_schema}}, {\"output\": {\"schema_version\": \"3.0.0\", \"description\": \"rename-scenario-original\", \"counter\": \"1\"}})"
+      ]
+    },
+    {
+      "name": "Install migration-suite-v4-rename-field on node 1",
+      "type": "install_package",
+      "mpk": "{{env.CORE_WASM_DIR}}/dist/com.calimero.migration-suite-4.0.0.mpk",
+      "outputs": {
+        "app_v4": "package",
+        "app_v4_version": "version"
+      },
+      "account": "app-migration-rename-1"
+    },
+    {
+      "name": "Assert both versions share one application id (bundle same-id)",
+      "type": "json_assert",
+      "statements": [
+        "equal(\"{{app_v3}}\", \"{{app_v4}}\")"
+      ]
+    },
+    {
+      "name": "Upgrade subgroup v3 → v4 (renames description → details)",
+      "type": "upgrade_app",
+      "app": "{{ctx_id}}",
+      "version": "{{app_v4_version}}",
+      "account": "app-migration-rename-1"
+    },
+    {
+      "name": "Wait for upgrade + migration to apply + log flush",
+      "type": "wait",
+      "seconds": 15.0
+    },
+    {
+      "name": "Read post-migration schema_info on node 1 (triggers lazy migration)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "schema_info",
+      "args": {},
+      "account": "app-migration-rename-1",
+      "outputs": {
+        "v4_schema_node1": "rpc"
+      }
+    },
+    {
+      "name": "Read post-migration schema_info on node 2 (triggers lazy migration)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "schema_info",
+      "args": {},
+      "account": "app-migration-rename-2",
+      "outputs": {
+        "v4_schema_node2": "rpc"
+      }
+    },
+    {
+      "name": "Assert v4 schema on node 1 (description → details, value carried over)",
+      "type": "json_assert",
+      "statements": [
+        "json_subset({{v4_schema_node1}}, {\"output\": {\"schema_version\": \"4.0.0\", \"details\": \"rename-scenario-original\", \"counter\": \"1\"}})"
+      ]
+    },
+    {
+      "name": "Assert v4 schema on node 2 (same shape, proves migration reached node 2)",
+      "type": "json_assert",
+      "statements": [
+        "json_subset({{v4_schema_node2}}, {\"output\": {\"schema_version\": \"4.0.0\", \"details\": \"rename-scenario-original\", \"counter\": \"1\"}})"
+      ]
+    },
+    {
+      "name": "Node 1 calls v4 set_details (renamed setter)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set_details",
+      "args": {
+        "details": "rename-scenario-updated-via-v4"
+      },
+      "account": "app-migration-rename-1"
+    },
+    {
+      "name": "Node 2 reads details back via v4 get_details",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get_details",
+      "args": {},
+      "account": "app-migration-rename-2",
+      "outputs": {
+        "details_after_node2": "rpc"
+      }
+    },
+    {
+      "name": "Assert v4 round-trip on renamed field reached node 2",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{details_after_node2}}, {\"output\": \"rename-scenario-updated-via-v4\"})"
+      ]
+    },
+    {
+      "name": "Negative — set_description gone in v4",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set_description",
+      "args": {
+        "description": "should-fail-old-name"
+      },
+      "account": "app-migration-rename-1",
+      "expected_failure": true
+    },
+    {
+      "name": "Negative — get_description gone in v4",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get_description",
+      "args": {},
+      "account": "app-migration-rename-1",
+      "expected_failure": true
+    },
+    {
+      "name": "Delete subgroup",
+      "type": "team_delete",
+      "org": "{{namespace_id}}",
+      "team": "{{group_id}}",
+      "account": "app-migration-rename-1"
+    }
+  ]
+}

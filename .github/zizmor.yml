@@ -30,10 +30,10 @@ rules:
   cache-poisoning:
     ignore:
       - abi-contract.yml:85
-      - ci-checks.yml:362
+      - ci-checks.yml:375
       - docs-ci.yml:29
-      - e2e.yml:527
-      - e2e.yml:674
+      - e2e.yml:311
+      - e2e.yml:665
   # The consumer checkout keeps its token to push the bump branch.
   artipacked:
     ignore:

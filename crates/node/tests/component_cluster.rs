@@ -2382,7 +2382,7 @@ async fn the_leader_checks_upgrade_authority_again() {
     );
 }
 
-/// The core-module fixture (`apps/kv-store`, SDK 0.12), which runs on wasmer.
+/// The core-module fixture (`apps/wasmer-fixtures/kv-store`, SDK 0.12), which runs on wasmer.
 fn wasmer_kv() -> Vec<u8> {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/wasm32-unknown-unknown/app-release/kv_store.wasm");

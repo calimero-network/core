@@ -1,6 +1,6 @@
 ---
 title: Testing strategy
-description: How Calimero Core is tested — crate unit tests, the in-process cluster tests, the merod and meroctl CLI tests, the SDK harnesses, merobox scenarios — and how to run each locally.
+description: How Calimero Core is tested — crate unit tests, the in-process cluster tests, the merod and meroctl CLI tests, the SDK harnesses, scenario files, the process suite on `merod` processes — and how to run each locally.
 sidebar:
   label: Testing strategy
 ---
@@ -10,7 +10,8 @@ import { Steps, Aside, LinkCard, CardGrid } from '@astrojs/starlight/components'
 Calimero Core is tested in layers that trade scope for speed. Most of the node is
 covered by real clusters in one process: three nodes, sealed channels, real
 WASM, driven only through the client. Multi-process behaviour (crashes,
-freezes, restarts, upgrades) is covered by merobox scenarios.
+freezes, restarts, upgrades) is covered by the process suite, which runs one
+`merod` process per node.
 
 | Layer | Where | What it proves | Speed |
 | --- | --- | --- | --- |
@@ -19,7 +20,8 @@ freezes, restarts, upgrades) is covered by merobox scenarios.
 | Cluster | `crates/node/tests/cluster.rs` | The node end to end in one process: sign-up, installs, calls, views, events, orgs and teams, upgrades and migrations, blobs, follow-ups, governance, replica moves | Seconds to minutes |
 | CLI | `crates/merod/tests/cli.rs`, `crates/meroctl/tests/cli.rs` | `merod init/config/run/inspect` through the binary; every `meroctl` command group against a local cluster | Seconds to minutes |
 | App logic | `TestHost` in `crates/sdk/src/testing.rs`, `converge` in `crates/storage/src/testing.rs` | An app's methods, events and migrations; that a state type converges | Milliseconds |
-| Scenarios | merobox `cloud-v2` backend | Separate `merod` processes: crash, freeze, restart and upgrade under load | Slow |
+| Scenario files | `apps/*/scenarios/`, `workflows/**/scenarios/`, run by `crates/node/tests/scenarios.rs` | An app or a flow end to end on an in-process cluster, written as data: orgs, teams, invites, packages, upgrades, blobs, calls as several accounts | Seconds per file |
+| Process suite | `crates/node/tests/fault/suite.py` | Separate `merod run --dev` processes: a crash, a freeze and a restart, a frozen leader, orgs and keys, signed packages, a rolling upgrade under load, the kv-store soak | Minutes |
 
 Use both ends. A green cluster test does not prove a process restart or a
 frozen leader behaves, and a green scenario does not localize a logic bug.
@@ -27,13 +29,14 @@ frozen leader behaves, and a green scenario does not localize a logic bug.
 ## Fixtures
 
 The cluster and CLI tests load compiled apps from
-`target/wasm32-unknown-unknown/app-release/`. Build them first:
+`target/wasm32-unknown-unknown/app-release/` (`org-gated` there is the wasmer
+fixture, `apps/wasmer-fixtures/org-gated`). Build them first:
 
 ```bash
 cargo build -p kv-store -p org-gated -p outbound-probe \
   --target wasm32-unknown-unknown --profile app-release
 PATH="$(scripts/setup-cargo-mero.sh):$PATH"
-for a in blobs kv-store-with-handlers kv-store-with-shared-storage search-chat xcall-example tee-cards tee-dice \
+for a in blobs kv-store-with-handlers wasmer-fixtures/kv-store-with-shared-storage search-chat xcall-example tee-cards tee-dice \
   migrations/migration-suite-v1 migrations/migration-suite-v2-add-field \
   migrations/scenario-migration-check-fail-v1 migrations/scenario-migration-check-fail-v2 \
   migrations/scenario-identity-downgrade-v1 migrations/scenario-identity-downgrade-v2; do
@@ -95,117 +98,304 @@ reordered operations. The app-author guide is [Testing your app](/build/testing/
   own merge rules.
 </Aside>
 
-## Scenario tests with merobox
+## Scenarios
 
-[merobox](https://github.com/calimero-network/merobox)'s `cloud-v2` backend
-(CI pins it with `MEROBOX_REF`) starts one `merod` process per node and runs YAML
-scenarios: deploy, call and read as several accounts, then crash, freeze,
-restart or upgrade nodes and check the app keeps its data and answers within a
-time budget.
-
-```bash
-MEROD_BINARY=target/debug/merod \
-KV_STORE_WASM=target/wasm32-unknown-unknown/app-release/kv_store.wasm \
-merobox cloud run workflow-examples/cloud-v2/frozen-leader.yml
-```
-
-The scenarios and their step reference are in merobox's
-`workflow-examples/cloud-v2/`. A node behaviour that only shows across
-processes (the bounded forward to a frozen leader is the example) gets its
-regression scenario there.
-
-### Core and app workflows
-
-Core's workflows (`workflows/`: app migrations, `sync-tests` (replication), fuzzy loads) and
-every app's (`apps/*/workflows/`) are merobox workflows for the `cloud-v2`
-backend; every deployable app has at least one. Run them against a build:
+Scenario files are end-to-end tests written as data: each runs on an
+in-process cluster of its own (`crates/node/tests/harness/cluster.rs`: real
+`run`, mock attestation, sealed channels, the real WASM, a package registry on
+loopback), driven only through `calimero-client`. One test binary runs every
+file it finds:
 
 ```bash
-python3 scripts/build-workflow-fixtures.py      # the releases and WASM they install
-MEROD_BINARY=target/debug/merod python3 scripts/run-workflows.py [FILE...]
-python3 scripts/run-workflows.py --shard 2/4 --list   # what CI's shard 2 runs
+cargo test -p calimero-node --test scenarios                       # all of them
+SCENARIO_FILTER=apps/blobs/,app-migration/02 cargo test -p calimero-node --test scenarios
+cargo test -p calimero-node --test scenarios -- fugue-collab        # a filter argument does the same
+SCENARIO_SHARD=3/4 cargo test -p calimero-node --test scenarios -- --test-threads 2
+cargo test -p calimero-node --test scenarios -- --list              # what would run
 ```
 
-Every workflow names its own `cluster.base_port` and no two overlap, so the four
-shards of one checkout can run side by side, each with its own `--json`. To run
-the same workflows from two checkouts at once, give each a band of its own with
-`--port-offset N` (or `WORKFLOW_PORT_OFFSET`), e.g. 10000 and 20000.
+It has its own test main (`harness = false`): `--test-threads N` (default 2)
+scenarios run at once, each on its own cluster; `SCENARIO_SHARD=k/n` keeps every
+n-th file of the sorted list starting at the k-th, so n shards split the files
+evenly and deterministically. A file listed in
+`crates/node/tests/scenarios-skip.txt` (`<path> <reason>`) is reported ignored
+until `--include-ignored` (or `SCENARIO_INCLUDE_SKIPPED=1`).
 
-`scripts/workflows-baseline.json` lists the workflows that pass; one
-of them failing fails CI. Add a workflow to it once it passes, and its measured
-duration to `scripts/workflows-durations.json` (the shards are packed
-by it). A workflow not on the baseline still runs and is reported, so a fix
-shows up as a pass.
+A run fails when it discovers no scenario, or when a filter matches none. Every
+run also checks that each `*.json` (other than `.org.json`) under any directory
+named `scenarios` is discovered or listed, with its reason, in
+`crates/node/tests/scenarios-exclude.txt`, so no scenario sits on disk unrun
+without saying why; a stale or reasonless entry fails too.
 
-### In CI
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `SCENARIO_FILTER` | all | Comma-separated substrings; a path containing any of them runs |
+| `SCENARIO_SHARD` | none | `k/n`: the k-th of n shards (1-based) |
+| `SCENARIO_WAIT_CAP_SECS` | `2` | Longest a `wait` step sleeps, unless it says `"exact": true`: the cluster replicates synchronously, and the ported waits were for v1's gossip |
+| `SCENARIO_FUZZY_SECONDS` | `10` | How long a `fuzzy_test` runs (soak lengths are the Python suite's) |
+| `SCENARIO_TIMEOUT_SECS` | `600` | A scenario still running after this, plus its own fuzzing (each `fuzzy_test` step's `SCENARIO_FUZZY_SECONDS`), fails |
+| `SCENARIO_REPEAT_CAP` | none | Most iterations of a `repeat` step |
+| `CORE_WASM_DIR` | `$CARGO_TARGET_DIR/workflow-wasm` | Where `{{env.CORE_WASM_DIR}}` fixtures live |
 
-`.github/workflows/e2e.yml` runs on every PR that touches code:
+After each `call` the runner waits, up to 10 s, until every replica has applied
+it and run its follow-ups (event handlers, xcalls). A call that does not settle
+fails its step, naming each replica behind, the index it waited for and the
+index that replica had reached. The runner never makes up a refusal: every
+refusal a step expects is the node's or the app's.
 
-- job `merobox fixtures`: builds `merod`, the fixtures and merobox's
-  example inputs once, for the jobs below;
-- job `merobox workflows (K/4)`: every workflow, core's and the
-  apps', in four shards of about equal length (merobox at `MEROBOX_REF`);
-  nightly, the fuzzy loads run 15 minutes each. Each shard's fuzzy load
-  reports its latency and throughput (below) in the job summary and as the
-  artifact `soak-metrics-K`;
-- job `merobox examples`: merobox's own examples;
-- job `clients against merod`: mero-js's `test:cloud-v2` and
-  calimero-client-py's cluster tests against this tree's `merod`. A change that
-  breaks a client goes green with the client's fix: a same-named branch there,
-  or `sdk-ref: <ref>` (mero-js) / `py-ref: <ref>` (Python) in the PR body.
+Fixtures are built on first use when missing: `<crate>.wasm` by
+`cargo mero build` of that app (the repository's own cargo-mero first:
+`CARGO_MERO_BIN_DIR`, then the target's `debug/`), a signed
+`dist/<package>-<version>.mpk` by `scripts/build-workflow-fixtures.py`, and the
+blobs size sweep's `static/generated/blob-<N>mib.bin` as random bytes in memory.
+`python3 scripts/build-workflow-fixtures.py` builds them all ahead of time.
 
-Those test a debug `cargo build`. Two jobs test the `merod` that ships, the
-binary inside the Docker image (merobox starts processes, so it is copied out
-with `docker create` and `docker cp`):
+### App-level scenarios
 
-- **A PR's own image** (`.github/workflows/release.yml`, job
-  `E2E on the merod image`, on PRs and the merge queue whenever the PR builds
-  the image). `Release Merod container` builds the amd64 image as it does for
-  master, loads it instead of pushing it, and hands it on as the artifact
-  `merod-image`; the job runs the smoke list,
-  `scripts/run-workflows.py --smoke` (one workflow per area, listed with
-  the fixtures they need in `scripts/workflows-smoke.json`, every one
-  on the baseline; `check-scenario-coverage.py` checks), and merobox's
-  `kv-store-failover` and `frozen-leader` examples against it, about four
-  minutes after the image. `Image E2E fixtures` builds only the smoke list's
-  fixtures, alongside the binaries.
-- **The latest release's image, nightly** (`e2e.yml`, jobs
-  `Latest release image`, `merobox fixtures (release V)` and
-  `merobox workflows on release V (K/4)`; on demand with the `release_image`
-  input: `latest`, a tag of `ghcr.io/<owner>/merod` such as `release-v2-edge`,
-  or an image reference). It pulls
-  `ghcr.io/calimero-network/merod:<version>` for the newest published release
-  (a prerelease included) and runs the four shards, soak included, on the
-  workflows, fixtures and baseline of the commit the image was built from
-  (its `org.opencontainers.image.revision`), so a workflow added after the
-  release does not fail it. A release older than 1.0 runs the earlier node,
-  which merobox does not run: the job says so in its summary and the shards
-  are skipped. On the release branch the nightly tests `release-v2-edge`
-  instead, the image of the branch's latest merge
-  ([Release branch](#release-branch)).
+`apps/<app>/scenarios/<name>.json` is the step array of
+`calimero_app_sdk::testing::scenario` (`call`, `view`, `tick`, `advance`,
+`removeMember`; `as`, `expect`, `save`, `$var`, `@account`, `events`), the same
+file the app's own `tests/scenarios.rs` runs in the harness. Beside it,
+`<name>.org.json` is the organization it needs:
 
-To run the smoke list against a binary taken out of an image locally:
+```json
+{ "admins": ["ada"], "members": ["bob", "cy"], "guests": ["gus"], "teams": { "sales": ["bob"] }, "outsiders": ["mallory"] }
+```
+
+The owner is always `owner`; an omitted key is empty, and no file means the
+owner alone. `outsiders` are accounts a step acts as that hold no place in the
+org: they sign up and join nothing, so the node refuses them. On the cluster an
+`as` that is neither in the org nor a declared outsider fails the scenario
+before it runs, so a mistyped name cannot become an outsider whose refusal
+passes. (The SDK's `TestApp` harness still treats an unknown name as an
+outsider.) On the cluster the runner builds the app (a component with
+`calimero_app_build::build_component_cached`, a wasmer app with
+`cargo mero build`), signs every account up, creates the organization, invites
+each account with its role, creates the teams and adds their members, deploys
+the app in the organization and runs the steps: step `i` on node `i % 3`, as
+its `as` account's own client. `@name` is that account's id; a string that is
+exactly a team's name in `args` is that team's id on the cluster (and a team id
+in a result reads back as its name). The app clock starts at
+`1_700_000_100_000` (a 15-minute slot boundary, the harness tests' time zero);
+`advance` moves every node's clock, `tick` waits until the timer's due slot is
+applied everywhere. Events are each account's live stream from the log's start.
+
+### Cluster scenarios
+
+`apps/<app>/scenarios/cluster/**/*.json` and `workflows/**/scenarios/**/*.json`
+hold node-level steps a harness cannot run. A file is an object:
+
+```json
+{
+  "name": "Blobs across nodes",
+  "description": "...",
+  "comment": ["what the YAML's header said: v1 steps dropped in the port, fixes"],
+  "cluster": { "nodes": 3, "settings": "[outbound]\nenabled = true\n..." },
+  "accounts": ["alice", "bob"],
+  "variables": {},
+  "steps": [
+    { "type": "create_org", "account": "alice", "org_name": "Blobs", "outputs": { "org": "orgId" } },
+    { "type": "deploy", "account": "alice", "org": "{{org}}",
+      "wasm": "{{env.CORE_WASM_DIR}}/blobs.wasm", "outputs": { "app": "contextId" } },
+    { "type": "upload_blob", "account": "bob", "app": "{{app}}", "file_path": "static/test.txt",
+      "outputs": { "blob": "blob_id" } },
+    { "type": "download_blob", "account": "alice", "app": "{{app}}", "blob_id": "{{blob}}",
+      "expected_size": 13 },
+    { "type": "assert", "statements": ["is_set({{blob}})"] }
+  ]
+}
+```
+
+It is merobox's cloud-v2 workflow format as JSON, so a workflow converts
+mechanically (`scripts/workflow-to-scenario.py FILE.yml [--delete]`; it drops
+`base_port` and `binary` and refuses what it cannot carry over, naming why).
+`cluster.settings` is the TOML every node starts with (its `[outbound]` table;
+the test build has `outbound-testing`). Every account in `accounts` is signed
+up with its own soft passkey on node 1 and talks to node `index % nodes` (an
+explicit `"node": N`, 1-based, overrides).
+
+Conventions, as merobox's runner had them:
+
+- `{{name}}` placeholders: a string that is one placeholder keeps the value's
+  type; one inside text is spliced in (`json.dumps` of a non-string). Dotted
+  paths reach into values (`{{accounts.alice.account_id}}`, `{{env.HOME}}`),
+  `{{a ?? b}}` takes the first that resolves, and an unresolved one fails the
+  step. Set for you: `accounts.<name>.{account_id,public_key}`,
+  `public_key_<name>`, `env.*`, `ops_token`.
+- `outputs: { var: path }` stores a path of the step's result (`""` the whole
+  result); a call's or view's result also has `rpc.output` (its result, as v1's
+  JSON-RPC envelope had it).
+- `expected_error: CODE` makes a refusal with that API code the step's success,
+  `expected_failure: true` any refusal, `allow_failure: true` either outcome;
+  an output whose path starts with `error` then holds the refusal's text.
+  `expect` compares a step's `result`; `retry_for: S` retries a failing step for
+  S seconds; `max_seconds: S` fails one that succeeds too late.
+- `assert` statements: `is_set(A)`, `is_empty(A)`, `contains(A, B)`,
+  `not_contains(A, B)`, `regex(A, P)`, `equal(A, B)` / `not_equal(A, B)`
+  (also `equals` / `not_equals`), `A op B` for `== != >= > <= <` (numeric when
+  both sides are numbers); `non_blocking: true` reports without failing.
+  `json_assert`: `json_equal`, `json_not_equal`, `json_subset` (and unprefixed).
+  Operands are evaluated as merobox did, with Python's semantics
+  (`crates/node/tests/harness/py.rs`): `str` of a map is its Python repr,
+  `1 == 1.0`, a whole `{{name}}` keeps its type and names a variable directly
+  (no dotted paths), and an unresolved one fails its statement.
+- `repeat { count, steps }` sets `iteration` (from 0) and `iteration_node`
+  (from 1). `fuzzy_test { operations: [{ name, weight, steps }], accounts,
+  success_threshold, operation_delay_ms }` picks weighted operations at random
+  for `SCENARIO_FUZZY_SECONDS`, with `{{random_account}}`,
+  `{{random_int(a, b)}}`, `{{uuid}}`, `{{timestamp}}` and, after a call,
+  `{{fuzzy_<arg>}}`; it passes at `success_threshold` percent.
+
+Step types (fields as in merobox; each acting step names an `account`, or an
+`api_key`, or `as_key`, an account's public key):
+
+| Area | Steps |
+| --- | --- |
+| Apps | `deploy` (`wasm` or `package` + `version`/`service`; `org`, `access`, `init_args`, `confirm_methods`, `app_name`) answers `appId`, `contextId`, `bundle`, `memberPublicKey`; `upload_bundle` (`hash`); `create_app`; `upgrade_app` (`version`/`package`/`bundle`/`migrate`, approved with the account's passkey when the node asks); `delete_app`; `migration_status` (`apps`) |
+| Packages | `install_package` (`mpk`: published to the cluster's registry, then `POST /packages/install`; answers `package`, `version`), `packages`, `uninstall_package` |
+| Calls | `call` (`args`, `confirm`, `idempotency_key`), `view` (`stale`, `min_index`), `wait_for` (`equals`/`contains`, `timeout`, `interval`), `events` (`from`, `count`, `timeout`) |
+| Accounts | `whoami` (adds `publicKey`), `add_device` (another passkey on the account; `device` then acts as it), `create_api_key` |
+| Orgs | `create_org`, `invite` (`role`, `teams`), `redeem_invite`, `remove_member`, `set_role`, `capabilities`, `member_capabilities` |
+| Teams | `create_team` (`team_name`, `join`, `parent`), `team_add` (`members`, `role`, `lead`, `capabilities`), `team_remove`, `team_update` (`join`, `metadata`, `team_name`, `parent`), `team_get`, `team_list`, `team_join`, `team_delete` |
+| Blobs | `upload_blob` (`file_path`: beside the scenario or any directory above it; answers `blobId`, `blob_id`, `size`), `download_blob` (`expected_size`, `expected_sha256`), `list_blobs`, `blob_info`, `delete_blob` |
+| Presence | `publish_presence` (`seq`, `state`), `presence` |
+| Approvals | `transfer_app`, `approve_release`, `approve_outbound`, `upgrade_org`, `upgrade_run`, `retry_upgrade_run` |
+| Raw | `http` (`method`, `path`, `body`; a `412 CONFIRM_REQUIRED` answered with the passkey) |
+| Flow | `wait` (`seconds`, capped; `exact`), `set` (`values`), `assert`, `json_assert`, `repeat`, `fuzzy_test`, `find_leader` |
+
+Node process faults (`kill_node`, `pause_node`, `resume_node`, `start_node`,
+`restart_node`, `ops`) are not steps here: a scenario naming one is refused.
+They need real processes, and run in the [process suite](#process-suite).
+
+### Converted from merobox workflows
+
+Core's and the apps' functional workflows (142 YAML files under `workflows/**`
+and `apps/*/workflows/**`, written for merobox, the external runner core used
+before) were converted to cluster scenarios by `scripts/workflow-to-scenario.py`
+and run in process; merobox is no longer used. What needed separate processes
+(merobox's cloud-v2 examples and its fuzzy-load soak) moved to the
+[process suite](#process-suite). The table below records the v1 workflows
+deleted earlier rather than ported.
+
+#### Workflows deleted in the migration
+
+A v1 workflow whose subject has no counterpart on a cluster was deleted rather
+than kept unrun. Each, and why nothing replaces it (or what does):
+
+| Workflow | Its subject, and why a cluster has none |
+| --- | --- |
+| `apps/blobs/workflows/blob-presence-multi-holder.yml` | DHT provider discovery among user nodes holding a blob: a cluster's nodes all keep an app's blobs (blob-cross-node-transfer, blob-cross-node-sizes) |
+| `apps/blobs/workflows/blob-presence-tee-serves.yml` | a ReadOnlyTee availability node prefetching blobs: every cluster node is the TEE and keeps the app's blobs |
+| `apps/fugue-collab/workflows/fugue-collab-figure2.yml` | the Fugue paper's Figure 2, three isolated replicas typing at positions of their own unsynced views and merged after: a cluster orders every edit against one current text, so there is no concurrent merge (the other fugue-collab workflows cover editing) |
+| `apps/fugue-collab/workflows/fugue-collab-large-paste.yml` | a paste merged across a libp2p partition: a cluster has no partitioned user replica (concurrent edits: the other fugue-collab workflows) |
+| `apps/fugue-collab/workflows/fugue-collab-partition-heal.yml` | two sides of a network partition typing at the same position and merging when it heals: a cluster has no partitioned user replica and no merge |
+| `apps/kv-store/workflows/ephemeral-open-subgroup-e2e.yml` | presence over v1's WS/SSE for a member inheriting an open subgroup, checked by a script on v1's endpoints (the cluster test `presence_reaches_every_node_and_expires` covers presence) |
+| `apps/kv-store/workflows/ephemeral-presence-e2e.yml` | presence delivered over v1's WS/SSE, replayed on subscribe and expired, checked by Node scripts on v1's endpoints (the port had already dropped them, leaving a bootstrap): the cluster test `presence_reaches_every_node_and_expires` (`crates/node/tests/cluster.rs`) covers presence |
+| `apps/nested-crdt-test/workflows/nested-crdt-offline-catchup.yml` | an offline node catching up over v1's HashComparison sync: a cluster replicates by its Raft log |
+| `apps/rich-collab/workflows/rich-catchup.yml` | offline and replaced nodes catching up over v1's HashComparison sync: a cluster replicates by its Raft log |
+| `apps/scaffolding-e2e/workflows/account-namespace-left-unfollows.yml` | v1 devices following and unfollowing an account's namespaces: a device is a passkey of the account and follows nothing |
+| `apps/scaffolding-e2e/workflows/account-pairing-application-scope.yml` | pairing scoped by namespace and application: a passkey signs in to the whole account |
+| `apps/scaffolding-e2e/workflows/account-pairing-missed-publish.yml` | a partitioned device missing the pairing's one-shot publish of its link and scope key: no keys are delivered to devices |
+| `apps/scaffolding-e2e/workflows/account-registry-replicates.yml` | the v1 account namespace recording each device's scope: an account's passkeys are cluster system state |
+| `apps/scaffolding-e2e/workflows/account-revoke-lost-device.yml` | revoking a device with a proof minted from the account root's recovery phrase: an account has passkeys, no root key |
+| `apps/scaffolding-e2e/workflows/account-revoked-device-misses-new-restricted-subgroup.yml` | a revoked device's key excluded from a subgroup opened later (key delivery): removing a passkey ends its sessions (account-device-revoke-lockout) |
+| `apps/scaffolding-e2e/workflows/account-revoked-device-repairs.yml` | a revoked node re-minting its device and re-pairing: a removed passkey is gone; signing in again is a new passkey (add_device) |
+| `apps/scaffolding-e2e/workflows/account-sibling-projected-by-founder.yml` | a device carried into a namespace by a sibling device: a device is a passkey of the account and needs no carrying |
+| `apps/scaffolding-e2e/workflows/admit-without-credential.yml` | v1's admission handler publishing a keyholder's signed join without a node credential: an invite token is redeemed by a signed-in person |
+| `apps/scaffolding-e2e/workflows/delegated-authorship.yml` | a keyholder writing through a relay under a signed warrant (delegated authorship): there are no relays, the node runs every call for the caller it authenticated |
+| `apps/scaffolding-e2e/workflows/delegated-invitation-routing.yml` | routing a join to an admitter named in the invitation: there are no admitters, any node redeems an invite |
+| `apps/scaffolding-e2e/workflows/delegated-proof.yml` | delegated execution by a signed request (CallerProof) to a node the caller has no account on: every call is the authenticated caller's own |
+| `apps/scaffolding-e2e/workflows/delegated-session.yml` | a device key obtaining a session on a node it does not own (delegated sessions): a passkey signs in to any node |
+| `apps/scaffolding-e2e/workflows/group-held-flip-applies-when-member-added.yml` | a governance op held until the subgroup key arrives: teams are system state with no keys to deliver |
+| `apps/scaffolding-e2e/workflows/group-held-flip-nonmember-keeps-up.yml` | a sealed governance op a non-member cannot settle stalling its governance: teams are system state ordered by one log |
+| `apps/scaffolding-e2e/workflows/group-join-mesh-not-ready.yml` | a join failing closed while no admitter is reachable over the mesh, then recovering: there are no admitters, any node redeems an invite (38-namespace-invite-join-regression covers joining) |
+| `apps/scaffolding-e2e/workflows/group-leave-context.yml` | leave_context, a node-local opt-out that stops a node syncing one context: a member holds no replica to stop; access follows the organization and team |
+| `apps/scaffolding-e2e/workflows/kad-routing-from-identify.yml` | libp2p Kademlia routing among user nodes: a cluster's peers are its attested nodes |
+| `apps/scaffolding-e2e/workflows/member-removed-partition-window-reconcile.yml` | v1's reconcile rolling back a write a removed member made in a partition window the admin had not seen: a cluster orders the write and the removal in one log, so there is no window to reconcile |
+| `apps/scaffolding-e2e/workflows/namespace-restore-kicked-member.yml` | restoring a namespace a node removed from its own disk: a cluster keeps no per-member copy to remove |
+| `apps/scaffolding-e2e/workflows/namespace-restore-without-invitation.yml` | restoring a namespace a node removed from its own disk: a cluster keeps no per-member copy to remove |
+| `apps/scaffolding-e2e/workflows/offline-account-root.yml` | a node joining under a certificate its account root signed elsewhere (the root kept offline): an account has passkeys, no root key |
+| `apps/scaffolding-e2e/workflows/public-intents.yml` | a relay serving delegated execution with --public-intents: there are no relays |
+| `apps/scaffolding-e2e/workflows/relay-device-login.yml` | a fleet relay in proxy auth mode behind mero-auth serving device-key login: there are no relays, and every node authenticates its callers |
+| `apps/scaffolding-e2e/workflows/sync-resilience-lossy-link.yml` | v1 sync recovering from packet loss on a user node's link: a cluster replicates by its Raft log |
+| `apps/scaffolding-e2e/workflows/sync-resilience-network-partition-symmetric.yml` | v1 sync and relay reservations across a NAT partition: a cluster replicates by its Raft log |
+| `apps/scaffolding-e2e/workflows/sync-resilience-network-partition.yml` | v1 sync and relay reservations across a NAT partition: a cluster replicates by its Raft log |
+| `apps/scaffolding-e2e/workflows/sync-resilience-peer-pause-symmetric.yml` | v1 sync after a paused peer re-dials its relay: a cluster replicates by its Raft log |
+| `apps/scaffolding-e2e/workflows/sync-resilience-peer-pause.yml` | v1 sync after a paused peer re-dials its relay: a cluster replicates by its Raft log |
+| `apps/scaffolding-e2e/workflows/sync-resilience-peer-restart-symmetric.yml` | v1 sync after a restarted peer re-registers its relay reservation: a cluster replicates by its Raft log |
+| `apps/scaffolding-e2e/workflows/sync-resilience-peer-restart.yml` | v1 sync after a restarted peer re-registers its relay reservation: a cluster replicates by its Raft log |
+| `apps/scaffolding-e2e/workflows/tee-admission-mode-relay.yml` | a namespace's TEE admission mode (RelayTee vs ReadOnlyTee): the cluster is the TEE and there are no relays |
+| `apps/tee-cards/workflows/tee-cards-failover.yml` | failover between TEE authorities elected per trigger: the cluster is the TEE and its leader runs every trigger (tee-cards covers the game) |
+| `apps/tee-cards/workflows/tee-cards-late-tee.yml` | a TEE admitted later opening a deck sealed before (the namespace TEE key): the cluster is the TEE and holds the app's key |
+| `apps/tee-cards/workflows/tee-cards-rotate.yml` | rotating the namespace TEE key when a TEE is removed: the cluster is the TEE and holds the app's key |
+| `workflows/app-migration/26-owner-driven-authored.yml` | identity-gated entries migrating lazily at each owner's next write: an upgrade migrates the app's one state at once (16 covers UserStorage) |
+| `workflows/app-migration/28-get-migration-status.yml` | the rollup of members' migration heartbeats: no member holds its own copy; an upgrade run reports the apps (00, 14) |
+| `workflows/app-migration/36-chained-catchup.yml` | a member left several releases behind replaying the upgrade ladder lazily: no member replica falls behind, each upgrade migrates at once |
+| `workflows/app-migration/37-stranded-resync.yml` | a member stranded by an unobtainable intermediate release, recovered by resync: no member replica falls behind |
+| `workflows/app-migration/42-activate-upgrade-on-an-idle-node.yml` | activating an upgrade on a member's idle node (POST .../upgrade/activate): the cluster installs and switches every node |
+| `workflows/app-migration/43-retarget-before-activate.yml` | a member's activation refused after the admin retargeted: there is no per-member activation |
+| `workflows/app-migration/45-frontend-two-releases.yml` | each release serving its own frontend, checked by a v1 script on the app host: the node serves a package's frontend from its own origin (`{label}.{apps_domain}`, routed by Host), which no runner step addresses; the cluster test `app_frontends_are_served_and_their_sessions_are_bound` (`crates/node/tests/cluster.rs`) covers serving a release's frontend there, one release only |
+| `workflows/app-migration/46-frontend-proxy-mode.yml` | an app host on a node in proxy auth mode passing no token: a cluster node always authenticates |
+| `workflows/app-migration/47-missing-releases-before-activate.yml` | a member installing the releases it missed before activating: the cluster installs releases on every node |
+| `workflows/app-migration/48-member-installs-only-the-newest-release.yml` | a member that installed only the newest release replaying the ladder: the cluster installs and migrates at once |
+| `workflows/auth-seam.yml` | v1's client tokens minted by the auth frontend (POST /admin/client-key): a cluster signs in with passkeys and scopes API keys (the process suite's `orgs-and-keys`) |
+
+## Process suite
+
+`crates/node/tests/fault/suite.py` runs the tests that need one `merod` process
+per node, so a test can SIGKILL, SIGSTOP, restart or upgrade one node: a
+crashed, a frozen and a restarted node (`kv-failover`); a frozen leader under a
+10 s write budget (`frozen-leader`); organizations, scoped API keys and passkey
+confirmations (`orgs-and-keys`); signed packages from a registry on loopback
+(`packages`); a rolling upgrade of every node under a keyed write load
+(`rolling-upgrade`); the kv-store soak (`kv-soak`); and, nightly,
+`rooms_fault.py`'s randomized nemesis (`rooms-fault`). Each test starts its own
+3-node `merod run --dev` cluster (`rv2.py`) on ports 7600-7699 (+
+`WORKFLOW_PORT_OFFSET`), drives it over plain HTTP with API keys and through
+`meroctl`, and stops it; a failed test keeps its directory under
+`target/fault-suite`, with each node's `nodeN.log`.
+
+| Set | What runs |
+| --- | --- |
+| default (PRs) | every test but `rooms-fault`, once, a 30 s soak |
+| `--smoke` | the release-image set: no `rolling-upgrade` (one image, one build) and no `rooms-fault`; with `--merod PATH`, against another binary |
+| `--nightly` | every test three times, a 900 s soak, 50 `rooms-fault` iterations |
+
+`--only a,b` and `--iterations N` pick and repeat tests. Its
+[`README.md`](https://github.com/calimero-network/core/blob/master/crates/node/tests/fault/README.md)
+(beside it) lists each test's checks and every input:
 
 ```bash
-docker create --name m ghcr.io/calimero-network/merod:release-v2-edge && docker cp m:/usr/local/bin/merod /tmp/merod && docker rm m
-python3 scripts/build-workflow-fixtures.py $(jq -r '.fixtures[]' scripts/workflows-smoke.json)
-MEROD_BINARY=/tmp/merod python3 scripts/run-workflows.py --smoke
+cargo build --release -p merod -p meroctl
+cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
+for v in 1.0.0 1.1.0; do (cd apps/wasmer-fixtures/kv-store && cargo mero bundle --dev --no-icon --app-version "$v"); done
+python3 -I crates/node/tests/fault/suite.py --list
+python3 -I crates/node/tests/fault/suite.py                        # the PR set
+python3 -I crates/node/tests/fault/suite.py --only kv-failover,frozen-leader
+python3 -I crates/node/tests/fault/suite.py --smoke --merod /tmp/merod
 ```
+
+The kv-store fixture is the wasmer build in `apps/wasmer-fixtures/kv-store`
+(package `kv-store`); the two signed releases are for `packages` and land in
+`dist/`. A node behaviour that only shows across processes (the bounded forward
+to a frozen leader is the example) gets its regression test here.
 
 ### Soak latency and throughput
 
-A `fuzzy_test` step times every step it sends to the cluster (one round trip
-each). With `MEROBOX_SOAK_REPORT=file.json` it appends a report to that file:
-per operation, how many ran and failed, operations and calls per second over
-the run, and the p50/p95/p99 (and mean, max) latency of its calls in
-milliseconds, the same per step kind (`call set`, `call get`), and the whole
-run's. `merobox cloud soak-report file.json` (or `scripts/soak-summary.sh`,
-which CI runs) prints it as a table:
+The suite's `kv-soak` (kv-store's fuzzy load: the operations and weights of
+`workflows/fuzzy-tests/kv-store/scenarios/fuzzy-test.json`, four members) times every call
+it sends to the cluster (one round trip each). With `--soak-report file.json`
+(or `SOAK_REPORT`) it appends a report to that file: per operation, how many ran
+and failed, operations and calls per second over the run, and the p50/p95/p99
+(and mean, max) latency of its calls in milliseconds, the same per call kind
+(`call set`, `call get`), and the whole run's (the JSON format merobox's
+`fuzzy_test` wrote, so older reports still render). `crates/node/tests/fault/soak.py
+report file.json` (or `scripts/soak-summary.sh`, which CI runs) prints it as a
+table:
 
 ```bash
-MEROD_BINARY=target/debug/merod MEROBOX_FUZZY_SECONDS=30 MEROBOX_SOAK_REPORT=soak.json \
-  python3 scripts/run-workflows.py workflows/fuzzy-tests/kv-store/fuzzy-test.yml
-merobox cloud soak-report soak.json
+python3 -I crates/node/tests/fault/suite.py --only kv-soak --soak-seconds 30 --soak-report soak.json
+python3 -I crates/node/tests/fault/soak.py report soak.json
 ```
 
 A 30-second kv-store run against a debug `merod` on a shared 4-vCPU Linux
@@ -222,16 +412,90 @@ container (the shape of the nightly table, not a reference):
 
 The calls run one at a time, so a call's latency is what one caller sees and
 calls/s is one caller's rate, not the cluster's capacity; the cluster bench
-([below](#cluster-throughput)) measures that. Numbers from a debug build
-(the PR shards) are for comparing runs of the same job, not the release's
-speed; the release image's shards measure that. The pass rate and
-`success_threshold` gate as before; latency gates nothing.
+([below](#cluster-throughput)) measures that. The PR job's numbers (a fresh
+release build on a shared runner) are for comparing runs of the same job; the
+release image's runs measure the binary that ships. The pass rate (99 %)
+gates; latency gates nothing.
+
+## In CI
+
+`.github/workflows/e2e.yml` runs on every PR that touches code:
+
+- job `scenario fixtures` (`fixtures`): builds the wasmer apps the cluster
+  scenarios install (`scripts/build-workflow-fixtures.py`, into
+  `target/workflow-wasm`) once, for the shards;
+- job `scenarios (K/4)` (`scenarios`): `cargo test -p calimero-node --test
+  scenarios` with `SCENARIO_SHARD=K/4`, every app-level and cluster scenario,
+  each on its own in-process cluster; the runner builds the component apps
+  itself. A `fuzzy_test` runs 10 s, nightly 900 s;
+- job `process suite (merod processes)` (`process-suite`): a release build of
+  `merod` and `meroctl`, kv-store's fixture and two signed releases of it, then
+  `suite.py` (nightly `--nightly`, which also builds the Rooms component). The
+  soak's latency and throughput ([below](#soak-latency-and-throughput)) go in
+  the job summary; the artifact `process-suite` holds the results, the soak
+  report and failed tests' node logs;
+- job `clients against merod` (`clients`): mero-js's `test:cloud-v2` and
+  calimero-client-py's cluster tests against this tree's `merod`. A change that
+  breaks a client goes green with the client's fix: a same-named branch there,
+  or `sdk-ref: <ref>` (mero-js) / `py-ref: <ref>` (Python) in the PR body.
+
+`ci-checks.yml`'s `Rust tests` job runs each component app's own `cargo test`
+(its `tests/harness.rs` and its app-level scenarios on `TestApp`), then clippy
+with `-D warnings` on the host and on `wasm32-wasip2` and the app's release
+`wasm32-wasip2` build. The apps are found by their `calimero-app-sdk`
+dependency.
+
+Nothing has to list a scenario for it to run: the runner discovers every file
+on disk, and one it must not run yet is listed, with its reason, in
+`crates/node/tests/scenarios-skip.txt` and reported as ignored.
+
+Those test a fresh build. Two jobs test the `merod` that ships, the binary
+inside the Docker image (the suite starts processes, so it is copied out with
+`docker create` and `docker cp`):
+
+- **A PR's own image** (`.github/workflows/release.yml`, job
+  `E2E on the merod image`, on PRs and the merge queue whenever the PR builds
+  the image). `Release Merod container` builds the amd64 image as it does for
+  master, loads it instead of pushing it, and hands it on as the artifact
+  `merod-image`; `Image E2E fixtures` builds a release `meroctl`, kv-store's
+  WASM and two signed releases of it alongside the binaries. The job runs
+  `suite.py --smoke` against the image's `merod`: `kv-failover`,
+  `frozen-leader`, `orgs-and-keys`, `packages` and a 30 s `kv-soak`. Master
+  pushes its image instead.
+- **The latest release's image, nightly** (`e2e.yml`, jobs
+  `Latest release image` (`release-image`) and `process suite on release V`
+  (`release-process-suite`); on demand with the `release_image` input:
+  `latest`, a tag of `ghcr.io/<owner>/merod` such as `release-v2-edge`, or an
+  image reference). It pulls `ghcr.io/calimero-network/merod:<version>` for the
+  newest published release (a prerelease included) and runs the process suite
+  of the commit the image was built from (its
+  `org.opencontainers.image.revision`), with that commit's `meroctl` and
+  fixtures, so a test added after the release does not fail it: every test but
+  the upgrade, with a 900 s soak. A release whose commit has no
+  `crates/node/tests/fault/suite.py` is reported in the summary and not run.
+  On the release branch the nightly tests `release-v2-edge` instead, the image
+  of the branch's latest merge ([Release branch](#release-branch)).
+  The same nightly runs every scenario at that commit, in four shards (jobs
+  `scenario fixtures (release V)` (`release-fixtures`) and
+  `scenarios on release V (K/4)` (`release-scenarios`)), with that commit's
+  runner and fixtures. The runner is in process, so what it tests is the
+  release's node source, the source its `merod` was built from; the binary
+  itself is the process suite's. A release whose commit has no
+  `crates/node/tests/scenarios.rs` is reported in the summary and not run.
+
+To run the smoke set against a binary taken out of an image locally (with the
+fixtures built as in [Process suite](#process-suite)):
+
+```bash
+docker create --name m ghcr.io/calimero-network/merod:release-v2-edge && docker cp m:/usr/local/bin/merod /tmp/merod && docker rm m
+python3 -I crates/node/tests/fault/suite.py --smoke --merod /tmp/merod
+```
 
 ### Flamegraphs
 
 Nightly (or with the `flamegraph` input), job `merod flamegraph (kv-store
 soak)` builds `merod` with the `profiling` profile (optimized, with symbols)
-and `-C force-frame-pointers=yes`, runs the kv-store fuzzy load for five
+and `-C force-frame-pointers=yes`, runs the process suite's `kv-soak` for five
 minutes, and records node 1 with `perf record -g` for most of it
 (`scripts/soak-flamegraph.sh`; the runner sets `kernel.perf_event_paranoid=-1`).
 inferno renders the samples; the artifact `merod-flamegraph` holds
@@ -241,15 +505,16 @@ and the profiled run's soak report. Locally, on Linux:
 
 ```bash
 cargo install inferno --version 0.12.8 --locked
-RUSTFLAGS="-C force-frame-pointers=yes" cargo build -p merod --profile profiling
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build -p merod -p meroctl --profile profiling
 sudo sysctl -w kernel.perf_event_paranoid=-1
-MEROD_BINARY=target/profiling/merod MEROBOX_FUZZY_SECONDS=120 scripts/soak-flamegraph.sh /tmp/flame
+MEROD_BINARY=target/profiling/merod MEROCTL_BINARY=target/profiling/meroctl SOAK_SECONDS=120 \
+  scripts/soak-flamegraph.sh /tmp/flame
 ```
 
 `PERF=/usr/lib/linux-tools/<version>/perf` points it at a perf whose wrapper
 does not match the running kernel; `PROFILE_DELAY`, `PROFILE_SECONDS` and
 `PROFILE_HZ` set when and how it samples, and a second argument names another
-fuzzy workflow (a third, another node).
+node.
 
 ## Release branch
 
@@ -261,7 +526,7 @@ with its own image tags:
 | --- | --- | --- |
 | PR into the branch | Every check a PR into master runs (no check's `pull_request` trigger leaves the branch out; `abi-guard.yml` and `platforms.yml` name it) | Nothing; `Release Merod container` builds the PR's image and `E2E on the merod image` tests it |
 | Merge (push) into the branch | `ci-checks.yml`, `e2e.yml`, `release.yml`, `benchmarks.yml`, `docs-ci.yml`, `crypto-vectors.yml`, `abi-contract.yml`, `abi-guard.yml`, `workflow-lint.yml`, `codeql.yml`; ci-checks and E2E runs are never cancelled, and the ci-checks, wasm-apps and storage-cost caches save, as on master | The multi-arch `merod` image as `ghcr.io/calimero-network/merod:release-v2-edge` and `:release-v2-<short sha>`, labelled with the commit (`org.opencontainers.image.revision`); the release binaries as the run's `artifacts-<target>` artifacts, kept 14 days; the criterion, search and cluster benchmark reports as the base the branch's PRs compare against |
-| Nightly | `e2e.yml` with `nightly: true` (the 15-minute soak, the shards on `release-v2-edge`, the flamegraph), `fuzz.yml` (30 minutes per target) and `platforms.yml` with `nightly: true` (macOS; a failure opens "Nightly platform build is failing on release-v2-parity") | Nothing |
+| Nightly | `e2e.yml` with `nightly: true` (the 15-minute soak, the process suite on `release-v2-edge`, the flamegraph), `fuzz.yml` (30 minutes per target) and `platforms.yml` with `nightly: true` (macOS; a failure opens "Nightly platform build is failing on release-v2-parity") | Nothing |
 
 The branch never publishes a version: no `edge`, `latest`, `prerelease` or
 version tag, no GitHub Release, crates, App Bundle, Homebrew tap update or SDK
@@ -275,7 +540,7 @@ runs only when dispatched. To run one by hand:
 
 ```bash
 gh workflow run e2e.yml --ref release-v2-parity -f nightly=true
-gh workflow run e2e.yml --ref release-v2-parity -f release_image=release-v2-edge   # the 30 s soak, plus the image's shards
+gh workflow run e2e.yml --ref release-v2-parity -f release_image=release-v2-edge   # the 30 s soak, plus the process suite on that image
 ```
 
 `docs-site.yml` stays master's: it deploys the public documentation site to
@@ -284,8 +549,10 @@ built and link-checked (`docs-ci.yml`) but not deployed.
 
 ## What scenario tests cannot catch
 
-Every node in a scenario run is the same build on fresh state, so it never
-tests data written by an older version. A change to an on-disk or wire format
+Every node in a scenario run is the same build on fresh state, and so is
+every node in the process suite (its rolling upgrade moves to a copy of the
+same binary unless `--upgrade-merod` names another), so neither tests data
+written by an older version. A change to an on-disk or wire format
 needs its own migration test, as `calimero-log`'s `migration_tests.rs` does for
 the `log.redb` store.
 
@@ -294,8 +561,9 @@ the `log.redb` store.
 <Steps>
 
 1. **Reproduce first, at the layer a user hits it.** A cluster test for API
-   behaviour, a unit test for a rule, a merobox scenario for a multi-process
-   flow. Watch it fail for the reason the bug describes.
+   behaviour, a unit test for a rule, a scenario file for an app's or a
+   flow's steps across accounts, a process-suite test for a multi-process flow
+   (a crash, a freeze, an upgrade). Watch it fail for the reason the bug describes.
 
 2. **Fix it and rerun the same test.** Keep it as the regression test; the
    before and after output goes in the PR description.

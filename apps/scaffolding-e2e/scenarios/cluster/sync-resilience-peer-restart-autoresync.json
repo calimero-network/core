@@ -1,0 +1,163 @@
+{
+  "name": "Sync Resilience — Peer Restart Auto-Resync (NAT cone, passive trigger_sync false)",
+  "description": "Sync-resilience regression test: a peer is restarted mid-session; after the restart, a NEW key is written on the other peer, and the restarted peer must auto-converge WITHOUT an explicit sync trigger (trigger_sync: false).\nThis is a stricter variant of `sync-resilience-peer-restart.yml` that validates the post-restart auto-resync machinery. The parent test uses `trigger_sync: true` to manually poke convergence; this test exercises the passive discovery + automatic sync path, catching regressions where:\n- The restarted peer fails to rejoin the gossipsub mesh for this context - The peer loses interest in the context's topics after restart - Peer-discovery (via rendezvous, DHT peer cache, etc.) breaks post-restart - The background sync-state reconciliation thread hangs or crashes\nTopology --------\nUses `topology: { type: nat, nat_mode: cone }` (same as parent test). Both peers sit on an internal LAN bridge behind a NAT-gateway container; the only path to the public-bridge boot-node is via the gateway's MASQUERADE. After the restart, node-2 has to discover node-1 via the overlaid peer-discovery machinery — rendezvous registration, datastore peer-cache lookups, or gossipsub heartbeat peer-exchange — and then initiate sync automatically (no manual wait_for_sync trigger).\nWhy this matters ----------------\nThe parent `sync-resilience-peer-restart.yml` manually triggers sync with `trigger_sync: true`, which pokes the sync state machine and forces a compare-and-push exchange. This test gates the passive path: the restarted peer's libp2p stack must re-register itself and rejoin the mesh, then the app layer's background sync engine must detect a peer mismatch and converge WITHOUT external instrumentation. This catches integration regressions in:\n- `crates/network/src/discovery/state.rs` (rendezvous peer-discovery post-restart) - `crates/network/src/handlers/stream/swarm/relay.rs` (relay reservation) - Gossipsub mesh rejoin logic - Background sync state-machine (peer-detection and state reconciliation)\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  assert_log_present x1: v1 node logs",
+    "  login (unknown) x2: checks what the dropped steps did",
+    "  restart_container x1: a user's node restarting has no counterpart in a cluster",
+    "  wait_for_sync x2: replication is synchronous: a read sees every committed write"
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "sync-autoresync-node-1",
+    "sync-autoresync-node-2"
+  ],
+  "steps": [
+    {
+      "name": "Install application on node-1",
+      "type": "upload_bundle",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "outputs": {
+        "app_id_bundle": "hash"
+      },
+      "account": "sync-autoresync-node-1"
+    },
+    {
+      "type": "set",
+      "values": {
+        "app_id": "com.calimero.scaffolding-e2e"
+      }
+    },
+    {
+      "name": "Create the mesh - namespace, context and every joiner",
+      "type": "create_org",
+      "account": "sync-autoresync-node-1",
+      "org_name": "mesh",
+      "outputs": {
+        "namespace_id": "orgId"
+      }
+    },
+    {
+      "type": "invite",
+      "account": "sync-autoresync-node-1",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "outputs": {
+        "_mesh_invite": "token"
+      }
+    },
+    {
+      "type": "redeem_invite",
+      "account": "sync-autoresync-node-2",
+      "token": "{{_mesh_invite}}"
+    },
+    {
+      "name": "Create the mesh - namespace, context and every joiner",
+      "type": "deploy",
+      "account": "sync-autoresync-node-1",
+      "org": "{{namespace_id}}",
+      "wasm": "{{env.CORE_WASM_DIR}}/scaffolding_e2e.wasm",
+      "app_name": "Create the mesh - namespace, context and every joiner",
+      "outputs": {
+        "ctx_id": "contextId"
+      }
+    },
+    {
+      "name": "Wait for namespace gossip",
+      "type": "wait",
+      "seconds": 5.0
+    },
+    {
+      "name": "Write baseline key on node-1",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set",
+      "args": {
+        "key": "baseline",
+        "value": "pre_restart"
+      },
+      "account": "sync-autoresync-node-1"
+    },
+    {
+      "name": "Read baseline on node-2 (sanity)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get",
+      "args": {
+        "key": "baseline"
+      },
+      "account": "sync-autoresync-node-2",
+      "outputs": {
+        "baseline_n2": "rpc"
+      }
+    },
+    {
+      "name": "Assert baseline replicated",
+      "type": "assert",
+      "statements": [
+        "contains({{baseline_n2}}, 'pre_restart')"
+      ]
+    },
+    {
+      "name": "Wait for libp2p + relay reservation to re-form after restart",
+      "type": "wait",
+      "seconds": 15.0
+    },
+    {
+      "name": "Write post-restart key on node-1 (after node-2 is down)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "set",
+      "args": {
+        "key": "post_restart_new",
+        "value": "auto_discovery_test"
+      },
+      "account": "sync-autoresync-node-1"
+    },
+    {
+      "name": "Read post-restart key on node-2",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get",
+      "args": {
+        "key": "post_restart_new"
+      },
+      "account": "sync-autoresync-node-2",
+      "outputs": {
+        "post_n2": "rpc"
+      }
+    },
+    {
+      "name": "Assert post-restart write auto-synced (proves passive path)",
+      "type": "assert",
+      "statements": [
+        "contains({{post_n2}}, 'auto_discovery_test')"
+      ]
+    },
+    {
+      "name": "Read baseline key on node-2 post-restart",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get",
+      "args": {
+        "key": "baseline"
+      },
+      "account": "sync-autoresync-node-2",
+      "outputs": {
+        "baseline_n2_post": "rpc"
+      }
+    },
+    {
+      "name": "Assert node-2 retained baseline across restart",
+      "type": "assert",
+      "statements": [
+        "contains({{baseline_n2_post}}, 'pre_restart')"
+      ]
+    }
+  ]
+}

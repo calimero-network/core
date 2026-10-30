@@ -1,0 +1,605 @@
+[
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "me",
+  "expect": {
+   "ok": "@owner"
+  }
+ },
+ {
+  "as": "ann",
+  "op": "view",
+  "method": "me",
+  "expect": {
+   "ok": "@ann"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "me",
+  "expect": {
+   "ok": "@bob"
+  }
+ },
+ {
+  "as": "ann",
+  "op": "view",
+  "method": "admins",
+  "expect": {
+   "ok": [
+    "@owner"
+   ]
+  }
+ },
+ {
+  "as": "ann",
+  "op": "call",
+  "method": "claim",
+  "args": {
+   "name": "rose",
+   "display": "Rose, as Ann"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "claim",
+  "args": {
+   "name": "rose",
+   "display": "Rose, as Bob"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "status",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": {
+    "state": "pending",
+    "owner": null,
+    "epoch": null,
+    "claimants": 2,
+    "mine": false
+   }
+  }
+ },
+ {
+  "as": "ann",
+  "op": "view",
+  "method": "claimTally",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": {
+    "claims": 2,
+    "releases": 0,
+    "epoch": 0
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "resolve",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": "@ann"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "resolve",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": "@ann"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "status",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": {
+    "state": "owned",
+    "owner": "@ann",
+    "epoch": 0,
+    "claimants": 0,
+    "mine": false
+   }
+  }
+ },
+ {
+  "as": "ann",
+  "op": "view",
+  "method": "status",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": {
+    "state": "owned",
+    "owner": "@ann",
+    "epoch": 0,
+    "claimants": 0,
+    "mine": true
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "status",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": {
+    "state": "lost",
+    "owner": "@ann",
+    "epoch": 0,
+    "claimants": 0,
+    "mine": false
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "claim",
+  "args": {
+   "name": "rose",
+   "display": "again"
+  },
+  "expect": {
+   "error": "Owned",
+   "fields": {
+    "name": "rose"
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "rebid",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": "nothing"
+  }
+ },
+ {
+  "as": "ann",
+  "op": "call",
+  "method": "letGo",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": "released"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "letGo",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": "nothing"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "ownerOf",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": "@ann"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "claimTally",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": {
+    "claims": 2,
+    "releases": 1,
+    "epoch": 0
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "resolve",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "status",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": {
+    "state": "free",
+    "owner": null,
+    "epoch": null,
+    "claimants": 0,
+    "mine": false
+   }
+  }
+ },
+ {
+  "as": "ann",
+  "op": "call",
+  "method": "rebid",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": "nothing"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "rebid",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": "rebid"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "status",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": {
+    "state": "pending",
+    "owner": null,
+    "epoch": null,
+    "claimants": 1,
+    "mine": false
+   }
+  }
+ },
+ {
+  "as": "ann",
+  "op": "view",
+  "method": "claimTally",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": {
+    "claims": 2,
+    "releases": 1,
+    "epoch": 1
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "resolve",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": "@bob"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "status",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": {
+    "state": "owned",
+    "owner": "@bob",
+    "epoch": 1,
+    "claimants": 0,
+    "mine": false
+   }
+  }
+ },
+ {
+  "as": "ann",
+  "op": "view",
+  "method": "status",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": {
+    "state": "owned",
+    "owner": "@bob",
+    "epoch": 1,
+    "claimants": 0,
+    "mine": false
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "status",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": {
+    "state": "owned",
+    "owner": "@bob",
+    "epoch": 1,
+    "claimants": 0,
+    "mine": true
+   }
+  }
+ },
+ {
+  "as": "ann",
+  "op": "view",
+  "method": "displayOf",
+  "args": {
+   "name": "rose"
+  },
+  "expect": {
+   "ok": "Rose, as Bob"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "claim",
+  "args": {
+   "name": "iris",
+   "display": "Iris, as Bob"
+  }
+ },
+ {
+  "as": "ann",
+  "op": "call",
+  "method": "resolve",
+  "args": {
+   "name": "iris"
+  },
+  "expect": {
+   "error": "NotAdmin"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "resolve",
+  "args": {
+   "name": "iris"
+  },
+  "expect": {
+   "error": "NotAdmin"
+  }
+ },
+ {
+  "as": "ann",
+  "op": "call",
+  "method": "setAdmins",
+  "args": {
+   "admins": [
+    "@ann"
+   ]
+  },
+  "expect": {
+   "error": "NotAdmin"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "status",
+  "args": {
+   "name": "iris"
+  },
+  "expect": {
+   "ok": {
+    "state": "pending",
+    "owner": null,
+    "epoch": null,
+    "claimants": 1,
+    "mine": false
+   }
+  }
+ },
+ {
+  "as": "ann",
+  "op": "view",
+  "method": "status",
+  "args": {
+   "name": "iris"
+  },
+  "expect": {
+   "ok": {
+    "state": "pending",
+    "owner": null,
+    "epoch": null,
+    "claimants": 1,
+    "mine": false
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "status",
+  "args": {
+   "name": "iris"
+  },
+  "expect": {
+   "ok": {
+    "state": "pending",
+    "owner": null,
+    "epoch": null,
+    "claimants": 1,
+    "mine": true
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "ownerOf",
+  "args": {
+   "name": "iris"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "ann",
+  "op": "view",
+  "method": "admins",
+  "expect": {
+   "ok": [
+    "@owner"
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "setAdmins",
+  "args": {
+   "admins": []
+  },
+  "expect": {
+   "error": "NoAdmins"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "setAdmins",
+  "args": {
+   "admins": [
+    "@ann"
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "admins",
+  "expect": {
+   "ok": [
+    "@ann"
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "claim",
+  "args": {
+   "name": "lily",
+   "display": "Lily, as Bob"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "resolve",
+  "args": {
+   "name": "lily"
+  },
+  "expect": {
+   "error": "NotAdmin"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "setAdmins",
+  "args": {
+   "admins": [
+    "@owner"
+   ]
+  },
+  "expect": {
+   "error": "NotAdmin"
+  }
+ },
+ {
+  "as": "ann",
+  "op": "call",
+  "method": "resolve",
+  "args": {
+   "name": "lily"
+  },
+  "expect": {
+   "ok": "@bob"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "ownerOf",
+  "args": {
+   "name": "lily"
+  },
+  "expect": {
+   "ok": "@bob"
+  }
+ },
+ {
+  "as": "ann",
+  "op": "call",
+  "method": "claim",
+  "args": {
+   "name": "Ann",
+   "display": "x"
+  },
+  "expect": {
+   "error": "BadName",
+   "fields": {
+    "name": "Ann"
+   }
+  }
+ }
+]

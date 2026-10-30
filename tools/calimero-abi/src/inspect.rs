@@ -103,7 +103,7 @@ pub fn inspect_wasm(wasm_file: &PathBuf) -> eyre::Result<()> {
         println!("\n⚠️  'calimero_abi_v1' section NOT found.");
         println!("This WASM file was built without ABI generation enabled.");
         println!("\nTo enable ABI generation:");
-        println!("  - See the build.rs examples in apps/kv-store or apps/abi_conformance");
+        println!("  - See the build.rs examples in apps/wasmer-fixtures/kv-store or apps/abi_conformance");
         println!("  - Build with: cargo build --target wasm32-unknown-unknown --release");
     }
 

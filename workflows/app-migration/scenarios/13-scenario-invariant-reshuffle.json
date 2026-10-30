@@ -1,0 +1,354 @@
+{
+  "name": "13 — Scenario \"invariant reshuffle\" (v1 → v2-normalize-stats, 2-node)",
+  "description": "2-node per-context migration for the invariant-reshuffle scenario. v1 carries a denormalized counter pair: `global_count: LwwRegister<u64>` at the top level and `per_item_counts: UnorderedMap<String, LwwRegister<u64>>`. The implicit invariant `global_count == sum(per_item_counts)` is easy to violate because each `record(item)` call independently bumps both fields. v2 keeps the same two top-level fields (`total` + `per_item`) but funnels all writes through a single `record` method that atomically bumps both — the field shape stays flat (a nested `Stats` substruct can't be used as a top-level `#[app::state]` field because plain structs of collections don't implement `Mergeable`). The migration re-derives `total` by summing the v1 per-item values rather than trusting v1's redundant `global_count`, guaranteeing the v2 invariant holds from the first byte of v2 state. Topology: namespace + one Open subgroup + one context, lazy-on-access upgrade policy, per-context upgrade (cascade=false).\nBug-2 cross-node guard: node 2 reads `get_item_count` for each v1 key after the migration to prove the migration's storage commit (the `ContextStorage::commit()` after WASM migrate) plus context-sync gossip both propagate the freshly populated `per_item` UnorderedMap, not just the scalar `total`.\n",
+  "comment": [
+    "Migrated from this file's v1 workflow by `merobox cloud port`.",
+    "Each of the original scenario's nodes is an account here; see merobox/cloud_v2/port.py for the mapping.",
+    "Dropped (no counterpart in this node):",
+    "  assert_log_present x2: v1 node logs",
+    "  assert_migration_complete x1: v1 group migration",
+    "  delete_context (unknown) x1: checks what the dropped steps did",
+    "  delete_namespace x1: v1 namespace deletion",
+    "  uninstall_application (unknown) x1: checks what the dropped steps did",
+    "  wait_for_sync x2: replication is synchronous: a read sees every committed write",
+    "Fixed in the migration (converter bugs): a cascade upgrade_group",
+    "upgrades every app in the namespace's teams; of get_migration_status",
+    "only the outputs that mean the same here are kept."
+  ],
+  "cluster": {
+    "nodes": 3
+  },
+  "accounts": [
+    "app-migration-reshuffle-1",
+    "app-migration-reshuffle-2"
+  ],
+  "steps": [
+    {
+      "name": "Install scenario-invariant-reshuffle-v1 on node 1",
+      "type": "install_package",
+      "mpk": "{{env.CORE_WASM_DIR}}/dist/com.calimero.scenario-invariant-reshuffle-1.0.0.mpk",
+      "outputs": {
+        "app_v1": "package",
+        "app_v1_version": "version"
+      },
+      "account": "app-migration-reshuffle-1"
+    },
+    {
+      "name": "Create namespace (v1) on node 1",
+      "type": "create_org",
+      "org_name": "Create namespace (v1) on node 1",
+      "outputs": {
+        "namespace_id": "orgId"
+      },
+      "account": "app-migration-reshuffle-1"
+    },
+    {
+      "name": "Create Open subgroup under namespace",
+      "type": "create_team",
+      "org": "{{namespace_id}}",
+      "team_name": "reshuffle-scenario-subgroup",
+      "join": "invite",
+      "outputs": {
+        "group_id": "teamId"
+      },
+      "account": "app-migration-reshuffle-1"
+    },
+    {
+      "name": "Mark subgroup as Open",
+      "type": "team_update",
+      "org": "{{namespace_id}}",
+      "team": "{{group_id}}",
+      "join": "everyone",
+      "account": "app-migration-reshuffle-1"
+    },
+    {
+      "name": "Create context in subgroup on node 1 (v1)",
+      "type": "deploy",
+      "account": "app-migration-reshuffle-1",
+      "package": "{{app_v1}}",
+      "version": "{{app_v1_version}}",
+      "app_name": "Create context in subgroup on node 1 (v1)",
+      "org": "{{namespace_id}}",
+      "access": {
+        "kind": "team",
+        "team": "{{group_id}}"
+      },
+      "outputs": {
+        "ctx_id": "contextId"
+      }
+    },
+    {
+      "name": "Create namespace invitation for node 2",
+      "type": "invite",
+      "org": "{{namespace_id}}",
+      "role": "member",
+      "account": "app-migration-reshuffle-1",
+      "outputs": {
+        "namespace_invitation": "token"
+      }
+    },
+    {
+      "name": "Node 2 joins namespace",
+      "type": "redeem_invite",
+      "token": "{{namespace_invitation}}",
+      "account": "app-migration-reshuffle-2"
+    },
+    {
+      "name": "Node 2 materialises subgroup membership via inheritance",
+      "type": "team_join",
+      "org": "{{namespace_id}}",
+      "team": "{{group_id}}",
+      "account": "app-migration-reshuffle-2"
+    },
+    {
+      "name": "Record apple (v1, 1/3)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "record",
+      "args": {
+        "item": "apple"
+      },
+      "account": "app-migration-reshuffle-1"
+    },
+    {
+      "name": "Record apple (v1, 2/3)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "record",
+      "args": {
+        "item": "apple"
+      },
+      "account": "app-migration-reshuffle-1"
+    },
+    {
+      "name": "Record apple (v1, 3/3)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "record",
+      "args": {
+        "item": "apple"
+      },
+      "account": "app-migration-reshuffle-1"
+    },
+    {
+      "name": "Record banana (v1, 1/2)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "record",
+      "args": {
+        "item": "banana"
+      },
+      "account": "app-migration-reshuffle-1"
+    },
+    {
+      "name": "Record banana (v1, 2/2)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "record",
+      "args": {
+        "item": "banana"
+      },
+      "account": "app-migration-reshuffle-1"
+    },
+    {
+      "name": "Record cherry (v1)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "record",
+      "args": {
+        "item": "cherry"
+      },
+      "account": "app-migration-reshuffle-1"
+    },
+    {
+      "name": "Sanity-check v1 schema on node 1",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "schema_info",
+      "args": {},
+      "account": "app-migration-reshuffle-1",
+      "outputs": {
+        "v1_schema": "rpc"
+      }
+    },
+    {
+      "name": "Assert v1 denormalized counter is in place",
+      "type": "json_assert",
+      "statements": [
+        "json_subset({{v1_schema}}, {\"output\": {\"schema_version\": \"1.0.0\", \"global_count\": 6}})"
+      ]
+    },
+    {
+      "name": "Install scenario-invariant-reshuffle-v2 on node 1",
+      "type": "install_package",
+      "mpk": "{{env.CORE_WASM_DIR}}/dist/com.calimero.scenario-invariant-reshuffle-2.0.0.mpk",
+      "outputs": {
+        "app_v2": "package",
+        "app_v2_version": "version"
+      },
+      "account": "app-migration-reshuffle-1"
+    },
+    {
+      "name": "Assert both versions share one application id (bundle same-id)",
+      "type": "json_assert",
+      "statements": [
+        "equal(\"{{app_v1}}\", \"{{app_v2}}\")"
+      ]
+    },
+    {
+      "name": "Upgrade subgroup v1 → v2 (per-context, not cascade)",
+      "type": "upgrade_app",
+      "app": "{{ctx_id}}",
+      "version": "{{app_v2_version}}",
+      "account": "app-migration-reshuffle-1"
+    },
+    {
+      "name": "Wait for upgrade meta to gossip to node 2",
+      "type": "wait",
+      "seconds": 15.0
+    },
+    {
+      "name": "Read post-migration schema_info on node 1 (triggers lazy migration)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "schema_info",
+      "args": {},
+      "account": "app-migration-reshuffle-1",
+      "outputs": {
+        "v2_schema_node1": "rpc"
+      }
+    },
+    {
+      "name": "Read post-migration schema_info on node 2 (triggers lazy migration)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "schema_info",
+      "args": {},
+      "account": "app-migration-reshuffle-2",
+      "outputs": {
+        "v2_schema_node2": "rpc"
+      }
+    },
+    {
+      "name": "Assert v2 schema on node 1 (total re-derived from per-item sums)",
+      "type": "json_assert",
+      "statements": [
+        "json_subset({{v2_schema_node1}}, {\"output\": {\"schema_version\": \"2.0.0\", \"total\": 6}})"
+      ]
+    },
+    {
+      "name": "Assert v2 schema on node 2 (bug-2 guard — re-derived total reached node 2)",
+      "type": "json_assert",
+      "statements": [
+        "json_subset({{v2_schema_node2}}, {\"output\": {\"schema_version\": \"2.0.0\", \"total\": 6}})"
+      ]
+    },
+    {
+      "name": "Read apple count on node 1 (post-migration, v1 data carried)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get_item_count",
+      "args": {
+        "item": "apple"
+      },
+      "account": "app-migration-reshuffle-1",
+      "outputs": {
+        "apple_count_node1": "rpc"
+      }
+    },
+    {
+      "name": "Read apple count on node 2 (bug-2 guard — per_item entry reached node 2)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get_item_count",
+      "args": {
+        "item": "apple"
+      },
+      "account": "app-migration-reshuffle-2",
+      "outputs": {
+        "apple_count_node2": "rpc"
+      }
+    },
+    {
+      "name": "Assert apple count = 3 on node 1 (carried over from v1)",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{apple_count_node1}}, {\"output\": 3})"
+      ]
+    },
+    {
+      "name": "Assert apple count = 3 round-trips to node 2 (per_item map sync guard)",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{apple_count_node2}}, {\"output\": 3})"
+      ]
+    },
+    {
+      "name": "Read banana count on node 2 (further per_item entry)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get_item_count",
+      "args": {
+        "item": "banana"
+      },
+      "account": "app-migration-reshuffle-2",
+      "outputs": {
+        "banana_count_node2": "rpc"
+      }
+    },
+    {
+      "name": "Assert banana count = 2 on node 2",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{banana_count_node2}}, {\"output\": 2})"
+      ]
+    },
+    {
+      "name": "Record apple under v2 on node 1 (atomic bump of total + per_item)",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "record",
+      "args": {
+        "item": "apple"
+      },
+      "account": "app-migration-reshuffle-1",
+      "outputs": {
+        "new_total": "rpc"
+      }
+    },
+    {
+      "name": "Assert v2 record returned new total = 7",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{new_total}}, {\"output\": 7})"
+      ]
+    },
+    {
+      "name": "Read apple count on node 2 after v2 record",
+      "type": "call",
+      "app": "{{ctx_id}}",
+      "method": "get_item_count",
+      "args": {
+        "item": "apple"
+      },
+      "account": "app-migration-reshuffle-2",
+      "outputs": {
+        "apple_count_after_node2": "rpc"
+      }
+    },
+    {
+      "name": "Assert apple count = 4 round-trips to node 2 (3 from v1 + 1 from v2)",
+      "type": "json_assert",
+      "statements": [
+        "json_equal({{apple_count_after_node2}}, {\"output\": 4})"
+      ]
+    },
+    {
+      "name": "Delete subgroup",
+      "type": "team_delete",
+      "org": "{{namespace_id}}",
+      "team": "{{group_id}}",
+      "account": "app-migration-reshuffle-1"
+    }
+  ]
+}

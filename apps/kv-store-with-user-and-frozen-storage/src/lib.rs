@@ -1,326 +1,333 @@
-#![allow(clippy::len_without_is_empty)]
+//! A key-value store with two more kinds of state beside the shared items:
+//!
+//! * **Per-account values** (v1's `UserStorage`): a simple value and a nested key-value map
+//!   per account. **Rule: an account writes only its own.** The setters take no account
+//!   argument; the row is keyed by `env::caller()`'s account, so there is no way to name
+//!   anybody else's. Anyone in the org may read anyone's simple value by account
+//!   (`getUserSimpleFor`). v1 keyed the writer by device for its logs; there is no device
+//!   here, so events name the account.
+//! * **Immutable, content-addressed values** (v1's `FrozenStorage`). **Rule: a value is
+//!   stored under the SHA-256 of its content and never changed or removed**: adding the
+//!   same content again is a no-op that returns the same hash. The hash is computed in the
+//!   guest over the bytes v1 hashed (the value's borsh encoding: its length as a
+//!   little-endian `u32`, then its UTF-8 bytes), so the hashes are v1's.
+//!
+//! Access: every method needs an org member (or above); guests get `Forbidden`.
 
 use std::collections::BTreeMap;
 
-use calimero_sdk::abi::AbiType;
-use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use calimero_sdk::serde::Serialize;
-use calimero_sdk::{AccountId, PublicKey};
-use calimero_storage::collections::Mergeable;
-use calimero_storage::collections::{FrozenStorage, LwwRegister, UnorderedMap, UserStorage};
-use thiserror::Error;
+use calimero_app_sdk::prelude::*;
+use sha2::{Digest, Sha256};
 
-#[app::state(emits = for<'a> Event<'a>)]
-pub struct KvStore {
-    // Public items, viewable by all
-    items: UnorderedMap<String, LwwRegister<String>>,
-
-    // Simple user-owned data (e.g., a user's profile name)
-    // Stores: UnorderedMap<AccountId, LwwRegister<String>>
-    user_items_simple: UserStorage<LwwRegister<String>>,
-
-    // Nested user-owned data (e.g., a user's private key-value store)
-    // Stores: UnorderedMap<AccountId, UnorderedMap<String, LwwRegister<String>>>
-    user_items_nested: UserStorage<NestedMap>,
-
-    // Content-addressable, immutable data
-    // Stores: UnorderedMap<Hash, FrozenValue<String>>
-    frozen_items: FrozenStorage<String>,
+/// A shared item.
+#[derive(Record)]
+#[table(key = "key")]
+pub struct Item {
+    pub key: String,
+    pub value: String,
 }
 
-// Nested map type for `user_items_nested`.
-#[derive(Debug, BorshSerialize, BorshDeserialize, Default, Mergeable, AbiType)]
-#[borsh(crate = "calimero_sdk::borsh")]
-struct NestedMap {
-    map: UnorderedMap<String, LwwRegister<String>>,
+/// An account's simple value.
+#[derive(Record)]
+#[table(key = "account")]
+pub struct UserValue {
+    pub account: String,
+    pub value: String,
+}
+
+/// One entry of an account's nested map.
+#[derive(Record)]
+#[table(key = ["account", "key"])]
+pub struct UserEntry {
+    pub account: String,
+    pub key: String,
+    pub value: String,
+}
+
+/// An immutable value, under the hex SHA-256 of its content.
+#[derive(Record)]
+#[table(key = "hash")]
+pub struct Frozen {
+    pub hash: String,
+    pub value: String,
+}
+
+#[app::state(version = 1)]
+pub struct KvStore {
+    items: Table<Item>,
+    /// How many items there are.
+    item_count: Counter,
+    user_simple: Table<UserValue>,
+    user_nested: Table<UserEntry>,
+    frozen: Table<Frozen>,
+}
+
+#[app::error]
+pub enum Error {
+    /// No item at `key`.
+    NotFound { key: String },
+    /// No frozen value under `hash`.
+    FrozenNotFound { hash: String },
+    /// `hashHex` is not 64 hex digits.
+    BadHash,
 }
 
 #[app::event]
-pub enum Event<'a> {
+pub enum Event {
     Inserted {
-        key: &'a str,
-        value: &'a str,
+        key: String,
+        value: String,
     },
     Updated {
-        key: &'a str,
-        value: &'a str,
+        key: String,
+        value: String,
     },
     Removed {
-        key: &'a str,
+        key: String,
     },
     Cleared,
-    // Events for new storage types
     UserSimpleSet {
-        executor_id: PublicKey,
-        value: &'a str,
+        account: String,
+        value: String,
     },
     UserNestedSet {
-        executor_id: PublicKey,
-        key: &'a str,
-        value: &'a str,
+        account: String,
+        key: String,
+        value: String,
     },
     FrozenAdded {
-        hash: [u8; 32],
-        value: &'a str,
+        hash: String,
+        value: String,
     },
 }
 
-#[derive(Debug, Error, Serialize)]
-#[serde(crate = "calimero_sdk::serde")]
-#[serde(tag = "kind", content = "data")]
-pub enum Error<'a> {
-    /// Error if key was not found
-    #[error("key not found: {0}")]
-    NotFound(&'a str),
-    /// Error for user-specific data not found
-    #[error("User data not found for key: {0}")]
-    UserNotFound(PublicKey),
-    /// Error for frozen data not found
-    #[error("Frozen data not found for hash: {0}")]
-    FrozenNotFound(&'a str),
+/// The page size `entries` and `clear` walk the items in.
+const PAGE: u32 = 1000;
+
+/// The content address of `value`: the hex SHA-256 of its borsh encoding, as v1 computed it.
+fn content_hash(value: &str) -> String {
+    let len = u32::try_from(value.len()).unwrap_or(u32::MAX);
+    let mut hasher = Sha256::new();
+    hasher.update(len.to_le_bytes());
+    hasher.update(value.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 #[app::logic]
 impl KvStore {
     #[app::init]
-    pub fn init() -> KvStore {
-        KvStore {
-            //
-            items: UnorderedMap::new(),
-            user_items_simple: UserStorage::new(),
-            user_items_nested: UserStorage::new(),
-            frozen_items: FrozenStorage::new(),
-        }
+    pub fn init() -> app::Result<Self> {
+        Ok(Self::load())
     }
 
-    // --- Public Storage Methods ---
+    // --- Shared items ---
 
     pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
-        app::log!("Setting key: {:?} to value: {:?}", key, value);
-        if self.items.contains(&key)? {
-            //
-            app::emit!(Event::Updated {
-                //
-                key: &key,
-                value: &value,
-            });
+        guards::require_member()?;
+        let event = if self.items.contains(&key)? {
+            Event::Updated {
+                key: key.clone(),
+                value: value.clone(),
+            }
         } else {
-            app::emit!(Event::Inserted {
-                //
-                key: &key,
-                value: &value,
-            });
-        }
-
-        self.items.insert(key, value.into())?;
-        Ok(())
-    }
-
-    pub fn get(&self, key: &str) -> app::Result<Option<String>> {
-        app::log!("Getting key: {:?}", key);
-
-        Ok(self.items.get(key)?.map(|v| v.get().clone()))
-    }
-
-    // --- User Storage (Simple) Methods ---
-
-    /// Sets a simple string value for the *current* user.
-    pub fn set_user_simple(&mut self, value: String) -> app::Result<()> {
-        let executor_id = calimero_sdk::env::device_id();
-        app::log!(
-            "Setting simple value for user {:?}: {:?}",
-            executor_id,
-            value
-        );
-
-        app::emit!(Event::UserSimpleSet {
-            executor_id: executor_id.into(),
-            value: &value
-        });
-
-        self.user_items_simple.insert(value.into())?;
-        Ok(())
-    }
-
-    /// Gets the simple string value for the *current* user.
-    pub fn get_user_simple(&self) -> app::Result<Option<String>> {
-        let executor_id = calimero_sdk::env::device_id();
-        app::log!("Getting simple value for user {:?}", executor_id);
-
-        Ok(self.user_items_simple.get()?.map(|v| v.get().clone()))
-    }
-
-    /// This node's account, hex-encoded — what user storage is keyed by.
-    ///
-    /// Exists for the e2e: an account is derived from the node's root rather
-    /// than carried on the wire, so a scenario has no other way to learn one.
-    pub fn my_account(&self) -> app::Result<String> {
-        Ok(AccountId::from(calimero_sdk::env::account_id()).to_string())
-    }
-
-    /// Gets the simple string value for a *specific* user.
-    ///
-    /// Named by ACCOUNT: user storage is keyed per person, so this reaches the
-    /// one slot every device of theirs writes to.
-    pub fn get_user_simple_for(&self, user_key: AccountId) -> app::Result<Option<String>> {
-        app::log!("Getting simple value for specific user {:?}", user_key);
-        Ok(self
-            .user_items_simple
-            .get_for_user(&user_key)?
-            .map(|v| v.get().clone()))
-    }
-
-    // --- User Storage (Nested) Methods ---
-
-    /// Sets a key-value pair in the *current* user's nested map.
-    pub fn set_user_nested(&mut self, key: String, value: String) -> app::Result<()> {
-        let executor_id = calimero_sdk::env::device_id();
-        app::log!(
-            "Setting nested key {:?} for user {:?}: {:?}",
-            key,
-            executor_id,
-            value
-        );
-
-        // This is a get-modify-put operation on the user's T value
-        let mut nested_map = self.user_items_nested.get()?.unwrap_or_default();
-        nested_map.map.insert(key.clone(), value.clone().into())?;
-        self.user_items_nested.insert(nested_map)?;
-
-        app::emit!(Event::UserNestedSet {
-            executor_id: executor_id.into(),
-            key: &key,
-            value: &value
-        });
-        Ok(())
-    }
-
-    /// Gets a value from the *current* user's nested map.
-    pub fn get_user_nested(&self, key: &str) -> app::Result<Option<String>> {
-        let executor_id = calimero_sdk::env::device_id();
-        app::log!("Getting nested key {:?} for user {:?}", key, executor_id);
-
-        let nested_map = self.user_items_nested.get()?;
-        match nested_map {
-            Some(map) => Ok(map.map.get(key)?.map(|v| v.get().clone())),
-            None => Ok(None),
-        }
-    }
-
-    // --- Frozen Storage Methods ---
-
-    /// Adds an immutable value to frozen storage.
-    /// Returns the hex-encoded SHA256 hash (key) of the value.
-    pub fn add_frozen(&mut self, value: String) -> app::Result<String> {
-        app::log!("Adding frozen value: {:?}", value);
-
-        let hash = self.frozen_items.insert(value.clone())?;
-
-        app::emit!(Event::FrozenAdded {
-            hash,
-            value: &value
-        });
-
-        let hash_hex = hex::encode(hash);
-        Ok(hash_hex)
-    }
-
-    /// Gets an immutable value from frozen storage by its hash.
-    pub fn get_frozen(&self, hash_hex: String) -> app::Result<String> {
-        app::log!("Getting frozen value for hash {:?}", hash_hex);
-        let mut hash = [0u8; 32];
-        hex::decode_to_slice(hash_hex, &mut hash[..])
-            .map_err(|_| Error::NotFound("dehex error"))?;
-
-        Ok(self
-            .frozen_items
-            .get(&hash)?
-            .ok_or(Error::FrozenNotFound("Frozen value is not found"))?)
-    }
-
-    // --- Original KvStore Methods (Public) ---
-
-    pub fn entries(&self) -> app::Result<BTreeMap<String, String>> {
-        app::log!("Getting all entries");
-        Ok(self
-            .items
-            .entries()?
-            .map(|(k, v)| (k, v.get().clone()))
-            .collect())
-    }
-
-    pub fn len(&self) -> app::Result<usize> {
-        app::log!("Getting the number of entries");
-        Ok(self.items.len()?)
-    }
-
-    pub fn get_unchecked(&self, key: &str) -> app::Result<String> {
-        app::log!("Getting key without checking: {:?}", key);
-        // this panics, which we do not recommend
-        Ok(self.items.get(key)?.expect("key not found").get().clone())
-    }
-
-    pub fn get_result(&self, key: &str) -> app::Result<String> {
-        app::log!("Getting key, possibly failing: {:?}", key);
-        let Some(value) = self.get(key)? else {
-            app::bail!(Error::NotFound(key));
+            self.item_count.add(1)?;
+            Event::Inserted {
+                key: key.clone(),
+                value: value.clone(),
+            }
         };
-        Ok(value)
+        self.items.upsert(Item { key, value })?;
+        env::emit(event, Audience::Org)?;
+        Ok(())
     }
 
-    pub fn remove(&mut self, key: &str) -> app::Result<Option<String>> {
-        app::log!("Removing key: {:?}", key);
-        app::emit!(Event::Removed { key });
-
-        Ok(self.items.remove(key)?.map(|v| v.get().clone()))
+    #[app::view]
+    pub fn get(&self, key: String) -> app::Result<Option<String>> {
+        guards::require_member()?;
+        Ok(self.items.get(&key)?.map(|i| i.value))
     }
 
+    /// Every item, by key.
+    #[app::view]
+    pub fn entries(&self) -> app::Result<BTreeMap<String, String>> {
+        guards::require_member()?;
+        let mut out = BTreeMap::new();
+        let mut cursor = None;
+        loop {
+            let mut opts = FindOpts::default().limit(PAGE);
+            if let Some(c) = cursor.take() {
+                opts = opts.cursor(c);
+            }
+            let page = self.items.scan(opts)?;
+            out.extend(page.items.into_iter().map(|i| (i.key, i.value)));
+            match page.next {
+                Some(next) => cursor = Some(next),
+                None => return Ok(out),
+            }
+        }
+    }
+
+    /// How many items there are (no `isEmpty`: the ABI is v1's).
+    #[allow(
+        clippy::len_without_is_empty,
+        reason = "an app method, not a container's"
+    )]
+    #[app::view]
+    pub fn len(&self) -> app::Result<u64> {
+        guards::require_member()?;
+        Ok(self.item_count.get()?)
+    }
+
+    /// The item at `key`; traps when there is none (an example of what not to do).
+    #[app::view]
+    pub fn get_unchecked(&self, key: String) -> app::Result<String> {
+        guards::require_member()?;
+        #[allow(
+            clippy::expect_used,
+            reason = "the trap is what this method demonstrates"
+        )]
+        Ok(self.items.get(&key)?.expect("key not found").value)
+    }
+
+    /// The item at `key`, or `NotFound`.
+    #[app::view]
+    pub fn get_result(&self, key: String) -> app::Result<String> {
+        guards::require_member()?;
+        match self.items.get(&key)? {
+            Some(i) => Ok(i.value),
+            None => Err(Error::NotFound { key }.into()),
+        }
+    }
+
+    /// Removes the item at `key`, returning its value; `Removed` only when there was one.
+    pub fn remove(&mut self, key: String) -> app::Result<Option<String>> {
+        guards::require_member()?;
+        let old = self.items.get(&key)?;
+        if old.is_some() {
+            self.items.remove(&key)?;
+            self.item_count.add(-1)?;
+            env::emit(Event::Removed { key }, Audience::Org)?;
+        }
+        Ok(old.map(|i| i.value))
+    }
+
+    /// Removes every item.
     pub fn clear(&mut self) -> app::Result<()> {
-        app::log!("Clearing all entries");
-        app::emit!(Event::Cleared);
-
-        self.items.clear().map_err(Into::into)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use calimero_sdk::testing::TestHost;
-
-    use super::*;
-
-    #[test]
-    fn regular_set_get() {
-        let mut app = TestHost::new(KvStore::init);
-
-        app.call(|s| s.set("k".into(), "v".into())).unwrap();
-        assert_eq!(app.view(|s| s.get("k")).unwrap(), Some("v".to_owned()));
+        guards::require_member()?;
+        loop {
+            let page = self.items.scan(FindOpts::default().limit(PAGE))?;
+            if page.items.is_empty() {
+                break;
+            }
+            for item in page.items {
+                self.items.remove(&item.key)?;
+                self.item_count.add(-1)?;
+            }
+        }
+        env::emit(Event::Cleared, Audience::Org)?;
+        Ok(())
     }
 
-    #[test]
-    fn user_storage_roundtrip() {
-        let mut app = TestHost::new(KvStore::init);
+    // --- Per-account values: each account writes only its own ---
 
-        app.call(|s| s.set_user_simple("mine".into())).unwrap();
-        assert_eq!(
-            app.view(|s| s.get_user_simple()).unwrap(),
-            Some("mine".to_owned())
-        );
+    /// The caller's account, as `getUserSimpleFor` takes it.
+    #[app::view]
+    pub fn my_account(&self) -> app::Result<String> {
+        guards::require_member()
     }
 
-    #[test]
-    fn frozen_storage_is_content_addressed() {
-        let mut app = TestHost::new(KvStore::init);
+    /// Sets the caller's own simple value.
+    pub fn set_user_simple(&mut self, value: String) -> app::Result<()> {
+        let account = guards::require_member()?;
+        self.user_simple.upsert(UserValue {
+            account: account.clone(),
+            value: value.clone(),
+        })?;
+        env::emit(Event::UserSimpleSet { account, value }, Audience::Org)?;
+        Ok(())
+    }
 
-        let hash = app.call(|s| s.add_frozen("immutable".into())).unwrap();
-        assert_eq!(
-            app.view(|s| s.get_frozen(hash.clone())).unwrap(),
-            "immutable"
-        );
+    /// The caller's own simple value.
+    #[app::view]
+    pub fn get_user_simple(&self) -> app::Result<Option<String>> {
+        let account = guards::require_member()?;
+        Ok(self.user_simple.get(&account)?.map(|v| v.value))
+    }
 
-        // Same content hashes to the same key (deduplicated).
-        let hash2 = app.call(|s| s.add_frozen("immutable".into())).unwrap();
-        assert_eq!(hash, hash2);
+    /// `userKey`'s simple value (an account, as `myAccount` shows it).
+    #[app::view]
+    pub fn get_user_simple_for(&self, user_key: String) -> app::Result<Option<String>> {
+        guards::require_member()?;
+        Ok(self.user_simple.get(&user_key)?.map(|v| v.value))
+    }
+
+    /// Sets `key` in the caller's own nested map.
+    pub fn set_user_nested(&mut self, key: String, value: String) -> app::Result<()> {
+        let account = guards::require_member()?;
+        self.user_nested.upsert(UserEntry {
+            account: account.clone(),
+            key: key.clone(),
+            value: value.clone(),
+        })?;
+        env::emit(
+            Event::UserNestedSet {
+                account,
+                key,
+                value,
+            },
+            Audience::Org,
+        )?;
+        Ok(())
+    }
+
+    /// `key` in the caller's own nested map.
+    #[app::view]
+    pub fn get_user_nested(&self, key: String) -> app::Result<Option<String>> {
+        let account = guards::require_member()?;
+        Ok(self
+            .user_nested
+            .get(&(account.as_str(), key.as_str()))?
+            .map(|e| e.value))
+    }
+
+    // --- Frozen values: content-addressed, never changed ---
+
+    /// Stores `value` under its content hash and returns the hash (hex). The same content
+    /// again stores nothing, emits nothing and returns the same hash.
+    pub fn add_frozen(&mut self, value: String) -> app::Result<String> {
+        guards::require_member()?;
+        let hash = content_hash(&value);
+        if !self.frozen.contains(&hash)? {
+            self.frozen.insert(Frozen {
+                hash: hash.clone(),
+                value: value.clone(),
+            })?;
+            env::emit(
+                Event::FrozenAdded {
+                    hash: hash.clone(),
+                    value,
+                },
+                Audience::Org,
+            )?;
+        }
+        Ok(hash)
+    }
+
+    /// The frozen value under `hashHex`.
+    #[app::view]
+    pub fn get_frozen(&self, hash_hex: String) -> app::Result<String> {
+        guards::require_member()?;
+        if hash_hex.len() != 64 || !hash_hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            app::bail!(Error::BadHash);
+        }
+        let hash = hash_hex.to_ascii_lowercase();
+        match self.frozen.get(&hash)? {
+            Some(f) => Ok(f.value),
+            None => Err(Error::FrozenNotFound { hash }.into()),
+        }
     }
 }

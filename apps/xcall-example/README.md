@@ -26,7 +26,7 @@ Cross-context calls are gated by the node, so an app cannot reach arbitrary cont
 - **Entry points (L3):** only methods declared `#[app::xcall]` are reachable via xcall. Here only `pong` is — an xcall to `secret` is denied.
 - **Provenance (L2a):** the node sets `env::xcall_origin()` to the calling context (it cannot be forged). `pong` uses it to reject direct calls and to verify the caller's self-reported `from_context`.
 
-`workflows/xcall-example.yml` is the same-namespace happy-path demo; `workflows/xcall.yml` is the full authorization test (positive call + cross-namespace denial + non-entry-point denial + direct-call rejection).
+`scenarios/cluster/xcall-example.json` is the same-namespace happy-path demo; `scenarios/cluster/xcall.json` is the full authorization test (positive call + cross-namespace denial + non-entry-point denial + direct-call rejection).
 
 ## Example Usage
 
@@ -71,7 +71,7 @@ This application includes an automated workflow for end-to-end testing across mu
 7. **Node 2** receives and syncs the Context B state change
 8. Both nodes now have the same state for Context B
 
-### What the Workflow Tests
+### What the Scenarios Test
 
 - Cross-context calls (xcall) between contexts on the same node
 - State delta generation from xcall execution (counter increments)
@@ -86,11 +86,11 @@ This application includes an automated workflow for end-to-end testing across mu
 # Build the application first
 cargo mero build
 
-# Run the workflow using merobox
-merobox bootstrap run workflows/xcall-example.yml
+# Run its scenarios on an in-process cluster
+cargo test -p calimero-node --test scenarios -- apps/xcall-example/
 ```
 
-The workflow verifies that:
+The scenarios verify that:
 - Pings sent via xcall execute locally and increment the receiver's counter
 - Counter state changes are broadcast and synced correctly to all nodes
 - Both nodes maintain consistent counter state for all contexts

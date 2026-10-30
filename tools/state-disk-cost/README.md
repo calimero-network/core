@@ -12,7 +12,7 @@ cargo run -p state-disk-cost --release -- --contexts 4 --kv 25000 --chat 10000 -
 
 The tool generates real rows with `calimero-storage`:
 
-- **kv**: an `UnorderedMap<String, LwwRegister<String>>`, which is the layout of `apps/kv-store`.
+- **kv**: an `UnorderedMap<String, LwwRegister<String>>`, which is the layout of `apps/wasmer-fixtures/kv-store`.
 - **chat**: an `AuthoredVector` of messages (sender, text, timestamp, flags), shaped like mero-chat's.
 
 It writes them under the node's `State` keys (`context_id ‖ tag ‖ id`, 65

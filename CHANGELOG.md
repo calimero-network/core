@@ -40,6 +40,36 @@ recreated, and clients must answer the new `412`/`428` step-ups.
   routes with `--operator-key-file` and takes `--dev-passkey` (and
   `account device add --approve-with`) on the new step-ups.
 
+### Changed
+
+- **Sixteen example apps are on the component SDK** (`calimero-app-sdk`,
+  `wasm32-wasip2`, standalone crates outside the root workspace):
+  authored-sorted-kv-store, components-demo, custom-key-store, indexed-forum,
+  indexed-issue-tracker, kv-store, kv-store-init, kv-store-with-shared-storage,
+  kv-store-with-user-and-frozen-storage, name-registry-admin, org-gated
+  (package `org-gated-notes`), permissions-showcase, rooms, sorted-kv-store,
+  sorted-set-store and team-metrics (two v1 apps, one with badges, merged: with
+  one log ordering every call they differed only by the badges). The wasmer
+  builds of kv-store, kv-store-with-shared-storage and org-gated, which the
+  node's tests load, moved to `apps/wasmer-fixtures/`. The other apps stay on
+  the wasmer SDK until the component SDK has blobs, xcall, search, handlers,
+  TEE methods, outbound requests, migrations and CRDT types.
+
+### Removed
+
+- **merobox.** Core's end-to-end tests no longer use it. Its 143 workflows
+  became JSON scenarios (`scripts/workflow-to-scenario.py`): app-level ones
+  (`apps/<app>/scenarios/*.json` with `<name>.org.json`) run in each component
+  app's harness, and every scenario, app-level and cluster
+  (`apps/*/scenarios/cluster/`, `workflows/**/scenarios/`), runs on an
+  in-process cluster with `cargo test -p calimero-node --test scenarios`
+  (`SCENARIO_SHARD=k/n`). What needs one `merod` process per node (a crash, a
+  freeze, a frozen leader, orgs and keys, packages, a rolling upgrade and the
+  kv-store soak) is the process suite, `crates/node/tests/fault/suite.py`
+  (`--smoke`, `--nightly`), which CI also runs against the merod image.
+  `scripts/run-workflows.py`, `scripts/workflows-{baseline,durations,smoke}.json`,
+  `scripts/check-scenario-coverage.py` and `MEROBOX_REF` are gone.
+
 ## [1.0.0-rc.4] - 2026-10-30
 
 ### Security

@@ -11,7 +11,7 @@ if [ "$#" -gt 0 ]; then
     wasms=("$@")
 else
     wasms=(
-        apps/kv-store/res/kv_store.wasm
+        apps/wasmer-fixtures/kv-store/res/kv_store.wasm
         apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
         apps/scaffolding-e2e/res/scaffolding_e2e.wasm
     )

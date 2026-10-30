@@ -55,8 +55,6 @@ env:
     cargo-mero
   DOCKER_PLATFORMS: ${{ github.event_name != 'push' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
   INCLUDE_AARCH64: ${{ github.event_name != 'push' && 'false' || 'true' }}
-  # The merobox revision `E2E on the merod image` runs; keep it e2e.yml's MEROBOX_REF.
-  MEROBOX_REF: release-v2-parity
   # The release branch's image tags are this prefix plus `edge` and the short sha.
   IMAGE_TAG_PREFIX: ${{ github.ref == 'refs/heads/release-v2-parity' && 'release-v2-' || '' }}
 
@@ -420,7 +418,7 @@ jobs:
         uses: ./.github/actions/setup-cargo-mero
 
       - name: Build the kv-store bundle
-        run: cargo mero bundle --dev --no-icon --app-version "${NEEDS_PREPARE_OUTPUTS_VERSION}" --manifest-path apps/kv-store/Cargo.toml --output dist/kv-store-test-fixture.mpk
+        run: cargo mero bundle --dev --no-icon --app-version "${NEEDS_PREPARE_OUTPUTS_VERSION}" --manifest-path apps/wasmer-fixtures/kv-store/Cargo.toml --output dist/kv-store-test-fixture.mpk
         env:
           NEEDS_PREPARE_OUTPUTS_VERSION: ${{ needs.prepare.outputs.version }}
 
@@ -535,8 +533,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # What `E2E on the merod image` installs: the fixtures its smoke list names
-  # (scripts/workflows-smoke.json), built while the binaries build.
+  # What `E2E on the merod image` needs besides the image: a release meroctl,
+  # kv-store's WASM and two signed releases of it, built while the binaries build.
   image-e2e-fixtures:
     name: Image E2E fixtures
     needs: prepare
@@ -560,27 +558,33 @@ jobs:
       - name: Setup cargo mero
         uses: ./.github/actions/setup-cargo-mero
 
-      - name: Build the smoke list's fixtures
+      - name: Build meroctl and the suite's fixtures
         run: |
           set -euo pipefail
-          readarray -t filters < <(jq -r '.fixtures[]' scripts/workflows-smoke.json)
-          python3 scripts/build-workflow-fixtures.py "${filters[@]}"
+          cargo build --release -p meroctl
+          cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
+          mkdir -p target/image-e2e
+          target_dir="${CARGO_TARGET_DIR:-target}"
+          cp "$target_dir/release/meroctl" "$target_dir/wasm32-unknown-unknown/app-release/kv_store.wasm" target/image-e2e/
+          for v in 1.0.0 1.1.0; do
+            (cd apps/wasmer-fixtures/kv-store && cargo mero bundle --dev --no-icon --app-version "$v")
+            cp "dist/com.calimero.kv-store-$v.mpk" target/image-e2e/
+          done
 
       - name: Upload them
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: image-e2e-fixtures
-          path: target/workflow-wasm
+          path: target/image-e2e
           if-no-files-found: error
           retention-days: 1
 
-  # The image this run built is tested, not only built: e2e.yml runs every
-  # workflow against a debug `cargo build`, and this runs the smoke list (one
-  # workflow per area, scripts/workflows-smoke.json, every one on the
-  # baseline) and two of merobox's fault examples (a crashed node, a frozen
-  # leader) against the release `merod` inside the image. Master and the
-  # release branch push their image instead; e2e.yml's nightly tests the latest
-  # release's (the release branch's nightly, its release-v2-edge).
+  # The image this run built is tested, not only built: e2e.yml runs the
+  # process suite against a fresh release build, and this runs its smoke set
+  # (`suite.py --smoke`: a crashed and a frozen node, a frozen leader,
+  # organizations and keys, signed packages, a 30 s kv-store soak) against
+  # the `merod` inside the image. Master pushes its image instead; e2e.yml's
+  # nightly tests the latest release's.
   image-e2e:
     name: E2E on the merod image
     needs: [prepare, release-merod-container, image-e2e-fixtures]
@@ -593,20 +597,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - name: Checkout merobox
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: calimero-network/merobox
-          ref: ${{ env.MEROBOX_REF }}
-          path: merobox
-          persist-credentials: false
-
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-
-      - name: Install merobox
-        run: pip install ./merobox
 
       - name: Download the image
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -618,9 +611,9 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: image-e2e-fixtures
-          path: target/workflow-wasm
+          path: target/image-e2e
 
-      # merobox runs `merod` processes, not containers: the binary is the
+      # The suite runs `merod` processes, not containers: the binary is the
       # image's own /usr/local/bin/merod, and the image must start it.
       - name: Take merod out of the image
         run: |
@@ -638,28 +631,20 @@ jobs:
           rm target/image/merod-image.tar
           echo "MEROD_BINARY=$GITHUB_WORKSPACE/target/image/merod" >> "$GITHUB_ENV"
 
-      - name: Smoke workflows
-        env:
-          MEROBOX_SOAK_REPORT: ${{ github.workspace }}/target/image/soak.json
-        run: python3 scripts/run-workflows.py --smoke --json target/image/workflows.json
-
-      - name: merobox's fault examples
-        if: ${{ !cancelled() }}
-        env:
-          KV_STORE_WASM: ${{ github.workspace }}/target/workflow-wasm/kv_store.wasm
+      - name: Process suite (smoke) on the image's merod
         run: |
-          set -uo pipefail
-          failed=0
-          for wf in kv-store-failover frozen-leader; do
-            echo "::group::$wf"
-            merobox cloud run "merobox/workflow-examples/cloud-v2/$wf.yml" || { echo "::error::$wf failed"; failed=1; }
-            echo "::endgroup::"
-          done
-          exit "$failed"
+          set -euo pipefail
+          chmod +x target/image-e2e/meroctl
+          python3 -I crates/node/tests/fault/suite.py --smoke \
+            --merod "$MEROD_BINARY" --meroctl target/image-e2e/meroctl \
+            --kv-wasm target/image-e2e/kv_store.wasm \
+            --kv-mpk target/image-e2e/com.calimero.kv-store-1.0.0.mpk \
+            --kv-mpk-next target/image-e2e/com.calimero.kv-store-1.1.0.mpk \
+            --soak-report target/image/soak.json --json target/image/suite.json
 
       - name: Soak latency and throughput
         if: ${{ !cancelled() }}
-        run: bash scripts/soak-summary.sh target/image/soak.json "Soak on this run's merod image (smoke list, 30s)"
+        run: bash scripts/soak-summary.sh target/image/soak.json "Soak on this run's merod image (process suite smoke, 30s)"
 
       - name: Upload the results
         if: ${{ !cancelled() }}
@@ -667,8 +652,9 @@ jobs:
         with:
           name: image-e2e-results
           path: |
-            target/image/workflows.json
+            target/image/suite.json
             target/image/soak.json
+            target/fault-suite
           if-no-files-found: ignore
           retention-days: 7
 
