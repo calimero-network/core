@@ -40,7 +40,7 @@ is its command line.
   is attested like any client's, plus the cluster secret (HMAC of K_c).
 - **API** (`api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
-  `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts and placement by id only, no read path into apps).
+  `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).
 - **Reserved methods** (`node::reserved_method`, `__*`): the node's own commands
   (`HOST_METHODS`: `__upgrade`, `__blob`, `__blob_forget`) run only for a
   `CallRequest::host` request, which only the API builds after judging who may;
@@ -223,6 +223,21 @@ is its command line.
   rebalancer): each app's id, group and replicas, each node's id, zone,
   attested release (`Node::release_of_node`, at most `PLACEMENT_RELEASE_WAIT`)
   and app count, after `sys_fresh` (`fresh` in the answer). Ids and counts only.
+- **Version and approval reports** (`report.rs`, read-only): `GET /ops/apps`,
+  `GET /ops/orgs` (operator), `GET /orgs/{org}/apps` (any member; `404` else) and
+  `GET /auth/apps` (the account's own apps), paged (`?after&limit`,
+  `report::MAX_REPORT_PAGE`). Per app: scope, bundle digest, package release,
+  `upgradesHeldBy`, `lastUpgrade` (`AppRecord::last_upgrade`, with
+  `report::actor_kind`: `owner`/`member`/`operator`, judged against the app's and
+  org's owners as they stand), approved releases, each replica's release and
+  whether approved; for accounts also name, the upgrader's account, newer
+  visible releases (`availableVersions`) and `clusterReleases`. The operator
+  sees a package name only for releases it installed (`Reader::Operator`,
+  `sees_release`), never an account, a name or an upgrade's error text.
+  Node releases come from `Node::release_of_node` (attested once, then kept;
+  at most `PLACEMENT_RELEASE_WAIT` each), as for placement. Regressions:
+  `app_versions_and_release_approvals_are_reported_without_names`,
+  `an_operator_upgrade_is_reported_as_the_operators`.
 - **Forwards are bounded**: a call or read forwarded to an app's leader waits at most
   `FORWARD_TIMEOUT` (5 s, `peer_forward`), then retries at whoever leads now; a frozen
   leader would otherwise hold a write for the 30 s HTTP timeout. Calls without a

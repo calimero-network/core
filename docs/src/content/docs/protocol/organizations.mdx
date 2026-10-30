@@ -60,7 +60,11 @@ invites and apps.
 An organization also keeps metadata for its apps and frontends to read (admins,
 or members holding `MANAGE_METADATA`), per-member metadata (the member or an
 admin), the mero-tee releases and outbound prefixes its owner approved, and its
-recent upgrade runs. Each metadata value is at most 16 KiB of JSON.
+recent upgrade runs. Each metadata value is at most 16 KiB of JSON. Any
+member reads, with `GET /orgs/{org}/apps`, the apps they reach or manage
+there with the release each runs and its last upgrade (who, of which kind),
+the releases the owner approved, and the releases the cluster's nodes run
+([Reading the approvals](/protocol/governance/#reading-the-approvals)).
 
 ## Teams
 

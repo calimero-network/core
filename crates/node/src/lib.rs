@@ -31,6 +31,7 @@ pub mod node;
 pub mod packages;
 pub mod placement;
 pub mod presence;
+pub mod report;
 pub mod services;
 pub mod system;
 pub mod types;
