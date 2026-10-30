@@ -1924,6 +1924,13 @@ async fn app_get(
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     let p = principal(&node, &headers).await?;
+    // As in `gate`: an anonymous caller is judged on the cluster's latest
+    // system state too, so an app made private through another node is hidden
+    // here at once (#4723). `principal` already read fresh for a credential.
+    // Read before the record, so the record answered is the fresh one.
+    if p.is_none() {
+        node.sys_fresh().await;
+    }
     let app = node.app(&app_id).await?;
     if let Some(p) = &p {
         p.within(&node, &app)?;

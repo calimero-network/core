@@ -324,7 +324,6 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
 /// An anonymous `GET /apps/{app}`: once the app stops being public through the
 /// leader, a follower that has not applied that must not show the app.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "fails until #4723: app_get does not read fresh state for anonymous callers"]
 async fn an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behind() {
     let c = ProxiedCluster::start().await;
     let leader = c.system_leader();
