@@ -9,7 +9,7 @@ p { margin: 0; }
 .trust { background: var(--trust-bg); color: var(--trust-fg); }
 .trust-in { max-width: 35rem; margin: 0 auto; padding: .85rem 1rem; display: flex; gap: .85rem; align-items: center; }
 .brand { display: inline-flex; align-items: center; gap: .4rem; font-weight: 650; letter-spacing: .01em; flex: none; }
-.brand .word { font-size: 1.05rem; }
+.brand .logo { display: block; height: 26px; width: auto; color: var(--trust-fg); }
 .trust-text { min-width: 0; border-left: 1px solid rgba(255,255,255,.18); padding-left: .85rem; }
 .trust-title { font-size: .85rem; font-weight: 600; display: flex; align-items: center; gap: .35rem; }
 .trust-host { font-size: .8rem; color: var(--trust-muted); overflow-wrap: anywhere; }
