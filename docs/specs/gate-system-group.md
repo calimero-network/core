@@ -94,8 +94,8 @@ These are found by reading the code; each needs a red test before its fix (secti
   (`/auth/passkey/login/begin`), have the user sign it, and finish the sign-in itself.
 - **F6. K_c opens every node's disk.** With a colluding host, an unapproved image that was
   delivered K_c can open a copied disk or backup of an approved node. That is the
-  "keys per app" item (`crates/node/AGENTS.md`, "Not done yet"; proposal on branch
-  `claude/per-app-keys-design`, `docs/specs/per-app-keys.md`). It matters here because the
+  "keys per app" item (`crates/node/AGENTS.md`, "Not done yet"; a design proposal for
+  per-app encryption is open, not merged). It matters here because the
   realm data at rest must not be sealed under K_c alone.
 
 F1 to F3 also break the app-data gate, so they are worth fixing whatever is decided about
@@ -161,7 +161,7 @@ holds email addresses.
   `docs/design/gcp-tdx-kms.md`). It cannot hand out a key that outlives a release or that
   follows approvals. A secret that must outlive a release passes from node to node by
   attestation ("TEE-only secrets must not depend on a release's root"), as K_c already does
-  and as the per-app keys proposal (option D) does for app data.
+  and as the per-app encryption keys proposal (option D) does for app data.
 - **C4. Approvals are per scope, and accounts span scopes.** On master an organization's set
   (`Org::approved_releases`) covers its apps, an account's own set covers its personal apps,
   and the operator's set covers everything under operator governance
@@ -363,7 +363,7 @@ Realm rows (stored by every node in the system group's `state` column, opened by
   node that creates the realm (sign-up, `CreateOrg`, the first app of a publisher in an
   org). The verify key goes in `RealmInfo.keys`.
 - **Not from mero-kms** (C3). A node keeps a keyring in its `meta` column, wrapped under
-  its node key K_n from mero-kms if the per-app keys proposal (option D) lands first, else
+  its node key K_n from mero-kms if the per-app encryption keys proposal (option D) lands first, else
   under K_r, its release key. **Never under K_c**, which every release holds (F6).
 - **Delivery.** A holder's reconcile loop finds registered nodes `N` with
   `release_at(N) ∈ hold(R)` and `N ∉ holders(R)` and sends their keys to N's registered
@@ -569,7 +569,7 @@ Nodes that ran before the switch keep what they already saw, and so do backups t
 before it (Q9).
 
 **Phase 2: clients and mdma** (5.9). **Phase 3: hardening**: the freshness option of Q7 if
-chosen, and per-app keys so that app data stops depending on K_c (F6).
+chosen, and per-app encryption keys so that app data stops depending on K_c (F6).
 
 ### 5.11 Tests
 
@@ -640,7 +640,7 @@ Migration (scenarios run one build on fresh state, so these are their own tests)
 | **Malicious, validly signed image on a release no realm approved** (e.g. built by a compromised release pipeline) | Reads every account, org, passkey, API key hash, invite and app record; holds K_s and mints a session for anyone (F1); reads and writes any app as anyone through `internal/*` (F2); approves itself (F3); can lead the system group | Cannot use `internal/*` for apps or forge approvals or operator commands. Still reads the whole system state and still holds K_s | Holds ciphertext and the directory: node list, opaque realm ids and their release sets, app routes, credential public keys, package pins, operator decisions. Cannot mint sessions others accept, forge realm rows or user actions | Sizes and timing of realm writes; availability and freshness as a voter (Q7); what it received before the switch |
 | **The same image on a release some realms approved** | As above, for everyone | As above | Reads exactly the realms that approved its release, including the auth rows of those orgs' members; can act for those members in those realms only (its tokens are refused elsewhere, and credential grants need the user's assertion) | Inside the approving realms it is trusted by their choice, as with app data |
 | **Operator** (ops token, mdma) | Registers nodes, starts images, removes voters, takes backups; under operator governance approves releases. Cannot read state through the Ops API | Its commands need its signature; nodes cannot forge them | Sees realm ids, release sets and holder counts in `/ops/placement`; under owner or publisher governance cannot put any realm on an image its approver did not approve | Availability; under operator governance it decides, as `docs/.../protocol/governance.mdx` says |
-| **Host / hypervisor** | Reads sealed disks only with K_c; with a malicious image it has delivered K_c to, opens any node's disk and backups (F6), system state included | Same | Realm rows on disk need the realm key, wrapped under K_n or K_r of an approved release: a copied disk opened by an unapproved image shows ciphertext | App data still under K_c until per-app keys; rollback of a disk is not detected |
+| **Host / hypervisor** | Reads sealed disks only with K_c; with a malicious image it has delivered K_c to, opens any node's disk and backups (F6), system state included | Same | Realm rows on disk need the realm key, wrapped under K_n or K_r of an approved release: a copied disk opened by an unapproved image shows ciphertext | App data still under K_c until per-app encryption keys; rollback of a disk is not detected |
 | **Network** | Nothing past the sealed channel | Same | Same | Traffic analysis |
 
 ## 7. Open questions for the product owner
@@ -675,7 +675,7 @@ Migration (scenarios run one build on fresh state, so these are their own tests)
    and K_s, and so have backups. Accept this, retire K_s at the switch (every access token
    ends; clients refresh), and refuse to restore pre-switch backups?
 10. **App data and K_c.** Gating the system group does not stop a host colluding with a
-    malicious image from opening app data on a copied disk until per-app keys land. Should
+    malicious image from opening app data on a copied disk until per-app encryption keys land. Should
     the two ship together?
 11. **mdma's view.** May the operator see which realms block a rollout, named by org or
     account (as `OrgPendingRelease` does today), or only counts?
@@ -708,7 +708,7 @@ scheduled first and does not depend on them.
    the inviting org's approved releases at once (consistent with 3).
 9. **Before the switch**: accept prior exposure; retire K_s at the switch so every
    token refreshes; refuse to restore pre-switch backups.
-10. **Order**: Phase 0 first, then realms together with per-app keys.
+10. **Order**: Phase 0 first, then realms together with per-app encryption keys.
 11. **mdma's view**: publishers (cloud users) by name; their customers' orgs and
     accounts as counts only.
 12. **Deadlines** apply to metadata too, since it is the same approval (1).
