@@ -1031,6 +1031,12 @@ impl From<ClientError> for Fail {
                 code,
                 details: details.to_string(),
             },
+            // The node's own answer: it issues and takes no session for the account here.
+            ClientError::WrongNode { message, details } => Refusal {
+                message: format!("421 WRONG_NODE: {message}"),
+                code: "WRONG_NODE".into(),
+                details: details.to_string(),
+            },
             ClientError::Transport(r) => Refusal {
                 message: format!("{r:#}"),
                 code: "TRANSPORT".into(),
@@ -2859,6 +2865,10 @@ fn app_failure(e: &ClientError) -> AppFailure {
         ClientError::Api { status, code, .. } => AppFailure::Refused {
             status: *status,
             code: code.clone(),
+        },
+        ClientError::WrongNode { .. } => AppFailure::Refused {
+            status: 421,
+            code: "WRONG_NODE".into(),
         },
         ClientError::Transport(e) => AppFailure::Other(e.to_string()),
     }
