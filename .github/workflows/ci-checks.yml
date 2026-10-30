@@ -60,6 +60,11 @@ jobs:
       - name: Check every rust-cache group hashes one environment
         run: python3 scripts/check-rust-cache-groups.py
 
+      # Every scenario file on disk is discovered by the runner or excluded with a reason.
+      # The runner checks the same when it runs (e2e.yml), but only this job is required.
+      - name: Check every scenario file runs
+        run: python3 scripts/check-scenario-discovery.py
+
       - name: Decide which jobs this change reaches
         id: decide
         env:

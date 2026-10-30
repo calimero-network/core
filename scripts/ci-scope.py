@@ -85,6 +85,7 @@ WORKFLOWS = {
             "scripts/check-naming.sh",
             "scripts/check-no-user-data-at-info.py",
             "scripts/check-rust-cache-groups.py",
+            "scripts/check-scenario-discovery.py",
             "scripts/check-storage-cost.sh",
             "scripts/check-wasm-size.sh",
             "scripts/tests/check-like-ci.test.sh",

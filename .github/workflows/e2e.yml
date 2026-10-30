@@ -177,6 +177,14 @@ jobs:
           name: e2e-fixtures
           path: target/workflow-wasm
 
+      # ci-checks' required `scope` job checks discovery with a script; it must see what
+      # the runner sees.
+      - name: The discovery check lists what the runner discovers
+        run: |
+          set -euo pipefail
+          diff <(python3 scripts/check-scenario-discovery.py --list) \
+            <(cargo test -p calimero-node --test scenarios -- --list | sed -n 's/: test$//p')
+
       - name: Scenarios of shard ${{ matrix.shard }}
         env:
           CORE_WASM_DIR: ${{ github.workspace }}/target/workflow-wasm
