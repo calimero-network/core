@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.4] - 2026-10-30
+
 ### Security
 
 Phase 0 of gating the system group (`docs/specs/gate-system-group.md`): a node
@@ -38,6 +40,22 @@ tokens or log entries; existing clusters are recreated.
 
 ### Added
 
+- **Releases are approved by capability, per app.** `APPROVE_RELEASES`
+  (capability bit 10) lets an organization's members approve mero-tee
+  releases without owning the organization. An app can bind a publisher
+  (`BindPublisher`) whose approvals count for it, and each app chooses who
+  holds its upgrades (`upgrades: owner | publisher`). The operator can set a
+  release deadline, signed with the operator key; past it, a release that was
+  not approved is refused (`409 RELEASE_DEADLINE`).
+- **The node reports who decides.** Each app reports the version it runs, who
+  upgraded it, `upgradesHeldBy`, `releasesApprovedBy` and its publisher
+  (`publisher.org`).
+- **A consent page served by the node.** Release and upgrade approvals open a
+  page the node itself serves (hash-only CSP, no third-party script). It
+  shows a plain summary, the publisher and what changed, with the
+  measurements behind a disclosure, and a confirmation code (`XXX-XXX`,
+  derived from the request id) to compare with the console. The approval binds
+  the measurements digest or manifest hash and can be withdrawn.
 - **A node reports which KMS it verified, inside its quote.** Each key fetch
   from mero-kms now keeps what it accepted: the KMS quote's MRTD and RTMR0-3,
   TCB status, the signed mero-kms release and profile whose policy it matched,
