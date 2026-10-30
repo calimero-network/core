@@ -15,36 +15,54 @@
     if (cls) e.className = cls;
     return e;
   }
-  function list(items, cls) {
-    var ul = el("ul");
-    (items || []).forEach(function (i) { ul.appendChild(el("li", typeof i === "string" ? i : JSON.stringify(i), cls)); });
-    if (!items || !items.length) ul.appendChild(el("li", "none"));
-    return ul;
+  function add(parent, child) { parent.appendChild(child); return child; }
+  function has(a) { return !!(a && a.length); }
+  function hostOf(u) { try { return new URL(u).host; } catch (e) { return String(u || ""); } }
+  // A long value on one line, cut with an ellipsis; the full value is its
+  // title and stays selectable.
+  function value(v, wrap) {
+    var s = typeof v === "string" ? v : JSON.stringify(v);
+    var e = el("span", s, wrap ? "v wrap" : "v");
+    e.title = s;
+    return e;
+  }
+  function link(url) {
+    var a = el("a", url, "v"); a.href = url; a.rel = "noreferrer noopener"; a.title = url;
+    return a;
   }
   function facts(rows) {
     var dl = el("dl");
     rows.forEach(function (r) {
       if (r[1] === undefined || r[1] === null || r[1] === "") return;
-      dl.appendChild(el("dt", r[0]));
-      var dd = el("dd");
-      if (r[1] instanceof Node) dd.appendChild(r[1]); else dd.appendChild(el("code", r[1]));
-      dl.appendChild(dd);
+      var row = add(dl, el("div"));
+      row.appendChild(el("dt", r[0]));
+      var dd = add(row, el("dd"));
+      dd.appendChild(r[1] instanceof Node ? r[1] : value(r[1], r[2]));
     });
     return dl;
   }
-  function diff(title, d) {
-    var box = el("div", null, "box");
-    box.appendChild(el("h2", title));
-    if (!d) { box.appendChild(el("p", "Unknown: a side of this upgrade embeds no ABI.")); return box; }
-    box.appendChild(el("p", "Added"));
-    box.appendChild(list((d.added || []).map(function (x) { return typeof x === "string" ? x : describe(x); }), "added"));
-    box.appendChild(el("p", "Removed"));
-    box.appendChild(list((d.removed || []).map(function (x) { return typeof x === "string" ? x : describe(x); }), "removed"));
-    if (d.changed && d.changed.length) {
-      box.appendChild(el("p", "Changed"));
-      box.appendChild(list(d.changed.map(describe)));
+  // One part of a diff; nothing at all when it has nothing in it.
+  function diff(parent, title, d) {
+    if (d === null) {
+      parent.appendChild(el("h3", title));
+      parent.appendChild(el("p", "Unknown: a side of this upgrade embeds no ABI.", "muted"));
+      return;
     }
-    return box;
+    if (!d) return;
+    var rows = [];
+    (d.added || []).forEach(function (x) { rows.push([typeof x === "string" ? x : describe(x), "added"]); });
+    (d.removed || []).forEach(function (x) { rows.push([typeof x === "string" ? x : describe(x), "removed"]); });
+    (d.changed || []).forEach(function (x) { rows.push([describe(x), "changed"]); });
+    if (!rows.length) return;
+    parent.appendChild(el("h3", title));
+    var ul = add(parent, el("ul", null, "diff"));
+    rows.forEach(function (r) { var li = add(ul, el("li", r[0], r[1])); li.title = r[0]; });
+  }
+  function plainList(parent, title, items) {
+    if (!has(items)) return;
+    parent.appendChild(el("h3", title));
+    var ul = add(parent, el("ul", null, "diff"));
+    items.forEach(function (i) { var li = add(ul, el("li", i)); li.title = i; });
   }
   function describe(m) {
     if (m.everySecs) return m.name + " (every " + m.everySecs + " s)";
@@ -65,116 +83,200 @@
     if (scope.kind === "app") return "the app " + scope.name + " (" + scope.app + ")" + (scope.org ? ", organization " + scope.org : "");
     return "your own apps (account " + scope.account + ")";
   }
+  // "Acme Inc." ends its own sentence.
+  function end(s) { s = String(s); return /[.!?]$/.test(s) ? s : s + "."; }
+  function shortKey(k) {
+    k = String(k || "");
+    return k.length > 24 ? k.slice(0, 14) + "…" + k.slice(-6) : k;
+  }
+  function plainDate(s) {
+    var d = new Date(s);
+    return isNaN(d.getTime()) ? String(s) : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  }
 
   function render(m) {
+    var host = location.host;
+    document.querySelectorAll(".host").forEach(function (h) { h.textContent = host; });
     withdrawing = m.kind === "release" && m.release.change === "withdraw";
     if (withdrawing) $("approve").textContent = "Withdraw approval";
-    $("headline").textContent = m.headline;
-    var c = $("content");
-    c.textContent = "";
-    c.appendChild(facts([
-      ["Approving as", m.approver && m.approver.account],
-      ["For", whom(m.scope)],
-      ["Asked by", m.requestedBy && (m.requestedBy.package ? "the app " + m.requestedBy.package : "a page on this cluster")],
-      ["Returns you to", m.requestedBy && m.requestedBy.returnOrigin],
-      ["Expires", new Date(m.expiresAt * 1000).toLocaleString()],
-    ]));
-    c.appendChild(el("p", m.before, "box before"));
-    c.appendChild(el("p", m.after, "box after"));
-    (m.notes || []).forEach(function (n) { c.appendChild(el("p", n, "box warn")); });
-    if (m.kind === "release") renderRelease(c, m.release);
-    if (m.kind === "upgrade") renderUpgrade(c, m.upgrade);
-    if (m.kind === "outbound") renderOutbound(c, m.outbound);
-    c.hidden = false;
+    renderWho(m);
+    $("headline").textContent = m.title || m.headline;
+    renderMeans(m);
+    renderChecks(m, host);
+    $("code").textContent = m.code || "";
+    renderTech(m);
+    $("content").hidden = false;
+    $("tech").hidden = false;
+    $("expires").textContent = "This request expires at " +
+      new Date(m.expiresAt * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) + ".";
     if (m.status === "pending") {
       $("actions").hidden = false;
     } else {
       $("status").textContent = "This request was " + m.status + " already.";
     }
   }
-  function renderRelease(c, r) {
-    c.appendChild(el("h2", "The release"));
+  function renderWho(m) {
+    var by = m.requestedBy || {}, name, publisher;
+    if (m.app) { name = m.app.name; publisher = m.publisher && m.publisher.name; }
+    else if (by.name) { name = by.name; publisher = by.publisher; }
+    else { name = hostOf(by.returnOrigin) || "A page of your cluster"; }
+    $("who-name").textContent = name;
+    $("who-by").textContent = publisher ? "by " + publisher : "";
+    $("avatar").textContent = (name || "?").trim().charAt(0).toUpperCase();
+    var acct = "Signed in as " + (m.approver && m.approver.account);
+    if (m.scope && m.scope.kind === "org") acct += " · for " + m.scope.name;
+    $("who-account").textContent = acct;
+    $("who").hidden = false;
+  }
+  function renderMeans(m) {
+    var points = m.points || [m.before, m.after];
+    var ul = $("points");
+    points.forEach(function (p) { if (p) ul.appendChild(el("li", p)); });
+    if (m.kind === "release" && m.release.deadline) {
+      ul.appendChild(el("li", "After " + plainDate(m.release.deadline) + ", new apps and updates pause until this is approved."));
+    }
+    var box = $("attention"), attn = m.attention || [];
+    if (attn.length) {
+      var w = add(box, el("div", null, "attn"));
+      w.appendChild(el("h3", "Needs your attention"));
+      var list = add(w, el("ul"));
+      attn.forEach(function (a) {
+        var li = add(list, el("li", a.text));
+        if (has(a.items)) {
+          var sub = add(li, el("ul"));
+          a.items.forEach(function (i) { sub.appendChild(el("li", i)); });
+        }
+      });
+    } else if (m.kind === "upgrade") {
+      box.appendChild(el("p", "No new permissions.", "calm"));
+    }
+  }
+  function check(ul, strong, rest, sub, note) {
+    var li = add(ul, el("li", null, note ? "note" : ""));
+    li.appendChild(el("strong", strong));
+    if (rest) li.appendChild(document.createTextNode(rest));
+    if (sub) li.appendChild(el("span", sub, "sub"));
+  }
+  function renderChecks(m, host) {
+    var ul = $("checks");
+    check(ul, "Served by your node at " + host + ",", " not by the app.", "Your browser's address bar should show " + host + ".");
+    check(ul, "Your passkey will ask to sign in to " + m.rpId + ".", "", "If it shows any other site, cancel.");
+    var p = m.publisher;
+    if (p && m.kind === "upgrade") {
+      if (p.keyChanged) {
+        check(ul, "Published by " + (p.name || "an unnamed publisher") + ", signed with a new key.", "", "Your node verified the signature, but the key differs from the version you run now (" + shortKey(p.signer) + ").", true);
+      } else {
+        check(ul, end("Published and signed by " + (p.name || "the app's publisher")), "", "Your node verified the signature: the same key as the version you run now (" + shortKey(p.signer) + ").");
+      }
+    } else if (p && m.kind === "outbound") {
+      check(ul, end("Published and signed by " + (p.name || "the app's publisher")), "", "Your node verified the signature: the key this app has used since its first release (" + shortKey(p.signer) + ").");
+    } else if (m.kind === "release" && !withdrawing) {
+      if (m.release.measurements && m.release.measurements.mock) {
+        check(ul, "Test cluster: no hardware checks.", "", "This cluster runs without hardware attestation, so there are no measurements to verify. Use it for testing only.", true);
+      } else {
+        check(ul, "Built and published by Calimero's public release process.", "", "Your node verified its signature before showing you this page.");
+      }
+    }
+  }
+
+  function renderTech(m) {
+    var t = $("tech-body");
+    t.appendChild(el("h3", "This request"));
+    var by = m.requestedBy || {};
+    t.appendChild(facts([
+      ["Request", m.requestId],
+      ["Approving as", m.approver && m.approver.account],
+      ["For", whom(m.scope), true],
+      ["Asked by", by.package ? "the app " + by.package : "a page on this cluster"],
+      ["Returns you to", by.returnOrigin],
+      ["Expires", new Date(m.expiresAt * 1000).toLocaleString()],
+    ]));
+    t.appendChild(el("h3", "In full"));
+    [m.headline, m.before, m.after].concat(m.notes || []).forEach(function (s) { if (s) t.appendChild(el("p", s)); });
+    if (m.kind === "release") techRelease(t, m.release);
+    if (m.kind === "upgrade") techUpgrade(t, m.upgrade);
+    if (m.kind === "outbound") techOutbound(t, m.outbound);
+  }
+  function techRelease(t, r) {
+    t.appendChild(el("h3", "The release"));
     if (r.change === "withdraw") {
       // Withdrawing lets nothing in: no measurements to check.
-      c.appendChild(facts([
+      t.appendChild(facts([
         ["Version", r.version],
         ["Approved now", r.currentlyApproved ? "yes" : "no"],
         ["Only one approved", r.lastApproved ? "yes: the node will refuse" : "no"],
         ["All approved now", (r.approved || []).join(", ")],
-        ["Nodes on it", (r.nodes || []).length ? r.nodes.join(", ") : "none attested yet"],
+        ["Nodes on it", has(r.nodes) ? r.nodes.join(", ") : "none attested yet"],
         ["Profile", r.profile],
       ]));
       return;
     }
-    var link = el("a", r.links.release); link.href = r.links.release; link.rel = "noreferrer noopener";
-    var meas = el("a", r.links.measurements); meas.href = r.links.measurements; meas.rel = "noreferrer noopener";
-    c.appendChild(facts([
+    t.appendChild(facts([
       ["Version", r.version],
       ["Already approved", r.alreadyApproved ? "yes" : "no"],
       ["Approved now", (r.approved || []).join(", ")],
-      ["Nodes on it", (r.nodes || []).length ? r.nodes.join(", ") : "none attested yet"],
+      ["Nodes on it", has(r.nodes) ? r.nodes.join(", ") : "none attested yet"],
       ["Profile", r.profile],
       ["Measurements digest", r.measurements.policyDigest],
-      ["Measurements", r.measurements.mock],
-      ["Signed release", link],
-      ["Published measurements", meas],
-      ["Verify it yourself", r.verify],
+      ["Measurements", r.measurements.mock, true],
+      ["Signed release", link(r.links.release)],
+      ["Published measurements", link(r.links.measurements)],
       ["Deadline", r.deadline],
     ]));
-    if (r.measurements.profiles) {
-      Object.keys(r.measurements.profiles).forEach(function (p) {
-        var reg = r.measurements.profiles[p];
-        c.appendChild(el("p", "Profile " + p));
-        c.appendChild(facts([["MRTD", reg.mrtd.join(" ")], ["RTMR1", reg.rtmr1.join(" ")], ["RTMR2", reg.rtmr2.join(" ")], ["RTMR3", reg.rtmr3.join(" ")]]));
-      });
+    if (r.verify) {
+      t.appendChild(el("h3", "Verify it yourself"));
+      t.appendChild(el("p", r.verify));
     }
+    var profiles = r.measurements.profiles || {};
+    Object.keys(profiles).forEach(function (p) {
+      var reg = profiles[p];
+      t.appendChild(el("h3", "Registers, profile " + p));
+      t.appendChild(facts(["mrtd", "rtmr0", "rtmr1", "rtmr2", "rtmr3"].filter(function (k) { return has(reg[k]); })
+        .map(function (k) { return [k.toUpperCase(), reg[k].join(" ")]; })));
+    });
   }
-  function renderUpgrade(c, u) {
-    c.appendChild(el("h2", "What changes"));
-    c.appendChild(facts([
+  function techUpgrade(t, u) {
+    t.appendChild(el("h3", "What changes"));
+    var mig = u.migration || {};
+    t.appendChild(facts([
       ["From", u.from.package + " " + u.from.version],
       ["To", u.to.package + " " + u.to.version],
-      ["Publisher", u.publisher.signer + (u.publisher.author ? " (" + u.publisher.author + ")" : "")],
-      ["Migration", u.migration.refused ? "refused: " + u.migration.refused : u.migration.runs ? "runs " + u.migration.export + " (state " + u.migration.fromStateVersion + " → " + u.migration.toStateVersion + ")" : "none: code only"],
-      ["Frontend", (u.frontend.from || "none") + " → " + (u.frontend.to || "none")],
+      ["Publisher key", u.publisher.signer],
+      ["Author", u.publisher.author],
+      ["Migration", mig.refused ? "refused: " + mig.refused : mig.runs ? "runs " + mig.export + " (state " + mig.fromStateVersion + " → " + mig.toStateVersion + ")" : "none: code only", true],
+      ["Frontend", u.frontend && (u.frontend.from || u.frontend.to) ? (u.frontend.from || "none") + " → " + (u.frontend.to || "none") : null],
     ]));
-    var origins = u.frontend.newLoginOrigins || [];
-    if (origins.length) {
-      var warn = el("div", null, "box warn");
-      warn.appendChild(el("p", "New sign-in origins: pages at these addresses could act in this app as you."));
-      warn.appendChild(list(origins));
-      c.appendChild(warn);
-    }
-    c.appendChild(diff("Outbound addresses (approved separately)", u.outbound));
-    c.appendChild(diff("Frontend aliases", u.frontend.aliases));
-    c.appendChild(diff("Interfaces used", u.interfaces.uses));
-    c.appendChild(diff("Interfaces exported", u.interfaces.exports));
-    c.appendChild(diff("Public methods", u.methods));
-    c.appendChild(diff("Events", u.events));
-    c.appendChild(diff("Timers", u.timers));
-    c.appendChild(el("h2", "Exactly what you approve"));
-    c.appendChild(facts([
+    var f = u.frontend || {};
+    plainList(t, "New sign-in addresses", f.newLoginOrigins);
+    plainList(t, "Sign-in addresses dropped", f.droppedLoginOrigins);
+    diff(t, "Outbound addresses (approved separately)", u.outbound);
+    diff(t, "Frontend aliases", f.aliases);
+    diff(t, "Interfaces used", u.interfaces && u.interfaces.uses);
+    diff(t, "Interfaces exported", u.interfaces && u.interfaces.exports);
+    diff(t, "Public methods", u.methods);
+    diff(t, "Events", u.events);
+    diff(t, "Timers", u.timers);
+    t.appendChild(el("h3", "Exactly what you approve"));
+    var b = u.buildInfo || {};
+    t.appendChild(facts([
       ["Target manifest", u.to.manifestHash],
       ["Target package file", u.to.mpk],
       ["Target code", u.to.bundle],
       ["Current manifest", u.from.manifestHash],
-      ["Build", JSON.stringify(u.buildInfo.to)],
-      ["Previous build", JSON.stringify(u.buildInfo.from)],
+      ["Build", b.to ? JSON.stringify(b.to) : null],
+      ["Previous build", b.from ? JSON.stringify(b.from) : null],
     ]));
   }
-  function renderOutbound(c, o) {
-    c.appendChild(el("h2", "Addresses"));
-    c.appendChild(facts([
+  function techOutbound(t, o) {
+    t.appendChild(el("h3", "Addresses"));
+    t.appendChild(facts([
       ["Package", o.package],
-      ["Publisher", o.publisher],
+      ["Publisher key", o.publisher],
       ["Release", o.release],
     ]));
-    c.appendChild(el("p", "Approving"));
-    c.appendChild(list(o.requested));
-    c.appendChild(el("p", "New among them"));
-    c.appendChild(list(o.new, "added"));
-    c.appendChild(el("p", "Already approved"));
-    c.appendChild(list(o.alreadyApproved));
+    plainList(t, "Approving", o.requested);
+    plainList(t, "New among them", o.new);
+    plainList(t, "Already approved", o.alreadyApproved);
   }
 
   function b64urlToBytes(s) {
@@ -247,5 +349,9 @@
   fetch(base + "/model", { credentials: "omit" })
     .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.message || r.status); return j; }); })
     .then(render)
-    .catch(function (e) { $("headline").textContent = "Nothing to approve here"; $("status").textContent = String(e.message || e); });
+    .catch(function (e) {
+      document.querySelectorAll(".host").forEach(function (h) { h.textContent = location.host; });
+      $("headline").textContent = "Nothing to approve here";
+      $("status").textContent = String(e.message || e);
+    });
 })();

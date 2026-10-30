@@ -387,12 +387,15 @@ is its command line.
   `POST /consent/requests { kind: release|upgrade|outbound, scope?, subject,
   returnTo }` (sealed; a release subject is `{ version, withdraw? }`,
   `withdraw: true` withdrawing its approval) and gets `{ requestId, url,
-  expiresAt }`; `returnTo` is the package's own frontend origin or one its
+  expiresAt, code }` (`consent_page::confirmation_code`, shown on the page
+  and by the console); `returnTo` is the package's own frontend origin or one its
   newest signed manifest names (unbound sessions: `config.origins`). The
   request (this node's memory,
   `CONSENT_REQUEST_TTL`, per-account and per-node bounds, decided once) freezes
   a model from node state and verified manifests (an upgrade's capability
-  sheet is `consent_page::diff`). `GET /consent/{id}` (static HTML in the
+  sheet is `consent_page::diff`; the plain-language `title`, `points` and
+  `attention` the page leads with are the node's too, and the rest sits under
+  a collapsed *Technical details*). `GET /consent/{id}` (static HTML in the
   binary, hash-only CSP, `frame-ancestors 'none'`), `/model`, `/approve`,
   `/decline` are an outer layer in the clear on the node's own origin (outside
   CORS and the sealed channel); `/approve` runs the same route code

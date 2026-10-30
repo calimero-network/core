@@ -4,19 +4,54 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>Approve with your passkey</title>
+<title>Approve with your passkey · Calimero</title>
 <style>/*STYLE*/</style>
 </head>
 <body>
+<header class="trust">
+<div class="trust-in">
+<span class="brand" aria-label="Calimero"><svg class="mark" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 2.5 20.5 7.25v9.5L12 21.5 3.5 16.75v-9.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M15.2 9.2a4 4 0 1 0 0 5.6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span class="word">Calimero</span></span>
+<div class="trust-text">
+<p class="trust-title"><svg class="lock" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M4.5 7V5a3.5 3.5 0 0 1 7 0v2" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="2.5" y="7" width="11" height="7.5" rx="1.5" fill="currentColor"/></svg>Secure approval page from your Calimero cluster</p>
+<p class="trust-host">Check that your browser's address bar shows <strong class="host"></strong></p>
+</div>
+</div>
+</header>
 <main>
-<p class="eyebrow">Served by your Calimero node, not by the app</p>
+<section id="who" class="who" hidden>
+<div class="avatar" id="avatar" aria-hidden="true"></div>
+<div class="who-text">
+<p class="who-name"><span id="who-name"></span> <span id="who-by" class="muted"></span></p>
+<p id="who-account" class="muted small"></p>
+</div>
+</section>
 <h1 id="headline">Loading what you are asked to approve…</h1>
-<section id="content" hidden></section>
-<p id="status" role="status" aria-live="polite"></p>
+<div id="content" hidden>
+<section id="means" class="card">
+<h2>What this means</h2>
+<ul id="points" class="points"></ul>
+<div id="attention"></div>
+</section>
+<section id="legit" class="card">
+<h2>How you know this is legit</h2>
+<ul id="checks" class="checks"></ul>
+<div class="code-box">
+<p class="code-label">Confirmation code</p>
+<p id="code" class="code"></p>
+<p class="small muted">The app or console that sent you here shows the same code. If it does not, decline.</p>
+</div>
+</section>
+</div>
 <div id="actions" hidden>
 <button id="approve" type="button">Approve with passkey</button>
 <button id="decline" type="button" class="secondary">Decline</button>
 </div>
+<p id="status" role="status" aria-live="polite"></p>
+<details id="tech" hidden>
+<summary>Technical details</summary>
+<div id="tech-body"></div>
+</details>
+<p id="expires" class="small muted"></p>
 <noscript><p>This page needs JavaScript to ask your passkey.</p></noscript>
 </main>
 <script>/*SCRIPT*/</script>

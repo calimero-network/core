@@ -20,7 +20,8 @@
 //!    returnTo }` inside the sealed channel. The node resolves the subject at
 //!    once, from its own state and the signed manifests (never from the
 //!    request beyond the names in it), freezes what it will show as the
-//!    request's *model*, and answers `{ requestId, url, expiresAt }`. The
+//!    request's *model*, and answers `{ requestId, url, expiresAt, code }`
+//!    (`code`: [`confirmation_code`], which the app shows too). The
 //!    request is held in this node's memory, bound to the account, for
 //!    [`CONSENT_REQUEST_TTL`]; `returnTo` must be the requesting package's
 //!    own frontend origin or one its signed manifest names, or for an unbound
@@ -683,12 +684,21 @@ pub async fn create(
     };
     let now = now_secs();
     let expires_at = now + CONSENT_REQUEST_TTL;
+    let (asker_name, asker_publisher) = match package.as_deref() {
+        Some(p) => package_names(&node, p).await,
+        None => (None, None),
+    };
     let mut model = model;
     if let Some(o) = model.as_object_mut() {
         let _prev = o.insert("approver".into(), json!({ "account": account }));
         let _prev = o.insert(
             "requestedBy".into(),
-            json!({ "package": package, "returnOrigin": origin_of(&return_to) }),
+            json!({
+                "package": package,
+                "name": asker_name,
+                "publisher": asker_publisher,
+                "returnOrigin": origin_of(&return_to),
+            }),
         );
         let _prev = o.insert("expiresAt".into(), json!(expires_at));
     }
@@ -705,6 +715,7 @@ pub async fn create(
         },
         now,
     )?;
+    let code = confirmation_code(&id);
     let base = Url::parse(&node.config.public_url)
         .map_err(|e| ApiError::internal(&format!("this node's public URL: {e}")))?;
     let url = base
@@ -714,7 +725,48 @@ pub async fn create(
         "requestId": id,
         "url": url.as_str(),
         "expiresAt": expires_at,
+        "code": code,
     })))
+}
+
+/// The confirmation code of request `request_id`: the page shows it, and so
+/// does the app or console that sent the person there, so they can tell the
+/// page is the one their own request opened. The first 30 bits of
+/// `SHA-256(request_id)` (big-endian), as six Crockford base32 characters
+/// (`0-9A-Z` without `I L O U`), written `XXX-XXX`. Not a secret: it only ties
+/// two screens to one request id.
+#[must_use]
+pub fn confirmation_code(request_id: &str) -> String {
+    const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let h = calimero_identity::sha256(request_id.as_bytes());
+    let bits = u32::from_be_bytes([h[0], h[1], h[2], h[3]]);
+    let mut out = String::with_capacity(7);
+    for i in 0..6_u32 {
+        if i == 3 {
+            out.push('-');
+        }
+        let index = (bits >> (27 - 5 * i)) & 31;
+        out.push(char::from(ALPHABET[index as usize]));
+    }
+    out
+}
+
+/// A package's display name and author, from its newest release's signed
+/// manifest; `None` for what it does not name or cannot be read now.
+async fn package_names(node: &Node, package: &str) -> (Option<String>, Option<String>) {
+    let Some(latest) = node.sys(|s| s.packages.get(package)?.latest().cloned()) else {
+        return (None, None);
+    };
+    match release_facts(node, package, &latest).await {
+        Ok(f) => {
+            let meta = f.manifest.metadata.as_ref();
+            (
+                meta.map(|m| m.name.clone()),
+                meta.and_then(|m| m.author.clone()),
+            )
+        }
+        Err(_) => (None, None),
+    }
 }
 
 /// `scope` for `account`, refused as missing when the account is not in the
@@ -751,6 +803,140 @@ fn scope_words(scope: &Value) -> String {
         Some(name) => format!("the organization {name}"),
         None => "your own apps".to_owned(),
     }
+}
+
+/// Whose data, as a person reads it: "Acme's", "your".
+fn possessive(scope: &Value) -> String {
+    match scope["name"].as_str() {
+        Some(name) => format!("{name}'s"),
+        None => "your".to_owned(),
+    }
+}
+
+/// The host an outbound prefix reaches (`https://api.example/v1/` ->
+/// `api.example`); the prefix itself when it is not a URL.
+fn host_of(prefix: &str) -> String {
+    Url::parse(prefix)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
+        .unwrap_or_else(|| prefix.to_owned())
+}
+
+/// The hosts `prefixes` reach, each once, in order.
+fn hosts<'a>(prefixes: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for h in prefixes.into_iter().map(host_of) {
+        if !out.contains(&h) {
+            out.push(h);
+        }
+    }
+    out
+}
+
+/// `a`, `a and b`, `a, b and c`, `a, b, c and 2 more`.
+fn phrase(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] if items.len() <= 3 => format!("{} and {last}", init.join(", ")),
+        _ => format!("{} and {} more", items[..3].join(", "), items.len() - 3),
+    }
+}
+
+/// One thing the person should not miss: a `flag` a client can key on, the
+/// sentence, and the items it names (hosts, origins, methods).
+fn attention(flag: &str, text: String, items: Vec<String>) -> Value {
+    json!({ "flag": flag, "text": text, "items": items })
+}
+
+fn strings(v: &Value) -> Vec<String> {
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// What an upgrade's capability `sheet` lets in that the person should see
+/// before anything else, in plain words: new outbound hosts, new sign-in
+/// origins, methods that newly delete data, a migration, removed methods, a
+/// refused plan, another publisher key. Empty: no new permissions.
+fn upgrade_attention(sheet: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    if let Some(why) = sheet["migration"]["refused"].as_str() {
+        out.push(attention(
+            "refused",
+            format!("Your cluster would refuse this update: {why}."),
+            vec![],
+        ));
+    }
+    let added = strings(&sheet["outbound"]["added"]);
+    if !added.is_empty() {
+        out.push(attention(
+            "sendsData",
+            "Can send data to new addresses (each still needs your separate approval):".to_owned(),
+            hosts(added.iter().map(String::as_str)),
+        ));
+    }
+    let origins = strings(&sheet["frontend"]["newLoginOrigins"]);
+    if !origins.is_empty() {
+        out.push(attention(
+            "newSignIn",
+            "Adds a new sign-in address. Pages there could act in this app as you:".to_owned(),
+            origins,
+        ));
+    }
+    let methods = &sheet["methods"];
+    let mut deletes: Vec<String> = methods["added"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["destructive"] == json!(true))
+        .filter_map(|m| m["name"].as_str().map(str::to_owned))
+        .collect();
+    deletes.extend(
+        methods["changed"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|m| {
+                m["to"]["destructive"] == json!(true) && m["from"]["destructive"] != json!(true)
+            })
+            .filter_map(|m| m["name"].as_str().map(str::to_owned)),
+    );
+    if !deletes.is_empty() {
+        out.push(attention(
+            "deletesData",
+            "Can now delete data, through:".to_owned(),
+            deletes,
+        ));
+    }
+    if sheet["migration"]["runs"] == json!(true) {
+        out.push(attention(
+            "migration",
+            "Rewrites the app's stored data once, when the new version starts.".to_owned(),
+            vec![],
+        ));
+    }
+    let removed = strings(&methods["removed"]);
+    if !removed.is_empty() {
+        out.push(attention(
+            "removesFeatures",
+            "Removes features:".to_owned(),
+            removed,
+        ));
+    }
+    if sheet["publisher"]["changed"] == json!(true) {
+        out.push(attention(
+            "newPublisherKey",
+            "Signed by a different publisher key than the version running now.".to_owned(),
+            vec![],
+        ));
+    }
+    out
 }
 
 async fn release_request(
@@ -814,11 +1000,35 @@ async fn release_request(
         |v| format!("{}{v}", calimero_tee_release::NODE_RELEASE_TAG_PREFIX),
     );
     let whose = scope_words(&scope_json);
+    let poss = possessive(&scope_json);
     let already = approved.contains(&version);
+    let mut points = Vec::new();
+    if already {
+        points.push(format!(
+            "Version {version} is already approved, so approving again changes nothing."
+        ));
+    }
+    points.push(format!(
+        "Cluster servers running version {version} will be allowed to receive, store and run {poss} apps."
+    ));
+    if !approved.is_empty() {
+        points.push(format!(
+            "Servers on the versions approved now ({}) keep working as before.",
+            approved.join(", ")
+        ));
+    }
+    points.push("Nothing changes until you approve.".to_owned());
+    points.push(
+        "You can withdraw this approval later, as long as another version stays approved."
+            .to_owned(),
+    );
     let model = json!({
         "kind": "release",
         "scope": scope_json,
         "headline": format!("Let nodes running mero-tee {version} hold the data of {whose}"),
+        "title": format!("Allow a new secure server version ({version}) to hold {poss} data"),
+        "points": points,
+        "attention": [],
         "before": format!(
             "Until you approve, nodes running mero-tee {version} receive none of the data of {whose}: \
              the nodes that hold it refuse to send them any."
@@ -883,8 +1093,36 @@ fn withdrawal_model(
     profile: Option<String>,
 ) -> Value {
     let whose = scope_words(&scope);
+    let poss = possessive(&scope);
     let current = approved.iter().any(|v| v == version);
     let last = current && approved.len() == 1;
+    let mut points = Vec::new();
+    if !current {
+        points.push(format!(
+            "Version {version} is not approved now, so this changes nothing."
+        ));
+    }
+    points.push(format!(
+        "Cluster servers running version {version} get no more of {poss} data, and no app is placed or moved onto them."
+    ));
+    points.push(
+        "Nothing is deleted: data already on those servers stays until the operator moves it, \
+         and an app one of them leads keeps running there until leadership moves."
+            .to_owned(),
+    );
+    points.push(format!("You can approve version {version} again later."));
+    let attention_list = if last {
+        vec![attention(
+            "lastApproved",
+            format!(
+                "Version {version} is the only approved version, and your cluster refuses to \
+                 withdraw the last one. Approve another version first."
+            ),
+            vec![],
+        )]
+    } else {
+        vec![]
+    };
     let mut notes = Vec::new();
     if !current {
         notes.push(format!(
@@ -901,6 +1139,9 @@ fn withdrawal_model(
         "kind": "release",
         "scope": scope,
         "headline": format!("Stop nodes running mero-tee {version} from receiving the data of {whose}"),
+        "title": format!("Stop server version {version} from receiving {poss} data"),
+        "points": points,
+        "attention": attention_list,
         "before": format!(
             "Until you withdraw it, nodes running mero-tee {version} may receive, hold and run \
              the apps of {whose}."
@@ -1040,6 +1281,7 @@ async fn upgrade_request(
     if sheet["publisher"]["changed"] == json!(true) {
         notes.push("The release is signed by a different key than the one running now.".to_owned());
     }
+    let author = to.manifest.metadata.as_ref().and_then(|m| m.author.clone());
     let model = json!({
         "kind": "upgrade",
         "scope": {
@@ -1049,6 +1291,18 @@ async fn upgrade_request(
             "org": app.org,
         },
         "headline": format!("Upgrade {name} from {old} to {new}"),
+        "title": format!("Update {} to version {new}", app.name),
+        "points": [
+            format!("{} moves from version {old} to {new}, for everyone who uses it.", app.name),
+            format!("Until you approve, nothing changes: it keeps running {old}."),
+        ],
+        "attention": upgrade_attention(&sheet),
+        "app": { "name": name, "package": package },
+        "publisher": {
+            "name": author,
+            "signer": to.signer,
+            "keyChanged": from.signer != to.signer,
+        },
         "before": format!(
             "Until you approve, the app keeps running {old}: only that code reads and changes its data."
         ),
@@ -1143,10 +1397,44 @@ async fn outbound_request(
     });
     let new: Vec<&String> = requested.iter().filter(|p| !approved.contains(p)).collect();
     let whose = scope_words(&scope_json);
+    let meta = facts.manifest.metadata.as_ref();
+    let display = meta.map_or_else(|| package.clone(), |m| m.name.clone());
+    let requested_hosts = hosts(requested.iter().map(String::as_str));
+    let mut points = vec![format!(
+        "{display} may send requests, with whatever data it puts in them, to {}. \
+         Data sent there leaves your Calimero cluster.",
+        phrase(&requested_hosts)
+    )];
+    let kept = hosts(
+        requested
+            .iter()
+            .filter(|p| approved.contains(p))
+            .map(String::as_str),
+    );
+    if !kept.is_empty() {
+        points.push(format!("Already allowed: {}.", phrase(&kept)));
+    }
+    points.push(match scope_json["name"].as_str() {
+        Some(org) => format!("This applies to every {display} app in the organization {org}."),
+        None => format!("This applies to your own {display} apps."),
+    });
+    points.push(
+        "Until you approve, it cannot reach these addresses. You can take this back later."
+            .to_owned(),
+    );
     let model = json!({
         "kind": "outbound",
         "scope": scope_json,
         "headline": format!("Let {package} send data to {} address(es)", requested.len()),
+        "title": format!("Allow {display} to send data to {}", phrase(&requested_hosts)),
+        "points": points,
+        "attention": [],
+        "app": { "name": display, "package": package },
+        "publisher": {
+            "name": meta.and_then(|m| m.author.clone()),
+            "signer": facts.signer,
+            "keyChanged": false,
+        },
         "before": format!(
             "Until you approve, apps of {package} in {whose} cannot send anything to these addresses."
         ),
@@ -1383,6 +1671,7 @@ fn model(node: &Node, id: &str) -> Result<Value, ApiError> {
         let _prev = o.insert("status".into(), json!(r.decision.label()));
         let _prev = o.insert("decidedAt".into(), json!(r.decision.at()));
         let _prev = o.insert("rpId".into(), json!(node.config.rp_id));
+        let _prev = o.insert("code".into(), json!(confirmation_code(id)));
     }
     Ok(m)
 }
@@ -1720,6 +2009,92 @@ mod tests {
         assert!(
             parse(json!({ "version": "1.0.0", "approved": false })).is_err(),
             "unknown fields are still refused"
+        );
+    }
+
+    #[test]
+    fn the_confirmation_code_is_the_documented_derivation() {
+        // Vectors in docs/src/content/docs/protocol/consent-page.mdx.
+        assert_eq!(confirmation_code("1.AAAAAAAAAAAAAAAAAAAAAA"), "R02-9P2");
+        assert_eq!(confirmation_code("2.q7Xb3kR0fLzM8nW1yVt5cA"), "54E-429");
+        let code = confirmation_code("7.abcdefghijklmnopqrstuv");
+        assert_eq!(code.len(), 7);
+        assert!(code.bytes().enumerate().all(|(i, b)| if i == 3 {
+            b == b'-'
+        } else {
+            b"0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(&b)
+        }));
+    }
+
+    #[test]
+    fn plain_words_name_hosts_and_whose_data() {
+        assert_eq!(
+            host_of("https://api.openai.com/v1/embeddings"),
+            "api.openai.com"
+        );
+        assert_eq!(host_of("not a url"), "not a url");
+        assert_eq!(
+            hosts([
+                "https://a.example/x",
+                "https://a.example/y",
+                "https://b.example/"
+            ]),
+            ["a.example", "b.example"]
+        );
+        let s = |v: &[&str]| v.iter().map(|x| (*x).to_owned()).collect::<Vec<_>>();
+        assert_eq!(phrase(&s(&["a"])), "a");
+        assert_eq!(phrase(&s(&["a", "b"])), "a and b");
+        assert_eq!(phrase(&s(&["a", "b", "c"])), "a, b and c");
+        assert_eq!(phrase(&s(&["a", "b", "c", "d", "e"])), "a, b, c and 2 more");
+        assert_eq!(
+            possessive(&json!({ "kind": "org", "name": "Acme" })),
+            "Acme's"
+        );
+        assert_eq!(possessive(&json!({ "kind": "account" })), "your");
+    }
+
+    #[test]
+    fn an_upgrade_flags_only_what_it_lets_in() {
+        let quiet = json!({
+            "migration": { "runs": false, "refused": null },
+            "outbound": { "added": [] },
+            "frontend": { "newLoginOrigins": [] },
+            "methods": { "added": [{ "name": "get", "destructive": false }], "removed": [], "changed": [] },
+            "publisher": { "changed": false },
+        });
+        assert!(upgrade_attention(&quiet).is_empty(), "no new permissions");
+        let loud = json!({
+            "migration": { "runs": true, "refused": null },
+            "outbound": { "added": ["https://api.openai.com/v1/", "https://api.openai.com/v2/"] },
+            "frontend": { "newLoginOrigins": ["https://beta.example"] },
+            "methods": {
+                "added": [{ "name": "wipe", "destructive": true }],
+                "removed": ["export_all"],
+                "changed": [
+                    { "name": "delete_note", "from": { "destructive": false }, "to": { "destructive": true } },
+                    { "name": "purge", "from": { "destructive": true }, "to": { "destructive": true, "xcall": true } },
+                ],
+            },
+            "publisher": { "changed": true },
+        });
+        let flags = upgrade_attention(&loud);
+        let names: Vec<&str> = flags.iter().filter_map(|f| f["flag"].as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "sendsData",
+                "newSignIn",
+                "deletesData",
+                "migration",
+                "removesFeatures",
+                "newPublisherKey"
+            ]
+        );
+        assert_eq!(flags[0]["items"], json!(["api.openai.com"]), "hosts only");
+        assert_eq!(
+            flags[2]["items"],
+            json!(["wipe", "delete_note"]),
+            "newly destructive only"
         );
     }
 

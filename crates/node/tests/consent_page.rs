@@ -360,7 +360,16 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
             "/upgrade/to/mpk",
             "/upgrade/to/signer",
             "/upgrade/publisher/signer",
+            "/publisher/signer",
+            "/code",
         ],
+    );
+    // The confirmation code: the same in the create answer and the model,
+    // and the documented derivation from the request id.
+    assert_eq!(model["code"], made["code"], "{made}");
+    assert_eq!(
+        model["code"],
+        json!(calimero_node::consent_page::confirmation_code(&id))
     );
     let expected = json!({
         "kind": "upgrade",
@@ -370,9 +379,31 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         "requestId": "<redacted>",
         "expiresAt": "<redacted>",
         "approver": { "account": "<redacted>" },
-        "requestedBy": { "package": PACKAGE, "returnOrigin": app_origin },
+        "code": "<redacted>",
+        "requestedBy": {
+            "package": PACKAGE, "name": "Notes", "publisher": "Example", "returnOrigin": app_origin,
+        },
         "scope": { "kind": "app", "app": "<redacted>", "name": "notes", "org": null },
         "headline": "Upgrade Notes from 1.0.0 to 2.0.0",
+        "title": "Update notes to version 2.0.0",
+        "points": [
+            "notes moves from version 1.0.0 to 2.0.0, for everyone who uses it.",
+            "Until you approve, nothing changes: it keeps running 1.0.0.",
+        ],
+        "attention": [
+            {
+                "flag": "sendsData",
+                "text": "Can send data to new addresses (each still needs your separate approval):",
+                "items": ["metrics.example"],
+            },
+            {
+                "flag": "newSignIn",
+                "text": "Adds a new sign-in address. Pages there could act in this app as you:",
+                "items": ["https://share.example"],
+            },
+        ],
+        "app": { "name": "Notes", "package": PACKAGE },
+        "publisher": { "name": "Example", "signer": "<redacted>", "keyChanged": false },
         "before": "Until you approve, the app keeps running 1.0.0: only that code reads and changes its data.",
         "after": "<redacted>",
         "notes": [
@@ -603,6 +634,12 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
         "{model}"
     );
     assert_eq!(model["release"]["alreadyApproved"], false);
+    assert_eq!(
+        model["title"],
+        "Allow a new secure server version (2.0.0) to hold your data"
+    );
+    assert_eq!(model["points"][0], "Cluster servers running version 2.0.0 will be allowed to receive, store and run your apps.");
+    assert_eq!(model["attention"], json!([]));
     // Mock attestation: no node checks measurements; the digest is over none.
     let measurements = &model["release"]["measurements"];
     assert_eq!(measurements["profiles"], json!({}));
@@ -646,6 +683,9 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
     let page = Page::new(made["url"].as_str().unwrap());
     let model = page.model().await;
     assert_eq!(model["outbound"]["new"], json!(["https://api.example/"]));
+    assert_eq!(model["title"], "Allow Notes to send data to api.example");
+    assert_eq!(model["app"], json!({ "name": "Notes", "package": PACKAGE }));
+    assert_eq!(model["publisher"]["name"], "Example");
     let ((code, done), args) = page.approve(&c, &mut page_key).await;
     assert_eq!(code, 200, "{done}");
     assert_eq!(args["prefixes"], json!(["https://api.example/"]));
@@ -758,6 +798,11 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
     let model = page.model().await;
     assert_eq!(model["kind"], "release");
     assert_eq!(model["release"]["change"], "withdraw", "{model}");
+    assert_eq!(
+        model["title"],
+        "Stop server version 2.0.0 from receiving your data"
+    );
+    assert_eq!(model["attention"], json!([]), "not the last approved");
     assert!(
         model["headline"]
             .as_str()
@@ -804,6 +849,7 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
     let page = Page::new(made["url"].as_str().unwrap());
     let model = page.model().await;
     assert_eq!(model["release"]["lastApproved"], true, "{model}");
+    assert_eq!(model["attention"][0]["flag"], "lastApproved", "{model}");
     let ((code, refused), _) = page.approve(&c, &mut page_key).await;
     assert_eq!(code, 400, "{refused}");
     assert_eq!(refused["error"], "REJECTED");
