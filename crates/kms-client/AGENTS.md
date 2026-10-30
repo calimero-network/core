@@ -32,6 +32,6 @@ The mero-kms client a TEE node fetches its keys with. It was merod's (`src/kms`,
 ## Commands
 
 ```bash
-cargo test -p calimero-kms-client --features mock-attestation,libp2p-identity/rand   # rand: alone, nothing else enables it
+cargo test -p calimero-kms-client --features mock-attestation
 cargo clippy -p calimero-kms-client --all-targets --features mock-attestation -- -D warnings
 ```
