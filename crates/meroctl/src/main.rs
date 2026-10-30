@@ -183,6 +183,10 @@ enum Cmd {
         method: String,
         path: String,
         body: Option<String>,
+        /// Answer a `412 CONFIRM_REQUIRED` on a post or delete with this
+        /// passkey file (development clusters).
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
     },
 }
 
@@ -375,16 +379,24 @@ async fn main() -> eyre::Result<()> {
         Cmd::Account(cmd) => account::run(cmd, &env).await?,
         Cmd::Dev(cmd) => return dev::run(cmd, &env).await,
         Cmd::Network(NetworkCmd::Status) => env.client.get("health").await?,
-        Cmd::Raw { method, path, body } => {
+        Cmd::Raw {
+            method,
+            path,
+            body,
+            dev_passkey,
+        } => {
             let path = path.trim_start_matches('/');
             let body = body.as_deref().map(json_arg).transpose()?;
             match method.to_ascii_lowercase().as_str() {
                 "get" => env.client.get(path).await?,
-                "delete" => env.client.delete(path).await?,
+                "delete" => env.delete_approved(path, dev_passkey.as_deref()).await?,
                 "post" => {
-                    env.client
-                        .post(path, body.unwrap_or_else(|| json!({})))
-                        .await?
+                    env.post_approved(
+                        path,
+                        body.unwrap_or_else(|| json!({})),
+                        dev_passkey.as_deref(),
+                    )
+                    .await?
                 }
                 "put" => {
                     env.client

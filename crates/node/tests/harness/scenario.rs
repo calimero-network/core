@@ -1713,7 +1713,9 @@ impl<'a> Runner<'a> {
             "team_remove" => {
                 for m in step["members"].as_array().cloned().unwrap_or_default() {
                     let id = self.account_id(&py::str_of(&m));
-                    let _r = cl.delete(&format!("{base}/members/{id}")).await?;
+                    let _r = self
+                        .delete_approved(step, &format!("{base}/members/{id}"))
+                        .await?;
                 }
                 return Ok(json!({}));
             }
@@ -1742,9 +1744,13 @@ impl<'a> Runner<'a> {
                 if let Some(t) = &team {
                     let _p = body.insert("team".into(), json!(t));
                 }
-                return Ok(cl
-                    .post(&format!("orgs/{org}/capabilities"), Value::Object(body))
-                    .await?);
+                return self
+                    .post_approved(
+                        step,
+                        &format!("orgs/{org}/capabilities"),
+                        Value::Object(body),
+                    )
+                    .await;
             }
             "team_list" => {
                 let o = cl.get(&format!("orgs/{org}")).await?;
@@ -1821,8 +1827,9 @@ impl<'a> Runner<'a> {
             let me_id = me["accountId"].as_str().unwrap_or_default().to_owned();
             let inherited = t.get("myRole").is_none_or(Value::is_null);
             if inherited || !truthy(t.get("member")) {
-                let _r = cl
-                    .post(
+                let _r = self
+                    .post_approved(
+                        step,
                         &format!("{base}/members"),
                         json!({ "account": me_id, "lead": false }),
                     )
@@ -2228,7 +2235,6 @@ impl<'a> Runner<'a> {
                 Ok(Value::Object(o))
             }
             "team_add" => {
-                let cl = self.client(step).await?;
                 let mut out = Value::Null;
                 for m in step["members"].as_array().cloned().unwrap_or_default() {
                     let mut body = Map::new();
@@ -2240,8 +2246,9 @@ impl<'a> Runner<'a> {
                     if let Some(c) = step.get("capabilities").filter(|v| !v.is_null()) {
                         let _p = body.insert("capabilities".into(), json!(as_int(c)?));
                     }
-                    out = cl
-                        .post(
+                    out = self
+                        .post_approved(
+                            step,
                             &format!("orgs/{}/teams/{}/members", s(step, "org"), s(step, "team")),
                             Value::Object(body),
                         )
@@ -2254,9 +2261,16 @@ impl<'a> Runner<'a> {
             "add_device" => {
                 // Another passkey on `account`'s account; `device` signs in with it and acts as
                 // that account from here on (v1: a paired device).
+                // A passkey the account already has approves the new one.
                 let mut pk = SoftAuthenticator::new("localhost", ORIGIN);
                 let cl = self.client(step).await?;
-                let cred = cl.add_passkey(&mut pk).await?;
+                let who = self.actor(step).unwrap_or_default();
+                let Some(approver) = self.passkeys.get_mut(&who) else {
+                    return Err(Fail::Workflow(format!(
+                        "add_device: {who} has no passkey to approve the new device"
+                    )));
+                };
+                let cred = cl.add_passkey(&mut pk, approver).await?;
                 let c = self.c.client(0);
                 let session = c.sign_in(&mut pk).await?;
                 let device = s(step, "device");
@@ -2308,13 +2322,10 @@ impl<'a> Runner<'a> {
                 Ok(json!({ "capabilities": caps }))
             }
             "set_role" => {
-                let cl = self.client(step).await?;
-                Ok(cl
-                    .post(
-                        &format!("orgs/{}/members", s(step, "org")),
-                        json!({ "account": self.account_id(&s(step, "member")), "role": step["role"] }),
-                    )
-                    .await?)
+                let body =
+                    json!({ "account": self.account_id(&s(step, "member")), "role": step["role"] });
+                self.post_approved(step, &format!("orgs/{}/members", s(step, "org")), body)
+                    .await
             }
             "wait_for" => self.wait_for(step).await,
             "events" => {
@@ -2342,7 +2353,14 @@ impl<'a> Runner<'a> {
                     opts["apps"] = apps.clone();
                 }
                 let cl = self.client(step).await?;
-                let (key_id, key) = cl.create_api_key(opts).await?;
+                // Minting a key is approved with the account's passkey; an API key mints none.
+                let who = self.actor(step).unwrap_or_default();
+                let Some(pk) = self.passkeys.get_mut(&who) else {
+                    return Err(Fail::Workflow(format!(
+                        "create_api_key: {who} has no passkey to approve the key"
+                    )));
+                };
+                let (key_id, key) = cl.create_api_key(opts, pk).await?;
                 Ok(json!({ "keyId": key_id, "key": key }))
             }
             "create_org" => {
@@ -2363,16 +2381,12 @@ impl<'a> Runner<'a> {
                     .await?)
             }
             "invite" => {
-                let cl = self.client(step).await?;
-                Ok(cl
-                    .post(
-                        &format!("orgs/{}/invites", s(step, "org")),
-                        json!({
-                            "role": step.get("role").cloned().unwrap_or_else(|| json!("member")),
-                            "teams": step.get("teams").cloned().unwrap_or_else(|| json!([])),
-                        }),
-                    )
-                    .await?)
+                let body = json!({
+                    "role": step.get("role").cloned().unwrap_or_else(|| json!("member")),
+                    "teams": step.get("teams").cloned().unwrap_or_else(|| json!([])),
+                });
+                self.post_approved(step, &format!("orgs/{}/invites", s(step, "org")), body)
+                    .await
             }
             "redeem_invite" => {
                 let cl = self.client(step).await?;
@@ -2381,14 +2395,12 @@ impl<'a> Runner<'a> {
                     .await?)
             }
             "remove_member" => {
-                let cl = self.client(step).await?;
-                Ok(cl
-                    .delete(&format!(
-                        "orgs/{}/members/{}",
-                        s(step, "org"),
-                        self.account_id(&s(step, "member"))
-                    ))
-                    .await?)
+                let path = format!(
+                    "orgs/{}/members/{}",
+                    s(step, "org"),
+                    self.account_id(&s(step, "member"))
+                );
+                self.delete_approved(step, &path).await
             }
             "http" => {
                 let method = s(step, "method").to_lowercase();
@@ -3052,7 +3064,8 @@ impl<'a> AppRunner<'a> {
         outsiders: &[String],
         wasm: Vec<u8>,
     ) -> Result<Self, String> {
-        let owner = person(c, "owner").await?;
+        // The owner's memberships, invites and team rows are approved with its passkey.
+        let mut owner = person(c, "owner").await?;
         let o = &owner.on[0];
         let org = str_field(
             &o.post("orgs", json!({ "name": "Scenario" }))
@@ -3065,9 +3078,13 @@ impl<'a> AppRunner<'a> {
             let Some(role) = role else { continue };
             let p = person(c, &name).await?;
             let token = str_field(
-                &o.post(&format!("orgs/{org}/invites"), json!({ "role": role }))
-                    .await
-                    .map_err(|e| format!("invite {name}: {e}"))?,
+                &o.post_confirmed(
+                    &format!("orgs/{org}/invites"),
+                    json!({ "role": role }),
+                    &mut owner.pk,
+                )
+                .await
+                .map_err(|e| format!("invite {name}: {e}"))?,
                 "token",
             )?;
             let _r = p.on[0]
@@ -3091,9 +3108,10 @@ impl<'a> AppRunner<'a> {
                     .get(m)
                     .map_or_else(|| owner.id.clone(), |p: &Person| p.id.clone());
                 let _r = o
-                    .post(
+                    .post_confirmed(
                         &format!("orgs/{org}/teams/{id}/members"),
                         json!({ "account": account, "lead": false }),
+                        &mut owner.pk,
                     )
                     .await
                     .map_err(|e| format!("add {m} to {team}: {e}"))?;
@@ -3111,7 +3129,10 @@ impl<'a> AppRunner<'a> {
         for (team, id) in &teams {
             if !spec.teams[team].iter().any(|m| m == "owner") {
                 let _r = o
-                    .delete(&format!("orgs/{org}/teams/{id}/members/{}", owner.id))
+                    .delete_confirmed(
+                        &format!("orgs/{org}/teams/{id}/members/{}", owner.id),
+                        &mut owner.pk,
+                    )
                     .await;
             }
         }
@@ -3340,8 +3361,9 @@ impl<'a> AppRunner<'a> {
             .ok_or_else(|| format!("no account {name}"))?
             .id
             .clone();
-        let _r = self.people["owner"].on[0]
-            .delete(&format!("orgs/{}/members/{id}", self.org))
+        let owner = self.people.get_mut("owner").ok_or("no account owner")?;
+        let _r = owner.on[0]
+            .delete_confirmed(&format!("orgs/{}/members/{id}", self.org), &mut owner.pk)
             .await
             .map_err(|e| e.to_string())?;
         for r in self.c.nodes.iter().flatten() {

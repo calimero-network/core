@@ -90,12 +90,15 @@ class Account:
         self.home.mkdir(parents=True, exist_ok=True)
         self.cli("login", "--dev-passkey", str(self.passkey), "--name", self.name, "--origin", ORIGIN)
         self.id = self.cli("whoami")["accountId"]
-        self.key = self.cli("account", "api-key", "create", "--label", f"suite-{self.name}")["key"]
+        self.key = self.cli("account", "api-key", "create", "--label", f"suite-{self.name}",
+                            "--dev-passkey", str(self.passkey))["key"]
         return self
 
     def raw(self, method, path, body=None):
+        """Any route as this account; a `412 CONFIRM_REQUIRED` (invites, members) is
+        answered with its passkey, as the person would."""
         args = ["raw", method, path] + ([json.dumps(body)] if body is not None else [])
-        return self.cli(*args)
+        return self.cli(*args, "--dev-passkey", str(self.passkey))
 
     def order(self, node=None):
         if node is not None:
