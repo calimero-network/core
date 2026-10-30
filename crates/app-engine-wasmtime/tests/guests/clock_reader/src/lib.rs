@@ -13,7 +13,7 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.0","methods":{"wall":{"kind":"view"},"monotonic":{"kind":"view"},"random":{"kind":"call"},"org":{"kind":"view"},"print":{"kind":"call"},"fetch":{"kind":"call"},"body_write":{"kind":"call"},"pollables":{"kind":"call"}}}"#;
+const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app@0.5.1","methods":{"wall":{"kind":"view"},"monotonic":{"kind":"view"},"random":{"kind":"call"},"org":{"kind":"view"},"print":{"kind":"call"},"fetch":{"kind":"call"},"body_write":{"kind":"call"},"pollables":{"kind":"call"}}}"#;
 
 #[link_section = "calimero:abi"]
 #[used]

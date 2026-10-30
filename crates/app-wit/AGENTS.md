@@ -8,10 +8,11 @@
 
 ## What This Crate Does
 
-Holds the `calimero:app@0.5.0` world verbatim from the spec and exposes `WIT_DIR`, `WORLD`, `allowed_imports()` (what the world imports) and `stubbed_imports()` (the nine D44 interfaces accepted at install). Anything in neither list is refused.
+Holds the `calimero:app@0.5.1` world (the spec's 0.5.0 plus the additive `files` interface) and exposes `WIT_DIR`, `WORLD`, `allowed_imports()` (what the world imports) and `stubbed_imports()` (the nine D44 interfaces accepted at install). Anything in neither list is refused.
 
 ## Rules
 
+- A patch bump is additive only: no existing type or function changes, so a component built against an older 0.5.z still links (the engine accepts `calimero:app/*` imports at any 0.5 patch up to the world's).
 - Change the WIT only together with the spec; keep `allowed_imports()` in step with the world.
 - `wit/deps/sockets` is vendored only because `wasi:cli` and `wasi:http` reference it; it is not imported by the world.
 

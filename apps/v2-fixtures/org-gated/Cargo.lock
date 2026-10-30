@@ -128,9 +128,11 @@ name = "calimero-app-host"
 version = "0.0.0"
 dependencies = [
  "ciborium",
+ "hex",
  "rand",
  "rand_chacha",
  "serde_json",
+ "sha2 0.11.1",
  "thiserror",
 ]
 
@@ -144,9 +146,11 @@ dependencies = [
  "calimero-app-sdk-macros",
  "ciborium",
  "eyre",
+ "hex",
  "rand",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror",
  "wit-bindgen",

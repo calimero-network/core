@@ -1,0 +1,38 @@
+// The types and storage interfaces of calimero:app 0.5.0, verbatim, so this guest imports
+// exactly what an app built before 0.5.1 imports.
+package calimero:app@0.5.0;
+
+interface types {
+  type account-id = string;
+  type org-id = string;
+  type team-id = string;
+  type blob-id = string;
+  type action-id = string;
+  record api-key-caller { key-id: string, account: account-id }
+  variant caller { account(account-id), api-key(api-key-caller), public, system, app(string) }
+  enum org-role { owner, admin, member, guest }
+  record org-membership { org: org-id, role: org-role }
+  variant audience {
+    all, caller, accounts(list<account-id>), team(team-id),
+    org-members(org-id), org-admins(org-id),
+  }
+  record event { name: string, data: list<u8>, audience: audience }
+  record app-error { code: string, message: string }
+  record blob-info { size: u64, sha256: list<u8>, mime: string }
+  enum invocation-kind { call, view, action, timer, xcall-deliver, init, migrate }
+}
+
+interface storage {
+  get: func(key: list<u8>) -> option<list<u8>>;
+  put: func(key: list<u8>, value: list<u8>);
+  delete: func(key: list<u8>);
+  add: func(key: list<u8>, delta: s64);
+  resource cursor { next: func(max: u32) -> list<tuple<list<u8>, list<u8>>>; }
+  range: func(start: list<u8>, end: list<u8>, reverse: bool) -> cursor;
+}
+
+world app {
+  import storage;
+  use types.{invocation-kind, app-error};
+  export handle: func(kind: invocation-kind, method: string, args: list<u8>) -> result<list<u8>, app-error>;
+}

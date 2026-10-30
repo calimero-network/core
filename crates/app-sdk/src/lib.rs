@@ -19,6 +19,7 @@ pub mod collections;
 pub mod encoding;
 pub mod env;
 pub mod error;
+pub mod files;
 pub mod guards;
 pub mod json;
 pub mod store;
