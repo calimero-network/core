@@ -17,6 +17,7 @@ use super::Node;
 use crate::api::PLACEMENT_RELEASE_WAIT;
 use crate::attest::{verify_job_key, AttestationDoc};
 use crate::error::ApiError;
+use crate::job_node::CANCEL_WAIT;
 use crate::job_wire::{self, Assignment};
 use crate::types::AppRecord;
 
@@ -52,11 +53,32 @@ pub(crate) fn busy_here(e: &eyre::Report) -> bool {
     e.downcast_ref::<BusyHere>().is_some()
 }
 
+/// A job node did not answer in time.
+#[derive(Debug)]
+pub(crate) struct TimedOut(NodeId);
+
+impl std::fmt::Display for TimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "job node {} did not answer in time", self.0)
+    }
+}
+
+impl std::error::Error for TimedOut {}
+
+/// Whether `e` is [`TimedOut`].
+pub(crate) fn timed_out(e: &eyre::Report) -> bool {
+    e.downcast_ref::<TimedOut>().is_some()
+}
+
 /// What a job node with no room answers.
 const BUSY_STATUS: u16 = 503;
 
 /// How long a status poll, delete, load or output-key request to a job node may take, its wait for a place included: a frozen node cannot stall a round.
 pub const JOB_CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a delete may take: the job node waits up to [`CANCEL_WAIT`] for the run to stop before it answers.
+pub const JOB_DELETE_TIMEOUT: Duration =
+    Duration::from_secs(CANCEL_WAIT.as_secs() + JOB_CONTROL_TIMEOUT.as_secs());
 
 /// How long an attestation fetch from a job node may take: quote generation can be slow.
 const JOB_ATTEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -128,13 +150,20 @@ struct Load {
 }
 
 impl Node {
-    /// Attest job node `id` and check that its release may run `app`'s work
+    /// Attest job node `id` and check that its release may run `app`'s work and is not retired
     /// (on every call; the attestation itself is kept, see `job_attestation`).
     pub async fn attest_job(&self, id: NodeId, app: &AppRecord) -> eyre::Result<JobPeer> {
         let peer = self.job_attestation(id).await?;
         if !self.sys(|s| s.release_may_hold(app, Some(&peer.release))) {
             eyre::bail!(
                 "job node {id} runs release {}, which this app's owner has not approved",
+                peer.release
+            );
+        }
+        let now = self.clock.now_ms() / 1000;
+        if self.sys(|s| s.retired(&peer.release, now)) {
+            eyre::bail!(
+                "job node {id} runs release {}, which is retired by a deadline",
                 peer.release
             );
         }
@@ -281,13 +310,29 @@ impl Node {
         body: Vec<u8>,
         max: usize,
     ) -> eyre::Result<JobAnswer> {
+        self.job_call_within(JOB_CONTROL_TIMEOUT, peer, method, path, headers, body, max)
+            .await
+    }
+
+    /// [`Self::job_call`] with `timeout` for the request itself.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn job_call_within(
+        &self,
+        timeout: Duration,
+        peer: &JobPeer,
+        method: Method,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Vec<u8>,
+        max: usize,
+    ) -> eyre::Result<JobAnswer> {
         let waited = tokio::time::timeout(JOB_CONTROL_TIMEOUT, self.job_control.acquire()).await;
         let Ok(slot) = waited else {
             return Err(BusyHere.into());
         };
         let _slot = slot?;
         let call = self.call_job(peer, method, path, headers, body, max);
-        self.within(JOB_CONTROL_TIMEOUT, peer, call).await
+        self.within(timeout, peer, call).await
     }
 
     /// `call` within `timeout`; a node that does not answer in time is dropped.
@@ -301,7 +346,7 @@ impl Node {
             return done;
         }
         self.forget_job(peer.id);
-        eyre::bail!("job node {} did not answer within {timeout:?}", peer.id)
+        Err(TimedOut(peer.id).into())
     }
 
     /// [`Self::job_call`] for a request that moves a component, an assignment or a file, with

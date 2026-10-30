@@ -666,3 +666,34 @@ async fn a_job_node_attested_under_another_id_is_refused() {
     let e = node.attest_job(JOB + 2, &record).await.unwrap_err();
     assert!(e.to_string().contains("cluster elsewhere"), "{e}");
 }
+
+/// A job node on a release past an operator's deadline takes no work, as a replica takes no new app.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_job_node_on_a_retired_release_is_not_attested() {
+    let c = Cluster::start_with(3, |cfg| cfg.tee_release = Some("1.0.0".into())).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let app = create(&alice, "kv").await;
+    let _ok = alice.approve_release(None, "2.0.0", &mut pk).await.unwrap();
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let record = node.sys(|s| s.apps[&app].clone());
+    let old = c
+        .start_job_node(JOB, |cfg| cfg.tee_release = Some("1.0.0".into()))
+        .await;
+    let new = c
+        .start_job_node(JOB + 1, |cfg| cfg.tee_release = Some("2.0.0".into()))
+        .await;
+    c.register_job_node(JOB, &old.url).await;
+    c.register_job_node(JOB + 1, &new.url).await;
+    assert!(node.attest_job(JOB, &record).await.is_ok());
+
+    let _ok = common::ops_signed(
+        &ops(&c).await,
+        "ops/releases/2.0.0/deadline",
+        json!({ "after": "2001-01-01T00:00:00Z" }),
+    )
+    .await
+    .unwrap();
+    let e = node.attest_job(JOB, &record).await.unwrap_err();
+    assert!(e.to_string().contains("retired"), "{e}");
+    assert!(node.attest_job(JOB + 1, &record).await.is_ok());
+}
