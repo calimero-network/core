@@ -14,6 +14,10 @@
   their own that a dropped RPC does not abort, one per peer at a time; the
   next RPC finds the channel open and the caller known. Regression:
   `peers_that_attest_slower_than_a_heartbeat_still_form_a_cluster`.
+- A system write (sign-up, passkey, org, node registration) that the system
+  group cannot commit answers `503 UNAVAILABLE` within 10 s, naming the leader,
+  voters, learners and the members behind the leader, instead of waiting until
+  a proxy cuts the connection.
 
 ## [1.0.0-rc.4] - 2026-10-30
 

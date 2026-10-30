@@ -535,6 +535,13 @@ pub const READ_ONLY: &str = "read-only in this team: the call would write";
 /// How long a forwarded call or read waits for the leader before retrying.
 pub const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long a system write may take, election and forwarding included, before
+/// it answers `503 UNAVAILABLE`. A system group that cannot commit (too few
+/// voters answering, or a membership change waiting on members that do not)
+/// otherwise left the write waiting until the proxy in front of merod cut the
+/// connection at 30 s, so the caller saw a dropped request and not the reason.
+pub const SYSTEM_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// A command the system log refused at apply.
 /// The largest blob (an app's file, a package's `.mpk`) a node keeps: it
 /// reaches the other nodes base64-encoded inside one sealed request
@@ -803,9 +810,16 @@ impl Node {
     /// Commit a system command through the system group's leader.
     pub async fn sys_write(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         let bytes = serde_json::to_vec(cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
-        // Up to ~8 s: long enough to ride out a system leader election.
+        // Long enough to ride out a system leader election, and never longer
+        // than `SYSTEM_WRITE_TIMEOUT` in all.
+        let deadline = tokio::time::Instant::now() + SYSTEM_WRITE_TIMEOUT;
         for attempt in 0..50 {
-            match self.system.write(bytes.clone()).await {
+            let Ok(written) =
+                tokio::time::timeout_at(deadline, self.system.write(bytes.clone())).await
+            else {
+                return Err(self.system_stalled());
+            };
+            match written {
                 Ok((index, out)) => {
                     let _ = index;
                     return output(&out).map_err(|e| rejected(&e));
@@ -831,9 +845,50 @@ impl Node {
                 Err(e @ WriteError::TooLarge { .. }) => return Err(status_of(&e)),
                 Err(e) => debug!(attempt, error = %e, "system write not yet possible"),
             }
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            if tokio::time::timeout_at(deadline, tokio::time::sleep(Duration::from_millis(150)))
+                .await
+                .is_err()
+            {
+                return Err(self.system_stalled());
+            }
         }
         Err(ApiError::unavailable("the system group has no leader"))
+    }
+
+    /// The `503` of a system write that did not commit in
+    /// [`SYSTEM_WRITE_TIMEOUT`], naming the system group as this node sees it:
+    /// its leader, voters and learners, and on the leader the members whose
+    /// log is behind. The write may still commit later; nothing here undoes it.
+    fn system_stalled(&self) -> ApiError {
+        let status = self.system.status();
+        let ids = |v: &[NodeId]| {
+            v.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut why = format!(
+            "the system group did not commit this write in {} s (leader {}, voters [{}], learners [{}]",
+            SYSTEM_WRITE_TIMEOUT.as_secs(),
+            status.leader.map_or_else(|| "none".to_owned(), |l| l.to_string()),
+            ids(&status.voters),
+            ids(&status.learners),
+        );
+        if status.is_leader {
+            let metrics = self.system.raft().metrics().borrow().clone();
+            let last = metrics.last_log_index.unwrap_or(0);
+            let behind: Vec<NodeId> = metrics
+                .replication
+                .iter()
+                .flatten()
+                .filter(|(_, log)| log.map_or(0, |l| l.index) < last)
+                .map(|(peer, _)| *peer)
+                .collect();
+            why.push_str(&format!(", behind the leader: [{}]", ids(&behind)));
+        }
+        why.push_str("); it may still apply once the group can commit");
+        warn!(%why, "system write timed out");
+        ApiError::unavailable(&why)
     }
 
     /// The voters and learners of app group `group` as this node's replica
