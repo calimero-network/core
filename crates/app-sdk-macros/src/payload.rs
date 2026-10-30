@@ -71,18 +71,24 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
     let mut arms = Vec::new();
     for variant in &item.variants {
         let vname = &variant.ident;
-        if let Fields::Unnamed(_) = &variant.fields {
-            return Err(unnamed(kind, variant, "tuple variant", &vname.to_string()));
-        }
+        // A unit variant or a braced one; a tuple variant is refused (D63).
+        let named = match &variant.fields {
+            Fields::Unnamed(_) => {
+                return Err(unnamed(kind, variant, "tuple variant", &vname.to_string()))
+            }
+            Fields::Unit => None,
+            Fields::Named(fields) => Some(fields),
+        };
         let code = vname.to_string();
         let mut fields_abi = Map::new();
         let mut binds = Vec::new();
         let mut inserts = Vec::new();
-        for field in &variant.fields {
-            // Every field is named: tuple variants were refused above.
-            let Some(bind) = field.ident.clone() else {
-                return Err(unnamed(kind, field, "tuple variant", &vname.to_string()));
-            };
+        // Every field of a braced variant has its name.
+        let fields = named
+            .into_iter()
+            .flat_map(|n| &n.named)
+            .filter_map(|f| f.ident.clone().map(|ident| (f, ident)));
+        for (field, bind) in fields {
             let key = camel(&bind.to_string());
             check_wire(&field.ty)?;
             let _ = fields_abi.insert(key.clone(), Value::String(abi_type(&field.ty)));
@@ -123,9 +129,9 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
             binds.push(bind);
         }
         let _ = abi.insert(code.clone(), Value::Object(fields_abi));
-        let pattern = match &variant.fields {
-            Fields::Unit => quote! { #name::#vname },
-            Fields::Named(_) | Fields::Unnamed(_) => quote! { #name::#vname { #(#binds),* } },
+        let pattern = match named {
+            None => quote! { #name::#vname },
+            Some(_) => quote! { #name::#vname { #(#binds),* } },
         };
         arms.push(quote! {
             #pattern => {
