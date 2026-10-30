@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Security
+
+Phase 0 of gating the system group (`docs/specs/gate-system-group.md`): a node
+on a mero-tee release nobody approved could reach app data and forge
+decisions. It no longer can. **Hard cutover**: no interop with earlier nodes,
+tokens or log entries; existing clusters are recreated.
+
+- **Internal routes judge the calling node** (F2, F4). A node's channel to a
+  peer is identified (sealed handshake version 3, Noise IK with its attested
+  transport key); the receiver attests the caller's registered address itself
+  and learns its release. `internal/view`, `call`, `events`, `storage`,
+  `blob/*`, `app-ready`, `presence` and an app group's `raft` refuse a node
+  whose release the app's owner has not approved; a Raft message must come
+  from the node it names, a member of the group. The cluster secret alone no
+  longer authorizes anything, and anonymous peer sessions are refused. App
+  blobs and presence are sent only to approved nodes.
+- **Decisions are checked where they apply** (F3). Release and outbound
+  approvals, upgrades and upgrade runs, transfers and organization deletions
+  carry the maker's passkey consent with its nonce, verified at apply on every
+  node, for exactly that change, once. The operator's decisions carry an
+  Ed25519 signature by the operator key (`--operator-key`, recorded at
+  genesis); without a proof the Ops API answers `428
+  OPERATOR_SIGNATURE_REQUIRED` with the bytes to sign.
+- **Sessions are node-signed** (F1). Tokens (`v2.`) are signed by the issuing
+  node's attested receipt key; other nodes accept one only if the issuer's
+  release may serve the account and the app. The shared session key K_s,
+  `AddSessionKey` and `--session-key-rotation-secs` are gone. A node whose
+  release may not serve an account answers `421 WRONG_NODE`, before it spends
+  a refresh token or a sign-in challenge. The receipt key is kept in
+  `<data-dir>/signing-key`, wrapped under K_r, so a node's sessions survive its
+  restart. Every node attests each peer's key ahead of time, so a session
+  works while its issuer is stopped or frozen. `calimero-client` refreshes
+  once on a `401` and reports `421 WRONG_NODE` as `Error::WrongNode`.
+
 ### Added
 
 - **A node reports which KMS it verified, inside its quote.** Each key fetch

@@ -14,12 +14,19 @@ use crate::server::{malformed, Refusal};
 /// (from the quote), the node's static key authenticates it, and both sides'
 /// ephemeral keys give the session forward secrecy.
 pub(crate) const NOISE_PARAMS: &str = "Noise_NK_25519_AESGCM_SHA256";
+/// The pattern of an identified session ([`crate::identity::IDENTIFIED_VERSION`]):
+/// as NK, and the caller also proves its own static key (`s`, `ss`, `se`), in
+/// the same one round trip.
+pub(crate) const NOISE_PARAMS_IDENTIFIED: &str = "Noise_IK_25519_AESGCM_SHA256";
 /// Binds the handshake to this protocol, so a Noise NK handshake for anything
 /// else never yields a sealed session.
 pub(crate) const PROLOGUE: &[u8] = b"calimero/sealed-http/v2";
 /// Noise message 1 of NK: the client's ephemeral key and the tag of an empty
 /// payload.
 pub(crate) const MESSAGE_1_LEN: usize = 32 + 16;
+/// Noise message 1 of IK: the caller's ephemeral key, its static key sealed
+/// (32 + tag) and the tag of an empty payload.
+pub(crate) const IDENTIFIED_MESSAGE_1_LEN: usize = 32 + 32 + 16 + 16;
 pub(crate) const SESSION_ID_LEN: usize = 16;
 
 /// How long a session's keys live, however busy it is. This is the forward
@@ -76,6 +83,50 @@ pub(crate) fn respond(
     respond_with(handshake, message_1, session_id)
 }
 
+/// [`respond`] for an identified session (Noise IK): also returns the static
+/// key the caller proved it holds.
+pub(crate) fn respond_identified(
+    transport_secret: &[u8; 32],
+    message_1: &[u8],
+    session_id: &SessionId,
+) -> Result<(Vec<u8>, SessionKeys, [u8; 32]), Refusal> {
+    let client_ephemeral = message_1.first_chunk::<32>().ok_or_else(malformed)?;
+    if low_order(client_ephemeral, transport_secret) {
+        return Err(malformed());
+    }
+    let params: NoiseParams = NOISE_PARAMS_IDENTIFIED
+        .parse()
+        // SAFETY: a constant naming a pattern and primitives snow supports.
+        .expect("valid Noise parameters");
+    let mut handshake = snow::Builder::new(params)
+        .prologue(PROLOGUE)
+        .local_private_key(transport_secret.as_slice())
+        .build_responder()
+        .map_err(|_| undecryptable())?;
+    let mut payload = [0u8; IDENTIFIED_MESSAGE_1_LEN];
+    let payload_len = handshake
+        .read_message(message_1, &mut payload)
+        .map_err(|_| undecryptable())?;
+    if payload_len != 0 {
+        return Err(malformed());
+    }
+    let peer: [u8; 32] = handshake
+        .get_remote_static()
+        .and_then(|k| k.try_into().ok())
+        .ok_or_else(malformed)?;
+    // A low-order static key proves nothing: anyone computes its shared secrets.
+    if low_order(&peer, transport_secret) {
+        return Err(malformed());
+    }
+    let (message_2, keys) = write_message_2(handshake, session_id)?;
+    Ok((message_2, keys, peer))
+}
+
+fn low_order(public: &[u8; 32], secret: &[u8; 32]) -> bool {
+    let shared = Zeroizing::new(MontgomeryPoint(*public).mul_clamped(*secret).0);
+    shared.iter().all(|byte| *byte == 0)
+}
+
 pub(crate) fn builder() -> snow::Builder<'static> {
     let params: NoiseParams = NOISE_PARAMS
         .parse()
@@ -107,7 +158,15 @@ pub(crate) fn respond_with(
     if payload_len != 0 {
         return Err(malformed());
     }
+    write_message_2(handshake, session_id)
+}
 
+/// Message 2, whose payload hands the caller its session id and lifetime, and
+/// the session's keys.
+fn write_message_2(
+    mut handshake: snow::HandshakeState,
+    session_id: &SessionId,
+) -> Result<(Vec<u8>, SessionKeys), Refusal> {
     let lifetime = u32::try_from(SESSION_LIFETIME.as_secs()).unwrap_or(u32::MAX);
     let mut payload = [0u8; SESSION_ID_LEN + 4];
     payload[..SESSION_ID_LEN].copy_from_slice(session_id);
@@ -130,6 +189,8 @@ pub(crate) fn respond_with(
 
 struct Session {
     keys: SessionKeys,
+    /// The static key an identified session's caller proved it holds.
+    peer: Option<[u8; 32]>,
     expires: Instant,
     idle_until: Instant,
     /// Whether a request has opened under this session.
@@ -150,7 +211,13 @@ pub(crate) struct Sessions {
 }
 
 impl Sessions {
-    pub fn insert(&mut self, id: SessionId, keys: SessionKeys, now: Instant) {
+    pub fn insert(
+        &mut self,
+        id: SessionId,
+        keys: SessionKeys,
+        peer: Option<[u8; 32]>,
+        now: Instant,
+    ) {
         if self.map.len() >= MAX_SESSIONS {
             self.map.retain(|_, session| session.is_live(now));
         }
@@ -168,6 +235,7 @@ impl Sessions {
             id,
             Session {
                 keys,
+                peer,
                 expires: now + SESSION_LIFETIME,
                 idle_until: now + SESSION_IDLE,
                 used: false,
@@ -186,14 +254,15 @@ impl Sessions {
         self.map.len()
     }
 
-    /// A live session's keys and the instant they expire.
+    /// A live session's keys, the instant they expire, and the static key its
+    /// caller proved (identified sessions only).
     pub fn keys(
         &mut self,
         id: &SessionId,
         now: Instant,
-    ) -> Result<(SessionKeys, Instant), Refusal> {
+    ) -> Result<(SessionKeys, Instant, Option<[u8; 32]>), Refusal> {
         let session = self.live(id, now)?;
-        Ok((session.keys.clone(), session.expires))
+        Ok((session.keys.clone(), session.expires, session.peer))
     }
 
     /// Record a request id as used. Called only once the request opened, so a

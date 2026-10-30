@@ -44,6 +44,8 @@ use tokio::sync::Mutex;
 use url::Url;
 use zeroize::Zeroizing;
 
+use crate::identity::{StaticKey, IDENTIFIED_VERSION};
+
 /// Produces the transport key a sealed session is opened to, after verifying
 /// the node's attestation. Called on first use and again after a node restart.
 pub trait Attest: Send + Sync + std::fmt::Debug {
@@ -85,12 +87,15 @@ pub const SEALED_CONTENT_TYPE: &str = "application/vnd.calimero.sealed";
 
 const VERSION: u8 = 2;
 const NOISE_PARAMS: &str = "Noise_NK_25519_AESGCM_SHA256";
+const NOISE_PARAMS_IDENTIFIED: &str = "Noise_IK_25519_AESGCM_SHA256";
 const PROLOGUE: &[u8] = b"calimero/sealed-http/v2";
 const SESSION_ID_LEN: usize = 16;
 /// `version || session_id || request_id`, a request's AAD and its frames'.
 const HEADER_LEN: usize = 1 + SESSION_ID_LEN + 8;
 /// Noise message 1 of NK: the client's ephemeral key and an empty payload's tag.
 const MESSAGE_1_LEN: usize = 32 + 16;
+/// Noise message 1 of IK: ephemeral key, sealed static key, empty payload's tag.
+const IDENTIFIED_MESSAGE_1_LEN: usize = 32 + 32 + 16 + 16;
 const FRAME_HEAD: u8 = 0;
 const FRAME_DATA: u8 = 1;
 const FRAME_END: u8 = 2;
@@ -135,6 +140,9 @@ pub struct SealedTransport {
     api_url: Url,
     http: reqwest::Client,
     key: KeySource,
+    /// The static key a node identifies itself with to a peer, if this is a
+    /// node's channel to a peer.
+    identity: Option<StaticKey>,
     state: Mutex<State>,
 }
 
@@ -170,11 +178,27 @@ impl SealedTransport {
         Self::with_source(api_url, http, KeySource::Fixed(transport_public_key))
     }
 
+    /// [`Self::attested`] for a node calling a peer: each session is opened
+    /// identified (Noise IK) with `key`, this node's own transport key, so the
+    /// peer knows which attested node calls.
+    #[must_use]
+    pub fn identified_as(
+        api_url: Url,
+        http: reqwest::Client,
+        attestor: Arc<dyn Attest>,
+        key: StaticKey,
+    ) -> Self {
+        let mut transport = Self::with_source(api_url, http, KeySource::Attested(attestor));
+        transport.identity = Some(key);
+        transport
+    }
+
     fn with_source(api_url: Url, http: reqwest::Client, key: KeySource) -> Self {
         Self {
             api_url,
             http,
             key,
+            identity: None,
             state: Mutex::new(State::default()),
         }
     }
@@ -330,16 +354,32 @@ impl SealedTransport {
         }
     }
 
+    /// One handshake: identified with this node's key (Noise IK) on a
+    /// channel to a peer, else anonymous (NK).
     async fn handshake_once(&self, transport_key: &[u8; 32]) -> Result<Session> {
-        let mut noise = noise_builder()?
-            .remote_public_key(transport_key)
-            .build_initiator()
-            .map_err(|err| eyre!("failed to start the handshake: {err}"))?;
-        let mut message_1 = [0u8; MESSAGE_1_LEN];
-        let len = noise
-            .write_message(&[], &mut message_1)
-            .map_err(|err| eyre!("failed to start the handshake: {err}"))?;
-        let body = [&[VERSION][..], transport_key, &message_1[..len]].concat();
+        let start = |err| eyre!("failed to start the handshake: {err}");
+        let (mut noise, version, message_len) = match &self.identity {
+            Some(key) => (
+                noise_builder(NOISE_PARAMS_IDENTIFIED)?
+                    .local_private_key(key.secret())
+                    .remote_public_key(transport_key)
+                    .build_initiator()
+                    .map_err(start)?,
+                IDENTIFIED_VERSION,
+                IDENTIFIED_MESSAGE_1_LEN,
+            ),
+            None => (
+                noise_builder(NOISE_PARAMS)?
+                    .remote_public_key(transport_key)
+                    .build_initiator()
+                    .map_err(start)?,
+                VERSION,
+                MESSAGE_1_LEN,
+            ),
+        };
+        let mut message_1 = vec![0u8; message_len];
+        let len = noise.write_message(&[], &mut message_1).map_err(start)?;
+        let body = [&[version][..], transport_key, &message_1[..len]].concat();
 
         let response = self
             .http
@@ -355,7 +395,7 @@ impl SealedTransport {
         let reply = read_body_capped(response, MAX_HANDSHAKE_REPLY)
             .await
             .wrap_err("the handshake reply is malformed")?;
-        finish(&mut noise, &reply)
+        finish(&mut noise, version, &reply)
     }
 
     async fn send_in(
@@ -380,18 +420,21 @@ impl SealedTransport {
     }
 }
 
-fn noise_builder() -> Result<snow::Builder<'static>> {
-    let params = NOISE_PARAMS
+fn noise_builder(pattern: &str) -> Result<snow::Builder<'static>> {
+    let params = pattern
         .parse()
         .map_err(|err| eyre!("invalid Noise parameters: {err:?}"))?;
     Ok(snow::Builder::new(params).prologue(PROLOGUE))
 }
 
 /// Finish the handshake with the node's reply.
-fn finish(noise: &mut snow::HandshakeState, reply: &[u8]) -> Result<Session> {
-    let Some((&VERSION, message_2)) = reply.split_first() else {
+fn finish(noise: &mut snow::HandshakeState, version: u8, reply: &[u8]) -> Result<Session> {
+    let Some((&replied, message_2)) = reply.split_first() else {
         bail!("the handshake reply is malformed");
     };
+    if replied != version {
+        bail!("the handshake reply is malformed");
+    }
     let mut payload = [0u8; 64];
     let len = noise.read_message(message_2, &mut payload).map_err(|_| {
         eyre!("the handshake reply did not open: it did not come from the attested node")

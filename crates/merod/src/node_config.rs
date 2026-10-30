@@ -102,6 +102,12 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_OPS_TOKEN_SHA256", conflicts_with = "ops_token")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ops_token_sha256: Option<String>,
+    /// The operator's Ed25519 verify key, hex: every operator decision (a
+    /// release approval, an upgrade, an outbound approval where the operator
+    /// holds it) must carry its signature. Recorded at genesis.
+    #[arg(long, env = "MEROD_OPERATOR_KEY")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operator_key: Option<String>,
     /// A plain-HTTP address serving only `GET /metrics` (Prometheus text, the
     /// counts `/ops/metrics` answers), for a scraper that cannot open the sealed
     /// channel; bind it to a private address. Off by default.
@@ -115,11 +121,6 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_BACKUP_DIR")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_dir: Option<PathBuf>,
-    /// Rotate the session-signing key after this many seconds (at least 1800:
-    /// the previous key must outlive the 15-minute sessions it signed) [default: 21600].
-    #[arg(long, env = "MEROD_SESSION_KEY_ROTATION")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_key_rotation_secs: Option<u64>,
     /// A file holding the storage key material (development only).
     #[arg(long, env = "MEROD_STORAGE_KEY_FILE", conflicts_with_all = ["storage_key", "kms_url"])]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -219,12 +220,10 @@ impl NodeArgs {
             origins: list(self.origins, base.origins),
             ops_token: self.ops_token.or(base.ops_token),
             ops_token_sha256: self.ops_token_sha256.or(base.ops_token_sha256),
+            operator_key: self.operator_key.or(base.operator_key),
             metrics_listen: self.metrics_listen.or(base.metrics_listen),
             replicas: self.replicas.or(base.replicas),
             backup_dir: self.backup_dir.or(base.backup_dir),
-            session_key_rotation_secs: self
-                .session_key_rotation_secs
-                .or(base.session_key_rotation_secs),
             storage_key_file: self.storage_key_file.or(base.storage_key_file),
             kms_url: self.kms_url.or(base.kms_url),
             kms_identity: self.kms_identity.or(base.kms_identity),

@@ -116,15 +116,33 @@ which releases may receive it:
   - placement of a new app considers only nodes on an approved release;
   - a replica move onto a node whose release is not approved is refused.
 
+  - every internal route that reaches an app's data (`internal/view`, `call`,
+    `events`, `storage`, `blob/*`, `app-ready`, `presence`, an app group's
+    `raft`) refuses a calling node whose release is not in the set: peers
+    identify themselves with their attested key ([Networking](/protocol/networking/#between-nodes));
+  - a session signed by a node on a release outside the set reaches none of
+    the app ([Sessions](/protocol/identities/#sessions)), and the app's blobs
+    and presence go only to nodes on an approved release.
+
+An approval is a decision with a proof: the owner's passkey consent over that
+exact change, or the operator's signature where the operator decides, checked
+where it applies on every node, and usable once
+([system group](/protocol/system-group/#decisions-carry-their-proof)). A node
+cannot log an approval of its own release.
+
 So a node on an unapproved image can join the cluster and replicate the system
 group, but receives no app's data until that app's approver approves its
-release.
+release. It still holds the system state (accounts, memberships, approvals) in
+full; gating that is the next phase (`docs/specs/gate-system-group.md`).
 
 ## Release deadlines
 
 Like a store's target-SDK deadline, the operator may announce, per release,
 when work on older images ends: `POST /ops/releases/{version}/deadline
-{ after: "2026-12-01T00:00:00Z" }` (`DELETE` lifts it; `SetReleaseDeadline`).
+{ after: "2026-12-01T00:00:00Z" }` (`after: null`, or `DELETE`, lifts it;
+`SetReleaseDeadline`). It is an operator decision: the node answers `428
+OPERATOR_SIGNATURE_REQUIRED` with the bytes to sign, and every node checks the
+signature where the deadline applies.
 Deadlines are public: `GET /releases`, which anyone may call inside the sealed
 channel, answers the governance and every deadline.
 

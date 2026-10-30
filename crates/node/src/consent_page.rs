@@ -1875,6 +1875,8 @@ async fn act(
         },
         session: None,
         api_key: None,
+        // This node vouches for the account, as for a session it signed.
+        issuer_release: Some(node.own_release()),
         consent_page: true,
     };
     let Json(v) = match &req.action {

@@ -440,6 +440,17 @@ impl<M: Machine> Group<M> {
         Some((id, addr))
     }
 
+    /// The address a voter or learner of this group was added with; `None`
+    /// for a node outside its membership.
+    #[must_use]
+    pub fn member_addr(&self, id: NodeId) -> Option<String> {
+        let m = self.raft.metrics().borrow().clone();
+        m.membership_config
+            .membership()
+            .get_node(&id)
+            .map(|n| n.addr.clone())
+    }
+
     #[must_use]
     pub fn status(&self) -> Status {
         let m = self.raft.metrics().borrow().clone();

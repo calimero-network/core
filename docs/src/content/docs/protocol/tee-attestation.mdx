@@ -109,6 +109,17 @@ debug image itself. What the peer's verified attestation named as its release
 is remembered and decides whether the peer may receive an app's data
 ([release approvals](/protocol/governance/#release-approvals)).
 
+The check runs the other way too. A node calling a peer proves its own
+attested transport key in the handshake (Noise IK), and the receiving node
+attests the caller's registered address with a fresh nonce, under its own
+peer policy: the caller is the node whose quote names that key, on the release
+that quote names. So a node knows which node calls an internal route and on
+which release, and judges it as it judges where to send
+([Networking](/protocol/networking/#between-nodes)). The same goes for
+sessions: a node takes a session token only under the receipt key it attested
+(`purpose=receipts`) for the node that signed it, ahead of time for every
+registered peer ([Failover](/protocol/identities/#failover)).
+
 
 ## Receipts
 
@@ -123,8 +134,10 @@ signature  = Ed25519(receipt_key,
                "calimero.receipt.v1\0" ‖ app ‖ 0 ‖ index (u64 BE) ‖ resultHash ‖ 0 ‖ node (u64 BE))
 ```
 
-The receipt key is an Ed25519 key each node makes in memory at start and never
-stores. It is attested on its own (`purpose=receipts`), together with the
+The receipt key is an Ed25519 key each node makes on its first start and keeps
+in its data directory wrapped under its K_r (`signing_key.rs`), so a restart
+keeps it and only the release whose mero-kms gives that K_r opens it. It also
+signs the node's sessions ([Sessions](/protocol/identities/#sessions)). It is attested on its own (`purpose=receipts`), together with the
 cluster's governance. So a receipt is checkable later, offline, by anyone who
 holds that node's receipt-key attestation: it shows that a genuine node of a
 cluster deployed under those rules returned that answer.

@@ -30,9 +30,10 @@ code, and app code beyond what its owner approved.
 | --- | --- | --- |
 | **Network / proxy** | See that clients talk to nodes, sizes, timing; drop or delay traffic | Read or forge requests, responses or frames; replay a request; impersonate a node without its attested key |
 | **Host / hypervisor** | Stop, freeze, restart a node; read sealed disks; withhold the network | Read memory of a non-debug TD; open sealed values without K_c; get K_r (it comes from mero-kms, not the host) or K_c (wrapped under K_r, or delivered by a peer only to the attested TD at a registered node's address) |
-| **Operator** (ops token) | Register nodes, move replicas onto approved releases, set quotas, take sealed backups, read counts and Raft status, set public release deadlines that stop new work on old images; and whatever governance gives it | Read state, events, blobs or credentials; sign in as anyone; move an app's data to an unapproved image (a deadline approves nothing); block an approval; upgrade apps, approve releases or outbound destinations unless governance gives it that decision |
-| **A publisher** (the organization a package's signing key is bound to) | Where owners decide: approve the releases every instance of its packages runs on (`APPROVE_RELEASES` holders), and upgrade every instance of a package whose manifest says `upgrades: publisher` (`MANAGE_APPLICATION` holders) | Read its customers' apps; take upgrades from instances of an `owner` package, or turn a package back to `publisher` once a release declared `owner` |
-| **A node of the cluster** | Everything this reference describes | — (it is the trusted computing base; that is why every peer is attested) |
+| **Operator** (ops token) | Register nodes, move replicas onto approved releases, set quotas, take sealed backups, read counts and Raft status, set public release deadlines that stop new work on old images (signed with the operator key); and whatever governance gives it | Read state, events, blobs or credentials; sign in as anyone; move an app's data to an unapproved image (a deadline approves nothing); block an approval; upgrade apps, approve releases or outbound destinations unless governance gives it that decision |
+| **A publisher** (the organization a package's signing key is bound to) | Where owners decide: approve the releases every instance of its packages runs on (`APPROVE_RELEASES` holders), and upgrade every instance of a package whose manifest says `upgrades: publisher` (`MANAGE_APPLICATION` holders), each with a passkey assertion checked where it applies | Read its customers' apps; take upgrades from instances of an `owner` package, or turn a package back to `publisher` once a release declared `owner` |
+| **A node on an approved release** | Everything this reference describes for the apps whose owners approved its release | — (it is the trusted computing base for those apps; that is why every peer is attested) |
+| **A node on a release nobody approved** (attested, registered: an operator rolled it out) | Join the system group, hold and replicate the system state, lead it; propose system commands | Receive or read an app's data, through Raft, internal routes, blobs or presence; act as a user with a session it signed; log a decision (approval, publisher binding, upgrade, transfer, deletion, operator decision) without its maker's passkey or the operator key |
 | **An app's owner** | Upgrade it (unless its package says `publisher`), change its access, approve outbound prefixes for it, approve releases for it while its package's key is not bound to a publisher (where governance says owner), delete it | Read other apps; act for other accounts |
 | **A member** | What the app's access rule and the app's own code allow | Read another member's private space; forge a writer rotation, a blob mark or TEE-only state; write if their team row is read-only |
 | **An app's frontend** (third-party page) | Act as the signed-in person for that package's apps only; ask the node to show its user a consent page | Reach other apps, manage credentials or API keys, approve anything, upgrade or uninstall, or choose what the consent page shows or where it returns |
@@ -65,8 +66,16 @@ code, and app code beyond what its owner approved.
   request.
 - **A lagging replica granting stale access** — credentials and access judged
   on fresh system state (a read index).
-- **Forged authority in the log** — commands built only by nodes from verified
-  credentials, and authority checked again at apply.
+- **A node on an unapproved release** — every internal route judges the
+  identified calling node's release, a Raft message's sender must be the node
+  that sent it and a member of the group, sessions are signed by the node that
+  issued them and accepted only from an approved one
+  ([Networking](/protocol/networking/#between-nodes), [Sessions](/protocol/identities/#sessions)).
+- **Forged authority in the log** — decisions carry their maker's passkey
+  consent or the operator's signature, checked at apply on every node and used
+  once ([system group](/protocol/system-group/#decisions-carry-their-proof));
+  other commands are built by nodes from verified credentials, and authority
+  is checked again at apply.
 - **A malicious app frontend** — its own origin and a package-bound session.
 - **An app's page driving an approval** — approvals are refused to
   package-bound sessions; an app asks the node, whose own consent page shows
@@ -81,13 +90,26 @@ code, and app code beyond what its owner approved.
 
 ## What is not protected yet
 
+- **The system state on unapproved nodes.** Every node of the cluster, whatever
+  its release, holds the whole system state: accounts, passkeys' public keys,
+  memberships, approvals, refresh-token hashes. Realms per approver are the
+  next phase (`docs/specs/gate-system-group.md`).
+- **Commands without a proof.** Commands other than the decisions above
+  (passkeys, API keys, refresh tokens, memberships, invites, node registration,
+  replicas, quotas) still name an actor any node of the cluster can claim.
+- **Which node a client talks to.** A client checks that a node is attested,
+  not that the user's approver approved its release, so it sends credentials and
+  passkey assertions to any attested node (F5 in the design).
+
 - **Rollback.** A host that restarts a node on an older copy of its disk is not
   detected. A rollback counter (a mero-kms epoch, restored nodes rejoining as
   learners) is proposed, not done.
 - **Keys per app.** One K_c covers every app on a cluster; keys per app from
   mero-kms are not done.
 - **Availability.** The host and operator can stop nodes. Raft tolerates the
-  loss of a minority of an app's replicas. A new app's replicas are spread
+  loss of a minority of an app's replicas, and a session outlives the node that
+  issued it: every node holds every peer's attested signing key
+  ([Failover](/protocol/identities/#failover)). A new app's replicas are spread
   across the zones the operator registered ([placement](/protocol/context-lifecycle/#create));
   moving existing apps between zones is the operator's (`ops placement`, `ops move`).
 - **Event audiences.** Everyone who reaches an app receives all its events.

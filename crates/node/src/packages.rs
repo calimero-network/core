@@ -265,7 +265,7 @@ impl Node {
                 .map_err(|e| ApiError::internal(&e.to_string()))?;
         }
         if let Some(mpk) = upload {
-            self.store_blob(&mpk).await?;
+            self.store_blob(&mpk, None).await?;
         }
         info!(
             package = %v.package,

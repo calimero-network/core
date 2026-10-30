@@ -17,29 +17,6 @@ use crate::types::{
     OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
 };
 
-/// A session key's encoding (base64url of its 32 bytes). Serialized as the
-/// string itself; `Debug` never prints it, so no `{:?}` of the system state or
-/// of a command logs a key that signs every session.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SecretKey(pub String);
-
-impl std::fmt::Debug for SecretKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionKey {
-    pub version: u32,
-    pub key: SecretKey,
-    /// Unix seconds; the leader rotates the key once it is old enough.
-    #[serde(default)]
-    pub created_at: u64,
-}
-
 /// Per-account limits, replicated so every node enforces the same ones at apply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -220,7 +197,6 @@ pub struct SystemState {
     /// refresh token hash -> record
     pub refresh: BTreeMap<String, RefreshRecord>,
     pub revoked_sessions: BTreeSet<String>,
-    pub session_keys: Vec<SessionKey>,
     pub orgs: BTreeMap<OrgId, Org>,
     /// invite token hash -> invite
     pub invites: BTreeMap<String, Invite>,
@@ -266,6 +242,14 @@ pub struct SystemState {
     /// second use is a stolen token, and revokes the session.
     #[serde(default)]
     pub rotated_refresh: BTreeMap<String, RefreshRecord>,
+    /// The proofs decisions were logged with ([`crate::proof`]), each usable
+    /// once: a node cannot log a decision again after its maker reversed it.
+    #[serde(default)]
+    pub used_proofs: BTreeSet<String>,
+    /// The operator's verify key, recorded at genesis: what the operator's
+    /// decisions are signed with.
+    #[serde(default)]
+    pub operator_key: Option<crate::proof::OperatorKey>,
 }
 
 pub use calimero_client::attest::{Authority, Governance};
@@ -765,6 +749,31 @@ impl SystemState {
         }
     }
 
+    /// Whether a node on `release` may vouch for `account` (sign its
+    /// sessions): a release the operator approved where it holds release
+    /// approvals; else one the account approved for its own apps, or one an
+    /// organization it belongs to approved (its membership already goes to
+    /// those). An account none of whose scopes ever recorded an approval
+    /// (state from before approvals) is unrestricted, as its apps are.
+    #[must_use]
+    pub fn release_may_serve_account(&self, account: &str, release: &str) -> bool {
+        if self.governance().releases == Authority::Operator {
+            return self.operator_releases.is_empty() || self.operator_releases.contains(release);
+        }
+        let own = self.accounts.get(account).map(|a| &a.approved_releases);
+        let sets: Vec<&BTreeSet<String>> = own
+            .into_iter()
+            .chain(
+                self.orgs
+                    .values()
+                    .filter(|o| o.role(account).is_some())
+                    .map(|o| &o.approved_releases),
+            )
+            .filter(|set| !set.is_empty())
+            .collect();
+        sets.is_empty() || sets.iter().any(|set| set.contains(release))
+    }
+
     /// Revoke `session`: its refresh tokens go and its tokens stop verifying.
     fn revoke_session(&mut self, session: &str, now: u64) {
         self.refresh.retain(|_, r| r.session != session);
@@ -790,21 +799,6 @@ impl SystemState {
 }
 
 impl SystemState {
-    #[must_use]
-    pub fn current_session_key(&self) -> Option<(u32, [u8; 32])> {
-        let k = self.session_keys.last()?;
-        Some((k.version, key32(&k.key.0)?))
-    }
-
-    #[must_use]
-    pub fn session_key(&self, version: u32) -> Option<[u8; 32]> {
-        self.session_keys
-            .iter()
-            .find(|k| k.version == version)
-            .and_then(|k| key32(&k.key.0))
-    }
-
-    #[must_use]
     pub fn account_of_credential(&self, cred_id: &str) -> Option<(&Account, &Credential)> {
         let account = self.accounts.get(self.credentials.get(cred_id)?)?;
         let cred = account.passkeys.iter().find(|c| c.id == cred_id)?;
@@ -882,9 +876,254 @@ impl SystemState {
     }
 }
 
-fn key32(s: &str) -> Option<[u8; 32]> {
-    let v = calimero_identity::from_b64url(s).ok()?;
-    v.try_into().ok()
+fn hex32(s: &str) -> Option<[u8; 32]> {
+    hex::decode(s).ok()?.try_into().ok()
+}
+
+/// The subject a decision over `scope` names, as the API states it.
+fn scope_subject(scope: &ReleaseScope, actor: &str) -> String {
+    match scope {
+        ReleaseScope::Org { org } => format!("org:{org}"),
+        ReleaseScope::Account => format!("account:{actor}"),
+        ReleaseScope::Cluster => "cluster".to_owned(),
+    }
+}
+
+/// Judge the proof a decision carries before it applies:
+/// a person's passkey consent over exactly this change, or the operator's
+/// signature over it. Answers what marks the proof used, if it carries one.
+/// Every node reaches the same answer from the same state, so a forged or
+/// missing proof is refused on every replica, whoever proposed it.
+///
+/// # Errors
+/// The proof is missing, does not verify, was used before, or states
+/// another change.
+pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'static str> {
+    use crate::proof::{verify_consent, verify_operator, Statement};
+
+    let consent_of = |actor: &str, consent: &Value| -> Result<(Statement, String), &'static str> {
+        let credentials = s
+            .accounts
+            .get(actor)
+            .map(|a| a.passkeys.as_slice())
+            .ok_or("unknown account")?;
+        verify_consent(consent, credentials)
+    };
+    let operator = |proof: &Value| verify_operator(proof, s.operator_key.as_ref());
+    let fresh =
+        |(statement, used): (Statement, String)| -> Result<(Statement, String), &'static str> {
+            if s.used_proofs.contains(&used) {
+                return Err("that consent was used already");
+            }
+            Ok((statement, used))
+        };
+    let states = |st: &Statement, subject: &str, method: &str, args: &dyn Fn(&Value) -> bool| {
+        if st.subject == subject && st.method == method && args(&st.args()) {
+            Ok(())
+        } else {
+            Err("the consent is for another change")
+        }
+    };
+
+    match cmd {
+        SystemCmd::UpgradeApp {
+            app_id,
+            bundle,
+            by_operator,
+            actor,
+            run: None,
+            consent,
+            ..
+        } => {
+            let (st, used) = if *by_operator {
+                fresh(operator(consent)?)?
+            } else {
+                fresh(consent_of(actor, consent)?)?
+            };
+            states(&st, app_id, "__upgrade", &|a| a["bundle"] == json!(bundle))?;
+            Ok(Some(used))
+        }
+        SystemCmd::UpgradeApp {
+            app_id,
+            bundle,
+            by_operator,
+            actor,
+            run: Some(run),
+            ..
+        } => {
+            // One consent covers the run (`StartUpgradeRun`); each app's
+            // upgrade must be one the run named, to the release it names.
+            // The run is kept by the organization that started it: the app's
+            // own, or the publisher's for a publisher's run over every
+            // instance of its package (as `note_run` finds it).
+            let r = s
+                .orgs
+                .values()
+                .find_map(|o| o.upgrade_runs.get(run))
+                .ok_or("no such upgrade run")?;
+            let by = if *by_operator {
+                OPERATOR
+            } else {
+                actor.as_str()
+            };
+            let release = s
+                .packages
+                .get(&r.package)
+                .and_then(|p| p.versions.get(&r.version));
+            if r.by != by
+                || r.finished
+                || !r.apps.contains(app_id)
+                || !release.is_some_and(|v| v.services.values().any(|h| h == bundle))
+            {
+                return Err("the upgrade is not one its run names");
+            }
+            Ok(None)
+        }
+        SystemCmd::StartUpgradeRun { org, run, consent } => {
+            let (st, used) = if run.by == OPERATOR {
+                fresh(operator(consent)?)?
+            } else {
+                fresh(consent_of(&run.by, consent)?)?
+            };
+            let subject = format!("org:{org}");
+            let same = |a: &Value| {
+                a["package"] == json!(run.package)
+                    && a["version"] == json!(run.version)
+                    && a["team"] == json!(run.team)
+                    && a["cascade"].as_bool().unwrap_or(false) == run.cascade
+            };
+            if st.method == "__upgrade_published" {
+                // A publisher's run over every instance of its package: no
+                // team; each app is still judged at apply (`may_upgrade`).
+                states(&st, &subject, "__upgrade_published", &|a| {
+                    a["package"] == json!(run.package) && a["version"] == json!(run.version)
+                })?;
+                if run.team.is_some() || run.cascade {
+                    return Err("the consent is for another change");
+                }
+            } else if st.method == "__upgrade_org_retry" {
+                // A retry repeats a run of the same org under its terms.
+                let prev = st.args()["run"]
+                    .as_str()
+                    .and_then(|p| s.orgs.get(org)?.upgrade_runs.get(p))
+                    .ok_or("the consent is for another change")?;
+                let terms = json!({
+                    "package": prev.package, "version": prev.version,
+                    "team": prev.team, "cascade": prev.cascade,
+                });
+                states(&st, &subject, "__upgrade_org_retry", &|_| same(&terms))?;
+            } else {
+                states(&st, &subject, "__upgrade_org", &same)?;
+            }
+            Ok(Some(used))
+        }
+        SystemCmd::TransferApp {
+            app_id,
+            to,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            states(&st, app_id, "__transfer", &|a| a["to"] == json!(to))?;
+            Ok(Some(used))
+        }
+        SystemCmd::SetReleaseApproval {
+            scope,
+            version,
+            approved,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let method = if *approved {
+                "__approve_release"
+            } else {
+                "__withdraw_release"
+            };
+            states(&st, &scope_subject(scope, actor), method, &|a| {
+                a["version"] == json!(version)
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::SetOperatorRelease {
+            version,
+            approved,
+            proof,
+        } => {
+            let (st, used) = fresh(operator(proof)?)?;
+            let method = if *approved {
+                "__approve_release"
+            } else {
+                "__withdraw_release"
+            };
+            states(&st, "cluster", method, &|a| a["version"] == json!(version))?;
+            Ok(Some(used))
+        }
+        SystemCmd::SetOutboundApproval {
+            scope,
+            package,
+            selection,
+            replace,
+            actor,
+            consent,
+        } => {
+            let (st, used) = if *scope == ReleaseScope::Cluster {
+                fresh(operator(consent)?)?
+            } else {
+                fresh(consent_of(actor, consent)?)?
+            };
+            states(
+                &st,
+                &scope_subject(scope, actor),
+                "__approve_outbound",
+                &|a| {
+                    a["package"] == json!(package)
+                        && a["prefixes"] == json!(selection)
+                        && a["replace"].as_bool().unwrap_or(false) == *replace
+                },
+            )?;
+            Ok(Some(used))
+        }
+        SystemCmd::BindPublisher {
+            signer_id,
+            org,
+            actor,
+            consent,
+            ..
+        } => {
+            // Over this key's binding as it stands when the command applies:
+            // a consent for an earlier generation binds nothing again.
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            let generation = s.binding_generation(signer_id);
+            states(&st, &format!("org:{org}"), "__bind_publisher", &|a| {
+                a["signerId"] == json!(signer_id) && a["generation"] == json!(generation)
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::SetReleaseDeadline {
+            version,
+            after,
+            proof,
+        } => {
+            let (st, used) = fresh(operator(proof)?)?;
+            states(&st, "cluster", "__release_deadline", &|a| {
+                a["version"] == json!(version) && a["after"] == json!(after)
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::DeleteOrg {
+            org,
+            actor,
+            consent,
+        } => {
+            let (st, used) = fresh(consent_of(actor, consent)?)?;
+            states(&st, &format!("org:{org}"), "__delete_org", &|a| {
+                a["org"] == json!(org)
+            })?;
+            Ok(Some(used))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// A change to the system group.
@@ -1012,12 +1251,6 @@ pub enum SystemCmd {
         #[serde(default)]
         now: u64,
     },
-    AddSessionKey {
-        version: u32,
-        key: SecretKey,
-        #[serde(default)]
-        created_at: u64,
-    },
     SetQuotas {
         quotas: Quotas,
     },
@@ -1039,12 +1272,18 @@ pub enum SystemCmd {
         /// approvals, it holds the apps until the operator approves another.
         #[serde(default)]
         release: Option<String>,
+        /// The operator's verify key (`--operator-key`), if configured.
+        #[serde(default)]
+        operator_key: Option<crate::proof::OperatorKey>,
     },
     /// Where the operator holds release approvals, it approves (or
     /// withdraws) a mero-tee release for every app's data.
     SetOperatorRelease {
         version: String,
         approved: bool,
+        /// The operator's signature over this decision ([`crate::proof`]).
+        #[serde(default)]
+        proof: Value,
     },
     /// A mero-tee release is approved (or withdrawn) for an org's apps by
     /// whoever holds `APPROVE_RELEASES` there, or by an account for its own
@@ -1080,6 +1319,10 @@ pub enum SystemCmd {
     SetReleaseDeadline {
         version: String,
         after: Option<u64>,
+        /// The operator's signature over this deadline
+        /// (`cluster / __release_deadline / { version, after }`).
+        #[serde(default)]
+        proof: Value,
     },
     /// The owner approves URL prefixes for a package's publisher to call out
     /// to, in an org's apps or their own outside one. `selection` is the latest release's declared
@@ -1138,6 +1381,11 @@ pub enum SystemCmd {
     StartUpgradeRun {
         org: OrgId,
         run: Box<crate::types::UpgradeRun>,
+        /// The starter's passkey consent over the run, or the operator's
+        /// signature for an operator's run; each app's `UpgradeApp` of the
+        /// run is then judged by the run.
+        #[serde(default)]
+        consent: Value,
     },
     FinishUpgradeRun {
         org: OrgId,
@@ -1283,13 +1531,29 @@ impl SystemMachine {
         self.state.orgs.get_mut(org).ok_or("no such organization")
     }
 
-    /// Apply `cmd`: refused if it is new work its scope has lost
-    /// ([`Self::new_work_refusal`]), else by its own rules.
+    /// Apply `cmd`, only once its proof holds ([`authorize`]): refused if it
+    /// is new work its scope has lost ([`Self::new_work_refusal`]), else by its
+    /// own rules. The proof is spent only when the command applies.
     fn run(&mut self, cmd: SystemCmd) -> Result<Value, String> {
+        let used = authorize(&self.state, &cmd).map_err(str::to_owned)?;
         if let Some(stall) = self.new_work_refusal(&cmd) {
             return Err(stall.message());
         }
-        self.run_cmd(cmd).map_err(str::to_owned)
+        let out = self.run_authorized(cmd).map_err(str::to_owned)?;
+        if let Some(used) = used {
+            let _new = self.state.used_proofs.insert(used);
+        }
+        Ok(out)
+    }
+
+    /// [`Self::run`] without the proof: the command's own rules and the
+    /// new-work refusal, for tests of those rules.
+    #[cfg(test)]
+    fn run_unproven(&mut self, cmd: SystemCmd) -> Result<Value, String> {
+        if let Some(stall) = self.new_work_refusal(&cmd) {
+            return Err(stall.message());
+        }
+        self.run_authorized(cmd).map_err(str::to_owned)
     }
 
     /// Creating an app, upgrading one or installing a release is new work:
@@ -1316,8 +1580,9 @@ impl SystemMachine {
         }
     }
 
+    /// Apply `cmd` by its own rules, its proof already judged ([`Self::run`]).
     #[allow(clippy::too_many_lines, reason = "one arm per command")]
-    fn run_cmd(&mut self, cmd: SystemCmd) -> Result<Value, &'static str> {
+    fn run_authorized(&mut self, cmd: SystemCmd) -> Result<Value, &'static str> {
         let s = &mut self.state;
         match cmd {
             SystemCmd::RegisterNode { node } => {
@@ -1628,7 +1893,11 @@ impl SystemMachine {
                 s.note_run(run.as_deref(), &app_id, Some(error));
                 Ok(Value::Null)
             }
-            SystemCmd::StartUpgradeRun { org, run } => {
+            SystemCmd::StartUpgradeRun {
+                org,
+                run,
+                consent: _,
+            } => {
                 let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
                 if o.upgrade_runs.contains_key(&run.run_id) {
                     return Err("that run exists");
@@ -1924,24 +2193,6 @@ impl SystemMachine {
                 s.quotas = quotas;
                 Ok(Value::Null)
             }
-            SystemCmd::AddSessionKey {
-                version,
-                key,
-                created_at,
-            } => {
-                if s.session_keys.iter().any(|k| k.version >= version) {
-                    return Err("stale session key version");
-                }
-                s.session_keys.push(SessionKey {
-                    version,
-                    key,
-                    created_at,
-                });
-                // Keep the current and previous key only.
-                let excess = s.session_keys.len().saturating_sub(2);
-                drop(s.session_keys.drain(..excess));
-                Ok(Value::Null)
-            }
             SystemCmd::CreateOrg {
                 org_id,
                 name,
@@ -1985,17 +2236,26 @@ impl SystemMachine {
             SystemCmd::Genesis {
                 governance,
                 release,
+                operator_key,
             } => {
                 if s.governance.is_some() || !s.accounts.is_empty() {
                     return Err("the cluster's governance is fixed at genesis");
                 }
+                if let Some(k) = &operator_key {
+                    hex32(&k.key).ok_or("an operator key is 32 bytes, hex")?;
+                }
+                s.operator_key = operator_key;
                 if governance.releases == Authority::Operator {
                     s.operator_releases = release.into_iter().collect();
                 }
                 s.governance = Some(governance.clone());
                 Ok(json!({ "governance": governance }))
             }
-            SystemCmd::SetOperatorRelease { version, approved } => {
+            SystemCmd::SetOperatorRelease {
+                version,
+                approved,
+                proof: _,
+            } => {
                 if s.governance().releases != Authority::Operator {
                     return Err("this cluster's releases are approved by each app's owner");
                 }
@@ -2042,7 +2302,7 @@ impl SystemMachine {
                 );
                 Ok(json!({ "generation": generation + 1 }))
             }
-            SystemCmd::SetReleaseDeadline { version, after } => {
+            SystemCmd::SetReleaseDeadline { version, after, .. } => {
                 // Closed input: a semver release, so it orders against the
                 // approved ones; a bounded number of them.
                 if version.len() > MAX_RELEASE_VERSION_BYTES
@@ -2665,33 +2925,12 @@ impl Machine for SystemMachine {
 #[cfg(test)]
 mod tests {
 
-    #[test]
-    fn debug_output_never_carries_a_session_key() {
-        use super::{SecretKey, SessionKey, SystemCmd};
-        let key = SecretKey("c2VjcmV0LXNlc3Npb24ta2V5".to_owned());
-        let stored = SessionKey {
-            version: 1,
-            key: key.clone(),
-            created_at: 0,
-        };
-        let cmd = SystemCmd::AddSessionKey {
-            version: 1,
-            key: key.clone(),
-            created_at: 0,
-        };
-        for printed in [format!("{stored:?}"), format!("{cmd:?}")] {
-            assert!(!printed.contains(&key.0), "{printed}");
-            assert!(printed.contains("<redacted>"), "{printed}");
-        }
-        // The wire and stored form is the string itself, as before.
-        assert_eq!(
-            serde_json::to_value(&stored).unwrap()["key"],
-            serde_json::json!(key.0)
-        );
-    }
     use serde_json::json;
 
     use super::{Authority, Governance, ReleaseScope, SystemCmd, SystemMachine, SystemState};
+
+    // The tests above `account_with` judge each command's own authority rules
+    // (`run_authorized`); the proofs `run` also requires are tested below it.
 
     fn account(id: &str) -> SystemCmd {
         SystemCmd::CreateAccount {
@@ -2706,6 +2945,7 @@ mod tests {
         SystemCmd::Genesis {
             governance,
             release: Some("2.0.0".into()),
+            operator_key: None,
         }
     }
 
@@ -2723,18 +2963,18 @@ mod tests {
     fn governance_is_fixed_at_genesis() {
         let mut m = SystemMachine::default();
         assert!(
-            m.run(account("alice")).is_err(),
+            m.run_authorized(account("alice")).is_err(),
             "an account before genesis"
         );
-        let _ok = m.run(genesis(all(Authority::Operator))).unwrap();
-        let _ok = m.run(account("alice")).unwrap();
-        assert!(m.run(genesis(all(Authority::Owner))).is_err());
+        let _ok = m.run_authorized(genesis(all(Authority::Operator))).unwrap();
+        let _ok = m.run_authorized(account("alice")).unwrap();
+        assert!(m.run_authorized(genesis(all(Authority::Owner))).is_err());
         assert_eq!(m.state.governance(), all(Authority::Operator));
 
         // Even before any account, a second genesis is refused.
         let mut m = SystemMachine::default();
-        let _ok = m.run(genesis(all(Authority::Owner))).unwrap();
-        assert!(m.run(genesis(all(Authority::Operator))).is_err());
+        let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+        assert!(m.run_authorized(genesis(all(Authority::Operator))).is_err());
         assert_eq!(m.state.governance(), all(Authority::Owner));
 
         // State from before governance reads as owner-decided throughout.
@@ -2767,9 +3007,9 @@ mod tests {
     #[test]
     fn leaving_an_open_team_sticks_until_someone_lets_you_back_in() {
         let mut m = SystemMachine::default();
-        let _ok = m.run(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
         for who in ["alice", "bob"] {
-            let _ok = m.run(account(who)).unwrap();
+            let _ok = m.run_authorized(account(who)).unwrap();
         }
         let _prev = m.state.orgs.insert(
             "org".into(),
@@ -2805,11 +3045,11 @@ mod tests {
             .unwrap();
         assert!(!reaches(&m), "inheritance does not put a leaver back");
         assert!(
-            m.run(join("bob")).is_err(),
+            m.run_authorized(join("bob")).is_err(),
             "nor may they rejoin themselves"
         );
 
-        let _ok = m.run(join("alice")).unwrap();
+        let _ok = m.run_authorized(join("alice")).unwrap();
         assert!(reaches(&m), "a lead re-adds them");
     }
 
@@ -2821,9 +3061,9 @@ mod tests {
     fn manage_application_lets_a_member_upgrade_and_approve_outbound() {
         const MANAGE_APPLICATION: u32 = 1 << 4;
         let mut m = SystemMachine::default();
-        let _ok = m.run(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
         for who in ["alice", "bob", "carol", "dave", "erin", "frank"] {
-            let _ok = m.run(account(who)).unwrap();
+            let _ok = m.run_authorized(account(who)).unwrap();
         }
         let _prev = m.state.orgs.insert(
             "org".into(),
@@ -2898,7 +3138,7 @@ mod tests {
             ("personal", "dave", false),
         ] {
             assert_eq!(
-                m.run(upgrade(app, actor)).is_ok(),
+                m.run_authorized(upgrade(app, actor)).is_ok(),
                 may,
                 "{actor} upgrading {app}"
             );
@@ -2934,15 +3174,19 @@ mod tests {
             ("frank", false),
             ("erin", false),
         ] {
-            assert_eq!(m.run(outbound(actor)).is_ok(), may, "{actor} approving");
+            assert_eq!(
+                m.run_authorized(outbound(actor)).is_ok(),
+                may,
+                "{actor} approving"
+            );
         }
     }
 
     fn check(g: &Governance) {
         let op = |a: Authority| a == Authority::Operator;
         let mut m = SystemMachine::default();
-        let _ok = m.run(genesis(g.clone())).unwrap();
-        let _ok = m.run(account("alice")).unwrap();
+        let _ok = m.run_authorized(genesis(g.clone())).unwrap();
+        let _ok = m.run_authorized(account("alice")).unwrap();
         if let Some(a) = m.state.accounts.get_mut("alice") {
             let _new = a.approved_releases.insert("2.0.0".into());
         }
@@ -2984,18 +3228,22 @@ mod tests {
             run: None,
             consent: serde_json::Value::Null,
         };
-        let by_operator = m.run(upgrade(true, "")).is_ok();
-        let by_owner = m.run(upgrade(false, "alice")).is_ok();
+        let by_operator = m.run_authorized(upgrade(true, "")).is_ok();
+        let by_owner = m.run_authorized(upgrade(false, "alice")).is_ok();
         assert_eq!(by_operator, op(g.app_upgrades), "{g:?}: operator upgrade");
         assert_eq!(by_owner, !op(g.app_upgrades), "{g:?}: owner upgrade");
-        assert!(m.run(upgrade(false, "mallory")).is_err(), "{g:?}");
+        assert!(
+            m.run_authorized(upgrade(false, "mallory")).is_err(),
+            "{g:?}"
+        );
 
         // Release approvals.
-        let ops_release = m.run(SystemCmd::SetOperatorRelease {
+        let ops_release = m.run_authorized(SystemCmd::SetOperatorRelease {
             version: "2.1.0".into(),
             approved: true,
+            proof: serde_json::Value::Null,
         });
-        let owner_release = m.run(SystemCmd::SetReleaseApproval {
+        let owner_release = m.run_authorized(SystemCmd::SetReleaseApproval {
             scope: ReleaseScope::Account,
             version: "2.1.0".into(),
             approved: true,
@@ -3026,8 +3274,12 @@ mod tests {
             actor: actor.into(),
             consent: serde_json::Value::Null,
         };
-        let ops_outbound = m.run(outbound(ReleaseScope::Cluster, "")).is_ok();
-        let owner_outbound = m.run(outbound(ReleaseScope::Account, "alice")).is_ok();
+        let ops_outbound = m
+            .run_authorized(outbound(ReleaseScope::Cluster, ""))
+            .is_ok();
+        let owner_outbound = m
+            .run_authorized(outbound(ReleaseScope::Account, "alice"))
+            .is_ok();
         assert_eq!(ops_outbound, op(g.outbound), "{g:?}: operator outbound");
         assert_eq!(owner_outbound, !op(g.outbound), "{g:?}: owner outbound");
         let approved = m
@@ -3096,9 +3348,9 @@ mod tests {
         assert_eq!(serde_json::to_value(&release).unwrap(), old);
 
         let mut m = SystemMachine::default();
-        let _ok = m.run(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
         for who in ["alice", "bob", "carol"] {
-            let _ok = m.run(account(who)).unwrap();
+            let _ok = m.run_authorized(account(who)).unwrap();
         }
         let install = |by: &str| SystemCmd::InstallPackage {
             package: "p".into(),
@@ -3108,7 +3360,7 @@ mod tests {
                 ..release.clone()
             },
         };
-        let _ok = m.run(install("alice")).unwrap();
+        let _ok = m.run_authorized(install("alice")).unwrap();
         let snapshot = serde_json::to_value(&m.state).unwrap();
         assert_eq!(snapshot["packages"]["p"]["versions"]["1.0.0"], old);
         let seen =
@@ -3119,11 +3371,11 @@ mod tests {
 
         // Installed again: by Bob (twice), then by the operator, which puts
         // it in the cluster's catalog; Alice stays first.
-        let _ok = m.run(install("bob")).unwrap();
-        let _ok = m.run(install("bob")).unwrap();
+        let _ok = m.run_authorized(install("bob")).unwrap();
+        let _ok = m.run_authorized(install("bob")).unwrap();
         assert!(seen(&m.state, "bob"));
         assert!(!seen(&m.state, "carol") && !seen(&m.state, OPERATOR));
-        let _ok = m.run(install(OPERATOR)).unwrap();
+        let _ok = m.run_authorized(install(OPERATOR)).unwrap();
         let v = &m.state.packages["p"].versions["1.0.0"];
         assert_eq!(v.installed_by, "alice");
         assert_eq!(
@@ -3142,7 +3394,7 @@ mod tests {
                 ..release.clone()
             },
         };
-        assert!(m.run(other).is_err());
+        assert!(m.run_authorized(other).is_err());
 
         // A snapshot carries the installers; an old one restores without.
         let restored: SystemState =
@@ -3153,6 +3405,166 @@ mod tests {
             .installers
             .is_empty());
         assert!(seen(&old_state, "alice") && !seen(&old_state, "bob"));
+    }
+
+    /// An account `id` holding the passkey `pk`.
+    fn account_with(id: &str, pk: &mut calimero_identity::testing::SoftAuthenticator) -> SystemCmd {
+        let rp = calimero_identity::RelyingParty {
+            id: "localhost".into(),
+            origins: vec!["http://localhost:3000".into()],
+            require_uv: false,
+        };
+        let challenge = calimero_identity::random::<32>();
+        let credential =
+            calimero_identity::verify_registration(&rp, &challenge, &pk.register(&challenge))
+                .unwrap();
+        SystemCmd::CreateAccount {
+            account: serde_json::from_value(json!({
+                "accountId": id, "name": id, "createdAt": 0,
+                "passkeys": [credential], "approvedReleases": ["1.0.0"],
+            }))
+            .unwrap(),
+        }
+    }
+
+    fn consent(
+        pk: &mut calimero_identity::testing::SoftAuthenticator,
+        subject: &str,
+        method: &str,
+        args: &serde_json::Value,
+    ) -> serde_json::Value {
+        let statement = crate::proof::Statement::new(subject, method, args);
+        let challenge = statement.challenge().unwrap();
+        serde_json::to_value(crate::proof::Consent {
+            statement,
+            assertion: pk.assert(&challenge),
+        })
+        .unwrap()
+    }
+
+    fn approve_with(actor: &str, version: &str, consent: serde_json::Value) -> SystemCmd {
+        SystemCmd::SetReleaseApproval {
+            scope: ReleaseScope::Account,
+            version: version.into(),
+            approved: true,
+            actor: actor.into(),
+            consent,
+        }
+    }
+
+    /// A cluster with alice and bob, each with a passkey.
+    fn two_accounts() -> (
+        SystemMachine,
+        calimero_identity::testing::SoftAuthenticator,
+        calimero_identity::testing::SoftAuthenticator,
+    ) {
+        let mut m = SystemMachine::default();
+        let _ok = m.run(genesis(all(Authority::Owner))).unwrap();
+        let mut alice = calimero_identity::testing::SoftAuthenticator::new(
+            "localhost",
+            "http://localhost:3000",
+        );
+        let mut bob = calimero_identity::testing::SoftAuthenticator::new(
+            "localhost",
+            "http://localhost:3000",
+        );
+        let _ok = m.run(account_with("alice", &mut alice)).unwrap();
+        let _ok = m.run(account_with("bob", &mut bob)).unwrap();
+        (m, alice, bob)
+    }
+
+    /// A decision applies only with its actor's passkey
+    /// consent over exactly that decision, and only once.
+    #[test]
+    fn a_decision_applies_with_its_makers_consent_once() {
+        let (mut m, mut alice, mut bob) = two_accounts();
+        let args = json!({ "version": "2.0.0" });
+        for (why, c) in [
+            ("none", serde_json::Value::Null),
+            ("an assertion alone, as before", {
+                let mut c = consent(&mut alice, "account:alice", "__approve_release", &args);
+                c["assertion"].take()
+            }),
+            (
+                "bob's passkey",
+                consent(&mut bob, "account:alice", "__approve_release", &args),
+            ),
+            (
+                "bob's subject",
+                consent(&mut alice, "account:bob", "__approve_release", &args),
+            ),
+            (
+                "a withdrawal",
+                consent(&mut alice, "account:alice", "__withdraw_release", &args),
+            ),
+            (
+                "another release",
+                consent(
+                    &mut alice,
+                    "account:alice",
+                    "__approve_release",
+                    &json!({ "version": "3.0.0" }),
+                ),
+            ),
+        ] {
+            assert!(m.run(approve_with("alice", "2.0.0", c)).is_err(), "{why}");
+        }
+        assert_eq!(m.state.accounts["alice"].approved_releases.len(), 1);
+
+        let real = consent(&mut alice, "account:alice", "__approve_release", &args);
+        let _ok = m.run(approve_with("alice", "2.0.0", real.clone())).unwrap();
+        assert!(m.state.accounts["alice"]
+            .approved_releases
+            .contains("2.0.0"));
+        // Withdrawn, then the old consent logged again: refused.
+        let w = consent(&mut alice, "account:alice", "__withdraw_release", &args);
+        let _ok = m
+            .run(SystemCmd::SetReleaseApproval {
+                scope: ReleaseScope::Account,
+                version: "2.0.0".into(),
+                approved: false,
+                actor: "alice".into(),
+                consent: w,
+            })
+            .unwrap();
+        assert_eq!(
+            m.run(approve_with("alice", "2.0.0", real)).unwrap_err(),
+            "that consent was used already"
+        );
+        assert!(!m.state.accounts["alice"]
+            .approved_releases
+            .contains("2.0.0"));
+    }
+
+    /// An organization-wide run is consented to once; each app's upgrade
+    /// is then judged by the run, never by a consent of its own.
+    #[test]
+    fn an_upgrade_names_its_consent_or_its_run() {
+        let (mut m, mut alice, _bob) = two_accounts();
+        let upgrade = |consent: serde_json::Value, run: Option<&str>| SystemCmd::UpgradeApp {
+            app_id: "app".into(),
+            bundle: "b2".into(),
+            by_operator: false,
+            actor: "alice".into(),
+            at: 0,
+            run: run.map(str::to_owned),
+            consent,
+        };
+        assert!(super::authorize(&m.state, &upgrade(serde_json::Value::Null, None)).is_err());
+        let c = consent(
+            &mut alice,
+            "app",
+            "__upgrade",
+            &json!({ "bundle": "b2", "migrate": null }),
+        );
+        assert!(super::authorize(&m.state, &upgrade(c, None))
+            .unwrap()
+            .is_some());
+        let c = consent(&mut alice, "app", "__upgrade", &json!({ "bundle": "b3" }));
+        assert!(super::authorize(&m.state, &upgrade(c, None)).is_err());
+        // A run nobody started names nothing.
+        assert!(super::authorize(&m.state, &upgrade(serde_json::Value::Null, Some("r1"))).is_err());
+        let _ = &mut m;
     }
 
     /// An organization of `who` (account -> role), each holding `caps`
@@ -3190,9 +3602,9 @@ mod tests {
     fn approving_releases_is_a_capability() {
         use crate::types::caps::APPROVE_RELEASES;
         let mut m = SystemMachine::default();
-        let _ok = m.run(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_unproven(genesis(all(Authority::Owner))).unwrap();
         for who in ["alice", "bob", "carol", "dave", "erin", "frank", "gina"] {
-            let _ok = m.run(account(who)).unwrap();
+            let _ok = m.run_unproven(account(who)).unwrap();
         }
         let mut o = org(
             &[
@@ -3230,7 +3642,7 @@ mod tests {
                 may,
                 "{actor} holds it"
             );
-            let r = m.run(approve("org", &format!("2.1.{}", actor.len()), actor));
+            let r = m.run_unproven(approve("org", &format!("2.1.{}", actor.len()), actor));
             assert_eq!(r.is_ok(), may, "{actor} approving: {r:?}");
         }
         assert_eq!(
@@ -3240,7 +3652,7 @@ mod tests {
 
         // Revoked: refused at apply, whatever the API saw before.
         let _ok = m
-            .run(SystemCmd::SetCapabilities {
+            .run_unproven(SystemCmd::SetCapabilities {
                 org: "org".into(),
                 team: None,
                 account: "bob".into(),
@@ -3248,10 +3660,10 @@ mod tests {
                 actor: "alice".into(),
             })
             .unwrap();
-        assert!(m.run(approve("org", "2.2.0", "bob")).is_err());
+        assert!(m.run_unproven(approve("org", "2.2.0", "bob")).is_err());
         // Removed: gone with the membership.
         let _ok = m
-            .run(SystemCmd::SetCapabilities {
+            .run_unproven(SystemCmd::SetCapabilities {
                 org: "org".into(),
                 team: None,
                 account: "bob".into(),
@@ -3260,13 +3672,13 @@ mod tests {
             })
             .unwrap();
         let _ok = m
-            .run(SystemCmd::RemoveOrgMember {
+            .run_unproven(SystemCmd::RemoveOrgMember {
                 org: "org".into(),
                 account: "bob".into(),
                 actor: "dave".into(),
             })
             .unwrap();
-        assert!(m.run(approve("org", "2.2.0", "bob")).is_err());
+        assert!(m.run_unproven(approve("org", "2.2.0", "bob")).is_err());
 
         // An account's own releases stay its own.
         let own = SystemCmd::SetReleaseApproval {
@@ -3276,19 +3688,19 @@ mod tests {
             actor: "erin".into(),
             consent: serde_json::Value::Null,
         };
-        let _ok = m.run(own).unwrap();
+        let _ok = m.run_unproven(own).unwrap();
         assert!(m.state.accounts["erin"].approved_releases.contains("2.4.0"));
 
         // Where the operator holds release approvals, nobody in an org does.
         let mut m = SystemMachine::default();
-        let _ok = m.run(genesis(all(Authority::Operator))).unwrap();
-        let _ok = m.run(account("alice")).unwrap();
+        let _ok = m.run_unproven(genesis(all(Authority::Operator))).unwrap();
+        let _ok = m.run_unproven(account("alice")).unwrap();
         let _prev = m
             .state
             .orgs
             .insert("org".into(), org(&[("alice", "owner")], &[], &["2.0.0"]));
         assert!(!m.state.approves_releases("org", "alice"));
-        assert!(m.run(approve("org", "2.1.0", "alice")).is_err());
+        assert!(m.run_unproven(approve("org", "2.1.0", "alice")).is_err());
     }
 
     /// Past a release's deadline, a scope whose newest approved release is
@@ -3300,9 +3712,9 @@ mod tests {
         use super::{PackageVersion, DEADLINE_PREFIX, OPERATOR};
         const T: u64 = 1_000;
         let mut m = SystemMachine::default();
-        let _ok = m.run(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_unproven(genesis(all(Authority::Owner))).unwrap();
         for who in ["alice", "bob"] {
-            let _ok = m.run(account(who)).unwrap();
+            let _ok = m.run_unproven(account(who)).unwrap();
             if let Some(a) = m.state.accounts.get_mut(who) {
                 let _new = a.approved_releases.insert("2.0.0".into());
             }
@@ -3347,28 +3759,30 @@ mod tests {
             }))
             .unwrap(),
         };
-        let _ok = m.run(app("old", "a", "alice", 1)).unwrap();
+        let _ok = m.run_unproven(app("old", "a", "alice", 1)).unwrap();
 
         // The operator announces 2.1.0's deadline; closed input first.
         for bad in ["latest", "", &"9".repeat(80)] {
             assert!(m
-                .run(SystemCmd::SetReleaseDeadline {
+                .run_unproven(SystemCmd::SetReleaseDeadline {
                     version: bad.into(),
                     after: Some(T),
+                    proof: serde_json::Value::Null,
                 })
                 .is_err());
         }
         let _ok = m
-            .run(SystemCmd::SetReleaseDeadline {
+            .run_unproven(SystemCmd::SetReleaseDeadline {
                 version: "2.1.0".into(),
                 after: Some(T),
+                proof: serde_json::Value::Null,
             })
             .unwrap();
 
         // Before it, everything goes on.
-        let _ok = m.run(app("early", "a", "alice", T - 1)).unwrap();
-        let _ok = m.run(upgrade("old", "alice", T - 1)).unwrap();
-        let _ok = m.run(install("alice", "1.0.0", T - 1)).unwrap();
+        let _ok = m.run_unproven(app("early", "a", "alice", T - 1)).unwrap();
+        let _ok = m.run_unproven(upgrade("old", "alice", T - 1)).unwrap();
+        let _ok = m.run_unproven(install("alice", "1.0.0", T - 1)).unwrap();
         assert!(!m.state.retired("2.0.0", T - 1));
 
         // From it, the organization that has not approved 2.1.0 starts nothing.
@@ -3376,9 +3790,9 @@ mod tests {
             let e = r.unwrap_err();
             assert!(e.starts_with(DEADLINE_PREFIX) && e.contains("2.1.0"), "{e}");
         };
-        refused(m.run(app("late", "a", "alice", T)));
-        refused(m.run(upgrade("old", "alice", T)));
-        refused(m.run(install("alice", "1.1.0", T)));
+        refused(m.run_unproven(app("late", "a", "alice", T)));
+        refused(m.run_unproven(upgrade("old", "alice", T)));
+        refused(m.run_unproven(install("alice", "1.1.0", T)));
         assert!(m.state.apps.contains_key("old"), "its apps stay");
         assert_eq!(
             m.state.stalled_for(Some("a"), "alice", T).unwrap().release,
@@ -3387,20 +3801,21 @@ mod tests {
         assert!(m.state.retired("2.0.0", T) && !m.state.retired("2.1.0", T));
 
         // The organization that approved it is unaffected.
-        let _ok = m.run(app("theirs", "b", "bob", T)).unwrap();
+        let _ok = m.run_unproven(app("theirs", "b", "bob", T)).unwrap();
         // So is the operator's install, and the approval itself.
-        let _ok = m.run(install(OPERATOR, "1.2.0", T)).unwrap();
+        let _ok = m.run_unproven(install(OPERATOR, "1.2.0", T)).unwrap();
 
         // Approving 2.1.0 lifts it at once.
-        let _ok = m.run(approve("a", "2.1.0", "alice")).unwrap();
-        let _ok = m.run(app("late", "a", "alice", T)).unwrap();
-        let _ok = m.run(upgrade("old", "alice", T)).unwrap();
+        let _ok = m.run_unproven(approve("a", "2.1.0", "alice")).unwrap();
+        let _ok = m.run_unproven(app("late", "a", "alice", T)).unwrap();
+        let _ok = m.run_unproven(upgrade("old", "alice", T)).unwrap();
 
         // A later deadline names the newest release not approved.
         let _ok = m
-            .run(SystemCmd::SetReleaseDeadline {
+            .run_unproven(SystemCmd::SetReleaseDeadline {
                 version: "2.2.0".into(),
                 after: Some(T + 10),
+                proof: serde_json::Value::Null,
             })
             .unwrap();
         assert!(m.state.stalled_for(Some("a"), "alice", T + 9).is_none());
@@ -3413,9 +3828,10 @@ mod tests {
         );
         // Lifted by the operator: gone.
         let _ok = m
-            .run(SystemCmd::SetReleaseDeadline {
+            .run_unproven(SystemCmd::SetReleaseDeadline {
                 version: "2.2.0".into(),
                 after: None,
+                proof: serde_json::Value::Null,
             })
             .unwrap();
         assert!(m.state.stalled_for(Some("b"), "bob", T + 10).is_none());
@@ -3458,9 +3874,9 @@ mod tests {
     /// and the customer's instances `inst` (of `p`) and `rawapp`.
     fn publishing(signer: &str, upgrades: &str) -> SystemMachine {
         let mut m = SystemMachine::default();
-        let _ok = m.run(genesis(all(Authority::Owner))).unwrap();
+        let _ok = m.run_unproven(genesis(all(Authority::Owner))).unwrap();
         for who in ["pam", "bob", "cora", "dan"] {
-            let _ok = m.run(account(who)).unwrap();
+            let _ok = m.run_unproven(account(who)).unwrap();
         }
         let mut o = org(&[("pam", "owner"), ("bob", "member")], &[], &["2.0.0"]);
         o.org_id = "pub".into();
@@ -3561,13 +3977,16 @@ mod tests {
                 "an outsider",
             ),
         ] {
-            assert!(m.run(cmd).is_err(), "{why}");
+            assert!(m.run_unproven(cmd).is_err(), "{why}");
         }
         let mut cluster = bind(&key, &signer, ("pub", "pub"), 0, "pam");
         if let SystemCmd::BindPublisher { cluster: c, .. } = &mut cluster {
             *c = "another".into();
         }
-        assert!(m.run(cluster).is_err(), "signed for another cluster");
+        assert!(
+            m.run_unproven(cluster).is_err(),
+            "signed for another cluster"
+        );
         assert!(m.state.publishers.is_empty());
 
         // A member granted APPROVE_RELEASES binds it.
@@ -3575,7 +3994,7 @@ mod tests {
             let _prev = o.capabilities.insert("bob".into(), APPROVE_RELEASES);
         }
         let _ok = m
-            .run(bind(&key, &signer, ("pub", "pub"), 0, "bob"))
+            .run_unproven(bind(&key, &signer, ("pub", "pub"), 0, "bob"))
             .unwrap();
         assert_eq!(m.state.publisher_of("b1"), Some(&"pub".to_owned()));
         assert_eq!(m.state.binding_generation(&signer), 1);
@@ -3591,20 +4010,21 @@ mod tests {
 
         // The customer approving a release changes nothing for the instance;
         // the publisher approving it does.
-        let _ok = m.run(approve("cust", "2.1.0", "cora")).unwrap();
+        let _ok = m.run_unproven(approve("cust", "2.1.0", "cora")).unwrap();
         assert!(!m.state.release_may_hold(&inst(&m), Some("2.1.0")));
         assert!(m.state.release_may_hold(&rawapp(&m), Some("2.1.0")));
-        let _ok = m.run(approve("pub", "2.1.0", "pam")).unwrap();
+        let _ok = m.run_unproven(approve("pub", "2.1.0", "pam")).unwrap();
         assert!(m.state.release_may_hold(&inst(&m), Some("2.1.0")));
 
         // Deadlines judge the instance on its publisher's set.
         let _ok = m
-            .run(SystemCmd::SetReleaseDeadline {
+            .run_unproven(SystemCmd::SetReleaseDeadline {
                 version: "2.2.0".into(),
                 after: Some(10),
+                proof: serde_json::Value::Null,
             })
             .unwrap();
-        let _ok = m.run(approve("cust", "2.2.0", "cora")).unwrap();
+        let _ok = m.run_unproven(approve("cust", "2.2.0", "cora")).unwrap();
         let create = |id: &str, bundle: &str| SystemCmd::CreateApp {
             app: Box::new(
                 serde_json::from_value(json!({
@@ -3614,23 +4034,23 @@ mod tests {
                 .unwrap(),
             ),
         };
-        let e = m.run(create("second", "b1")).unwrap_err();
+        let e = m.run_unproven(create("second", "b1")).unwrap_err();
         assert!(e.starts_with(super::DEADLINE_PREFIX), "{e}");
-        let _ok = m.run(create("raw2", "raw")).unwrap();
-        let _ok = m.run(approve("pub", "2.2.0", "pam")).unwrap();
-        let _ok = m.run(create("second", "b1")).unwrap();
+        let _ok = m.run_unproven(create("raw2", "raw")).unwrap();
+        let _ok = m.run_unproven(approve("pub", "2.2.0", "pam")).unwrap();
+        let _ok = m.run_unproven(create("second", "b1")).unwrap();
 
         // Rebinding: the old signature is spent; the key signs the next
         // generation for the organization it moves to, and the one it
         // leaves cannot keep it.
         assert!(m
-            .run(bind(&key, &signer, ("pub", "pub"), 0, "pam"))
+            .run_unproven(bind(&key, &signer, ("pub", "pub"), 0, "pam"))
             .is_err());
         assert!(m
-            .run(bind(&key, &signer, ("cust", "cust"), 0, "cora"))
+            .run_unproven(bind(&key, &signer, ("cust", "cust"), 0, "cora"))
             .is_err());
         let _ok = m
-            .run(bind(&key, &signer, ("cust", "cust"), 1, "cora"))
+            .run_unproven(bind(&key, &signer, ("cust", "cust"), 1, "cora"))
             .unwrap();
         assert_eq!(m.state.publisher_of("b1"), Some(&"cust".to_owned()));
         assert_eq!(m.state.binding_generation(&signer), 2);
@@ -3661,7 +4081,7 @@ mod tests {
         }
 
         let _ok = m
-            .run(bind(&key, &signer, ("pub", "pub"), 0, "pam"))
+            .run_unproven(bind(&key, &signer, ("pub", "pub"), 0, "pam"))
             .unwrap();
         for (who, expected) in [
             ("pam", true),
@@ -3681,10 +4101,10 @@ mod tests {
             consent: serde_json::Value::Null,
         };
         assert!(
-            m.run(upgrade("cora", "b2")).is_err(),
+            m.run_unproven(upgrade("cora", "b2")).is_err(),
             "the customer may not"
         );
-        let _ok = m.run(upgrade("bob", "b2")).unwrap();
+        let _ok = m.run_unproven(upgrade("bob", "b2")).unwrap();
 
         // Releases: publisher first, then owner, never back.
         let install = |version: &str, upgrades: &str| SystemCmd::InstallPackage {
@@ -3697,20 +4117,20 @@ mod tests {
             }))
             .unwrap(),
         };
-        let _ok = m.run(install("1.2.0", "owner")).unwrap();
+        let _ok = m.run_unproven(install("1.2.0", "owner")).unwrap();
         assert!(
-            m.run(install("1.3.0", "publisher")).is_err(),
+            m.run_unproven(install("1.3.0", "publisher")).is_err(),
             "back to the publisher"
         );
         assert!(
-            m.run(install("1.1.5", "owner")).is_ok(),
+            m.run_unproven(install("1.1.5", "owner")).is_ok(),
             "owner between them"
         );
         assert!(
-            m.run(install("0.9.0", "owner")).is_err(),
+            m.run_unproven(install("0.9.0", "owner")).is_err(),
             "owner below a publisher release"
         );
-        let _ok = m.run(install("0.8.0", "publisher")).unwrap();
+        let _ok = m.run_unproven(install("0.8.0", "publisher")).unwrap();
 
         // The instance moves to the owner release, by its publisher; then it
         // is its owner's, and never goes back.
@@ -3722,12 +4142,12 @@ mod tests {
             }))
             .unwrap(),
         );
-        let _ok = m.run(upgrade("pam", "h1.2.0")).unwrap();
+        let _ok = m.run_unproven(upgrade("pam", "h1.2.0")).unwrap();
         assert!(may(&m, "cora") && !may(&m, "pam"));
         assert!(
-            m.run(upgrade("cora", "b1")).is_err(),
+            m.run_unproven(upgrade("cora", "b1")).is_err(),
             "never back to the publisher"
         );
-        let _ok = m.run(upgrade("cora", "h1.2.0")).unwrap();
+        let _ok = m.run_unproven(upgrade("cora", "h1.2.0")).unwrap();
     }
 }

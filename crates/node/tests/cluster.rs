@@ -75,6 +75,165 @@ impl Cluster {
         self._dirs.push(dir);
         self.nodes.len() - 1
     }
+
+    /// Stop node `i` and start it again on its data directory, as a restart
+    /// (or a rolling upgrade of its binary) does.
+    async fn restart(&mut self, i: usize) {
+        self.stop(i).await;
+        let peers: BTreeMap<u64, String> = self
+            .urls
+            .iter()
+            .enumerate()
+            .map(|(i, u)| (i as u64 + 1, u.clone()))
+            .collect();
+        let mut config = node_config(i as u64 + 1, &peers, self._dirs[i].path());
+        config.cluster.clone_from(&self.name);
+        config.bootstrap = false;
+        // The stopped node's tasks may hold its store for a moment.
+        for _ in 0..50 {
+            if let Ok(r) = run(config.clone()).await {
+                self.nodes[i] = Some(r);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("node {} did not restart", i + 1);
+    }
+}
+
+/// `session` without its refresh token: a client holding it cannot refresh,
+/// so what it is answered is what the node judged of the session itself.
+fn without_refresh(session: calimero_client::Session) -> calimero_client::Session {
+    calimero_client::Session {
+        refresh_token: String::new(),
+        ..session
+    }
+}
+
+/// Sends `set key=value` through `cl` until it commits, a node answers 401,
+/// or about 10 s pass (an election, a forward to a stopped node).
+async fn set_through(cl: &Client, app: &str, key: &str, value: &str) -> Result<(), String> {
+    let mut wrote = Err(String::new());
+    for _ in 0..100 {
+        wrote = cl
+            .call(app, "set", json!({ "key": key, "value": value }), None)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+        match &wrote {
+            Ok(()) => break,
+            Err(e) if e.starts_with("401") => break,
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+    wrote
+}
+
+/// Failover: a session outlives the node that issued it. Every node attests
+/// each peer's session-signing key ahead of time, so with the issuer gone
+/// another node still verifies the session, without a refresh (merobox
+/// `kv-store-failover` and `frozen-leader` write through a survivor with the
+/// session the dead or frozen node issued).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_session_outlives_the_node_that_issued_it() {
+    let mut c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    set_through(&alice, &app, "a", "1").await.unwrap();
+    let session = without_refresh(alice.session().await.unwrap());
+    // Node 2 has never been shown a session node 1 issued.
+    c.stop(0).await;
+    let survivor = c.client(1);
+    survivor.use_session(session).await;
+    set_through(&survivor, &app, "b", "2")
+        .await
+        .expect("a write through a survivor with the stopped issuer's session");
+}
+
+/// A node's sessions survive its restart on the same data directory (a crash,
+/// or a rolling upgrade of its binary): the key it signs them with is kept,
+/// wrapped under its K_r, and attested again at start (merobox
+/// `rolling-upgrade`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn sessions_survive_a_restart_of_the_node_that_issued_them() {
+    let mut c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    set_through(&alice, &app, "a", "1").await.unwrap();
+    let session = without_refresh(alice.session().await.unwrap());
+    c.restart(0).await;
+    for i in [0, 1] {
+        let cl = c.client(i);
+        cl.use_session(session.clone()).await;
+        set_through(&cl, &app, &format!("k{i}"), "v")
+            .await
+            .unwrap_or_else(|e| panic!("node {}: {e}", i + 1));
+    }
+}
+
+/// Once a node is removed, the sessions it issued verify nowhere: no node
+/// keeps a removed node's signing key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_removed_nodes_sessions_are_refused() {
+    let mut c = Cluster::start(3).await;
+    let new = c.join().await;
+    let new_id = new as u64 + 1;
+    // Signed up on the new node: it issued the session.
+    let mut issued = None;
+    for _ in 0..100 {
+        let cl = c.client(new);
+        let mut pk = SoftAuthenticator::new("localhost", ORIGIN);
+        if let Ok(s) = cl.sign_up(&mut pk, "alice").await {
+            issued = Some(s);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let full = issued.expect("signed up on the joined node");
+    let session = without_refresh(full.clone());
+    let other = c.client(0);
+    other.use_session(session).await;
+    let _me = other.me().await.expect("another node takes the session");
+
+    let mut removed = false;
+    for _ in 0..100 {
+        let leader = system_leader(&c).await;
+        if ops_at(&c, leader)
+            .await
+            .delete(&format!("ops/nodes/{new_id}"))
+            .await
+            .is_ok()
+        {
+            removed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(removed, "node {new_id} was never removed");
+    let mut answer = Ok(Value::Null);
+    for _ in 0..50 {
+        answer = other.me().await;
+        if answer.is_err() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let e = answer.expect_err("a removed node's session must be refused");
+    assert!(e.to_string().starts_with("401"), "{e}");
+
+    // A client holding the refresh token refreshes on that 401 on its own,
+    // once, on the node it talks to (one that applied the removal), and sends
+    // the request again.
+    let refreshing = c.client(0);
+    refreshing.use_session(full.clone()).await;
+    let me = refreshing
+        .me()
+        .await
+        .expect("the client refreshes the session on its own");
+    assert!(me["accountId"].is_string(), "{me}");
+    let now = refreshing.session().await.unwrap();
+    assert_ne!(now.session_token, full.session_token, "a new session token");
+    assert_ne!(now.refresh_token, full.refresh_token, "a new refresh token");
 }
 
 /// A passkey ceremony begun on one node finishes on another (a load balancer
@@ -792,39 +951,6 @@ async fn quotas_are_enforced_by_the_log() {
     let _key = alice.create_api_key(json!({})).await.unwrap();
     let err = alice.create_api_key(json!({})).await.unwrap_err();
     assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn session_keys_rotate_and_old_sessions_stay_valid() {
-    let c = Cluster::start_with(3, |cfg| cfg.session_key_rotation_secs = 3).await;
-    let (alice, pk) = signed_up(&c, 0, "alice").await;
-    let version = || {
-        c.nodes[0]
-            .as_ref()
-            .unwrap()
-            .node
-            .sys(|s| s.session_keys.last().map(|k| k.version))
-            .unwrap()
-    };
-    let before = version();
-    // Wait for exactly one rotation (keys are kept: current and previous).
-    let mut after = before;
-    for _ in 0..80 {
-        after = version();
-        if after > before {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(after > before, "key did not rotate ({before} -> {after})");
-    // The session minted under the previous key still works...
-    let _me = alice.me().await.unwrap();
-    // ...and a new sign-in is signed with the current key.
-    let mut pk = pk;
-    let fresh = c.client(2);
-    let s = fresh.sign_in(&mut pk).await.unwrap();
-    let claims = calimero_identity::peek_session(&s.session_token).unwrap();
-    assert_eq!(claims.key_version, after);
 }
 
 async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value {
@@ -3130,13 +3256,13 @@ async fn the_operator_installs_the_releases_it_upgrades_to() {
         .unwrap();
     let listed = ops.get("ops/packages").await.unwrap();
     assert!(listed.to_string().contains("1.1.0"), "{listed}");
-    let _ = ops
-        .post(
-            &format!("ops/apps/{app}/upgrade"),
-            json!({ "version": "1.1.0" }),
-        )
-        .await
-        .unwrap_or_else(|e| panic!("the operator upgrades to its release: {e}"));
+    let _ = harness::ops_signed(
+        &ops,
+        &format!("ops/apps/{app}/upgrade"),
+        json!({ "version": "1.1.0" }),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the operator upgrades to its release: {e}"));
     let a = alice.get("apps?package=com.test.ops").await.unwrap();
     assert_eq!(a["apps"][0]["version"], "1.1.0", "{a}");
 
@@ -3244,12 +3370,12 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
         assert_eq!(status["governance"], json!(g), "{g:?}");
 
         // App upgrades: exactly one of the two may.
-        let by_operator = ops
-            .post(
-                &format!("ops/apps/{app}/upgrade"),
-                json!({ "bundle": next }),
-            )
-            .await;
+        let by_operator = harness::ops_signed(
+            &ops,
+            &format!("ops/apps/{app}/upgrade"),
+            json!({ "bundle": next }),
+        )
+        .await;
         assert_eq!(
             by_operator.is_ok(),
             op(g.app_upgrades),
@@ -3271,9 +3397,8 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
             .unwrap();
 
         // Release approvals.
-        let ops_release = ops
-            .post("ops/releases", json!({ "version": "9.0.0" }))
-            .await;
+        let ops_release =
+            harness::ops_signed(&ops, "ops/releases", json!({ "version": "9.0.0" })).await;
         assert_eq!(
             ops_release.is_ok(),
             op(g.releases),
@@ -3287,9 +3412,8 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
         );
 
         // Outbound approvals.
-        let ops_outbound = ops
-            .post("ops/outbound", json!({ "package": "com.test.gov" }))
-            .await;
+        let ops_outbound =
+            harness::ops_signed(&ops, "ops/outbound", json!({ "package": "com.test.gov" })).await;
         assert_eq!(
             ops_outbound.is_ok(),
             op(g.outbound),
@@ -4351,6 +4475,11 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     alice2.use_session(session).await;
     let mut wrote = Err(String::new());
     for _ in 0..100 {
+        // Node 1 signed the session: with it gone, the session refreshes
+        // into one a live node signs.
+        if wrote.as_ref().is_err_and(|e| e.starts_with("401")) {
+            let _ = alice2.refresh().await;
+        }
         wrote = alice2
             .call(&app, "set", json!({ "key": "b", "value": "2" }), None)
             .await
@@ -4630,6 +4759,9 @@ async fn nodes_on_the_next_release_keep_the_data_of_the_ones_before() {
     // Only the next release's nodes are left, and they hold everything.
     let cl = c.client(next[0]);
     cl.use_session(alice.session().await.unwrap()).await;
+    // The founders signed alice's session: with them gone, it refreshes into
+    // one a node of the next release signs.
+    let _fresh = cl.refresh().await.unwrap();
     let v = eventually(&cl, &kv, "get", json!({ "key": "a" }), |v| v == &json!("1")).await;
     assert_eq!(v, json!("1"), "the app's state");
     let mine = eventually(&cl, &cards, "my_hand", json!({}), |v| v == &hand).await;
@@ -5068,6 +5200,7 @@ async fn the_client_creates_from_a_package_deletes_confirmed_and_signs_out_every
     let _ = alice.delete_confirmed(&path, &mut pk).await.unwrap();
     let status = |e: calimero_client::Error| match e {
         calimero_client::Error::Api { status, .. } => status,
+        calimero_client::Error::WrongNode { .. } => 421,
         calimero_client::Error::Transport(e) => panic!("{e}"),
     };
     assert_eq!(status(alice.get(&path).await.unwrap_err()), 404);
@@ -5362,12 +5495,15 @@ async fn approving_an_organizations_releases_needs_approve_releases() {
     assert!(e.to_string().starts_with("403"), "the operator: {e}");
 }
 
-async fn set_deadline(c: &Cluster, after: &str) -> Result<Value, Box<Error>> {
-    ops(c)
-        .await
-        .post("ops/releases/2.0.0/deadline", json!({ "after": after }))
-        .await
-        .map_err(Box::new)
+/// Set (`Some`) or lift (`None`) 2.0.0's deadline, signed by the operator.
+async fn set_deadline(c: &Cluster, after: Option<&str>) -> Result<Value, Box<Error>> {
+    harness::ops_signed(
+        &ops(c).await,
+        "ops/releases/2.0.0/deadline",
+        json!({ "after": after }),
+    )
+    .await
+    .map_err(Box::new)
 }
 
 /// A release deadline stops new work for whoever has not approved the
@@ -5389,7 +5525,9 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
     set(&alice, &app, "v1").await.unwrap();
 
     // Announced for later: nothing changes yet, and anyone can read it.
-    let _ok = set_deadline(&c, "2999-01-01T00:00:00Z").await.unwrap();
+    let _ok = set_deadline(&c, Some("2999-01-01T00:00:00Z"))
+        .await
+        .unwrap();
     let _early = alice.create_app("early", &bundle, json!({})).await.unwrap();
     let public = c.client(1).get("releases").await.unwrap();
     assert_eq!(
@@ -5413,7 +5551,9 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
         .approve_release(None, "2.0.0", &mut bob_pk)
         .await
         .unwrap();
-    let _ok = set_deadline(&c, "2001-01-01T00:00:00Z").await.unwrap();
+    let _ok = set_deadline(&c, Some("2001-01-01T00:00:00Z"))
+        .await
+        .unwrap();
 
     let stopped = |e: Error| {
         assert_eq!(e.code(), Some("RELEASE_DEADLINE"), "{e}");
@@ -5469,11 +5609,14 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
     assert_eq!(created["replicas"], json!([3]), "{created}");
 
     // Lifted by the operator: gone from the public rules.
-    let _ok = ops(&c)
+    // Unsigned, it is not lifted; the operator's signature lifts it.
+    let e = ops(&c)
         .await
         .delete("ops/releases/2.0.0/deadline")
         .await
-        .unwrap();
+        .unwrap_err();
+    assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
+    let _ok = set_deadline(&c, None).await.unwrap();
     let public = c.client(1).get("releases").await.unwrap();
     assert_eq!(public["deadlines"], json!([]), "{public}");
 }
@@ -5909,13 +6052,13 @@ async fn an_operator_upgrade_is_reported_as_the_operators() {
         ))
         .await
         .unwrap();
-    let _ = ops
-        .post(
-            &format!("ops/apps/{app}/upgrade"),
-            json!({ "version": "1.1.0" }),
-        )
-        .await
-        .unwrap();
+    let _ = harness::ops_signed(
+        &ops,
+        &format!("ops/apps/{app}/upgrade"),
+        json!({ "version": "1.1.0" }),
+    )
+    .await
+    .unwrap();
 
     let a = reported_app(&ops, "ops/apps", &app).await;
     assert_eq!(a["scope"], json!({ "kind": "account" }), "{a}");

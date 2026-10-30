@@ -1151,6 +1151,7 @@ name = "calimero-client"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
+ "bytes",
  "calimero-identity",
  "calimero-node",
  "calimero-sealed",
@@ -5827,6 +5828,7 @@ dependencies = [
 name = "meroctl"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
  "calimero-build-utils",
  "calimero-bundle",
  "calimero-client",

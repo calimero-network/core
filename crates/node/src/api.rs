@@ -20,10 +20,10 @@ use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use calimero_identity::{
-    b64url, confirm_challenge, mint_session, peek_session, random, sha256, verify_assertion,
-    verify_registration, verify_session, Assertion, Registration, RelyingParty, SessionClaims,
+    b64url, confirm_challenge, peek_session, random, sha256, verify_assertion, verify_registration,
+    verify_session, Assertion, Registration, RelyingParty, SessionClaims,
 };
 use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -70,6 +70,9 @@ pub enum Pending {
         app: String,
         method: String,
         args: Vec<u8>,
+        /// The challenge's nonce (base64url): logged with the consent, so
+        /// `apply` can rebuild the challenge.
+        nonce: String,
         account: String,
         expires: u64,
     },
@@ -166,9 +169,10 @@ struct TakeChallengeBody {
 async fn internal_challenge_take(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
     Json(body): Json<TakeChallengeBody>,
 ) -> ApiResult {
-    peer_only(&node, &headers)?;
+    let _caller = peer(&node, &headers, key).await?;
     let p = take_local(&node, &body.id)?;
     Ok(Json(
         serde_json::to_value(p).map_err(|e| ApiError::internal(&e.to_string()))?,
@@ -217,6 +221,8 @@ pub struct Principal {
     pub caller: Caller,
     pub session: Option<SessionClaims>,
     pub api_key: Option<ApiKeyRecord>,
+    /// The verified release of the node that signed the session: it reaches only the apps whose owner approved that release.
+    pub issuer_release: Option<String>,
     /// The node's consent page acting for the account a consent request
     /// names (`consent_page`): no session of its own, so every action it
     /// takes is a step-up, and the step-up may come from the node's own
@@ -256,6 +262,16 @@ impl Principal {
         node: &Node,
         app: &crate::types::AppRecord,
     ) -> Result<(), ApiError> {
+        // A session vouches for its account only where the node that signed
+        // it may hold the data: a node on an unapproved release cannot mint
+        // its way into an app (F1).
+        if let Some(release) = &self.issuer_release {
+            if !node.sys(|s| s.release_may_hold(app, Some(release))) {
+                return Err(ApiError::unauthenticated(
+                    "this session was signed by a node whose release this app's owner has not approved; sign in again",
+                ));
+            }
+        }
         match self.bound_app() {
             None => Ok(()),
             Some(pkg)
@@ -302,16 +318,11 @@ async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>
             },
             session: None,
             api_key: Some(rec),
+            issuer_release: None,
             consent_page: false,
         }));
     }
-    let claims = peek_session(token).map_err(|_| ApiError::unauthenticated("malformed token"))?;
-    let key = node
-        .sys_until(|s| s.session_key(claims.key_version))
-        .await
-        .ok_or_else(|| ApiError::unauthenticated("token signed with an unknown key"))?;
-    let claims = verify_session(&key, token, now_secs())
-        .map_err(|e| ApiError::unauthenticated(&e.to_string()))?;
+    let (claims, issuer_release) = verify_token(node, token).await?;
     if node.sys(|s| s.revoked_sessions.contains(&claims.session)) {
         return Err(ApiError::unauthenticated("session revoked"));
     }
@@ -330,8 +341,86 @@ async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>
         },
         session: Some(claims),
         api_key: None,
+        issuer_release,
         consent_page: false,
     }))
+}
+
+/// Check a session token: signed by the receipt key of the node it names,
+/// which this node attests at that node's registered address, and whose
+/// attested release may serve the account
+/// (`SystemState::release_may_serve_account`). Answers the claims and the
+/// issuer's release, which each app access checks too (`Principal::within`).
+async fn verify_token(
+    node: &Node,
+    token: &str,
+) -> Result<(SessionClaims, Option<String>), ApiError> {
+    let claims = peek_session(token).map_err(|_| ApiError::unauthenticated("malformed token"))?;
+    let issuer_id = claims.node;
+    let unknown = || {
+        ApiError::unauthenticated(
+            "the token's issuing node is not a node of this cluster, or cannot be attested; refresh the session",
+        )
+    };
+    // Answered from the key this node attested ahead of time: the issuer may
+    // be stopped or frozen by now.
+    let mut issuer = node
+        .session_issuer(issuer_id, false)
+        .await
+        .ok_or_else(unknown)?;
+    let named = calimero_identity::from_b64url(&claims.key).ok();
+    if named.as_deref() != Some(issuer.key.as_slice()) {
+        // Signed under another key than the one attested here: the issuer's
+        // data directory may have been replaced since (a restart keeps it).
+        issuer = node
+            .session_issuer(issuer_id, true)
+            .await
+            .ok_or_else(unknown)?;
+    }
+    let claims = verify_session(&issuer.key, token, now_secs())
+        .map_err(|e| ApiError::unauthenticated(&e.to_string()))?;
+    let release = issuer
+        .release
+        .ok_or_else(|| ApiError::unauthenticated("the token's issuing node names no release"))?;
+    if !node.sys(|s| s.release_may_serve_account(&claims.account, &release)) {
+        if issuer_id == node.config.node_id {
+            return Err(wrong_node());
+        }
+        return Err(ApiError::unauthenticated(
+            "this session was signed by a node whose release the account's owners have not approved; sign in again",
+        ));
+    }
+    Ok((claims, Some(release)))
+}
+
+/// This node's release is not one the account's approvers approved: it
+/// neither issues nor takes the account's sessions. `421`, so a client tries
+/// another node rather than refreshing here.
+fn wrong_node() -> ApiError {
+    ApiError::new(
+        421,
+        "WRONG_NODE",
+        "this node runs a release the account's owners have not approved; use another node of the cluster",
+    )
+}
+
+/// Whether this node's release may serve `account`: issue and take its
+/// sessions (`SystemState::release_may_serve_account`). Asked before a sign-in,
+/// sign-up or refresh spends anything (a challenge, a refresh token), so a
+/// `421 WRONG_NODE` leaves the client free to finish on another node.
+fn serves(node: &Node, account: &str) -> bool {
+    let release = node.own_release();
+    node.sys(|s| s.release_may_serve_account(account, &release))
+}
+
+/// A session token for `claims`, signed by this node's attested receipt key.
+fn session_token(node: &Node, claims: SessionClaims) -> Result<String, ApiError> {
+    // A session no other node would take is not issued: the client goes to a
+    // node its approvers approved instead.
+    if !serves(node, &claims.account) {
+        return Err(wrong_node());
+    }
+    Ok(node.mint_session(claims))
 }
 
 pub(crate) async fn signed_in(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError> {
@@ -369,22 +458,20 @@ pub(crate) async fn person(node: &Node, headers: &HeaderMap) -> Result<Principal
 }
 
 async fn new_session(node: &Node, account: &str, passkey: &str, app: Option<String>) -> ApiResult {
-    let (version, key) = node
-        .sys(|s| s.current_session_key())
-        .ok_or_else(|| ApiError::unavailable("the cluster has no session key yet"))?;
     let session = b64url(&random::<16>());
     let expires_at = now_secs() + SESSION_TTL;
-    let token = mint_session(
-        &key,
-        &SessionClaims {
+    let token = session_token(
+        node,
+        SessionClaims {
             account: account.to_owned(),
             session: session.clone(),
             expires_at,
-            key_version: version,
             passkey: Some(passkey.to_owned()),
             app: app.clone(),
+            node: 0,
+            key: String::new(),
         },
-    );
+    )?;
     let refresh = format!("rt_{}", b64url(&random::<32>()));
     let _ok = node
         .sys_write(&SystemCmd::CreateRefresh {
@@ -584,6 +671,13 @@ async fn register_finish(
     State(node): State<Arc<Node>>,
     Json(body): Json<RegisterFinish>,
 ) -> ApiResult {
+    // A new account approves this node's release, so only a release the
+    // operator did not approve (where it holds release approvals) refuses it:
+    // decided before the challenge is spent, so the client can finish on
+    // another node. An account no one holds yet stands for the new one.
+    if !serves(&node, "") {
+        return Err(wrong_node());
+    }
     let Pending::Register {
         challenge, name, ..
     } = take_pending(&node, &body.challenge_id).await?
@@ -707,6 +801,17 @@ async fn check_assertion_for(
 }
 
 async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionBody>) -> ApiResult {
+    // The account the passkey names, if this replica knows it: refused before
+    // the challenge is spent when this node may not serve it, so the client
+    // finishes the same ceremony on another node. (A replica that does not
+    // know the passkey yet decides after the assertion is checked.)
+    let named = node.sys(|s| {
+        s.account_of_credential(&body.assertion.credential_id)
+            .map(|(a, _)| a.account_id.clone())
+    });
+    if named.is_some_and(|a| !serves(&node, &a)) {
+        return Err(wrong_node());
+    }
     let Pending::Login { challenge, .. } = take_pending(&node, &body.challenge_id).await? else {
         return Err(ApiError::bad_request(
             "WRONG_CHALLENGE",
@@ -844,9 +949,12 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
         }
         return Err(ApiError::unauthenticated("unknown refresh token"));
     };
-    let (version, key) = node
-        .sys(|s| s.current_session_key())
-        .ok_or_else(|| ApiError::unavailable("no session key"))?;
+    // Decided before the token is spent: a `421 WRONG_NODE` leaves it valid
+    // for another node, where presenting it again would otherwise look like a
+    // stolen copy and revoke the session.
+    if !serves(&node, &rec.account) {
+        return Err(wrong_node());
+    }
     let new_refresh = format!("rt_{}", b64url(&random::<32>()));
     let record = RefreshRecord {
         account: rec.account.clone(),
@@ -881,17 +989,18 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
         return Err(ApiError::unauthenticated(&e.message));
     }
     let expires_at = now_secs() + SESSION_TTL;
-    let token = mint_session(
-        &key,
-        &SessionClaims {
+    let token = session_token(
+        &node,
+        SessionClaims {
             account: rec.account.clone(),
             session: rec.session,
             expires_at,
-            key_version: version,
             passkey: rec.passkey,
             app: rec.app,
+            node: 0,
+            key: String::new(),
         },
-    );
+    )?;
     Ok(Json(
         json!({ "accountId": rec.account, "sessionToken": token, "expiresAt": expires_at, "refreshToken": new_refresh }),
     ))
@@ -1916,6 +2025,7 @@ async fn gate(
         caller: Caller::Public,
         session: None,
         api_key: None,
+        issuer_release: None,
         consent_page: false,
     }))
 }
@@ -1965,6 +2075,7 @@ pub(crate) async fn consent(
                 app: app_id.to_owned(),
                 method: method.to_owned(),
                 args: args_bytes,
+                nonce: b64url(&nonce),
                 account: account.clone(),
                 expires: now_secs() + CHALLENGE_TTL,
             },
@@ -1992,6 +2103,7 @@ pub(crate) async fn consent(
         app,
         method: m,
         args: a,
+        nonce,
         account: acc,
         ..
     } = take_pending(node, &confirm.challenge_id).await?
@@ -2023,7 +2135,18 @@ pub(crate) async fn consent(
         false,
     )
     .await?;
-    Ok(serde_json::to_value(&confirm.assertion).unwrap_or_default())
+    // Logged with what was signed, so every replica checks it where the
+    // command applies (`system::authorize`).
+    let consent = crate::proof::Consent {
+        statement: crate::proof::Statement {
+            subject: app,
+            method: m,
+            args: String::from_utf8(a).unwrap_or_default(),
+            nonce,
+        },
+        assertion: confirm.assertion,
+    };
+    Ok(serde_json::to_value(&consent).unwrap_or_default())
 }
 
 fn answer(node: &Node, app_id: &str, a: Applied) -> Response {
@@ -2563,9 +2686,11 @@ async fn presence_stream(
 async fn internal_presence(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
     Json(u): Json<crate::presence::Update>,
 ) -> ApiResult {
-    peer_only(&node, &headers)?;
+    let caller = peer(&node, &headers, key).await?;
+    caller_may_hold_app(&node, &caller, &u.app).await?;
     let _applied = node.presence.apply(&u, crate::types::now_ms());
     Ok(Json(json!({})))
 }
@@ -2852,6 +2977,9 @@ struct OrgUpgradeBody {
     migrate: Option<String>,
     #[serde(default)]
     confirm: Option<ConfirmBody>,
+    /// The operator's signature, for an operator's run.
+    #[serde(default, rename = "operatorProof")]
+    operator_proof: Option<OperatorProofBody>,
 }
 
 /// The apps an organization-wide upgrade of `package` covers.
@@ -2955,6 +3083,7 @@ async fn start_run(
         .sys_write(&SystemCmd::StartUpgradeRun {
             org: org.clone(),
             run: Box::new(run.clone()),
+            consent: who.consent.clone(),
         })
         .await?;
     let who = Upgrader {
@@ -3147,6 +3276,7 @@ async fn publisher_upgrade(
         cascade: false,
         migrate: body.migrate,
         confirm: None,
+        operator_proof: None,
     };
     start_run(node, org, run, apps, who).await
 }
@@ -3156,7 +3286,7 @@ async fn ops_org_upgrade(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(org): Path<String>,
-    Json(body): Json<OrgUpgradeBody>,
+    Json(mut body): Json<OrgUpgradeBody>,
 ) -> ApiResult {
     operator(&node, &headers)?;
     operator_holds(&node, |g| g.app_upgrades, "app upgrades")?;
@@ -3164,6 +3294,16 @@ async fn ops_org_upgrade(
     if !node.sys(|s| s.orgs.contains_key(&org)) {
         return Err(ApiError::not_found("no such organization"));
     }
+    let consent = operator_proof(
+        &node,
+        &format!("org:{org}"),
+        "__upgrade_org",
+        &json!({
+            "package": body.package, "version": body.version, "team": body.team,
+            "cascade": body.cascade, "migrate": body.migrate,
+        }),
+        body.operator_proof.take(),
+    )?;
     let apps = run_targets(
         &node,
         &org,
@@ -3175,7 +3315,7 @@ async fn ops_org_upgrade(
         caller: Caller::Public,
         actor: String::new(),
         by_operator: true,
-        consent: Value::Null,
+        consent,
         run: None,
     };
     start_run(node, org, body, apps, who).await
@@ -3215,22 +3355,31 @@ async fn org_upgrade_retry(
             .filter_map(|a| s.apps.get(a).cloned())
             .collect()
     });
+    let body = body.map(|Json(b)| b).unwrap_or_default();
     let mut retry = OrgUpgradeBody {
         package: prev.package.clone(),
         version: prev.version.clone(),
         team: prev.team.clone(),
         cascade: prev.cascade,
         migrate: None,
-        confirm: body.and_then(|Json(b)| serde_json::from_value(b["confirm"].clone()).ok()),
+        confirm: serde_json::from_value(body["confirm"].clone()).ok(),
+        operator_proof: None,
     };
     if prev.by == crate::system::OPERATOR {
         operator(&node, &headers)?;
         operator_holds(&node, |g| g.app_upgrades, "app upgrades")?;
+        let consent = operator_proof(
+            &node,
+            &format!("org:{org}"),
+            "__upgrade_org_retry",
+            &json!({ "run": run }),
+            serde_json::from_value(body["operatorProof"].clone()).ok(),
+        )?;
         let who = Upgrader {
             caller: Caller::Public,
             actor: String::new(),
             by_operator: true,
-            consent: Value::Null,
+            consent,
             run: None,
         };
         return start_run(node, org, retry, failed, who).await;
@@ -3940,6 +4089,91 @@ pub(crate) fn peer_only(node: &Node, headers: &HeaderMap) -> Result<(), ApiError
     }
 }
 
+/// Who called an internal route, as this node verified it.
+pub type PeerCaller = crate::node::PeerIdentity;
+
+/// A peer request's caller: the cluster secret, and an identified session
+/// whose proven key the claimed node's address attests (`x-calimero-node`
+/// names it); an anonymous session is refused. The cluster secret alone
+/// authorizes no data access: each route judges the caller.
+async fn peer(
+    node: &Node,
+    headers: &HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+) -> Result<PeerCaller, ApiError> {
+    peer_only(node, headers)?;
+    let Some(Extension(calimero_sealed::PeerKey(key))) = key else {
+        return Err(ApiError::forbidden(
+            "peers identify themselves (an identified sealed session)",
+        ));
+    };
+    let claimed = headers
+        .get(crate::node::PEER_NODE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .ok_or_else(|| ApiError::forbidden("name the calling node (x-calimero-node)"))?;
+    node.identify_peer(key, claimed).await.ok_or_else(|| {
+        ApiError::forbidden("the calling node's address does not attest the key it proved")
+    })
+}
+
+/// The inbound twin of `Node::may_send`: refuse a caller whose verified
+/// release `app`'s owner has not approved to hold its data.
+fn caller_may_hold(
+    node: &Node,
+    caller: &PeerCaller,
+    app: &crate::types::AppRecord,
+) -> Result<(), ApiError> {
+    if node.sys(|s| s.release_may_hold(app, caller.release.as_deref())) {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(
+            "the calling node's release is not approved for this app's data",
+        ))
+    }
+}
+
+/// [`caller_may_hold`] for an app named by id.
+async fn caller_may_hold_app(
+    node: &Node,
+    caller: &PeerCaller,
+    app_id: &str,
+) -> Result<(), ApiError> {
+    let app = node
+        .sys_until(|s| s.apps.get(app_id).cloned())
+        .await
+        .ok_or_else(|| ApiError::forbidden("no such app"))?;
+    caller_may_hold(node, caller, &app)
+}
+
+/// Whether a blob is code (a bundle, a package release): what any node of
+/// the cluster may fetch. Anything else is an app's data.
+fn is_code(node: &Node, hash: &str) -> bool {
+    node.sys(|s| {
+        s.bundles.contains_key(hash)
+            || s.packages
+                .values()
+                .any(|p| p.versions.values().any(|v| v.mpk == hash))
+    })
+}
+
+/// The apps hosted here whose state marks blob `hash`.
+fn hosted_holders(node: &Node, hash: &str) -> Vec<crate::types::AppRecord> {
+    let Some(raw) = hex::decode(hash)
+        .ok()
+        .and_then(|v| <[u8; 32]>::try_from(v).ok())
+    else {
+        return Vec::new();
+    };
+    let apps: Vec<crate::types::AppRecord> = node.sys(|s| s.apps.values().cloned().collect());
+    apps.into_iter()
+        .filter(|a| {
+            node.hosted(&a.app_id)
+                .is_some_and(|g| g.read_local(|m, _| m.holds_blob(&raw)))
+        })
+        .collect()
+}
+
 /// How many cluster-key requests one node judges at once (each verifies a
 /// quote, which in TDX mode fetches a release); past it, `429`.
 pub const MAX_CONCURRENT_KEY_RELEASES: usize = 4;
@@ -4004,9 +4238,33 @@ struct RaftBody {
 async fn internal_raft(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
     Json(body): Json<RaftBody>,
 ) -> ApiResult {
-    peer_only(&node, &headers)?;
+    let caller = peer(&node, &headers, key).await?;
+    // openraft takes the sender an RPC names on trust, and a follower takes
+    // an append from any node with a higher term: the sender must be the
+    // caller, and a member of the group (F4).
+    if body.rpc.sender() != Some(caller.node) {
+        return Err(ApiError::forbidden(
+            "a Raft message names another node than the one that sent it",
+        ));
+    }
+    if body.group != crate::node::SYSTEM_GROUP {
+        let app = node
+            .sys(|s| s.apps.values().find(|a| a.group == body.group).cloned())
+            .ok_or_else(|| ApiError::forbidden("no such group"))?;
+        caller_may_hold(&node, &caller, &app)?;
+        let member = app.replicas.contains(&caller.node)
+            || node
+                .group_members(body.group)
+                .is_some_and(|m| m.contains(&caller.node));
+        if !member {
+            return Err(ApiError::forbidden(
+                "the calling node is not a member of that group",
+            ));
+        }
+    }
     let r = node.engine.handle_rpc(body.group, body.rpc).await;
     Ok(Json(serde_json::to_value(r).unwrap_or_default()))
 }
@@ -4014,9 +4272,12 @@ async fn internal_raft(
 async fn internal_system(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
     Json(cmd): Json<SystemCmd>,
 ) -> ApiResult {
-    peer_only(&node, &headers)?;
+    // Any node of the cluster may propose; what it proposes is judged where
+    // it applies (`system::authorize` and each command's own checks).
+    let _caller = peer(&node, &headers, key).await?;
     // Only the leader answers; a follower refuses rather than forwarding again.
     let bytes = serde_json::to_vec(&cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
     match node.system.write(bytes).await {
@@ -4037,9 +4298,11 @@ struct BlobBody {
 async fn internal_blob_put(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
     Json(body): Json<BlobBody>,
 ) -> ApiResult {
-    peer_only(&node, &headers)?;
+    // Content-addressed: a node can store nothing but the bytes of the hash.
+    let _caller = peer(&node, &headers, key).await?;
     let wasm = body
         .wasm
         .ok_or_else(|| ApiError::bad_request("BAD_REQUEST", "wasm missing"))?;
@@ -4055,9 +4318,22 @@ async fn internal_blob_put(
 async fn internal_blob_get(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
     Json(body): Json<BlobBody>,
 ) -> ApiResult {
-    peer_only(&node, &headers)?;
+    let caller = peer(&node, &headers, key).await?;
+    // Code goes to any node of the cluster; an app's blob only to a node
+    // approved for an app hosted here that marks it.
+    if !is_code(&node, &body.hash) {
+        let allowed = hosted_holders(&node, &body.hash)
+            .iter()
+            .any(|app| caller_may_hold(&node, &caller, app).is_ok());
+        if !allowed {
+            return Err(ApiError::forbidden(
+                "the calling node's release is not approved for an app that holds this blob here",
+            ));
+        }
+    }
     let wasm = node
         .engine
         .get_blob(&body.hash)
@@ -4102,7 +4378,7 @@ async fn blob_upload(
     if p.caller.account().is_none() {
         return Err(ApiError::unauthenticated("sign in to upload"));
     }
-    let id = node.store_blob(&body).await?;
+    let id = node.store_blob(&body, Some(&app_id)).await?;
     let size = body.len() as u64;
     let a = node
         .call(&CallRequest::host(
@@ -4317,10 +4593,12 @@ async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
 async fn internal_storage(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
     Json(body): Json<Value>,
 ) -> ApiResult {
-    peer_only(&node, &headers)?;
+    let caller = peer(&node, &headers, key).await?;
     let app = body["app"].as_str().unwrap_or_default();
+    caller_may_hold_app(&node, &caller, app).await?;
     let g = node
         .hosted(app)
         .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
@@ -4338,10 +4616,16 @@ async fn internal_storage(
 async fn internal_blob_delete(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
     Json(body): Json<Value>,
 ) -> ApiResult {
-    peer_only(&node, &headers)?;
+    let _caller = peer(&node, &headers, key).await?;
     let hash = body["hash"].as_str().unwrap_or_default().to_owned();
+    // The node that collects a blob checked that no app marks it; one here
+    // that still does keeps its bytes, whoever asks.
+    if !hosted_holders(&node, &hash).is_empty() {
+        return Err(ApiError::forbidden("an app here still holds that blob"));
+    }
     let code = node.sys(|s| {
         s.bundles.contains_key(&hash)
             || s.packages
@@ -4367,10 +4651,12 @@ struct HeldBody {
 async fn internal_blob_held(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
     Json(body): Json<HeldBody>,
 ) -> ApiResult {
-    peer_only(&node, &headers)?;
+    let caller = peer(&node, &headers, key).await?;
     let app = node.app(&body.app).await?;
+    caller_may_hold(&node, &caller, &app)?;
     let raw = parse_blob_id(&body.id)?;
     let g = node
         .hosted(&app.app_id)
@@ -4387,8 +4673,12 @@ async fn internal_blob_held(
 }
 
 /// The system leader's applied index, once it confirmed it leads.
-async fn internal_system_index(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
-    peer_only(&node, &headers)?;
+async fn internal_system_index(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+) -> ApiResult {
+    let _caller = peer(&node, &headers, key).await?;
     let index = node
         .system
         .read_strong(|_, applied| applied)
@@ -4400,18 +4690,22 @@ async fn internal_system_index(State(node): State<Arc<Node>>, headers: HeaderMap
 async fn internal_call(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
     Json(req): Json<CallRequest>,
 ) -> ApiResult {
-    peer_only(&node, &headers)?;
+    let caller = peer(&node, &headers, key).await?;
+    caller_may_hold_app(&node, &caller, &req.app_id).await?;
     Ok(Json(node.call_here_any(&req).await?))
 }
 
 async fn internal_view(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
     Json(req): Json<ViewRequest>,
 ) -> ApiResult {
-    peer_only(&node, &headers)?;
+    let caller = peer(&node, &headers, key).await?;
+    caller_may_hold_app(&node, &caller, &req.app_id).await?;
     let a = node.view(&req).await?;
     Ok(Json(serde_json::to_value(a).unwrap_or_default()))
 }
@@ -4425,9 +4719,11 @@ struct ReadyBody {
 async fn internal_app_ready(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
     Json(b): Json<ReadyBody>,
 ) -> ApiResult {
-    peer_only(&node, &headers)?;
+    let caller = peer(&node, &headers, key).await?;
+    caller_may_hold_app(&node, &caller, &b.app_id).await?;
     let state = node
         .hosted(&b.app_id)
         .and_then(|g| g.read_local(|m, _| init_state(&m.state)));
@@ -4451,9 +4747,11 @@ struct InternalEvents {
 async fn internal_events(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
     Query(q): Query<InternalEvents>,
 ) -> Result<Response, ApiError> {
-    peer_only(&node, &headers)?;
+    let caller = peer(&node, &headers, key).await?;
+    caller_may_hold_app(&node, &caller, &q.app).await?;
     let subscriber = Some(q.subscriber).filter(|s| !s.is_empty());
     let stream = local_events(&node, &q.app, q.from, subscriber)
         .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
@@ -5223,6 +5521,64 @@ struct OpsReleaseBody {
     version: String,
     #[serde(default = "yes")]
     approved: bool,
+    #[serde(default, rename = "operatorProof")]
+    operator_proof: Option<OperatorProofBody>,
+}
+
+/// The operator's signature over a decision, as mdma sends it: the nonce of
+/// the statement it signed (from the `428 OPERATOR_SIGNATURE_REQUIRED` that
+/// named it, or its own) and the Ed25519 signature, hex.
+#[derive(Clone, Debug, Default, Deserialize)]
+struct OperatorProofBody {
+    nonce: String,
+    signature: String,
+}
+
+/// The operator's proof for `method` on `subject` with `args`, to log with
+/// the decision ([`crate::proof::OperatorProof`]). Without one: `428
+/// OPERATOR_SIGNATURE_REQUIRED`, naming the statement and the exact bytes to
+/// sign under a fresh nonce. A proof that does not verify under the recorded
+/// operator key: `403`.
+fn operator_proof(
+    node: &Node,
+    subject: &str,
+    method: &str,
+    args: &Value,
+    given: Option<OperatorProofBody>,
+) -> Result<Value, ApiError> {
+    let key = node.sys(|s| s.operator_key.clone());
+    let mut statement = crate::proof::Statement::new(subject, method, args);
+    let Some(given) = given else {
+        let Some(key) = key else {
+            return Err(ApiError::forbidden(
+                "no operator key is registered: start the nodes with --operator-key",
+            ));
+        };
+        let message = statement.operator_message(&key.cluster);
+        return Err(ApiError::new(
+            428,
+            "OPERATOR_SIGNATURE_REQUIRED",
+            "sign this decision with the operator key and send it again with operatorProof",
+        )
+        .with_details(json!({
+            "subject": statement.subject,
+            "method": statement.method,
+            "args": statement.args,
+            "nonce": statement.nonce,
+            "cluster": key.cluster,
+            "message": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, message),
+        })));
+    };
+    statement.nonce = given.nonce;
+    let proof = serde_json::to_value(crate::proof::OperatorProof {
+        statement,
+        signature: given.signature,
+    })
+    .unwrap_or_default();
+    // Checked here too, so a bad signature is a 403 and not a log refusal.
+    let _checked = crate::proof::verify_operator(&proof, key.as_ref())
+        .map_err(|e| ApiError::new(403, "BAD_OPERATOR_SIGNATURE", e))?;
+    Ok(proof)
 }
 
 /// Approve (or withdraw) a mero-tee release for every app, on a cluster whose
@@ -5234,8 +5590,21 @@ async fn ops_release(
 ) -> ApiResult {
     operator(&node, &headers)?;
     operator_holds(&node, |g| g.releases, "release approvals")?;
+    let method = if body.approved {
+        "__approve_release"
+    } else {
+        "__withdraw_release"
+    };
+    let proof = operator_proof(
+        &node,
+        "cluster",
+        method,
+        &json!({ "version": body.version }),
+        body.operator_proof,
+    )?;
     Ok(Json(
         node.sys_write(&SystemCmd::SetOperatorRelease {
+            proof,
             version: body.version,
             approved: body.approved,
         })
@@ -5247,14 +5616,26 @@ async fn ops_release(
 #[serde(deny_unknown_fields)]
 struct OpsDeadlineBody {
     /// RFC 3339: from then on, a scope that has not approved the release
-    /// starts no new work.
-    after: String,
+    /// starts no new work. `null` lifts the deadline.
+    after: Option<String>,
+    /// The operator's signature, once the node asked for it (`428`).
+    #[serde(default, rename = "operatorProof")]
+    operator_proof: Option<OperatorProofBody>,
 }
 
-/// Set the end-of-new-work deadline of a mero-tee release, in any
-/// governance: it decides availability, which is the operator's already. It
-/// moves no data and blocks no approval; a scope that approves the release
-/// (or a newer one) is past it at once.
+/// What lifting a deadline with `DELETE` may carry.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct OpsDeadlineLiftBody {
+    #[serde(default, rename = "operatorProof")]
+    operator_proof: Option<OperatorProofBody>,
+}
+
+/// Set (or, with `after: null`, lift) the end-of-new-work deadline of a
+/// mero-tee release, in any governance: it decides availability, which is the
+/// operator's already. It moves no data and blocks no approval; a scope that
+/// approves the release (or a newer one) is past it at once. An operator
+/// decision: it carries the operator's signature, checked where it applies.
 async fn ops_release_deadline(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -5262,32 +5643,55 @@ async fn ops_release_deadline(
     Json(body): Json<OpsDeadlineBody>,
 ) -> ApiResult {
     operator(&node, &headers)?;
-    let after = chrono::DateTime::parse_from_rfc3339(&body.after)
-        .ok()
-        .and_then(|t| u64::try_from(t.timestamp()).ok())
-        .ok_or_else(|| {
-            ApiError::bad_request("BAD_REQUEST", "`after` is an RFC 3339 time after 1970")
-        })?;
-    Ok(Json(
-        node.sys_write(&SystemCmd::SetReleaseDeadline {
-            version,
-            after: Some(after),
-        })
-        .await?,
-    ))
+    let after = match body.after {
+        None => None,
+        Some(t) => Some(
+            chrono::DateTime::parse_from_rfc3339(&t)
+                .ok()
+                .and_then(|t| u64::try_from(t.timestamp()).ok())
+                .ok_or_else(|| {
+                    ApiError::bad_request("BAD_REQUEST", "`after` is an RFC 3339 time after 1970")
+                })?,
+        ),
+    };
+    set_release_deadline(&node, version, after, body.operator_proof).await
 }
 
-/// Lift a release's deadline.
+/// Lift a release's deadline (`POST` with `after: null` does the same).
 async fn ops_release_deadline_lift(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(version): Path<String>,
+    body: axum::body::Bytes,
 ) -> ApiResult {
     operator(&node, &headers)?;
+    let body: OpsDeadlineLiftBody = if body.is_empty() {
+        OpsDeadlineLiftBody::default()
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?
+    };
+    set_release_deadline(&node, version, None, body.operator_proof).await
+}
+
+async fn set_release_deadline(
+    node: &Node,
+    version: String,
+    after: Option<u64>,
+    given: Option<OperatorProofBody>,
+) -> ApiResult {
+    let proof = operator_proof(
+        node,
+        "cluster",
+        "__release_deadline",
+        &json!({ "version": version, "after": after }),
+        given,
+    )?;
     Ok(Json(
         node.sys_write(&SystemCmd::SetReleaseDeadline {
             version,
-            after: None,
+            after,
+            proof,
         })
         .await?,
     ))
@@ -5410,6 +5814,8 @@ struct OpsOutboundBody {
     prefixes: calimero_primitives::outbound::OutboundSelection,
     #[serde(default)]
     replace: bool,
+    #[serde(default)]
+    operator_proof: Option<OperatorProofBody>,
 }
 
 /// Approve URL prefixes a package's publisher may call out to, for every app,
@@ -5421,6 +5827,17 @@ async fn ops_outbound(
 ) -> ApiResult {
     operator(&node, &headers)?;
     operator_holds(&node, |g| g.outbound, "outbound approvals")?;
+    let consent = operator_proof(
+        &node,
+        "cluster",
+        "__approve_outbound",
+        &json!({
+            "package": body.package,
+            "prefixes": body.prefixes,
+            "replace": body.replace,
+        }),
+        body.operator_proof,
+    )?;
     Ok(Json(
         node.sys_write(&SystemCmd::SetOutboundApproval {
             scope: crate::system::ReleaseScope::Cluster,
@@ -5428,7 +5845,7 @@ async fn ops_outbound(
             selection: body.prefixes,
             replace: body.replace,
             actor: String::new(),
-            consent: Value::Null,
+            consent,
         })
         .await?,
     ))
@@ -5447,6 +5864,8 @@ struct OpsUpgradeBody {
     service: Option<String>,
     #[serde(default)]
     migrate: Option<String>,
+    #[serde(default)]
+    operator_proof: Option<OperatorProofBody>,
 }
 
 /// Upgrade any app, on a cluster whose operator manages upgrades. The release
@@ -5507,6 +5926,14 @@ async fn ops_upgrade(
     }) {
         return Err(crate::node::rejected("unknown bundle"));
     }
+    // Signed before the upgrade runs on the app's group.
+    let consent = operator_proof(
+        &node,
+        &app_id,
+        "__upgrade",
+        &json!({ "bundle": bundle, "migrate": body.migrate }),
+        body.operator_proof,
+    )?;
     run_upgrade(
         &node,
         app_id,
@@ -5516,7 +5943,7 @@ async fn ops_upgrade(
             caller: Caller::Public,
             actor: String::new(),
             by_operator: true,
-            consent: Value::Null,
+            consent,
             run: None,
         },
     )

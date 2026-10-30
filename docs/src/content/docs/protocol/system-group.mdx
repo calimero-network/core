@@ -19,7 +19,7 @@ not one app's own data:
 | `accounts`, `credentials` | Accounts with their passkeys, labels, aliases and approvals; credential id → account |
 | `api_keys`, `refresh`, `rotated_refresh` | API-key hashes, live refresh tokens, and refresh tokens already exchanged |
 | `revoked_sessions`, `revoked_at` | Sessions that no longer verify, and when they were revoked |
-| `session_keys` | The session-signing key K_s: the current version and the one before it |
+| `used_proofs`, `operator_key` | The consents and operator signatures already used; the operator's verify key and the cluster its signatures name |
 | `orgs`, `invites` | Organizations (members, roles, capabilities, teams, approvals, metadata, upgrade runs) and invite-token hashes |
 | `quotas` | Per-account limits and the account cap |
 | `governance` | Who holds which decision, fixed at genesis ([Deployment governance](/protocol/governance/)) |
@@ -61,6 +61,32 @@ committed, as a no-op with its reason, and the node that proposed it turns the
 reason into the HTTP answer (`400 REJECTED`, or `429 QUOTA_EXCEEDED` for a
 reason that starts with "quota exceeded").
 
+## Decisions carry their proof
+
+`actor` alone is a claim any node of the cluster could make, say
+`SetReleaseApproval { actor: <the org's owner>, version: <its own release> }`.
+So `apply` first runs `system::authorize`:
+
+| Command | Must carry |
+| --- | --- |
+| `SetReleaseApproval`, `TransferApp`, `DeleteOrg`, `UpgradeApp` (an owner's), `SetOutboundApproval` (an org's or account's), `StartUpgradeRun` (an account's) | The actor's passkey **consent**: `{ subject, method, args, nonce, assertion }`, where the assertion signs `confirm_challenge(subject, method, args, nonce)` with user verification, under a passkey the actor's account holds in the state |
+| `SetOperatorRelease`, `UpgradeApp { by_operator }`, `SetOutboundApproval` (cluster scope), `StartUpgradeRun` (the operator's) | The **operator's signature** (Ed25519, under `operator_key`) over `"calimero.operator.v1\0" ‖ cluster ‖ 0 ‖ subject ‖ 0 ‖ method ‖ 0 ‖ args ‖ 0 ‖ nonce ‖ 0` ([Operator](/protocol/operator/)) |
+| `UpgradeApp { run }` | Nothing of its own: the run it names must exist in the app's organization, be started by the same party, not be finished, name the app, and the bundle must be a service of the run's release |
+
+The statement must say what the command does (the subject, `__approve_release`
+or `__withdraw_release` as `approved` says, the version, and so on), and each
+proof is accepted once (`used_proofs`), so a consent cannot be logged again
+after its maker reversed the decision. Every replica reaches the same verdict
+from the same state, so a forged decision is refused on every node whoever
+proposed it, the system leader included. Origins, the RP id and the signature
+counter stay with the node that took the assertion (`verify_assertion`): they
+are each node's configuration, not replicated state.
+
+Commands that name an actor but carry no proof yet (memberships, API keys,
+passkeys, invites) are still trusted from any node of the cluster; making them
+carry the user's proof is the next phase of the design
+(`docs/specs/gate-system-group.md`, section 5.6).
+
 The API checks most rules before it proposes, too, so a request that would be
 refused usually fails fast and records nothing. The check at apply is the one
 that counts: two requests that each passed the API's check against slightly
@@ -77,8 +103,8 @@ refused once it has, or once any account exists. A node restarted with other
 therefore changes nothing: the state already holds the answer, and it is the
 state every receipt key attests.
 
-The same leader registers the configured `--peers` as nodes and adds the first
-session key.
+The same leader registers the configured `--peers` as nodes. Genesis also
+records the operator's verify key (`--operator-key`) when one is configured.
 
 ## The leader's housekeeping
 
@@ -89,8 +115,7 @@ kick, and every 500 ms). On the system leader it also:
 - registers configured peers that are not yet in `nodes`;
 - adds every registered node that is not in the system group as a **learner**
   ([Replication](/protocol/replication/#joining-nodes));
-- adds a new session key once the current one is older than
-  `--session-key-rotation-secs` (6 h by default, at least 30 min).
+- promotes caught-up learners to voters while there are fewer than three.
 
 On every node it starts the app groups this node is a replica of, stops the
 ones it no longer is, runs a newly created app's `init` where this node leads

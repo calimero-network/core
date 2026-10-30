@@ -34,8 +34,11 @@ quote matches a release the KMS's policy accepts, and everything it writes is
 sealed under keys derived from what it got. Every node of a cluster derives the
 same K_r, so a follower opens a leader's snapshot as it is; a different cluster
 name gives a different K_r from the same KMS key. The keys that identify a node
-to clients — its transport and receipt keys — are made in memory at start and
-attested on their own, never derived from K_r.
+to clients — its transport and receipt keys — are attested on their own, never
+derived from K_r. The transport key is made in memory at start; the receipt
+key, which also signs sessions, is made on the node's first start and kept in
+its data directory wrapped under K_r, so it survives a restart and only the
+release that holds that K_r opens it.
 
 Each node's data — every Raft entry, vote, state row, snapshot frame and blob —
 is sealed under one 32-byte **cluster key**, K_c, which the node keeps on disk
@@ -83,7 +86,9 @@ So nothing the nodes share is keyed by K_r itself (`calimero_node::cluster_key`)
   AES-256-GCM under `HMAC-SHA256(K_r, "calimero.cluster-key.wrap.v1")`, and
   unwraps it at each start. A K_r that does not open it (the same disk booted
   on another release's KMS) stops the node: a node does not move to a new
-  release in place.
+  release in place. The node's signing key (receipts and sessions) is kept
+  beside it the same way, in `<data-dir>/signing-key` under
+  `HMAC-SHA256(K_r, "calimero.signing-key.wrap.v1")`, made on the first start.
 - **Delivered to new nodes by attestation.** A node starting on an empty data
   directory without `--bootstrap` serves only `/health` (with a `waiting`
   field), `/attestation` and a delivery route, and asks its `--peers` for K_c
