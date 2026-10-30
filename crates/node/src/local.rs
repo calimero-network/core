@@ -89,9 +89,11 @@ pub async fn start(
         };
         nodes.push(run(config).await?);
     }
-    // Ready once the system group has every node and a session key.
+    // Ready once the system group has every replica node.
     for _ in 0..200 {
-        let ready = nodes[0].node.sys(|s| s.nodes.len() == nodes.len());
+        let ready = nodes[0]
+            .node
+            .sys(|s| s.replica_nodes().count() == nodes.len());
         if ready {
             return Ok(LocalCluster {
                 nodes,

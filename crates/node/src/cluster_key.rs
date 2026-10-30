@@ -280,6 +280,7 @@ async fn waiting_attestation(
         receipt_key: None,
         governance: None,
         kms: None,
+        job_key: None,
     }))
 }
 

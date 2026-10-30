@@ -14,7 +14,7 @@ its peers; mero-js's `src/cloud-v2/attestation.ts` implements the same check.
 
 ## The attestation document
 
-`GET /attestation?nonce=<32 bytes hex>[&app=<app>|&appHash=<hex>][&purpose=receipts|kms]`
+`GET /attestation?nonce=<32 bytes hex>[&app=<app>|&appHash=<hex>][&purpose=receipts|kms|jobs]`
 answers, unsealed:
 
 | Field | Meaning |
@@ -27,6 +27,7 @@ answers, unsealed:
 | `cluster`, `node`, `mock` | The cluster name, node id, and whether the quote is a mock |
 | `receiptKey`, `governance` | With `purpose=receipts` only: the node's receipt key and the cluster's governance |
 | `kms` | With `purpose=kms` only, and only when the node has a record: what it verified of the mero-kms replica each key came from (below) |
+| `jobKey` | With `purpose=jobs` only, on a job node: its Ed25519 job signing key |
 
 The quote's 64 bytes of report data bind the request to the key:
 
@@ -141,6 +142,18 @@ signs the node's sessions ([Sessions](/protocol/identities/#sessions)). It is at
 cluster's governance. So a receipt is checkable later, offline, by anyone who
 holds that node's receipt-key attestation: it shows that a genuine node of a
 cluster deployed under those rules returned that answer.
+
+## Job nodes
+
+A job node (`merod run --job-node`) runs compute for a cluster's apps and holds no replica, vote or cluster key.
+`GET /attestation?purpose=jobs` on it binds its transport key and its job signing key in one quote.
+The report data is `nonce ‖ SHA-256("calimero.tee-attest.job-key.v1" ‖ transportKey ‖ jobKey ‖ release.version ‖ cluster ‖ node)`, so a quote for one key pair cannot vouch for another, nobody on the path can rewrite the release the leader judges the node by, and a quote cannot be replayed as another node or cluster.
+A job node attests nothing else: `GET /attestation` without `purpose=jobs`, or with any other purpose, is `404`.
+So the channels a cluster node opens after attesting a transport key (the cluster key's delivery, peer requests carrying the cluster secret, Raft, blob pushes) cannot open to a job node.
+`calimero_client::attest::verify_job_key` checks it with the same quote and measurement policy as every other attestation.
+A cluster node answers `purpose=jobs` with `404`.
+The cluster's leader attests a job node this way, under its `--peer-profiles` and `--peer-min-release`, and uses it only if the release it names is one the app's owner approved.
+Clients never need it.
 
 ## Verifying the whole app cluster
 

@@ -18,7 +18,9 @@
 //! snapshot install. Host records (`last_id`, `timers`, `install_ts_ms`,
 //! `last_ts_ms`, idempotency) are never keys the app sees (D39).
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
+#[cfg(feature = "testing")]
+use std::collections::VecDeque;
 use std::sync::{Arc, Weak};
 
 use calimero_app_host as host;

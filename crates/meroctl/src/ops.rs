@@ -6,10 +6,21 @@
 
 use std::path::PathBuf;
 
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::env::{json_arg, read_file, Env};
+
+/// What a registered node is for (`POST /ops/nodes`).
+#[derive(Clone, Copy, Debug, ValueEnum, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeRole {
+    /// Holds apps and the cluster key.
+    Replica,
+    /// Only runs compute: never a member, replica or key holder.
+    Job,
+}
 
 #[derive(Debug, Subcommand)]
 pub enum OpsCmd {
@@ -28,6 +39,8 @@ pub enum OpsCmd {
         addr: String,
         #[arg(long, default_value = "")]
         zone: String,
+        #[arg(long, value_enum, default_value_t = NodeRole::Replica)]
+        role: NodeRole,
     },
     /// Remove a node from the cluster once no context keeps a replica on it
     /// (run against the system leader; another node names it).
@@ -127,10 +140,14 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
             return Ok(Value::Null);
         }
         OpsCmd::Placement => client.get("ops/placement").await?,
-        OpsCmd::AddNode { id, addr, zone } => {
-            client
-                .post("ops/nodes", json!({ "id": id, "addr": addr, "zone": zone }))
-                .await?
+        OpsCmd::AddNode {
+            id,
+            addr,
+            zone,
+            role,
+        } => {
+            let body = json!({ "id": id, "addr": addr, "zone": zone, "role": role });
+            client.post("ops/nodes", body).await?
         }
         OpsCmd::RemoveNode { id } => client.delete(&format!("ops/nodes/{id}")).await?,
         OpsCmd::Move { context, replicas } => {

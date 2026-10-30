@@ -265,7 +265,7 @@ node answers `403` for the others.
 | `ops status` | `GET /ops/status` | This node, the system group's and hosted groups' Raft status, governance, fleet and counts. |
 | `ops metrics` | `GET /ops/metrics` | Prometheus text. |
 | `ops placement` | `GET /ops/placement` | Each context's group and replica node ids, each node's zone, release and context count. Ids and counts only. |
-| `ops add-node ID ADDR [--zone Z]` | `POST /ops/nodes` | Register a node so the system group admits it as a learner (and a voter while fewer than 3 voters are left). `ADDR` is its URL. |
+| `ops add-node ID ADDR [--zone Z] [--role replica\|job]` | `POST /ops/nodes` | Register a node so the system group admits it as a learner (and a voter while fewer than 3 voters are left). `ADDR` is its URL. `--role job` registers a job node (`merod run --job-node`): it is never admitted, placed or sent the cluster key. A node's role is fixed until it is removed. |
 | `ops remove-node ID` | `DELETE /ops/nodes/{id}` | Remove a node no app keeps a replica on; run against the system leader. |
 | `ops move CONTEXT --replicas ID,...` | `POST /ops/apps/{app}/replicas` | Move a context to these replica node ids. A follower answers `421 NOT_LEADER`; meroctl retries at the leader it names. The set it already has answers `unchanged: true`; another move of it running, `409 MOVE_IN_PROGRESS`. |
 | `ops backup` | `POST /ops/backup` | Write encrypted snapshots of the contexts this node leads now. |

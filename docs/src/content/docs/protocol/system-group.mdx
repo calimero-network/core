@@ -11,7 +11,7 @@ not one app's own data:
 
 | Field of `SystemState` | What it is |
 | --- | --- |
-| `nodes` | Every registered node: id, base URL, zone |
+| `nodes` | Every registered node: id, base URL, zone, role (`replica`, or `job` for a node that only runs compute) |
 | `apps` | The app directory: each instance's bundle, owner, organization, access rule, confirm methods, replicas, group, metadata, last upgrade |
 | `next_group` | The next app group number |
 | `bundles` | Bundle hash → size, uploader, and the release it ships in (the WASM itself is in the blob store) |
@@ -106,6 +106,16 @@ state every receipt key attests.
 The same leader registers the configured `--peers` as nodes. Genesis also
 records the operator's verify key (`--operator-key`) when one is configured.
 
+## Job nodes in the directory
+
+`POST /ops/nodes` takes an optional `role`: `replica` (the default) or `job`.
+A job node runs compute for the cluster's apps and never holds the cluster key, so it is never a Raft member, not even a learner: a member keeps its log sealed under that key.
+It is also never placed an app, never a target or a majority member of a blob or bundle push, and never sent the cluster key.
+`/ops/placement` lists it with its role and an app count of zero, and `/ops/apps/{app}/replicas` refuses a request that names one.
+`DELETE /ops/nodes/{id}` removes it at any time and changes no voter.
+A node's role is fixed until it is removed, an address belongs to one node in any spelling, and `--peers` must list only replica nodes.
+Registering a job node is refused (`409 CLUSTER_NOT_UPGRADED`) until every replica node, voter and learner runs at least the registering node's release, so no older node ever reads a job record.
+
 ## The leader's housekeeping
 
 Every node runs a reconcile loop (on each applied system entry, on a follow-up
@@ -113,8 +123,8 @@ kick, and every 500 ms). On the system leader it also:
 
 - writes `Genesis` if nothing has;
 - registers configured peers that are not yet in `nodes`;
-- adds every registered node that is not in the system group as a **learner**
-  ([Replication](/protocol/replication/#joining-nodes));
+- adds every registered replica node that is not in the system group as a **learner**
+  ([Replication](/protocol/replication/#joining-nodes)), once it attests its transport key as a cluster node (a job node registered as a replica never does, so it is never admitted);
 - promotes caught-up learners to voters while there are fewer than three.
 
 On every node it starts the app groups this node is a replica of, stops the

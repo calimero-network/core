@@ -93,6 +93,16 @@ pub enum Access {
     Team { team: TeamId },
 }
 
+/// What a registered node is for: a replica holds apps and the cluster key, a
+/// job node only runs compute for them and never holds either.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NodeRole {
+    #[default]
+    Replica,
+    Job,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeRecord {
@@ -100,6 +110,8 @@ pub struct NodeRecord {
     pub addr: String,
     #[serde(default)]
     pub zone: String,
+    #[serde(default)]
+    pub role: NodeRole,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -341,3 +341,101 @@ fn attest_serve_answers_each_nonce() {
     assert!(status.contains("404"), "{status}");
     interrupt(child);
 }
+
+/// `--job-node` takes only what a job node uses: a flag that would make it hold
+/// a cluster (here `--bootstrap`, a storage key) is refused before it starts.
+#[test]
+fn a_job_node_refuses_flags_that_make_no_sense_for_it() {
+    let home = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let job = |extra: &[&str]| {
+        merod(home.path())
+            .args(["--node", "j1", "run", "--job-node", "--dev"])
+            .args(["--node-id", "9"])
+            .args(["--listen", &format!("127.0.0.1:{port}")])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    for (flag, value) in [("--bootstrap", None), ("--storage-key", Some("aa"))] {
+        let out = job(&[Some(flag), value]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>());
+        assert!(!out.status.success(), "{flag}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(&format!("{flag} makes no sense")), "{err}");
+    }
+    assert!(health(port).is_none(), "nothing started");
+}
+
+/// A job node over the binary: a scratch directory, `/health`, an attestation
+/// binding its job key, and no receipts.
+#[test]
+fn a_job_node_attests_its_job_key_and_has_no_receipts() {
+    let home = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let data = home.path().join("data");
+    let child = merod(home.path())
+        .args(["run", "--job-node", "--dev", "--node-id", "9"])
+        .args(["--listen", &format!("127.0.0.1:{port}")])
+        .arg("--data-dir")
+        .arg(&data)
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while health(port).is_none() {
+        assert!(Instant::now() < deadline, "the job node did not start");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let nonce = [6u8; 32];
+    let jobs = format!("/attestation?nonce={}&purpose=jobs", hex::encode(nonce));
+    let (status, body) = get(port, &jobs).unwrap();
+    assert!(status.contains("200"), "{status} {body}");
+    let doc: calimero_client::attest::AttestationDoc = serde_json::from_str(&body).unwrap();
+    let mock = calimero_client::Policy {
+        allow_mock: true,
+        ..calimero_client::Policy::default()
+    };
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (transport, job_key) = rt
+        .block_on(calimero_client::attest::verify_job_key(&doc, &nonce, &mock))
+        .unwrap();
+    assert_eq!(hex::encode(transport), doc.transport_key);
+    assert_eq!(Some(hex::encode(job_key)), doc.job_key);
+    // Another nonce does not verify the same document.
+    assert!(rt
+        .block_on(calimero_client::attest::verify_job_key(
+            &doc, &[7; 32], &mock
+        ))
+        .is_err());
+
+    let receipts = format!("/attestation?nonce={}&purpose=receipts", hex::encode(nonce));
+    let (status, _) = get(port, &receipts).unwrap();
+    assert!(status.contains("404"), "{status}");
+    // No other attestation: a channel that attests the transport key the usual way never opens.
+    let plain = format!("/attestation?nonce={}", hex::encode(nonce));
+    let (status, _) = get(port, &plain).unwrap();
+    assert!(status.contains("404"), "{status}");
+
+    assert!(data.join("scratch").is_dir());
+    assert!(!data.join("raft").exists() && !data.join("cluster.key").exists());
+    interrupt(child);
+}
+
+/// A job node outside `--dev` judges leaders by a TEE release and profile, as a
+/// TDX cluster node judges peers: without them it does not start.
+#[test]
+fn a_tdx_job_node_needs_the_release_and_profile_to_judge_leaders() {
+    let home = tempfile::tempdir().unwrap();
+    let out = merod(home.path())
+        .args(["run", "--job-node", "--node-id", "9"])
+        .args(["--listen", &format!("127.0.0.1:{}", free_port())])
+        .arg("--data-dir")
+        .arg(home.path().join("data"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("MERO_TEE_VERSION"), "{err}");
+}

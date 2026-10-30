@@ -12,7 +12,7 @@ use calimero_app_build::build_component_cached;
 use calimero_client::{Client, Policy};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::attest::Mode;
-use calimero_node::{run, Config, Running};
+use calimero_node::{run, run_job, Config, JobConfig, Running, RunningJob};
 
 /// The fixture `name` ("kv" or "org-gated") as a component, built on first use and cached
 /// by source hash under `target/app-components` (the fixture, the SDK crates, the toolchain and
@@ -298,5 +298,66 @@ impl Cluster {
             .hosted(app)
             .unwrap()
             .applied()
+    }
+}
+
+/// A job node started next to a cluster ([`Cluster::start_job_node`]).
+pub struct JobNode {
+    pub running: RunningJob,
+    pub id: u64,
+    pub url: String,
+    _dir: tempfile::TempDir,
+}
+
+impl Cluster {
+    /// Starts job node `id` with the cluster's settings, `configure` applied
+    /// last. It is not in the directory until [`Cluster::register_job_node`].
+    pub async fn start_job_node(&self, id: u64, configure: impl Fn(&mut JobConfig)) -> JobNode {
+        let dir = tempfile::tempdir().unwrap();
+        let from = &self.configs[0];
+        let mut config = JobConfig {
+            node_id: id,
+            listen: format!("127.0.0.1:{}", free_port()).parse().unwrap(),
+            data_dir: dir.path().to_owned(),
+            cluster: from.cluster.clone(),
+            attestation: from.attestation,
+            sealed_required: from.sealed_required,
+            release: from.release.clone(),
+            tee_release: from.tee_release.clone(),
+            tee_profile: from.tee_profile.clone(),
+            peers: from.peers.clone(),
+            allow_mock_peers: from.allow_mock_peers,
+            peer_measurements: from.peer_measurements.clone(),
+        };
+        configure(&mut config);
+        let url = format!("http://127.0.0.1:{}/", config.listen.port());
+        JobNode {
+            running: run_job(config).await.unwrap(),
+            id,
+            url,
+            _dir: dir,
+        }
+    }
+
+    /// Registers `addr` as job node `id` through `/ops/nodes` and waits until
+    /// the first node's directory shows it.
+    pub async fn register_job_node(&self, id: u64, addr: &str) {
+        let ops = self.client(0);
+        ops.use_api_key("ops-secret").await;
+        let _ = ops
+            .post(
+                "ops/nodes",
+                serde_json::json!({ "id": id, "addr": addr, "role": "job" }),
+            )
+            .await
+            .unwrap();
+        let node = &self.nodes[0].as_ref().unwrap().node;
+        for _ in 0..100 {
+            if node.sys(|s| s.job_nodes().any(|n| n.id == id)) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("node 1 never applied job node {id}");
     }
 }
