@@ -669,6 +669,10 @@ Every list view returns `{ items, next? }` with an opaque cursor. The SDK provid
 >
 > The node checks all three before the target runs, so the target's code never hand-checks the caller. `from_same_app` keeps its meaning.
 
+> **Comment (Sandi, Oct 30), synchronous xcall across machines:** the source's leader (node X) and the target's leader (node Y) are usually different machines in the same cluster. X sends the call to Y over the existing sealed, identified peer channel (`internal/call`, Noise IK with attested transport keys). Y runs the call and commits it with the target's replicas, then answers. The cost is one X→Y round-trip plus the target's commit; the same holds for `xcall.view` with a read-index round instead of the commit.
+>
+> Y must not take `App(source)` from the message. It sets the origin only if the channel's node X is the current leader, or at least a replica, of the source app in system state. Otherwise any attested node could claim to speak for any app. The peer release gate from Phase 0 applies too: the target's owner must have approved X's release. If Y is down, X retries against the target's new leader within the source's deadline using the same derived key, then returns `Err(unavailable)` or `Err(timeout)`. Calls across clusters are out of scope (Q14: same cluster only).
+
 | `init` | the owner | allowed |
 | `migrate` | `System` | allowed, migration context only |
 
