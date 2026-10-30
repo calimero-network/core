@@ -8,7 +8,7 @@
 
 ## What This Crate Does
 
-Holds the `calimero:app@0.5.1` world: the spec's 0.5.0 plus `search`, below, plus the additive `files` interface, and exposes `WIT_DIR`, `WORLD`, `allowed_imports()` (what the world imports) and `stubbed_imports()` (the nine D44 interfaces accepted at install). Anything in neither list is refused.
+Holds the `calimero:app@0.5.1` world: the spec's 0.5.0 plus `search`, below, plus the additive `files` and `compute` interfaces, and exposes `WIT_DIR`, `WORLD`, `allowed_imports()` (what the world imports) and `stubbed_imports()` (the nine D44 interfaces accepted at install). Anything in neither list is refused.
 
 ## Beyond the spec's section 4
 

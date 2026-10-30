@@ -933,6 +933,7 @@ dependencies = [
  "calimero-app-build",
  "calimero-app-engine-wasmtime",
  "calimero-app-host",
+ "calimero-app-wit",
  "calimero-sdk",
  "calimero-sdk-macros",
  "ciborium",

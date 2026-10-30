@@ -29,6 +29,15 @@ enum Kind {
     View,
     Timer,
     Action,
+    Compute,
+}
+
+/// `#[app::compute(..)]`: the caps the host enforces and the method that gets the outcome.
+struct ComputeAttr {
+    fuel: u64,
+    memory_mib: Option<u32>,
+    wall_secs: Option<u32>,
+    result: String,
 }
 
 #[derive(Default)]
@@ -44,6 +53,8 @@ struct Attrs {
     every: Option<String>,
     allow_system: bool,
     allow_apps: Vec<String>,
+    compute: Option<ComputeAttr>,
+    compute_result: bool,
 }
 
 struct Method {
@@ -80,6 +91,32 @@ fn valid_every(text: &str) -> bool {
         return false;
     };
     matches!(unit, 's' | 'm' | 'h') && text[..text.len() - 1].parse::<u64>().is_ok_and(|n| n > 0)
+}
+
+fn compute_attr(attr: &Attribute) -> syn::Result<ComputeAttr> {
+    let (mut fuel, mut memory_mib, mut wall_secs, mut result) = (None, None, None, None);
+    attr.parse_nested_meta(|meta| {
+        let key = meta.path.get_ident().map(ToString::to_string);
+        match key.as_deref() {
+            Some("fuel") => fuel = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?),
+            Some("memory_mib") => {
+                memory_mib = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?);
+            }
+            Some("wall_secs") => {
+                wall_secs = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?);
+            }
+            Some("result") => result = Some(meta.value()?.parse::<LitStr>()?.value()),
+            _ => return Err(meta.error("expected `fuel`, `memory_mib`, `wall_secs` or `result`")),
+        }
+        Ok(())
+    })?;
+    let missing = |what: &str| syn::Error::new_spanned(attr, format!("`compute` needs `{what}`"));
+    Ok(ComputeAttr {
+        fuel: fuel.ok_or_else(|| missing("fuel = N"))?,
+        memory_mib,
+        wall_secs,
+        result: result.ok_or_else(|| missing("result = \"method\""))?,
+    })
 }
 
 fn parse_attrs(f: &mut ImplItemFn) -> syn::Result<Attrs> {
@@ -127,6 +164,12 @@ fn parse_attrs(f: &mut ImplItemFn) -> syn::Result<Attrs> {
                 // A timer's caller is always `System` (D13), so `every` implies it (Ruling 26).
                 attrs.allow_system = true;
             }
+            "compute" => attrs.compute = Some(compute_attr(&attr)?),
+            "compute_result" => {
+                attrs.compute_result = true;
+                // The node runs it as the system caller (a compute run's outcome).
+                attrs.allow_system = true;
+            }
             "allow" => attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("system") {
                     attrs.allow_system = true;
@@ -163,7 +206,8 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
             || attrs.public
             || attrs.every.is_some()
             || attrs.action
-            || attrs.action_only;
+            || attrs.action_only
+            || attrs.compute.is_some();
         if any || attrs.allow_system || !attrs.allow_apps.is_empty() {
             return Err(syn::Error::new_spanned(
                 &f.sig.ident,
@@ -214,14 +258,29 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
         }
     }
 
-    let kind = match (attrs.init, attrs.view, attrs.every.is_some(), attrs.action) {
-        (true, false, false, false) => Kind::Init,
-        (false, true, false, false) => Kind::View,
-        (false, false, true, false) => Kind::Timer,
-        (false, false, false, true) => Kind::Action,
-        (false, false, false, false) => Kind::Call,
-        _ => return fail("`init`, `view`, `every` and `action` exclude each other"),
+    let kind = match (
+        attrs.init,
+        attrs.view,
+        attrs.every.is_some(),
+        attrs.action,
+        attrs.compute.is_some(),
+    ) {
+        (true, false, false, false, false) => Kind::Init,
+        (false, true, false, false, false) => Kind::View,
+        (false, false, true, false, false) => Kind::Timer,
+        (false, false, false, true, false) => Kind::Action,
+        (false, false, false, false, true) => Kind::Compute,
+        (false, false, false, false, false) => Kind::Call,
+        _ => {
+            return fail("`init`, `view`, `every`, `action` and `compute` exclude each other");
+        }
     };
+    if attrs.compute_result && kind != Kind::Call {
+        return fail("`compute_result` goes on a plain call method");
+    }
+    if attrs.compute_result && attrs.public {
+        return fail("a `compute_result` method is not public: only the node runs it");
+    }
     match kind {
         Kind::Init if receiver_mut.is_some() => return fail("`init` takes no `self`"),
         Kind::Init
@@ -236,6 +295,12 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
         Kind::View if attrs.confirm => return fail("a `confirm` method never runs as a view"),
         Kind::Timer if receiver_mut.is_none() => return fail("a timer takes `&mut self`"),
         Kind::Timer if !params.is_empty() => return fail("a timer takes no arguments"),
+        Kind::Compute if receiver_mut.is_some() => {
+            return fail("a compute method has no state: it takes no `self`")
+        }
+        Kind::Compute if attrs.confirm || attrs.public || attrs.allow_system => {
+            return fail("a compute method is started by the app; it takes no access attribute")
+        }
         Kind::Call if receiver_mut.is_none() => {
             return fail("an app method takes `&self` or `&mut self`")
         }
@@ -279,6 +344,7 @@ fn abi_entry(m: &Method) -> Value {
         Kind::View => "view",
         Kind::Timer => "timer",
         Kind::Action => "action",
+        Kind::Compute => "compute",
     };
     let params: Vec<Value> = m
         .params
@@ -297,6 +363,21 @@ fn abi_entry(m: &Method) -> Value {
     let _ = entry.insert("confirm".into(), m.attrs.confirm.into());
     let _ = entry.insert("public".into(), m.attrs.public.into());
     let _ = entry.insert("allowSystem".into(), m.attrs.allow_system.into());
+    if let Some(compute) = &m.attrs.compute {
+        let mut caps = Map::new();
+        let _ = caps.insert("fuel".into(), compute.fuel.into());
+        if let Some(memory_mib) = compute.memory_mib {
+            let _ = caps.insert("memoryMib".into(), memory_mib.into());
+        }
+        if let Some(wall_secs) = compute.wall_secs {
+            let _ = caps.insert("wallSecs".into(), wall_secs.into());
+        }
+        let _ = caps.insert("result".into(), camel(&compute.result).into());
+        let _ = entry.insert("compute".into(), Value::Object(caps));
+    }
+    if m.attrs.compute_result {
+        let _ = entry.insert("computeResult".into(), true.into());
+    }
     if let Some(every) = &m.attrs.every {
         let _ = entry.insert("every".into(), every.clone().into());
     }
@@ -414,6 +495,24 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
             ));
         }
     }
+    for m in &methods {
+        let Some(compute) = &m.attrs.compute else {
+            continue;
+        };
+        let result = camel(&compute.result);
+        if !methods
+            .iter()
+            .any(|r| r.abi == result && r.attrs.compute_result)
+        {
+            return Err(syn::Error::new_spanned(
+                &m.rust,
+                format!(
+                    "`result = {:?}` is not a `#[app::compute_result]` method",
+                    compute.result
+                ),
+            ));
+        }
+    }
     // Top-level keys in sorted order, like every object below them (`canonical`).
     let head = format!("{{\"abiVersion\":{ABI_VERSION},\"errors\":");
     let methods_json = format!(
@@ -430,6 +529,7 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
             Kind::View => quote!(View),
             Kind::Timer => quote!(Timer),
             Kind::Action => quote!(Action),
+            Kind::Compute => quote!(Compute),
         };
         let public = m.attrs.public;
         let allow_system = m.attrs.allow_system;
@@ -575,5 +675,62 @@ mod tests {
             impl S { #[app::view] #[app::public(rate = "10/min")] pub fn m(&self) -> Result<()> { Ok(()) } }
         })
         .unwrap();
+    }
+
+    #[test]
+    fn compute_methods_and_their_result_reach_the_abi() {
+        let item: ItemImpl = parse_quote! {
+            impl S {
+                #[app::compute(fuel = 100, memory_mib = 64, result = "on_done")]
+                pub fn digest(x: u32) -> Result<()> { Ok(()) }
+                #[app::compute_result]
+                pub fn on_done(&mut self) -> Result<()> { Ok(()) }
+            }
+        };
+        let out = expand(item).unwrap().to_string();
+        let digest = r#""digest":{"allowSystem":false,"compute":{"fuel":100,"memoryMib":64,"result":"onDone"},"confirm":false,"kind":"compute","params":[["x","u32"]],"public":false,"returns":null}"#;
+        let result = r#""onDone":{"allowSystem":true,"computeResult":true,"confirm":false,"kind":"call","params":[],"public":false,"returns":null}"#;
+        let out = out.replace(r#"\""#, "\"");
+        assert!(out.contains(digest), "{out}");
+        assert!(out.contains(result), "{out}");
+    }
+
+    #[test]
+    fn bad_compute_declarations_are_refused() {
+        let msg = refused(parse_quote! {
+            impl S { #[app::compute(result = "r")] pub fn m() -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("fuel"), "{msg}");
+        let msg = refused(parse_quote! {
+            impl S { #[app::compute(fuel = 1)] pub fn m() -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("result"), "{msg}");
+        let msg = refused(parse_quote! {
+            impl S { #[app::compute(fuel = 1, speed = 2, result = "r")] pub fn m() -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("expected"), "{msg}");
+        let msg = refused(parse_quote! {
+            impl S { #[app::compute(fuel = 1, result = "r")] pub fn m(&self) -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("no `self`"), "{msg}");
+        let msg = refused(parse_quote! {
+            impl S { #[app::compute(fuel = 1, result = "r")] #[app::view] pub fn m() -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("exclude"), "{msg}");
+        let msg = refused(parse_quote! {
+            impl S { #[app::compute(fuel = 1, result = "missing")] pub fn m() -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("compute_result"), "{msg}");
+        let msg = refused(parse_quote! {
+            impl S { #[app::compute_result] #[app::view] pub fn m(&self) -> Result<()> { Ok(()) } }
+        });
+        assert!(
+            msg.contains("compute_result") || msg.contains("exclude"),
+            "{msg}"
+        );
+        let msg = refused(parse_quote! {
+            impl S { #[app::compute_result] #[app::public] pub fn m(&mut self) -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("not public"), "{msg}");
     }
 }

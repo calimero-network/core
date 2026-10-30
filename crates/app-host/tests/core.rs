@@ -55,6 +55,7 @@ fn inv(kind: InvocationKind) -> Invocation {
         id_seq: 42,
         seed: [7; 32],
         timer: None,
+        compute: None,
     }
 }
 

@@ -23,6 +23,7 @@ pub mod app;
 pub mod blob;
 pub mod collections;
 mod commons;
+pub mod compute;
 pub mod encoding;
 pub mod env;
 pub mod error;
