@@ -1,18 +1,23 @@
 //! A job node (`merod run --job-node`): runs compute for a cluster's apps and
 //! holds none of its keys, store, Raft or system group; serves only `/health`, `/attestation` and `/job/*`.
 
-use std::collections::BTreeMap;
+mod admission;
+mod bundles;
+mod exec;
+mod runs;
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
-use axum::extract::{Query, State};
-use axum::routing::get;
+use axum::extract::{DefaultBodyLimit, Query, State};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
+use calimero_app_engine_wasmtime::WasmtimeEngine;
 use calimero_sealed::{expire_sessions, intercept, SealedOptions, SealedTransport};
 use serde::Deserialize;
 use serde_json::{json, to_value, Value};
@@ -20,18 +25,22 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::attest::{job_key_binding, quote, AttestationDoc, Measurements, Mode, Policy, Release};
+use crate::attest::{job_key_binding, quote, AttestationDoc, Mode, Release};
 use crate::error::ApiError;
-use crate::node::{attested_release, peer_policy};
+use crate::node::attested_release;
 
-/// How many compute runs one job node takes at once.
-pub const RUNS_PER_JOB_NODE: usize = 2;
+pub const RUNS_PER_JOB_NODE: usize = 2; // How many compute runs one job node takes at once
 
-/// Where run files live under the data directory.
-const SCRATCH_DIR: &str = "scratch";
+const SCRATCH_DIR: &str = "scratch"; // Where run files live under the data directory
 
-/// How long [`RunningJob::stop`] waits for the server to drain.
-const STOP_WAIT: Duration = Duration::from_secs(2);
+const STOP_WAIT: Duration = Duration::from_secs(2); // How long [`RunningJob::stop`] waits for the server to drain
+
+const SWEEP_EVERY: Duration = Duration::from_secs(1); // How often finished and abandoned runs are looked for
+
+pub use runs::{
+    AWAITING_INPUTS_TTL, CANCEL_WAIT, JOB_RESULT_TTL, MAX_ASSIGNMENT_BYTES, MAX_FINISHED_BYTES,
+    MAX_RUN_INPUTS, MAX_RUN_INPUT_BYTES, TOKEN_HEADER,
+};
 
 /// What a job node is started with: nothing of a cluster's storage or keys.
 #[derive(Clone, Debug)]
@@ -46,11 +55,8 @@ pub struct JobConfig {
     pub release: String,
     pub tee_release: Option<String>,
     pub tee_profile: Option<String>,
-    /// The cluster's nodes, by id: the leaders this node will take work from.
-    pub peers: BTreeMap<u64, String>,
-    /// How this node will judge a leader's quote, as a cluster node judges its peers'.
-    pub allow_mock_peers: bool,
-    pub peer_measurements: Measurements,
+    /// The cluster's identity key (`GET /ops/cluster`): work and components it did not sign are refused.
+    pub cluster_identity: [u8; 32],
 }
 
 impl JobConfig {
@@ -62,16 +68,6 @@ impl JobConfig {
             self.attestation,
         )
     }
-
-    /// How this node judges a leader's quote.
-    #[must_use]
-    pub fn peer_policy(&self) -> Policy {
-        peer_policy(
-            self.allow_mock_peers,
-            &self.peer_measurements,
-            self.tee_profile.as_deref(),
-        )
-    }
 }
 
 struct JobNode {
@@ -79,7 +75,24 @@ struct JobNode {
     transport: Arc<SealedTransport>,
     /// Signs the reports of this node's runs. Made in memory at start, never stored.
     job_key: ed25519_dalek::SigningKey,
-    running: AtomicUsize,
+    /// Compiles and runs compute only; holds no key.
+    engine: Arc<WasmtimeEngine>,
+    bundles: bundles::Bundles,
+    runs: runs::Runs,
+    scratch: PathBuf,
+    dirs: AtomicU64,
+}
+
+impl JobNode {
+    /// A directory name no other run of this process has.
+    fn next_dir(&self) -> u64 {
+        self.dirs.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+/// `m`'s contents; a thread that panicked holding it leaves them usable.
+fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// A running job node.
@@ -87,13 +100,15 @@ pub struct RunningJob {
     pub addr: SocketAddr,
     /// The job signing key's public half, as `purpose=jobs` attests it.
     pub job_key: [u8; 32],
+    job: Arc<JobNode>,
     shutdown: CancellationToken,
     server: tokio::task::JoinHandle<()>,
 }
 
 impl RunningJob {
-    /// Stop serving.
+    /// Stop serving, and stop the runs.
     pub async fn stop(self) {
+        self.job.runs.cancel_all();
         self.shutdown.cancel();
         let mut server = self.server;
         if tokio::time::timeout(STOP_WAIT, &mut server).await.is_err() {
@@ -102,9 +117,26 @@ impl RunningJob {
     }
 }
 
+/// Refuses a cluster identity that is not a curve point, or is one of small order: a signature
+/// by such a key can be made without holding it.
+pub fn check_cluster_identity(identity: &[u8; 32]) -> eyre::Result<()> {
+    let key = ed25519_dalek::VerifyingKey::from_bytes(identity)
+        .map_err(|_| eyre::eyre!("the cluster identity is not a point of the curve"))?;
+    if key.is_weak() {
+        eyre::bail!("the cluster identity is a weak key");
+    }
+    Ok(())
+}
+
 /// Start a job node and serve until stopped.
 pub async fn run_job(config: JobConfig) -> eyre::Result<RunningJob> {
-    std::fs::create_dir_all(config.data_dir.join(SCRATCH_DIR))?;
+    check_cluster_identity(&config.cluster_identity)?;
+    let scratch = config.data_dir.join(SCRATCH_DIR);
+    // A restarted node knows no runs: what an earlier process left is no one's.
+    if scratch.exists() {
+        std::fs::remove_dir_all(&scratch)?;
+    }
+    std::fs::create_dir_all(&scratch)?;
     let listener = TcpListener::bind(config.listen).await?;
     let addr = listener.local_addr()?;
     let transport = Arc::new(SealedTransport::generate(&SealedOptions {
@@ -118,13 +150,42 @@ pub async fn run_job(config: JobConfig) -> eyre::Result<RunningJob> {
         config,
         transport: Arc::clone(&transport),
         job_key,
-        running: AtomicUsize::new(0),
+        engine: Arc::new(WasmtimeEngine::for_compute()?),
+        bundles: bundles::Bundles::new(),
+        runs: runs::Runs::default(),
+        scratch,
+        dirs: AtomicU64::new(0),
     });
     let router = Router::new()
         .route("/health", get(health))
         .route("/attestation", get(attestation))
         .route("/job/load", get(load))
-        .with_state(job);
+        .route("/job/bundles/{hash}", put(bundles::put_bundle))
+        .route(
+            "/job/runs",
+            post(runs::assign).layer(DefaultBodyLimit::max(runs::MAX_ASSIGNMENT_BYTES)),
+        )
+        .route(
+            "/job/runs/{app}/{run}/{attempt}",
+            get(runs::status).delete(runs::cancel),
+        )
+        .route(
+            "/job/runs/{app}/{run}/{attempt}/inputs/{i}",
+            put(runs::put_input),
+        )
+        .route(
+            "/job/runs/{app}/{run}/{attempt}/outputs/{i}",
+            get(runs::output),
+        )
+        .route(
+            "/job/runs/{app}/{run}/{attempt}/outputs/{i}/key",
+            get(runs::output_key),
+        )
+        // Components and inputs exceed axum's 2 MiB default; the sealed envelope caps requests.
+        .layer(DefaultBodyLimit::max(
+            calimero_sealed::server::MAX_SEALED_BYTES,
+        ))
+        .with_state(Arc::clone(&job));
     let app = tower::Layer::layer(
         &axum::middleware::from_fn_with_state(Arc::clone(&transport), intercept),
         router,
@@ -144,13 +205,28 @@ pub async fn run_job(config: JobConfig) -> eyre::Result<RunningJob> {
         Arc::downgrade(&transport),
         shutdown.clone(),
     )));
+    drop(tokio::spawn(sweep_runs(Arc::clone(&job), shutdown.clone())));
     info!(node = node_id, %addr, "merod serving as a job node");
     Ok(RunningJob {
         addr,
         job_key: public,
+        job,
         shutdown,
         server,
     })
+}
+
+/// Drops runs whose time is up, and their files.
+async fn sweep_runs(job: Arc<JobNode>, shutdown: CancellationToken) {
+    loop {
+        tokio::select! {
+            () = shutdown.cancelled() => return,
+            () = tokio::time::sleep(SWEEP_EVERY) => {}
+        }
+        for run in job.runs.sweep(Instant::now()) {
+            let _ = tokio::fs::remove_dir_all(&run.dir).await;
+        }
+    }
 }
 
 async fn health(State(job): State<Arc<JobNode>>) -> Json<Value> {
@@ -193,6 +269,7 @@ async fn attestation(
         &release.version,
         &job.config.cluster,
         job.config.node_id,
+        Some(&job.config.cluster_identity),
     ));
     let quote =
         quote(job.config.attestation, report).map_err(|e| ApiError::internal(&e.to_string()))?;
@@ -209,6 +286,7 @@ async fn attestation(
         governance: None,
         kms: None,
         job_key: Some(hex::encode(job_key)),
+        cluster_identity: Some(hex::encode(job.config.cluster_identity)),
     };
     Ok(Json(to_value(doc).unwrap_or_default()))
 }
@@ -216,7 +294,7 @@ async fn attestation(
 /// `GET /job/load`: how many runs this node has and how many it takes.
 async fn load(State(job): State<Arc<JobNode>>) -> Json<Value> {
     Json(json!({
-        "running": job.running.load(Ordering::SeqCst),
+        "running": job.runs.active(),
         "capacity": RUNS_PER_JOB_NODE,
     }))
 }
@@ -225,37 +303,26 @@ async fn load(State(job): State<Arc<JobNode>>) -> Json<Value> {
 mod tests {
     use super::*;
 
-    fn config(tee_profile: Option<&str>, allow_mock_peers: bool) -> JobConfig {
-        JobConfig {
-            node_id: 9,
-            listen: ([127, 0, 0, 1], 0).into(),
-            data_dir: PathBuf::new(),
-            cluster: "c".into(),
-            attestation: Mode::Mock,
-            sealed_required: false,
-            release: "r".into(),
-            tee_release: None,
-            tee_profile: tee_profile.map(str::to_owned),
-            peers: BTreeMap::new(),
-            allow_mock_peers,
-            peer_measurements: Measurements::Release {
-                allowed_profiles: vec!["p".into()],
-                min_version: Some("2.4.0".into()),
-            },
-        }
-    }
-
     #[test]
-    fn a_job_node_judges_leaders_by_the_policy_a_cluster_node_judges_peers() {
-        let policy = config(None, true).peer_policy();
-        assert!(policy.allow_mock);
-        assert!(!policy.allow_debug_profiles);
-        assert!(matches!(policy.measurements, Measurements::Release { .. }));
-        assert!(!config(None, false).peer_policy().allow_mock);
-        assert!(
-            config(Some("debug-read-only"), false)
-                .peer_policy()
-                .allow_debug_profiles
-        );
+    fn a_cluster_identity_must_be_a_strong_curve_point() {
+        let real = crate::backup::cluster_identity_key(&[1; 32]);
+        assert!(check_cluster_identity(&real.verifying_key().to_bytes()).is_ok());
+        // The neutral element and a point of order 4 sign for anyone.
+        let mut neutral = [0u8; 32];
+        neutral[0] = 1;
+        for weak in [neutral, [0u8; 32]] {
+            let e = check_cluster_identity(&weak).unwrap_err();
+            assert!(e.to_string().contains("weak"), "{e}");
+        }
+        let off_curve = (2u8..=255)
+            .map(|y| {
+                let mut b = [0u8; 32];
+                b[0] = y;
+                b
+            })
+            .find(|b| ed25519_dalek::VerifyingKey::from_bytes(b).is_err())
+            .unwrap();
+        let e = check_cluster_identity(&off_curve).unwrap_err();
+        assert!(e.to_string().contains("not a point"), "{e}");
     }
 }
