@@ -72,6 +72,7 @@ fn release(
         frontend: None,
         frontend_aliases: d.aliases.iter().map(|a| (*a).to_owned()).collect(),
         outbound: d.outbound.iter().map(|u| (*u).to_owned()).collect(),
+        upgrades: None,
         services: None,
         signature: None,
     };
