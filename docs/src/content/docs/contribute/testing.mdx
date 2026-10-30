@@ -59,6 +59,13 @@ cargo test -p calimero-tee-attestation --features mock-attestation
 cargo test --workspace                            # everything
 ```
 
+The real-process fault tests start `merod` processes on ports 7600-7699 and need release `merod` and `meroctl` (`cargo build --release -p merod -p meroctl`):
+
+```bash
+python3 -I crates/node/tests/fault/rooms_fault.py --iterations 200 --seed 1   # Rooms under leader kills
+python3 -I crates/node/tests/fault/compute_e2e.py                              # compute actions: 3 replicas, 2 job nodes
+```
+
 [cargo-nextest](https://nexte.st/) runs the workspace faster
 (`cargo nextest run --workspace`, then `cargo test --workspace --doc` for the
 doctests it skips).
