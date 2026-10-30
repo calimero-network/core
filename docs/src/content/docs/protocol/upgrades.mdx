@@ -88,7 +88,10 @@ replicas hold different schemas.
 A refused plan, a failing migration or a failing check leaves the app on its
 bundle with its state untouched. The node answers `422 UPGRADE_FAILED` with the
 reason and records it on the instance (`UpgradeFailed` sets the app's `lastUpgrade` with
-`ok: false` and the error), so a client can see why.
+`ok: false` and the error), so a client can see why. The app's members read the last upgrade, with the
+release it went from and to and the kind of actor, in `GET /orgs/{org}/apps`
+or `GET /auth/apps`; the operator reads it without the account or the error
+in `GET /ops/apps` ([Deployment governance](/protocol/governance/#reading-the-approvals)).
 
 ## Organization-wide upgrade runs
 

@@ -65,7 +65,11 @@ upgrade runs. An organization may also be a **publisher**: a package signing key
 bound to it by the key's own signature (`APPROVE_RELEASES` holders send the
 binding), and it then approves releases, and (where the package says so) runs
 upgrades, for every instance of that key's packages
-([Publishers](/protocol/governance/#publishers)). Each metadata value is at most 16 KiB of JSON.
+([Publishers](/protocol/governance/#publishers)). Each metadata value is at most 16 KiB of JSON. Any
+member reads, with `GET /orgs/{org}/apps`, the apps they reach or manage
+there with the release each runs and its last upgrade (who, of which kind),
+the releases that govern each app, and the releases the cluster's nodes run
+([Reading the approvals](/protocol/governance/#reading-the-approvals)).
 
 ## Teams
 

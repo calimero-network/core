@@ -200,6 +200,45 @@ later release adds reads as *awaiting approval* rather than approved. The
 operator additionally bounds which hosts any app may reach and holds the
 secrets requests may carry ([Application execution](/protocol/execution/#outbound-https)).
 
+## Reading the approvals
+
+Before approving, the approver needs to see what is waiting. Read-only reports
+show it, each paged (`?after=ID&limit=N`, at most 100 per page):
+
+- **An organization's members:** `GET /orgs/{org}/apps` (any member; `404`
+  to anyone else, as `GET /orgs/{org}`).
+- **An account, for its own apps:** `GET /auth/apps`. An app's frontend (a
+  session bound to its package) reads only that package's apps, so a
+  developer's app can tell its users that a release waits for their approval.
+- **The operator:** `GET /ops/apps` and `GET /ops/orgs`, without names or
+  accounts ([The operator](/protocol/operator/#what-runs-where)).
+
+Each answers the governance, the scope's approved releases (`null`: none ever
+recorded, which leaves the apps unrestricted), the releases the cluster's
+nodes run with whether each is approved (so "2.3.131 runs here, not approved
+yet" is one read), and per app:
+
+- its release, and its publisher: the package's pinned signer and, once the
+  key is bound, the organization it is bound to (`publisher.org`);
+- `releasesApprovedBy`: whose approvals decide which releases hold it:
+  `operator`, `publisher` (a bound key) or `owner` (the app's organization or
+  account). The app's `approvedReleases` is that party's set, which for a
+  publisher's package is not the scope's own;
+- `upgradesHeldBy`: who upgrades it: `operator`, or what its release's
+  manifest declares, `owner` or `publisher`;
+- newer releases it could upgrade to, its last upgrade with the actor's kind
+  (`owner`, `member`, `operator`), and each replica's release and whether it
+  is approved.
+
+The scope's own `approvedReleases` and `clusterReleases` describe the
+organization's or account's own set: the one that governs its raw uploads,
+its unbound packages and, as a publisher, every instance of its packages.
+
+Approving and upgrading stay the passkey routes above (`POST /auth/releases`,
+`POST /orgs/{org}/releases`, `POST /apps/{app}/upgrade`), on the cluster's own
+origin: a session bound to an app's frontend is refused them (`403`), so an
+app sends its user to the cluster's page to approve.
+
 ## Choosing
 
 Giving the operator a decision is giving it the power to put new code, a new

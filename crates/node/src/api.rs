@@ -6,7 +6,9 @@
 //! - Internal (peers, cluster secret): `/internal/*`.
 //! - Ops (mdma, operator token): `/ops/*`.
 
+use std::collections::BTreeMap;
 use std::convert::Infallible;
+use std::ops::Bound;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,6 +32,7 @@ use crate::app::{Applied, Status};
 use crate::attest::{kms_report_data, quote, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::{CallRequest, Node, ViewRequest};
+use crate::report::{self, Reader, MAX_REPORT_PAGE};
 use crate::system::{SystemCmd, SystemState};
 use crate::types::{
     now_secs, Access, Account, ApiKeyRecord, Caller, Invite, OrgRole, RefreshRecord, TeamJoin,
@@ -4657,6 +4660,210 @@ async fn ops_placement(State(node): State<Arc<Node>>, headers: HeaderMap) -> Api
     ))
 }
 
+/// A page of a report (`ops/apps`, `ops/orgs`, `orgs/{org}/apps`,
+/// `auth/apps`): the entries after the id `after`, at most `limit` of them
+/// (default and most: [`MAX_REPORT_PAGE`]).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PageQuery {
+    #[serde(default)]
+    after: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+impl PageQuery {
+    fn limit(&self) -> Result<usize, ApiError> {
+        match self.limit {
+            None => Ok(MAX_REPORT_PAGE),
+            Some(n) if (1..=MAX_REPORT_PAGE).contains(&n) => Ok(n),
+            Some(_) => Err(ApiError::bad_request(
+                "BAD_LIMIT",
+                &format!("limit is 1 to {MAX_REPORT_PAGE}"),
+            )),
+        }
+    }
+}
+
+/// Every registered node's attested release, attesting a node first if this
+/// one has not yet (each waits at most [`PLACEMENT_RELEASE_WAIT`]).
+async fn attested_releases(node: &Node) -> BTreeMap<u64, Option<String>> {
+    let ids: Vec<u64> = node.sys(|s| s.nodes.keys().copied().collect());
+    let releases = futures_util::future::join_all(
+        ids.iter()
+            .map(|id| tokio::time::timeout(PLACEMENT_RELEASE_WAIT, node.release_of_node(*id))),
+    )
+    .await;
+    ids.into_iter()
+        .zip(releases)
+        .map(|(id, r)| (id, r.ok().flatten()))
+        .collect()
+}
+
+/// What every app runs, for the operator (mdma): per app its id, group,
+/// scope (organization id or `account`, never the account), bundle digest,
+/// package release only where the operator may see it
+/// (`SystemState::sees_release`: the releases it installed), who holds app
+/// upgrades, its last upgrade by actor kind, the releases approved to hold
+/// it, and each replica's release and whether it is approved. Paged.
+async fn ops_apps(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Query(q): Query<PageQuery>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    let limit = q.limit()?;
+    let fresh = node.sys_fresh().await;
+    let releases = attested_releases(&node).await;
+    let (apps, next, governance) = node.sys(|s| {
+        let (page, next) = report::page(s, q.after.as_deref(), limit, |_| true);
+        let apps: Vec<Value> = page
+            .into_iter()
+            .map(|a| report::app_json(s, a, &releases, Reader::Operator))
+            .collect();
+        (apps, next, s.governance())
+    });
+    Ok(Json(json!({
+        "fresh": fresh,
+        "governance": governance,
+        "apps": apps,
+        "next": next,
+    })))
+}
+
+/// Each organization's id and the releases approved to hold its apps, for
+/// the operator. Paged like [`ops_apps`].
+async fn ops_orgs(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Query(q): Query<PageQuery>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    let limit = q.limit()?;
+    let fresh = node.sys_fresh().await;
+    let (orgs, next, governance) = node.sys(|s| {
+        let start = q.after.clone().map_or(Bound::Unbounded, Bound::Excluded);
+        let mut ids: Vec<&String> = s
+            .orgs
+            .range((start, Bound::Unbounded))
+            .map(|(id, _)| id)
+            .take(limit.saturating_add(1))
+            .collect();
+        let next = (ids.len() > limit).then(|| {
+            ids.truncate(limit);
+            ids.last().map(|id| (*id).clone())
+        });
+        let orgs: Vec<Value> = ids
+            .into_iter()
+            .map(|id| {
+                json!({
+                    "org": id,
+                    "approvedReleases": report::approved_releases(s.approved_for(Some(id), "")),
+                })
+            })
+            .collect();
+        (orgs, next.flatten(), s.governance())
+    });
+    Ok(Json(json!({
+        "fresh": fresh,
+        "governance": governance,
+        "orgs": orgs,
+        "next": next,
+    })))
+}
+
+/// The report of one approval scope's apps for an account: an
+/// organization's (`org`) or the account's own outside one (`None`). Lists
+/// the apps the account reaches or may upgrade, within what its credential
+/// is scoped to (a package-bound session: that package's apps; an API key
+/// naming apps: those).
+async fn scope_report(
+    node: &Node,
+    p: &Principal,
+    account: &str,
+    org: Option<&str>,
+    q: &PageQuery,
+    limit: usize,
+) -> Value {
+    // A peer is attested once and its release kept (`Node::release_of_node`),
+    // so this contacts a node only the first time, at most
+    // `PLACEMENT_RELEASE_WAIT` each.
+    let releases = attested_releases(node).await;
+    let bound = p.bound_app();
+    let key_apps = p.api_key.as_ref().and_then(|k| k.apps.as_ref());
+    node.sys(|s| {
+        let keep = |a: &crate::types::AppRecord| {
+            let in_scope = match org {
+                Some(o) => a.org.as_deref() == Some(o),
+                None => a.org.is_none() && a.owner == account,
+            };
+            in_scope
+                && (s.may_reach(a, Some(account)) || s.may_upgrade(a, account))
+                && bound.is_none_or(|pkg| {
+                    s.bundles
+                        .get(&a.bundle)
+                        .and_then(|b| b.package.as_ref())
+                        .is_some_and(|r| r.package == pkg)
+                })
+                && key_apps.is_none_or(|apps| apps.contains(&a.app_id))
+        };
+        let (page, next) = report::page(s, q.after.as_deref(), limit, keep);
+        let apps: Vec<Value> = page
+            .into_iter()
+            .map(|a| report::app_json(s, a, &releases, Reader::Account(account)))
+            .collect();
+        let approved = s.approved_for(org, account);
+        let scope = match org {
+            Some(o) => json!({ "kind": "org", "org": o }),
+            None => json!({ "kind": "account" }),
+        };
+        json!({
+            "scope": scope,
+            "governance": s.governance(),
+            "approvedReleases": report::approved_releases(approved),
+            "clusterReleases": report::cluster_releases(&releases, approved),
+            "apps": apps,
+            "next": next,
+        })
+    })
+}
+
+/// An organization's apps, what they run and who upgraded them, the
+/// releases it approved and those the cluster's nodes run: for any of its
+/// members; `404` to anyone else, as `GET /orgs/{org}`.
+async fn org_apps(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Query(q): Query<PageQuery>,
+) -> ApiResult {
+    let p = signed_in(&node, &headers).await?;
+    let account = p.account()?;
+    let limit = q.limit()?;
+    let member = node.sys(|s| s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some()));
+    if !member {
+        return Err(ApiError::not_found("no such organization"));
+    }
+    Ok(Json(
+        scope_report(&node, &p, &account, Some(&org), &q, limit).await,
+    ))
+}
+
+/// The signed-in account's own apps (outside any organization), whose
+/// release approvals and upgrades are its own: as [`org_apps`].
+async fn account_apps(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Query(q): Query<PageQuery>,
+) -> ApiResult {
+    let p = signed_in(&node, &headers).await?;
+    let account = p.account()?;
+    let limit = q.limit()?;
+    Ok(Json(
+        scope_report(&node, &p, &account, None, &q, limit).await,
+    ))
+}
+
 #[derive(Deserialize)]
 struct NodeBody {
     id: u64,
@@ -5278,6 +5485,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/auth/releases", post(account_release_approval))
         .route("/auth/outbound", post(account_outbound_approval))
         .route("/auth/me", get(me))
+        .route("/auth/apps", get(account_apps))
         .route("/auth/usage", get(usage))
         .route("/auth/aliases", get(alias_list))
         .route("/auth/aliases/{alias}", get(alias_get).put(alias_set).delete(alias_delete))
@@ -5324,6 +5532,7 @@ pub fn router(node: Arc<Node>) -> Router {
             "/orgs/{org}/packages/{package}/upgrade",
             post(publisher_upgrade),
         )
+        .route("/orgs/{org}/apps", get(org_apps))
         .route("/orgs/{org}/outbound", post(org_outbound_approval))
         .route("/orgs/{org}/teams/{team}/members", post(team_set_member))
         .route(
@@ -5350,6 +5559,8 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/status", get(ops_status))
         .route("/ops/metrics", get(ops_metrics))
         .route("/ops/placement", get(ops_placement))
+        .route("/ops/apps", get(ops_apps))
+        .route("/ops/orgs", get(ops_orgs))
         .route("/ops/nodes", post(ops_register_node))
         .route("/ops/nodes/{id}", delete(ops_remove_node))
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))
