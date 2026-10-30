@@ -6,8 +6,8 @@
 //! by the caller (the node keeps them in the system group).
 
 use ring::digest::{digest, SHA256};
-use ring::hmac;
 use ring::rand::SystemRandom;
+use ring::signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519};
 use serde::{Deserialize, Serialize};
 
 pub mod webauthn;
@@ -16,8 +16,8 @@ pub mod webauthn;
 pub mod testing;
 
 pub use webauthn::{
-    claimed_origin, verify_assertion, verify_registration, Assertion, Credential, PublicKey,
-    Registration, RelyingParty,
+    claimed_origin, verify_assertion, verify_consent, verify_registration, Assertion, Credential,
+    PublicKey, Registration, RelyingParty,
 };
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -70,8 +70,6 @@ pub struct SessionClaims {
     pub session: String,
     /// Unix seconds.
     pub expires_at: u64,
-    /// Which K_s version signed it.
-    pub key_version: u32,
     /// The passkey the session was opened with (its credential id): the
     /// device, for whoever asks which one this is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,20 +78,46 @@ pub struct SessionClaims {
     /// that package's apps. `None` for the cluster's own origins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+    /// The node that issued and signed the token.
+    pub node: u64,
+    /// That node's signing key (Ed25519, base64url): the key its attestation
+    /// binds. A verifier that attested another key for the node attests it
+    /// again (the node restarted).
+    pub key: String,
 }
 
-/// Mint a session token: `v1.<claims>.<mac>`, MAC = HMAC-SHA256 under `key`.
+/// What a token's signature covers before its claims.
+const SESSION_DOMAIN: &[u8] = b"calimero.session.v2\0";
+
+/// Mint a session token: `v2.<claims>.<sig>`, signed with the Ed25519 key
+/// whose seed is `seed` (the issuing node's attested key) over
+/// `"calimero.session.v2\0" || claims`. `claims.node` and `claims.key` name
+/// the issuer.
 #[must_use]
-pub fn mint_session(key: &[u8; 32], claims: &SessionClaims) -> String {
+pub fn mint_session(seed: &[u8; 32], claims: &SessionClaims) -> String {
     let body = b64url(&serde_json::to_vec(claims).expect("claims serialize"));
-    let tag = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, key), body.as_bytes());
-    format!("v1.{body}.{}", b64url(tag.as_ref()))
+    // SAFETY: any 32 bytes are an Ed25519 seed.
+    let pair = Ed25519KeyPair::from_seed_unchecked(seed).expect("a 32-byte seed");
+    let signature = pair.sign(&[SESSION_DOMAIN, body.as_bytes()].concat());
+    format!("v2.{body}.{}", b64url(signature.as_ref()))
 }
 
-/// Read a token's claims without checking it, to find which key to check with.
+/// The Ed25519 public key of `seed`, as a token's `key` names it.
+#[must_use]
+pub fn session_public(seed: &[u8; 32]) -> [u8; 32] {
+    // SAFETY: any 32 bytes are an Ed25519 seed, whose public key is 32 bytes.
+    let pair = Ed25519KeyPair::from_seed_unchecked(seed).expect("a 32-byte seed");
+    pair.public_key()
+        .as_ref()
+        .try_into()
+        .expect("an Ed25519 public key is 32 bytes")
+}
+
+/// Read a token's claims without checking it, to find which issuer to check
+/// it with.
 pub fn peek_session(token: &str) -> Result<SessionClaims, Error> {
     let mut parts = token.split('.');
-    let (Some("v1"), Some(body), Some(_), None) =
+    let (Some("v2"), Some(body), Some(_), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
     else {
         return Err(Error::Malformed("session token"));
@@ -101,20 +125,22 @@ pub fn peek_session(token: &str) -> Result<SessionClaims, Error> {
     serde_json::from_slice(&from_b64url(body)?).map_err(|_| Error::Malformed("session claims"))
 }
 
-/// Check a session token's MAC under `key` and its expiry against `now`.
-pub fn verify_session(key: &[u8; 32], token: &str, now: u64) -> Result<SessionClaims, Error> {
+/// Check a token's signature under `public` (the issuer's attested key) and
+/// its expiry against `now`. Which node issued it, and whether that node may
+/// vouch for the account, is the caller's to judge.
+pub fn verify_session(public: &[u8; 32], token: &str, now: u64) -> Result<SessionClaims, Error> {
     let mut parts = token.split('.');
-    let (Some("v1"), Some(body), Some(tag), None) =
+    let (Some("v2"), Some(body), Some(signature), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
     else {
         return Err(Error::Malformed("session token"));
     };
-    hmac::verify(
-        &hmac::Key::new(hmac::HMAC_SHA256, key),
-        body.as_bytes(),
-        &from_b64url(tag)?,
-    )
-    .map_err(|_| Error::BadSignature)?;
+    UnparsedPublicKey::new(&ED25519, public)
+        .verify(
+            &[SESSION_DOMAIN, body.as_bytes()].concat(),
+            &from_b64url(signature)?,
+        )
+        .map_err(|_| Error::BadSignature)?;
     let claims: SessionClaims = serde_json::from_slice(&from_b64url(body)?)
         .map_err(|_| Error::Malformed("session claims"))?;
     if claims.expires_at <= now {
@@ -231,22 +257,66 @@ mod tests {
     }
 
     #[test]
-    fn session_tokens() {
-        let key = random::<32>();
+    fn a_consent_verifies_from_public_data_only() {
+        let mut auth = SoftAuthenticator::new("localhost", "http://localhost:3000");
+        let challenge = random::<32>();
+        let cred = verify_registration(&rp(), &challenge, &auth.register(&challenge)).unwrap();
+        let a = auth.assert(&[8; 32]);
+        assert_eq!(verify_consent(&[8; 32], &cred, &a), Ok(()));
+        // Again: apply leaves the counter to the node that took it.
+        assert_eq!(verify_consent(&[8; 32], &cred, &a), Ok(()));
+        assert_eq!(
+            verify_consent(&[9; 32], &cred, &a),
+            Err(Error::Mismatch("challenge"))
+        );
+        let mut other = SoftAuthenticator::new("localhost", "http://localhost:3000");
+        let c2 = random::<32>();
+        let other_cred = verify_registration(&rp(), &c2, &other.register(&c2)).unwrap();
+        let forged = Assertion {
+            credential_id: cred.id.clone(),
+            ..other.assert(&[8; 32])
+        };
+        assert_eq!(
+            verify_consent(&[8; 32], &cred, &forged),
+            Err(Error::BadSignature)
+        );
+        assert_eq!(
+            verify_consent(&[8; 32], &other_cred, &a),
+            Err(Error::Mismatch("credential"))
+        );
+    }
+
+    #[test]
+    fn node_signed_session_tokens() {
+        let seed = random::<32>();
+        let public = session_public(&seed);
         let claims = SessionClaims {
             account: "acc".into(),
             session: "s1".into(),
             expires_at: 1000,
-            key_version: 1,
-            passkey: None,
+            passkey: Some("cred".into()),
             app: None,
+            node: 3,
+            key: b64url(&public),
         };
-        let token = mint_session(&key, &claims);
-        assert_eq!(verify_session(&key, &token, 999).unwrap(), claims);
+        let token = mint_session(&seed, &claims);
+        assert_eq!(verify_session(&public, &token, 999).unwrap(), claims);
         assert_eq!(peek_session(&token).unwrap(), claims);
-        assert_eq!(verify_session(&key, &token, 1000), Err(Error::Expired));
+        assert_eq!(verify_session(&public, &token, 1000), Err(Error::Expired));
+        let other = session_public(&random::<32>());
+        assert_eq!(verify_session(&other, &token, 1), Err(Error::BadSignature));
+        // Claims swapped under a valid signature do not verify.
+        let mut parts: Vec<&str> = token.split('.').collect();
+        let forged = b64url(
+            &serde_json::to_vec(&SessionClaims {
+                account: "someone-else".into(),
+                ..claims
+            })
+            .unwrap(),
+        );
+        parts[1] = &forged;
         assert_eq!(
-            verify_session(&random::<32>(), &token, 1),
+            verify_session(&public, &parts.join("."), 1),
             Err(Error::BadSignature)
         );
     }

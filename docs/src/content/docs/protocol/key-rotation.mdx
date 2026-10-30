@@ -11,27 +11,26 @@ process that made them. This page lists them all, shortest-lived first.
 
 | Key | Made by | Lives | Replaced |
 | --- | --- | --- | --- |
-| Sealed-session keys | Noise NK handshake, both sides' ephemeral keys | 1 hour at most; 10 minutes idle | The client opens a new session |
+| Sealed-session keys | Noise NK handshake (a node to a peer: IK), both sides' ephemeral keys | 1 hour at most; 10 minutes idle | The client opens a new session |
 | Transport key (X25519) | Each node, in memory, at start | Until the process stops | On restart; clients get `stale_transport_key` and attest again |
-| Receipt key (Ed25519) | Each node, in memory, at start | Until the process stops | On restart; `verify_app_cluster` returns the new keys |
-| Session token | The node that signs someone in, under K_s | 15 minutes | Exchanged with a refresh token |
+| Receipt key (Ed25519) | Each node, on its first start; kept in its data directory wrapped under K_r; signs receipts and the sessions the node issues | As long as the node's data directory | When a node is replaced (a new data directory): `verify_app_cluster` returns the new key, and the node's sessions refresh |
+| Session token | The node that signs someone in, with its receipt key | 15 minutes | Exchanged with a refresh token |
 | Refresh token (`rt_…`) | The same node; only its hash is stored | 30 days, single use | Each refresh returns a new one |
-| Session-signing key K_s | The system leader, random, in the system state | `--session-key-rotation-secs` (6 h default, 30 min minimum), then still verifying | The leader adds version n+1; two versions are kept |
+| Operator key (Ed25519) | The operator (mdma); only the public half is in the system state | The cluster's lifetime | Not rotated yet |
 | API key (`cal_…`) | Generated for an account; only its hash is stored | Up to 1 year (`ttlSecs`) | Revoked by the account, or expires |
 | Passkey | The person's authenticator | Until removed from the account | Added and removed by the account (at least one stays) |
 | Storage key K_r | HKDF of the KMS key and the cluster name | One mero-tee release (each has its own mero-kms) | Replaced with the release; it only wraps K_c |
 | Cluster key K_c | The founding node's K_r; handed to new nodes by attestation | The cluster's lifetime | Not rotated |
 
-## Session keys rotate in the log
+## Sessions are signed by the node that issued them
 
-K_s signs every session token as `v1.<claims>.<HMAC-SHA256>`, and the claims
-name the version that signed them. The system leader's reconcile loop adds
-`AddSessionKey { version: n+1 }` once the current key is older than the
-rotation interval; `apply` refuses a version that is not newer and keeps the
-newest two. New tokens use the newest key, and tokens signed with the previous
-one keep verifying, which is why the interval must outlive a session's 15
-minutes (it is clamped to at least 30). Because K_s is in the system state,
-every node verifies every token without asking anyone.
+Each node signs the sessions it issues with its own receipt key
+([Sessions](/protocol/identities/#sessions)); no session-signing key is shared
+or replicated. Every node attests each peer's receipt key at its registered
+address ahead of time and verifies tokens from that, so a node's sessions
+survive its restart (same key) and outlive it while it is down or frozen.
+They stop verifying when the node is removed, or replaced on a new data
+directory (a new key): clients refresh ([Failover](/protocol/identities/#failover)).
 
 ## Revocation
 

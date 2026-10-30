@@ -36,7 +36,7 @@ The `Authorization: Bearer` header carries one of:
 
 | Credential | Form | Obtained from |
 | --- | --- | --- |
-| Session token | `v1.<claims>.<mac>`, 15 minutes | a passkey ceremony, or `/auth/refresh` |
+| Session token | `v2.<claims>.<signature>` by the issuing node, 15 minutes | a passkey ceremony, or `/auth/refresh` |
 | API key | `cal_…` | `POST /auth/apikeys` |
 | Ops token | the configured token | `--ops-token` / `--ops-token-sha256` |
 
@@ -109,6 +109,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | `POST /auth/logout` | session | End this session | |
 | `POST /auth/logout-all` | account holder | End every session of the account | `logout --all` |
 | `GET /auth/me` | signed in | The account, passkeys, `passkeyId`, organizations, approvals | `whoami`, `account show` |
+| `GET /auth/apps[?after=ID&limit=N]` | signed in | The account's own apps (outside any organization; a package-bound session: its package's): `{ scope, governance, approvedReleases, clusterReleases, apps, next }`, each app's release, newer releases it may upgrade to, last upgrade and replicas' releases ([Reading the approvals](/protocol/governance/#reading-the-approvals)) | |
 | `GET /auth/usage` | signed in | Apps, bundle bytes, API keys and owned orgs against the quotas | `account usage` |
 | `GET /auth/aliases` | signed in | The account's aliases | `context alias list` |
 | `GET/PUT/DELETE /auth/aliases/{alias}` | signed in | Resolve, set (`{ app }`) or remove an alias | `context alias get/add/remove`, `context use` |
@@ -186,6 +187,7 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `DELETE /orgs/{org}/teams/{team}` | session | Delete with the teams and apps below | `group delete` |
 | `POST /orgs/{org}/teams/{team}/members` | session | `{ account, role?, capabilities? }` | `group members add` |
 | `DELETE /orgs/{org}/teams/{team}/members/{account}` | session | Remove, or leave | `group members remove`, `group leave` |
+| `GET /orgs/{org}/apps[?after=ID&limit=N]` | signed in (a member) | As `GET /auth/apps`, for the organization's apps the caller reaches or manages; `404` to a non-member | |
 | `POST /orgs/{org}/releases` | account holder | `{ version, approved, confirm? }` (owner) | `namespace approve-release` |
 | `POST /orgs/{org}/outbound` | account holder | `{ package, prefixes, replace, confirm? }` (owner) | `namespace outbound` |
 | `POST /orgs/{org}/upgrade` | account holder | `{ package, version, team?, cascade?, migrate?, confirm? }`: an upgrade run (owner) | `group upgrade trigger` |
@@ -205,6 +207,8 @@ there.
 | `GET /ops/status` | `{ node, system, governance, groups, nodes, apps, accounts }` | `ops status` |
 | `GET /ops/metrics` | Prometheus text, including per-app usage for billing; see [Observability](/operate/observability/) and [usage metering](/operate/observability/#usage-metering) | `ops metrics` |
 | `GET /ops/placement` | `{ fresh, apps: [{ app, group, replicas }], nodes: [{ id, zone, release, apps }] }`: where every app's replicas are, ids and counts only, read after a read index (`fresh`: this node caught up with the system leader); `release` is the node's attested release, `null` when unknown | `ops placement` |
+| `GET /ops/apps[?after=ID&limit=N]` | `{ fresh, governance, apps: [{ app, group, scope, bundle, package, publisher: { signer, org }, upgradesHeldBy, releasesApprovedBy, lastUpgrade, approvedReleases, replicas: [{ node, release, approved }] }], next }`: what each app runs and which releases may hold it; `package` only for a release the operator installed, the upgrade's actor by kind only ([What runs where](/protocol/operator/#what-runs-where)) | |
+| `GET /ops/orgs[?after=ID&limit=N]` | `{ fresh, governance, orgs: [{ org, approvedReleases }], next }` | |
 | `POST /ops/nodes` | `{ id, addr, zone? }`: register a node; the system leader adds it as a learner, and promotes caught-up learners while fewer than 3 voters are left (straight to 3, never 2) | `ops add-node` |
 | `DELETE /ops/nodes/{id}` | Remove a node no app keeps a replica on (system leader; elsewhere `421 NOT_LEADER`) | `ops remove-node` |
 | `POST /ops/apps/{app}/replicas` | `{ replicas: [id, …] }`: move an app (at least `min(3, nodes in the cluster)` registered nodes, and only nodes on a release the app's owner approved) → `{ status, unchanged }`. The set it already has: `unchanged: true`, nothing written. Another move of the app running: `409 MOVE_IN_PROGRESS`. On a follower: `421 NOT_LEADER`. | `ops move` |

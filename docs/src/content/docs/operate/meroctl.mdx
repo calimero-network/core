@@ -41,6 +41,7 @@ watch`, `dev`) print their own lines.
 | `--min-release VERSION` | `CALIMERO_MIN_RELEASE` | `2.3.109` | The oldest mero-tee release to trust. |
 | `--api-key KEY` | `CALIMERO_API_KEY` | none | Authenticate with this API key instead of a saved session. |
 | `--ops-token TOKEN` | `CALIMERO_OPS_TOKEN` | none | The operator's token, for `ops` commands. |
+| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex): `ops release`, `ops outbound`, `ops upgrade` and `ops upgrade-namespace` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). |
 
 Which node: `--api`, else `--node`, else the default saved node. Which
 credential: `--api-key`, else the session saved for that node's URL (refreshed
@@ -255,8 +256,9 @@ The signed-in account.
 
 The operator's commands. Every one needs `--ops-token` (or
 `CALIMERO_OPS_TOKEN`). The Ops API has no read path into apps' data. Decisions
-the deployment gave the operator are made here; the node answers `403` for the
-others.
+the deployment gave the operator are made here, signed with
+`--operator-key-file` ([Operator](/protocol/operator/#the-credential)); the
+node answers `403` for the others.
 
 | Command | Route | Meaning |
 | --- | --- | --- |

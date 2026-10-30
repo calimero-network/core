@@ -59,58 +59,108 @@ const RETRY: Duration = Duration::from_secs(1);
 
 const MAGIC: &[u8] = b"calimero.cluster-key.v1\n";
 
-/// The key K_c is wrapped with on disk: derived from K_r.
-fn wrap_key(storage_key: &[u8; 32]) -> LessSafeKey {
-    let tag = hmac::sign(
-        &hmac::Key::new(hmac::HMAC_SHA256, storage_key),
-        b"calimero.cluster-key.wrap.v1",
-    );
+/// What the key K_c is wrapped with on disk is derived from K_r with.
+const WRAP_LABEL: &[u8] = b"calimero.cluster-key.wrap.v1";
+
+/// The AES-256-GCM key a secret is wrapped with on disk: HMAC-SHA256(K_r, `label`).
+fn wrap_key(storage_key: &[u8; 32], label: &[u8]) -> LessSafeKey {
+    let tag = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, storage_key), label);
     // SAFETY: an HMAC-SHA256 tag is 32 bytes, an AES-256 key.
     LessSafeKey::new(UnboundKey::new(&AES_256_GCM, tag.as_ref()).expect("a 32-byte key"))
 }
 
-/// `MAGIC || nonce || AES-256-GCM(wrap_key(K_r), K_c)`.
-pub fn wrap(storage_key: &[u8; 32], cluster_key: &[u8; 32]) -> eyre::Result<Vec<u8>> {
+/// Why a wrapped secret did not open ([`open_secret`]).
+#[derive(Debug, thiserror::Error)]
+pub enum Unwrap {
+    #[error("not the expected file")]
+    Format,
+    #[error("the file is truncated")]
+    Truncated,
+    #[error("another storage key wrapped it")]
+    WrongKey,
+    #[error("the file holds no 32-byte key")]
+    Size,
+}
+
+/// `magic || nonce || AES-256-GCM(wrap_key(K_r, label), secret)`, `magic` as
+/// the AAD: a secret this node keeps on disk that only its K_r opens (K_c
+/// here, the signing key in `signing_key`).
+pub fn seal_secret(
+    storage_key: &[u8; 32],
+    label: &[u8],
+    magic: &[u8],
+    secret: &[u8; 32],
+) -> eyre::Result<Vec<u8>> {
     let nonce: [u8; NONCE_LEN] = calimero_identity::random();
-    let mut sealed = cluster_key.to_vec();
-    wrap_key(storage_key)
+    let mut sealed = secret.to_vec();
+    wrap_key(storage_key, label)
         .seal_in_place_append_tag(
             Nonce::assume_unique_for_key(nonce),
-            Aad::from(MAGIC),
+            Aad::from(magic),
             &mut sealed,
         )
-        .map_err(|_| eyre::eyre!("cannot wrap the cluster key"))?;
-    let mut out = MAGIC.to_vec();
+        .map_err(|_| eyre::eyre!("cannot wrap a key"))?;
+    let mut out = magic.to_vec();
     out.extend_from_slice(&nonce);
     out.extend_from_slice(&sealed);
     Ok(out)
 }
 
-/// Open what [`wrap`] wrote with the same K_r.
-pub fn unwrap(storage_key: &[u8; 32], bytes: &[u8]) -> eyre::Result<[u8; 32]> {
-    let Some(rest) = bytes.strip_prefix(MAGIC) else {
-        bail!("not a cluster key file");
-    };
+/// Open what [`seal_secret`] wrote with the same K_r, label and magic.
+pub fn open_secret(
+    storage_key: &[u8; 32],
+    label: &[u8],
+    magic: &[u8],
+    bytes: &[u8],
+) -> Result<[u8; 32], Unwrap> {
+    let rest = bytes.strip_prefix(magic).ok_or(Unwrap::Format)?;
     if rest.len() < NONCE_LEN {
-        bail!("the cluster key file is truncated");
+        return Err(Unwrap::Truncated);
     }
     let (nonce, sealed) = rest.split_at(NONCE_LEN);
     let mut sealed = sealed.to_vec();
-    let nonce = Nonce::try_assume_unique_for_key(nonce)
-        .map_err(|_| eyre::eyre!("the cluster key file is truncated"))?;
-    let plain = wrap_key(storage_key)
-        .open_in_place(nonce, Aad::from(MAGIC), &mut sealed)
-        .map_err(|_| {
-            eyre::eyre!(
-                "this node's storage key does not open its cluster key: the data directory \
-                 was written on another mero-tee release (whose mero-kms gave another key). \
-                 A node does not move to a new release in place; start a new node on it and \
-                 let it join"
-            )
-        })?;
-    plain
-        .try_into()
-        .map_err(|_| eyre::eyre!("the cluster key file holds no 32-byte key"))
+    let nonce = Nonce::try_assume_unique_for_key(nonce).map_err(|_| Unwrap::Truncated)?;
+    let plain = wrap_key(storage_key, label)
+        .open_in_place(nonce, Aad::from(magic), &mut sealed)
+        .map_err(|_| Unwrap::WrongKey)?;
+    plain.try_into().map_err(|_| Unwrap::Size)
+}
+
+/// Write `bytes` to `dir/file`, readable by this user only, all at once
+/// (a temporary file renamed over it).
+pub fn write_secret(dir: &Path, file: &str, bytes: &[u8]) -> eyre::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(file);
+    let tmp = dir.join(format!("{file}.tmp"));
+    std::fs::write(&tmp, bytes).wrap_err_with(|| format!("cannot write {}", tmp.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+    std::fs::File::open(&tmp)?.sync_all()?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
+/// `MAGIC || nonce || AES-256-GCM(wrap_key(K_r), K_c)`.
+pub fn wrap(storage_key: &[u8; 32], cluster_key: &[u8; 32]) -> eyre::Result<Vec<u8>> {
+    seal_secret(storage_key, WRAP_LABEL, MAGIC, cluster_key)
+}
+
+/// Open what [`wrap`] wrote with the same K_r.
+pub fn unwrap(storage_key: &[u8; 32], bytes: &[u8]) -> eyre::Result<[u8; 32]> {
+    open_secret(storage_key, WRAP_LABEL, MAGIC, bytes).map_err(|e| match e {
+        Unwrap::Format => eyre::eyre!("not a cluster key file"),
+        Unwrap::Truncated => eyre::eyre!("the cluster key file is truncated"),
+        Unwrap::Size => eyre::eyre!("the cluster key file holds no 32-byte key"),
+        Unwrap::WrongKey => eyre::eyre!(
+            "this node's storage key does not open its cluster key: the data directory \
+             was written on another mero-tee release (whose mero-kms gave another key). \
+             A node does not move to a new release in place; start a new node on it and \
+             let it join"
+        ),
+    })
 }
 
 /// K_c from `dir`, if this node has one.
@@ -124,19 +174,7 @@ pub fn load(dir: &Path, storage_key: &[u8; 32]) -> eyre::Result<Option<[u8; 32]>
 }
 
 fn save(dir: &Path, storage_key: &[u8; 32], cluster_key: &[u8; 32]) -> eyre::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let path = dir.join(FILE);
-    let tmp = dir.join(format!("{FILE}.tmp"));
-    std::fs::write(&tmp, wrap(storage_key, cluster_key)?)
-        .wrap_err_with(|| format!("cannot write {}", tmp.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-    }
-    std::fs::File::open(&tmp)?.sync_all()?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+    write_secret(dir, FILE, &wrap(storage_key, cluster_key)?)
 }
 
 /// This node's K_c and the listener it serves on: unwrapped from its data
@@ -242,6 +280,7 @@ async fn waiting_attestation(
         mock: w.mode == crate::attest::Mode::Mock,
         receipt_key: None,
         governance: None,
+        kms: None,
     }))
 }
 

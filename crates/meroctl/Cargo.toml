@@ -14,7 +14,9 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true, features = ["derive", "env"] }
+base64.workspace = true
 dirs.workspace = true
+ed25519-dalek.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true
@@ -25,6 +27,9 @@ url.workspace = true
 
 calimero-client = { workspace = true, features = ["testing"] }
 calimero-identity = { workspace = true, features = ["testing"] }
+
+[build-dependencies]
+calimero-build-utils.workspace = true
 
 [dev-dependencies]
 ed25519-dalek.workspace = true

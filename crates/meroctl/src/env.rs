@@ -154,6 +154,10 @@ pub struct Env {
     pub client: Client,
     pub api_key: Option<String>,
     pub ops_token: Option<String>,
+    /// The operator's Ed25519 key (32-byte seed, hex, in a file), for the
+    /// decisions `ops` commands make where governance gives them to the
+    /// operator.
+    pub operator_key_file: Option<std::path::PathBuf>,
 }
 
 impl Env {
@@ -172,6 +176,7 @@ impl Env {
             client,
             api_key,
             ops_token,
+            operator_key_file: None,
         })
     }
 

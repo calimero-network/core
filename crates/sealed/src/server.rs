@@ -46,6 +46,11 @@
 //!             0x02 || transport_pk || Noise message 1 (e, es; empty payload)
 //!   response  0x02 || Noise message 2 (e, ee; payload = session_id(16) || lifetime secs, u32 BE)
 //!   keys      (req key, resp key) = Split()
+//! identified  version 0x03: Noise_IK_25519_AESGCM_SHA256, same prologue, a node
+//!             calling a peer with its own transport key as its static key
+//!   request   0x03 || transport_pk || Noise message 1 (e, es, s, ss; empty payload)
+//!   response  0x03 || Noise message 2 (e, ee, se; payload as above)
+//!             every request of the session carries the caller's key (`PeerKey`)
 //!
 //! exchange    POST /sealed/v2
 //!   header    0x02 || session_id(16) || request_id (u64 BE; from 1, each used once)
@@ -88,8 +93,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use zeroize::{Zeroize, Zeroizing};
 
+use crate::identity::{PeerKey, StaticKey, IDENTIFIED_VERSION};
 pub use crate::session::SESSION_LIFETIME;
-use crate::session::{SessionId, SessionKeys, Sessions, MESSAGE_1_LEN, SESSION_ID_LEN};
+use crate::session::{
+    SessionId, SessionKeys, Sessions, IDENTIFIED_MESSAGE_1_LEN, MESSAGE_1_LEN, SESSION_ID_LEN,
+};
 
 /// Where a session is opened, under the node's mount (see [`SealedOptions`]).
 pub const HANDSHAKE_PATH: &str = "/sealed/v2/handshake";
@@ -101,6 +109,8 @@ pub const SEALED_CONTENT_TYPE: &str = "application/vnd.calimero.sealed";
 const VERSION: u8 = 2;
 /// `version || transport_pk || Noise message 1`.
 const HANDSHAKE_LEN: usize = 1 + 32 + MESSAGE_1_LEN;
+/// The same for an identified session (Noise IK, version 3).
+const IDENTIFIED_HANDSHAKE_LEN: usize = 1 + 32 + IDENTIFIED_MESSAGE_1_LEN;
 /// `version || session_id || request_id`, a request's AAD and its frames'.
 const HEADER_LEN: usize = 1 + SESSION_ID_LEN + 8;
 const TAG_LEN: usize = 16;
@@ -213,6 +223,13 @@ impl SealedTransport {
     #[must_use]
     pub const fn public_key(&self) -> [u8; 32] {
         self.public
+    }
+
+    /// This transport key as the static key this process identifies itself
+    /// with when it calls a peer ([`crate::client::SealedTransport::identified_as`]).
+    #[must_use]
+    pub fn static_key(&self) -> StaticKey {
+        StaticKey::from_secret(&self.secret)
     }
 
     fn sessions(&self) -> std::sync::MutexGuard<'_, Sessions> {
@@ -393,14 +410,22 @@ async fn handshake(transport: &SealedTransport, request: Request) -> Result<Resp
             message: "too many sealed sessions are being opened; retry shortly",
         });
     }
-    let body = to_bytes(request.into_body(), HANDSHAKE_LEN)
+    let body = to_bytes(request.into_body(), IDENTIFIED_HANDSHAKE_LEN)
         .await
         .map_err(|_| malformed())?;
-    if body.len() != HANDSHAKE_LEN {
+    let (&[version], rest) = body.split_first_chunk::<1>().ok_or_else(malformed)?;
+    let identified = version == IDENTIFIED_VERSION;
+    if !identified {
+        check_version(version)?;
+    }
+    let expected = if identified {
+        IDENTIFIED_HANDSHAKE_LEN
+    } else {
+        HANDSHAKE_LEN
+    };
+    if body.len() != expected {
         return Err(malformed());
     }
-    let (&[version], rest) = body.split_first_chunk::<1>().ok_or_else(malformed)?;
-    check_version(version)?;
     let (transport_public, message_1) = rest.split_first_chunk::<32>().ok_or_else(malformed)?;
     if *transport_public != transport.public {
         // A restart replaced the key. The client has to attest again: taking a
@@ -415,16 +440,23 @@ async fn handshake(transport: &SealedTransport, request: Request) -> Result<Resp
 
     let mut session_id: SessionId = [0; SESSION_ID_LEN];
     UnwrapErr(SysRng).fill_bytes(&mut session_id);
-    let (message_2, keys) = crate::session::respond(&transport.secret, message_1, &session_id)?;
+    let (message_2, keys, peer) = if identified {
+        let (message_2, keys, peer) =
+            crate::session::respond_identified(&transport.secret, message_1, &session_id)?;
+        (message_2, keys, Some(peer))
+    } else {
+        let (message_2, keys) = crate::session::respond(&transport.secret, message_1, &session_id)?;
+        (message_2, keys, None)
+    };
     {
         let mut sessions = transport.sessions();
-        sessions.insert(session_id, keys, Instant::now());
+        sessions.insert(session_id, keys, peer, Instant::now());
         transport.record_session_count(&sessions);
     }
     let _previous = transport.metrics.handshakes.fetch_add(1, Ordering::Relaxed);
 
     let mut sealed = Vec::with_capacity(1 + message_2.len());
-    sealed.push(VERSION);
+    sealed.push(version);
     sealed.extend_from_slice(&message_2);
     Ok(sealed_response(Body::from(sealed)))
 }
@@ -441,7 +473,7 @@ async fn open_and_dispatch(
     let mut sealed = Zeroizing::new(sealed);
 
     let envelope = RequestEnvelope::parse(&sealed)?;
-    let (keys, expires) = live_session(transport, &envelope.session_id)?;
+    let (keys, expires, peer) = live_session(transport, &envelope.session_id)?;
     let plaintext = open_request(&keys, &envelope, &mut sealed)?;
     transport
         .sessions()
@@ -470,6 +502,16 @@ async fn open_and_dispatch(
     // Whatever the server's own layers put on the outer request (connection
     // info, above all) belongs to the inner one: it is the same request.
     *inner.extensions_mut() = outer.extensions;
+    // Which node opened the session, when it identified itself; set last, so
+    // nothing upstream can have chosen it.
+    match peer {
+        Some(key) => {
+            let _previous = inner.extensions_mut().insert(PeerKey(key));
+        }
+        None => {
+            let _previous = inner.extensions_mut().remove::<PeerKey>();
+        }
+    }
     // The outer hop's Host, X-Forwarded-Host and Origin are set by whoever
     // relays the envelope, which is not who sealed it: copying them in would let
     // a relay choose what the node reads as the request's origin (Xil's review,
@@ -483,7 +525,7 @@ async fn open_and_dispatch(
 fn live_session(
     transport: &SealedTransport,
     session_id: &SessionId,
-) -> Result<(SessionKeys, Instant), Refusal> {
+) -> Result<(SessionKeys, Instant, Option<[u8; 32]>), Refusal> {
     let mut sessions = transport.sessions();
     let found = sessions.keys(session_id, Instant::now());
     transport.record_session_count(&sessions);

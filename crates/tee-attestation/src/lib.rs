@@ -56,6 +56,7 @@ mod error;
 mod evidence;
 mod generate;
 mod info;
+mod kms_evidence;
 mod policy;
 pub mod quote;
 mod verify;
@@ -71,6 +72,7 @@ pub use generate::{
 #[cfg(feature = "mock-attestation")]
 pub use generate::{generate_mock_attestation, is_mock_quote};
 pub use info::{get_tee_info, TeeInfo};
+pub use kms_evidence::KmsEvidence;
 pub use policy::{
     MeasurementRegister, PolicyRejection, VerifierPolicy, DEFAULT_ALLOWED_TCB_STATUS,
     TCB_STATUS_MOCK, TCB_STATUS_REVOKED,

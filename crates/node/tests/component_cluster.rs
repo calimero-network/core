@@ -573,39 +573,6 @@ async fn quotas_are_enforced_by_the_log() {
     assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn session_keys_rotate_and_old_sessions_stay_valid() {
-    let c = Cluster::start_with(3, |cfg| cfg.session_key_rotation_secs = 3).await;
-    let (alice, pk) = signed_up(&c, 0, "alice").await;
-    let version = || {
-        c.nodes[0]
-            .as_ref()
-            .unwrap()
-            .node
-            .sys(|s| s.session_keys.last().map(|k| k.version))
-            .unwrap()
-    };
-    let before = version();
-    // Wait for exactly one rotation (keys are kept: current and previous).
-    let mut after = before;
-    for _ in 0..80 {
-        after = version();
-        if after > before {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(after > before, "key did not rotate ({before} -> {after})");
-    // The session minted under the previous key still works...
-    let _me = alice.me().await.unwrap();
-    // ...and a new sign-in is signed with the current key.
-    let mut pk = pk;
-    let fresh = c.client(2);
-    let s = fresh.sign_in(&mut pk).await.unwrap();
-    let claims = calimero_identity::peek_session(&s.session_token).unwrap();
-    assert_eq!(claims.key_version, after);
-}
-
 async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value {
     cl.view(app, method, args, Consistency::Strong)
         .await
@@ -2323,7 +2290,15 @@ async fn the_leader_checks_upgrade_authority_again() {
                 .await
                 .unwrap_err();
             assert_eq!(e.code(), Some("FORBIDDEN"), "{who}, route, node {i}: {e}");
-            // Past the front check, straight into the system log: refused at apply.
+            // Past the front check, straight into the system log, with the
+            // actor's own valid consent: refused at apply, for authority.
+            let statement =
+                calimero_node::proof::Statement::new(app, "__upgrade", &json!({ "bundle": v2 }));
+            let consent = serde_json::to_value(calimero_node::proof::Consent {
+                assertion: pk.assert(&statement.challenge().unwrap()),
+                statement,
+            })
+            .unwrap();
             let e = c.nodes[i]
                 .as_ref()
                 .unwrap()
@@ -2335,7 +2310,7 @@ async fn the_leader_checks_upgrade_authority_again() {
                     actor: id.clone(),
                     at: calimero_node::types::now_secs(),
                     run: None,
-                    consent: json!({}),
+                    consent,
                 })
                 .await
                 .unwrap_err();

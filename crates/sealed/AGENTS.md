@@ -8,6 +8,15 @@ The sealed transport (wire format v2) between clients and the node.
 - `client`: `SealedTransport` that seals `reqwest::Request`s; the key comes from
   `with_key` or an `Attest` implementation that verifies the node's quote.
 - The wire format is byte-compatible with mero-js `src/sealed/`; change both or neither.
+- **Identified sessions** (handshake version 3, `Noise_IK_25519_AESGCM_SHA256`,
+  `identity.rs`): a node calling a peer proves its own transport key
+  (`client::SealedTransport::identified_as`, `server::SealedTransport::static_key`);
+  the server puts the proven key on every request of that session as a
+  `PeerKey` extension, set last so nothing upstream chooses it, and removes
+  one on an anonymous session. A low-order static key is refused. No fallback
+  to NK. Peers only: clients stay on NK, so mero-js is unaffected. Tests:
+  `an_identified_session_names_its_caller`,
+  `an_identified_handshake_with_another_nodes_key_is_refused`.
 - A refused envelope (`Refusal`: too large, unknown session, busy) is answered in
   the clear, after the rest of its body is read and dropped (`discard`, up to
   `MAX_DISCARDED_BYTES`): a server that answers and closes with the body unread

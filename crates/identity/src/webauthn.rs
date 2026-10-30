@@ -302,3 +302,45 @@ pub fn verify_assertion(
         .verify(&message, &b64(&assertion.signature)?)?;
     Ok(auth.sign_count)
 }
+
+/// What a replica checks of a logged consent, from the system state alone:
+/// `assertion` is `credential`'s signature over `challenge`, made with the
+/// user present and verified. Every node reaches the same answer, so it can
+/// run where the command applies.
+///
+/// The origin, the RP id and the signature counter are left to the node that
+/// took the assertion ([`verify_assertion`]): origins and the RP id are each
+/// node's configuration, not replicated state; the credential is bound to its
+/// RP id by the authenticator; and a replayed consent is refused by the
+/// command, whose challenge names the state it changes.
+pub fn verify_consent(
+    challenge: &[u8],
+    credential: &Credential,
+    assertion: &Assertion,
+) -> Result<(), Error> {
+    if assertion.credential_id != credential.id {
+        return Err(Error::Mismatch("credential"));
+    }
+    let client_data = b64(&assertion.client_data_json)?;
+    let cd: ClientData =
+        serde_json::from_slice(&client_data).map_err(|_| Error::Malformed("client data"))?;
+    if cd.kind != "webauthn.get" {
+        return Err(Error::Mismatch("ceremony type"));
+    }
+    if b64(&cd.challenge)? != challenge {
+        return Err(Error::Mismatch("challenge"));
+    }
+    let auth_bytes = b64(&assertion.authenticator_data)?;
+    let auth = parse_auth_data(&auth_bytes)?;
+    if auth.flags & FLAG_UP == 0 {
+        return Err(Error::Mismatch("user presence"));
+    }
+    if auth.flags & FLAG_UV == 0 {
+        return Err(Error::Mismatch("user verification"));
+    }
+    let mut message = auth_bytes;
+    message.extend_from_slice(digest(&SHA256, &client_data).as_ref());
+    credential
+        .public_key
+        .verify(&message, &b64(&assertion.signature)?)
+}

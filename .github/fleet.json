@@ -116,8 +116,6 @@
 
   "_excluded": {
     "kv-store": "Its contract lives in apps/wasmer-fixtures/kv-store and is bumped there. The standalone repo is still public and unarchived but pins `branch = \"master\"`, which this script deliberately refuses to rewrite — a branch pin is not a version and turning one into a tag is a decision, not a bump.",
-    "mero-chat": "Abandoned 2026-08-19, repo archived 2026-09-02. Not migrated: it is on rc.20 / mero-js 7 / mero-react 4 and nothing brings it forward.",
-    "auth-frontend": "Pre-migration, mero-ui 0.3.x.",
-    "admin-dashboard": "Declares none of these packages."
+    "mero-chat": "Abandoned 2026-08-19, repo archived 2026-09-02. Not migrated: it is on rc.20 / mero-js 7 / mero-react 4 and nothing brings it forward."
   }
 }

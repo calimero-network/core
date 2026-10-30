@@ -15,6 +15,12 @@ matching allowed profile; then `policy_valid` (TCB status, debug TD, app-hash bi
 mero-js `src/cloud-v2/attestation.ts` implements the same check; change both or neither.
 The quote step itself (`verify_quote`, then `judge` for a real quote's registers) is
 shared by `verify`, `verify_receipt_key` and `attest::release::verify_release`.
+A document that carries `kms` (`KmsKeys`: what the node verified of the KMS its storage
+and disk keys came from, asked with `purpose=kms`) passes `verify` only if its report
+data is `kms_report_data`: `nonce || SHA-256("calimero.tee-attest.kms-evidence.v1" |
+transport_binding | SHA-256(JCS(kms)))`. Opt in: a document without `kms` is checked
+exactly as before. mero-js does not ask for it yet; the attestation verifier
+(mero-tee) recomputes it, pinned by `the_kms_binding_matches_the_published_vector`.
 
 Release attestations (`attest/release.rs`, made by `merod attest`): a quote a node makes
 before it holds any key, report data
@@ -29,6 +35,21 @@ Errors: `Error::Api` is the node's answer (`{ error, message, details }`);
 `Error::Transport` is not reaching, attesting or understanding it. One envelope
 refusal is an answer too: a sealed request past `MAX_SEALED_BYTES` comes back
 `413` in the clear, and `sealed_error` makes it `Error::Api { 413, TOO_LARGE }`.
+`421 WRONG_NODE` (the node runs a release the account's owners have not
+approved: it neither issues nor takes their sessions) is `Error::WrongNode`: send
+the request to another node.
+
+Sessions refresh on their own: a `401` to a request sent with a session token this
+client holds the refresh token of is refreshed once (`Client::refresh`, which any
+node takes) and the request sent once more (`send_payload`; bodies are kept as a
+`Payload` for that). Requests that get a `401` together refresh once
+(`refreshing`): a refresh token presented twice ends the session. A `401` to
+`auth/refresh` itself, an API key, or a session held without its refresh token is
+returned as it is. Why a `401` can need it: the node that issued the session was
+removed, or replaced on a new data directory (a new signing key); a node's
+restart keeps its key, and a stopped node's sessions verify on the others
+(node `AGENTS.md`, "Sessions are node-signed"). Test:
+`a_removed_nodes_sessions_are_refused` (node `tests/cluster.rs`).
 
 Calls are retried with the same key (D70): `Client::call` always sends an
 idempotency key (the caller's, else a new `node:c-…` key, which the node keeps

@@ -28,6 +28,22 @@ pub enum RpcRequest {
     Snapshot(InstallSnapshotRequest<TypeConfig>),
 }
 
+impl RpcRequest {
+    /// The node the request says it comes from: the leader of an append or a
+    /// snapshot, the candidate of a vote. openraft takes it on trust; a node
+    /// that knows who is calling checks it against that (and against the
+    /// group's members) before handing the request to the engine.
+    #[must_use]
+    pub fn sender(&self) -> Option<NodeId> {
+        let vote = match self {
+            Self::Append(r) => &r.vote,
+            Self::Vote(r) => &r.vote,
+            Self::Snapshot(r) => &r.vote,
+        };
+        vote.leader_id().voted_for()
+    }
+}
+
 /// The answer to an [`RpcRequest`].
 #[derive(Debug, Serialize, Deserialize)]
 pub enum RpcResponse {
