@@ -58,6 +58,7 @@ events — must stay under **1 MiB**.
 | Open passkey ceremonies per node | 10 000, each 5 minutes | `MAX_PENDING_CHALLENGES` |
 | Sealed sessions per node | 16 384; 1 h lifetime, 10 min idle | `MAX_SESSIONS`, `SESSION_LIFETIME` |
 | Forward to an app's leader | 5 s, then retry | `FORWARD_TIMEOUT` |
+| Compute runs, files and job nodes | See [Compute actions](/protocol/compute-actions/#limits) | `MAX_COMPUTE_WALL_SECS`, `MAX_COMPUTE_MEMORY_MIB`, `MAX_COMPUTE_FUEL` |
 | Replicas per app | `--replicas`, 3 by default; moves keep at least 3 | |
 
 A body past a limit is answered `413`, error code `TOO_LARGE`, with the limit
@@ -100,6 +101,9 @@ Per account, set by the operator (`POST /ops/quotas`), checked at apply
 | API keys | 50 |
 | Organizations owned | 20 |
 | Accounts on the cluster | 100 000 |
+| Stored file bytes per organization (`maxFileBytesPerOrg`) | 50 GB |
+| Concurrent compute runs per organization (`maxConcurrentRunsPerOrg`) | 4 |
+| Reserved compute fuel per organization (`computeFuelPerOrg`) | 10 times `MAX_COMPUTE_FUEL` |
 
 ## Roles and capabilities
 

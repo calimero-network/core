@@ -13,7 +13,7 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 
 ## The node
 
-- [node](node/AGENTS.md) (`calimero-node`) - the node itself: system group, app groups, routing, the HTTP and Ops API, packages, follow-ups, blobs, presence, search, app frontends, backups, storage key. Its `AGENTS.md` is the node's mental model.
+- [node](node/AGENTS.md) (`calimero-node`) - the node itself: system group, app groups, routing, the HTTP and Ops API, packages, follow-ups, blobs, files and compute runs, the job node, presence, search, app frontends, backups, storage key. Its `AGENTS.md` is the node's mental model.
 - [log](log/AGENTS.md) (`calimero-log`) - multi-group Raft (openraft) over one sealed RocksDB per node; snapshots; the `log.redb` migration.
 - [sealed](sealed/AGENTS.md) (`calimero-sealed`) - the sealed HTTP transport (wire format v2), server middleware and client; byte-compatible with mero-js.
 - [identity](identity/AGENTS.md) (`calimero-identity`) - WebAuthn passkeys, session tokens, API keys, confirm challenges.

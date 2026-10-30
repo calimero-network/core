@@ -170,6 +170,17 @@ period.
 **Upgrade run** — An organization-wide upgrade of every app running a package.
 [Cascade upgrade]
 
+**Compute action** - An app method that runs outside the log on a job node, with no network, over sealed input files, writing sealed output files. See
+[Compute actions](/protocol/compute-actions/).
+
+**Compute run** - One execution of a compute action, from its start to its final entry, in one or more attempts. Its state is queued, running, done, failed or cancelled.
+
+**Job node** - A node with `role: job` that runs compute runs. It is never a Raft member and holds no cluster key; it attests only for `purpose=jobs`.
+
+**Result method** - The `#[app::compute_result]` method the node runs as a logged call, with the system as caller, when a compute run ends. It is the run's only way into the app's state.
+
+**File (component)** - Sealed, content-addressed bytes of a component app, with a mark in its state (size, hash, wrapped key), stored on its replicas and read only by its own code.
+
 **Migration** — The target bundle's `#[app::migrate]` export, run once on the
 leader, checked by `__calimero_migration_check`. See
 [Upgrades & migrations](/protocol/upgrades/).
