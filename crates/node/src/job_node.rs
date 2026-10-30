@@ -8,6 +8,8 @@ mod runs;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+#[cfg(feature = "testing")]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -37,7 +39,9 @@ const STOP_WAIT: Duration = Duration::from_secs(2); // How long [`RunningJob::st
 
 const SWEEP_EVERY: Duration = Duration::from_secs(1); // How often finished and abandoned runs are looked for
 
-pub use runs::{CANCEL_WAIT, MAX_ASSIGNMENT_BYTES, MAX_RUN_INPUTS, TOKEN_HEADER};
+pub use runs::{
+    CANCEL_WAIT, MAX_ASSIGNMENT_BYTES, MAX_RUN_INPUTS, NEED_BUNDLE, TOKEN_HEADER, UNKNOWN_RUN,
+};
 
 /// What a job node is started with: nothing of a cluster's storage or keys.
 #[derive(Clone, Debug)]
@@ -78,6 +82,15 @@ struct JobNode {
     runs: runs::Runs,
     scratch: PathBuf,
     dirs: AtomicU64,
+    /// While set, every run answers `running`, as a stuck node would (feature `testing`).
+    #[cfg(feature = "testing")]
+    stuck: AtomicBool,
+    /// While set, run status and cancel never answer, as a frozen node (feature `testing`).
+    #[cfg(feature = "testing")]
+    frozen: AtomicBool,
+    /// While set, every output route answers an error (feature `testing`).
+    #[cfg(feature = "testing")]
+    outputs_fail: AtomicBool,
 }
 
 impl JobNode {
@@ -111,6 +124,34 @@ impl RunningJob {
         if tokio::time::timeout(STOP_WAIT, &mut server).await.is_err() {
             server.abort();
         }
+    }
+
+    /// Makes every run's status and cancel answer `running` from now on. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn answer_running_always(&self) {
+        self.job.stuck.store(true, Ordering::Relaxed);
+    }
+
+    /// Makes run status and cancel requests hang from now on. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn freeze(&self) {
+        self.job.frozen.store(true, Ordering::Relaxed);
+    }
+
+    /// Makes every output and key route answer an error from now on. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn fail_outputs(&self) {
+        self.job.outputs_fail.store(true, Ordering::Relaxed);
+    }
+
+    /// Signs `report` as this node's job key would for the assignment with `digest`. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn sign_report(
+        &self,
+        digest: &[u8; 32],
+        report: &crate::job_wire::Report,
+    ) -> eyre::Result<String> {
+        crate::job_wire::sign_report(&self.job.job_key, digest, report)
     }
 }
 
@@ -152,6 +193,12 @@ pub async fn run_job(config: JobConfig) -> eyre::Result<RunningJob> {
         runs: runs::Runs::default(),
         scratch,
         dirs: AtomicU64::new(0),
+        #[cfg(feature = "testing")]
+        stuck: AtomicBool::new(false),
+        #[cfg(feature = "testing")]
+        frozen: AtomicBool::new(false),
+        #[cfg(feature = "testing")]
+        outputs_fail: AtomicBool::new(false),
     });
     let router = Router::new()
         .route("/health", get(health))
