@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::ops::{Bound, RangeBounds};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use openraft::storage::{LogFlushed, RaftLogStorage};
@@ -311,6 +311,17 @@ pub struct Db {
     /// The directory it was opened in, which names it to [`crate::testing`].
     #[cfg(feature = "testing")]
     pub(crate) dir: PathBuf,
+    /// Last field, so it is set after RocksDB has closed and released its lock.
+    pub(crate) closed: Closed,
+}
+
+/// Set when dropped; see [`Db::closed`].
+pub(crate) struct Closed(pub(crate) Arc<AtomicBool>);
+
+impl Drop for Closed {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
 }
 
 /// Groups whose applies are held back, by the directory their node opened
@@ -318,6 +329,25 @@ pub struct Db {
 #[cfg(feature = "testing")]
 pub(crate) static HELD: std::sync::Mutex<Vec<(PathBuf, GroupId)>> =
     std::sync::Mutex::new(Vec::new());
+
+/// How long closing a store waits first, by the directory it was opened in
+/// (feature `testing`; see [`crate::testing::slow_close`]).
+#[cfg(feature = "testing")]
+pub(crate) static CLOSE_DELAYS: std::sync::Mutex<Vec<(PathBuf, std::time::Duration)>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(feature = "testing")]
+impl Drop for Db {
+    fn drop(&mut self) {
+        let delay = CLOSE_DELAYS
+            .lock()
+            .ok()
+            .and_then(|d| d.iter().find(|(dir, _)| *dir == self.dir).map(|(_, t)| *t));
+        if let Some(delay) = delay {
+            std::thread::sleep(delay);
+        }
+    }
+}
 
 impl Db {
     /// Open (or create) the database under `dir`: the store in `dir/store`,
@@ -357,6 +387,7 @@ impl Db {
             losing: std::sync::RwLock::default(),
             #[cfg(feature = "testing")]
             dir: dir.to_owned(),
+            closed: Closed(Arc::default()),
         }))
     }
 
