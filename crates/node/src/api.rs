@@ -3100,6 +3100,7 @@ async fn ops_org_upgrade(
 ) -> ApiResult {
     operator(&node, &headers)?;
     operator_holds(&node, |g| g.app_upgrades, "app upgrades")?;
+    node.sys_fresh().await;
     if !node.sys(|s| s.orgs.contains_key(&org)) {
         return Err(ApiError::not_found("no such organization"));
     }
@@ -5398,6 +5399,10 @@ async fn ops_upgrade(
 ) -> ApiResult {
     operator(&node, &headers)?;
     operator_holds(&node, |g| g.app_upgrades, "app upgrades")?;
+    // The release the operator installed a moment ago may have committed on
+    // the system leader but not applied here yet: read fresh, or it is
+    // answered `NOT_INSTALLED`.
+    node.sys_fresh().await;
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let current = node.release_of(&app.bundle);
