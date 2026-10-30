@@ -16,7 +16,7 @@ lists what that rests on.
 | --- | --- | --- |
 | Intel TDX and its attestation (DCAP collateral) | That a quote comes from a genuine TD with the measured image, and that a debug TD is not passed off as one | Every client and peer, on every new channel |
 | The signed mero-tee release | That the measurements in `published-mrtds.json` are the image Calimero built and signed (Sigstore) | `Measurements::Release` in the client and peer policy |
-| mero-kms | Releasing the storage key only to an attested TD | The KMS client verifies the KMS against the signed release too |
+| mero-kms | Releasing the storage key only to an attested TD | The KMS client verifies the KMS against the signed release too, and the node reports the KMS quote it accepted, bound into its own quote (`purpose=kms`, [Attestation](/protocol/tee-attestation/#which-kms-a-node-took-its-keys-from)), so anyone verifying the node can check which KMS that was |
 | The `merod` build in that image | Everything in this reference | Its measurement is part of the image |
 | The person's authenticator | Their passkey | WebAuthn, with user verification for step-ups |
 

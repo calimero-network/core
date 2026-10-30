@@ -4,6 +4,12 @@
 //!
 //! Report data layout, as today's node uses it:
 //! `report_data = nonce(32) || SHA-256("calimero.tee-attest.transport-key.v1" | app_hash | transport_key)`.
+//!
+//! Asked with `purpose=kms`, a node that took its keys from mero-kms also
+//! reports what it verified of that KMS ([`KmsKeys`]) and binds it in:
+//! `report_data = nonce(32) || SHA-256("calimero.tee-attest.kms-evidence.v1" |
+//! transport_binding | SHA-256(JCS(kms)))`, where `transport_binding` is the
+//! second half above. Not asking keeps the layout above, byte for byte.
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -48,6 +54,76 @@ pub struct AttestationDoc {
     /// asked for the receipt key: the quote binds it with the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub governance: Option<Governance>,
+    /// What the node verified of the KMS it took its keys from, when asked
+    /// (`purpose=kms`) and it has a record: the quote binds it with the
+    /// transport key ([`kms_report_data`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kms: Option<KmsKeys>,
+}
+
+/// What a node verified of the mero-kms replicas it took its keys from, one
+/// record per key: the storage key merod fetched itself, and the data disk's
+/// key the image's boot script fetched (`merod kms disk-key`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KmsKeys {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<calimero_tee_attestation::KmsEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk: Option<calimero_tee_attestation::KmsEvidence>,
+}
+
+impl KmsKeys {
+    /// No key has a record (a development node, or one whose KMS was pinned by
+    /// config rather than a signed release).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.storage.is_none() && self.disk.is_none()
+    }
+
+    /// SHA-256 of the records' canonical JSON (RFC 8785): what the quote
+    /// binds, and what a verifier in another language recomputes from the
+    /// JSON it received.
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        use sha2::Digest;
+        let canonical = serde_json_canonicalizer::to_vec(self).unwrap_or_default();
+        sha2::Sha256::digest(&canonical).into()
+    }
+}
+
+/// Domain separator for [`kms_evidence_binding`].
+pub const ATTEST_KMS_BINDING_DOMAIN: &[u8] = b"calimero.tee-attest.kms-evidence.v1";
+
+/// The second half of a `purpose=kms` quote's report data: SHA-256 over the
+/// domain, the transport binding the quote would carry otherwise (`inner`),
+/// and [`KmsKeys::digest`]. Wrapping the transport binding keeps the one quote
+/// good for both: the key a client seals to, and the KMS the node accepted.
+#[must_use]
+pub fn kms_evidence_binding(inner: &[u8; 32], kms: &KmsKeys) -> [u8; 32] {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(ATTEST_KMS_BINDING_DOMAIN);
+    h.update(inner);
+    h.update(kms.digest());
+    h.finalize().into()
+}
+
+/// The report data of a `purpose=kms` attestation.
+#[must_use]
+pub fn kms_report_data(
+    nonce: &[u8; 32],
+    app_hash: &[u8; 32],
+    transport_key: &[u8; 32],
+    kms: &KmsKeys,
+) -> [u8; 64] {
+    let mut out = [0; 64];
+    out[..32].copy_from_slice(nonce);
+    out[32..].copy_from_slice(&kms_evidence_binding(
+        &attest_transport_binding(app_hash, transport_key),
+        kms,
+    ));
+    out
 }
 
 /// Who holds one decision over a cluster's apps. Chosen when the cluster is
@@ -296,6 +372,10 @@ fn hex32(s: &str) -> eyre::Result<[u8; 32]> {
 }
 
 /// Check `doc` against `nonce` and `policy`; returns the attested transport key.
+///
+/// A document that reports the KMS the node verified (`kms`) passes only if
+/// its quote binds that record too, so once this returns the record is as
+/// trustworthy as the node's own code.
 pub async fn verify(
     doc: &AttestationDoc,
     nonce: &[u8; 32],
@@ -305,7 +385,10 @@ pub async fn verify(
     let app_hash = policy
         .app_hash
         .unwrap_or_else(|| hex32(&doc.app_hash).unwrap_or([0; 32]));
-    let expected = report_data(nonce, &app_hash, &transport_key);
+    let expected = match &doc.kms {
+        Some(kms) => kms_report_data(nonce, &app_hash, &transport_key, kms),
+        None => report_data(nonce, &app_hash, &transport_key),
+    };
     verify_report(doc, nonce, policy, &expected).await?;
     Ok(transport_key)
 }
@@ -554,6 +637,7 @@ mod tests {
             mock: false,
             receipt_key: None,
             governance: None,
+            kms: None,
         }
     }
 
@@ -674,6 +758,135 @@ mod tests {
         let err = judge(&result, &Policy::default(), None).await.unwrap_err();
         assert!(err.to_string().contains("no measurement policy"), "{err}");
     }
+
+    fn evidence() -> calimero_tee_attestation::KmsEvidence {
+        calimero_tee_attestation::KmsEvidence {
+            kms_host: "kms.internal:8080".into(),
+            release: "2.4.1".into(),
+            profile: Some("locked-read-only".into()),
+            mrtd: "aa".repeat(48),
+            rtmr0: "00".repeat(48),
+            rtmr1: "11".repeat(48),
+            rtmr2: "22".repeat(48),
+            rtmr3: "33".repeat(48),
+            tcb_status: Some("UpToDate".into()),
+            quote_sha256: "44".repeat(32),
+            verified_at: 1_790_000_000,
+            mock: false,
+        }
+    }
+
+    /// A mock-quoted document over `report`, reporting `kms`.
+    fn mock_doc(report: [u8; 64], kms: Option<KmsKeys>) -> AttestationDoc {
+        let mut quote = MOCK_QUOTE_HEADER.to_vec();
+        quote.extend_from_slice(&report);
+        quote.resize(256, 0);
+        AttestationDoc {
+            quote: STANDARD.encode(quote),
+            mock: true,
+            kms,
+            ..doc("2.4.0")
+        }
+    }
+
+    fn mock_policy() -> Policy {
+        Policy {
+            allow_mock: true,
+            ..Policy::default()
+        }
+    }
+
+    /// The KMS a node reports passes only with a quote that binds it: a relay
+    /// or host that swaps the record, adds one, or strips it is caught by the
+    /// same check that attests the transport key.
+    #[tokio::test]
+    async fn the_reported_kms_is_bound_into_the_quote() {
+        let nonce = [2; 32];
+        let transport = [1; 32];
+        let kms = KmsKeys {
+            storage: Some(evidence()),
+            disk: None,
+        };
+        let bound = kms_report_data(&nonce, &[0; 32], &transport, &kms);
+        let key = verify(&mock_doc(bound, Some(kms.clone())), &nonce, &mock_policy())
+            .await
+            .expect("a quote that binds the record passes");
+        assert_eq!(key, transport);
+
+        let mut swapped = kms.clone();
+        if let Some(storage) = swapped.storage.as_mut() {
+            storage.mrtd = "bb".repeat(48);
+        }
+        assert!(
+            verify(&mock_doc(bound, Some(swapped)), &nonce, &mock_policy())
+                .await
+                .is_err(),
+            "another KMS's registers"
+        );
+        assert!(
+            verify(&mock_doc(bound, None), &nonce, &mock_policy())
+                .await
+                .is_err(),
+            "the record stripped"
+        );
+        let plain = report_data(&nonce, &[0; 32], &transport);
+        assert!(
+            verify(&mock_doc(plain, Some(kms)), &nonce, &mock_policy())
+                .await
+                .is_err(),
+            "a record added to a quote that binds none"
+        );
+        // A node that reports nothing verifies as it always has.
+        verify(&mock_doc(plain, None), &nonce, &mock_policy())
+            .await
+            .expect("an older node's document");
+    }
+
+    #[test]
+    fn the_kms_binding_never_equals_the_transport_binding() {
+        let inner = attest_transport_binding(&[0; 32], &[1; 32]);
+        assert_ne!(kms_evidence_binding(&inner, &KmsKeys::default()), inner);
+        let one = KmsKeys {
+            storage: Some(evidence()),
+            disk: None,
+        };
+        let other = KmsKeys {
+            storage: None,
+            disk: Some(evidence()),
+        };
+        assert_ne!(
+            kms_evidence_binding(&inner, &one),
+            kms_evidence_binding(&inner, &other),
+            "which key a record is for is bound too"
+        );
+    }
+
+    /// Fixed vector, recomputed by the attestation verifier (mero-tee
+    /// `attestation-verifier/api/verify.js`) from the JSON a node sends: the
+    /// two are separate implementations of one binding, and this keeps them
+    /// the same one.
+    #[test]
+    fn the_kms_binding_matches_the_published_vector() {
+        let kms = KmsKeys {
+            storage: Some(evidence()),
+            disk: Some(calimero_tee_attestation::KmsEvidence {
+                profile: None,
+                tcb_status: None,
+                mock: true,
+                ..evidence()
+            }),
+        };
+        assert_eq!(hex::encode(kms.digest()), KMS_EVIDENCE_DIGEST_VECTOR);
+        assert_eq!(
+            hex::encode(kms_evidence_binding(&[0x11; 32], &kms)),
+            KMS_BINDING_VECTOR
+        );
+    }
+
+    const KMS_EVIDENCE_DIGEST_VECTOR: &str =
+        "5e10682b9a71691f98f4a3d2bae3b5e752e7dd217fe16dedfba8396945786666";
+    const KMS_BINDING_VECTOR: &str =
+        "892223f0ed9f341a78158d181b1edca07a8b8bfeeaadce491361c094abd75aa3";
 
     #[test]
     fn pinned_measurements_become_a_fail_closed_verifier_policy() {
