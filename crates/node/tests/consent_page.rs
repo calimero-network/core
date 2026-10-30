@@ -905,13 +905,13 @@ async fn an_organizations_release_is_approved_on_the_page_by_whoever_approves_re
         .to_owned();
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
-    let _ok = ops
-        .post(
-            "ops/releases/3.0.0/deadline",
-            json!({ "after": "2999-01-01T00:00:00Z" }),
-        )
-        .await
-        .unwrap();
+    let _ok = harness::ops_signed(
+        &ops,
+        "ops/releases/3.0.0/deadline",
+        json!({ "after": "2999-01-01T00:00:00Z" }),
+    )
+    .await
+    .unwrap();
     let ask = json!({
         "kind": "release",
         "scope": { "org": org },
