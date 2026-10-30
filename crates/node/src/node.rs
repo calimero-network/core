@@ -393,8 +393,14 @@ pub struct Node {
     /// proved: the node registered at the address that attests that key, and
     /// the release that attestation named ([`Self::identify_peer`]).
     callers: Mutex<HashMap<[u8; 32], PeerIdentity>>,
-    /// One attestation of a caller at a time per node id.
-    identifying: tokio::sync::Mutex<()>,
+    /// One attestation of a caller at a time.
+    identifying: Arc<tokio::sync::Mutex<()>>,
+    /// Attestations of callers under way, by key and claimed node: each runs
+    /// in a task of its own, so a caller that hangs up does not abort it.
+    identifications: Mutex<HashMap<([u8; 32], NodeId), Detached<Option<PeerIdentity>>>>,
+    /// Channels to peers being opened, by address: each in a task of its own
+    /// ([`Self::connected`]).
+    connecting: Mutex<HashMap<String, Detached<Result<(), String>>>>,
     /// The issuers of node-signed sessions this node has attested, by node id
     /// ([`Self::session_issuer`]), every peer's ahead of time
     /// ([`Self::warm_issuers`]).
@@ -447,6 +453,40 @@ struct ReadRounds {
     finished: Mutex<(u64, Option<u64>)>,
     /// Held for the length of a round.
     turn: tokio::sync::Mutex<()>,
+}
+
+/// Work that runs to the end in a task of its own, whoever still waits on it.
+type Detached<T> = futures_util::future::Shared<futures_util::future::BoxFuture<'static, T>>;
+
+/// Most detached attestations of one kind under way at once (callers being
+/// identified, peer channels being opened); past it the request is refused
+/// and its caller tries again.
+const MAX_DETACHED: usize = 64;
+
+/// Start `work` in a task of its own, unless `map` holds unfinished work under
+/// `key`; either way, the work to wait on. Finished work is dropped from `map`.
+fn detach<K, T>(
+    map: &Mutex<HashMap<K, Detached<T>>>,
+    key: K,
+    work: impl FnOnce() -> futures_util::future::BoxFuture<'static, T>,
+) -> Option<Detached<T>>
+where
+    K: std::hash::Hash + Eq,
+    T: Clone + Send + Sync + 'static,
+{
+    use futures_util::FutureExt as _;
+    let mut map = map.lock().ok()?;
+    map.retain(|_, w| w.peek().is_none());
+    if let Some(w) = map.get(&key) {
+        return Some(w.clone());
+    }
+    if map.len() >= MAX_DETACHED {
+        return None;
+    }
+    let w = work().shared();
+    drop(tokio::spawn(w.clone()));
+    let _prev = map.insert(key, w.clone());
+    Some(w)
 }
 
 /// Raft RPCs to peers, over their sealed channels.
@@ -602,7 +642,9 @@ impl Node {
             promoting: std::sync::atomic::AtomicBool::new(false),
             peer_releases: Mutex::new(HashMap::new()),
             callers: Mutex::new(HashMap::new()),
-            identifying: tokio::sync::Mutex::new(()),
+            identifying: Arc::default(),
+            identifications: Mutex::default(),
+            connecting: Mutex::default(),
             issuers: Mutex::new(HashMap::new()),
             issuer_tries: Mutex::new(HashMap::new()),
             sys_reads: ReadRounds::default(),
@@ -672,9 +714,35 @@ impl Node {
         Ok(t)
     }
 
+    /// The sealed channel to the peer at `addr`, opened first if it is not.
+    /// The opening (attesting the peer, then the handshake) runs in a task of
+    /// its own: attesting a TDX peer takes about a second, Intel's collateral
+    /// included, and openraft drops an RPC after one heartbeat (200 ms). Run
+    /// inside the RPC, every attempt was dropped halfway and the next began
+    /// again, so the channel never opened (eu-shared-2's system group kept no
+    /// leader). Now the attempt outlives the RPC and the next one finds the
+    /// channel open; one opening per peer runs at a time.
+    async fn connected(
+        &self,
+        addr: &str,
+    ) -> eyre::Result<Arc<calimero_sealed::client::SealedTransport>> {
+        use futures_util::FutureExt as _;
+        let peer = self.peer(addr)?;
+        if peer.is_open() {
+            return Ok(peer);
+        }
+        let opening = detach(&self.connecting, addr.to_owned(), || {
+            let peer = Arc::clone(&peer);
+            async move { peer.connect().await.map_err(|e| format!("{e:#}")) }.boxed()
+        })
+        .ok_or_else(|| eyre::eyre!("too many peer channels are being opened"))?;
+        opening.await.map_err(|e| eyre::eyre!(e))?;
+        Ok(peer)
+    }
+
     /// POST JSON to a peer's internal route over its sealed channel.
     pub async fn peer_post(&self, addr: &str, path: &str, body: &Value) -> eyre::Result<Value> {
-        let peer = self.peer(addr)?;
+        let peer = self.connected(addr).await?;
         let url = calimero_sealed::client::resolve_path(&addr.parse()?, path)?;
         let req = self
             .http
@@ -880,20 +948,13 @@ impl Node {
     /// nonce, at the address the cluster has for `claimed`; cached by key (a
     /// key lives as long as the process holding it). `None` when the claim
     /// does not hold: no such node, removed, or another key there.
+    ///
+    /// The attestation runs in a task of its own ([`detach`]): it takes
+    /// longer than a Raft RPC may (about a second on TDX), and a caller that
+    /// gives up must not abort it, or no RPC from that peer is ever taken.
     pub async fn identify_peer(&self, key: [u8; 32], claimed: NodeId) -> Option<PeerIdentity> {
-        let cached = |node: &Self| {
-            node.callers
-                .lock()
-                .ok()?
-                .get(&key)
-                .filter(|p| p.node == claimed)
-                .cloned()
-        };
-        if let Some(p) = cached(self) {
-            return self.is_peer(p.node).then_some(p);
-        }
-        let _one = self.identifying.lock().await;
-        if let Some(p) = cached(self) {
+        use futures_util::FutureExt as _;
+        if let Some(p) = self.cached_caller(&key, claimed) {
             return self.is_peer(p.node).then_some(p);
         }
         if !self.is_peer(claimed) {
@@ -901,38 +962,65 @@ impl Node {
         }
         let addr = self.addr_of(claimed)?;
         let url: Url = addr.parse().ok()?;
-        let release = Arc::new(Mutex::new(None));
-        let attestor = HttpAttestor {
-            seen_release: Arc::clone(&release),
-            policy: self.config.peer_policy(),
-        };
-        let attested =
-            calimero_sealed::client::Attest::attest_transport_key(&attestor, &self.http, &url)
-                .await;
-        let attested = match attested {
-            Ok(k) => k,
-            Err(e) => {
-                warn!(node = claimed, error = %format!("{e:#}"), "could not attest a calling peer");
-                return None;
+        // What the task needs, and the node only weakly: a stopping node must
+        // not be kept alive (its store open) by an attestation under way.
+        let (http, policy, turn) = (
+            self.http.clone(),
+            self.config.peer_policy(),
+            Arc::clone(&self.identifying),
+        );
+        let node = self.this.lock().ok()?.clone();
+        let identifying = detach(&self.identifications, (key, claimed), || {
+            async move {
+                let _one = turn.lock().await;
+                if let Some(p) = node.upgrade()?.cached_caller(&key, claimed) {
+                    return Some(p);
+                }
+                let release = Arc::new(Mutex::new(None));
+                let attestor = HttpAttestor {
+                    seen_release: Arc::clone(&release),
+                    policy,
+                };
+                let attested =
+                    calimero_sealed::client::Attest::attest_transport_key(&attestor, &http, &url)
+                        .await;
+                let attested = match attested {
+                    Ok(k) => k,
+                    Err(e) => {
+                        warn!(node = claimed, error = %format!("{e:#}"), "could not attest a calling peer");
+                        return None;
+                    }
+                };
+                if attested != key {
+                    warn!(
+                        node = claimed,
+                        "a peer called with a key its node's address does not attest"
+                    );
+                    return None;
+                }
+                let identity = PeerIdentity {
+                    node: claimed,
+                    release: release.lock().ok()?.clone(),
+                };
+                if let Ok(mut callers) = node.upgrade()?.callers.lock() {
+                    // A restarted node has a new key: forget its old one.
+                    callers.retain(|_, p| p.node != claimed);
+                    let _prev = callers.insert(key, identity.clone());
+                }
+                Some(identity)
             }
-        };
-        if attested != key {
-            warn!(
-                node = claimed,
-                "a peer called with a key its node's address does not attest"
-            );
-            return None;
-        }
-        let identity = PeerIdentity {
-            node: claimed,
-            release: release.lock().ok()?.clone(),
-        };
-        if let Ok(mut callers) = self.callers.lock() {
-            // A restarted node has a new key: forget its old one.
-            callers.retain(|_, p| p.node != claimed);
-            let _prev = callers.insert(key, identity.clone());
-        }
-        Some(identity)
+            .boxed()
+        })?;
+        identifying.await.filter(|p| self.is_peer(p.node))
+    }
+
+    fn cached_caller(&self, key: &[u8; 32], claimed: NodeId) -> Option<PeerIdentity> {
+        self.callers
+            .lock()
+            .ok()?
+            .get(key)
+            .filter(|p| p.node == claimed)
+            .cloned()
     }
 
     /// Whether `id` is a node of this cluster: registered (or in `--peers`)
