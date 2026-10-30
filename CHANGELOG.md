@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.5] - 2026-10-30
+
+### Security
+
+- **wasmtime 50.0.1**, for four RustSec advisories against 50.0.0 (#4792).
+
 ### Fixed
 
 - **A TDX cluster keeps a system leader.** Since 1.0.0-rc.4 a node attests
@@ -18,6 +24,9 @@
   group cannot commit answers `503 UNAVAILABLE` within 10 s, naming the leader,
   voters, learners and the members behind the leader, instead of waiting until
   a proxy cuts the connection.
+- A stopped node reports its store closed only once RocksDB has released its
+  lock, so a restart or `merod inspect` right after a stop no longer finds the
+  store still locked (#4801).
 
 ## [1.0.0-rc.4] - 2026-10-30
 
