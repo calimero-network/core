@@ -6,6 +6,7 @@ use thiserror::Error;
 
 use crate::abi::ComputeCaps;
 use crate::files::NewFile;
+use crate::runs::StartedRun;
 
 /// Fuel per call or view (D28); Task 13 measures the real ratio to wall time.
 pub const DEFAULT_FUEL: u64 = 200_000_000;
@@ -215,6 +216,10 @@ pub struct Outcome {
     pub http: Vec<crate::action::HttpExchange>,
     /// Files the run finished; empty unless the status is `Ok`.
     pub new_files: Vec<NewFile>,
+    /// The runs the run started and the active ones it asked to cancel; empty unless the status
+    /// is `Ok`.
+    pub compute_starts: Vec<StartedRun>,
+    pub compute_cancels: Vec<String>,
     pub usage: Usage,
 }
 

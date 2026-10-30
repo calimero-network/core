@@ -7,18 +7,44 @@
 use std::io::{Read, Write};
 
 use calimero_sdk::blob::BlobRef;
-use calimero_sdk::compute;
+use calimero_sdk::compute::{self, RunId};
 use calimero_sdk::prelude::*;
 use sha2::{Digest, Sha256};
 
 /// One read or write call's size.
 const PIECE: usize = 64 * 1024;
 
-/// The part of the run's outcome `onDone` reads: its status and the output ids.
+/// The outcome the node hands `onDone`: the shape of the SDK's `ComputeOutcome`.
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Outcome {
+    pub run: RunId,
+    pub method: String,
+    pub attempt: u32,
     pub status: String,
-    pub outputs: Vec<BlobRef>,
+    pub reason: Option<String>,
+    pub result: Option<String>,
+    pub outputs: Vec<Output>,
+    pub usage: Usage,
+}
+
+/// A file the run wrote: its id is the `BlobRef` to keep, size and hash are of the plaintext.
+#[derive(serde::Deserialize)]
+pub struct Output {
+    pub id: BlobRef,
+    #[serde(with = "calimero_sdk::json::u64_str")]
+    pub size: u64,
+    pub sha256: String,
+}
+
+/// What the run cost.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Usage {
+    pub cpu_seconds: f64,
+    pub gib_seconds: f64,
+    #[serde(with = "calimero_sdk::json::u64_str")]
+    pub fuel: u64,
 }
 
 #[app::state(version = 1)]
@@ -97,13 +123,23 @@ impl Compute {
         Ok(0)
     }
 
+    /// Starts a `digest` run over `inputs`; the same inputs while it is active answer its id.
+    pub fn start_digest(&mut self, inputs: Vec<BlobRef>) -> app::Result<RunId> {
+        compute::start("digest", &(), &inputs)
+    }
+
+    /// Asks for the active run `run` to end.
+    pub fn cancel(&mut self, run: RunId) -> app::Result<()> {
+        compute::cancel(&run)
+    }
+
     /// Receives the outcome of `digest` and keeps its outputs; an output a result method does
     /// not store is collected.
     #[app::compute_result]
     pub fn on_done(&mut self, outcome: Outcome) -> app::Result<()> {
         if outcome.status == "done" {
             for output in outcome.outputs {
-                self.kept.insert(&output.id(), &output)?;
+                self.kept.insert(&output.id.id(), &output.id)?;
             }
         }
         self.done.add(1)?;

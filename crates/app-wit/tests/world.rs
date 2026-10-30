@@ -45,7 +45,7 @@ fn world_parses_and_imports_exactly_the_spec_set() {
     }
     let expected: BTreeSet<String> = allowed_imports().iter().map(|s| s.to_string()).collect();
     assert_eq!(imports, expected);
-    assert_eq!(allowed_imports().len(), 22);
+    assert_eq!(allowed_imports().len(), 23);
 
     let exports: Vec<_> = world.exports.keys().map(|k| format!("{k:?}")).collect();
     assert_eq!(exports.len(), 1, "exports: {exports:?}");
@@ -95,7 +95,7 @@ fn compute_world_imports_exactly_its_allow_list_and_exports_only_run() {
 #[test]
 fn compute_world_has_no_state_xcall_or_http() {
     let imports = imports_of_world("compute");
-    for name in ["storage", "xcall", "context", "events", "action", "search"] {
+    for name in ["storage", "xcall", "context", "events", "action", "search", "runs"] {
         assert!(
             !imports.contains(&format!("calimero:app/{name}@0.5.1")),
             "{name}"
@@ -108,6 +108,12 @@ fn compute_world_has_no_state_xcall_or_http() {
 #[test]
 fn app_world_does_not_import_job() {
     assert!(!imports_of_world("app").contains("calimero:app/job@0.5.1"));
+}
+
+#[test]
+fn only_the_app_world_imports_runs() {
+    assert!(imports_of_world("app").contains("calimero:app/runs@0.5.1"));
+    assert!(!imports_of_world("compute").contains("calimero:app/runs@0.5.1"));
 }
 
 #[test]

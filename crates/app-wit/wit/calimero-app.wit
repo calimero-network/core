@@ -95,6 +95,14 @@ interface files {
   info: func(id: blob-id) -> option<blob-info>;       // mime is "" for files; size and sha256 are of the plaintext
 }
 
+// Starting and cancelling compute runs: logged writes only (call, timer, init, xcall delivery).
+// The compute world does not import it: a run cannot start runs.
+interface runs {
+  use types.{blob-id, action-id};
+  start: func(method: string, args: list<u8>, inputs: list<blob-id>) -> result<action-id, string>; // an active run with the same method, args and inputs answers its id
+  cancel: func(run: action-id) -> result<_, string>;   // an active run only; recorded with the run's outcome, applied with its entry
+}
+
 // What a compute component sees of its run; the app world does not import it.
 interface job {
   use types.{blob-id, action-id};
@@ -129,6 +137,7 @@ world app {
   import files;
   import xcall;
   import action;
+  import runs;
 
   // WASI 0.2.12, what wasmtime 50 and componentize-js 0.23 ship (D43); implemented by the host (section 4 table).
   // The nine stubbed interfaces of D44 are accepted at install but are not part of the world.
