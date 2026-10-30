@@ -55,6 +55,19 @@ is its command line.
   No interop with nodes before this (a hard cutover: clusters are recreated).
   Regression (`tests/approval_bypasses.rs`):
   `a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes`.
+- **Raft addressee** (`PeerTransport::send`, `api::internal_raft`): the sender check above
+  covers one end of a Raft message; the other is its addressee. Every Raft message names the
+  node it is for (`target`), and a node that is not that node refuses it with `421 NOT_ADDRESSEE`.
+  So a genuine member's message that reaches the wrong node (a reused port, a node moved or
+  replaced) cannot move that node's term or log. Regression:
+  `a_raft_message_for_another_node_is_refused_and_the_group_stays_healthy`. Both cases are counted
+  in `calimero_raft_misaddressed_total{reason="not_addressee"|"no_target"}`. **Transition:** a
+  message without `target` comes from a peer on a release before this one (rc.4 and earlier). This
+  release accepts it, counts it as `no_target`, and warns at most once per
+  `api::NO_TARGET_WARN_EVERY` (60 s; one slot per process, taken by compare-and-swap; the count in
+  between is in the metric). The release after this one refuses a missing `target` too
+  (`RaftBody::target` stops being optional). Ship that only once every node runs this release,
+  which `no_target` at zero on every node shows.
 - **Decisions carry proofs** (`proof.rs`, `system::authorize`, run before every command):
   consent is logged as `{ subject, method, args, nonce, assertion }`
   (`api::consent` keeps the nonce in `Pending::Confirm`); `apply` rebuilds
