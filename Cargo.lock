@@ -1272,6 +1272,7 @@ name = "calimero-log"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
+ "calimero-log",
  "criterion",
  "eyre",
  "hex",

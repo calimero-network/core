@@ -2,14 +2,13 @@
 //! a bomb `tar` would buffer inside `entries()` before any `Entry` reaches
 //! caller code, and an archive walked once per artifact instead of once.
 //!
-//! Both the counting allocator and the clock are process-wide, so every
-//! measurement here takes `PROBE`.
+//! The counting allocator is process-wide, so every measurement here takes
+//! `PROBE`.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 use calimero_node_primitives::bundle::{derive_signer_id_did_key, sign_manifest_json};
 use calimero_node_primitives::client::application::bundle::{runtime_version, VerifiedBundle};
@@ -207,22 +206,15 @@ fn services_sharing_one_artifact_cost_one_copy() {
     );
 }
 
-/// Zero-filled padding entry: ~64 MiB to inflate, ~64 KiB on the wire. Skipping
-/// an entry still decompresses it, so this is what a redundant walk pays for.
+/// Size of the oversized frontend file: ~64 MiB to inflate, ~64 KiB on the wire.
 const PADDING_BYTES: usize = 64 * 1024 * 1024;
 
 const WALK_BYTES: usize = 32 * 1024; // lower bound of one walk's decoder and buffers
 const INDEX_HTML: &[u8] = b"<html></html>"; // the frontend file every bundle here declares
 
-/// A signed `.mpk` with `services` distinct tiny wasm artifacts behind an optional `padding` entry;
+/// A signed `.mpk` with `services` distinct tiny wasm artifacts;
 /// a `Some` index declares `INDEX_HTML` as the frontend and ships the given bytes in its place.
-fn padded_bundle(
-    dir: &TempDir,
-    name: &str,
-    services: usize,
-    padding: usize,
-    index: Option<&[u8]>,
-) -> Vec<u8> {
+fn padded_bundle(dir: &TempDir, name: &str, services: usize, index: Option<&[u8]>) -> Vec<u8> {
     let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasms: Vec<Vec<u8>> = (0..services)
         .map(|i| format!("wasm for service {i}").into_bytes())
@@ -263,13 +255,8 @@ fn padded_bundle(
     sign_manifest_json(&mut manifest, &key).unwrap();
 
     let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
-    let padding = vec![0u8; padding];
     let paths: Vec<String> = (0..services).map(|i| format!("svc{i}.wasm")).collect();
     let mut entries: Vec<(&str, &[u8])> = vec![("manifest.json", &manifest_bytes)];
-    if !padding.is_empty() {
-        // Ahead of the artifacts, so every read has to walk through it.
-        entries.push(("padding.bin", &padding));
-    }
     entries.extend(
         paths
             .iter()
@@ -282,59 +269,31 @@ fn padded_bundle(
     pack_entries(dir, name, &entries)
 }
 
-fn install_elapsed(bundle: Vec<u8>) -> Duration {
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    let (node, _store, _data, _blobs) = runtime.block_on(node_client());
-    let (blob_id, _) = runtime
-        .block_on(node.add_blob(
-            Cursor::new(bundle.as_slice()),
-            Some(bundle.len() as u64),
-            None,
-        ))
-        .unwrap();
-    let source = "https://registry.example.com/app.mpk".parse().unwrap();
-
-    let started = Instant::now();
-    runtime
-        .block_on(node.install_application_from_bundle_blob(&blob_id, &source))
-        .expect("install");
-    started.elapsed()
-}
-
-/// What crossing the padding costs during one install. Everything else about
-/// the two installs is identical, so the difference isolates the walk from a
-/// fixed cost that would otherwise swamp it.
-fn walk_cost(dir: &TempDir, services: usize) -> Duration {
-    let index = Some(INDEX_HTML);
-    let padded = padded_bundle(
-        dir,
-        &format!("pad{services}.mpk"),
-        services,
-        PADDING_BYTES,
-        index,
-    );
-    let bare = padded_bundle(dir, &format!("bare{services}.mpk"), services, 0, index);
-    install_elapsed(padded).saturating_sub(install_elapsed(bare))
-}
-
 /// Reading D distinct artifacts must cost one walk, not D. Nothing caps
 /// `services[]`, so a walk per artifact multiplies the archive's whole
 /// decompressed size by D, and D can reach thousands in a small `.mpk`.
+/// Each walk builds its own decoder and read buffer, so a walk per artifact
+/// shows up as bytes allocated, which unlike a clock does not flake.
 #[test]
 fn distinct_artifacts_cost_one_walk() {
     let _probe = PROBE.lock().unwrap_or_else(|e| e.into_inner());
 
     const DISTINCT: usize = 8;
     let dir = TempDir::new().unwrap();
-    let one = walk_cost(&dir, 1);
-    let many = walk_cost(&dir, DISTINCT);
+    let allocated = |services: usize| {
+        let bundle = padded_bundle(&dir, &format!("read{services}.mpk"), services, None);
+        let verified = VerifiedBundle::open(bundle.into(), &runtime_version()).unwrap();
+        let before = TOTAL.load(Ordering::Relaxed);
+        verified.contents().unwrap();
+        TOTAL.load(Ordering::Relaxed) - before
+    };
+    let one = allocated(1);
+    let many = allocated(DISTINCT);
 
-    // One walk either way, so the padding is crossed once in both. A walk per
-    // artifact would make it ~{DISTINCT}x, since each read re-inflates it.
     assert!(
-        many < one * 3,
-        "crossing {PADDING_BYTES} bytes of padding cost {many:?} for {DISTINCT} distinct \
-         artifacts against {one:?} for one: the archive is being walked per artifact"
+        many < one + (DISTINCT - 1) * WALK_BYTES / 2,
+        "reading {DISTINCT} distinct artifacts allocated {many} bytes against {one} for one: \
+         the archive is being walked per artifact"
     );
 }
 
@@ -347,7 +306,7 @@ fn a_frontend_shares_the_walk() {
 
     let dir = TempDir::new().unwrap();
     let allocated = |frontend: bool| {
-        let bundle = padded_bundle(&dir, "read.mpk", 1, 0, frontend.then_some(INDEX_HTML));
+        let bundle = padded_bundle(&dir, "read.mpk", 1, frontend.then_some(INDEX_HTML));
         let verified = VerifiedBundle::open(bundle.into(), &runtime_version()).unwrap();
         let before = TOTAL.load(Ordering::Relaxed);
         verified.contents().unwrap();
@@ -370,7 +329,7 @@ fn an_entry_larger_than_declared_is_refused_without_buffering_it() {
     let _probe = PROBE.lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     let huge = vec![b'x'; PADDING_BYTES];
-    let bundle = padded_bundle(&dir, "oversized.mpk", 1, 0, Some(&huge));
+    let bundle = padded_bundle(&dir, "oversized.mpk", 1, Some(&huge));
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (node, _store, _data, _blobs) = runtime.block_on(node_client());

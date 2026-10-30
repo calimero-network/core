@@ -3286,7 +3286,8 @@ mod tests {
         assert!(err.contains("policy.allowed_rtmr0"));
     }
 
-    /// A listener standing in for the KMS that counts who connects.
+    /// A listener standing in for the KMS that counts the POSTs it receives; a stray
+    /// connection or probe of the port is not a contact.
     #[cfg(not(feature = "mock-attestation"))]
     async fn silent_kms() -> (Url, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3297,12 +3298,14 @@ mod tests {
         let addr = listener.local_addr().expect("stand-in KMS address");
         let url = Url::parse(&format!("http://{addr}/")).expect("stand-in KMS url");
         let contacts = Arc::new(AtomicUsize::new(0));
-        let seen = Arc::clone(&contacts);
+        let count = |axum::extract::State(seen): axum::extract::State<Arc<AtomicUsize>>| async move {
+            let _ = seen.fetch_add(1, Ordering::SeqCst);
+            axum::http::StatusCode::NOT_FOUND
+        };
+        let app = axum::Router::new()
+            .fallback_service(axum::routing::post(count).with_state(Arc::clone(&contacts)));
         drop(tokio::spawn(async move {
-            while let Ok((stream, _)) = listener.accept().await {
-                let _ = seen.fetch_add(1, Ordering::SeqCst);
-                drop(stream);
-            }
+            let _ = axum::serve(listener, app).await;
         }));
         (url, contacts)
     }
@@ -3340,13 +3343,6 @@ mod tests {
         (kms, contacts)
     }
 
-    /// The accept loop counts on its own task; give it a moment to see a dial.
-    #[cfg(not(feature = "mock-attestation"))]
-    async fn contacts_seen(contacts: &std::sync::atomic::AtomicUsize) -> usize {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        contacts.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
     #[cfg(not(feature = "mock-attestation"))]
     async fn fetch_with(
         attestation: KmsAttestationConfig,
@@ -3357,7 +3353,7 @@ mod tests {
         let result = fetch_storage_key(Some(&kms), "peer", &identity, policy)
             .await
             .map(|released| released.key);
-        (result, contacts_seen(&contacts).await)
+        (result, contacts.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     #[cfg(not(feature = "mock-attestation"))]
@@ -3365,7 +3361,33 @@ mod tests {
         let (kms, contacts) = stand_in_kms_config(attestation).await;
         let identity = Keypair::generate_ed25519();
         let result = probe_storage_key(&kms, "peer", &identity, None).await;
-        (result, contacts_seen(&contacts).await)
+        (result, contacts.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    #[cfg(not(feature = "mock-attestation"))]
+    #[tokio::test]
+    async fn the_stand_in_counts_posts_not_probes_of_its_port() {
+        use std::sync::atomic::Ordering;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (url, contacts) = silent_kms().await;
+        let addr = (
+            url.host_str().unwrap_or_default(),
+            url.port().unwrap_or_default(),
+        );
+        let send = |method: &'static str| async move {
+            let mut stream = tokio::net::TcpStream::connect(addr).await.expect("dial");
+            let request = format!("{method} / HTTP/1.1\r\nhost: localhost\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+            stream.write_all(request.as_bytes()).await.expect("send");
+            let _ = stream.read_to_end(&mut Vec::new()).await.expect("answer");
+        };
+        send("GET").await;
+        assert_eq!(
+            contacts.load(Ordering::SeqCst),
+            0,
+            "a GET probe is not a contact"
+        );
+        send("POST").await;
+        assert_eq!(contacts.load(Ordering::SeqCst), 1, "a POST is a contact");
     }
 
     /// A KMS nothing pins is never asked for a key: with no release policy and

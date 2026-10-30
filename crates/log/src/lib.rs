@@ -554,16 +554,16 @@ impl<M: Machine> RpcTarget for Group<M> {
 
 type GroupFactory = Arc<dyn Fn(GroupId) -> BoxFuture<bool> + Send + Sync>;
 
-/// All groups hosted by one node.
 /// See [`Engine::store_watch`].
-pub struct StoreWatch(std::sync::Weak<Db>);
+pub struct StoreWatch(Arc<std::sync::atomic::AtomicBool>);
 
 impl StoreWatch {
     pub fn is_open(&self) -> bool {
-        self.0.strong_count() > 0
+        !self.0.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
+/// All groups hosted by one node.
 pub struct Engine {
     node: NodeId,
     db: Arc<Db>,
@@ -739,9 +739,10 @@ impl Engine {
     }
 
     /// Whether the store is still open: it closes, releasing its lock, once
-    /// the engine and every group task holding it are gone.
+    /// the engine and every group task holding it are gone and RocksDB has
+    /// finished closing.
     pub fn store_watch(&self) -> StoreWatch {
-        StoreWatch(Arc::downgrade(&self.db))
+        StoreWatch(Arc::clone(&self.db.closed.0))
     }
 
     /// Stop every group (for shutdown or tests).
