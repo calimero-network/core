@@ -1340,6 +1340,7 @@ dependencies = [
  "calimero-tee-release",
  "calimero-wasm-abi",
  "camino",
+ "chrono",
  "ed25519-dalek 3.0.0",
  "eyre",
  "flate2",

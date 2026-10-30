@@ -12,6 +12,7 @@ publish = false
 axum.workspace = true
 base64.workspace = true
 camino.workspace = true
+chrono.workspace = true
 ed25519-dalek.workspace = true
 eyre.workspace = true
 futures-util.workspace = true

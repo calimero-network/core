@@ -132,6 +132,12 @@ impl Node {
         version: &str,
         actor: &str,
     ) -> Result<Value, ApiError> {
+        // Before the fetch, judged by the key the package is pinned to (none
+        // yet: unbound); `record_release` judges the verified key again.
+        let pinned = self
+            .sys(|s| s.packages.get(package).map(|p| p.signer_id.clone()))
+            .unwrap_or_default();
+        self.refuse_stalled_install(actor, &pinned)?;
         let mpk = self.fetch_from_registry(package, version).await?;
         let verified = self.verify_release(mpk, BundleSource::Registry, actor)?;
         if verified.package != package || verified.release.version != version {
@@ -144,6 +150,17 @@ impl Node {
             ));
         }
         self.record_release(verified, None).await
+    }
+
+    /// Refused `409 RELEASE_DEADLINE` before any fetch or verification when
+    /// `actor` may install nothing past a release deadline
+    /// ([`crate::system::SystemState::install_stalled`]); `InstallPackage`
+    /// asks again at apply.
+    fn refuse_stalled_install(&self, actor: &str, signer: &str) -> Result<(), ApiError> {
+        match self.sys(|s| s.install_stalled(actor, signer, now_secs())) {
+            Some(stall) => Err(crate::node::stalled(&stall)),
+            None => Ok(()),
+        }
     }
 
     /// Install an uploaded `.mpk`.
@@ -172,6 +189,17 @@ impl Node {
                     "{package} is published under {pinned}; this release is signed by {signer_id}"
                 )));
             }
+        }
+        let upgrades = manifest.upgrades.unwrap_or_default();
+        let in_order = self.sys(|s| {
+            s.packages
+                .get(&package)
+                .is_none_or(|p| p.upgrades_in_order(&manifest.app_version, upgrades))
+        });
+        if !in_order {
+            return Err(ApiError::conflict(
+                "a release may not give its package's upgrades back to the publisher once a lower one gave them to owners",
+            ));
         }
         let mut services = BTreeMap::new();
         let mut wasm_by_service = BTreeMap::new();
@@ -216,6 +244,7 @@ impl Node {
                 installed_by: actor.to_owned(),
                 installed_at: now_secs(),
                 installers: BTreeSet::new(),
+                upgrades,
             },
             wasm: wasm_by_service,
         })
@@ -228,6 +257,7 @@ impl Node {
         v: Verified,
         upload: Option<Arc<[u8]>>,
     ) -> Result<Value, ApiError> {
+        self.refuse_stalled_install(&v.release.installed_by, &v.signer_id)?;
         for (service, bytes) in &v.wasm {
             let hash = &v.release.services[service];
             self.engine
