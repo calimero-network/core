@@ -22,5 +22,5 @@ calimero-primitives.workspace = true
 [dev-dependencies]
 actix.workspace = true
 eyre.workspace = true
-tokio = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["macros", "test-util"] }
 tokio-stream = { workspace = true, features = ["time"] }
