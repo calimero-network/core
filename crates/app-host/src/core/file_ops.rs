@@ -6,9 +6,9 @@ use super::HostCore;
 use crate::files::{
     FileError, FileInfo, FileRead, FileWrite, NewFile, ReadError, FILE_CORRUPT,
     FILE_CREATED_IN_RUN, FILE_DELETED_TWICE, FILE_FAILED, FILE_FINISHED, FILE_TOO_LARGE,
-    FILE_TOO_MANY_DELETES, FILE_TOO_MANY_NEW, FILE_TOO_MANY_OPEN, FILE_UNAVAILABLE, MAX_DELETES,
-    MAX_FILE_BYTES, MAX_NEW_FILES, MAX_OPEN_FILES, MAX_READ_CHUNK, MAX_RUN_FILE_BYTES,
-    NO_SUCH_FILE, RUN_WROTE_TOO_MUCH,
+    FILE_TOO_MANY_DELETES, FILE_TOO_MANY_NEW, FILE_TOO_MANY_OPEN, FILE_UNAVAILABLE,
+    MAX_COMPUTE_FILE_BYTES, MAX_DELETES, MAX_FILE_BYTES, MAX_NEW_FILES, MAX_OPEN_FILES,
+    MAX_READ_CHUNK, MAX_RUN_FILE_BYTES, NO_SUCH_FILE, RUN_WROTE_TOO_MUCH,
 };
 use crate::types::{HostDenied, InvocationKind};
 
@@ -34,6 +34,10 @@ struct Writer {
 
 struct Reader {
     source: Box<dyn FileRead>,
+    /// The provider answered an empty read: the file ended and proved authentic.
+    ended: bool,
+    /// A provider failure met after some bytes were gathered; answered by the next read.
+    failed: Option<ReadError>,
     /// What the provider returned beyond the last `max`, served first on the next read.
     pending: Vec<u8>,
 }
@@ -82,11 +86,11 @@ impl HostCore {
         }
         let sink = match self.provider.create() {
             Ok(sink) => sink,
-            Err(FileError::Failed(reason)) => return Ok(Err(reason)),
-            Err(FileError::Unavailable) => {
-                self.files.unavailable = true;
-                return Err(HostDenied::new(FILE_UNAVAILABLE));
+            Err(FileError::Failed(_)) if self.inv.compute.is_some() => {
+                return Err(self.unavailable())
             }
+            Err(FileError::Failed(reason)) => return Ok(Err(reason)),
+            Err(FileError::Unavailable) => return Err(self.unavailable()),
         };
         let id = self.files.next_id()?;
         let _ = self.files.writers.insert(
@@ -118,11 +122,19 @@ impl HostCore {
         if writer.bytes.saturating_add(len) > MAX_FILE_BYTES {
             return Ok(Err(FILE_TOO_LARGE.to_owned()));
         }
-        if written.saturating_add(len) > MAX_RUN_FILE_BYTES {
+        let run_limit = if self.inv.compute.is_some() {
+            MAX_COMPUTE_FILE_BYTES
+        } else {
+            MAX_RUN_FILE_BYTES
+        };
+        if written.saturating_add(len) > run_limit {
             return Ok(Err(RUN_WROTE_TOO_MUCH.to_owned()));
         }
         if let Err(reason) = sink.write(bytes) {
             writer.sink = Sink::Failed;
+            if self.inv.compute.is_some() {
+                return Err(self.unavailable());
+            }
             return Ok(Err(reason));
         }
         writer.bytes += len;
@@ -155,6 +167,9 @@ impl HostCore {
             }
             Err(reason) => {
                 writer.sink = Sink::Failed;
+                if self.inv.compute.is_some() {
+                    return Err(self.unavailable());
+                }
                 Ok(Err(reason))
             }
         }
@@ -167,7 +182,7 @@ impl HostCore {
 
     /// Opens a file the app marks. Every kind but migrate.
     pub fn files_open(&mut self, id: &str) -> Result<Result<ReaderId, String>, HostDenied> {
-        self.may_read_files("files.open")?;
+        self.may_read_files("files.open", Some(id))?;
         if self.files.open_count() >= MAX_OPEN_FILES {
             return Ok(Err(FILE_TOO_MANY_OPEN.to_owned()));
         }
@@ -176,10 +191,12 @@ impl HostCore {
         }
         let source = match self.provider.open(id) {
             Ok(source) => source,
+            Err(FileError::Failed(_)) if self.inv.compute.is_some() => {
+                return Err(self.unavailable())
+            }
             Err(FileError::Failed(reason)) => return Ok(Err(reason)),
-            Err(FileError::Unavailable) if self.is_logged_write() => {
-                self.files.unavailable = true;
-                return Err(HostDenied::new(FILE_UNAVAILABLE));
+            Err(FileError::Unavailable) if self.is_logged_write() || self.inv.compute.is_some() => {
+                return Err(self.unavailable());
             }
             Err(FileError::Unavailable) => return Ok(Err(FILE_UNAVAILABLE.to_owned())),
         };
@@ -188,37 +205,62 @@ impl HostCore {
             id,
             Reader {
                 source,
+                ended: false,
+                failed: None,
                 pending: Vec::new(),
             },
         );
         Ok(Ok(ReaderId(id)))
     }
 
-    /// Up to `max` bytes, clamped to `1..=MAX_READ_CHUNK` so an empty vector always means the
-    /// end of the file.
+    /// `max` bytes (clamped to `1..=MAX_READ_CHUNK`) or what is left of the file, however the
+    /// provider chunks it; an empty vector is always the end of the file.
     pub fn reader_read(
         &mut self,
         id: ReaderId,
         max: u32,
     ) -> Result<Result<Vec<u8>, String>, HostDenied> {
-        self.may_read_files("files.read")?;
+        self.may_read_files("files.read", None)?;
+        let compute = self.inv.compute.is_some();
         let Some(reader) = self.files.readers.get_mut(&id.0) else {
             return Err(HostDenied::new("unknown reader"));
         };
         let max = max.clamp(1, MAX_READ_CHUNK) as usize;
-        if !reader.pending.is_empty() {
-            let rest = reader.pending.split_off(max.min(reader.pending.len()));
-            return Ok(Ok(std::mem::replace(&mut reader.pending, rest)));
+        let take = max.min(reader.pending.len());
+        let rest = reader.pending.split_off(take);
+        let mut out = std::mem::replace(&mut reader.pending, rest);
+        while out.len() < max && !reader.ended {
+            let failure = match reader.failed.take() {
+                Some(failure) => failure,
+                None => match reader.source.read(max - out.len()) {
+                    Ok(mut chunk) => {
+                        if chunk.is_empty() {
+                            reader.ended = true;
+                        }
+                        let room = max - out.len();
+                        if chunk.len() > room {
+                            reader.pending = chunk.split_off(room);
+                        }
+                        out.append(&mut chunk);
+                        continue;
+                    }
+                    Err(failure) => failure,
+                },
+            };
+            if !out.is_empty() {
+                reader.failed = Some(failure);
+                break;
+            }
+            return match failure {
+                ReadError::Failed(_) if compute => {
+                    self.files.unavailable = true;
+                    Err(HostDenied::new(FILE_UNAVAILABLE))
+                }
+                ReadError::Failed(reason) => Ok(Err(reason)),
+                ReadError::Corrupt => Err(HostDenied::new(FILE_CORRUPT)),
+            };
         }
-        let mut chunk = match reader.source.read(max) {
-            Ok(chunk) => chunk,
-            Err(ReadError::Failed(reason)) => return Ok(Err(reason)),
-            Err(ReadError::Corrupt) => return Err(HostDenied::new(FILE_CORRUPT)),
-        };
-        if chunk.len() > max {
-            reader.pending = chunk.split_off(max);
-        }
-        Ok(Ok(chunk))
+        Ok(Ok(out))
     }
 
     /// Drops a reader (the WIT resource's destructor).
@@ -227,7 +269,7 @@ impl HostCore {
     }
 
     pub fn files_info(&self, id: &str) -> Result<Option<FileInfo>, HostDenied> {
-        self.may_read_files("files.info")?;
+        self.may_read_files("files.info", Some(id))?;
         if self.files.deleted.iter().any(|d| d == id) {
             return Ok(None);
         }
@@ -238,7 +280,9 @@ impl HostCore {
     /// Logged writes only; the file must exist and not be created, or already deleted, in
     /// this run.
     pub fn files_delete(&mut self, id: &str) -> Result<Result<(), String>, HostDenied> {
-        self.may_write_files("files.delete")?;
+        if self.inv.compute.is_some() || !self.is_logged_write() {
+            return Err(self.denied("files.delete"));
+        }
         if self.files.created.iter().any(|f| f.id == id) {
             return Ok(Err(FILE_CREATED_IN_RUN.to_owned()));
         }
@@ -255,16 +299,29 @@ impl HostCore {
         Ok(Ok(()))
     }
 
+    /// The run could not be served: it ends `Unavailable` and is retried, never the app's fault.
+    fn unavailable(&mut self) -> HostDenied {
+        self.files.unavailable = true;
+        HostDenied::new(FILE_UNAVAILABLE)
+    }
+
     fn may_write_files(&self, what: &str) -> Result<(), HostDenied> {
-        if !self.is_logged_write() {
+        if !self.is_logged_write() && self.inv.compute.is_none() {
             return Err(self.denied(what));
         }
         Ok(())
     }
 
-    fn may_read_files(&self, what: &str) -> Result<(), HostDenied> {
+    /// Every kind but migrate reads; a compute run only the files it was given. `id` is none
+    /// for a read, which works on a handle that was already checked at `open`.
+    fn may_read_files(&self, what: &str, id: Option<&str>) -> Result<(), HostDenied> {
         if self.inv.kind == InvocationKind::Migrate {
             return Err(self.denied(what));
+        }
+        if let Some(run) = &self.inv.compute {
+            if id.is_some_and(|id| !run.inputs.iter().any(|input| input == id)) {
+                return Err(HostDenied::new(format!("{what}: not an input of this run")));
+            }
         }
         Ok(())
     }

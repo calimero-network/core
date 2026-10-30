@@ -22,6 +22,7 @@ testing = [
 [dependencies]
 base64.workspace = true
 calimero-app-sdk-macros.workspace = true
+calimero-app-wit.workspace = true
 ciborium.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

@@ -655,7 +655,9 @@ API and system group. What differs from the wasmer path:
   cap is logged trapped `HostDenied` (D50). Answers carry the node's receipt.
 - **ABI gate** (`Node::abi_gate`, `abi_check`, S5, Ruling 31/40): from the ABI of the
   bundle the group runs; default-deny; `/intents` reads `view` and `confirm` from it
-  (`AppRecord::confirm_methods` is the wasmer path's).
+  (`AppRecord::confirm_methods` is the wasmer path's). A compute method (kind `compute`) and a
+  `computeResult` method are `WrongKind` on `/intents` and `/views` for every caller, System
+  included: only the node runs them.
 - **Unique ids** (D52): `id_term` is the term `propose_led`'s leadership check found
   (no round of its own), `id_seq` this node's per-term counter (`Node::next_id`),
   continuing from `max(memory, AppState last_id)`. Safety on this log: a deposed

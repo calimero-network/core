@@ -3,7 +3,7 @@
 ## Package Identity
 
 - **Crate**: `calimero-app-sdk` (`publish = false`, prototype); builds for the host (tests) and `wasm32-wasip2` (apps)
-- **Entry**: `src/lib.rs` (+ `prelude`); `app.rs` (the `app` attributes from `calimero-app-sdk-macros`, `AppState`, `AppEvent`, `bail!`), `private.rs` (`__private`: the generated `handle`, argument decoding, the ABI assembly; not an API), `encoding/{key,value}.rs`, `store.rs` (+ `store/{mem,host}.rs`), `table.rs`, `collections/{map,counter}.rs`, `env.rs` (+ `env/{wasm,mock}.rs`), `files.rs` (+ `files/{wasm,mock}.rs`), `guards.rs`, `error.rs`, `json.rs`, `bindings.rs` (wasm32 only), `testing/{mod,directory,scenario}.rs` (feature `testing`, host only)
+- **Entry**: `src/lib.rs` (+ `prelude`); `app.rs` (the `app` attributes from `calimero-app-sdk-macros`, `AppState`, `AppEvent`, `bail!`), `private.rs` (`__private`: the generated `handle`, argument decoding, the ABI assembly; not an API), `encoding/{key,value}.rs`, `store.rs` (+ `store/{mem,host}.rs`), `table.rs`, `collections/{map,counter}.rs`, `env.rs` (+ `env/{wasm,mock}.rs`), `files.rs` (+ `files/{wasm,mock}.rs`), `compute.rs`, `guards.rs`, `error.rs`, `json.rs`, `bindings.rs` (wasm32 only), `testing/{mod,directory,scenario}.rs` (feature `testing`, host only)
 - **Spec**: `docs/specs/app-runtime-v0.14.md` section 7, the SDK reference, D9, D10, D20, D47, D48, D50, D52
 
 ## What This Crate Does
@@ -13,7 +13,7 @@ The shared storage encoding (order-preserving tuple keys, deterministic CBOR val
 ## The generated `handle` (`__private::handle`)
 
 - Method lookup by ABI (camelCase) name; unknown → `AppError UnknownMethod`.
-- Kind: a view may run as a call (or xcall delivery); a call, timer or init method run as a view → `NotAView`; any other mismatch, and `action` / `migrate` (not in this version) → `WrongKind`.
+- Kind: a view may run as a call (or xcall delivery); a call, timer or init method run as a view → `NotAView`; any other mismatch, and `migrate` (not in this version) → `WrongKind`; a compute method runs only as `action`, any caller (the node vetted it at start), and as anything else is `WrongKind`.
 - Callers (D13), checked after the kind, except for `init` (runs as the owner): `System` needs `allow(system)` and `App(id)` needs `allow(app = id)`, else `Forbidden`; `Public` needs `public`, else `LoginRequired`. The host's checks come first (Rulings 32, 35): on a node, and in the harness, an anonymous caller reaches the guest only on a public app and only for a `public` method, otherwise the platform answers `401 UNAUTHENTICATED` before `handle` runs, so the guest-side `LoginRequired` is a backstop clients do not normally see.
 - Args: a JSON object keyed by camelCase parameter names, empty args = `{}`, unknown keys refused; `u64`/`i64` (and `Option`) params are canonical decimal strings (no `+`, no leading zeros, no `-0`) and `Vec<u8>` (and `Option`) params base64url without padding (D20); anything malformed → `BadArgs` (`{"message": ..}`).
 - Timers: `#[app::every]` implies `allow(system)` (Ruling 26), so the ABI says `allowSystem: true` on every timer.
@@ -35,6 +35,7 @@ The macros convert exactly these types, at the top level of a parameter, a resul
 - `#[app::error]` and `#[app::event]` must live in the `#[app::logic]` module (their ABI constants are picked up there; elsewhere the ABI lists none), and one module takes one of each: a second `#[app::error]` enum in a module is refused (`__CALIMERO_ABI_ERRORS` defined twice, pinned by `tests/ui/second_error.rs`).
 - `env::emit(event, audience)` takes an `#[app::event]` value (spec); `env::emit_raw(name, data, audience)` takes any serde value.
 - `env::mock` (host target) is the stand-in for the host in tests.
+- `compute`: `run_id() -> Option<String>`, `inputs() -> Vec<FileId>` and `progress(percent, step)` for `#[app::compute]` methods (`app::compute`, `app::compute_result`); on the host target there is no run, no input, and progress is dropped.
 - `files`: `create() -> Writer` (`std::io::Write`, `finish() -> FileId`, dropped unfinished leaves no file), `open(&FileId) -> Reader` (`std::io::Read`), `info`, `delete`; errors are `AppError` code `Files` with a `message` field; `From<std::io::Error>` gives `Files` for the Reader's and Writer's own errors and the neutral code `Io` for any other io error. `FileId` is an opaque string, a plain JSON string. On the host target a thread-local in-memory store stands in (a finished file and a delete take effect at once, and it has none of the host's soft errors; only `TestApp` shows the host's commit semantics, because they need the host core); the harness gives the real component a `MemoryFiles` provider and applies a committed call's new and deleted files, with `TestApp::add_file` and `TestApp::file` to seed and inspect.
 
 ## Encoding contract (the TypeScript SDK must match)

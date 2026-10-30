@@ -89,6 +89,8 @@ pub fn trap_name(kind: host::TrapKind) -> &'static str {
     match kind {
         host::TrapKind::OutOfFuel => "OutOfFuel",
         host::TrapKind::Timeout => "Timeout",
+        host::TrapKind::Cancelled => "Cancelled",
+        host::TrapKind::Unavailable => "Unavailable",
         host::TrapKind::OutOfMemory => "OutOfMemory",
         host::TrapKind::StackOverflow => "StackOverflow",
         host::TrapKind::Fault => "Fault",
@@ -170,11 +172,14 @@ impl Outcome {
         }
     }
 
-    /// Whether the run hit its wall-clock deadline (or found no instance): never
-    /// logged, the idempotency key not spent (D23).
+    /// Whether the run hit its wall-clock deadline or the node could not serve it (no
+    /// instance, memory or file bytes): never logged, the idempotency key not spent (D23).
     #[must_use]
-    pub fn is_timeout(&self) -> bool {
-        self.status == Status::Trap && self.error["kind"] == trap_name(host::TrapKind::Timeout)
+    pub fn is_retryable(&self) -> bool {
+        self.status == Status::Trap
+            && [host::TrapKind::Timeout, host::TrapKind::Unavailable]
+                .into_iter()
+                .any(|kind| self.error["kind"] == trap_name(kind))
     }
 }
 
@@ -322,7 +327,8 @@ pub struct Applied {
     /// The entry was built on a state that was no longer current; nothing changed.
     #[serde(default)]
     pub conflict: bool,
-    /// The run timed out: nothing was logged (D23); answered `503 TIMEOUT`.
+    /// The run is retryable (wall clock or node unavailable): nothing was logged (D23); answered
+    /// `503 TIMEOUT`.
     #[serde(default)]
     pub timeout: bool,
     /// Plaintext bytes of the files this entry really removed: what the node refunds.
@@ -336,7 +342,7 @@ impl Applied {
     pub fn unlogged(index: u64, outcome: Outcome) -> Self {
         Self {
             index,
-            timeout: outcome.is_timeout(),
+            timeout: outcome.is_retryable(),
             status: outcome.status,
             result: outcome.result,
             error: outcome.error,
@@ -989,6 +995,38 @@ pub fn embedded_abi(component: &[u8]) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_wall_clock_and_node_unavailability_are_retryable() {
+        use host::TrapKind::*;
+        let wire: Vec<_> = [
+            OutOfFuel,
+            Timeout,
+            Cancelled,
+            Unavailable,
+            OutOfMemory,
+            StackOverflow,
+            Fault,
+            HostDenied,
+        ]
+        .into_iter()
+        .map(|kind| (trap_name(kind), Outcome::trap(kind, "d").is_retryable()))
+        .collect();
+        assert_eq!(
+            wire,
+            [
+                ("OutOfFuel", false),
+                ("Timeout", true),
+                ("Cancelled", false),
+                ("Unavailable", true),
+                ("OutOfMemory", false),
+                ("StackOverflow", false),
+                ("Fault", false),
+                ("HostDenied", false),
+            ]
+        );
+        assert!(!Outcome::default().is_retryable());
+    }
 
     /// A machine on a real, empty group state (the log's store, in a temp dir).
     struct Rig {

@@ -1605,6 +1605,45 @@ async fn unknown_methods_and_init_are_refused_by_the_node() {
     assert_eq!(applied(), at, "a refused call was logged");
 }
 
+/// A compute method and its result method are the node's: no client can call either through
+/// `/intents` or `/views`, and a refused call leaves no log entry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compute_and_compute_result_methods_are_refused_to_clients() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice.upload_bundle(wasm("compute")).await.unwrap();
+    let app = alice
+        .create_app("compute", &bundle, json!({}))
+        .await
+        .unwrap();
+    let leader = c.app_leader(&app).unwrap();
+    let applied = || {
+        c.nodes[leader]
+            .as_ref()
+            .unwrap()
+            .node
+            .hosted(&app)
+            .unwrap()
+            .applied()
+    };
+    let at = applied();
+    for method in ["digest", "onDone"] {
+        let e = alice.call(&app, method, json!({}), None).await.unwrap_err();
+        assert_eq!(e.details().unwrap()["code"], "WrongKind", "{method}: {e}");
+        let e = alice
+            .view(&app, method, json!({}), Consistency::Strong)
+            .await
+            .unwrap_err();
+        assert_eq!(e.details().unwrap()["code"], "WrongKind", "{method}: {e}");
+    }
+    assert_eq!(applied(), at, "a refused call was logged");
+    let v = alice
+        .view(&app, "done", json!({}), Consistency::Strong)
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!("0"));
+}
+
 /// Upgrades switch the bundle, code only; a named migration is refused (D38).
 /// The upgrade route is the node's: a passkey assertion over the exact
 /// upgrade (412 first), and a refusal answered `422 UPGRADE_FAILED` with the

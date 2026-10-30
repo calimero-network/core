@@ -28,6 +28,8 @@ use std::task::Poll;
 
 use bytes::Bytes;
 use calimero_app_host::{HostDenied, InvocationKind, MAX_LOG_BYTES};
+
+use crate::MAX_RANDOM_BYTES_PER_CALL;
 use tokio::io::AsyncWrite;
 use wasmtime::component::types::ComponentItem;
 use wasmtime::component::Component;
@@ -164,12 +166,10 @@ impl monotonic_clock::Host for StoreData {
 
 impl random::Host for StoreData {
     fn get_random_bytes(&mut self, len: u64) -> Result<Vec<u8>> {
-        // A request larger than the instance's memory could never be returned; refuse it
-        // before allocating.
         let len = usize::try_from(len)
             .ok()
-            .filter(|len| *len <= self.max_random_bytes)
-            .ok_or_else(|| denied(HostDenied("random request larger than memory".into())))?;
+            .filter(|len| *len <= MAX_RANDOM_BYTES_PER_CALL)
+            .ok_or_else(|| denied(HostDenied("random request over the per-call limit".into())))?;
         let mut buf = vec![0; len];
         self.host.random_fill(&mut buf);
         Ok(buf)

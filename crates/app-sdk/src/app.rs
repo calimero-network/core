@@ -23,7 +23,7 @@
 //! assembled.
 
 pub use calimero_app_sdk_macros::{
-    allow, confirm, error, event, every, init, logic, public, state, view,
+    allow, compute, compute_result, confirm, error, event, every, init, logic, public, state, view,
 };
 
 pub use crate::__app_bail as bail;

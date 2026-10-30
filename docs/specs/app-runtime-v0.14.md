@@ -381,6 +381,14 @@ interface files {
   delete: func(id: blob-id) -> result<_, string>;
 }
 
+// Available only while handling a compute run: kind = action with a run id.
+interface compute {
+  use types.{blob-id, action-id};
+  run-id: func() -> option<action-id>;
+  inputs: func() -> list<blob-id>;
+  progress: func(percent: u8, step: string);   // compute runs only; step is cut at 128 bytes; the last value wins, never logged
+}
+
 interface xcall {
   send: func(app: string, method: string, args: list<u8>) -> result<_, string>; // outbox; delivered after commit
 }
@@ -399,6 +407,7 @@ world app {
   import events;
   import blobs;
   import files;
+  import compute;
   import xcall;
   import action;
 
@@ -441,6 +450,18 @@ Every refusal that is not a policy violation is a fixed soft error string: `no s
 A storage failure inside the provider is passed through as an opaque soft error, and the writer then answers `file write failed`.
 An unknown handle, or running out of handle ids, traps `HostDenied`.
 A component built against 0.5.0 keeps installing and running: the engine accepts `calimero:app/*` imports at any 0.5 patch up to the world's, and the linker matches them by semver within the minor.
+
+### Compute methods
+
+A method declares itself a compute method in the ABI with `"kind": "compute"` and `"compute": { "fuel": u64, "memoryMib": u32, "wallSecs": u32, "result": "<method>" }`; `fuel` is required, memory defaults to 4,096 MiB and wall time to 900 s.
+`result` names a method of the same ABI that carries `"computeResult": true`.
+The host refuses at install (`BadAbi`) a compute method whose fuel is over 10^12, memory over 4,096 MiB or wall time over 900 s, or whose `result` is not a `computeResult` method; so does `compute` on any other kind.
+The SDK writes them from `#[app::compute(fuel = N, memory_mib = M, wall_secs = S, result = "method")]` on a method without `self`, and `#[app::compute_result]` on a call method.
+The node never lets a client reach either: `/intents` and `/views` answer `WrongKind` for a compute method and for a `computeResult` method, whoever the caller is.
+A compute run is `kind = action` with a run: it has no storage, `emit`, `xcall`, `unique-id` or `start-action` (`HostDenied`), reads only the files named in `compute.inputs`, may create files (2 GiB in all, 47 MiB each) and may not delete.
+Its clock is fixed at the start entry's timestamp and its randomness is ChaCha20 from the run's seed, so a run repeats exactly.
+Its result is at most 64 KiB; a larger one ends the run `Trap(HostDenied, "result too large")`.
+The engine runs it in a store with on-demand allocation, NaN canonicalization, memory up to 4 GiB, and an interrupt flag checked at every epoch tick (a cancelled run is `Trap(Cancelled, "cancelled")`); `Usage` carries the fuel, CPU time and peak memory the run took.
 
 ### WASI, implemented by the host
 
@@ -521,6 +542,8 @@ Every engine maps its failures to one status set, written to the log. Any status
 | `AppError { code, message }` | method returned an error | empty |
 | `Trap(OutOfFuel)` | fuel exhausted | empty |
 | `Trap(Timeout)` | epoch deadline reached; not logged, retryable with the same key (D23); returned as 503 TIMEOUT (D36) | empty |
+| `Trap(Unavailable)` | the node could not serve the run (no instance slot, an allocation or the bytes of a file); not logged, retryable like a timeout, never the app's fault | empty |
+| `Trap(Cancelled)` | a compute run's interrupt flag was set | empty |
 | `Trap(OutOfMemory)` | memory or table limit | empty |
 | `Trap(StackOverflow)` | stack limit | empty |
 | `Trap(Fault)` | out-of-bounds, misaligned, bad signature, arithmetic, unreachable, a JS exception | empty |

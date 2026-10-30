@@ -27,6 +27,8 @@ pub enum MethodKind {
     View,
     /// `#[app::every(..)]`.
     Timer,
+    /// `#[app::compute(..)]`: runs on a job node as an action.
+    Compute,
 }
 
 /// One exposed method.
@@ -51,7 +53,7 @@ pub enum Kind {
     Call,
     /// A read on any node.
     View,
-    /// An action (not in this SDK version).
+    /// A compute run.
     Action,
     /// A timer tick; `args` carry the tick.
     Timer,
@@ -105,7 +107,8 @@ pub fn handle<D: Dispatch>(kind: Kind, method: &str, args: &[u8]) -> Result<Vec<
         (Kind::View, MethodKind::View)
         | (Kind::Call | Kind::XcallDeliver, MethodKind::Call | MethodKind::View)
         | (Kind::Timer, MethodKind::Timer)
-        | (Kind::Init, MethodKind::Init) => {}
+        | (Kind::Init, MethodKind::Init)
+        | (Kind::Action, MethodKind::Compute) => {}
         (Kind::View, _) => return Err(AppError::new("NotAView")),
         _ => return Err(AppError::new("WrongKind")),
     }
@@ -119,7 +122,8 @@ pub fn handle<D: Dispatch>(kind: Kind, method: &str, args: &[u8]) -> Result<Vec<
     } else {
         args
     };
-    if kind != Kind::Init {
+    // The node vets the caller when it starts a compute run, so the run itself is not checked.
+    if kind != Kind::Init && m.kind != MethodKind::Compute {
         match env::caller() {
             Caller::Account(_) | Caller::ApiKey { .. } => {}
             Caller::System if m.allow_system => {}

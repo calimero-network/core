@@ -65,6 +65,7 @@ fn invoke(
         id_seq: 1,
         seed: [7; 32],
         timer: None,
+        compute: None,
     };
     let host = HostCore::new(app, state, applied, inv, dir).unwrap();
     r.node.app_engine().invoke(prepared, host, budget)

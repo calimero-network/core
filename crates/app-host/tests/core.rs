@@ -6,12 +6,12 @@ use std::time::Duration;
 use std::time::Instant;
 
 use calimero_app_host::{
-    stored_key, Abi, Audience, Caller, Directory, Event, HostCore, HostDenied, InvalidInvocation,
-    Invocation, InvocationKind, KeyValue, MethodKind, OrgRole, PrepareError, Status, TimerCtx,
-    Usage, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE, EMIT_FOREIGN_ORG, EMIT_NAME_TOO_LONG,
-    EMIT_TOO_MANY, EMIT_TOO_MANY_ACCOUNTS, EMIT_UNKNOWN_TEAM, GENERATION, MAX_AUDIENCE_ACCOUNTS,
-    MAX_EVENTS, MAX_EVENT_DATA_BYTES, MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES, MAX_RUN_BYTES,
-    MAX_WRITES, SUPPORTED_ABI_VERSIONS,
+    stored_key, Abi, Audience, Caller, ComputeCtx, Directory, Event, HostCore, HostDenied,
+    InvalidInvocation, Invocation, InvocationKind, KeyValue, MethodKind, OrgRole, PrepareError,
+    Status, TimerCtx, Usage, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE, EMIT_FOREIGN_ORG,
+    EMIT_NAME_TOO_LONG, EMIT_TOO_MANY, EMIT_TOO_MANY_ACCOUNTS, EMIT_UNKNOWN_TEAM, GENERATION,
+    MAX_AUDIENCE_ACCOUNTS, MAX_EVENTS, MAX_EVENT_DATA_BYTES, MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES,
+    MAX_RUN_BYTES, MAX_WRITES, SUPPORTED_ABI_VERSIONS,
 };
 use serde_json::json;
 
@@ -49,6 +49,11 @@ fn inv(kind: InvocationKind) -> Invocation {
         id_seq: 42,
         seed: [7; 32],
         timer: None,
+        compute: (kind == InvocationKind::Action).then(|| ComputeCtx {
+            run_id: "run".to_owned(),
+            owner: "owner".to_owned(),
+            inputs: Vec::new(),
+        }),
     }
 }
 

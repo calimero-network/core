@@ -108,6 +108,7 @@ fn inv(kind: InvocationKind) -> Invocation {
         id_seq: 42,
         seed: [7; 32],
         timer: None,
+        compute: None,
     }
 }
 
@@ -149,15 +150,10 @@ fn writes_are_logged_kinds_only_reads_are_everything_but_migrate() {
         InvocationKind::Init,
         InvocationKind::XcallDeliver,
     ];
-    let no_writes = [
-        InvocationKind::View,
-        InvocationKind::Action,
-        InvocationKind::Migrate,
-    ];
+    let no_writes = [InvocationKind::View, InvocationKind::Migrate];
     let reads = [
         InvocationKind::Call,
         InvocationKind::View,
-        InvocationKind::Action,
         InvocationKind::Init,
         InvocationKind::XcallDeliver,
     ];
@@ -639,7 +635,7 @@ impl Files for UnavailableFiles {
 }
 
 #[test]
-fn an_unavailable_file_aborts_a_logged_run_as_a_timeout_and_is_soft_in_a_view() {
+fn an_unavailable_file_aborts_a_logged_run_as_unavailable_and_is_soft_in_a_view() {
     for kind in [InvocationKind::Call, InvocationKind::Init] {
         let mut h = host(inv(kind), Arc::new(UnavailableFiles));
         denied(h.files_open("f"));
@@ -653,7 +649,7 @@ fn an_unavailable_file_aborts_a_logged_run_as_a_timeout_and_is_soft_in_a_view() 
             matches!(
                 out.status,
                 Status::Trap {
-                    kind: TrapKind::Timeout,
+                    kind: TrapKind::Unavailable,
                     ..
                 }
             ),
@@ -677,4 +673,40 @@ fn new_files_are_capped_per_run() {
     }
     let w = h.files_create().unwrap().unwrap();
     assert_eq!(h.writer_finish(w).unwrap().unwrap_err(), FILE_TOO_MANY_NEW);
+}
+
+/// A provider whose file hands out one byte per read.
+struct TrickleFiles(Vec<u8>);
+
+struct Trickle(std::collections::VecDeque<u8>);
+
+impl FileRead for Trickle {
+    fn read(&mut self, _max: usize) -> Result<Vec<u8>, ReadError> {
+        Ok(self.0.pop_front().into_iter().collect())
+    }
+}
+
+impl Files for TrickleFiles {
+    fn open(&self, _id: &str) -> Result<Box<dyn FileRead>, FileError> {
+        Ok(Box::new(Trickle(self.0.iter().copied().collect())))
+    }
+    fn info(&self, _id: &str) -> Option<FileInfo> {
+        None
+    }
+    fn create(&self) -> Result<Box<dyn FileWrite>, FileError> {
+        Err(FileError::Failed(FILES_DISABLED.to_owned()))
+    }
+}
+
+#[test]
+fn a_read_fills_to_max_whatever_the_provider_chunks() {
+    for kind in [InvocationKind::Call, InvocationKind::View] {
+        let mut h = host(inv(kind), Arc::new(TrickleFiles(b"abcdefg".to_vec())));
+        let r = h.files_open("f").unwrap().unwrap();
+        assert_eq!(h.reader_read(r, 3).unwrap().unwrap(), b"abc", "{kind:?}");
+        assert_eq!(h.reader_read(r, 3).unwrap().unwrap(), b"def");
+        assert_eq!(h.reader_read(r, 3).unwrap().unwrap(), b"g");
+        assert!(h.reader_read(r, 3).unwrap().unwrap().is_empty());
+        assert!(h.reader_read(r, 3).unwrap().unwrap().is_empty());
+    }
 }
