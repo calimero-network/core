@@ -32,6 +32,7 @@ log records carry the actor `operator`, which no account id can be.
 | `POST /ops/apps/{app}/replicas` | Move an app to a new replica set, onto approved releases only ([Replica moves](/protocol/replication/#replica-moves)) |
 | `GET` / `POST /ops/quotas` | Read or set the per-account quotas |
 | `POST /ops/backup` | Write sealed snapshots of the app groups this node leads (below) |
+| `POST /ops/releases/{version}/deadline { after }`, `DELETE …` | Set (RFC 3339) or lift a release's end-of-new-work deadline: after it, a party that has not approved the release creates, installs and upgrades nothing until it does; running apps go on ([Release deadlines](/protocol/governance/#release-deadlines)). Public at `GET /releases` |
 
 And, only where the deployment's [governance](/protocol/governance/) gives
 the operator that decision:
@@ -87,7 +88,9 @@ as anyone: sessions are minted only after a passkey ceremony, under a key held
 in the system state.
 
 The operator does control availability. It can stop, freeze or restart nodes,
-withhold the network, or refuse to register nodes. An app stays available
+withhold the network, or refuse to register nodes, and it sets release
+deadlines, which stop new work on old images but move no data and block no
+approval. An app stays available
 while a majority of its replicas run.
 
 ## Backups

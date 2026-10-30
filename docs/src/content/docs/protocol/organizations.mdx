@@ -47,8 +47,8 @@ Members have one role each, ordered `guest < member < admin < owner`:
 | --- | --- |
 | `guest` | Reach the organization's `org`-access apps |
 | `member` | Also own apps in the organization and create top-level teams if they hold `CREATE_TEAM` |
-| `admin` | Manage members and their roles (below owner), capabilities, teams, organization metadata; delete the organization's apps |
-| `owner` | Everything, plus ownership, release approvals, and deleting the organization. Upgrades and outbound approvals are also open to `MANAGE_APPLICATION` holders (see Capabilities) |
+| `admin` | Manage members and their roles (below owner), capabilities, teams, organization metadata; delete the organization's apps; approve releases, upgrade apps and approve outbound hosts (they hold every capability) |
+| `owner` | Everything, plus ownership and deleting the organization. Release approvals are also open to `APPROVE_RELEASES` holders, upgrades and outbound approvals to `MANAGE_APPLICATION` holders (see Capabilities) |
 
 There is exactly one owner. `SetOrgRole { role: owner }` by the owner moves
 ownership and makes the previous owner an admin; the owner cannot be removed,
@@ -59,11 +59,16 @@ invites and apps.
 
 An organization also keeps metadata for its apps and frontends to read (admins,
 or members holding `MANAGE_METADATA`), per-member metadata (the member or an
-admin), the mero-tee releases and outbound prefixes its owner approved, and its
-recent upgrade runs. Each metadata value is at most 16 KiB of JSON. Any
+admin), the mero-tee releases its `APPROVE_RELEASES` holders approved, the
+outbound prefixes its `MANAGE_APPLICATION` holders approved, and its recent
+upgrade runs. An organization may also be a **publisher**: a package signing key is
+bound to it by the key's own signature (`APPROVE_RELEASES` holders send the
+binding), and it then approves releases, and (where the package says so) runs
+upgrades, for every instance of that key's packages
+([Publishers](/protocol/governance/#publishers)). Each metadata value is at most 16 KiB of JSON. Any
 member reads, with `GET /orgs/{org}/apps`, the apps they reach or manage
 there with the release each runs and its last upgrade (who, of which kind),
-the releases the owner approved, and the releases the cluster's nodes run
+the releases that govern each app, and the releases the cluster's nodes run
 ([Reading the approvals](/protocol/governance/#reading-the-approvals)).
 
 ## Teams
@@ -117,6 +122,12 @@ organization value). Admins and team leads hold them all where they manage.
 | `1 << 6` | `DELETE_TEAM` | Deleting a team one does not manage |
 | `1 << 7` | `MANAGE_VISIBILITY` | Switching a team between open and restricted |
 | `1 << 8` | `MANAGE_METADATA` | Organization and team metadata |
+| `1 << 10` | `APPROVE_RELEASES` | Approving (or withdrawing) the mero-tee releases that hold the apps the organization governs: those of the packages it publishes, and its own apps of packages whose key is not bound; and binding a package signing key to the organization (org-wide only: a team grant does not reach it) ([Release approvals](/protocol/governance/#release-approvals)) |
+
+Bit 9 is unused: v1's `MemberCapabilities` spends it on `CAN_AUTHOR_ON_BEHALF`,
+so a client that sends v1's `ALL` grants nothing new by accident. A grant is
+`POST /orgs/{org}/capabilities { account, capabilities }` by an admin; `GET
+/orgs/{org}` lists who may approve releases (`releaseApprovers`).
 
 ## Invites
 

@@ -1879,7 +1879,7 @@ fn mpk_declaring(
     key: &ed25519_dalek::SigningKey,
     outbound: &[&str],
 ) -> Vec<u8> {
-    mpk_full(package, version, wasm, key, outbound, &[])
+    mpk_full(package, version, wasm, key, outbound, &[], None)
 }
 
 /// [`mpk`] declaring `outbound` and shipping `frontend` files (paths under
@@ -1891,6 +1891,7 @@ fn mpk_full(
     key: &ed25519_dalek::SigningKey,
     outbound: &[&str],
     frontend: &[(&str, &[u8])],
+    upgrades: Option<calimero_bundle::UpgradeAuthority>,
 ) -> Vec<u8> {
     use sha2::Digest;
     let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
@@ -1918,6 +1919,7 @@ fn mpk_full(
             files: frontend.iter().map(|(p, b)| artifact(p, b)).collect(),
         }),
         frontend_aliases: Vec::new(),
+        upgrades,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
         services: None,
         signature: None,
@@ -3800,6 +3802,7 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
                 ("frontend/index.html", html),
                 ("frontend/assets/app.js", b"console.log(1)"),
             ],
+            None,
         ))
         .await
         .unwrap();
@@ -5239,6 +5242,387 @@ async fn metrics_count_requests_errors_and_raft_without_naming_anyone() {
             "{secret} leaked into the metrics"
         );
     }
+}
+
+// ---------------------------------------------------------------- release governance
+
+const APPROVE_RELEASES: u32 = 1 << 10;
+
+/// An account's id, from `/auth/me`.
+async fn id_of(cl: &Client) -> String {
+    cl.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// `who` joins `org` at `role` through an invite `inviter` mints.
+async fn join(inviter: &Client, who: &Client, org: &str, role: &str) {
+    let token = inviter
+        .post(&format!("orgs/{org}/invites"), json!({ "role": role }))
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = who
+        .post(&format!("invites/{token}/redeem"), json!({}))
+        .await
+        .unwrap();
+}
+
+async fn new_org(cl: &Client, name: &str) -> String {
+    cl.post("orgs", json!({ "name": name })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+async fn ops(c: &Cluster) -> Client {
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    ops
+}
+
+/// Approving an organization's releases is `APPROVE_RELEASES`: the owner and
+/// admins hold it, a member only when granted, refused (403, before any
+/// passkey ceremony) once revoked; an outsider is told nothing (404); the
+/// operator still cannot approve on a cluster whose owners decide.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn approving_an_organizations_releases_needs_approve_releases() {
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let (carol, mut carol_pk) = signed_up(&c, 2, "carol").await;
+    let (dan, mut dan_pk) = signed_up(&c, 0, "dan").await;
+    let org = new_org(&alice, "Docs").await;
+    join(&alice, &bob, &org, "member").await;
+    join(&alice, &carol, &org, "admin").await;
+    let bob_id = id_of(&bob).await;
+    let caps = format!("orgs/{org}/capabilities");
+
+    let e = bob
+        .approve_release(Some(&org), "9.0.0", &mut bob_pk)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("403"), "{e}");
+    assert!(e.to_string().contains("APPROVE_RELEASES"), "{e}");
+
+    let _ok = alice
+        .post(
+            &caps,
+            json!({ "account": bob_id, "capabilities": APPROVE_RELEASES }),
+        )
+        .await
+        .unwrap();
+    let _ok = bob
+        .approve_release(Some(&org), "9.0.0", &mut bob_pk)
+        .await
+        .unwrap();
+    let _ok = carol
+        .approve_release(Some(&org), "9.1.0", &mut carol_pk)
+        .await
+        .unwrap();
+    let _ok = alice
+        .approve_release(Some(&org), "9.2.0", &mut alice_pk)
+        .await
+        .unwrap();
+    let view = alice.get(&format!("orgs/{org}")).await.unwrap();
+    let approvers: Vec<String> = serde_json::from_value(view["releaseApprovers"].clone()).unwrap();
+    assert!(approvers.contains(&bob_id), "{view}");
+    assert_eq!(approvers.len(), 3, "{view}");
+    for v in ["9.0.0", "9.1.0", "9.2.0"] {
+        assert!(view["approvedReleases"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(v)));
+    }
+
+    let _ok = alice
+        .post(&caps, json!({ "account": bob_id, "capabilities": 0 }))
+        .await
+        .unwrap();
+    let e = bob
+        .approve_release(Some(&org), "9.3.0", &mut bob_pk)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("403"), "revoked: {e}");
+
+    let e = dan
+        .approve_release(Some(&org), "9.3.0", &mut dan_pk)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("404"), "an outsider: {e}");
+
+    let e = ops(&c)
+        .await
+        .post("ops/releases", json!({ "version": "9.4.0" }))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("403"), "the operator: {e}");
+}
+
+async fn set_deadline(c: &Cluster, after: &str) -> Result<Value, Box<Error>> {
+    ops(c)
+        .await
+        .post("ops/releases/2.0.0/deadline", json!({ "after": after }))
+        .await
+        .map_err(Box::new)
+}
+
+/// A release deadline stops new work for whoever has not approved the
+/// release: before it everything goes on; after it a new app, an install and
+/// an upgrade are refused `409 RELEASE_DEADLINE` naming the release, while
+/// the existing app keeps answering; an account that approved it is
+/// unaffected, approving lifts the stop at once, and new apps then go only
+/// to nodes on the newer release. The deadlines are public.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_release_deadline_stops_new_work_but_not_running_apps() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.tee_release = Some(if cfg.node_id == 3 { "2.0.0" } else { "1.0.0" }.into());
+    })
+    .await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    set(&alice, &app, "v1").await.unwrap();
+
+    // Announced for later: nothing changes yet, and anyone can read it.
+    let _ok = set_deadline(&c, "2999-01-01T00:00:00Z").await.unwrap();
+    let _early = alice.create_app("early", &bundle, json!({})).await.unwrap();
+    let public = c.client(1).get("releases").await.unwrap();
+    assert_eq!(
+        public["deadlines"][0]["version"],
+        json!("2.0.0"),
+        "{public}"
+    );
+    assert_eq!(
+        public["deadlines"][0]["after"],
+        json!("2999-01-01T00:00:00Z")
+    );
+    let e = ops(&c)
+        .await
+        .post("ops/releases/2.0.0/deadline", json!({ "after": "soon" }))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("400"), "{e}");
+
+    // Bob approves 2.0.0 in time; then the deadline passes.
+    let _ok = bob
+        .approve_release(None, "2.0.0", &mut bob_pk)
+        .await
+        .unwrap();
+    let _ok = set_deadline(&c, "2001-01-01T00:00:00Z").await.unwrap();
+
+    let stopped = |e: Error| {
+        assert_eq!(e.code(), Some("RELEASE_DEADLINE"), "{e}");
+        assert!(e.to_string().contains("2.0.0"), "{e}");
+    };
+    stopped(
+        alice
+            .create_app("late", &bundle, json!({}))
+            .await
+            .unwrap_err(),
+    );
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
+    stopped(
+        alice
+            .upload_package(mpk("com.test.late", "0.1.0", &kv_wasm(), &publisher))
+            .await
+            .unwrap_err(),
+    );
+    let next = alice
+        .upload_bundle(variant(&kv_wasm(), "v2"))
+        .await
+        .unwrap();
+    stopped(
+        alice
+            .post(&format!("apps/{app}/upgrade"), json!({ "bundle": next }))
+            .await
+            .unwrap_err(),
+    );
+    // The running app keeps answering, reads and writes.
+    set(&alice, &app, "v2").await.unwrap();
+    assert_eq!(
+        strong_view(&alice, &app, "get", json!({ "key": "k" })).await,
+        json!("v2")
+    );
+
+    // Bob, who approved, carries on: on the newer node only.
+    let bobs = bob.upload_bundle(kv_wasm()).await.unwrap();
+    let created = bob
+        .post("apps", json!({ "name": "b", "bundle": bobs }))
+        .await
+        .unwrap();
+    assert_eq!(created["replicas"], json!([3]), "{created}");
+
+    // Approving lifts it for Alice at once.
+    let _ok = alice
+        .approve_release(None, "2.0.0", &mut alice_pk)
+        .await
+        .unwrap();
+    let created = alice
+        .post("apps", json!({ "name": "late", "bundle": bundle }))
+        .await
+        .unwrap();
+    assert_eq!(created["replicas"], json!([3]), "{created}");
+
+    // Lifted by the operator: gone from the public rules.
+    let _ok = ops(&c)
+        .await
+        .delete("ops/releases/2.0.0/deadline")
+        .await
+        .unwrap();
+    let public = c.client(1).get("releases").await.unwrap();
+    assert_eq!(public["deadlines"], json!([]), "{public}");
+}
+
+/// The binding of `key` to `org`: the key's signature over
+/// `calimero-publisher-binding/v1\n{cluster}\n{org}\n{signer}\n{generation}`,
+/// with the cluster's name and the key's generation as the node names them.
+async fn publisher_binding(cl: &Client, key: &ed25519_dalek::SigningKey, org: &str) -> Value {
+    use ed25519_dalek::Signer as _;
+    let signer = calimero_bundle::derive_signer_id_did_key(key.verifying_key().as_bytes());
+    let next = cl.get(&format!("publishers/{signer}")).await.unwrap();
+    let message = format!(
+        "calimero-publisher-binding/v1\n{}\n{org}\n{signer}\n{}",
+        next["cluster"].as_str().unwrap(),
+        next["generation"]
+    );
+    json!({
+        "signerId": signer,
+        "publicKey": calimero_identity::b64url(key.verifying_key().as_bytes()),
+        "signature": calimero_identity::b64url(&key.sign(message.as_bytes()).to_bytes()),
+    })
+}
+
+/// A publisher binds its package's key with the key's signature, then
+/// upgrades its customers' instances of a `publisher` package, which the
+/// customer may not (and nobody may before the binding); a later release may
+/// give upgrades to owners, never back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_publisher_upgrades_the_instances_of_its_publisher_packages() {
+    use calimero_bundle::UpgradeAuthority::{Owner, Publisher};
+    let c = Cluster::start(3).await;
+    let (pam, mut pam_pk) = signed_up(&c, 0, "pam").await;
+    let (cora, mut cora_pk) = signed_up(&c, 1, "cora").await;
+    let publisher = new_org(&pam, "Publisher").await;
+    let customer = new_org(&cora, "Customer").await;
+    let key = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
+    let release = |version: &str, wasm: &[u8], upgrades| {
+        mpk_full(
+            "com.test.pub",
+            version,
+            wasm,
+            &key,
+            &[],
+            &[],
+            Some(upgrades),
+        )
+    };
+    let kv = kv_wasm();
+    let first = release("1.0.0", &kv, Publisher);
+    let _ok = pam.upload_package(first.clone()).await.unwrap();
+    let _ok = cora.upload_package(first).await.unwrap();
+    let inst = cora
+        .create_app_from_package("i", "com.test.pub", None, None, json!({ "org": customer }))
+        .await
+        .unwrap();
+
+    // Until the key is bound, nobody upgrades a `publisher` package.
+    let e = cora
+        .post(
+            &format!("apps/{inst}/upgrade"),
+            json!({ "version": "1.0.0" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("409"), "{e}");
+    // The reports say so: the release declares `publisher`, but with the key
+    // unbound the instance's own organization approves its node releases.
+    let a = reported_app(&cora, &format!("orgs/{customer}/apps"), &inst).await;
+    assert_eq!(a["upgradesHeldBy"], json!("publisher"), "{a}");
+    assert_eq!(a["releasesApprovedBy"], json!("owner"), "{a}");
+    assert_eq!(a["publisher"]["org"], Value::Null, "{a}");
+
+    // Only the key's own signature over this organization's binding counts.
+    let e = cora
+        .post_confirmed(
+            &format!("orgs/{customer}/publishers"),
+            publisher_binding(&cora, &key, &publisher).await,
+            &mut cora_pk,
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("403"), "{e}");
+    let binding = publisher_binding(&pam, &key, &publisher).await;
+    let _ok = pam
+        .post_confirmed(
+            &format!("orgs/{publisher}/publishers"),
+            binding.clone(),
+            &mut pam_pk,
+        )
+        .await
+        .unwrap();
+    let view = pam.get(&format!("orgs/{publisher}")).await.unwrap();
+    assert_eq!(view["publishes"][0], binding["signerId"]);
+    // Bound: the publisher's approvals now decide the customer's instance.
+    let a = reported_app(&cora, &format!("orgs/{customer}/apps"), &inst).await;
+    assert_eq!(a["releasesApprovedBy"], json!("publisher"), "{a}");
+    assert_eq!(a["publisher"]["org"], json!(publisher), "{a}");
+    let ops = c.client(2);
+    ops.use_api_key("ops-secret").await;
+    let a = reported_app(&ops, "ops/apps", &inst).await;
+    assert_eq!(a["releasesApprovedBy"], json!("publisher"), "{a}");
+    assert_eq!(a["upgradesHeldBy"], json!("publisher"), "{a}");
+    // The same signature again is spent.
+    let e = pam
+        .post_confirmed(
+            &format!("orgs/{publisher}/publishers"),
+            binding,
+            &mut pam_pk,
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("403"), "{e}");
+
+    let _ok = pam
+        .upload_package(release("1.1.0", &variant(&kv, "v2"), Publisher))
+        .await
+        .unwrap();
+    // The customer no longer upgrades it.
+    let e = cora
+        .post_confirmed(
+            &format!("apps/{inst}/upgrade"),
+            json!({ "version": "1.1.0" }),
+            &mut cora_pk,
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("403"), "{e}");
+    // The publisher does, for every instance.
+    let run = pam
+        .post_confirmed(
+            &format!("orgs/{publisher}/packages/com.test.pub/upgrade"),
+            json!({ "version": "1.1.0" }),
+            &mut pam_pk,
+        )
+        .await
+        .unwrap();
+    let run = finished_run(&pam, &publisher, run["runId"].as_str().unwrap()).await;
+    assert_eq!(run["done"], json!([inst]), "{run}");
+
+    // Upgrades go to owners in a later release, never back.
+    let _ok = pam
+        .upload_package(release("1.2.0", &variant(&kv, "v3"), Owner))
+        .await
+        .unwrap();
+    let e = pam
+        .upload_package(release("1.3.0", &variant(&kv, "v4"), Publisher))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("409"), "{e}");
 }
 
 // ---------------------------------------------------------------- version and approval reports

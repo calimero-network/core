@@ -902,8 +902,10 @@ const fn yes() -> bool {
 }
 
 /// Approve (or withdraw) a mero-tee release for the apps of `scope`, with a
-/// passkey assertion over the exact change. Until the owner approves a
-/// release, nodes on it get none of those apps' data.
+/// passkey assertion over the exact change: an organization's by whoever
+/// holds `APPROVE_RELEASES` there (`SystemState::approves_releases`), an
+/// account's own by the account. Until it is approved, nodes on the release
+/// get none of those apps' data.
 async fn set_release_approval(
     node: &Node,
     headers: &HeaderMap,
@@ -918,6 +920,26 @@ async fn set_release_approval(
         crate::system::ReleaseScope::Cluster => "cluster".to_owned(),
     };
     owner_holds(node, |g| g.releases, "release approvals")?;
+    // Asked before the passkey ceremony, on fresh state, so a member whose
+    // capability was revoked or who left is refused at once; `apply` asks
+    // again.
+    if let crate::system::ReleaseScope::Org { org } = &scope {
+        node.sys_fresh().await;
+        let (member, approves) = node.sys(|s| {
+            (
+                s.orgs.get(org).is_some_and(|o| o.role(&account).is_some()),
+                s.approves_releases(org, &account),
+            )
+        });
+        if !member {
+            return Err(ApiError::not_found("no such organization"));
+        }
+        if !approves {
+            return Err(ApiError::forbidden(
+                "approving releases needs APPROVE_RELEASES in the organization",
+            ));
+        }
+    }
     let method = if body.approved {
         "__approve_release"
     } else {
@@ -1544,6 +1566,7 @@ async fn app_create(
         return Err(ApiError::forbidden("read-only API key"));
     }
     let owner = p.account()?;
+    let now = now_secs();
     let bundle = bundle_named(
         &node,
         body.bundle,
@@ -1570,10 +1593,21 @@ async fn app_create(
             Vec::new()
         }
     };
-    // Only nodes on an approved release (the owner's, or the operator's where
-    // the deployment gave it release approvals) may hold the app.
-    let approved = node.sys(|s| s.approved_for(body.org.as_deref(), &owner).cloned());
-    let replicas = node.place(approved.as_ref()).await;
+    // Past a release deadline the app's approver has not met, no new app;
+    // `CreateApp` asks again at the same time.
+    if let Some(stall) =
+        node.sys(|s| s.stalled_for_bundle(&bundle, body.org.as_deref(), &owner, now))
+    {
+        return Err(crate::node::stalled(&stall));
+    }
+    // Only nodes on an approved release (the publisher's, the owner's for an
+    // unbound package, or the operator's where the deployment gave it
+    // release approvals) may hold the app.
+    let approved = node.sys(|s| {
+        s.approved_for_bundle(&bundle, body.org.as_deref(), &owner)
+            .cloned()
+    });
+    let replicas = node.place(approved.as_ref(), now).await;
     if replicas.is_empty() {
         return Err(ApiError::unavailable(
             "no node runs a release this app's owner approved",
@@ -1598,7 +1632,7 @@ async fn app_create(
                 confirm_methods,
                 executor,
                 replicas,
-                created_at: now_secs(),
+                created_at: now,
                 init_args: body.init_args,
                 metadata: body.metadata,
                 last_upgrade: None,
@@ -2532,9 +2566,20 @@ async fn app_upgrade(
     // their own passkey: new code reads the app's data.
     let app = node.app(&app_id).await?;
     owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
-    if !node.sys(|s| s.may_upgrade(&app, &account)) {
+    let (may, unbound) = node.sys(|s| {
+        (
+            s.may_upgrade(&app, &account),
+            !s.upgrades_of(&app.bundle).is_owner() && s.publisher_of(&app.bundle).is_none(),
+        )
+    });
+    if unbound {
+        return Err(ApiError::conflict(
+            "this app's package is upgraded by its publisher, and no organization has bound its key yet",
+        ));
+    }
+    if !may {
         return Err(ApiError::forbidden(
-            "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization",
+            "upgrading this app needs whoever its package names: its owner (or MANAGE_APPLICATION in its organization), or its publisher's MANAGE_APPLICATION holders",
         ));
     }
     // A version alone means the app's own package and service.
@@ -2561,6 +2606,12 @@ async fn app_upgrade(
     if !node.sys(|s| s.bundles.contains_key(&bundle)) {
         return Err(crate::node::rejected("unknown bundle"));
     }
+    if !node.sys(|s| s.upgrade_keeps_authority(&app.bundle, &bundle)) {
+        return Err(ApiError::forbidden(
+            "an app whose owner upgrades it is not moved to a release its publisher upgrades",
+        ));
+    }
+    refuse_stalled(&node, &app, &bundle, now_secs())?;
     // A fresh passkey assertion over this exact upgrade, logged as consent.
     let consent = consent(
         &node,
@@ -2622,6 +2673,33 @@ async fn run_upgrade(
     migrate: Option<String>,
     who: Upgrader,
 ) -> ApiResult {
+    // Judged once, before the migration runs; `UpgradeApp` carries this time
+    // so `apply` judges the deadline at the same moment and never refuses
+    // the record of an upgrade the app's group already ran.
+    let begun = now_secs();
+    // Who may, and where to: judged here, for every path (one app, an
+    // organization's run, a publisher's run), before anything runs on the
+    // app's group; `UpgradeApp` judges both again.
+    let refusal = node.sys(|s| {
+        let a = s.apps.get(&app_id)?;
+        if !who.by_operator && !s.may_upgrade(a, &who.actor) {
+            return Some(ApiError::forbidden(
+                "upgrading this app needs whoever its package names: its owner (or MANAGE_APPLICATION in its organization), or its publisher's MANAGE_APPLICATION holders",
+            ));
+        }
+        if !who.by_operator && !s.upgrade_keeps_authority(&a.bundle, &bundle) {
+            return Some(ApiError::forbidden(
+                "an app whose owner upgrades it is not moved to a release its publisher upgrades",
+            ));
+        }
+        s.stalled_for_bundle(&bundle, a.org.as_deref(), &a.owner, begun)
+            .map(|stall| crate::node::stalled(&stall))
+    });
+    if let Some(e) = refusal {
+        let error = json!({ "code": e.code, "message": e.message });
+        note_failed_upgrade(node, &app_id, &bundle, &who, error).await;
+        return Err(e);
+    }
     let applied = match node
         .call(&CallRequest::host(
             app_id.clone(),
@@ -2657,7 +2735,7 @@ async fn run_upgrade(
             bundle,
             by_operator: who.by_operator,
             actor: who.actor,
-            at: now_secs(),
+            at: begun,
             run: who.run,
             consent: who.consent,
         })
@@ -2665,6 +2743,20 @@ async fn run_upgrade(
     Ok(Json(
         json!({ "index": applied.index, "status": applied.status, "error": applied.error }),
     ))
+}
+
+/// Refused `409 RELEASE_DEADLINE` when `app`, upgraded to `bundle`, may start
+/// no new work at `now` ([`crate::system::SystemState::stalled_for_bundle`]).
+fn refuse_stalled(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    bundle: &str,
+    now: u64,
+) -> Result<(), ApiError> {
+    match node.sys(|s| s.stalled_for_bundle(bundle, app.org.as_deref(), &app.owner, now)) {
+        Some(stall) => Err(crate::node::stalled(&stall)),
+        None => Ok(()),
+    }
 }
 
 async fn note_failed_upgrade(
@@ -2909,6 +3001,94 @@ async fn org_upgrade(
         run: None,
     };
     start_run(node, org, body, apps, who).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublisherUpgradeBody {
+    version: String,
+    #[serde(default)]
+    migrate: Option<String>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Upgrade every instance of `package`, whoever owns it, that its publisher
+/// upgrades (its release declares `upgrades: publisher`): for whoever holds
+/// `MANAGE_APPLICATION` in the publisher organization (`org`, which proved
+/// it holds the package's key), with one passkey assertion over the run.
+/// The run is kept on the publisher; each app is still checked on its own.
+async fn publisher_upgrade(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((org, package)): Path<(String, String)>,
+    Json(mut body): Json<PublisherUpgradeBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
+    node.sys_fresh().await;
+    let publishes = node.sys(|s| {
+        s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some())
+            && s.packages
+                .get(&package)
+                .and_then(|pk| s.publisher_of_signer(&pk.signer_id))
+                .is_some_and(|o| *o == org)
+    });
+    if !publishes {
+        return Err(ApiError::not_found(
+            "the organization publishes no such package",
+        ));
+    }
+    if !node.sys(|s| s.manages_apps(&org, &account, None)) {
+        return Err(ApiError::forbidden(
+            "upgrading a published package's instances needs MANAGE_APPLICATION in the publisher",
+        ));
+    }
+    // Installed from the registry first if the cluster lacks the release.
+    let _bundle = node
+        .resolve_release(&package, Some(&body.version), None, &account, false)
+        .await;
+    let consent = consent(
+        &node,
+        &p,
+        &format!("org:{org}"),
+        "__upgrade_published",
+        &json!({ "package": package, "version": body.version, "migrate": body.migrate }),
+        body.confirm.take(),
+    )
+    .await?;
+    let apps: Vec<crate::types::AppRecord> = node.sys(|s| {
+        s.apps
+            .values()
+            .filter(|a| {
+                s.bundles
+                    .get(&a.bundle)
+                    .and_then(|b| b.package.as_ref())
+                    .is_some_and(|at| at.package == package)
+                    && s.may_upgrade(a, &account)
+            })
+            .cloned()
+            .collect()
+    });
+    let who = Upgrader {
+        caller: Caller::Account {
+            account: account.clone(),
+        },
+        actor: account,
+        by_operator: false,
+        consent,
+        run: None,
+    };
+    let run = OrgUpgradeBody {
+        package,
+        version: body.version,
+        team: None,
+        cascade: false,
+        migrate: body.migrate,
+        confirm: None,
+    };
+    start_run(node, org, run, apps, who).await
 }
 
 /// [`org_upgrade`] by the operator, where the deployment gave it app upgrades.
@@ -3159,6 +3339,31 @@ async fn org_get(
     let mut v = serde_json::to_value(&o).unwrap_or_default();
     if let Some(teams) = v.get_mut("teams").and_then(Value::as_object_mut) {
         teams.retain(|id, _| o.sees_team(&account, id));
+    }
+    // Who may approve its releases, the keys it publishes, and whether a
+    // passed deadline has stopped new work on its own set (`null`: it has
+    // not).
+    let (approvers, publishes, stall) = node.sys(|s| {
+        (
+            s.release_approvers(&org),
+            s.publishers
+                .iter()
+                .filter(|(_, b)| b.org == org)
+                .map(|(k, _)| k.clone())
+                .collect::<Vec<_>>(),
+            s.stalled_for(Some(&org), "", now_secs()),
+        )
+    });
+    if let Some(obj) = v.as_object_mut() {
+        let _prev = obj.insert("releaseApprovers".into(), json!(approvers));
+        let _prev = obj.insert("publishes".into(), json!(publishes));
+        let _prev = obj.insert(
+            "newWorkStopped".into(),
+            stall.map_or(
+                Value::Null,
+                |st| json!({ "release": st.release, "after": crate::system::rfc3339(st.after) }),
+            ),
+        );
     }
     Ok(Json(v))
 }
@@ -4978,6 +5183,165 @@ async fn ops_release(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpsDeadlineBody {
+    /// RFC 3339: from then on, a scope that has not approved the release
+    /// starts no new work.
+    after: String,
+}
+
+/// Set the end-of-new-work deadline of a mero-tee release, in any
+/// governance: it decides availability, which is the operator's already. It
+/// moves no data and blocks no approval; a scope that approves the release
+/// (or a newer one) is past it at once.
+async fn ops_release_deadline(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(version): Path<String>,
+    Json(body): Json<OpsDeadlineBody>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    let after = chrono::DateTime::parse_from_rfc3339(&body.after)
+        .ok()
+        .and_then(|t| u64::try_from(t.timestamp()).ok())
+        .ok_or_else(|| {
+            ApiError::bad_request("BAD_REQUEST", "`after` is an RFC 3339 time after 1970")
+        })?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::SetReleaseDeadline {
+            version,
+            after: Some(after),
+        })
+        .await?,
+    ))
+}
+
+/// Lift a release's deadline.
+async fn ops_release_deadline_lift(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(version): Path<String>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::SetReleaseDeadline {
+            version,
+            after: None,
+        })
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PublisherBody {
+    signer_id: String,
+    public_key: String,
+    signature: String,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Bind a package signing key to the organization: the key's Ed25519
+/// signature over `system::publisher_binding_message` (this cluster's name,
+/// the organization, the key, the key's binding generation from
+/// `GET /publishers/{signer}`), by a member holding `APPROVE_RELEASES`, with a
+/// passkey assertion. The organization then approves the node images every
+/// instance of the key's packages runs on, and upgrades those whose package
+/// says `upgrades: publisher`. Binding again moves the key, with a new
+/// signature from it.
+async fn org_publisher(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<PublisherBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    node.sys_fresh().await;
+    let (member, holds, generation) = node.sys(|s| {
+        (
+            s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some()),
+            s.holds_approve_releases(&org, &account),
+            s.binding_generation(&body.signer_id),
+        )
+    });
+    if !member {
+        return Err(ApiError::not_found("no such organization"));
+    }
+    if !holds {
+        return Err(ApiError::forbidden(
+            "binding a publisher key needs APPROVE_RELEASES in the organization",
+        ));
+    }
+    let cluster = node.config.cluster.clone();
+    let proof = crate::system::PublisherProof {
+        public_key: body.public_key,
+        signature: body.signature,
+    };
+    let message =
+        crate::system::publisher_binding_message(&cluster, &org, &body.signer_id, generation);
+    if !proof.proves(&body.signer_id, &message) {
+        return Err(ApiError::forbidden(
+            "the proof is not that key's signature over this binding",
+        ));
+    }
+    let consent = consent(
+        &node,
+        &p,
+        &format!("org:{org}"),
+        "__bind_publisher",
+        &json!({ "signerId": body.signer_id, "generation": generation }),
+        body.confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::BindPublisher {
+            signer_id: body.signer_id,
+            org,
+            cluster,
+            proof,
+            actor: account,
+            consent,
+        })
+        .await?,
+    ))
+}
+
+/// What a key signs to bind it here next: this cluster's name and the key's
+/// binding generation, and whether it is bound now. For anyone signed in.
+async fn publisher_binding(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(signer): Path<String>,
+) -> ApiResult {
+    let _p = signed_in(&node, &headers).await?;
+    node.sys_fresh().await;
+    Ok(Json(node.sys(|s| {
+        json!({
+            "signerId": signer,
+            "cluster": node.config.cluster,
+            "generation": s.binding_generation(&signer),
+            "bound": s.publisher_of_signer(&signer).is_some(),
+        })
+    })))
+}
+
+/// The cluster's release rules, for anyone, signed in or not (inside the
+/// sealed channel, so from an attested node): the governance, and each
+/// release's end-of-new-work deadline. Users see the rules before they rely
+/// on them.
+async fn releases_public(State(node): State<Arc<Node>>) -> ApiResult {
+    node.sys_fresh().await;
+    Ok(Json(node.sys(|s| {
+        json!({
+            "governance": s.governance(),
+            "deadlines": s.deadlines_json(),
+        })
+    })))
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OpsOutboundBody {
     package: String,
@@ -5162,6 +5526,12 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/orgs/{org}/teams/{team}", get(team_get).post(team_update).delete(team_delete))
         .route("/orgs/{org}/capabilities", post(org_capabilities))
         .route("/orgs/{org}/releases", post(org_release_approval))
+        .route("/orgs/{org}/publishers", post(org_publisher))
+        .route("/publishers/{signer}", get(publisher_binding))
+        .route(
+            "/orgs/{org}/packages/{package}/upgrade",
+            post(publisher_upgrade),
+        )
         .route("/orgs/{org}/apps", get(org_apps))
         .route("/orgs/{org}/outbound", post(org_outbound_approval))
         .route("/orgs/{org}/teams/{team}/members", post(team_set_member))
@@ -5196,6 +5566,11 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))
         .route("/ops/backup", post(ops_backup))
         .route("/ops/releases", post(ops_release))
+        .route(
+            "/ops/releases/{version}/deadline",
+            post(ops_release_deadline).delete(ops_release_deadline_lift),
+        )
+        .route("/releases", get(releases_public))
         .route("/ops/outbound", post(ops_outbound))
         .route("/ops/apps/{app}/upgrade", post(ops_upgrade))
         .route("/ops/orgs/{org}/upgrade", post(ops_org_upgrade))

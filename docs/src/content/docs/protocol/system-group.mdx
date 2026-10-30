@@ -24,6 +24,8 @@ not one app's own data:
 | `quotas` | Per-account limits and the account cap |
 | `governance` | Who holds which decision, fixed at genesis ([Deployment governance](/protocol/governance/)) |
 | `operator_releases`, `operator_outbound` | The operator's approvals, where governance gives it those decisions |
+| `release_deadlines` | The operator's end-of-new-work deadline per mero-tee release ([Release deadlines](/protocol/governance/#release-deadlines)) |
+| `publishers` | Package signing key → the organization it is bound to, and its binding generation ([Publishers](/protocol/governance/#publishers)) |
 
 ## Commands carry their actor
 
@@ -37,10 +39,17 @@ answers `{ "ok": … }` or `{ "err": … }`:
 ```text
 DeleteApp { app_id, actor }
   → refused unless actor is the app's owner, or an admin of its organization
-UpgradeApp { app_id, bundle, by_operator, actor, consent, … }
+UpgradeApp { app_id, bundle, by_operator, actor, at, consent, … }
   → refused unless governance gives app upgrades to whoever this is, and
-    (for an owner) actor is the app's owner, or, for an org app, holds
-    MANAGE_APPLICATION on its team or org-wide (owner, admin, lead, granted)
+    (an `owner` package) actor is the app's owner, or, for an org app, holds
+    MANAGE_APPLICATION on its team or org-wide (owner, admin, lead, granted),
+    or (a `publisher` package) holds MANAGE_APPLICATION in the publisher org;
+    and refused past a release deadline its approver has not met (at `at`)
+SetReleaseApproval { scope, version, actor, … }
+  → refused unless actor holds APPROVE_RELEASES in the org
+BindPublisher { signer_id, org, cluster, proof, actor, … }
+  → refused unless actor holds APPROVE_RELEASES in org and proof is the
+    key's signature over (cluster, org, key, the key's generation)
 InstallPackage { package, signer_id, release }
   → refused if the package is pinned to another signer, or the same
     version is installed with other contents, or the uploader's quota is spent

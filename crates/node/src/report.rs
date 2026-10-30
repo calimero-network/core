@@ -10,7 +10,7 @@ use std::ops::Bound;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::system::{compare_versions, SystemState, OPERATOR};
+use crate::system::{compare_versions, Authority, SystemState, OPERATOR};
 use crate::types::{Access, AppRecord, OrgRole, UpgradeRecord};
 
 /// The most apps (or organizations) one page of a report answers.
@@ -187,6 +187,33 @@ fn approved_json(set: Option<&BTreeSet<String>>) -> Value {
     set.map_or(Value::Null, |s| json!(s))
 }
 
+/// Who upgrades an app running `bundle`: `operator` where the cluster gives
+/// it app upgrades, else what the release's manifest declares (`owner` or
+/// `publisher`; a raw upload is its owner's).
+fn upgrades_held_by(s: &SystemState, bundle: &str) -> &'static str {
+    if s.governance().app_upgrades == Authority::Operator {
+        "operator"
+    } else if s.upgrades_of(bundle).is_owner() {
+        "owner"
+    } else {
+        "publisher"
+    }
+}
+
+/// Whose approvals decide which releases hold an app running `bundle`
+/// (`SystemState::approved_for_bundle`): `operator` where the cluster gives
+/// it release approvals, else `publisher` once the package's key is bound
+/// to an organization, else `owner` (the app's organization or account).
+fn releases_approved_by(s: &SystemState, bundle: &str) -> &'static str {
+    if s.governance().releases == Authority::Operator {
+        "operator"
+    } else if s.publisher_of(bundle).is_some() {
+        "publisher"
+    } else {
+        "owner"
+    }
+}
+
 /// One app's entry. `releases` is each node's attested release, as known.
 #[must_use]
 pub fn app_json(
@@ -214,8 +241,9 @@ pub fn app_json(
         "publisher": current
             .as_ref()
             .and_then(|r| s.packages.get(&r.package))
-            .map(|p| json!({ "signer": p.signer_id })),
-        "upgradesHeldBy": s.governance().app_upgrades,
+            .map(|p| json!({ "signer": p.signer_id, "org": s.publisher_of_signer(&p.signer_id) })),
+        "upgradesHeldBy": upgrades_held_by(s, &app.bundle),
+        "releasesApprovedBy": releases_approved_by(s, &app.bundle),
         "lastUpgrade": app.last_upgrade.as_ref().map(|u| last_upgrade_json(s, app, u, reader)),
         "approvedReleases": approved_json(s.approved_releases(app)),
         "replicas": replicas,

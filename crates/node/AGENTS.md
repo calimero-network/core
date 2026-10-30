@@ -108,16 +108,49 @@ is its command line.
   it installed), recorded as `system::OPERATOR`, which no account can be and
   which no account quota counts. Owner side: the passkey routes below. Whichever
   party does not hold a decision gets 403 (API) and a refusal (`apply`).
-- **Owner approvals** (where the owner holds the decision; `system::ReleaseScope`, `Org/Account::approved_releases`): the
-  mero-tee releases that may hold an org's (or an account's own) apps; the one it
-  began on is approved at creation, others by the owner with a passkey assertion
-  (`POST /orgs/{org}/releases`, `/auth/releases`, logged as consent). Enforced by the
-  replicas that hold the data: `Node::may_send` refuses Raft entries/snapshots to a
-  peer whose attested release (`HttpAttestor::seen_release`) is not approved,
-  `Node::place` skips such nodes, `/ops/apps/{app}/replicas` refuses them. Upgrades
-  are the app's owner's, or, for an org app, of whoever holds `MANAGE_APPLICATION`
-  on its team or org-wide (`SystemState::manages_apps`), with their own passkey
-  assertion over the exact upgrade (`consent` on `UpgradeApp`).
+- **The approval model** (where governance says `owner`; the same on every
+  cluster, shared or dedicated). Decision × who holds it × who acts × where:
+  - *Node images* (`SystemState::approved_for_bundle`): the app's **publisher**,
+    the org its package's signing key is bound to (`BindPublisher`,
+    `POST /orgs/{org}/publishers { signerId, publicKey, signature }` by an
+    `APPROVE_RELEASES` holder with passkey consent; the key's Ed25519 signature
+    over `system::publisher_binding_message` (cluster name, org, key, the key's
+    generation from `GET /publishers/{signer}`), verified at apply; each binding
+    bumps the generation, so a signature never replays; rebinding needs a new
+    signature from the pinned key; `SystemState::publishers`). `PackageRecord::owner`
+    is only the first installer and is never the publisher. The publisher's
+    `Org::approved_releases` cover every instance of every package the key
+    signs, customers' included. Unbound key or raw bundle: the app's own org's
+    set, or its owner account's. Acted on by members holding
+    `caps::APPROVE_RELEASES` (bit 10; owner and admins hold it, a member when
+    granted org-wide; `SystemState::approves_releases`, 403 at the API and
+    refused at apply), or by the account for its own set
+    (`POST /orgs/{org}/releases`, `/auth/releases`, logged as consent). Enforced
+    by the replicas that hold the data: `Node::may_send` refuses Raft
+    entries/snapshots to a peer whose attested release
+    (`HttpAttestor::seen_release`) is not approved, `Node::place` skips such
+    nodes, `/ops/apps/{app}/replicas` refuses them.
+  - *App upgrades*, per app: the package's signed manifest says
+    `upgrades: owner | publisher` (`calimero_bundle::UpgradeAuthority`, kept on
+    `PackageVersion::upgrades`; absent = `owner`). `owner`: the app's owner, or, for an org app, whoever holds
+    `MANAGE_APPLICATION` on its team or org-wide (`SystemState::manages_apps`).
+    `publisher`: the publisher's org-wide `MANAGE_APPLICATION` holders, for
+    every instance (`POST /orgs/{org}/packages/{package}/upgrade`), not the
+    instance's owner, and nobody (`409`) while the key is unbound.
+    Only loosens toward owners: `PackageRecord::upgrades_in_order` at install,
+    `SystemState::upgrade_keeps_authority` at upgrade (API and apply). Each with
+    their own passkey assertion (`consent` on `UpgradeApp`). `run_upgrade` judges
+    who and where before anything runs on the app's group.
+  - *Release deadlines* (`SetReleaseDeadline`, `SystemState::release_deadlines`):
+    the operator's, any governance, `POST|DELETE /ops/releases/{version}/deadline`,
+    public at `GET /releases`. Past one, a party whose newest approved release is
+    older (judged on the set that governs the app) creates, installs and upgrades
+    nothing (`SystemState::stalled_for_bundle`, `install_stalled`; `409
+    RELEASE_DEADLINE`, `node::stalled`), placement skips retired nodes
+    (`SystemState::retired`); running apps go on. Judged at the command's own
+    time (`createdAt`, `at`, `installedAt`), never a node's clock; `run_upgrade`
+    stamps `at` before the migration so apply agrees. No mixed-version
+    support: every node runs the same release.
 - **Placement** (`Node::place`, `placement::choose`): among the approved nodes,
   a new app's `--replicas` span as many zones (`NodeRecord::zone`, from
   `POST /ops/nodes`) as they are in, least loaded (then lower id) first within
