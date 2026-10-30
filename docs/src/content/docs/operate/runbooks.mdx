@@ -161,7 +161,18 @@ meroctl ops set-quotas '{"maxAppsPerAccount":100,"maxBundleBytesPerAccount":1073
 `set-quotas` replaces all of them (a field left out takes its default). They
 live in the system state, so every node enforces the same limits when commands
 apply; refusals are `429 QUOTA_EXCEEDED`. Sign-up is open, so `maxAccounts` is
-what bounds the cluster's growth.
+what bounds the cluster's growth. `maxFuelPerPayerPerDay` (0, the default, is no
+limit) caps the fuel an organization's apps, or an account's personal apps, burn
+per UTC day; it is checked where a call runs, not at apply
+([Limits](/protocol/limits/#quotas)).
+
+<Aside type="caution" title="Set the fuel cap only once every node runs a release that knows it">
+  A node of an earlier release does not know `maxFuelPerPayerPerDay`. It drops the
+  field from the quotas it applies, so a system snapshot it takes, and a quota change
+  sent to it (`set-quotas` merges into that node's own quotas), bring the cap back
+  to 0, which is no limit. Set the cap after the last node of the earlier release is
+  retired, and set it again if a quota changed while one was still running.
+</Aside>
 
 ## Upgrade the cluster's release
 

@@ -102,6 +102,11 @@ Per account, set by the operator (`POST /ops/quotas`), checked at apply
 | Accounts on the cluster | 100 000 |
 | Fuel per payer per UTC day (an org for its apps, an account for its personal apps, D78), over its component apps | 0 (no limit); checked before a client's call to any of its apps runs, not at apply: `init` and timer ticks still run and count (D76) |
 
+The fuel cap fails open: an app none of whose replicas answers counts as having
+used nothing that day, so during an outage a payer can run past its cap. Failing
+closed would refuse every call to all of a payer's apps whenever one replica of one
+of them is unreachable, which is worse than a payer briefly exceeding a daily cap.
+
 ## Roles and capabilities
 
 Organization roles (`guest < member < admin < owner`), team row roles (`lead`,
