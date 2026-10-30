@@ -582,10 +582,19 @@ impl AppMachine {
     /// a scan of its whole state.
     #[must_use]
     pub fn storage_stats(&self) -> StorageStats {
-        // A component's storage is its own keyspace, in memory; its files count as blob bytes.
+        // A component's storage is its own keyspace, in memory; its files are its blobs.
         if self.state.executor() == Some(crate::types::Executor::Component) {
             let kv = &self.state.component.kv;
-            return StorageStats {
+            let files = self.state.component.files.values();
+            let marks = files.filter_map(|f| {
+                let id = <[u8; 32]>::try_from(hex::decode(&f.id).ok()?).ok()?;
+                Some((
+                    id,
+                    f.size,
+                    <[u8; 32]>::try_from(f.sha256.0.as_slice()).ok()?,
+                ))
+            });
+            let mut stats = StorageStats {
                 keys: kv.len() as u64,
                 bytes: kv.iter().map(|(k, v)| (k.len() + v.len()) as u64).sum(),
                 blob_bytes: (self.state.component.files.values())
@@ -593,6 +602,12 @@ impl AppMachine {
                     .sum(),
                 ..StorageStats::default()
             };
+            for (id, size, sha256) in marks {
+                stats.blobs.push((id, size));
+                let _prev = stats.sha256.insert(id, sha256);
+            }
+            stats.blobs.sort();
+            return stats;
         }
         let prefix = blob_key(&[0; 32]);
         let prefix = &prefix[..prefix.len() - 32];
@@ -1027,6 +1042,9 @@ pub struct StorageStats {
     pub bytes: u64,
     #[serde(skip)]
     pub blobs: Vec<([u8; 32], u64)>,
+    /// The plaintext SHA-256 of each blob, for a component's files.
+    #[serde(skip)]
+    pub sha256: std::collections::BTreeMap<[u8; 32], [u8; 32]>,
     pub blob_bytes: u64,
 }
 

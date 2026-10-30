@@ -155,10 +155,10 @@ on a node with `meroctl ops backup` (it answers `{ written }`).
 
 ```bash
 meroctl ops quotas
-meroctl ops set-quotas '{"maxAppsPerAccount":100,"maxBundleBytesPerAccount":1073741824,"maxApiKeysPerAccount":50,"maxOrgsPerAccount":20,"maxAccounts":100000}'
+meroctl ops set-quotas '{"maxFileBytesPerOrg":50000000000}'
 ```
 
-`set-quotas` replaces all of them (a field left out takes its default). They
+`set-quotas` changes the limits it names (a field left out keeps its value). They
 live in the system state, so every node enforces the same limits when commands
 apply; refusals are `429 QUOTA_EXCEEDED`. Sign-up is open, so `maxAccounts` is
 what bounds the cluster's growth.

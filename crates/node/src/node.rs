@@ -45,6 +45,8 @@ struct StatsWire {
     bytes: u64,
     blob_bytes: u64,
     blobs: Vec<(String, u64)>,
+    #[serde(default)]
+    sha256: Vec<(String, String)>,
 }
 
 impl From<StatsWire> for crate::app::StorageStats {
@@ -59,6 +61,16 @@ impl From<StatsWire> for crate::app::StorageStats {
                 .filter_map(|(id, size)| {
                     let raw: [u8; 32] = hex::decode(id).ok()?.try_into().ok()?;
                     Some((raw, size))
+                })
+                .collect(),
+            sha256: w
+                .sha256
+                .into_iter()
+                .filter_map(|(id, sha)| {
+                    Some((
+                        hex::decode(id).ok()?.try_into().ok()?,
+                        hex::decode(sha).ok()?.try_into().ok()?,
+                    ))
                 })
                 .collect(),
         }
@@ -213,7 +225,12 @@ pub struct CallRequest {
 /// request: they change what the app is (its bundle, its blob marks), so
 /// authority over them is the API's (`run_upgrade`, the blob routes), never
 /// the app's or a caller's.
-pub const HOST_METHODS: [&str; 3] = ["__upgrade", "__blob", "__blob_forget"];
+pub const HOST_METHODS: [&str; 4] = [
+    "__upgrade",
+    "__blob",
+    "__blob_forget",
+    component::FILE_FORGET,
+];
 
 /// Whether a method name is reserved: the node's commands and the runtime's
 /// own exports (`__calimero_*`) are not methods a client, an xcall or a
@@ -528,6 +545,17 @@ pub fn stalled(stall: &crate::system::Stall) -> ApiError {
         "after": crate::system::rfc3339(stall.after),
         "afterSecs": stall.after,
     }))
+}
+
+pub(crate) fn blob_too_large() -> ApiError {
+    ApiError::new(
+        413,
+        "TOO_LARGE",
+        &format!(
+            "a blob is limited to {} MiB (what reaches the other nodes)",
+            MAX_BLOB_BYTES >> 20
+        ),
+    )
 }
 
 pub fn rejected(reason: &str) -> ApiError {
@@ -1245,6 +1273,18 @@ impl Node {
         }
     }
 
+    /// Removes this node's bytes of the files of an app that was deleted.
+    fn drop_deleted_files(&self, g: &Group<AppMachine>) {
+        for id in g.read_local(|m, _| m.file_marks()).keys() {
+            if self.is_code_blob(id) {
+                continue;
+            }
+            if let Err(e) = self.engine.delete_blob(id) {
+                warn!(file = %id, error = %e, "file bytes not deleted");
+            }
+        }
+    }
+
     /// Removes the bytes of files an app's applied entries deleted, once the group's applied
     /// index shows the entry committed; ends when the group is dropped.
     fn drop_forgotten_files(
@@ -1515,7 +1555,12 @@ impl Node {
                 }) {
                     self.search.drop_app(&app);
                 }
-                let _g = self.apps.write().ok().and_then(|mut a| a.remove(&group));
+                let stopped = self.apps.write().ok().and_then(|mut a| a.remove(&group));
+                if let Some(g) =
+                    stopped.filter(|_| self.sys(|s| s.apps.values().all(|a| a.group != group)))
+                {
+                    self.drop_deleted_files(&g);
+                }
                 let _r = self.engine.remove_group(group).await;
                 info!(group, "stopped hosting app group");
             }
@@ -1739,14 +1784,7 @@ impl Node {
     /// an app's blob goes only to nodes whose release may hold its data.
     pub async fn store_blob(&self, bytes: &[u8], app: Option<&str>) -> Result<String, ApiError> {
         if bytes.len() > MAX_BLOB_BYTES {
-            return Err(ApiError::new(
-                413,
-                "TOO_LARGE",
-                &format!(
-                    "a blob is limited to {} MiB (what reaches the other nodes)",
-                    MAX_BLOB_BYTES >> 20
-                ),
-            ));
+            return Err(blob_too_large());
         }
         let id = hex::encode(calimero_identity::sha256(bytes));
         self.engine
@@ -2205,8 +2243,11 @@ impl Node {
         if req.host && req.method == "__upgrade" {
             return self.upgrade_local(g, req).await;
         }
+        if req.host && req.method == component::FILE_FORGET {
+            return self.file_local(g, req).await;
+        }
         // Everything below runs a wasmer app's code or writes its keyspace; a
-        // component's calls are `call_component`'s, and its blobs wait for R8.
+        // component's calls are `call_component`'s.
         if g.read_local(|m, _| m.state.executor()) == Some(Kind::Component) {
             return Ok(Applied {
                 index: g.applied(),

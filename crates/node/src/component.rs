@@ -260,6 +260,25 @@ pub enum ComponentCmd {
     /// executors is refused before it is proposed.
     #[serde(rename = "componentUpgrade")]
     Upgrade { bundle: String, base_index: u64 },
+    /// An uploaded file's mark: the node's own command, built by the upload route once the
+    /// ciphertext is on the replicas. Applies on any state; a mark already there is refused.
+    #[serde(rename = "componentFile")]
+    File {
+        mark: FileMark,
+        /// The request's idempotency key: a retry of a committed command replays its answer.
+        #[serde(default)]
+        key: Option<String>,
+    },
+    /// Applies as nothing: committed through the leader to settle which earlier entries stand.
+    #[serde(rename = "componentBarrier")]
+    Barrier,
+    /// Forgets a file at its owner's request; answers its size. Each replica then drops the bytes.
+    #[serde(rename = "componentFileForget")]
+    FileForget {
+        id: String,
+        #[serde(default)]
+        key: Option<String>,
+    },
 }
 
 impl ComponentCmd {
@@ -304,6 +323,9 @@ pub struct Applied {
     /// The run timed out: nothing was logged (D23); answered `503 TIMEOUT`.
     #[serde(default)]
     pub timeout: bool,
+    /// Plaintext bytes of the files this entry really removed: what the node refunds.
+    #[serde(default)]
+    pub freed: u64,
 }
 
 impl Applied {
@@ -318,6 +340,29 @@ impl Applied {
             error: outcome.error,
             events: Vec::new(),
             conflict: false,
+            freed: 0,
+        }
+    }
+
+    fn answered(index: u64, result: Value) -> Self {
+        Self {
+            index,
+            status: Status::Ok,
+            result,
+            error: Value::Null,
+            events: Vec::new(),
+            conflict: false,
+            timeout: false,
+            freed: 0,
+        }
+    }
+
+    /// A node command the state refused: nothing changed.
+    fn refused(index: u64, reason: &str) -> Self {
+        Self {
+            status: Status::AppError,
+            error: Value::String(reason.to_owned()),
+            ..Self::answered(index, Value::Null)
         }
     }
 
@@ -330,6 +375,7 @@ impl Applied {
             events: Vec::new(),
             conflict: true,
             timeout: false,
+            freed: 0,
         }
     }
 }
@@ -498,6 +544,7 @@ impl AppMachine {
         }
         let c = &mut self.state.component;
         c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
+        let mut freed = 0;
         if outcome.status == Status::Ok {
             if !outcome.diff.is_empty() {
                 let kv = Arc::make_mut(&mut c.kv);
@@ -514,7 +561,7 @@ impl AppMachine {
                     }
                 }
             }
-            self.apply_files(tx, index, outcome);
+            freed = self.apply_files(tx, index, outcome);
             for (seq, e) in outcome.events.iter().enumerate() {
                 self.push_event(
                     tx,
@@ -541,13 +588,15 @@ impl AppMachine {
             },
             conflict: false,
             timeout: false,
+            freed,
         }
     }
 
-    /// Marks the files an `Ok` run finished and forgets the ones it deleted.
-    fn apply_files(&mut self, tx: &mut StateTx<'_>, index: u64, outcome: &Outcome) {
+    /// Marks the files an `Ok` run finished and forgets the ones it deleted; answers the
+    /// plaintext bytes of the marks that were really there to remove.
+    fn apply_files(&mut self, tx: &mut StateTx<'_>, index: u64, outcome: &Outcome) -> u64 {
         if outcome.files.is_empty() && outcome.deleted_files.is_empty() {
-            return;
+            return 0;
         }
         let files = Arc::make_mut(&mut self.state.component.files);
         for mark in &outcome.files {
@@ -557,9 +606,10 @@ impl AppMachine {
             }
             let _prev = files.insert(mark.id.clone(), mark.clone());
         }
+        let mut freed = 0;
         for id in &outcome.deleted_files {
             tx.delete_hidden(rows::CFILE, id.as_bytes());
-            let _prev = files.remove(id);
+            freed += files.remove(id).map_or(0, |mark| mark.size);
         }
         // The node drops the bytes once entry `index` shows as applied, so a failed commit keeps them.
         if let Some(forgotten) = self
@@ -568,6 +618,51 @@ impl AppMachine {
             .filter(|_| !outcome.deleted_files.is_empty())
         {
             let _sent = forgotten.send((index, outcome.deleted_files.clone()));
+        }
+        freed
+    }
+
+    fn apply_file(&mut self, tx: &mut StateTx<'_>, index: u64, mark: FileMark) -> Applied {
+        if self.state.component.files.contains_key(&mark.id) {
+            return Applied::refused(index, "file exists");
+        }
+        let result = json!({ "mark": mark });
+        let _freed = self.apply_files(
+            tx,
+            index,
+            &Outcome {
+                files: vec![mark],
+                ..Outcome::default()
+            },
+        );
+        Applied::answered(index, result)
+    }
+
+    /// Records a node command's answer under its request's key, as a call's is.
+    fn remember_command(&mut self, tx: &mut StateTx<'_>, key: Option<&str>, applied: &Applied) {
+        // The first answer under a key stays: a duplicate that applies as a refusal is not it.
+        let known = key.is_some_and(|k| self.component_replay(&Caller::System, k).is_some());
+        if let (Some(key), false) = (key, known) {
+            let ts_ms = self.state.component.head.last_ts_ms;
+            self.remember_component(tx, ts_ms, &Caller::System, key, applied);
+        }
+    }
+
+    fn apply_file_forget(&mut self, tx: &mut StateTx<'_>, index: u64, id: String) -> Applied {
+        if !self.state.component.files.contains_key(&id) {
+            return Applied::refused(index, "no such file");
+        }
+        let freed = self.apply_files(
+            tx,
+            index,
+            &Outcome {
+                deleted_files: vec![id],
+                ..Outcome::default()
+            },
+        );
+        Applied {
+            freed,
+            ..Applied::answered(index, json!({ "size": freed }))
         }
     }
 
@@ -670,7 +765,13 @@ impl AppMachine {
             Ok(ComponentCmd::Init { ts_ms, .. }) => Some(*ts_ms),
             Ok(ComponentCmd::Call(call)) => Some(call.ts_ms),
             Ok(ComponentCmd::Tick(tick)) => Some(tick.ts_ms),
-            Ok(ComponentCmd::Upgrade { .. }) | Err(_) => None,
+            Ok(
+                ComponentCmd::Upgrade { .. }
+                | ComponentCmd::File { .. }
+                | ComponentCmd::FileForget { .. }
+                | ComponentCmd::Barrier,
+            )
+            | Err(_) => None,
         };
         match &cmd {
             Ok(ComponentCmd::Init {
@@ -742,6 +843,17 @@ impl AppMachine {
                 a
             }
             Ok(ComponentCmd::Tick(tick)) => self.apply_tick(tx, index, &tick),
+            Ok(ComponentCmd::File { mark, key }) => {
+                let a = self.apply_file(tx, index, mark);
+                self.remember_command(tx, key.as_deref(), &a);
+                a
+            }
+            Ok(ComponentCmd::Barrier) => Applied::answered(index, Value::Null),
+            Ok(ComponentCmd::FileForget { id, key }) => {
+                let a = self.apply_file_forget(tx, index, id);
+                self.remember_command(tx, key.as_deref(), &a);
+                a
+            }
             Err(e) => Applied {
                 index,
                 status: Status::Trap,
@@ -750,6 +862,7 @@ impl AppMachine {
                 events: Vec::new(),
                 conflict: true,
                 timeout: false,
+                freed: 0,
             },
         };
         self.expire_component(tx, entry_ts_ms);
@@ -1045,6 +1158,36 @@ mod tests {
         assert_eq!(r.machine.storage_stats().blob_bytes, 2 * (5 + 16));
         let _a = r.apply(3, &call_with_files(2, Status::Ok, vec![], vec!["a"]));
         assert_eq!(r.machine.storage_stats().blob_bytes, 5 + 16);
+    }
+
+    #[test]
+    fn only_the_entry_that_really_removes_a_file_frees_its_bytes() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let _a = r.apply(2, &call_with_files(1, Status::Ok, vec![mark("a")], vec![]));
+        let first = r.apply(3, &call_with_files(2, Status::Ok, vec![], vec!["a"]));
+        let again = r.apply(4, &call_with_files(3, Status::Ok, vec![], vec!["a"]));
+        assert_eq!((first.freed, again.freed), (5, 0));
+    }
+
+    #[test]
+    fn a_duplicate_forget_does_not_overwrite_the_answer_recorded_for_its_key() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let _a = r.apply(2, &call_with_files(1, Status::Ok, vec![mark("a")], vec![]));
+        let forget = serde_json::to_vec(&ComponentCmd::FileForget {
+            id: "a".into(),
+            key: Some("node:k".into()),
+        })
+        .unwrap();
+        assert_eq!(r.apply(3, &forget).result["size"], json!(5));
+        assert_eq!(r.apply(4, &forget).status, Status::AppError);
+        let kept = r
+            .machine
+            .component_replay(&Caller::System, "node:k")
+            .unwrap();
+        assert_eq!(kept.status, Status::Ok);
+        assert_eq!(kept.result["size"], json!(5));
     }
 
     #[test]
