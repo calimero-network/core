@@ -24,7 +24,7 @@ pub fn is_hash(text: &str) -> bool {
 }
 
 /// The 32 bytes of a hash spelled as [`is_hash`] says.
-fn hash_bytes(text: &str) -> EyreResult<[u8; SHA256_LEN]> {
+pub(crate) fn hash_bytes(text: &str) -> EyreResult<[u8; SHA256_LEN]> {
     if !is_hash(text) {
         bail!("a hash is 64 lowercase hex digits");
     }

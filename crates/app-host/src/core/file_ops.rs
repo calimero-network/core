@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use super::HostCore;
 use crate::files::{
     FileError, FileInfo, FileRead, FileWrite, NewFile, ReadError, FILE_CORRUPT,
-    FILE_CREATED_IN_RUN, FILE_DELETED_TWICE, FILE_FAILED, FILE_FINISHED, FILE_TOO_LARGE,
-    FILE_TOO_MANY_DELETES, FILE_TOO_MANY_NEW, FILE_TOO_MANY_OPEN, FILE_UNAVAILABLE,
+    FILE_CREATED_IN_RUN, FILE_DELETED_TWICE, FILE_FAILED, FILE_FINISHED, FILE_IS_RUN_INPUT,
+    FILE_TOO_LARGE, FILE_TOO_MANY_DELETES, FILE_TOO_MANY_NEW, FILE_TOO_MANY_OPEN, FILE_UNAVAILABLE,
     MAX_COMPUTE_FILE_BYTES, MAX_DELETES, MAX_FILE_BYTES, MAX_NEW_FILES, MAX_OPEN_FILES,
     MAX_READ_CHUNK, MAX_RUN_FILE_BYTES, NO_SUCH_FILE, RUN_WROTE_TOO_MUCH,
 };
@@ -58,6 +58,10 @@ pub(crate) struct FileTable {
 impl FileTable {
     pub(crate) fn unavailable(&self) -> bool {
         self.unavailable
+    }
+
+    pub(crate) fn is_deleted(&self, id: &str) -> bool {
+        self.deleted.iter().any(|d| d == id)
     }
 
     pub(crate) fn into_changes(self) -> (Vec<NewFile>, Vec<String>) {
@@ -292,11 +296,27 @@ impl HostCore {
         if self.provider.info(id).is_none() {
             return Ok(Err(NO_SUCH_FILE.to_owned()));
         }
+        if self.is_run_input(id)? {
+            return Ok(Err(FILE_IS_RUN_INPUT.to_owned()));
+        }
         if self.files.deleted.len() >= MAX_DELETES {
             return Ok(Err(FILE_TOO_MANY_DELETES.to_owned()));
         }
         self.files.deleted.push(id.to_owned());
         Ok(Ok(()))
+    }
+
+    /// Whether `id` is an input of an active run, or of a run this invocation started.
+    fn is_run_input(&mut self, id: &str) -> Result<bool, HostDenied> {
+        let started = self
+            .starts
+            .iter()
+            .any(|r| r.inputs.iter().any(|i| i.id == id));
+        Ok(started
+            || self
+                .active_runs()?
+                .iter()
+                .any(|r| r.inputs.iter().any(|i| i == id)))
     }
 
     /// The run could not be served: it ends `Unavailable` and is retried, never the app's fault.

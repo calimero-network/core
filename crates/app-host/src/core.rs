@@ -8,9 +8,17 @@ use ciborium::value::Integer;
 use ciborium::Value;
 use rand::Rng;
 use rand_chacha::ChaCha20Rng;
+use sha2::{Digest, Sha256};
 
+use crate::abi::{Abi, MethodKind};
 use crate::files::{Files, NoFiles, FILE_UNAVAILABLE};
 use crate::overlay::{Cursor, Overlay};
+use crate::runs::{
+    ActiveRun, NoRuns, RunInput, Runs, StartedRun, MAX_ACTIVE_RUNS, MAX_COMPUTE_ARGS_BYTES,
+    MAX_RUN_INPUTS, MAX_RUN_INPUT_BYTES, MAX_STARTS_PER_RUN, NOT_A_COMPUTE_METHOD, NO_ACTIVE_RUN,
+    RUN_ARGS_TOO_LARGE, RUN_DUPLICATE_INPUT, RUN_INPUTS_TOO_LARGE, RUN_INPUT_MISSING,
+    RUN_RECORDS_UNREADABLE, RUN_TOO_MANY_ACTIVE, RUN_TOO_MANY_INPUTS, RUN_TOO_MANY_STARTS,
+};
 use crate::state::{stored_key, KeyValue, StateView, GENERATION};
 use crate::time;
 use crate::types::{
@@ -108,6 +116,12 @@ pub struct HostCore {
     provider: Arc<dyn Files>,
     files: FileTable,
     progress: Option<Progress>,
+    abi: Abi,
+    runs: Arc<dyn Runs>,
+    /// The app's active runs, read on the first `start` or `cancel`.
+    active: Option<Vec<ActiveRun>>,
+    starts: Vec<StartedRun>,
+    cancels: Vec<String>,
 }
 
 impl HostCore {
@@ -152,6 +166,11 @@ impl HostCore {
             provider: Arc::new(NoFiles),
             files: FileTable::default(),
             progress: None,
+            abi: Abi::default(),
+            runs: Arc::new(NoRuns),
+            active: None,
+            starts: Vec::new(),
+            cancels: Vec::new(),
         })
     }
 
@@ -166,6 +185,15 @@ impl HostCore {
     #[must_use]
     pub fn with_files(mut self, files: Arc<dyn Files>) -> Self {
         self.provider = files;
+        self
+    }
+
+    /// Lets the run start and cancel compute runs: `abi` is the running bundle's, `runs` the app's
+    /// records; the default has no compute method and no active run.
+    #[must_use]
+    pub fn with_compute(mut self, abi: Abi, runs: Arc<dyn Runs>) -> Self {
+        self.abi = abi;
+        self.runs = runs;
         self
     }
 
@@ -429,6 +457,109 @@ impl HostCore {
         Ok(())
     }
 
+    /// Starts a compute run, or answers the active run that is the same (method, arguments and
+    /// inputs). Logged writes only; the run exists once the entry that records it applies.
+    pub fn compute_start(
+        &mut self,
+        method: &str,
+        args: &[u8],
+        inputs: &[String],
+    ) -> Result<Result<String, String>, HostDenied> {
+        if !self.is_logged_write() {
+            return Err(self.denied("compute.start"));
+        }
+        let Some(MethodKind::Compute(caps)) = self.abi.methods.get(method).map(|m| m.kind.clone())
+        else {
+            return Ok(Err(NOT_A_COMPUTE_METHOD.to_owned()));
+        };
+        if args.len() > MAX_COMPUTE_ARGS_BYTES {
+            return Ok(Err(RUN_ARGS_TOO_LARGE.to_owned()));
+        }
+        if inputs.len() > MAX_RUN_INPUTS {
+            return Ok(Err(RUN_TOO_MANY_INPUTS.to_owned()));
+        }
+        let mut files = Vec::with_capacity(inputs.len());
+        let mut total = 0u64;
+        for id in inputs {
+            if files.iter().any(|f: &RunInput| &f.id == id) {
+                return Ok(Err(RUN_DUPLICATE_INPUT.to_owned()));
+            }
+            let info = if self.files.is_deleted(id) {
+                None
+            } else {
+                self.provider.info(id)
+            };
+            let Some(info) = info else {
+                return Ok(Err(RUN_INPUT_MISSING.to_owned()));
+            };
+            total = total.saturating_add(info.size);
+            files.push(RunInput {
+                id: id.clone(),
+                size: info.size,
+                sha256: info.sha256,
+            });
+        }
+        if total > MAX_RUN_INPUT_BYTES {
+            return Ok(Err(RUN_INPUTS_TOO_LARGE.to_owned()));
+        }
+        let wanted = ActiveRun {
+            run: String::new(),
+            method: method.to_owned(),
+            args_sha256: Sha256::digest(args).to_vec(),
+            inputs: inputs.to_vec(),
+            cancel_requested: false,
+        };
+        let started: Vec<ActiveRun> = self.starts.iter().map(StartedRun::to_active).collect();
+        let cancelled = self.cancels.clone();
+        if let Some(same) = (self.active_runs()?.iter())
+            .chain(&started)
+            .filter(|r| !r.cancel_requested && !cancelled.contains(&r.run))
+            .find(|r| r.same_job(&wanted))
+        {
+            return Ok(Ok(same.run.clone()));
+        }
+        if self.starts.len() >= MAX_STARTS_PER_RUN {
+            return Ok(Err(RUN_TOO_MANY_STARTS.to_owned()));
+        }
+        if self.active_runs()?.len() + self.starts.len() >= MAX_ACTIVE_RUNS {
+            return Ok(Err(RUN_TOO_MANY_ACTIVE.to_owned()));
+        }
+        let run = self.unique_id()?;
+        self.starts.push(StartedRun {
+            run: run.clone(),
+            method: method.to_owned(),
+            args: args.to_vec(),
+            inputs: files,
+            caps,
+        });
+        Ok(Ok(run))
+    }
+
+    /// Asks for an active run to be cancelled. Logged writes only; recorded, not applied.
+    pub fn compute_cancel(&mut self, run: &str) -> Result<Result<(), String>, HostDenied> {
+        if !self.is_logged_write() {
+            return Err(self.denied("compute.cancel"));
+        }
+        if !self.active_runs()?.iter().any(|r| r.run == run) {
+            return Ok(Err(NO_ACTIVE_RUN.to_owned()));
+        }
+        if !self.cancels.iter().any(|c| c == run) {
+            self.cancels.push(run.to_owned());
+        }
+        Ok(Ok(()))
+    }
+
+    pub(crate) fn active_runs(&mut self) -> Result<&[ActiveRun], HostDenied> {
+        if self.active.is_none() {
+            let active = self
+                .runs
+                .active()
+                .map_err(|_| HostDenied::new(RUN_RECORDS_UNREADABLE))?;
+            self.active = Some(active);
+        }
+        Ok(self.active.as_deref().unwrap_or_default())
+    }
+
     // --- events, xcall, blobs, action ------------------------------------------------
 
     /// Queues an event, delivered only if the run ends `Ok`. A policy refusal is the
@@ -603,6 +734,11 @@ impl HostCore {
         } else {
             (Vec::new(), Vec::new())
         };
+        let (compute_starts, compute_cancels) = if ok {
+            (self.starts, self.cancels)
+        } else {
+            (Vec::new(), Vec::new())
+        };
         Outcome {
             status,
             result,
@@ -615,6 +751,8 @@ impl HostCore {
             logs: self.logs,
             new_files,
             deleted_files,
+            compute_starts,
+            compute_cancels,
             usage: Usage {
                 writes: self.writes,
                 ..usage

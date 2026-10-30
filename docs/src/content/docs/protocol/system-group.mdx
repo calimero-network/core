@@ -174,5 +174,7 @@ same command for the same reason:
 | `maxOrgsPerAccount` | 20 (organizations owned) | `CreateOrg` |
 | `maxAccounts` | 100 000 | `CreateAccount` (sign-up is open, so this bounds the cluster) |
 | `maxFileBytesPerOrg` | 50 000 000 000 | `ChargeFileBytes` (plaintext bytes of the files of an organization's apps, or of a personal account's) |
+| `maxConcurrentRunsPerOrg` | 4 | `AcquireRun`, `ReleaseRun` (compute runs of an organization's apps, or of a personal account's, granted to job nodes at once; the rest wait, the longest-waiting organization first) |
+| `computeFuelPerOrg` | 10 000 000 000 000 | `AcquireRun`, `ReleaseRun` (the declared fuel of an organization's granted runs, summed) |
 
 `GET /auth/usage` shows an account what it uses against them.

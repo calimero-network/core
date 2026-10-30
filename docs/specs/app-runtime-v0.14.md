@@ -381,9 +381,12 @@ interface files {
   delete: func(id: blob-id) -> result<_, string>;
 }
 
-// Available only while handling a compute run: kind = action with a run id.
+// run-id, inputs and progress: only while handling a compute run (kind = action with a run id).
+// start and cancel: logged writes only (call, timer, init, xcall delivery, and so a result method).
 interface compute {
   use types.{blob-id, action-id};
+  start: func(method: string, args: list<u8>, inputs: list<blob-id>) -> result<action-id, string>; // an active run with the same method, args and inputs answers its id
+  cancel: func(run: action-id) -> result<_, string>;   // an active run only; recorded with the run's outcome, applied with its entry
   run-id: func() -> option<action-id>;
   inputs: func() -> list<blob-id>;
   progress: func(percent: u8, step: string);   // compute runs only; step is cut at 128 bytes; the last value wins, never logged
@@ -461,6 +464,14 @@ The node never lets a client reach either: `/intents` and `/views` answer `Wrong
 A compute run is `kind = action` with a run: it has no storage, `emit`, `xcall`, `unique-id` or `start-action` (`HostDenied`), reads only the files named in `compute.inputs`, may create files (2 GiB in all, 47 MiB each) and may not delete.
 Its clock is fixed at the start entry's timestamp and its randomness is ChaCha20 from the run's seed, so a run repeats exactly.
 Its result is at most 64 KiB; a larger one ends the run `Trap(HostDenied, "result too large")`.
+
+A logged run starts a compute run with `compute.start(method, args, inputs)` and asks for one to end with `compute.cancel(run)`; any other kind (a view, a compute run, a migration) gets `HostDenied`.
+`start` answers soft errors in this order: `not a compute method` (the method is not a compute method of the running bundle's ABI), `arguments too large` (over 64 KiB), `too many inputs` (over 64), `input named twice`, `input is not a file of this app` (an input must be a file the app marks and this run did not delete), `inputs too large` (declared plaintext over 2 GiB).
+An active run, or one this invocation already started, with the same method, SHA-256 of the arguments and inputs in order answers its id and records nothing.
+Otherwise `too many runs started` (16 per run) and `too many active runs` (64 per app) apply, and the new run's id is `unique-id`.
+`files.delete` answers `file is a run input` for a file that is an input of an active run or of a run this invocation started.
+`cancel` needs an active run (`no such active run`; a run started in the same invocation is not active yet).
+A start or cancel reaches the log only if the run ends `Ok`, in its outcome (`computeStarts`, `computeCancels`), and takes effect when that entry applies.
 The engine runs it in a store with on-demand allocation, NaN canonicalization, memory up to 4 GiB, and an interrupt flag checked at every epoch tick (a cancelled run is `Trap(Cancelled, "cancelled")`); `Usage` carries the fuel, CPU time and peak memory the run took.
 
 ### WASI, implemented by the host

@@ -335,6 +335,21 @@ impl files::HostReader for StoreData {
 }
 
 impl compute::Host for StoreData {
+    fn start(
+        &mut self,
+        method: String,
+        args: Vec<u8>,
+        inputs: Vec<String>,
+    ) -> Result<std::result::Result<String, String>> {
+        self.host
+            .compute_start(&method, &args, &inputs)
+            .map_err(denied)
+    }
+
+    fn cancel(&mut self, run: String) -> Result<std::result::Result<(), String>> {
+        self.host.compute_cancel(&run).map_err(denied)
+    }
+
     fn run_id(&mut self) -> Result<Option<String>> {
         Ok(self.host.compute_run_id())
     }

@@ -6,7 +6,7 @@
 use std::io::{Read, Write};
 
 use calimero_app_sdk::files::FileId;
-use calimero_app_sdk::compute;
+use calimero_app_sdk::compute::{self, RunId};
 use calimero_app_sdk::prelude::*;
 use sha2::{Digest, Sha256};
 
@@ -85,6 +85,16 @@ impl Compute {
     pub fn peek(id: FileId) -> app::Result<u64> {
         let _reader = calimero_app_sdk::files::open(&id)?;
         Ok(0)
+    }
+
+    /// Starts a `digest` run over `inputs`; the same inputs while it is active answer its id.
+    pub fn start_digest(&mut self, inputs: Vec<FileId>) -> app::Result<RunId> {
+        compute::start("digest", &(), &inputs)
+    }
+
+    /// Asks for the active run `run` to end.
+    pub fn cancel(&mut self, run: RunId) -> app::Result<()> {
+        compute::cancel(&run)
     }
 
     /// Receives the outcome of `digest`.
