@@ -337,9 +337,11 @@ is its command line.
 - **Consent page** (`consent_page.rs`; docs: protocol "The consent page"): an
   app (any session of the account, package-bound included) asks
   `POST /consent/requests { kind: release|upgrade|outbound, scope?, subject,
-  returnTo }` (sealed) and gets `{ requestId, url, expiresAt }`; `returnTo` is
-  the package's own frontend origin or one its newest signed manifest names
-  (unbound sessions: `config.origins`). The request (this node's memory,
+  returnTo }` (sealed; a release subject is `{ version, withdraw? }`,
+  `withdraw: true` withdrawing its approval) and gets `{ requestId, url,
+  expiresAt }`; `returnTo` is the package's own frontend origin or one its
+  newest signed manifest names (unbound sessions: `config.origins`). The
+  request (this node's memory,
   `CONSENT_REQUEST_TTL`, per-account and per-node bounds, decided once) freezes
   a model from node state and verified manifests (an upgrade's capability
   sheet is `consent_page::diff`). `GET /consent/{id}` (static HTML in the
@@ -353,9 +355,11 @@ is its command line.
   Upgrade consent always binds the target's manifest hash
   (`VerifiedBundle::manifest_hash`); a release approval always binds its
   measurements digest (`consent_page::release_digest`: Sigstore-verified,
-  `503` when unfetchable, over no measurements on mock attestation); neither
-  route takes the hash from the client. `GET /consent/{id}/result`
-  (sealed, same account; forwarded to the holder over `internal/consent/result`).
+  `503` when unfetchable, over no measurements on mock attestation); a
+  withdrawal binds `{ version }` alone and fetches nothing
+  (`ReleaseChange::Withdraw`); neither route takes the hash from the client.
+  `GET /consent/{id}/result` (sealed, same account; forwarded to the holder
+  over `internal/consent/result`).
   Package-bound sessions are still refused the approval routes themselves.
   Regressions: `tests/consent_page.rs`.
 - **Presence** (`presence.rs`, the ephemeral awareness channel): in memory on

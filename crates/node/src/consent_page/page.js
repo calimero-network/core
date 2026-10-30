@@ -6,6 +6,8 @@
   var id = decodeURIComponent(location.pathname.split("/")[2] || "");
   var base = "/consent/" + encodeURIComponent(id);
   var $ = function (sel) { return document.getElementById(sel); };
+  // Withdrawing a release approval reads differently from approving.
+  var withdrawing = false;
 
   function el(tag, text, cls) {
     var e = document.createElement(tag);
@@ -65,6 +67,8 @@
   }
 
   function render(m) {
+    withdrawing = m.kind === "release" && m.release.change === "withdraw";
+    if (withdrawing) $("approve").textContent = "Withdraw approval";
     $("headline").textContent = m.headline;
     var c = $("content");
     c.textContent = "";
@@ -90,6 +94,18 @@
   }
   function renderRelease(c, r) {
     c.appendChild(el("h2", "The release"));
+    if (r.change === "withdraw") {
+      // Withdrawing lets nothing in: no measurements to check.
+      c.appendChild(facts([
+        ["Version", r.version],
+        ["Approved now", r.currentlyApproved ? "yes" : "no"],
+        ["Only one approved", r.lastApproved ? "yes: the node will refuse" : "no"],
+        ["All approved now", (r.approved || []).join(", ")],
+        ["Nodes on it", (r.nodes || []).length ? r.nodes.join(", ") : "none attested yet"],
+        ["Profile", r.profile],
+      ]));
+      return;
+    }
     var link = el("a", r.links.release); link.href = r.links.release; link.rel = "noreferrer noopener";
     var meas = el("a", r.links.measurements); meas.href = r.links.measurements; meas.rel = "noreferrer noopener";
     c.appendChild(facts([
@@ -204,7 +220,7 @@
         userVerification: "required",
         timeout: 120000,
       } }).then(function (cred) {
-        busy(true, "Recording your approval…");
+        busy(true, withdrawing ? "Withdrawing the approval…" : "Recording your approval…");
         return post("/approve", { confirm: { challengeId: d.challengeId, assertion: {
           credentialId: bytesToB64url(cred.rawId),
           authenticatorData: bytesToB64url(cred.response.authenticatorData),
@@ -214,9 +230,9 @@
       });
     }).then(function (r) {
       if (r.status !== 200) throw new Error((r.body && r.body.message) || "refused: " + r.status);
-      busy(true, "Approved. Returning you to the app…");
+      busy(true, (withdrawing ? "Withdrawn." : "Approved.") + " Returning you to the app…");
       leave(r.body.redirect);
-    }).catch(function (e) { busy(false, "Not approved: " + e.message); });
+    }).catch(function (e) { busy(false, (withdrawing ? "Not withdrawn: " : "Not approved: ") + e.message); });
   }
   function decline() {
     busy(true, "Declining…");

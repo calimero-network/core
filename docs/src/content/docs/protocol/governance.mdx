@@ -57,7 +57,12 @@ which releases may receive it:
 - **Changing it.** `POST /orgs/{org}/releases` or `/auth/releases`
   `{ version, approved }` by the owner with a passkey step-up, or
   `POST /ops/releases` by the operator. The last approved release cannot be
-  withdrawn.
+  withdrawn. An app or console asks the owner for either through the node's
+  [consent page](/protocol/consent-page/) (`kind: "release"`, with
+  `"withdraw": true` to withdraw). A withdrawal stops new data reaching nodes
+  on that release; it deletes and moves nothing: a replica already there keeps
+  what it holds (and, if it leads the app, keeps leading it) until the
+  operator moves it.
 - **Enforcement** is by the nodes that already hold the data:
   - `Node::may_send` refuses every Raft entry and snapshot of an app group to a
     peer whose verified attestation names a release outside the app's set (a

@@ -53,7 +53,9 @@
 //!   re-published release with other measurements under the same tag is not
 //!   the one approved. A node that cannot fetch them refuses the approval
 //!   (`503`); on mock attestation, where no node checks measurements, the
-//!   digest is over none.
+//!   digest is over none. A withdrawal (`subject.withdraw`) binds
+//!   `{ version }` alone and fetches nothing: revoking a release never waits
+//!   on the network.
 //! - **Upgrade**: `{ bundle, migrate, manifest }`: the target WASM's hash and
 //!   the target release's signed-manifest hash
 //!   (`VerifiedBundle::manifest_hash`; `null` only for a raw development
@@ -196,6 +198,9 @@ pub enum ScopeBody {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReleaseSubject {
     version: String,
+    /// `true` asks to withdraw the release's approval instead.
+    #[serde(default)]
+    withdraw: bool,
 }
 
 #[derive(Deserialize)]
@@ -223,7 +228,7 @@ enum Action {
     Release {
         scope: ReleaseScope,
         version: String,
-        policy_digest: String,
+        change: ReleaseChange,
     },
     Upgrade {
         app: String,
@@ -242,6 +247,15 @@ enum Action {
         /// The `.mpk` of the release whose declarations the page listed.
         latest_mpk: String,
     },
+}
+
+/// What a release request changes.
+#[derive(Clone, Debug)]
+enum ReleaseChange {
+    /// Approve it, bound to the digest of the measurements the page showed.
+    Approve { policy_digest: String },
+    /// Withdraw its approval, bound to the version alone.
+    Withdraw,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -774,6 +788,20 @@ async fn release_request(
             on_it.push(id);
         }
     }
+    let profile = (node.own_release() == version)
+        .then(|| node.config.tee_profile.clone())
+        .flatten();
+    if subject.withdraw {
+        let model = withdrawal_model(&version, scope_json, approved, &on_it, profile);
+        return Ok((
+            Action::Release {
+                scope,
+                version,
+                change: ReleaseChange::Withdraw,
+            },
+            model,
+        ));
+    }
     let policy = release_policy(node, &version).await?;
     let digest = policy_digest(&policy);
     let mock = node.config.attestation == crate::attest::Mode::Mock;
@@ -806,10 +834,11 @@ async fn release_request(
         },
         "release": {
             "version": version,
+            "change": "approve",
             "alreadyApproved": already,
             "approved": approved,
             "nodes": on_it,
-            "profile": (node.own_release() == version).then(|| node.config.tee_profile.clone()).flatten(),
+            "profile": profile,
             "measurements": {
                 "policyDigest": digest,
                 "profiles": policy_json(&policy)["profiles"].clone(),
@@ -834,10 +863,67 @@ async fn release_request(
         Action::Release {
             scope,
             version,
-            policy_digest: digest,
+            change: ReleaseChange::Approve {
+                policy_digest: digest,
+            },
         },
         model,
     ))
+}
+
+/// What the page shows for withdrawing `version`'s approval: what the nodes
+/// that hold the data do once it is withdrawn (`Node::may_send`,
+/// `Node::place`, the replica-move check), what they leave as it is, and the
+/// rule `apply` holds it to. No measurements: a withdrawal lets nothing in.
+fn withdrawal_model(
+    version: &str,
+    scope: Value,
+    approved: Vec<String>,
+    on_it: &[u64],
+    profile: Option<String>,
+) -> Value {
+    let whose = scope_words(&scope);
+    let current = approved.iter().any(|v| v == version);
+    let last = current && approved.len() == 1;
+    let mut notes = Vec::new();
+    if !current {
+        notes.push(format!(
+            "{version} is not approved for {whose}; withdrawing it changes nothing."
+        ));
+    }
+    if last {
+        notes.push(format!(
+            "{version} is the only release approved for {whose}, and the node refuses to \
+             withdraw the last approved release: approve another release first."
+        ));
+    }
+    json!({
+        "kind": "release",
+        "scope": scope,
+        "headline": format!("Stop nodes running mero-tee {version} from receiving the data of {whose}"),
+        "before": format!(
+            "Until you withdraw it, nodes running mero-tee {version} may receive, hold and run \
+             the apps of {whose}."
+        ),
+        "after": format!(
+            "Once you withdraw it, the nodes that hold the data of {whose} send nodes running \
+             {version} no more of it (no Raft entries, no snapshots), and no app of {whose} is \
+             placed or moved onto them. Nothing is deleted or moved: a replica already on such a \
+             node keeps the data it holds until the operator moves it elsewhere, and one that \
+             leads an app keeps leading it, receiving its writes, until leadership moves. You can \
+             approve {version} again later."
+        ),
+        "notes": notes,
+        "release": {
+            "version": version,
+            "change": "withdraw",
+            "currentlyApproved": current,
+            "lastApproved": last,
+            "approved": approved,
+            "nodes": on_it,
+            "profile": profile,
+        },
+    })
 }
 
 async fn upgrade_request(
@@ -1436,18 +1522,22 @@ async fn act(
         Action::Release {
             scope,
             version,
-            policy_digest,
+            change,
         } => {
+            let (approved, shown) = match change {
+                ReleaseChange::Approve { policy_digest } => (true, Some(policy_digest.as_str())),
+                ReleaseChange::Withdraw => (false, None),
+            };
             set_release_approval(
                 node,
                 &p,
                 scope.clone(),
                 ReleaseApprovalBody {
                     version: version.clone(),
-                    approved: true,
+                    approved,
                     confirm,
                 },
-                Some(policy_digest),
+                shown,
             )
             .await?
         }
@@ -1517,7 +1607,9 @@ mod tests {
             action: Action::Release {
                 scope: ReleaseScope::Account,
                 version: "1.0.0".into(),
-                policy_digest: "digest".into(),
+                change: ReleaseChange::Approve {
+                    policy_digest: "digest".into(),
+                },
             },
             model: json!({ "kind": "release" }),
             return_to: Url::parse("https://app.example/back?x=1").unwrap(),
@@ -1602,6 +1694,33 @@ mod tests {
         assert!(csp.contains("default-src 'none'"), "{csp}");
         assert!(!csp.contains("unsafe-inline"), "{csp}");
         assert!(csp.contains("connect-src 'self'"), "{csp}");
+    }
+
+    #[test]
+    fn a_release_request_withdraws_only_when_it_says_so() {
+        let parse = |subject: Value| {
+            serde_json::from_value::<CreateBody>(json!({
+                "kind": "release",
+                "scope": "account",
+                "subject": subject,
+                "returnTo": "https://app.example/",
+            }))
+        };
+        let withdraw = |subject: Value| match parse(subject).unwrap() {
+            CreateBody::Release { subject, .. } => subject.withdraw,
+            CreateBody::Upgrade { .. } | CreateBody::Outbound { .. } => unreachable!(),
+        };
+        assert!(
+            !withdraw(json!({ "version": "1.0.0" })),
+            "approval by default"
+        );
+        assert!(!withdraw(json!({ "version": "1.0.0", "withdraw": false })));
+        assert!(withdraw(json!({ "version": "1.0.0", "withdraw": true })));
+        assert!(parse(json!({ "version": "1.0.0", "withdraw": "yes" })).is_err());
+        assert!(
+            parse(json!({ "version": "1.0.0", "approved": false })).is_err(),
+            "unknown fields are still refused"
+        );
     }
 
     #[test]

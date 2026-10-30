@@ -708,3 +708,115 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
     .unwrap();
     assert_eq!(r.status(), 404);
 }
+
+/// A console asks the page to withdraw a release approval: the page says what
+/// stops and what stays, shows no measurements (withdrawing never waits on
+/// fetching them), and the consent binds the version alone. The node still
+/// refuses to withdraw the last approved release.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_release_approval_is_withdrawn_on_the_page() {
+    let c = Cluster::start(3).await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let back = format!("{ORIGIN}/settings");
+    let ask = |version: &str, withdraw: bool| {
+        json!({
+            "kind": "release",
+            "scope": "account",
+            "subject": { "version": version, "withdraw": withdraw },
+            "returnTo": back,
+        })
+    };
+    let approved = || async {
+        alice.me().await.unwrap()["approvedReleases"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let first = approved().await;
+    assert_eq!(first.len(), 1, "the sign-up node's release: {first:?}");
+    let first = first[0].as_str().unwrap().to_owned();
+    let mut page_key = SoftAuthenticator::with_key(&alice_key, "localhost", &origin(&c.urls[0]));
+
+    // A second release, approved on the page.
+    let made = alice
+        .post("consent/requests", ask("2.0.0", false))
+        .await
+        .unwrap();
+    let page = Page::new(made["url"].as_str().unwrap());
+    let ((code, done), _) = page.approve(&c, &mut page_key).await;
+    assert_eq!(code, 200, "{done}");
+    assert!(approved().await.contains(&json!("2.0.0")));
+
+    // Withdrawn on the page: no measurements, the version alone is bound.
+    let made = alice
+        .post("consent/requests", ask("2.0.0", true))
+        .await
+        .unwrap();
+    let id = made["requestId"].as_str().unwrap().to_owned();
+    let page = Page::new(made["url"].as_str().unwrap());
+    let model = page.model().await;
+    assert_eq!(model["kind"], "release");
+    assert_eq!(model["release"]["change"], "withdraw", "{model}");
+    assert!(
+        model["headline"]
+            .as_str()
+            .unwrap()
+            .starts_with("Stop nodes running mero-tee 2.0.0 from receiving the data of"),
+        "{model}"
+    );
+    assert!(model["release"].get("measurements").is_none(), "{model}");
+    assert_eq!(model["release"]["currentlyApproved"], true);
+    assert_eq!(model["release"]["lastApproved"], false);
+    let ((code, done), args) = page.approve(&c, &mut page_key).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(
+        args,
+        json!({ "version": "2.0.0", "__method": "__withdraw_release" })
+    );
+    assert_eq!(
+        done["redirect"],
+        json!(format!("{back}?request_id={id}&result=approved"))
+    );
+    assert_eq!(approved().await, vec![json!(first)]);
+
+    // A release that is not approved: the page says withdrawing changes nothing.
+    let made = alice
+        .post("consent/requests", ask("5.0.0", true))
+        .await
+        .unwrap();
+    let model = Page::new(made["url"].as_str().unwrap()).model().await;
+    assert_eq!(model["release"]["currentlyApproved"], false, "{model}");
+    assert!(
+        model["notes"][0]
+            .as_str()
+            .unwrap()
+            .contains("is not approved"),
+        "{model}"
+    );
+
+    // The last approved release: the page warns, and the node refuses it.
+    let made = alice
+        .post("consent/requests", ask(&first, true))
+        .await
+        .unwrap();
+    let id = made["requestId"].as_str().unwrap().to_owned();
+    let page = Page::new(made["url"].as_str().unwrap());
+    let model = page.model().await;
+    assert_eq!(model["release"]["lastApproved"], true, "{model}");
+    let ((code, refused), _) = page.approve(&c, &mut page_key).await;
+    assert_eq!(code, 400, "{refused}");
+    assert_eq!(refused["error"], "REJECTED");
+    assert_eq!(
+        refused["message"],
+        "the last approved release cannot be withdrawn"
+    );
+    assert_eq!(approved().await, vec![json!(first)]);
+    let result = alice.get(&format!("consent/{id}/result")).await.unwrap();
+    assert_eq!(result["status"], "pending");
+
+    // The subject is still closed.
+    let mut unknown = ask("2.0.0", true);
+    unknown["subject"]["approved"] = json!(false);
+    let e = alice.post("consent/requests", unknown).await.unwrap_err();
+    assert_eq!(status(&e), 400, "{e}");
+}

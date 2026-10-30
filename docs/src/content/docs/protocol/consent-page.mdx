@@ -1,6 +1,6 @@
 ---
 title: The consent page
-description: How an app asks its user to approve an upgrade, a mero-tee release or outbound addresses — through a page the node serves on its own origin, never the app's — what that page shows, and what the passkey's consent binds.
+description: How an app asks its user to approve an upgrade, a mero-tee release (or withdraw one) or outbound addresses — through a page the node serves on its own origin, never the app's — what that page shows, and what the passkey's consent binds.
 sidebar:
   order: 15
 ---
@@ -61,13 +61,15 @@ That stays true. Instead, the app asks the **node** to ask the person.
    { "kind": "upgrade", "subject": { "app": "<appId>", "toVersion": "2.0.0" },
      "returnTo": "https://<label>.<apps-domain>/2.0.0/settings" }
    { "kind": "release", "scope": "account" | { "org": "<orgId>" },
-     "subject": { "version": "1.4.0" }, "returnTo": "…" }
+     "subject": { "version": "1.4.0", "withdraw": false }, "returnTo": "…" }
    { "kind": "outbound", "scope": "account" | { "org": "<orgId>" },
      "subject": { "package": "<package>?", "prefixes": ["https://api.example/"]? },
      "returnTo": "…" }
    ```
 
-   Unknown fields are refused. The node checks the caller could make this
+   A release request approves by default; `"withdraw": true` asks to withdraw
+   the release's approval instead (a console's *Withdraw*). Unknown fields are
+   refused. The node checks the caller could make this
    approval at all (the governance holder, upgrade authority, organization
    membership, a package-bound session only about its own package and apps),
    resolves the subject from its own state and the releases' verified `.mpk`
@@ -120,6 +122,7 @@ Warnings the person should not miss come next, in their own boxes.
 | Kind | Shown, from node-side data only |
 | --- | --- |
 | **Release** | The version; whether it is already approved and what is approved now; which of the cluster's nodes attest it; this node's profile if it runs it; the release's signed measurements per profile and their digest (on mock attestation it says there are none); links to the signed release and its Sigstore-signed `published-mrtds.json`, with how to verify them independently; the deadline, if any |
+| **Release withdrawal** | The version; whether it is approved now (if not, that withdrawing changes nothing) and what else is; whether it is the only approved release, which the node refuses to withdraw; which of the cluster's nodes attest it; this node's profile if it runs it. No measurements: a withdrawal lets nothing in, so it never waits on fetching them. The page says what changes: the nodes that hold the data send nodes on that release no more Raft entries or snapshots, and no app is placed or moved onto them; and what does not: nothing is deleted or moved, a replica already there keeps what it holds until the operator moves it, and one that leads an app keeps leading it until leadership moves. Its button reads *Withdraw approval* |
 | **Upgrade** | The app, current and target version, the publisher's key and author, and a **capability sheet** computed from the two signed manifests and the ABIs their WASM embeds: outbound prefixes added and removed; frontend origin and aliases, with every **new sign-in origin** highlighted (a page there could act in the app as the person); interfaces used and exported; public methods added, removed or changed (view or write, xcall entry point, event handler, destructive); events; timers; whether a migration runs and between which state versions, or why the upgrade would be refused; SDK and build information; the `.mpk`, WASM and manifest hashes |
 | **Outbound** | The package and its publisher, the release whose declarations are listed, the prefixes being approved, which of them are new, which are already approved |
 
@@ -147,7 +150,13 @@ The routes bind the same arguments whoever calls them: `POST /apps/{app}/upgrade
 the measurements digest themselves, and the challenge they hand out commits to
 them. A target or release that changes between the `412` and the assertion no
 longer matches the challenge, and the approval is refused. Withdrawing a
-release lets nothing in and binds `{ version }` alone.
+release lets nothing in and binds `{ version }` alone, through the page
+(`"withdraw": true`) as through the route; the node fetches no measurements
+for it, so revoking a bad release never waits on the network. The last
+approved release cannot be withdrawn: `/approve` answers `400 REJECTED`
+("the last approved release cannot be withdrawn") after the passkey, and the
+request stays pending. A withdrawal the person confirms is reported like any
+consent: `result=approved` (they approved the withdrawal).
 
 ## Limits
 
