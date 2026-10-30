@@ -32,6 +32,14 @@ pub fn file_key(cluster_key: &[u8; 32], app_id: &str) -> [u8; 32] {
     tag(cluster_key, format!("calimero.files.v1|{app_id}"))
 }
 
+/// The cluster's identity: an Ed25519 key only a node holding the cluster key can make, so a
+/// signature by it proves a node of this cluster signed. Its public half names the cluster to
+/// the job nodes that take its work.
+#[must_use]
+pub fn cluster_identity_key(cluster_key: &[u8; 32]) -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&tag(cluster_key, "calimero.cluster-identity.v1"))
+}
+
 /// `HMAC-SHA256(key, label)`: every key this node derives from another is one.
 pub(crate) fn tag(key: &[u8; 32], label: impl AsRef<[u8]>) -> [u8; 32] {
     let tag = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, key), label.as_ref());
@@ -94,6 +102,24 @@ mod tests {
         assert_eq!(
             hex::encode(file_key(&[7; 32], "app")),
             "fd6f5681b66993559e8d5027662473049b1a25fe667a1383454003d7db41fdf6"
+        );
+    }
+
+    #[test]
+    fn the_cluster_identity_matches_its_known_answer() {
+        // HMAC-SHA256([1; 32], "calimero.cluster-identity.v1") as the Ed25519 seed.
+        let key = cluster_identity_key(&[1; 32]);
+        assert_eq!(
+            hex::encode(key.to_bytes()),
+            "e0dbdecf4f52790ed642083a9a60385823234a1334b17efb432568cab988a4db"
+        );
+        assert_eq!(
+            hex::encode(key.verifying_key().to_bytes()),
+            "c0bfb91fd240b8b36345da220f2a4040028c563d3499d01af91919e90fe1990a"
+        );
+        assert_ne!(
+            key.verifying_key(),
+            cluster_identity_key(&[2; 32]).verifying_key()
         );
     }
 }
