@@ -36,6 +36,8 @@ pub mod report;
 pub mod services;
 pub mod signing_key;
 pub mod system;
+#[cfg(feature = "testing")]
+pub mod testing;
 pub mod types;
 pub mod usage;
 
