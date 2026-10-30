@@ -794,6 +794,10 @@ async fn followers_honour_min_index_and_hide_titles() {
         booked.index
     );
 
+    // The restarted node signs with a new key, so the session it issued no
+    // longer verifies: the client refreshes, as a real one does on that 401.
+    let _fresh = org.on("cy", lagging).refresh().await.unwrap();
+
     let order = std::iter::once(lagging).chain((0..3).filter(|i| *i != lagging));
     for node in order {
         let cy = org
