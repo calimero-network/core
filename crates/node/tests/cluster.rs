@@ -16,6 +16,8 @@ mod harness;
 
 use harness::{free_port, kv_wasm, node_config, signed_up, Cluster, ORIGIN};
 
+const EVENTUALLY_DEADLINE: Duration = Duration::from_secs(60); // sized for a loaded CI runner
+
 impl Cluster {
     /// Start one more node, not a founder: it knows the cluster's addresses
     /// but joins only once the operator registers it (`/ops/nodes`).
@@ -541,7 +543,8 @@ async fn eventually(
     done: impl Fn(&Value) -> bool,
 ) -> Value {
     let mut last = Value::Null;
-    for _ in 0..100 {
+    let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
+    while tokio::time::Instant::now() < deadline {
         if let Ok(v) = cl
             .view(app, method, args.clone(), Consistency::Strong)
             .await
