@@ -247,6 +247,47 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  # Compute actions against real processes: three replicas and two job nodes
+  # (crates/node/tests/fault/compute_e2e.py), which merobox's cloud-v2 backend
+  # cannot start.
+  compute-e2e:
+    name: compute actions, real processes
+    runs-on: big-machine
+    timeout-minutes: 30
+    env:
+      COMPUTE_E2E_DIR: ${{ github.workspace }}/target/compute-e2e
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: ci-checks
+          save-if: false
+
+      # Optimized like the product (sealing 47 MiB files in a debug build misses the push deadline), without fat LTO.
+      - name: Build merod, meroctl and the component builder
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: cargo build --release -p merod -p meroctl -p calimero-app-build
+
+      - name: Compute scenarios
+        run: python3 -I crates/node/tests/fault/compute_e2e.py --skip-cargo-tests
+
+      - name: Upload the logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: compute-e2e-logs
+          path: target/compute-e2e
+          if-no-files-found: ignore
+          retention-days: 7
+
   # Nightly: the shipped artifact. The newest published release (a prerelease
   # included) has its image tagged with its version by release.yml; its merod
   # runs the four shards of the commit the image was built from (its

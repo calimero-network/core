@@ -2,8 +2,9 @@
 
 Scenarios: happy path, a job node killed mid-run, restart determinism, cancel, the three caps.
 Forged finals and per-run key isolation need a forger inside the cluster, so the in-process
-tests that prove them are run and quoted. Release binaries (`RV2_BIN_DIR`, default
-target/release) and the compute fixture (cached by the node tests under target/app-components):
+tests that prove them are run and quoted. Binaries from `RV2_BIN_DIR` (default target/release);
+the compute fixture is the node tests' cached build, else built by `mero-app-build` from there.
+Work dir and logs: `COMPUTE_E2E_DIR` (default target/compute-e2e).
 
     python3 -I crates/node/tests/fault/compute_e2e.py [--skip-cargo-tests]
 """
@@ -23,7 +24,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rv2 import MEROD, ORIGIN, ROOT, Client, Cluster, http  # noqa: E402
+from rv2 import BIN, MEROD, ORIGIN, ROOT, Client, Cluster, http  # noqa: E402
 
 BASE_PORT = 7650
 JOBS = (4, 5)
@@ -85,11 +86,13 @@ class E2E(Cluster):
         return http("GET", self.url(i) + "job/load", timeout=5)
 
 
-def compute_wasm():
+def compute_wasm(wd):
     found = sorted((ROOT / "target" / "app-components").glob("compute-*.wasm"), key=lambda p: p.stat().st_mtime)
-    if not found:
-        raise SystemExit("no compute component: run cargo test --release -p calimero-node --test compute_runs")
-    return str(found[-1])
+    if found:
+        return str(found[-1])
+    built = wd / "compute.wasm"
+    subprocess.run([str(BIN / "mero-app-build"), "apps/v2-fixtures/compute", "--out", str(built)], cwd=ROOT, check=True)
+    return str(built)
 
 
 def cargo_tests():
@@ -185,14 +188,14 @@ def stuck_cancel(cl, rig):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-cargo-tests", action="store_true")
-    ap.add_argument("--workdir", default=str(ROOT / ".scratch" / "compute-actions" / "e2e" / "work"))
+    ap.add_argument("--workdir", default=os.environ.get("COMPUTE_E2E_DIR", str(ROOT / "target" / "compute-e2e")))
     args = ap.parse_args()
     offset = int(os.environ.get("WORKFLOW_PORT_OFFSET", "0"))
     wd = Path(args.workdir)
     shutil.rmtree(wd, ignore_errors=True)
     wd.mkdir(parents=True)
     in_process = {} if args.skip_cargo_tests else cargo_tests()
-    wasm = compute_wasm()
+    wasm = compute_wasm(wd)
     cl = E2E(wd, base_port=BASE_PORT + offset, cluster="computee2e")
     try:
         cl.start()

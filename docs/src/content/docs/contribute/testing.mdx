@@ -156,6 +156,10 @@ shows up as a pass.
   reports its latency and throughput (below) in the job summary and as the
   artifact `soak-metrics-K`;
 - job `merobox examples`: merobox's own examples;
+- job `compute actions, real processes`: `crates/node/tests/fault/compute_e2e.py`
+  starts three replicas and two `merod run --job-node` processes of a release build (without fat LTO) and drives
+  compute runs through a job node's loss, a cancel and the caps (logs are the
+  artifact `compute-e2e-logs` on failure);
 - job `clients against merod`: mero-js's `test:cloud-v2` and
   calimero-client-py's cluster tests against this tree's `merod`. A change that
   breaks a client goes green with the client's fix: a same-named branch there,
