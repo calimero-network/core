@@ -395,12 +395,20 @@ interface files {
   info: func(id: blob-id) -> option<blob-info>;       // mime is "" for files; size and sha256 are of the plaintext
 }
 
+// Starting and cancelling compute runs: logged writes only (call, timer, init, xcall delivery).
+// The compute world does not import it: a run cannot start runs.
+interface runs {
+  use types.{blob-id, action-id};
+  start: func(method: string, args: list<u8>, inputs: list<blob-id>) -> result<action-id, string>; // an active run with the same method, args and inputs answers its id
+  cancel: func(run: action-id) -> result<_, string>;   // an active run only; recorded with the run's outcome, applied with its entry
+}
+
 // What a compute component sees of its run; only the compute world imports it.
 interface job {
   use types.{blob-id, action-id};
   run-id: func() -> option<action-id>;
   inputs: func() -> list<blob-id>;
-  progress: func(percent: u8, step: string);   // compute runs only; step is cut at 128 bytes; the last value wins, never logged
+  progress: func(percent: u8, step: string);   // step is cut at 128 bytes; the last value wins, never logged
 }
 
 interface xcall {
@@ -428,6 +436,7 @@ world app {
   import files;
   import xcall;
   import action;
+  import runs;
 
   // WASI 0.2.12, what wasmtime 50 and componentize-js 0.23 ship (D43); implemented by the host (section 4 table).
   // The nine stubbed interfaces of D44 are accepted at install but are not part of the world.
@@ -511,13 +520,21 @@ A release ships the compute component as `compute` in the signed manifest (`serv
 At install the node prepares it on the compute world only, never on the replica engine, and refuses the release unless its ABI is the compute world's and lists exactly the app ABI's compute methods with the same caps (`COMPUTE_ABI_MISMATCH`).
 A release without a compute component installs and its app runs calls, but cannot run compute.
 The release records the compute hash per service and the app's record carries the running release's compute hash next to its bundle; the compute component is never an app's bundle, and replicas never prepare it.
-A compute run is `kind = action` with a run: it has no storage, `emit`, `xcall`, `unique-id`, `start-action` or outgoing HTTP (`HostDenied`) and reads only the files named in `compute.inputs`, which are blob ids.
+A compute run is `kind = action` with a run: it has no storage, `emit`, `xcall`, `unique-id`, `start-action` or outgoing HTTP (`HostDenied`) and reads only the files named in `job.inputs`, which are blob ids.
 It may create files, 2 GiB in all and 47 MiB each; this cap replaces the 64 MiB per-run cap of a logged run.
 There is no delete: a file is a sealed blob, and dropping the reference is the delete.
 The outputs of a run are sealed blobs, and the run's result method, which receives one typed outcome carrying the output ids, keeps them with R8: a `BlobRef` to an output that the result method stores is retained, and an output it does not store is collected.
 `storage_put` in the result method accepts a `BlobRef` to a blob the app holds or to an output of the run, and refuses any other id.
 Its clock is fixed at the start entry's timestamp and its randomness is ChaCha20 from the run's seed, so a run repeats exactly.
 Its result is at most 64 KiB; a larger one ends the run `Trap(HostDenied, "result too large")`.
+
+A logged run starts a compute run with `runs.start(method, args, inputs)` and asks for one to end with `runs.cancel(run)`; any other kind (a view, a compute run, a migration) gets `HostDenied`.
+`start` answers soft errors in this order: `not a compute method` (the method is not a compute method of the running bundle's ABI), `arguments too large` (over 64 KiB), `too many inputs` (over 64), `input named twice`, `input is not a file of this app` (an input must be a file the app marks and this run did not delete), `inputs too large` (declared plaintext over 2 GiB).
+An active run, or one this invocation already started, with the same method, SHA-256 of the arguments and inputs in order answers its id and records nothing.
+Otherwise `too many runs started` (16 per run) and `too many active runs` (64 per app) apply, and the new run's id is `unique-id`.
+`files.delete` answers `file is a run input` for a file that is an input of an active run or of a run this invocation started.
+`cancel` needs an active run (`no such active run`; a run started in the same invocation is not active yet).
+A start or cancel reaches the log only if the run ends `Ok`, in its outcome (`computeStarts`, `computeCancels`), and takes effect when that entry applies.
 The engine runs it in a store with on-demand allocation, NaN canonicalization, memory up to 4 GiB, and an interrupt flag checked at every epoch tick (a cancelled run is `Trap(Cancelled, "cancelled")`); `Usage` carries the fuel, CPU time and peak memory the run took.
 
 ### WASI, implemented by the host

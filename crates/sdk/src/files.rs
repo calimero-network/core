@@ -1,8 +1,8 @@
 //! Files: encrypted, replicated byte streams the node keeps for the app.
 //!
 //! A [`Writer`] makes a file in a call, timer, init or xcall delivery; [`Reader`] opens one
-//! in any invocation but a migration. The app keeps the [`FileId`] in its own state: a file
-//! exists only once the run that finished it is committed, and is deleted with `delete`.
+//! in any invocation but a migration. The app keeps the [`BlobRef`] in its own state: a file
+//! exists only once the run that finished it is committed, and goes when no state refers to it.
 //! In the guest every function reaches the host through the `calimero:app/files` import; on
 //! the host target they use a plain in-memory store that shows a finished file at once.
 //! Only `testing::TestApp` shows the host's commit semantics (a file appears when its call
